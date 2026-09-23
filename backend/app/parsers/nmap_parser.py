@@ -14,6 +14,7 @@ from app.parsers.parser_utils import epoch_to_utc
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services import smb_signing as smb_signing_states
+from app.services.cert_fields import _classify_tls_version, parse_cert_not_after
 from app.services.subnet_correlation import SubnetCorrelationService
 import logging
 import time
@@ -380,6 +381,7 @@ class NmapXMLParser:
             
             # Process port scripts
             self._process_port_scripts(port_elem, port.id, scan_id)
+            self._record_tls_from_scripts(port_elem, host_id, port, scan_id)
 
     def _extract_port_data(self, port_elem: etree.Element) -> Dict[str, Any]:
         """Extract port information from XML element"""
@@ -425,6 +427,64 @@ class NmapXMLParser:
             })
         
         return port_data
+
+    def _record_tls_from_scripts(self, port_elem: etree.Element, host_id: int, port, scan_id: int) -> None:
+        """nmap's ``ssl-cert`` / ``ssl-enum-ciphers`` as a TLS observation of
+        this port (v2.390.0): a ``web_interfaces`` row, source ``nmap``, with
+        the certificate expiry, self-signed state, issuer/subject org and the
+        weak-protocol flag — the typed columns the ``has:cert_issue`` /
+        ``has:weak_tls`` conditions and the Posture read.  Only httpx, testssl
+        and the like wrote them, so a certificate or TLS weakness that only
+        nmap found was missed.  Read from the script's structured tables, not
+        its display text."""
+        scripts = {s.get('id'): s for s in port_elem.findall('script')}
+        cert = scripts.get('ssl-cert')
+        ciphers = scripts.get('ssl-enum-ciphers')
+        if cert is None and ciphers is None:
+            return
+
+        def _table(el, key):
+            t = el.find(f"table[@key='{key}']") if el is not None else None
+            return {e.get('key'): (e.text or '') for e in t.findall('elem')} if t is not None else None
+
+        not_after = self_signed = subject_org = issuer_org = None
+        if cert is not None:
+            validity = _table(cert, 'validity') or {}
+            not_after = parse_cert_not_after(validity.get('notAfter'))
+            subject, issuer = _table(cert, 'subject'), _table(cert, 'issuer')
+            if subject and issuer:
+                self_signed = subject == issuer
+            subject_org = ((subject or {}).get('organizationName') or '')[:255] or None
+            issuer_org = ((issuer or {}).get('organizationName') or '')[:255] or None
+
+        weak = None
+        if ciphers is not None:
+            verdicts = [_classify_tls_version(t.get('key')) for t in ciphers.findall('table')]
+            weak = True if True in verdicts else (False if False in verdicts else None)
+
+        host = self.db.get(models.Host, host_id)
+        if host is None:
+            return
+        url = f"https://{host.ip_address}:{port.port_number}"
+        row = (
+            self.db.query(models.WebInterface)
+            .filter(models.WebInterface.scan_id == scan_id, models.WebInterface.url == url,
+                    models.WebInterface.source == 'nmap')
+            .first()
+        )
+        if row is None:
+            row = models.WebInterface(
+                scan_id=scan_id, host_id=host_id, port_id=port.id, project_id=self._project_id,
+                source='nmap', url=url, protocol='https', port=port.port_number,
+                ip_address=host.ip_address,
+            )
+            self.db.add(row)
+        row.cert_not_after = not_after
+        row.cert_self_signed = self_signed
+        row.cert_subject_org = subject_org
+        row.cert_issuer_org = issuer_org
+        row.tls_weak_protocol = weak
+        self.db.flush()
 
     def _process_port_scripts(self, port_elem: etree.Element, port_id: int, scan_id: int):
         """Process scripts for a port"""

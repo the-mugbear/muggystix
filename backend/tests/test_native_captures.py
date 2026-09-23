@@ -247,6 +247,29 @@ def test_smb_signing_agrees_across_tools_and_counts_as_relayable(db_session, tes
     assert NmapXMLParser._detect_smb_signing(hostscript) == host.smb_signing
 
 
+# --- nmap TLS scripts -----------------------------------------------------------
+
+def test_nmap_ssl_scripts_feed_the_cert_and_tls_conditions(db_session, test_project):
+    """v2.390.0 — nmap's ssl-cert / ssl-enum-ciphers were stored as display
+    text only; has:cert_issue / has:weak_tls read web_interfaces, which only
+    httpx / testssl filled, so a self-signed certificate nmap saw was missed.
+    The capture: a lab service, self-signed, valid one week, TLS 1.2 + 1.3."""
+    from datetime import datetime, timezone
+    from app.parsers.nmap_parser import NmapXMLParser
+    from app.services.host_condition_sets import cert_issue_host_ids, weak_tls_host_ids
+
+    scan = NmapXMLParser(db_session).parse_file(
+        str(NATIVE / "nmap-tls-verbose.xml"), "nmap-tls-verbose.xml", project_id=test_project.id)
+    [wi] = db_session.query(models.WebInterface).filter_by(scan_id=scan.id, source="nmap").all()
+    assert (wi.url, wi.port) == ("https://172.30.80.20:8443", 8443)
+    assert wi.cert_not_after == datetime(2026, 9, 30, 6, 6, 36, tzinfo=timezone.utc)
+    assert wi.cert_self_signed is True
+    assert (wi.cert_subject_org, wi.cert_issuer_org) == ("Disposable Parser Lab", "Disposable Parser Lab")
+    assert wi.tls_weak_protocol is False
+    assert wi.host_id in cert_issue_host_ids(db_session, test_project.id)
+    assert wi.host_id not in weak_tls_host_ids(db_session, test_project.id)
+
+
 # --- content discovery --------------------------------------------------------
 
 def test_content_discovery_keeps_nmaps_service_and_stores_paths(db_session, test_project, tmp_path):
