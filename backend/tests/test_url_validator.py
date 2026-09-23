@@ -254,3 +254,59 @@ class TestPinnedTransport:
             with pytest.raises(httpx.ConnectError):
                 client.get("http://split.test/")
         assert "request" not in seen
+
+
+# ---------------------------------------------------------------------------
+# IPv4-mapped IPv6 (review 2026-09-23 C2): ``::ffff:a.b.c.d`` reaches the IPv4
+# host, but as a version-6 address it matched none of the IPv4 ranges — so
+# loopback, RFC1918 and even the metadata address passed both guards.
+# ---------------------------------------------------------------------------
+
+class TestIpv4MappedAddresses:
+    # (mapped answer, rejected even with allow_private=True?)
+    CASES = [
+        ("::ffff:127.0.0.1", False),
+        ("::ffff:10.0.0.1", False),
+        ("::ffff:192.168.1.10", False),
+        ("::ffff:169.254.169.254", True),
+        ("::ffff:224.0.0.1", True),
+    ]
+
+    @pytest.mark.parametrize("ip,always", CASES)
+    def test_save_time_guard_classifies_mapped_as_ipv4(self, monkeypatch, ip, always):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo(ip))
+        with pytest.raises(ValueError):
+            require_public_http_url("http://mapped.test/")
+        if always:
+            with pytest.raises(ValueError):
+                require_public_http_url("http://mapped.test/", allow_private=True)
+        else:
+            assert require_public_http_url("http://mapped.test/", allow_private=True)
+
+    @pytest.mark.parametrize("ip,always", CASES)
+    def test_connect_time_guard_classifies_mapped_as_ipv4(self, monkeypatch, ip, always):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo(ip))
+        with pytest.raises(ValueError):
+            _uv.resolve_host_guarded("mapped.test")
+        if always:
+            with pytest.raises(ValueError):
+                _uv.resolve_host_guarded("mapped.test", allow_private=True)
+        else:
+            assert _uv.resolve_host_guarded("mapped.test", allow_private=True) == [ip]
+
+    def test_literal_mapped_metadata_url_rejected(self):
+        # No mocked DNS: getaddrinfo of the literal returns the literal.
+        with pytest.raises(ValueError):
+            require_public_http_url("http://[::ffff:169.254.169.254]/", allow_private=True)
+
+    def test_mapped_public_address_still_allowed(self, monkeypatch):
+        monkeypatch.setattr(_uv.socket, "getaddrinfo", lambda h, *a, **k: _addrinfo("::ffff:93.184.216.34"))
+        assert require_public_http_url("http://mapped.test/")
+        assert _uv.resolve_host_guarded("mapped.test") == ["::ffff:93.184.216.34"]
+
+    def test_plain_public_ipv6_unaffected(self, monkeypatch):
+        monkeypatch.setattr(
+            _uv.socket, "getaddrinfo",
+            lambda h, *a, **k: _addrinfo("2606:2800:220:1:248:1893:25c8:1946"),
+        )
+        assert require_public_http_url("https://v6.test/")

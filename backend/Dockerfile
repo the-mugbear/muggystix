@@ -108,7 +108,9 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # but nginx connects over the Docker network, so request.client.host was
 # nginx's IP for EVERY client — globally exploitable login throttling and
 # wrong audit attribution (code-review C2).  '*' is safe only while the
-# backend is unexposed (reachable solely via the nginx proxy).
+# backend is unexposed (reachable solely via the nginx proxy) AND nginx
+# replaces X-Forwarded-For with $remote_addr: uvicorn takes the leftmost
+# entry, so a proxy that appends lets the client pick its own IP.
 CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attachments /app/uploads/report_artifacts 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
 
 # Report worker (v2.381.0) — the production image plus Quarto.  The backend

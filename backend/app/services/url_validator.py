@@ -82,6 +82,32 @@ _FORBIDDEN_NETWORKS = [
 ]
 
 
+def _policy_violation(addr, *, allow_private: bool):
+    """The ``(tier, network)`` that forbids ``addr``, or None.
+
+    ``tier`` is ``"always"`` (rejected regardless of ``allow_private``) or
+    ``"private"``.  The ONE classifier both guards use.
+
+    An IPv4-mapped IPv6 address (``::ffff:a.b.c.d``) is classified as the
+    IPv4 address it reaches: the kernel connects it to that IPv4 host, but
+    as a version-6 address it matched none of the IPv4 ranges, so
+    ``::ffff:169.254.169.254`` passed even the always-forbidden tier
+    (review 2026-09-23 C2).
+    """
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    for net in _ALWAYS_FORBIDDEN_NETWORKS:
+        if addr.version == net.version and addr in net:
+            return ("always", net)
+    if allow_private:
+        return None
+    for net in _FORBIDDEN_NETWORKS:
+        if addr.version == net.version and addr in net:
+            return ("private", net)
+    return None
+
+
 def require_public_http_url(
     value: str,
     *,
@@ -144,31 +170,28 @@ def require_public_http_url(
         except ValueError:
             # Shouldn't happen for getaddrinfo output; be defensive.
             raise ValueError(f"Could not parse resolved address {ip_str!r}")
-        # ALWAYS check the SSRF-trap ranges (cloud metadata, link-local,
-        # multicast, reserved) — even ``allow_private=True`` doesn't
-        # unlock these.
-        for net in _ALWAYS_FORBIDDEN_NETWORKS:
-            if addr.version == net.version and addr in net:
-                raise ValueError(
-                    f"URL host {host!r} resolves to {addr}, which is in "
-                    f"a forbidden range ({net}).  Link-local, cloud "
-                    f"metadata, multicast, and reserved ranges are "
-                    f"rejected regardless of integration type."
-                )
-        # Private-IP check only applies to public-only integrations.
-        # Scanner integrations on a LAN (Nessus on 192.168.x.x, OpenVAS
-        # on 10.x.x.x, Ollama on 127.0.0.1) skip this gate.
-        if allow_private:
+        # The SSRF-trap ranges (cloud metadata, link-local, multicast,
+        # reserved) are rejected even with ``allow_private=True``; the
+        # private ranges only for public-only integrations — scanners on a
+        # LAN (Nessus on 192.168.x.x, Ollama on 127.0.0.1) skip that tier.
+        violation = _policy_violation(addr, allow_private=allow_private)
+        if violation is None:
             continue
-        for net in _FORBIDDEN_NETWORKS:
-            if addr.version == net.version and addr in net:
-                raise ValueError(
-                    f"URL host {host!r} resolves to a private address "
-                    f"({addr}). Public IP required for this integration "
-                    f"type.  On-prem scanners (Nessus, OpenVAS, Nuclei, "
-                    f"Burp) and local LLMs (Ollama) are allowed to use "
-                    f"private addresses; other integration types are not."
-                )
+        tier, net = violation
+        if tier == "always":
+            raise ValueError(
+                f"URL host {host!r} resolves to {addr}, which is in "
+                f"a forbidden range ({net}).  Link-local, cloud "
+                f"metadata, multicast, and reserved ranges are "
+                f"rejected regardless of integration type."
+            )
+        raise ValueError(
+            f"URL host {host!r} resolves to a private address "
+            f"({addr}). Public IP required for this integration "
+            f"type.  On-prem scanners (Nessus, OpenVAS, Nuclei, "
+            f"Burp) and local LLMs (Ollama) are allowed to use "
+            f"private addresses; other integration types are not."
+        )
 
     return value
 
@@ -246,19 +269,18 @@ def _host_resolves_safely(host: str, *, allow_private: bool = False) -> list:
             addr = ipaddress.ip_address(ip_str)
         except ValueError:
             raise ValueError(f"Could not parse resolved address {ip_str!r}")
-        for net in _ALWAYS_FORBIDDEN_NETWORKS:
-            if addr.version == net.version and addr in net:
-                raise ValueError(
-                    f"Host {host!r} resolves to {addr}, in a forbidden "
-                    f"range ({net})."
-                )
-        if allow_private:
+        violation = _policy_violation(addr, allow_private=allow_private)
+        if violation is None:
             continue
-        for net in _FORBIDDEN_NETWORKS:
-            if addr.version == net.version and addr in net:
-                raise ValueError(
-                    f"Host {host!r} resolves to a private address ({addr})."
-                )
+        tier, net = violation
+        if tier == "always":
+            raise ValueError(
+                f"Host {host!r} resolves to {addr}, in a forbidden "
+                f"range ({net})."
+            )
+        raise ValueError(
+            f"Host {host!r} resolves to a private address ({addr})."
+        )
     if not safe:
         raise ValueError(f"Host {host!r} resolved to no addresses.")
     return safe
