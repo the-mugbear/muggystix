@@ -188,4 +188,27 @@ describe('UploadReviewDialog flow', () => {
     await waitFor(() => expect(api.discardIngestionJob).toHaveBeenCalledWith(1));
     await waitFor(() => expect(screen.queryByText('a.xml')).not.toBeInTheDocument());
   });
+
+  // v5.273.1 — a drop where some files were already imported: after the rest
+  // started, the dialog sat on a disabled "Import 0 ready files".
+  it('says the review is over, and offers Done, when only refused duplicates remain', async () => {
+    api.startIngestionJob.mockResolvedValue({ id: 1, status: 'queued' });
+    api.uploadFile.mockImplementationOnce(async (f: File) => ({
+      job_id: 1, filename: f.name, status: 'staged', message: 'staged', scan_id: null,
+    }));
+    api.uploadFile.mockImplementationOnce(async () => {
+      throw { response: { status: 409, data: { detail: { code: 'duplicate_scan', scan_id: 461, message: 'Already imported as scan #461.' } } } };
+    });
+    const onOpenChange = vi.fn();
+    const { container } = render(<Harness onOpenChange={onOpenChange} />);
+    drop(container, ['a.xml', 'rustscan.txt']);
+    fireEvent.click(await screen.findByRole('button', { name: 'Import 1 ready file' }));
+
+    expect(await screen.findByRole('status')).toHaveTextContent(
+      '1 started — results appear on the page · 1 already imported, not uploaded again',
+    );
+    expect(screen.queryByRole('button', { name: /Import 0 ready files/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onOpenChange).toHaveBeenLastCalledWith(false);
+  });
 });

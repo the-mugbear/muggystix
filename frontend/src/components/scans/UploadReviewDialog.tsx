@@ -95,6 +95,16 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
     multiple: true,
   });
 
+  // Nothing left to act on, and something was started: the rest were refused
+  // as duplicates or failed to upload.  The footer says so and offers Done.
+  const counts = {
+    started: rows.filter((r) => r.phase === 'started').length,
+    duplicate: rows.filter((r) => r.phase === 'duplicate').length,
+    error: rows.filter((r) => r.phase === 'error').length,
+  };
+  const finished = !review.busy && counts.started > 0
+    && rows.every((r) => r.phase === 'started' || r.phase === 'duplicate' || r.phase === 'error');
+
   // Every file started: the banner has them; the dialog's job is done.
   useEffect(() => {
     if (open && review.allStarted) onOpenChange(false);
@@ -263,13 +273,32 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
               {review.chooseCount} file{review.chooseCount === 1 ? '' : 's'} need a format. Files left here expire after 24 hours.
             </span>
           )}
-          <Button variant="outline" onClick={() => onOpenChange(false)} disabled={review.busy}>
-            Close
-          </Button>
-          <Button onClick={() => void review.importReady()} disabled={review.readyCount === 0 || review.busy}>
-            {review.busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-            Import {review.readyCount} ready file{review.readyCount === 1 ? '' : 's'}
-          </Button>
+          {finished ? (
+            // v5.273.1 — everything that could be imported was started; what
+            // remains (already imported, failed to upload) needs no action.
+            // It used to sit on a disabled "Import 0 ready files" with no
+            // sign the review was over.
+            <>
+              <span role="status" className="mr-auto text-caption text-muted-foreground">
+                {[
+                  `${counts.started} started — results appear on the page`,
+                  counts.duplicate ? `${counts.duplicate} already imported, not uploaded again` : null,
+                  counts.error ? `${counts.error} failed to upload` : null,
+                ].filter(Boolean).join(' · ')}
+              </span>
+              <Button onClick={() => onOpenChange(false)}>Done</Button>
+            </>
+          ) : (
+            <>
+              <Button variant="outline" onClick={() => onOpenChange(false)} disabled={review.busy}>
+                Close
+              </Button>
+              <Button onClick={() => void review.importReady()} disabled={review.readyCount === 0 || review.busy}>
+                {review.busy && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+                Import {review.readyCount} ready file{review.readyCount === 1 ? '' : 's'}
+              </Button>
+            </>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>
