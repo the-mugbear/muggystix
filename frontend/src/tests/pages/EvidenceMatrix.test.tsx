@@ -144,3 +144,16 @@ describe('Evidence — domain × segment matrix', () => {
     expect(matrix.querySelector('table')!.style.tableLayout).toBe('fixed');
   });
 });
+
+describe('Evidence — the lead (5.262.0)', () => {
+  beforeEach(() => { coverageMock.mockReset().mockResolvedValue(coverage); });
+
+  it('opens with how many domains are complete and the largest in-scope gap', async () => {
+    await renderPage();
+    // The 18 hosts outside every scoped subnet are the biggest number, but they
+    // are not a collection task — the lead names the largest IN-SCOPE gap.
+    expect(screen.getByText(/0 of 2 assessment domains cover every eligible host/)).toHaveTextContent(
+      'the largest gap is Authentication / SMB / AD in 10.8.0.0/24 — 11 of 11 hosts not assessed.',
+    );
+  });
+});

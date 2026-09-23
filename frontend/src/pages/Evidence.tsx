@@ -37,9 +37,10 @@ import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { InfoTip } from '../components/ui/info-tip';
 import PostureSection from '../components/posture/PostureSection';
+import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
+import PostureEmpty from '../components/posture/PostureEmpty';
 import { cn } from '../utils/cn';
 
 const GAP_PREVIEW = 12;
@@ -316,6 +317,35 @@ const CoverageMatrix: React.FC<{
   );
 };
 
+/** The answer first: how many domains are complete, and the largest gap. */
+const EvidenceLead: React.FC<{
+  data: EvidenceCoverageResponse;
+  largest?: { row: { label: string }; cell: { gap: number; eligible: number }; segmentLabel: string; outside: boolean };
+}> = ({ data, largest }) => {
+  const applicable = data.domains.filter((d) => d.coverage.denominator > 0);
+  const complete = applicable.filter((d) => d.coverage.numerator >= d.coverage.denominator);
+  const tone: LeadTone = applicable.length === 0 ? 'neutral'
+    : complete.length === applicable.length ? 'clear'
+      : complete.length === 0 ? 'critical' : 'warning';
+  return (
+    <PostureLead tone={tone} restsOn={<>
+      Covers all {data.total_hosts.toLocaleString()} host{data.total_hosts === 1 ? '' : 's'} in the project, inside a scoped
+      subnet or not — Patterns and the Posture grid count only hosts inside scoped subnets, so their totals can be smaller.
+      A gap is missing evidence, not a finding: nothing observed where nobody looked is unknown, not clean.
+    </>}>
+      {applicable.length === 0
+        ? 'No assessment domain applies to the hosts found so far.'
+        : <>
+          {complete.length} of {applicable.length} assessment domain{applicable.length === 1 ? '' : 's'} cover every eligible host
+          {largest && !largest.outside
+            ? <>; the largest gap is {largest.row.label} in <span className="break-all">{largest.segmentLabel}</span> —{' '}
+              {largest.cell.gap.toLocaleString()} of {largest.cell.eligible.toLocaleString()} hosts not assessed.</>
+            : '.'}
+        </>}
+    </PostureLead>
+  );
+};
+
 const Evidence: React.FC = () => {
   const { currentProject } = useProject();
   const [data, setData] = useState<EvidenceCoverageResponse | null>(null);
@@ -363,10 +393,8 @@ const Evidence: React.FC = () => {
         <div className="min-w-0">
           <h1 className="text-page-title">Evidence</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            How much of the picture this assessment actually has. Each figure is{' '}
-            <strong className="text-foreground">assessed ÷ eligible</strong> hosts — only hosts a domain applies to
-            count toward it. A gap is missing <em>evidence</em>, not a finding about the estate: zero observed issues
-            where nobody looked is unknown, not clean.
+            How much of the picture this assessment actually has — which hosts carry evidence in each domain that applies
+            to them, and where the gaps are.
           </p>
         </div>
         <Button size="sm" variant="outline" onClick={reload} disabled={loading}>
@@ -391,26 +419,15 @@ const Evidence: React.FC = () => {
         </Alert>
       ) : data ? (
         data.total_hosts === 0 ? (
-          <Card>
-            <CardContent className="p-lg text-center">
-              <ShieldAlert className="mx-auto mb-sm size-8 text-muted-foreground" aria-hidden />
-              <p className="text-subheading font-semibold text-foreground">No hosts yet</p>
-              <p className="mx-auto mt-xs max-w-md text-metadata text-muted-foreground">
-                Upload a scan or run recon, then return — evidence coverage is measured against the
-                hosts in this project.
-              </p>
-              <Button asChild size="sm" className="mt-md"><Link to="/scans">Upload a scan</Link></Button>
-            </CardContent>
-          </Card>
+          <PostureEmpty Icon={ShieldAlert} title="No hosts yet" action={{ to: '/scans', label: 'Upload a scan' }}>
+            Evidence coverage is measured against the hosts in this project. Upload a scan or run recon, then come back.
+          </PostureEmpty>
         ) : (
           <div className="space-y-lg">
+            <EvidenceLead data={data} largest={largest[0]} />
             <PostureSection
               title="Where the gaps are"
-              description={<>
-                Covers all <span className="font-medium text-foreground">{data.total_hosts.toLocaleString()}</span> hosts in this
-                project, inside a scoped subnet or not — Patterns and the Posture grid count only hosts inside scoped
-                subnets, so their totals can be smaller.
-              </>}
+              description="Each domain by site (or subnet): assessed ÷ eligible hosts. Select a tinted or hatched cell for its hosts and the step that closes the gap."
             >
               {data.matrix ? (
                 <CoverageMatrix data={data} matrix={data.matrix} selection={selection} onSelect={setSelection} />
