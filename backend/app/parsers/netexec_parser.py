@@ -374,7 +374,7 @@ class NetexecParser:
         """Parse basic host discovery line"""
         protocol, ip, port, hostname, status, details = match.groups()
 
-        return {
+        data = {
             'ip_address': ip,
             'port': int(port),
             'hostname': hostname if hostname != ip else None,
@@ -385,6 +385,14 @@ class NetexecParser:
             },
             'raw_line': full_line
         }
+        # "[-] DOMAIN\user:pass STATUS_LOGON_FAILURE" is a failed login: a
+        # login result, so it can clear an older guest success (v2.388.1).
+        if status.strip() == '-':
+            # The credential's domain is what was TRIED, not the host's own:
+            # it is not written to the host.
+            _domain, username = self._parse_credential(details)
+            data.update(auth_success=False, username=username, details=details.strip())
+        return data
 
     def _process_json_host_data(self, ip_address: str, data: Any, scan_id: int):
         """Process host data from JSON output"""
@@ -624,7 +632,11 @@ class NetexecParser:
             port=host_data.get('port'),
             hostname=host_data.get('hostname'),
             domain_name=host_data.get('domain'),
-            auth_success=host_data.get('auth_success', False),
+            # v2.388.1 — None unless the line IS a login result: the SMB
+            # banner and a spider_plus listing were stored False and shown as
+            # "Auth failed", and (latest row per host/port) could hide a real
+            # guest login from the weak-auth condition.
+            auth_success=host_data.get('auth_success'),
             username=host_data.get('username'),
             shares=host_data.get('shares'),
             raw_output=raw_output[:10000],  # Limit size

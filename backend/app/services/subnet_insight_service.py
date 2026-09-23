@@ -396,7 +396,8 @@ def compute_subnet_insights(
             NetexecResult.auth_success, NetexecResult.username, NetexecResult.discovered_at,
         )
         .join(models.Host, NetexecResult.host_id == models.Host.id)
-        .filter(models.Host.project_id == project_id)
+        # Only login results (v2.388.1): a banner row is not an auth attempt.
+        .filter(models.Host.project_id == project_id, NetexecResult.auth_success.isnot(None))
         .all()
     ):
         if host_to_subnet.get(host_id) is None:

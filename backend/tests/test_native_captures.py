@@ -147,6 +147,30 @@ def test_netexec_share_table_is_kept(name, db_session, test_project):
     ]
 
 
+def test_netexec_banner_is_not_a_failed_login_and_guest_counts_as_weak_auth(db_session, test_project, tmp_path):
+    """v2.388.1 — every row defaulted to auth_success=False: the SMB banner
+    read "Auth failed" beside the real guest login, and the weak-auth
+    condition (latest row per host/port) could pick the banner over it."""
+    from app.db.models_confidence import NetexecResult
+    from app.parsers.netexec_parser import NetexecParser
+    from app.services.host_condition_sets import weak_auth_host_ids
+
+    NetexecParser(db_session).parse_file(
+        str(NATIVE / "netexec-samba.txt"), "netexec-samba.txt", project_id=test_project.id)
+    rows = db_session.query(NetexecResult).all()
+    assert sorted(((r.username, r.auth_success) for r in rows), key=repr) == [("guest", True), (None, None)]
+    host = db_session.query(models.Host).filter_by(ip_address="172.30.77.10").one()
+    assert weak_auth_host_ids(db_session, test_project.id) == {host.id}
+
+    # A later "[-]" line is a failed login: the guest success no longer counts.
+    failed = tmp_path / "later.txt"
+    failed.write_text(
+        "SMB   172.30.77.10   445   LABSMB   [-] LABSMB\\guest: STATUS_LOGON_FAILURE\n")
+    NetexecParser(db_session).parse_file(str(failed), "later.txt", project_id=test_project.id)
+    latest = db_session.query(NetexecResult).order_by(NetexecResult.id.desc()).first()
+    assert (latest.username, latest.auth_success) == ("guest", False)
+
+
 def test_netexec_spider_plus_takes_the_address_from_the_file_name(db_session, test_project):
     """spider_plus writes <ip>.json holding {share: {path: {...}}}; no IP inside."""
     from app.db.models_confidence import NetexecResult

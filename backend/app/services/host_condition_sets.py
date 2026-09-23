@@ -197,7 +197,9 @@ def weak_auth_host_ids(db: Session, project_id: int) -> Set[int]:
             NetexecResult.discovered_at,
         )
         .join(models.Host, NetexecResult.host_id == models.Host.id)
-        .filter(models.Host.project_id == project_id)
+        # Only login results: a banner / listing row says nothing about auth
+        # and must not become the "latest" observation (v2.388.1).
+        .filter(models.Host.project_id == project_id, NetexecResult.auth_success.isnot(None))
         .all()
     ):
         d = _normalize_dt(discovered_at) or _EPOCH

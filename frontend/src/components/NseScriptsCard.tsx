@@ -39,6 +39,7 @@ const NSE_FRIENDLY_NAMES: Record<string, string> = {
   'smb-security-mode': 'SMB Security Mode (signing)',
   'smb2-security-mode': 'SMB2 Security Mode (signing)',
   'smb2-capabilities': 'SMB2 Capabilities',
+  'smb2-time': 'SMB2 Server Time',
   'smb-enum-shares': 'SMB Share Enumeration',
   'smb-enum-users': 'SMB User Enumeration',
   'smb-protocols': 'SMB Protocol Versions',
@@ -92,9 +93,22 @@ interface ScriptItemProps {
   itemValue: string;
 }
 
+/** nmap's script output starts with a newline and an indent ("\n  2.1:\n
+ *  Distributed …"). `.trim()` removed the FIRST line's indent only, so it sat
+ *  two spaces left of its siblings (v5.274.2).  Drop blank lines at the ends
+ *  and the indent every line shares; keep the relative indentation. */
+export const formatNseOutput = (raw: string | null | undefined): string => {
+  const lines = (raw || '').replace(/\r\n?/g, '\n').split('\n');
+  while (lines.length && !lines[0].trim()) lines.shift();
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  const indents = lines.filter((l) => l.trim()).map((l) => l.match(/^[ \t]*/)![0].length);
+  const common = indents.length ? Math.min(...indents) : 0;
+  return lines.map((l) => l.slice(Math.min(common, l.match(/^[ \t]*/)![0].length))).join('\n').trimEnd();
+};
+
 const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => {
   const flagged = isSecurityRelevant(script.script_id);
-  const output = (script.output || '').trim();
+  const output = formatNseOutput(script.output);
   return (
     <AccordionItem value={itemValue} className="border-border">
       <AccordionTrigger className="py-sm hover:no-underline">

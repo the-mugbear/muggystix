@@ -557,7 +557,9 @@ export default function Layout({ children }: LayoutProps) {
       // overlay below is `absolute` inside the `fixed` strip, which
       // is a valid positioning chain.
       className={cn(
-        'fixed inset-x-0 z-20 flex min-h-10 items-center gap-xs overflow-x-auto border-b border-border bg-background/80 px-sm backdrop-blur sm:left-[var(--drawer-width)] sm:px-md',
+        // v5.274.2 — opaque: at /80 + blur the page scrolled underneath
+        // showed through ("Ports 1" / "Notes 0" behind the tabs).
+        'fixed inset-x-0 z-20 flex min-h-10 items-center gap-xs overflow-x-auto border-b border-border bg-background px-sm sm:left-[var(--drawer-width)] sm:px-md',
       )}
       style={{
         '--drawer-width': DRAWER_WIDTH_PX,
@@ -626,7 +628,7 @@ export default function Layout({ children }: LayoutProps) {
       <header
         ref={topbarRef}
         className={cn(
-          'fixed inset-x-0 top-0 z-30 flex min-h-[76px] items-center gap-sm border-b border-border bg-background/80 backdrop-blur',
+          'fixed inset-x-0 top-0 z-30 flex min-h-[76px] items-center gap-sm border-b border-border bg-background',
           'sm:left-[var(--drawer-width)]',
         )}
         style={{ '--drawer-width': DRAWER_WIDTH_PX } as React.CSSProperties}
