@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   AlertCircle,
   AlertTriangle,
@@ -9,12 +9,11 @@ import {
   CheckCircle2,
   ChevronDown,
   ChevronUp,
-  Eye,
+  MoreHorizontal,
   GitCompareArrows,
   Hourglass,
   Loader2,
   Search,
-  SquareArrowOutUpRight,
   Info,
   Trash2,
   Upload,
@@ -60,14 +59,23 @@ import { updateProjectIngestSettings } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
+import PostureLead from '../components/posture/PostureLead';
+import PostureSection from '../components/posture/PostureSection';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '../components/ui/dropdown-menu';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
+import { formatRelativeTime } from '../utils/relativeTime';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import FormatRetryDialog from '../components/scans/FormatRetryDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
-import { ScanRunCell, ScanUploadedCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
+import { ScanWhenCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
@@ -77,7 +85,6 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
-import { Separator } from '../components/ui/separator';
 import {
   Table,
   TableBody,
@@ -148,6 +155,8 @@ export default function Scans() {
   const [recentJobs, setRecentJobs] = useState<IngestionJob[]>([]);
   const [recentJobsFetched, setRecentJobsFetched] = useState<Date | null>(null);
   const [recentJobsLoading, setRecentJobsLoading] = useState(false);
+  // v5.270.0 — the queue could not be read: said, never shown as "nothing failed".
+  const [recentJobsError, setRecentJobsError] = useState(false);
 
   const [expandedScanIds, setExpandedScanIds] = useState<number[]>([]);
   // v5.207.0 — upload batches, one row per sweep. Their files leave the flat
@@ -157,6 +166,7 @@ export default function Scans() {
   // newest first), from the server; `scans` and `batches` hold the rows.
   const [history, setHistory] = useState<ImportHistoryEntry[]>([]);
   const [historyPartial, setHistoryPartial] = useState(false);
+  const [historyTotal, setHistoryTotal] = useState<number | null>(null);
 
   // ---------------------------------------------------------------------
   // Scan Inventory filters + pagination (v4.47.0 QoL pass).
@@ -267,8 +277,10 @@ export default function Scans() {
       const jobs = await getRecentIngestionJobs(25);
       setRecentJobs(jobs);
       setRecentJobsFetched(new Date());
+      setRecentJobsError(false);
     } catch (err) {
       console.error('Error fetching ingestion jobs:', err);
+      setRecentJobsError(true);
     } finally {
       setRecentJobsLoading(false);
     }
@@ -307,6 +319,7 @@ export default function Scans() {
         const page = await getImportHistory({ ...filters, limit: HISTORY_PAGE });
         const rows = await hydrateHistory(page.items, filters);
         setHistory(page.items);
+        setHistoryTotal(typeof page.total === 'number' ? page.total : null);
         setScans(rows.scans);
         setBatches(rows.batches);
         setHistoryPartial(rows.partial);
@@ -713,14 +726,6 @@ export default function Scans() {
     return !open;
   });
 
-  const scanSummary = useMemo(() => {
-    const totalHosts = scans.reduce((sum, scan) => sum + (scan.total_hosts || 0), 0);
-    const upHosts = scans.reduce((sum, scan) => sum + (scan.up_hosts || 0), 0);
-    const openServices = scans.reduce((sum, scan) => sum + (scan.open_ports || 0), 0);
-    const queuedOrProcessing = recentJobs.filter((j) => j.status === 'queued' || j.status === 'processing').length;
-    return { totalHosts, upHosts, openServices, queuedOrProcessing };
-  }, [scans, recentJobs]);
-
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
   const handleDeleteClick = (scan: Scan) => {
     setScanToDelete(scan);
@@ -857,6 +862,13 @@ export default function Scans() {
     );
   };
 
+  // The newest upload among what is loaded (the first page is newest first).
+  const lastImportAt = [
+    ...history.map((h) => h.at),
+    ...scans.map((sc) => sc.created_at),
+    ...batches.map((b) => b.last_uploaded),
+  ].filter((v): v is string => !!v).sort((x, y) => new Date(x).getTime() - new Date(y).getTime()).pop() ?? null;
+
   if (loading) {
     return <ListPageSkeleton titleWidth={160} actionCount={2} tableProps={{ rows: 8, columns: 6 }} />;
   }
@@ -881,35 +893,18 @@ export default function Scans() {
         </div>
       </div>
 
-      <div className="mb-md grid grid-cols-1 gap-sm sm:grid-cols-2 md:grid-cols-4">
-        {[
-          // Headline totals come from the filter-aware /scans/summary so they
-          // reflect every matching scan, not just the loaded page.  Fall back
-          // to the loaded-page sums if the summary fetch hasn't landed / failed.
-          {
-            label: 'Scans',
-            value: (inventorySummary?.total_scans ?? scans.length).toLocaleString(),
-          },
-          {
-            label: 'Hosts up',
-            value: `${(inventorySummary?.up_hosts ?? scanSummary.upHosts).toLocaleString()} / ${(inventorySummary?.total_hosts ?? scanSummary.totalHosts).toLocaleString()}`,
-          },
-          {
-            label: 'Open services',
-            value: (inventorySummary?.open_services ?? scanSummary.openServices).toLocaleString(),
-          },
-          { label: 'Queue active', value: scanSummary.queuedOrProcessing.toLocaleString() },
-        ].map((metric) => (
-          <Card key={metric.label}>
-            <CardContent className="p-md">
-              <p className="text-caption uppercase tracking-wide text-muted-foreground">
-                {metric.label}
-              </p>
-              <p className="mt-xxs text-section-title font-semibold">{metric.value}</p>
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+      {/* v5.270.0 — one sentence instead of four stat cards.  "Hosts up" (a
+          scanner's own up flag, not liveness) and "Open services" were totals
+          nobody acts on, and "Queue active" repeated the queue below.  Counts
+          come from the filter-aware /scans/summary (every matching file, not
+          the loaded page). */}
+      <ScansLead
+        files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
+        filtered={hasActiveFilters}
+        failed={queueCounts.failed}
+        queueUnknown={recentJobsError && recentJobs.length === 0}
+        lastImportAt={lastImportAt}
+      />
 
       {/* Files the operator has started, followed to their import result —
           aria-live so screen readers announce progress when the dialog has
@@ -1026,19 +1021,42 @@ export default function Scans() {
           shows only what's actionable from a queue perspective:
           in-flight (`queued` / `processing`) and recent failures.
           Successful uploads appear exclusively in Your Scans. */}
+      {recentJobsError && pendingJobs.length === 0 && (
+        <p role="status" className="mb-md text-caption text-muted-foreground">
+          The ingestion queue could not be checked — this is not a confirmation that nothing is
+          queued or failed.
+        </p>
+      )}
+      {/* v5.270.0 — a left-rule callout that exists only while something is
+          in flight, waiting for review or failed; not a boxed card. */}
       {pendingJobs.length > 0 && (
-        <Card className="mb-md">
-          <CardContent className="p-md">
-            <div className="mb-sm flex flex-wrap items-center justify-between gap-xs">
+        <div
+          data-testid="ingestion-queue"
+          className={cn(
+            'mb-md border-l-4 py-xs pl-md',
+            queueCounts.failed > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
+          )}
+        >
+          <div>
+            <div className="mb-xs flex flex-wrap items-center justify-between gap-xs">
               {/* v5.239.0 — a compact strip: what is in the queue, in counts,
                   with the table one click away.  It was a full table above the
                   import history whenever a single job was in flight. */}
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-xs">
-                  <h2 className="text-section-title font-semibold">Ingestion Queue</h2>
-                  {queueCounts.processing > 0 && <Badge variant="info">{queueCounts.processing} processing</Badge>}
-                  {queueCounts.staged > 0 && <Badge variant="warning">{queueCounts.staged} waiting for review</Badge>}
-                  {queueCounts.failed > 0 && <Badge variant="destructive">{queueCounts.failed} failed</Badge>}
+                  <h2 className="text-metadata font-semibold text-foreground">Ingestion queue</h2>
+                  <span className="text-metadata text-muted-foreground">
+                    {[
+                      queueCounts.processing > 0 ? `${queueCounts.processing} processing` : null,
+                      queueCounts.staged > 0 ? `${queueCounts.staged} waiting for review` : null,
+                    ].filter(Boolean).join(' · ')}
+                    {queueCounts.failed > 0 && (
+                      <span className="text-destructive">
+                        {queueCounts.processing > 0 || queueCounts.staged > 0 ? ' · ' : ''}
+                        {queueCounts.failed} failed
+                      </span>
+                    )}
+                  </span>
                   <button
                     type="button"
                     aria-expanded={queueOpen}
@@ -1467,16 +1485,11 @@ export default function Scans() {
               </Table>
             </div>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       )}
 
-      <Separator className="mb-md" />
-
-      {/* v5.226.0 — one heading for what was "Your Scans" + "Scan Inventory"
-          (second /scans design review, point 1, interim step); the two
-          cards below are labelled for what they hold. */}
-      <h2 className="mb-sm text-section-title font-semibold">Import history</h2>
+      <PostureSection title="Import history">
 
       {/* Scan Timeline moved to /tool-activity in v2.59.0 — that page
           plots scans by their actual scan_start (SOC-correlation
@@ -1496,150 +1509,115 @@ export default function Scans() {
         </div>
       ) : (
         <div>
-          <div className="mb-sm flex flex-wrap items-start justify-between gap-sm">
-            <div>
-              {/* v5.239.0 — one history, two ways to read it.  The choice was a
-                  text link under the description; both /scans reviews asked
-                  for a prominent selector. */}
-              <div
-                className="mb-xs inline-flex overflow-hidden rounded-control border border-border"
-                role="group"
-                aria-label="How the import history is listed"
-              >
-                {([
-                  { value: false, label: 'Grouped by upload' },
-                  { value: true, label: 'All files' },
-                ] as const).map((opt) => (
-                  <button
-                    key={opt.label}
-                    type="button"
-                    aria-pressed={showBatchFiles === opt.value}
-                    onClick={() => setShowBatchFiles(opt.value)}
-                    className={cn(
-                      'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      showBatchFiles === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
-                    )}
-                  >
-                    {opt.label}
-                  </button>
+          {/* v5.270.0 — the filters are ONE row: search, tool, range, the
+              Grouped / All files switch, and how much of the list is loaded.
+              (Two rows of upper-case count chips and a paragraph before.) */}
+          <div className="mb-xs flex flex-wrap items-center gap-sm border-b border-border pb-sm">
+            <div className="relative w-64 min-w-0">
+              <Search
+                className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+                aria-hidden
+              />
+              <Input
+                type="search"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="Search filename, tool, scan type…"
+                aria-label="Search scan inventory"
+                className="h-8 pl-xl text-metadata"
+              />
+            </div>
+            <Select value={toolFilter || '__all'} onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}>
+              <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__all">
+                  All tools ({(inventorySummary?.total_files ?? scans.length).toLocaleString()})
+                </SelectItem>
+                {toolChips.map(([group, count]) => (
+                  <SelectItem key={group} value={group}>
+                    {group.toLowerCase()} ({count.toLocaleString()})
+                  </SelectItem>
                 ))}
-              </div>
-              <p className="text-metadata text-muted-foreground">
-                {showBatchFiles
-                  ? 'Every imported file in one sortable list, whether it was dropped as part of a batch or on its own.'
-                  : 'One list, newest upload first. Files dropped together are one row — an upload batch, '
-                    + 'expandable to its files — among the files uploaded on their own. '
-                    + 'Switch to All files to sort by another column.'}
-              </p>
-              {/* v2.86.2 — explicit "Showing N" hint so the page makes
-                  it obvious whether you're looking at a partial or
-                  complete view.  Pre-fix the only signal was the Load
-                  More button at the bottom of the table, which sat
-                  off-screen on long lists and was field-reported as a
-                  "100-row cap". */}
-              {(scans.length > 0 || batches.length > 0) && (
-                <p className="mt-xxs text-caption text-muted-foreground">
-                  {showBatchFiles
-                    ? `Showing ${scans.length} file${scans.length === 1 ? '' : 's'}`
-                    : `Showing ${historyRows.length} upload${historyRows.length === 1 ? '' : 's'}: `
-                      + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
-                      + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
-                  {hasMoreScans ? ' — more available, see Load button below' : hasActiveFilters ? ' (filtered)' : ''}
-                </p>
-              )}
-              {historyPartial && !showBatchFiles && (
-                <p role="alert" className="mt-xxs text-caption text-warning">
-                  Some rows of this history could not be loaded, so the list below is missing entries.
-                  Refresh to try again.
-                </p>
-              )}
-            </div>
-            {/* v4.47.0 QoL pass — full filter row.  Search runs against
-                filename/tool_name/scan_type server-side (debounced 300ms).
-                Tool chips and date-range chips are clickable; everything
-                persists to the URL for shareable views. */}
-            <div className="flex w-full flex-col items-stretch gap-xs lg:w-auto lg:items-end">
-              <div className="relative lg:w-96">
-                <Search
-                  className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                  aria-hidden
-                />
-                <Input
-                  type="search"
-                  value={searchText}
-                  onChange={(e) => setSearchText(e.target.value)}
-                  placeholder="Search filename, tool, scan type…"
-                  aria-label="Search scan inventory"
-                  className="pl-xl"
-                />
-              </div>
-              <div
-                className="flex flex-wrap items-center gap-xs"
-                role="group"
-                aria-label="Filter scans by tool"
-              >
-                <span className="text-caption text-muted-foreground">Tool:</span>
+                {/* A tool picked from a row badge that the counts do not list. */}
+                {toolFilter && !toolChips.some(([g]) => g.toLowerCase() === toolFilter.toLowerCase()) && (
+                  <SelectItem value={toolFilter}>{toolFilter.toLowerCase()}</SelectItem>
+                )}
+              </SelectContent>
+            </Select>
+            <Select
+              value={dateRangeDays == null ? 'all' : String(dateRangeDays)}
+              onValueChange={(v) => setDateRangeDays(v === 'all' ? null : parseInt(v, 10))}
+            >
+              <SelectTrigger className="h-8 w-36 text-metadata" aria-label="Filter scans by upload date">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {DATE_RANGE_PRESETS.map((preset) => (
+                  <SelectItem key={preset.label} value={preset.days == null ? 'all' : String(preset.days)}>
+                    {preset.days == null ? 'Any time' : `Last ${preset.days} days`}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            {/* v5.239.0 — one history, two ways to read it. */}
+            <div
+              className="inline-flex overflow-hidden rounded-control border border-border"
+              role="group"
+              aria-label="How the import history is listed"
+            >
+              {([
+                { value: false, label: 'Grouped by upload' },
+                { value: true, label: 'All files' },
+              ] as const).map((opt) => (
                 <button
+                  key={opt.label}
                   type="button"
-                  onClick={() => setToolFilter('')}
-                  aria-pressed={toolFilter === ''}
-                  className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                  aria-pressed={showBatchFiles === opt.value}
+                  onClick={() => setShowBatchFiles(opt.value)}
+                  className={cn(
+                    'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    showBatchFiles === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+                  )}
                 >
-                  <Badge variant={toolFilter === '' ? 'default' : 'outline'}>
-                    All: {(inventorySummary?.total_files ?? scans.length).toLocaleString()}
-                  </Badge>
+                  {opt.label}
                 </button>
-                {toolChips.map(([group, count]) => {
-                  const active = toolFilter.toLowerCase() === group.toLowerCase();
-                  return (
-                    <button
-                      key={group}
-                      type="button"
-                      onClick={() => setToolFilter(active ? '' : group)}
-                      aria-pressed={active}
-                      className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      title={active ? `Clear ${group} filter` : `Show only ${group} files (batched files included)`}
-                    >
-                      <Badge variant={active ? 'default' : 'outline'}>
-                        {group}: {count.toLocaleString()}
-                      </Badge>
-                    </button>
-                  );
-                })}
-              </div>
-              <div
-                className="flex flex-wrap items-center gap-xs"
-                role="group"
-                aria-label="Filter scans by upload date"
-              >
-                <span className="text-caption text-muted-foreground">Range:</span>
-                {DATE_RANGE_PRESETS.map((preset) => {
-                  const active = dateRangeDays === preset.days;
-                  return (
-                    <button
-                      key={preset.label}
-                      type="button"
-                      onClick={() => setDateRangeDays(preset.days)}
-                      aria-pressed={active}
-                      className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                    >
-                      <Badge variant={active ? 'default' : 'outline'}>{preset.label}</Badge>
-                    </button>
-                  );
-                })}
-              </div>
+              ))}
             </div>
+            {/* v2.86.2 — how much of the list is loaded, so a partial view is
+                never mistaken for the whole one. */}
+            {(scans.length > 0 || batches.length > 0) && (
+              <span className="ml-auto text-caption text-muted-foreground">
+                {showBatchFiles
+                  ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
+                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
+                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
+                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
+                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
+              </span>
+            )}
           </div>
-
+          <p className="mb-xxs text-caption text-muted-foreground">
+            {showBatchFiles
+              ? 'Every imported file, batched or not. Click a column heading to sort.'
+              : 'Newest upload first. Files dropped together are one batch row; expand it for its files.'}
+          </p>
+          {historyPartial && !showBatchFiles && (
+            <p role="alert" className="mb-xxs text-caption text-warning">
+              Some rows of this history could not be loaded, so the list below is missing entries.
+              Refresh to try again.
+            </p>
+          )}
           {scans.length > 0 && <ViewerZoneNote className="mb-xs" />}
           {(showBatchFiles ? scans.length === 0 : historyRows.length === 0) ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
             // navigating away.
-            <Card>
-              <CardContent className="flex flex-col items-center gap-sm p-xl text-center">
-                <AlertCircle className="size-12 text-muted-foreground" aria-hidden />
-                <p className="text-subheading font-semibold">No scans match these filters</p>
+            <div className="flex flex-col items-start gap-xs border-l-4 border-border py-xs pl-md">
+                <p className="flex items-center gap-xs text-subheading font-semibold">
+                  <AlertCircle className="size-4 text-muted-foreground" aria-hidden /> No scans match these filters
+                </p>
                 <p className="max-w-md text-metadata text-muted-foreground">
                   Adjust the search, tool, or date range above — or clear them to see every scan
                   in this project.
@@ -1655,32 +1633,61 @@ export default function Scans() {
                 >
                   Clear filters
                 </Button>
-              </CardContent>
-            </Card>
+            </div>
           ) : (
-          <Card>
-            <CardContent className="p-0">
-              <Table>
+          // v5.270.0 — the table sits in the section, not in a card.
+          <div className="overflow-x-auto">
+              <Table style={{ tableLayout: 'fixed' }}>
                 <TableHeader>
                   <TableRow>
                     {/* Grouped by upload is chronological by definition (the
                         server orders batches and single files together), so
                         the headers sort only in the all-files view. */}
-                    {historyHeader('filename', 'Scan', 'w-[22%]')}
-                    {/* v5.205.0 — when the scan RAN, per its own output, with
-                        where that time came from; the upload time is its own
-                        column. The old "Window" silently fell back to the
-                        upload time and read naive UTC as local time. */}
-                    {historyHeader('start_time', 'Ran', 'w-[16%]')}
-                    {historyHeader('created_at', 'Uploaded', 'w-[13%]')}
-                    {historyHeader('new_hosts', 'New hosts', 'w-[9%]')}
+                    {historyHeader('filename', 'Scan', 'w-[24%]')}
+                    {/* v5.270.0 — ONE time column: when the scan ran, per its
+                        own output, else when it was uploaded; the other time
+                        and the provenance are on hover.  In the all-files view
+                        it sorts by either. */}
+                    {showBatchFiles ? (
+                      <TableHead className="w-[15%]">
+                        <span className="inline-flex flex-wrap items-center gap-x-xs">
+                          When
+                          {(['start_time', 'created_at'] as const).map((col) => {
+                            const label = col === 'start_time' ? 'Ran' : 'Uploaded';
+                            const sorted = sortBy === col;
+                            return (
+                              <button
+                                key={col}
+                                type="button"
+                                onClick={() => handleSort(col)}
+                                aria-label={`Sort by ${label}, currently ${
+                                  sorted ? (sortOrder === 'asc' ? 'sorted ascending' : 'sorted descending') : 'not sorted'
+                                }`}
+                                className={cn(
+                                  'inline-flex items-center gap-xxs rounded-control text-caption normal-case focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                                  sorted ? 'text-foreground' : 'text-muted-foreground hover:text-foreground',
+                                )}
+                              >
+                                {label}
+                                {sorted && (sortOrder === 'asc'
+                                  ? <ArrowUp className="size-3" aria-hidden />
+                                  : <ArrowDown className="size-3" aria-hidden />)}
+                              </button>
+                            );
+                          })}
+                        </span>
+                      </TableHead>
+                    ) : (
+                      <TableHead className="w-[15%]">When</TableHead>
+                    )}
+                    {historyHeader('new_hosts', 'New hosts', 'w-[10%]')}
                     <TableHead
-                      className="w-[30%]"
+                      className="w-[39%]"
                       title="What this scan added or observed, counted from the rows it wrote. Hover a line for what it counts."
                     >
                       What it contributed
                     </TableHead>
-                    <TableHead className="w-[10%]">Actions</TableHead>
+                    <TableHead className="w-[12%]"><span className="sr-only">Actions</span></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -1696,7 +1703,7 @@ export default function Scans() {
                             createdAfter: createdAfterIso,
                           }}
                           onViewScan={handleViewScan}
-                          colSpan={6}
+                          colSpan={5}
                         />
                       );
                     }
@@ -1735,7 +1742,12 @@ export default function Scans() {
                                   inside the flex row; without it the
                                   span keeps its content width and a long
                                   name overflows into the next column. */}
-                              <span className="min-w-0 break-words font-semibold">{scan.filename}</span>
+                              <Link
+                                to={`/scans/${scan.id}`}
+                                className="min-w-0 break-words rounded font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              >
+                                {scan.filename}
+                              </Link>
                             </div>
                             <div className="flex flex-wrap items-center gap-xxs">
                               {renderInlineToolBadge(scan)}
@@ -1758,10 +1770,7 @@ export default function Scans() {
                             </div>
                           </TableCell>
                           <TableCell className="min-w-0">
-                            <ScanRunCell scan={scan} />
-                          </TableCell>
-                          <TableCell className="min-w-0">
-                            <ScanUploadedCell scan={scan} />
+                            <ScanWhenCell scan={scan} />
                           </TableCell>
                           {/* What the scan INTRODUCED, out of what it saw:
                               hosts first discovered here, over every host it
@@ -1790,35 +1799,48 @@ export default function Scans() {
                             <ScanContribution scan={scan} />
                           </TableCell>
                           <TableCell>
-                            <div className="flex flex-wrap items-center gap-xs">
+                            {/* v5.270.0 — the filename opens the scan; "Hosts" is
+                                a quiet link; delete lives in the row menu, out of
+                                reach of a stray click. */}
+                            <div className="flex items-center justify-end gap-xs">
                               {scan.total_hosts > 0 && (
-                                <Button
-                                  size="sm"
-                                  variant="outline"
-                                  onClick={() => navigate(`/hosts?scan_ids=${scan.id}`)}
+                                <Link
+                                  to={`/hosts?scan_ids=${scan.id}`}
+                                  className="rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                   title="Open the Hosts page filtered to this scan"
                                 >
-                                  <SquareArrowOutUpRight className="size-4" aria-hidden /> Hosts
-                                </Button>
+                                  Hosts
+                                </Link>
                               )}
-                              <Button size="sm" onClick={() => handleViewScan(scan.id)}>
-                                <Eye className="size-4" aria-hidden /> View
-                              </Button>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleDeleteClick(scan)}
-                                aria-label={`Delete scan ${scan.filename || scan.id}`}
-                                className="text-muted-foreground hover:text-destructive"
-                              >
-                                <Trash2 className="size-4" aria-hidden />
-                              </Button>
+                              <DropdownMenu>
+                                <DropdownMenuTrigger asChild>
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="size-7 text-muted-foreground"
+                                    aria-label={`More actions for ${scan.filename || `scan ${scan.id}`}`}
+                                  >
+                                    <MoreHorizontal className="size-4" aria-hidden />
+                                  </Button>
+                                </DropdownMenuTrigger>
+                                <DropdownMenuContent align="end">
+                                  <DropdownMenuItem onSelect={() => handleViewScan(scan.id)}>
+                                    Open scan
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
+                                    onSelect={() => handleDeleteClick(scan)}
+                                    className="text-destructive focus:text-destructive"
+                                  >
+                                    <Trash2 className="size-3.5" aria-hidden /> Delete scan…
+                                  </DropdownMenuItem>
+                                </DropdownMenuContent>
+                              </DropdownMenu>
                             </div>
                           </TableCell>
                         </TableRow>
                         {hasCommand && isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={6} className="py-sm">
+                            <TableCell colSpan={5} className="py-sm">
                               {commandDetail(scan)}
                             </TableCell>
                           </TableRow>
@@ -1828,8 +1850,7 @@ export default function Scans() {
                   })}
                 </TableBody>
               </Table>
-            </CardContent>
-          </Card>
+          </div>
           )}
 
           {hasMoreScans && (
@@ -1850,6 +1871,7 @@ export default function Scans() {
           )}
         </div>
       )}
+      </PostureSection>
 
       {/* Upload dialog — v5.229.0: choose → review formats → import → results
           (staged-import plan, phase C). The dialog stages and inspects each
@@ -2043,3 +2065,38 @@ export default function Scans() {
     </div>
   );
 }
+
+/**
+ * The page's lead (v5.270.0): how much has been imported, whether anything
+ * needs attention, and when the last file arrived.  "Nothing failed" is said
+ * only when the queue was actually read.
+ */
+const ScansLead: React.FC<{
+  files: number;
+  filtered: boolean;
+  failed: number;
+  queueUnknown: boolean;
+  lastImportAt: string | null;
+}> = ({ files, filtered, failed, queueUnknown, lastImportAt }) => {
+  if (files === 0 && !filtered) return null;
+  const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
+  return (
+    <PostureLead
+      className="mb-md"
+      tone={failed > 0 ? 'warning' : 'neutral'}
+      restsOn="Every imported file counts, batched files included. Failures are the ingestion queue's recent jobs; Ingestion Results lists every import that failed or finished partial."
+    >
+      {files.toLocaleString()} file{files === 1 ? '' : 's'} imported{filtered ? ' (matching these filters)' : ''};{' '}
+      {queueUnknown ? (
+        'the ingestion queue could not be checked'
+      ) : failed > 0 ? (
+        <Link to="/parse-errors?status=needs_attention" className="text-warning underline-offset-2 hover:underline">
+          {failed} failed import{failed === 1 ? '' : 's'} need{failed === 1 ? 's' : ''} attention
+        </Link>
+      ) : (
+        'nothing failed'
+      )}
+      {last ? `; last import ${last}.` : '.'}
+    </PostureLead>
+  );
+};

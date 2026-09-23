@@ -10,7 +10,6 @@
 import React from 'react';
 
 import type { Scan } from '../../services/api';
-import SeverityBar from '../ui/SeverityBar';
 
 export type ToolFamily = 'port' | 'vuln' | 'web' | 'dns' | 'auth' | 'other';
 
@@ -220,22 +219,24 @@ export const ScanContribution: React.FC<{ scan: ContributionScan }> = ({ scan })
       </span>
     );
   }
-  const findings = scan.vulnerability_summary;
+  // v5.270.0 — one line per kind, the label on the same line.  The per-row
+  // severity bar repeated the counts written beside it, and the label column
+  // was narrow enough to wrap "Scanner observations" onto two lines.
   return (
-    <dl className="grid grid-cols-[4.25rem_minmax(0,1fr)] gap-x-xs gap-y-xxs">
-      {rows.map((row) => (
-        <React.Fragment key={row.key}>
-          <dt className="text-caption text-muted-foreground" title={row.hint}>
-            {row.label}
-          </dt>
-          <dd className="min-w-0 break-words text-caption tabular-nums text-foreground" title={row.hint}>
-            {row.key === 'findings' && findings && (
-              <SeverityBar counts={findings} variant="compact" className="mb-xxs" />
-            )}
-            {row.parts.join(' · ')}
-          </dd>
-        </React.Fragment>
-      ))}
+    <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-sm gap-y-xxs">
+      {rows.map((row) => {
+        const text = row.parts.join(' · ');
+        return (
+          <React.Fragment key={row.key}>
+            <dt className="whitespace-nowrap text-caption text-muted-foreground" title={row.hint}>
+              {row.label}
+            </dt>
+            <dd className="min-w-0 truncate text-caption tabular-nums text-foreground" title={`${text}\n\n${row.hint}`}>
+              {text}
+            </dd>
+          </React.Fragment>
+        );
+      })}
     </dl>
   );
 };

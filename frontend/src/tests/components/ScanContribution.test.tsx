@@ -109,6 +109,26 @@ describe('ScanContribution', () => {
     expect(screen.getByText('2 hosts · ldap/smb · 1 valid account')).toBeInTheDocument();
   });
 
+  // v5.270.0 — one line per kind; the severity bar repeated the counts.
+  it('keeps each kind to one line and draws no severity bar', () => {
+    const { container } = render(
+      <ScanContribution
+        scan={{
+          ...blank,
+          tool_name: 'Nessus',
+          total_hosts: 4,
+          vulnerability_summary: {
+            total: 2, critical: 1, high: 1, medium: 0, low: 0, info: 0,
+            hosts_affected: 1, hosts_critical_high: 1, exploitable: 0,
+          },
+        }}
+      />,
+    );
+    expect(screen.getByText('Scanner observations')).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText(/^2 new/)).toHaveClass('truncate');
+    expect(container.querySelector('[role="img"], [aria-label*="everity"]')).toBeNull();
+  });
+
   it('says so when a scan recorded nothing', () => {
     render(<ScanContribution scan={blank} />);
     expect(screen.getByText('Nothing recorded')).toBeInTheDocument();

@@ -52,41 +52,35 @@ interface CellProps {
   format?: TimeFormatOptions;
 }
 
-/** When the scan ran, per its own output — or a plain statement that it doesn't say. */
-export const ScanRunCell: React.FC<CellProps> = ({ scan, format }) => {
+/**
+ * When a scan happened, in ONE column (v5.270.0): the time it ran, per its own
+ * output, else the time it was uploaded.  The other time, the duration and
+ * where the time came from ("Reported by nmap") are on hover.  A scanner clock
+ * of unknown zone stays visibly flagged — it may be hours off.
+ */
+export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
   const run = describeScanRun(scan, format);
-  const detail = [run.durationLabel, run.uploadLagLabel].filter(Boolean).join(' · ');
-  return (
-    <div className="min-w-0">
-      {run.startLabel ? (
-        <p className="text-metadata tabular-nums">{run.startLabel}</p>
-      ) : (
-        <p className="text-metadata text-muted-foreground">Not recorded</p>
-      )}
-      {detail && <p className="mt-xxs text-caption text-muted-foreground">{detail}</p>}
-      <ScanTimeSourceNote
-        className="mt-xxs"
-        label={run.sourceLabel}
-        explanation={run.explanation}
-        utc={run.utcLabel}
-        caution={run.kind === 'tool_clock'}
-      />
-    </div>
-  );
-};
-
-/** When the file reached BlueStick (server clock) and who uploaded it. */
-export const ScanUploadedCell: React.FC<CellProps> = ({ scan, format }) => {
   const upload = describeUpload(scan, format);
+  const hover = [
+    run.startLabel ? `Ran ${run.startLabel}` : 'Run time: not in the file',
+    [run.durationLabel, run.uploadLagLabel].filter(Boolean).join(' · ') || null,
+    `${run.sourceLabel} — ${run.explanation}`,
+    run.utcLabel,
+    `Uploaded ${upload.label}${scan.uploaded_by ? ` by ${scan.uploaded_by}` : ''}`,
+  ].filter(Boolean).join('\n');
   return (
-    <div className="min-w-0">
-      <p className="text-metadata tabular-nums" title={upload.explanation}>
-        {upload.label}
-      </p>
-      {scan.uploaded_by && (
-        <p className="mt-xxs truncate text-caption text-muted-foreground" title={scan.uploaded_by}>
-          by {scan.uploaded_by}
-        </p>
+    <div className="min-w-0" title={hover}>
+      <p className="truncate text-metadata tabular-nums">{run.startLabel ?? upload.label}</p>
+      {run.startLabel ? (
+        run.kind === 'tool_clock' ? (
+          <p className="truncate text-caption text-warning">{run.sourceLabel}</p>
+        ) : (
+          run.durationLabel && run.durationLabel !== 'Instant' && (
+            <p className="truncate text-caption text-muted-foreground">took {run.durationLabel}</p>
+          )
+        )
+      ) : (
+        <p className="truncate text-caption text-muted-foreground">uploaded · run time unknown</p>
       )}
     </div>
   );

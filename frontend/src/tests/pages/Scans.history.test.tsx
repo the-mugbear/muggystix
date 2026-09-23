@@ -5,6 +5,7 @@
  */
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
+import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Everything the page (and the components it mounts) takes from the barrel.
@@ -85,7 +86,8 @@ describe('Scans — import history', () => {
     // Rows are fetched by id for the page the server ordered.
     expect(api.getScans).toHaveBeenCalledWith(0, 2, { ids: [9, 3] });
     expect(api.getScanBatches).toHaveBeenCalledWith(expect.objectContaining({ ids: [4] }));
-    expect(screen.getByText(/Showing 3 uploads: 1 batch, 2 single files/)).toBeInTheDocument();
+    // v5.270.0 — how much is loaded sits at the end of the one filter row.
+    expect(screen.getByText(/^3 uploads · 1 batch, 2 single files/)).toBeInTheDocument();
   });
 
   it('the view selector switches to one flat, sortable list of every file', async () => {
@@ -103,5 +105,61 @@ describe('Scans — import history', () => {
     await waitFor(() => expect(screen.queryByText('DMZ sweep')).not.toBeInTheDocument());
     expect(api.getScans).toHaveBeenLastCalledWith(0, 250, expect.objectContaining({ unbatched: false }));
     expect(screen.getByRole('button', { name: /Sort by Scan/ })).toBeInTheDocument();
+    // One time column that sorts by either time.
+    expect(screen.getByRole('button', { name: /Sort by Ran/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Sort by Uploaded/ })).toBeInTheDocument();
+  });
+});
+
+// v5.270.0 — the page is a lead sentence and a section, not stat cards and
+// boxes; the table's actions are quiet.
+describe('Scans — layout', () => {
+  it('opens with one sentence and no stat cards or card-wrapped table', async () => {
+    renderPage();
+    await screen.findByText('newest.xml');
+    expect(screen.queryByText('Hosts up')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open services')).not.toBeInTheDocument();
+    expect(screen.queryByText('Queue active')).not.toBeInTheDocument();
+    expect(screen.getByText(/files? imported; nothing failed; last import/)).toBeInTheDocument();
+    expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+  });
+
+  it('points at failed imports from the lead, and shows the queue only while it holds something', async () => {
+    api.getRecentIngestionJobs.mockResolvedValue([
+      { id: 71, status: 'failed', original_filename: 'broken.xml', created_at: '2026-09-19T10:00:00Z', message: 'not XML' },
+    ]);
+    renderPage();
+    const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(screen.getByTestId('ingestion-queue')).toHaveTextContent('1 failed');
+  });
+
+  it('has no queue box when nothing is queued, waiting or failed', async () => {
+    renderPage();
+    await screen.findByText('newest.xml');
+    expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Ingestion queue' })).not.toBeInTheDocument();
+  });
+
+  it('says so when the queue could not be read — never "nothing failed"', async () => {
+    api.getRecentIngestionJobs.mockRejectedValue(new Error('503'));
+    renderPage();
+    expect(await screen.findByText(/the ingestion queue could not be checked/)).toBeInTheDocument();
+    expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
+  });
+
+  it('the filename opens the scan; delete is in the row menu, not a button on the row', async () => {
+    renderPage();
+    const name = await screen.findByText('newest.xml');
+    expect(name.closest('a')).toHaveAttribute('href', '/scans/9');
+    expect(screen.queryByRole('button', { name: /^View$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Delete scan newest\.xml/ })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: 'Hosts' })[0]).toHaveAttribute('href', expect.stringContaining('/hosts?scan_ids='));
+    const user = userEvent.setup({ skipHover: true });
+    await user.click(screen.getByRole('button', { name: 'More actions for newest.xml' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Delete scan/ }));
+    // Delete still goes through its confirmation (the impact dialog).
+    await waitFor(() => expect(api.getScanDeletionImpact).toHaveBeenCalledWith(9));
+    expect(api.deleteScan).not.toHaveBeenCalled();
   });
 });
