@@ -155,14 +155,11 @@ const AttnTile: React.FC<{
 const PortfolioHero: React.FC<{
   summary: PortfolioSummary;
   projects: ProjectCard[];
-  isAdmin: boolean;
   onNeedsAttention: () => void;
-  onNoAdmin: () => void;
   attnFilter: string | null;
   onAttn: (key: string) => void;
   attentionOnly: boolean;
-  noAdminOnly: boolean;
-}> = ({ summary, projects, isAdmin, onNeedsAttention, onNoAdmin, attnFilter, onAttn, attentionOnly, noAdminOnly }) => {
+}> = ({ summary, projects, onNeedsAttention, attnFilter, onAttn, attentionOnly }) => {
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
     for (const p of projects) c[p.health] = (c[p.health] ?? 0) + 1;
@@ -235,10 +232,6 @@ const PortfolioHero: React.FC<{
             onClick={() => onAttn('pending')} selected={attnFilter === 'pending'} />
           <AttnTile label="Blocked runs" value={summary.blocked_sessions_total} tone="destructive"
             onClick={() => onAttn('blocked')} selected={attnFilter === 'blocked'} />
-          {isAdmin && (
-            <AttnTile label="No admin" value={summary.projects_without_admin} tone="destructive"
-              onClick={onNoAdmin} selected={noAdminOnly} />
-          )}
         </div>
       </CardContent>
     </Card>
@@ -336,13 +329,12 @@ const ProjectTile: React.FC<{
 
         {/* Signal chips */}
         {(card.pending_plan_reviews > 0 || card.open_tasks > 0 || card.active_sessions > 0
-          || card.blocked_sessions > 0 || !card.has_admin) && (
+          || card.blocked_sessions > 0) && (
           <div className="flex flex-wrap gap-xxs">
             {card.pending_plan_reviews > 0 && <Badge variant="warning">{card.pending_plan_reviews} pending review</Badge>}
             {card.blocked_sessions > 0 && <Badge variant="destructive">{card.blocked_sessions} blocked</Badge>}
             {card.active_sessions > 0 && <Badge variant="info">{card.active_sessions} active run{card.active_sessions === 1 ? '' : 's'}</Badge>}
             {card.open_tasks > 0 && <Badge variant="muted">{card.open_tasks} open task{card.open_tasks === 1 ? '' : 's'}</Badge>}
-            {!card.has_admin && <Badge variant="destructive">No admin</Badge>}
           </div>
         )}
 
@@ -384,14 +376,6 @@ const PortfolioDashboard: React.FC = () => {
     else params.delete('view');
     setSearchParams(params, { replace: true });
   };
-  // SOC-P3 — admin-only "projects without an admin" governance filter.
-  const noAdminOnly = searchParams.get('no_admin') === '1';
-  const setNoAdminOnly = (on: boolean) => {
-    const params = new URLSearchParams(searchParams);
-    if (on) params.set('no_admin', '1');
-    else params.delete('no_admin');
-    setSearchParams(params, { replace: true });
-  };
   // §26 — attention rollups filter the PORTFOLIO grid (cross-project totals
   // must not silently land in one project's /hosts). Single-select toggle,
   // URL-synced (?attn=critical|stale|no_data|pending|blocked) so a triage
@@ -430,7 +414,6 @@ const PortfolioDashboard: React.FC = () => {
     let list = data.projects;
     if (statusFilter) list = list.filter((p) => p.status === statusFilter);
     if (attentionOnly) list = list.filter((p) => p.attention_reasons.length > 0);
-    if (noAdminOnly) list = list.filter((p) => !p.has_admin);
     const attnPred = attnFilter ? ATTN_PREDICATE[attnFilter] : undefined;
     if (attnPred) list = list.filter(attnPred);
     // Always worst-first — health severity, then critical findings, then the
@@ -446,7 +429,7 @@ const PortfolioDashboard: React.FC = () => {
       if (ar !== 0) return ar;
       return a.name.localeCompare(b.name);
     });
-  }, [data, statusFilter, attentionOnly, noAdminOnly, attnFilter]);
+  }, [data, statusFilter, attentionOnly, attnFilter]);
 
   const statusCounts = useMemo(() => {
     if (!data) return {};
@@ -550,13 +533,10 @@ const PortfolioDashboard: React.FC = () => {
       <PortfolioHero
         summary={summary}
         projects={data.projects}
-        isAdmin={hasRole('admin')}
         onNeedsAttention={() => setAttentionOnly(!attentionOnly)}
-        onNoAdmin={() => setNoAdminOnly(!noAdminOnly)}
         attnFilter={attnFilter}
         onAttn={setAttnFilter}
         attentionOnly={attentionOnly}
-        noAdminOnly={noAdminOnly}
       />
 
       <div className="flex flex-wrap items-center justify-between gap-sm">
@@ -564,7 +544,6 @@ const PortfolioDashboard: React.FC = () => {
           {filteredProjects.length} project{filteredProjects.length === 1 ? '' : 's'}
           {statusFilter ? ` · status "${statusFilter.replace('_', ' ')}"` : ''}
           {attentionOnly ? ' · needs attention' : ''}
-          {noAdminOnly ? ' · no admin' : ''}
           {attnFilter ? ` · ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}` : ''}
         </p>
         <div className="flex flex-wrap items-center gap-sm">
@@ -572,12 +551,6 @@ const PortfolioDashboard: React.FC = () => {
             aria-pressed={attentionOnly} onClick={() => setAttentionOnly(!attentionOnly)}>
             <AlertTriangle className="size-4" aria-hidden /> Needs attention
           </Button>
-          {hasRole('admin') && (
-            <Button size="sm" variant={noAdminOnly ? 'default' : 'outline'}
-              aria-pressed={noAdminOnly} onClick={() => setNoAdminOnly(!noAdminOnly)}>
-              <Users className="size-4" aria-hidden /> No admins
-            </Button>
-          )}
           <div className="min-w-40">
             <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
               <SelectTrigger aria-label="Filter projects by status">
@@ -601,16 +574,13 @@ const PortfolioDashboard: React.FC = () => {
           <CardContent className="p-xl text-center">
             <FolderOpen className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">
-              {noAdminOnly ? 'Every project has an admin. \U0001F389'
-                : attentionOnly ? 'No projects currently need attention. \U0001F389'
+              {attentionOnly ? 'No projects currently need attention.'
                 : attnFilter ? `No projects are ${ATTN_FILTER_LABEL[attnFilter] ?? attnFilter}.`
                 : statusFilter ? 'No projects match the selected filter.'
                 : 'No projects available.'}
             </p>
             <div className="mt-sm flex justify-center gap-xs">
-              {noAdminOnly ? (
-                <Button size="sm" variant="outline" onClick={() => setNoAdminOnly(false)}>Show all projects</Button>
-              ) : attentionOnly ? (
+              {attentionOnly ? (
                 <Button size="sm" variant="outline" onClick={() => setAttentionOnly(false)}>Show all projects</Button>
               ) : attnFilter ? (
                 <Button size="sm" variant="outline" onClick={() => setAttnFilter(attnFilter)}>Show all projects</Button>

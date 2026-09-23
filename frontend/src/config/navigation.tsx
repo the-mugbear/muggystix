@@ -152,6 +152,12 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Folder, order: 0 },
   },
   {
+    // Global administrators' programme dashboard (5.258.0).  Its sidebar
+    // entry sits under "All Projects" in Layout.tsx, admins only.
+    id: 'oversight', path: '/oversight', label: 'Oversight', requiredRole: 'admin',
+    palette: { Icon: Gauge, keywords: ['metrics', 'programme', 'program', 'manager', 'testers'], order: 0 },
+  },
+  {
     id: 'operations', path: '/operations', label: 'Operations', requiredRole: 'viewer',
     palette: { Icon: Sparkles, order: 1 },
   },

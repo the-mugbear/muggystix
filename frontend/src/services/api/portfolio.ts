@@ -51,9 +51,6 @@ export interface ProjectCard {
   blocked_sessions: number;
   member_count: number;
   user_role: string | null;
-  // SOC-P3 governance.
-  has_admin: boolean;
-  admins: string[];
 }
 
 export interface PortfolioSummary {
@@ -70,7 +67,6 @@ export interface PortfolioSummary {
   projects_no_data: number;
   pending_approvals_total: number;
   blocked_sessions_total: number;
-  projects_without_admin: number;
 }
 
 export interface PortfolioDashboardResponse {

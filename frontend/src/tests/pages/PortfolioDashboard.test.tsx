@@ -30,7 +30,7 @@ const card = (over: Partial<ProjectCard>): ProjectCard => ({
   review_progress_pct: 80, unreviewed_hosts: 2, hosts_tested: 8,
   findings: sev(), unjudged_observations: sev(), health: 'healthy', attention_reasons: [],
   pending_plan_reviews: 0, open_tasks: 0, active_sessions: 0, blocked_sessions: 0,
-  member_count: 1, user_role: 'admin', has_admin: true, admins: ['a'],
+  member_count: 1, user_role: 'admin',
   ...over,
 });
 
@@ -38,7 +38,7 @@ const summary = {
   total_projects: 3, active_projects: 3, total_hosts: 30, total_open_ports: 0, total_scans: 3,
   total_unreviewed: 6, projects_requiring_attention: 2, projects_with_critical: 2,
   stale_projects: 0, projects_no_data: 0, pending_approvals_total: 0,
-  blocked_sessions_total: 0, projects_without_admin: 0,
+  blocked_sessions_total: 0,
 };
 
 const projects = [

@@ -5,7 +5,7 @@ from app.api.v1.endpoints import (
     webhooks, dashboard, upload,
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, auth, two_factor,
     audit, users, projects, notifications,
-    portfolio, test_plans, test_plan_bundles, feedback, llm_providers,
+    portfolio, oversight, test_plans, test_plan_bundles, feedback, llm_providers,
     integrations,
     # Per-workflow agent routers (split out of agent_api.py in v2.16.0).
     # Mounted individually below so each gets its own Swagger/Redoc tag —
@@ -53,7 +53,8 @@ from app.api.v1.endpoints import (
     # Durable job-queue operational metrics (admin-only, deployment-wide).
     system_metrics,
 )
-from app.api.v1.endpoints.auth import require_password_changed
+from app.api.v1.endpoints.auth import require_password_changed, require_role
+from app.db.models_auth import UserRole
 from app.api.deps import enforce_agent_operator_access
 
 api_router = APIRouter()
@@ -74,6 +75,11 @@ api_router.include_router(notifications.router, prefix="/notifications", tags=["
                           dependencies=[Depends(require_password_changed)])
 api_router.include_router(portfolio.router, prefix="/portfolio", tags=["portfolio"],
                           dependencies=[Depends(require_password_changed)])
+# v2.377.0 — the administrators' programme dashboard.  The GLOBAL admin gate
+# is router-level so no endpoint added here later can forget it.
+api_router.include_router(oversight.router, prefix="/oversight", tags=["oversight"],
+                          dependencies=[Depends(require_password_changed),
+                                        Depends(require_role(UserRole.ADMIN))])
 # Cross-project SOC-correlation activity feed.  Lives at the top
 # level (not under /projects/{id}/...) because the whole point is
 # "what was running across MY projects at time X" — see

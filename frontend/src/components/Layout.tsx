@@ -2,6 +2,7 @@ import React, { ReactNode } from 'react';
 import { useNavigate, useLocation, useNavigationType, NavLink, Link } from 'react-router-dom';
 import {
   FolderOpen,
+  Gauge,
   MenuIcon,
   Repeat,
   Sparkles,
@@ -445,28 +446,36 @@ export default function Layout({ children }: LayoutProps) {
           context (selector + hubs) below. */}
       {hasPermission('viewer') && (
         <div className="px-xs pt-xs">
-          <NavLink
-            to="/portfolio"
-            className={({ isActive }) =>
-              cn(
-                'relative flex w-full items-center gap-sm rounded-control border-l-2 px-sm py-xs text-left text-metadata transition-colors no-underline',
-                'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
-                isActive
-                  ? 'border-l-primary bg-sidebar-accent font-semibold text-foreground'
-                  : 'border-l-transparent font-medium text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
-                themeName === 'phosphor' && 'tracking-[0.04em]',
-              )
-            }
-          >
-            {({ isActive }) => (
-              <>
-                <FolderOpen
-                  className={cn('size-4 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')}
-                />
-                <span className="truncate">All Projects</span>
-              </>
-            )}
-          </NavLink>
+          {[
+            { to: '/portfolio', label: 'All Projects', Icon: FolderOpen, show: true },
+            // Oversight — global administrators' programme dashboard
+            // (5.258.0); the route and the API are admin-gated as well.
+            { to: '/oversight', label: 'Oversight', Icon: Gauge, show: hasPermission('admin') },
+          ].filter((l) => l.show).map(({ to, label, Icon }) => (
+            <NavLink
+              key={to}
+              to={to}
+              className={({ isActive }) =>
+                cn(
+                  'relative flex w-full items-center gap-sm rounded-control border-l-2 px-sm py-xs text-left text-metadata transition-colors no-underline',
+                  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1',
+                  isActive
+                    ? 'border-l-primary bg-sidebar-accent font-semibold text-foreground'
+                    : 'border-l-transparent font-medium text-muted-foreground hover:bg-sidebar-accent/60 hover:text-foreground',
+                  themeName === 'phosphor' && 'tracking-[0.04em]',
+                )
+              }
+            >
+              {({ isActive }) => (
+                <>
+                  <Icon
+                    className={cn('size-4 shrink-0', isActive ? 'text-primary' : 'text-muted-foreground')}
+                  />
+                  <span className="truncate">{label}</span>
+                </>
+              )}
+            </NavLink>
+          ))}
         </div>
       )}
 

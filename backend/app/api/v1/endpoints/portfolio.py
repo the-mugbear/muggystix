@@ -19,17 +19,13 @@ from app.db import models
 from app.db.models import HostFollow, FollowStatus
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
-from app.db.models_agent import (
-    TestPlan, TestPlanEntry, ExecutionSession, ReconSession,
-)
-from app.services.agent_session_metrics import blocked_exec_session_counts
+from app.db.models_agent import TestPlan, TestPlanEntry
 from app.services.engagement_metrics_service import project_engagement
+from app.services.project_signals_service import project_signals
 from app.api.v1.endpoints.auth import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-STALE_THRESHOLD_DAYS = 14
 
 
 # ---------------------------------------------------------------------------
@@ -77,9 +73,9 @@ class ProjectCard(BaseModel):
     blocked_sessions: int = 0         # execution sessions paused/failed
     member_count: int = 0
     user_role: Optional[str] = None   # caller's project role (None if global-admin non-member)
-    # SOC-P3 governance
-    has_admin: bool = True
-    admins: List[str] = []
+    # v2.377.0 — the "no project admin" governance signal (has_admin, admins,
+    # projects_without_admin, the no_admin reason) moved to Oversight, the
+    # admin-only dashboard; this page serves every member.
 
 
 class PortfolioSummary(BaseModel):
@@ -96,7 +92,6 @@ class PortfolioSummary(BaseModel):
     projects_no_data: int = 0
     pending_approvals_total: int = 0
     blocked_sessions_total: int = 0
-    projects_without_admin: int = 0
 
 
 class PortfolioDashboardResponse(BaseModel):
@@ -168,26 +163,6 @@ def get_portfolio_dashboard(
         .all()
     )
 
-    # Scan counts and last scan time
-    scan_stats = dict(
-        db.query(
-            models.Scan.project_id,
-            func.count(models.Scan.id),
-        )
-        .filter(models.Scan.project_id.in_(project_ids))
-        .group_by(models.Scan.project_id)
-        .all()
-    )
-    last_scans = dict(
-        db.query(
-            models.Scan.project_id,
-            func.max(models.Scan.created_at),
-        )
-        .filter(models.Scan.project_id.in_(project_ids))
-        .group_by(models.Scan.project_id)
-        .all()
-    )
-
     # Targets, review counts, findings and judged / not-yet-judged scanner
     # observations — the shared definitions (engagement_metrics_service), so
     # this page and Oversight report the same numbers for a project.  The
@@ -195,64 +170,12 @@ def get_portfolio_dashboard(
     # false-positive dismissal counting as "critical".
     engagement = project_engagement(db, project_ids)
 
-    # ------------------------------------------------------------------
-    # P4 control-plane signals — all batched (one GROUP BY each).
-    # ------------------------------------------------------------------
+    # Workflow + governance signals (pending approvals, open tasks, active /
+    # blocked runs, members, admins, last import, "quiet") — shared with
+    # Oversight (project_signals_service).
+    signals = project_signals(db, projects, now)
 
-    # Pending plan reviews (proposed plans) per project.
-    pending_review_counts = dict(
-        db.query(TestPlan.project_id, func.count(TestPlan.id))
-        .filter(TestPlan.project_id.in_(project_ids), TestPlan.status == "proposed")
-        .group_by(TestPlan.project_id)
-        .all()
-    )
-
-    # Open tasks (non-terminal entries on accepted plans) per project.
-    open_task_counts = dict(
-        db.query(TestPlan.project_id, func.count(TestPlanEntry.id))
-        .join(TestPlanEntry, TestPlanEntry.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id.in_(project_ids),
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
-        )
-        .group_by(TestPlan.project_id)
-        .all()
-    )
-
-    # Active execution + recon sessions, and blocked (paused/failed) execs.
-    # ExecutionSession is scoped by test_plan_id → join TestPlan for project.
-    active_exec_counts = dict(
-        db.query(TestPlan.project_id, func.count(ExecutionSession.id))
-        .join(ExecutionSession, ExecutionSession.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id.in_(project_ids),
-            ExecutionSession.status == "active",
-        )
-        .group_by(TestPlan.project_id)
-        .all()
-    )
-    # Only the LATEST execution session per plan counts as "blocked" (paused /
-    # failed) — shared with Security Posture so the two surfaces agree on the
-    # invariant.  See agent_session_metrics for the rationale.
-    blocked_exec_counts = blocked_exec_session_counts(db, project_ids)
-    active_recon_counts = dict(
-        db.query(ReconSession.project_id, func.count(ReconSession.id))
-        .filter(
-            ReconSession.project_id.in_(project_ids),
-            ReconSession.status == "active",
-        )
-        .group_by(ReconSession.project_id)
-        .all()
-    )
-
-    # Member counts + the caller's per-project role.
-    member_counts = dict(
-        db.query(ProjectMembership.project_id, func.count(ProjectMembership.id))
-        .filter(ProjectMembership.project_id.in_(project_ids))
-        .group_by(ProjectMembership.project_id)
-        .all()
-    )
+    # The caller's per-project role.
     my_roles = dict(
         db.query(ProjectMembership.project_id, ProjectMembership.role)
         .filter(
@@ -261,23 +184,6 @@ def get_portfolio_dashboard(
         )
         .all()
     )
-
-    # SOC-P3 governance — admin members per project (names), batched.  A
-    # project with no admin is a governance risk (no one can manage its
-    # membership), surfaced as the ``no_admin`` attention reason.
-    from app.db.models_auth import User as _User
-    admin_rows = (
-        db.query(ProjectMembership.project_id, _User.full_name, _User.username)
-        .join(_User, _User.id == ProjectMembership.user_id)
-        .filter(
-            ProjectMembership.project_id.in_(project_ids),
-            ProjectMembership.role == "admin",
-        )
-        .all()
-    )
-    admins_map: Dict[int, List[str]] = {}
-    for pid, full_name, username in admin_rows:
-        admins_map.setdefault(pid, []).append(full_name or username)
 
     # ------------------------------------------------------------------
     # Build response
@@ -295,15 +201,14 @@ def get_portfolio_dashboard(
     projects_no_data = 0
     pending_approvals_total = 0
     blocked_sessions_total = 0
-    projects_without_admin = 0
 
     for p in projects:
         e = engagement[p.id]
+        s = signals[p.id]
         hc = e.host_count
         uhc = up_host_counts.get(p.id, 0)
         opc = open_port_counts.get(p.id, 0)
-        sc = scan_stats.get(p.id, 0)
-        ls = last_scans.get(p.id)
+        sc = s.scan_count
         rc = e.hosts_reviewed
         findings = SeverityBrief(**e.findings.as_dict())
         unjudged = SeverityBrief(**e.observations_unjudged.as_dict())
@@ -317,22 +222,9 @@ def get_portfolio_dashboard(
         unreviewed = max(0, hc - rc)
         review_pct = round((rc / hc) * 100, 1) if hc else 0.0
 
-        days_since: Optional[int] = None
-        is_stale = False
-        if ls:
-            ls_naive = ls.replace(tzinfo=None) if ls.tzinfo else ls
-            now_naive = now.replace(tzinfo=None)
-            days_since = (now_naive - ls_naive).days
-            # "Quiet", and only for a project still marked active (v2.374.1).
-            # A project runs 6–12 weeks and is then kept for posterity, so
-            # flagging every finished project "stale — requires attention"
-            # forever was noise.  On an ACTIVE project, no import for a
-            # fortnight is a useful question for a manager — is it finished?
-            # mark it completed — and says nothing about its evidence.
-            is_stale = (
-                p.status in ("active", "in_progress")
-                and days_since >= STALE_THRESHOLD_DAYS
-            )
+        # "Quiet" (API code ``stale``): still marked active, no import for a
+        # fortnight — a question about the project, never about its evidence.
+        is_stale = s.is_quiet
 
         # Health indicator
         if has_critical:
@@ -347,18 +239,13 @@ def get_portfolio_dashboard(
         if p.status in ("active", "in_progress"):
             active_projects += 1
 
-        pending_reviews = pending_review_counts.get(p.id, 0)
-        open_tasks = open_task_counts.get(p.id, 0)
-        active_sessions = active_exec_counts.get(p.id, 0) + active_recon_counts.get(p.id, 0)
-        blocked_sessions = blocked_exec_counts.get(p.id, 0)
-        member_count = member_counts.get(p.id, 0)
+        pending_reviews = s.pending_plan_reviews
+        blocked_sessions = s.blocked_sessions
         # Global admins may have no per-project membership row; surface
         # their global role so the table never shows a blank for them.
         role = my_roles.get(p.id)
         if role is None and current_user.role == UserRole.ADMIN:
             role = "admin"
-        admins = admins_map.get(p.id, [])
-        has_admin = len(admins) > 0
 
         # Attention reasons — a project can trip several at once.  Stable
         # codes; the frontend maps them to labels + row actions.
@@ -375,8 +262,6 @@ def get_portfolio_dashboard(
             reasons.append("pending_review")
         if blocked_sessions > 0:
             reasons.append("blocked_session")
-        if not has_admin:
-            reasons.append("no_admin")  # SOC-P3 governance risk
         if is_stale:
             reasons.append("stale")
         if hc == 0:
@@ -398,8 +283,6 @@ def get_portfolio_dashboard(
             projects_no_data += 1
         pending_approvals_total += pending_reviews
         blocked_sessions_total += blocked_sessions
-        if not has_admin:
-            projects_without_admin += 1
 
         cards.append(ProjectCard(
             id=p.id,
@@ -411,8 +294,8 @@ def get_portfolio_dashboard(
             up_host_count=uhc,
             open_port_count=opc,
             scan_count=sc,
-            last_scan_at=ls,
-            days_since_last_scan=days_since,
+            last_scan_at=s.last_scan_at,
+            days_since_last_scan=s.days_since_last_scan,
             is_stale=is_stale,
             review_progress_pct=review_pct,
             unreviewed_hosts=unreviewed,
@@ -422,13 +305,11 @@ def get_portfolio_dashboard(
             health=health,
             attention_reasons=reasons,
             pending_plan_reviews=pending_reviews,
-            open_tasks=open_tasks,
-            active_sessions=active_sessions,
+            open_tasks=s.open_tasks,
+            active_sessions=s.active_sessions,
             blocked_sessions=blocked_sessions,
-            member_count=member_count,
+            member_count=s.member_count,
             user_role=role,
-            has_admin=has_admin,
-            admins=admins,
         ))
 
     return PortfolioDashboardResponse(
@@ -445,7 +326,6 @@ def get_portfolio_dashboard(
             projects_no_data=projects_no_data,
             pending_approvals_total=pending_approvals_total,
             blocked_sessions_total=blocked_sessions_total,
-            projects_without_admin=projects_without_admin,
         ),
         projects=cards,
     )

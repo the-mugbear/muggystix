@@ -46,6 +46,7 @@ export * from './api/integrations';
 export * from './api/llm-providers';
 export * from './api/names';
 export * from './api/notifications';
+export * from './api/oversight';
 export * from './api/parse-errors';
 export * from './api/portfolio';
 export * from './api/posture';

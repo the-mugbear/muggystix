@@ -122,27 +122,15 @@ def test_blocked_when_latest_session_paused(client, db_session, test_project, te
     assert "blocked_session" in card["attention_reasons"]
 
 
-def test_no_admin_governance_flag(client, db_session, test_project):
-    """SOC-P3 — a project with no admin MEMBER is flagged (global-admin
-    caller doesn't count; has_admin is about ProjectMembership role=admin)."""
+def test_no_admin_governance_moved_to_oversight(client, db_session, test_project):
+    """v2.377.0 — "no project admin" is an administrator's question, answered
+    on the admin-only Oversight page (tests/test_oversight.py); Portfolio,
+    which every member sees, no longer carries it."""
     body = client.get(PORTFOLIO_URL).json()
     card = _card_for(body, test_project.id)
-    assert card["has_admin"] is False
-    assert "no_admin" in card["attention_reasons"]
-    assert body["summary"]["projects_without_admin"] >= 1
-
-
-def test_admin_member_clears_no_admin(client, db_session, test_project):
-    admin_user = _make_user(db_session, "proj-admin")
-    db_session.add(ProjectMembership(
-        project_id=test_project.id, user_id=admin_user.id, role="admin",
-    ))
-    db_session.flush()
-
-    card = _card_for(client.get(PORTFOLIO_URL).json(), test_project.id)
-    assert card["has_admin"] is True
     assert "no_admin" not in card["attention_reasons"]
-    assert admin_user.full_name in card["admins"]
+    assert "has_admin" not in card and "admins" not in card
+    assert "projects_without_admin" not in body["summary"]
 
 
 def test_team_roster_with_workload(client, db_session, test_project, test_agent):

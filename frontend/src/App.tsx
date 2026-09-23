@@ -51,6 +51,7 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/force-2fa-setup', kind: 'detail' },
   // cards
   { pattern: '/portfolio', kind: 'cards' },
+  { pattern: '/oversight', kind: 'cards' },
   { pattern: '/llm-settings', kind: 'cards' },
   { pattern: '/integrations', kind: 'cards' },
   { pattern: '/operations', kind: 'cards' },
@@ -108,6 +109,7 @@ const SystemSettings = lazy(() => import('./pages/SystemSettings'));
 const ToolReference = lazy(() => import('./pages/ToolReference'));
 const ProjectSettings = lazy(() => import('./pages/ProjectSettings'));
 const PortfolioDashboard = lazy(() => import('./pages/PortfolioDashboard'));
+const Oversight = lazy(() => import('./pages/Oversight'));
 const TestPlans = lazy(() => import('./pages/TestPlans'));
 const TestPlanLayout = lazy(() => import('./pages/test-plan/TestPlanLayout'));
 const TestPlanPlanTab = lazy(() => import('./pages/test-plan/PlanTab'));
@@ -624,6 +626,16 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <PortfolioDashboard />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/oversight"
+                        element={
+                          // Global administrators only (the API router is
+                          // admin-gated too).
+                          <ProtectedRoute requiredRole="admin">
+                            <Oversight />
                           </ProtectedRoute>
                         }
                       />
