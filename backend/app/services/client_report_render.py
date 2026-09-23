@@ -65,6 +65,18 @@ def _evidence_resolver(db: Session, project_id: int):
     return resolve
 
 
+def _lock_report(db: Session, report_id: int) -> Optional[Report]:
+    """The report row under FOR UPDATE, re-read — a row already in the
+    session would otherwise be checked at its pre-lock status."""
+    report = (
+        db.query(Report).filter(Report.id == report_id)
+        .with_for_update().populate_existing().one_or_none()
+    )
+    if report is not None:
+        db.expire(report, ["files"])
+    return report
+
+
 def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, basename: str,
             *, issued: bool = False):
     template = templates.get_template(report.template)
@@ -108,13 +120,19 @@ def run_client_job(db: Session, job: ReportJob) -> Optional[Tuple[bytes, str, st
             return path.read_bytes(), quarto_render.FORMATS[fmt][2], path.name
 
     if job.format == ISSUE_FORMAT:
+        # A replay (reaped + requeued after the files were published) or a
+        # stale concurrent attempt must never touch published files: they are
+        # the issued report (remediation review 2026-09-23 finding 1).
+        if report.render_status == RenderStatus.DONE:
+            return None
         try:
             _render_issued(db, report)
         except Exception as exc:
             db.rollback()
-            report = db.get(Report, report_id)
-            report.render_status = RenderStatus.FAILED
-            report.render_error = str(exc)[:4000]
+            report = _lock_report(db, report_id)
+            if report is not None and report.render_status != RenderStatus.DONE:
+                report.render_status = RenderStatus.FAILED
+                report.render_error = str(exc)[:4000]
             db.commit()
             raise
         return None
@@ -132,6 +150,14 @@ def _render_issued(db: Session, report: Report) -> None:
     final_dir = root / str(report.project_id) / str(report.id)
     with tempfile.TemporaryDirectory(prefix="bs-issue-") as tmp:
         files = _render(db, report, dataset, quarto_render.FORMATS, Path(tmp), basename, issued=True)
+        # Render outside the lock (Quarto takes a while), publish under it:
+        # whichever attempt gets here first publishes, every later one
+        # discards its render and leaves the files alone.
+        report = _lock_report(db, report.id)
+        if report is None or report.render_status == RenderStatus.DONE:
+            db.commit()
+            logger.info("Client report render: already published, discarding this attempt's files")
+            return
         final_dir.mkdir(parents=True, exist_ok=True)
         existing = {f.format: f for f in report.files}
         for fmt, path in files.items():

@@ -524,3 +524,48 @@ def test_projects_say_what_role_the_caller_has(client, test_project, people, act
     assert client.get(f"/api/v1/projects/{test_project.id}").json()["my_role"] == "analyst"
     act_as(people["admin"])
     assert client.get(f"/api/v1/projects/{test_project.id}").json()["my_role"] == "admin"
+
+
+def test_a_replayed_issue_job_never_replaces_published_files(db_session, test_project, tmp_path, monkeypatch):
+    """Remediation review 2026-09-23 finding 1: a job reaped after the files
+    were published (or a stale concurrent attempt) must not republish them —
+    and a failing replay must not mark a published report FAILED."""
+    from pathlib import Path
+    from app.db.models_reports import RenderStatus, ReportStatus
+    from app.services import client_report_render as renderer
+
+    monkeypatch.setattr(settings, "REPORT_FILES_DIR", str(tmp_path / "reports"))
+    monkeypatch.setattr(renderer.quarto_render, "quarto_version", lambda: "test")
+    calls = []
+
+    def fake_render(db, report, dataset, formats, out_dir, basename, **kwargs):
+        calls.append(1)
+        path = out_dir / (basename + ".pdf")
+        path.write_bytes(f"render-{len(calls)}".encode())
+        return {"pdf": path}
+
+    monkeypatch.setattr(renderer, "_render", fake_render)
+    report = Report(project_id=test_project.id, title="Replay", kind="full", template="test",
+                    status=ReportStatus.ISSUED, number=1, render_status=RenderStatus.PENDING,
+                    snapshot={"dataset": {"project": {"name": "Replay"}}})
+    db_session.add(report)
+    db_session.flush()
+    job = ReportJob(project_id=test_project.id, format="report-issue", report_type="client",
+                    status="processing", filters={"report_id": report.id})
+    db_session.add(job)
+    db_session.commit()
+
+    renderer.run_client_job(db_session, job)
+    path = Path(settings.REPORT_FILES_DIR) / report.files[0].storage_path
+    assert path.read_bytes() == b"render-1"
+
+    renderer.run_client_job(db_session, job)  # the replay
+    assert path.read_bytes() == b"render-1"
+
+    # A stale attempt that rendered before the first one published.
+    report.render_status = RenderStatus.PENDING
+    db_session.commit()
+    monkeypatch.setattr(renderer, "_lock_report", lambda db, rid: (
+        setattr(db.get(Report, rid), "render_status", RenderStatus.DONE) or db.get(Report, rid)))
+    renderer.run_client_job(db_session, job)
+    assert path.read_bytes() == b"render-1"

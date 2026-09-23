@@ -260,3 +260,26 @@ def test_a_reobservation_without_a_score_keeps_the_stored_one(db_session, test_p
     upsert_vulnerability(**common, cvss_score=5.3)
     v = upsert_vulnerability(**common, cvss_score=None)
     assert v.cvss_score == 5.3
+
+
+def test_a_revisited_new_host_updates_its_script(db_session, test_project, tmp_path):
+    """Remediation review 2026-09-23 finding 2: a host created in this parse,
+    left for another host and met again (merged XML: A → B → A) was assumed
+    to have nothing in the DB, so its script INSERT collided on
+    uq_port_script and the later element was skipped."""
+    from app.parsers.nmap_parser import NmapXMLParser
+
+    def host(ip, output):
+        return (f'<host><status state="up"/><address addr="{ip}" addrtype="ipv4"/><ports>'
+                f'<port protocol="tcp" portid="443"><state state="open"/><service name="https"/>'
+                f'<script id="http-title" output="{output}"/></port></ports></host>')
+
+    path = tmp_path / "merged.xml"
+    path.write_text('<nmaprun scanner="nmap" start="1790143597">'
+                    + host("10.91.0.1", "first") + host("10.91.0.2", "middle")
+                    + host("10.91.0.1", "latest") + '</nmaprun>')
+    NmapXMLParser(db_session).parse_file(str(path), path.name, project_id=test_project.id)
+    script = (db_session.query(models.Script).join(models.Port).join(models.Host)
+              .filter(models.Host.project_id == test_project.id,
+                      models.Host.ip_address == "10.91.0.1").one())
+    assert script.output == "latest"

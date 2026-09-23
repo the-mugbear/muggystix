@@ -364,6 +364,10 @@ class HostDeduplicationService:
                         updated_port = self._update_existing_port(existing_port, scan_id, port_data)
                         self._record_port_scan_history(updated_port.id, scan_id, port_data)
                         fallback_nested.commit()
+                        # The working set now vouches for this port, so it
+                        # must hold the port's scripts too.
+                        for script in self.db.query(Script).filter(Script.port_id == updated_port.id):
+                            self._ws_scripts.setdefault((updated_port.id, script.script_id), script)
                         self._ws_ports[(port_number, protocol)] = updated_port
                         return updated_port
                     fallback_nested.rollback()
@@ -424,7 +428,13 @@ class HostDeduplicationService:
         self._ws_scripts = {}
         self._ws_fresh_port_ids = set()
         if host_id in self._fresh_host_ids:
-            self._ws_ports = {}  # created in this parse: nothing to load
+            # Created in this parse: nothing to load — but only the FIRST
+            # time.  A later element for the same host (merged XML, host A →
+            # B → A) must reload what the first one wrote, or its scripts
+            # look new and collide on uq_port_script (remediation review
+            # 2026-09-23 finding 2).
+            self._fresh_host_ids.discard(host_id)
+            self._ws_ports = {}
             return
         ports = self.db.query(Port).filter(Port.host_id == host_id).all()
         self._ws_ports = {(p.port_number, p.protocol): p for p in ports}

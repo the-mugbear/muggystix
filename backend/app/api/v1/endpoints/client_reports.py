@@ -491,7 +491,13 @@ def rerender_report(
     render, or a PENDING one with no live job (a render lost before
     v2.390.4).  Rendered files are never replaced — an issued report does not
     change (review 2026-09-23 C4)."""
-    report = _load(db, project, report_id)
+    _load(db, project, report_id)
+    # Check-and-enqueue under the row lock: two retries (or a retry racing
+    # the worker's publication) must not both pass the checks below.
+    report = (
+        db.query(Report).filter(Report.id == report_id)
+        .with_for_update().populate_existing().one()
+    )
     if report.status == ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="A draft is previewed, not rendered.")
     if report.render_status == RenderStatus.DONE:
