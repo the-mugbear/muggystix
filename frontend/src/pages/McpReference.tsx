@@ -23,7 +23,6 @@ import McpWorkflowMap from '../components/mcp/McpWorkflowMap';
 import { CodeBlock } from '../components/ui/code-block';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
-import { Card, CardContent } from '../components/ui/card';
 import {
   Table,
   TableBody,
@@ -238,15 +237,14 @@ const McpReference: React.FC = () => {
         planning feeds execution, and the read tools work across all of it at any time — the same
         key throughout.
       </p>
-      <Card className="mb-lg">
-        <CardContent className="p-md">
-          <McpWorkflowMap counts={workflowCounts} />
-        </CardContent>
-      </Card>
+      {/* v5.266.0 — documentation blocks, not cards. */}
+      <div className="mb-lg">
+        <McpWorkflowMap counts={workflowCounts} />
+      </div>
 
       {/* --- Transport facts, straight off the running server --- */}
-      <Card className="mb-lg">
-        <CardContent className="flex flex-wrap gap-lg p-md">
+      <div className="mb-lg border-y border-border py-sm">
+        <div className="flex flex-wrap gap-lg">
           <div className="min-w-0">
             <p className="text-caption text-muted-foreground">Endpoint</p>
             <p className="truncate font-mono text-metadata" title={endpoint}>
@@ -268,8 +266,8 @@ const McpReference: React.FC = () => {
               {catalog ? ` · ${catalog.max_batch_messages}-message batch` : ''}
             </p>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* --- Connect --- */}
       <h2 className="text-section-title">Connecting a client</h2>
@@ -283,8 +281,8 @@ const McpReference: React.FC = () => {
       {/* Every client fails here first, and each needs a different variable —
           so the page leads with the one command that handles both rather than
           six steps an operator has to translate for their client. */}
-      <Card className="mb-sm border-warning/40">
-        <CardContent className="space-y-sm p-md">
+      <div className="mb-sm space-y-sm border-l-4 border-l-warning py-xs pl-md">
+        <div className="space-y-sm">
           <div className="flex gap-sm">
             <ShieldCheck className="mt-xxs size-4 shrink-0 text-warning" aria-hidden />
             <div className="min-w-0">
@@ -361,8 +359,8 @@ const McpReference: React.FC = () => {
             verified on Linux and macOS. On Windows, run Codex inside WSL and use the bash script
             there; its key-entry line (<span className="font-mono">read -rs</span>) is bash as well.
           </p>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
       <Alert variant="warning" className="mb-sm">
         <AlertDescription>
           <strong>The key is a live credential.</strong> A project-scoped config
@@ -396,8 +394,8 @@ const McpReference: React.FC = () => {
 
       {/* --- What a call actually does --- */}
       <h2 className="text-section-title">What happens on a tool call</h2>
-      <Card className="mb-lg mt-xs">
-        <CardContent className="p-md">
+      <div className="mb-lg mt-xs">
+        <div>
           <McpFlowDiagram />
           <ol className="ml-md mt-md list-decimal space-y-xxs text-caption text-muted-foreground">
             <li>
@@ -424,8 +422,8 @@ const McpReference: React.FC = () => {
               instead of retrying forever.
             </li>
           </ol>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* --- Tools --- */}
       <h2 className="text-section-title">Available tools</h2>
@@ -477,8 +475,8 @@ const McpReference: React.FC = () => {
 
       {/* --- Authority --- */}
       <h2 className="text-section-title">What a session may do</h2>
-      <Card className="mb-lg mt-xs">
-        <CardContent className="space-y-sm p-md">
+      <div className="mb-lg mt-xs">
+        <div className="space-y-sm">
           <div className="flex gap-sm">
             <ShieldCheck className="mt-xxs size-4 shrink-0 text-success" aria-hidden />
             <p className="text-caption text-muted-foreground">
@@ -519,8 +517,8 @@ const McpReference: React.FC = () => {
               time by ending the session.
             </p>
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
       {/* --- The deliberate omissions --- */}
       <h2 className="text-section-title">Writing the engagement up</h2>

@@ -9,7 +9,7 @@ import {
 } from '../components/ui/accordion';
 import { Input } from '../components/ui/input';
 import { Badge } from '../components/ui/badge';
-import { Card, CardContent } from '../components/ui/card';
+import PostureSection from '../components/posture/PostureSection';
 import {
   Table,
   TableBody,
@@ -270,25 +270,23 @@ const HostReadinessPanel: React.FC<{ documentedNames: Set<string> }> = ({
       : [];
 
   return (
-    <Card className="mb-md" aria-busy={loading}>
-      <CardContent className="p-md">
-        <div className="mb-sm flex flex-wrap items-start justify-between gap-sm">
-          <div className="min-w-0">
-            <h2 className="text-subheading font-semibold">Host Readiness</h2>
-            <p className="text-metadata text-muted-foreground">
-              The agent tool catalog checked against your most recent environment probe —
-              what this host already has and what it still needs for agentic workflows.
-            </p>
-          </div>
-          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-            {loading ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-            ) : (
-              <RefreshCw className="size-4" aria-hidden />
-            )}
-            Refresh
-          </Button>
-        </div>
+    // v5.266.0 — a section, not a card.
+    <PostureSection
+      className="mb-lg"
+      title="Readiness of your machine"
+      description="The agent tool catalogue checked against your most recent environment probe — what your machine already has, and what it still needs for agent work."
+      actions={
+        <Button size="sm" variant="ghost" onClick={load} disabled={loading}>
+          {loading ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+          ) : (
+            <RefreshCw className="size-4" aria-hidden />
+          )}
+          Refresh
+        </Button>
+      }
+    >
+      <div aria-busy={loading}>
 
         {/* First load only — a refresh keeps the prior data on screen
             (aria-busy on the Card + the spinning Refresh button signal
@@ -457,8 +455,8 @@ const HostReadinessPanel: React.FC<{ documentedNames: Set<string> }> = ({
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 
@@ -602,22 +600,18 @@ const ToolReference: React.FC = () => {
       </div>
 
       {loading ? (
-        <Card>
-          <CardContent className="flex items-center justify-center gap-sm p-lg text-metadata text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            Loading tool catalogue…
-          </CardContent>
-        </Card>
+        <p className="flex items-center gap-sm text-metadata text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" aria-hidden />
+          Loading tool catalogue…
+        </p>
       ) : error ? (
         <Alert variant="destructive">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       ) : groupedEntries.length === 0 ? (
-        <Card>
-          <CardContent className="p-lg text-center text-metadata text-muted-foreground">
-            {filter ? `No tools match "${filter}"` : 'No tools are registered.'}
-          </CardContent>
-        </Card>
+        <p className="text-metadata text-muted-foreground">
+          {filter ? `No tools match "${filter}".` : 'No tools are registered.'}
+        </p>
       ) : (
         <Accordion
           type="multiple"

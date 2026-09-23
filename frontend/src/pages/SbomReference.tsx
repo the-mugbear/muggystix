@@ -17,7 +17,6 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
-import { Card, CardContent } from '../components/ui/card';
 import {
   Select,
   SelectContent,
@@ -298,8 +297,8 @@ const SbomReference: React.FC = () => {
         )}
       </div>
 
-      {/* Summary cards. */}
-      <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-4">
+      {/* Summary — v5.266.0: one strip of quiet measures, not four cards. */}
+      <div className="mb-md grid grid-cols-2 gap-y-md divide-border border-b border-border pb-sm lg:grid-cols-4 lg:divide-x">
         <SummaryCard label="Total" value={data.summary.total} />
         <SummaryCard label="Direct" value={data.summary.direct} hint="explicitly listed" />
         <SummaryCard
@@ -571,15 +570,11 @@ const SummaryCard: React.FC<{ label: string; value: string | number; hint?: stri
   value,
   hint,
 }) => (
-  <Card>
-    <CardContent className="p-md">
-      <p className="text-micro font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <p className="text-section-title font-semibold text-foreground">{value}</p>
-      {hint && <p className="text-caption text-muted-foreground">{hint}</p>}
-    </CardContent>
-  </Card>
+  <div className="min-w-0 px-md first:pl-0">
+    <p className="truncate text-caption text-muted-foreground">{label}</p>
+    <p className="mt-xxs text-subheading font-bold leading-none text-foreground">{value}</p>
+    {hint && <p className="mt-xs truncate text-caption text-muted-foreground">{hint}</p>}
+  </div>
 );
 
 export default SbomReference;

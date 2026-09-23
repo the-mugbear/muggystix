@@ -3,17 +3,12 @@ import { copyToClipboard as copyText } from '../utils/clipboard';
 import {
   Search,
   Copy,
-  Shield,
-  Filter as FilterIcon,
   ChevronLeft,
   ChevronRight,
 } from 'lucide-react';
-import type { LucideIcon } from 'lucide-react';
-import { Card, CardContent } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Button } from '../components/ui/button';
-import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Separator } from '../components/ui/separator';
 import {
@@ -148,10 +143,10 @@ const DefaultCredentials: React.FC = () => {
 
   return (
     <div className="p-md md:p-lg">
-      <h1 className="text-page-title">Default Credentials Database</h1>
-      <p className="mt-xxs mb-md text-metadata text-muted-foreground">
-        Search through a comprehensive database of default credentials for various products and
-        vendors. Use this information for authorized security testing and vulnerability assessment.
+      <h1 className="text-page-title">Default credentials</h1>
+      <p className="mt-xxs mb-md max-w-3xl text-metadata text-muted-foreground">
+        Vendor default usernames and passwords, searchable. For authorised security testing only —
+        confirm authorisation before trying any of them on a system.
       </p>
 
       {error && (
@@ -160,17 +155,10 @@ const DefaultCredentials: React.FC = () => {
         </Alert>
       )}
 
-      {/* Filters */}
-      <Card className="mb-md">
-        <CardContent className="p-md">
-          <div className="mb-md flex items-center gap-sm">
-            <FilterIcon className="size-4 text-primary" aria-hidden />
-            <p className="text-subheading font-semibold text-foreground">Filters</p>
-            <Badge variant="outline">
-              {filtered.length} of {credentials.length}
-            </Badge>
-          </div>
-          <div className="grid grid-cols-1 gap-md md:grid-cols-12">
+      {/* v5.266.0 — one filter row closed by a rule (was a card, plus four
+          stat cards that repeated the count and the selected vendor). */}
+      <div className="mb-md border-b border-border pb-sm">
+          <div className="grid grid-cols-1 items-end gap-md md:grid-cols-12">
             <div className="md:col-span-4">
               <Label htmlFor="dc-vendor">Vendor</Label>
               <Select
@@ -207,33 +195,26 @@ const DefaultCredentials: React.FC = () => {
                 />
               </div>
             </div>
-            <div className="flex items-end md:col-span-2">
+            <div className="flex items-center gap-sm md:col-span-2">
               <Button
-                variant="outline"
+                variant="ghost"
                 onClick={() => {
                   setSelectedVendor('');
                   setSearchTerm('');
                 }}
-                className="w-full"
+                disabled={!selectedVendor && !searchTerm}
               >
                 Clear
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      {/* Stat cards */}
-      <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-4">
-        <StatCard Icon={Shield} tone="text-primary" value={credentials.length} label="Total" />
-        <StatCard Icon={FilterIcon} tone="text-success" value={vendors.length} label="Vendors" />
-        <StatCard Icon={Search} tone="text-warning" value={filtered.length} label="Filtered" />
-        <StatCard Icon={Copy} tone="text-info" value={selectedVendor || 'All'} label="Vendor" />
+          <p className="mt-xs text-caption text-muted-foreground">
+            {filtered.length.toLocaleString()} of {credentials.length.toLocaleString()} credentials · {vendors.length.toLocaleString()} vendors
+          </p>
       </div>
 
       {/* Table */}
-      <Card>
-        <CardContent className="p-0">
+      <div>
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -369,34 +350,9 @@ const DefaultCredentials: React.FC = () => {
               </Button>
             </div>
           </div>
-        </CardContent>
-      </Card>
-
-      <Alert variant="warning" className="mt-md">
-        <AlertDescription>
-          <strong>Security Notice:</strong> This database is for authorized security testing only.
-          Always confirm authorization before testing credentials on any system.
-        </AlertDescription>
-      </Alert>
+      </div>
     </div>
   );
 };
-
-const StatCard: React.FC<{
-  Icon: LucideIcon;
-  tone: string;
-  value: string | number;
-  label: string;
-}> = ({ Icon, tone, value, label }) => (
-  <Card>
-    <CardContent className="flex items-center gap-sm p-md">
-      <Icon className={cn('size-7 shrink-0', tone)} aria-hidden />
-      <div className="min-w-0">
-        <p className="truncate text-section-title font-semibold text-foreground">{value}</p>
-        <p className="text-caption text-muted-foreground">{label}</p>
-      </div>
-    </CardContent>
-  </Card>
-);
 
 export default DefaultCredentials;

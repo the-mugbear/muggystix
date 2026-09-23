@@ -1,240 +1,135 @@
+/**
+ * /reference (v5.266.0) — the index of reading material: guides, what you use
+ * while testing, and the API documentation.
+ *
+ * A compact list per group, not a wall of tiles: each entry is its title, one
+ * line on what it is for, and what following it does — opens a page here,
+ * downloads a file, or opens in a new tab.  No colour per entry (colour
+ * follows meaning, and these have none to carry), no count badges, and no
+ * group badge repeated inside its own group.
+ */
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
-  BookOpen,
-  KeyRound,
-  Terminal,
-  FileText,
-  FileCode,
-  Bot,
-  Package,
-  Plug,
+  BookOpen, Bot, Download, ExternalLink, FileCode, FileText, KeyRound, Package, Plug, Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { Card, CardContent } from '../components/ui/card';
-import { Badge } from '../components/ui/badge';
-import { cn } from '../utils/cn';
 
-type ReferenceSection = {
+import PostureSection from '../components/posture/PostureSection';
+
+type Entry = {
   title: string;
   description: string;
   Icon: LucideIcon;
-  /** Semantic palette token for the left-bar accent. */
-  tone: 'primary' | 'secondary' | 'warning' | 'destructive' | 'success' | 'info' | 'muted';
-  group: 'Guides' | 'Operational Reference' | 'API Documentation';
-  path?: string;
-  href?: string;
-  /** URL to fetch + trigger as a file download. */
-  download?: string;
-};
+} & (
+  | { kind: 'page'; path: string }
+  | { kind: 'download'; href: string; filename: string; label: string }
+  | { kind: 'external'; href: string }
+);
 
-const sections: ReferenceSection[] = [
+const GROUPS: Array<{ title: string; description: string; entries: Entry[] }> = [
   {
-    title: 'User Guide',
-    description: 'Complete walkthrough of BlueStick features, workflows, and best practices.',
-    Icon: BookOpen,
-    path: '/reference/user-guide',
-    tone: 'info',
-    group: 'Guides',
-  },
-  // TODO(risk-scoring): the "Risk Assessment" reference card is removed while
-  // risk scoring is in a broken state (HostRiskAssessment is unpopulated).
-  // Restore it when risk scoring is reworked (admin-tunable weights). See
-  // TODO.md and frontend/src/config/featureFlags.ts.
-  {
-    title: 'MCP for AI Assist',
-    description:
-      'Connect an AI assistant as native tools instead of curl — setup per client, the tool catalog, and what a session may do.',
-    Icon: Plug,
-    path: '/reference/mcp',
-    tone: 'primary',
-    group: 'Guides',
+    title: 'Guides',
+    description: 'How BlueStick works, for people and for the AI agents working with them.',
+    entries: [
+      {
+        kind: 'page', path: '/reference/user-guide', Icon: BookOpen, title: 'User guide',
+        description: 'Getting started, bringing data in, triage and reporting, agents, administration.',
+      },
+      {
+        kind: 'page', path: '/reference/mcp', Icon: Plug, title: 'MCP for AI Assist',
+        description: 'Connect an AI assistant as native tools — setup per client, the tool catalogue, what a session may do.',
+      },
+      {
+        kind: 'download', href: '/api/v1/agents-guide', filename: 'AGENTS.md', label: 'AGENTS.md', Icon: Bot,
+        title: 'AI agent guide',
+        description: 'The contract an agent reads at startup, with this deployment’s URLs filled in.',
+      },
+    ],
   },
   {
-    title: 'Default Credentials',
-    description: 'Searchable database of vendor default credentials for security testing.',
-    Icon: KeyRound,
-    path: '/default-credentials',
-    tone: 'destructive',
-    group: 'Operational Reference',
+    title: 'While testing',
+    description: 'Reference material for triage, validation and planning.',
+    entries: [
+      {
+        kind: 'page', path: '/tool-reference', Icon: Terminal, title: 'Tool reference',
+        description: 'The tools BlueStick knows, by category — install commands, output BlueStick can ingest, and agent policy.',
+      },
+      {
+        kind: 'page', path: '/default-credentials', Icon: KeyRound, title: 'Default credentials',
+        description: 'Vendor default usernames and passwords, searchable, for authorised testing.',
+      },
+      {
+        kind: 'page', path: '/reference/sbom', Icon: Package, title: 'Software bill of materials',
+        description: 'Every package bundled with this build — to answer “is package X in the app?”.',
+      },
+    ],
   },
   {
-    title: 'Tool Reference',
-    description: 'Curated catalog of pentesting tools organized by category with install commands.',
-    Icon: Terminal,
-    path: '/tool-reference',
-    tone: 'success',
-    group: 'Operational Reference',
-  },
-  {
-    title: 'Software Bill of Materials',
-    description:
-      'Every backend Python and frontend npm package bundled with this build — for vulnerability triage.',
-    Icon: Package,
-    path: '/reference/sbom',
-    tone: 'muted',
-    group: 'Operational Reference',
-  },
-  {
-    title: 'AI Agent Guide',
-    description:
-      'Download AGENTS.md for AI assistants. URLs are pre-configured for this deployment.',
-    Icon: Bot,
-    download: '/api/v1/agents-guide',
-    tone: 'primary',
-    group: 'Guides',
-  },
-  {
-    title: 'Swagger UI',
-    description: 'Interactive OpenAPI documentation for exploring and testing the API.',
-    Icon: FileText,
-    href: '/docs',
-    tone: 'secondary',
-    group: 'API Documentation',
-  },
-  {
-    title: 'ReDoc',
-    description:
-      'Reference-style API documentation with the full schema and endpoint details.',
-    Icon: FileCode,
-    href: '/redoc',
-    tone: 'info',
-    group: 'API Documentation',
+    title: 'API documentation',
+    description: 'The OpenAPI schema of this deployment, for integrations.',
+    entries: [
+      {
+        kind: 'external', href: '/docs', Icon: FileText, title: 'Swagger UI',
+        description: 'Interactive documentation: explore and try the endpoints.',
+      },
+      {
+        kind: 'external', href: '/redoc', Icon: FileCode, title: 'ReDoc',
+        description: 'Reference-style documentation with the full schema.',
+      },
+    ],
   },
 ];
 
-const GROUPS: Array<ReferenceSection['group']> = [
-  'Guides',
-  'Operational Reference',
-  'API Documentation',
-];
+const titleClass = 'font-medium text-foreground group-hover:text-info group-hover:underline';
 
-const GROUP_DESCRIPTIONS: Record<ReferenceSection['group'], string> = {
-  Guides: 'Documentation for people and agents using BlueStick day to day.',
-  'Operational Reference': 'Reference material used during triage, validation, and planning work.',
-  'API Documentation': 'Browsable API schemas and interactive endpoint documentation.',
-};
-
-// Tone → Tailwind border-color class.  We use the left-side accent
-// border as a 4px stripe to visually group cards by category without
-// loading the design with full background colour.
-const TONE_ACCENT: Record<ReferenceSection['tone'], string> = {
-  primary: 'border-l-primary',
-  secondary: 'border-l-secondary',
-  warning: 'border-l-warning',
-  destructive: 'border-l-destructive',
-  success: 'border-l-success',
-  info: 'border-l-info',
-  muted: 'border-l-muted-foreground',
-};
-
-const TONE_ICON: Record<ReferenceSection['tone'], string> = {
-  primary: 'text-primary',
-  secondary: 'text-secondary',
-  warning: 'text-warning',
-  destructive: 'text-destructive',
-  success: 'text-success',
-  info: 'text-info',
-  muted: 'text-muted-foreground',
-};
-
-const Reference: React.FC = () => {
-  const navigate = useNavigate();
-
-  const handleAction = (section: ReferenceSection) => {
-    if (section.path) {
-      navigate(section.path);
-      return;
-    }
-    if (section.download) {
-      const a = document.createElement('a');
-      a.href = section.download;
-      a.download = 'AGENTS.md';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    }
-  };
-
-  return (
-    <div className="p-md md:p-lg">
-      <h1 className="mb-md text-page-title">Reference</h1>
-
-      <div className="flex flex-col gap-lg">
-        {GROUPS.map((group) => {
-          const groupSections = sections.filter((s) => s.group === group);
-          if (groupSections.length === 0) return null;
-
-          return (
-            <section key={group}>
-              <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-center sm:justify-between">
-                <div>
-                  <h2 className="text-subheading font-semibold">{group}</h2>
-                  <p className="text-metadata text-muted-foreground">
-                    {GROUP_DESCRIPTIONS[group]}
-                  </p>
-                </div>
-                <Badge variant="outline">
-                  {groupSections.length} item{groupSections.length === 1 ? '' : 's'}
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-1 gap-md md:grid-cols-2">
-                {groupSections.map((section) => {
-                  const InternalNavigation = section.path || section.download;
-                  const Icon = section.Icon;
-                  const Wrapper: React.ElementType = section.href ? 'a' : 'button';
-                  const wrapperProps = section.href
-                    ? {
-                        href: section.href,
-                        target: '_blank',
-                        rel: 'noreferrer',
-                      }
-                    : {
-                        type: 'button',
-                        onClick: () => handleAction(section),
-                      };
-
-                  return (
-                    <Card
-                      key={section.title}
-                      className={cn(
-                        'border-l-4 transition-colors hover:bg-accent/50 focus-within:bg-accent/50',
-                        TONE_ACCENT[section.tone],
-                      )}
-                    >
-                      <Wrapper
-                        {...(wrapperProps as Record<string, unknown>)}
-                        className={cn(
-                          'block h-full w-full rounded-panel text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                        )}
-                      >
-                        <CardContent className="p-md pt-md">
-                          <div className="flex items-start gap-md">
-                            <Icon className={cn('size-8 shrink-0', TONE_ICON[section.tone])} aria-hidden />
-                            <div className="min-w-0">
-                              <h3 className="mb-xxs text-subheading font-semibold">{section.title}</h3>
-                              <p className="text-metadata text-muted-foreground">
-                                {section.description}
-                              </p>
-                              <Badge variant="outline" className="mt-sm">
-                                {section.group}
-                              </Badge>
-                            </div>
-                          </div>
-                          {InternalNavigation ? null : null}
-                        </CardContent>
-                      </Wrapper>
-                    </Card>
-                  );
-                })}
-              </div>
-            </section>
-          );
-        })}
-      </div>
-    </div>
+const EntryRow: React.FC<{ entry: Entry }> = ({ entry }) => {
+  const { Icon } = entry;
+  const body = (
+    <>
+      <Icon className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-baseline gap-x-xs">
+          <span className={titleClass}>{entry.title}</span>
+          {entry.kind === 'download' && (
+            <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+              <Download className="size-3" aria-hidden /> downloads {entry.label}
+            </span>
+          )}
+          {entry.kind === 'external' && (
+            <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+              <ExternalLink className="size-3" aria-hidden /> opens in a new tab
+            </span>
+          )}
+        </span>
+        <span className="block text-caption text-muted-foreground">{entry.description}</span>
+      </span>
+    </>
   );
+  const cls = 'group flex min-w-0 items-start gap-sm rounded-control py-xs pr-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  if (entry.kind === 'page') return <Link to={entry.path} className={cls}>{body}</Link>;
+  if (entry.kind === 'download') return <a href={entry.href} download={entry.filename} className={cls}>{body}</a>;
+  return <a href={entry.href} target="_blank" rel="noreferrer" className={cls}>{body}</a>;
 };
+
+const Reference: React.FC = () => (
+  <div className="mx-auto max-w-5xl space-y-lg p-md md:p-lg">
+    <header>
+      <h1 className="text-page-title">Reference</h1>
+      <p className="mt-xxs max-w-3xl text-metadata text-muted-foreground">
+        Guides and reference material, available from every page.
+      </p>
+    </header>
+    {GROUPS.map((group) => (
+      <PostureSection key={group.title} title={group.title} description={group.description}>
+        <ul className="grid gap-x-lg gap-y-xxs md:grid-cols-2">
+          {group.entries.map((entry) => (
+            <li key={entry.title} className="min-w-0"><EntryRow entry={entry} /></li>
+          ))}
+        </ul>
+      </PostureSection>
+    ))}
+  </div>
+);
 
 export default Reference;
