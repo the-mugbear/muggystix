@@ -1,3 +1,26 @@
+# Quarto (v2.381.0) — the client-report renderer, used ONLY by the
+# report-worker target below.  Pinned version, checksum-verified tarball; it
+# bundles Pandoc and Typst (PDF), so no TeX is installed.  Its own stage so the
+# download is cached apart from the application code.
+FROM debian:bookworm-slim AS quarto
+ARG QUARTO_VERSION=1.10.18
+ARG QUARTO_SHA256_AMD64=afad071b5bd22c02f2d300695743189d3650e0537a53073e654b630cff2b0c73
+ARG QUARTO_SHA256_ARM64=f6a07df68e25330b5df34f65d3df66bca605acce3b830c593a58e91884d4cf6c
+ARG TARGETARCH
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "${TARGETARCH:-amd64}" in \
+         amd64) arch=amd64; sha="${QUARTO_SHA256_AMD64}" ;; \
+         arm64) arch=arm64; sha="${QUARTO_SHA256_ARM64}" ;; \
+         *) echo "Quarto: unsupported architecture ${TARGETARCH}" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/quarto.tar.gz \
+       "https://github.com/quarto-dev/quarto-cli/releases/download/v${QUARTO_VERSION}/quarto-${QUARTO_VERSION}-linux-${arch}.tar.gz" \
+    && echo "${sha}  /tmp/quarto.tar.gz" | sha256sum -c - \
+    && mkdir -p /opt/quarto \
+    && tar -xzf /tmp/quarto.tar.gz -C /opt/quarto --strip-components=1 \
+    && rm /tmp/quarto.tar.gz
+
 # Build stage
 FROM python:3.11-slim as builder
 
@@ -87,3 +110,10 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=60s --retries=3 \
 # wrong audit attribution (code-review C2).  '*' is safe only while the
 # backend is unexposed (reachable solely via the nginx proxy).
 CMD ["sh", "-c", "mkdir -p /app/uploads/ingestion_queue /app/uploads/note_attachments /app/uploads/report_artifacts 2>/dev/null; uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${UVICORN_WORKERS:-4} --proxy-headers --forwarded-allow-ips=${FORWARDED_ALLOW_IPS:-*}"]
+
+# Report worker (v2.381.0) — the production image plus Quarto.  The backend
+# and ingestion worker build `target: production` and carry no Quarto; only
+# this image renders client reports.
+FROM production AS report-worker
+COPY --from=quarto /opt/quarto /opt/quarto
+RUN ln -s /opt/quarto/bin/quarto /usr/local/bin/quarto && quarto --version

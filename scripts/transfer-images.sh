@@ -105,7 +105,19 @@ export_app() {
 
   # Build images if needed
   log "Building application images..."
-  $COMPOSE_CMD build backend frontend
+  $COMPOSE_CMD build backend frontend report-worker
+
+  # v2.381.0 — the report worker's image carries Quarto (downloaded at build
+  # time), so an offline host needs the built image, not the Dockerfile.
+  local report_worker_image
+  report_worker_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep report-worker | grep -v '<none>' | head -1)
+  if [[ -n "$report_worker_image" ]]; then
+    log "Exporting report-worker image: $report_worker_image"
+    docker save "$report_worker_image" -o "$output_dir/report-worker.tar"
+    echo "$report_worker_image" > "$output_dir/report-worker-tag.txt"
+  else
+    log "WARNING: report-worker image not found — client reports will need a build on the target host"
+  fi
 
   # Get image names - use the images that were just built
   local backend_image frontend_image
@@ -300,6 +312,7 @@ TROUBLE
   log "Exported files:"
   log "  - backend.tar ($(du -h "$output_dir/backend.tar" | cut -f1))"
   log "  - frontend.tar ($(du -h "$output_dir/frontend.tar" | cut -f1))"
+  [[ -f "$output_dir/report-worker.tar" ]] && log "  - report-worker.tar ($(du -h "$output_dir/report-worker.tar" | cut -f1))"
   log "  - database.sql ($(du -h "$output_dir/database.sql" | cut -f1))"
   log "  - db-config.env"
   log "  - docker-compose.yml"
@@ -342,6 +355,16 @@ import_app() {
 
   log "Loading frontend image..."
   docker load -i "$input_dir/frontend.tar"
+
+  if [[ -f "$input_dir/report-worker.tar" ]]; then
+    log "Loading report-worker image (Quarto)..."
+    docker load -i "$input_dir/report-worker.tar"
+    local rw_tag
+    rw_tag=$(cat "$input_dir/report-worker-tag.txt" 2>/dev/null || echo "")
+    if [[ -n "$rw_tag" && "$rw_tag" != "networkmapper-report-worker:latest" ]]; then
+      docker tag "$rw_tag" networkmapper-report-worker:latest 2>/dev/null || true
+    fi
+  fi
 
   # Re-tag images if tag metadata exists
   if [[ -f "$input_dir/backend-tag.txt" && -f "$input_dir/frontend-tag.txt" ]]; then

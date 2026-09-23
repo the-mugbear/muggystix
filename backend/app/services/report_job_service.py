@@ -43,6 +43,10 @@ logger = logging.getLogger(__name__)
 # degraded; the interactive HTML report is the functional handover. Re-adding PDF
 # means restoring the "pdf" branch in _render + this tuple + the endpoint pattern.
 ASYNC_REPORT_FORMATS = ("json", "agent-package", "markdown-bundle")
+# v2.381.0 — client reports (Quarto): draft previews and issued renders.
+# Mirrors client_report_render.CLIENT_JOB_FORMATS (kept literal so this module
+# does not import the renderer on the API side).
+CLIENT_JOB_FORMATS = ("report-html", "report-docx", "report-pdf", "report-issue")
 
 _REAP_MAX_RETRIES = 2
 
@@ -239,27 +243,47 @@ class ReportJobService:
                 logger.error("Report job %s not found", job_id)
                 return
             try:
-                # Run as the requesting user so "assigned to me" / follow filters
-                # resolve the same way they did in the dialog (None if the user
-                # was deleted between enqueue and run — degraded, rare).
-                user = db.get(User, job.requested_by_id) if job.requested_by_id else None
-                gen = ReportGenerator(db, user, project_id=job.project_id)
-                filters = job.filters or {}
-                report_type = job.report_type or "comprehensive"
-                # These formats build the whole document in memory, so they are
-                # bounded by the in-memory cap rather than the streaming one.
-                # It defaults to REPORT_MAX_HOSTS (the worker isn't memory-
-                # constrained the way the API thread was), but is a real lever
-                # again: lower REPORT_MAX_INMEMORY_HOSTS if this worker OOMs
-                # against REPORT_WORKER_MEM_LIMIT.  The lease-renewal thread keeps
-                # the reaper off this row for the duration.
-                hosts = gen.get_hosts_for_report(
-                    filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
-                )
-                data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
+                truncated = False
+                if job.format in CLIENT_JOB_FORMATS:
+                    # v2.381.0 — a client report (Quarto): a draft preview
+                    # returns its file; an issued report's render stores its
+                    # files with the report and returns None.
+                    from app.services.client_report_render import run_client_job
+                    rendered = run_client_job(db, job)
+                    if rendered is None:
+                        now = datetime.now(timezone.utc)
+                        written = _transitions.complete(
+                            db, job_id, claimed_at,
+                            completed_at=now, message="Rendered the report's files",
+                            expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
+                            last_error=None,
+                        )
+                        db.commit()
+                        return
+                    data, media_type, filename = rendered
+                else:
+                    # Run as the requesting user so "assigned to me" / follow filters
+                    # resolve the same way they did in the dialog (None if the user
+                    # was deleted between enqueue and run — degraded, rare).
+                    user = db.get(User, job.requested_by_id) if job.requested_by_id else None
+                    gen = ReportGenerator(db, user, project_id=job.project_id)
+                    filters = job.filters or {}
+                    report_type = job.report_type or "comprehensive"
+                    # These formats build the whole document in memory, so they are
+                    # bounded by the in-memory cap rather than the streaming one.
+                    # It defaults to REPORT_MAX_HOSTS (the worker isn't memory-
+                    # constrained the way the API thread was), but is a real lever
+                    # again: lower REPORT_MAX_INMEMORY_HOSTS if this worker OOMs
+                    # against REPORT_WORKER_MEM_LIMIT.  The lease-renewal thread keeps
+                    # the reaper off this row for the duration.
+                    hosts = gen.get_hosts_for_report(
+                        filters, cap=gen.MAX_INMEMORY_REPORT_HOSTS
+                    )
+                    data, media_type, ext = self._render(gen, job.format, hosts, filters, report_type)
+                    truncated = bool(gen.report_truncated)
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+                    filename = f"hosts_{report_type}_{ts}.{ext}"
 
-                ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-                filename = f"hosts_{report_type}_{ts}.{ext}"
                 job_dir = self._storage_root / uuid.uuid4().hex
                 job_dir.mkdir(parents=True, exist_ok=True)
                 os.chmod(job_dir, 0o700)
@@ -279,8 +303,8 @@ class ReportJobService:
                     result_filename=filename,
                     media_type=media_type,
                     file_size=len(data),
-                    truncated=bool(gen.report_truncated),
-                    message=f"Generated {filename}" + (" (truncated)" if gen.report_truncated else ""),
+                    truncated=truncated,
+                    message=f"Generated {filename}" + (" (truncated)" if truncated else ""),
                     expires_at=now + timedelta(hours=settings.REPORT_ARTIFACT_TTL_HOURS),
                     last_error=None,
                 )
@@ -294,7 +318,7 @@ class ReportJobService:
                     return
                 logger.info(
                     "Report job %s completed: %s (%d bytes, truncated=%s)",
-                    job_id, filename, len(data), bool(gen.report_truncated),
+                    job_id, filename, len(data), truncated,
                 )
                 self._notify_finished(db, job_id)
             except Exception as exc:
@@ -327,7 +351,9 @@ class ReportJobService:
             from app.services.notification_service import NotificationService
 
             job = db.get(ReportJob, job_id)
-            if job is None:
+            # Client-report renders are followed on the Reports page, which
+            # shows their state; a notification per preview would be noise.
+            if job is None or job.report_type == "client":
                 return
             if NotificationService(db).notify_report_job_finished(job) is not None:
                 db.commit()

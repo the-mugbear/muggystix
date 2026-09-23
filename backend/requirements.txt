@@ -21,6 +21,9 @@ bcrypt==3.2.2
 PyJWT==2.8.0
 cryptography>=41.0.0
 defusedxml==0.7.1
+# v2.381.0 — client-report templates: the .qmd is a Jinja template (sandboxed
+# environment, every value escaped for Markdown) rendered before Quarto runs.
+jinja2==3.1.6
 ijson==3.3.0
 # TOTP 2FA: pyotp (RFC 6238) + qrcode for the enrollment QR.  qrcode's SVG
 # image factory renders via lxml (already a dependency), so no Pillow needed.

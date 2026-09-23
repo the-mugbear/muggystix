@@ -56,6 +56,9 @@ services:
   backend:
     build:
       context: ./backend
+      # v2.381.0 — the Dockerfile's LAST stage is the report worker (with
+      # Quarto); the API and ingestion worker name the plain image.
+      target: production
       args:
         CACHE_BUST: ${CACHE_BUST:-}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
@@ -82,7 +85,7 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.380.0}
+      APP_VERSION: ${APP_VERSION:-2.381.0}
       FRONTEND_VERSION: ${FRONTEND_VERSION:-5.260.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
@@ -103,6 +106,10 @@ services:
       # mount keeps the source of truth in frontend/ — the SBOM endpoint
       # in main.py reflects whatever the deployed build resolved to.
       - ./frontend/package-lock.json:/app/frontend-package-lock.json:ro
+      # v2.381.0 — the client-report templates (listed and fingerprinted by
+      # the API; rendered by the report worker).  Read-only: templates come
+      # from the repository, edited there, picked up without a rebuild.
+      - ./report-templates:/app/report-templates:ro
       # Manual test fixtures (v2.45.1) — read-only.  Used by the
       # parametrized dispatcher test in test_artifacts_manual_dispatcher.py
       # to verify the correct parser engages for every supported
@@ -116,6 +123,7 @@ services:
   worker:
     build:
       context: ./backend
+      target: production
       args:
         CACHE_BUST: ${CACHE_BUST:-}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
@@ -153,7 +161,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.380.0}
+      APP_VERSION: ${APP_VERSION:-2.381.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -172,13 +180,15 @@ services:
   report-worker:
     build:
       context: ./backend
+      # v2.381.0 — the production image plus a pinned Quarto (client reports).
+      target: report-worker
       args:
         CACHE_BUST: ${CACHE_BUST:-}
     restart: unless-stopped
     # Sized for an in-memory PDF/zip build of a capped report; bump
     # REPORT_WORKER_MEM_LIMIT in .env if you raise REPORT_MAX_HOSTS.
     mem_limit: ${REPORT_WORKER_MEM_LIMIT:-2g}
-    command: ["sh", "-c", "mkdir -p /app/uploads/report_artifacts 2>/dev/null; python -m app.report_worker"]
+    command: ["sh", "-c", "mkdir -p /app/uploads/report_artifacts /app/uploads/client_reports 2>/dev/null; python -m app.report_worker"]
     # Same heartbeat-freshness healthcheck as the ingestion worker (v2.194.0):
     # the loop rewrites the file each cycle, so a wedged render goes stale ->
     # unhealthy.  Reuses WORKER_HEARTBEAT_TIMEOUT; own heartbeat path.
@@ -193,7 +203,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.380.0}
+      APP_VERSION: ${APP_VERSION:-2.381.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -204,6 +214,7 @@ services:
     volumes:
       - ./uploads:/app/uploads
       - ./platform_version.json:/app/platform_version.json:ro
+      - ./report-templates:/app/report-templates:ro
     networks:
       - app-network
 
@@ -215,7 +226,7 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.380.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.381.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in

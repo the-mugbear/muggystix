@@ -29,7 +29,8 @@ if [ "$(id -u)" = "0" ]; then
     mkdir -p \
         "$UPLOADS/ingestion_queue" \
         "$UPLOADS/note_attachments" \
-        "$UPLOADS/report_artifacts"
+        "$UPLOADS/report_artifacts" \
+        "$UPLOADS/client_reports"
 
     # Chown only when something under the mount is not ours, so steady-state
     # restarts do not rewrite ownership over a potentially large volume.

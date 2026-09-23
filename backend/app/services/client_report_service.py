@@ -390,14 +390,19 @@ class ClientReportService:
         settings["distribution"] = list(settings.get("distribution") or [])
 
         revision_of = report.revision_of
+        draft = issued_at is None and report.status == ReportStatus.DRAFT
+        heading = settings.get("client_name") or (project.name if project else None) or ""
         dataset = {
             "schema": SCHEMA_VERSION,
             "report": {
                 "id": report.id,
                 "kind": report.kind,
                 "title": report.title,
+                # The line under the title: the client (else the project),
+                # marked on a draft.
+                "heading": f"{heading} — DRAFT" if draft else heading,
                 "number": number if number is not None else report.number,
-                "draft": issued_at is None and report.status == ReportStatus.DRAFT,
+                "draft": draft,
                 "date": _date(issued_at) if issued_at else datetime.now(timezone.utc).date().isoformat(),
                 "issued_at": _iso(issued_at or report.issued_at),
                 "template": report.template,
@@ -528,7 +533,6 @@ class ClientReportService:
         ) + 1
         now = datetime.now(timezone.utc)
         dataset, reported, summary = self.build(report, number=number, issued_at=now)
-        dataset["report"]["draft"] = False
         report.snapshot = {
             "schema": SCHEMA_VERSION, "dataset": dataset, "reported": reported, "summary": summary,
         }
