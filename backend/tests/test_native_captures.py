@@ -160,6 +160,30 @@ def test_netexec_spider_plus_takes_the_address_from_the_file_name(db_session, te
     assert list(result.shares["public"]) == ["README.txt"]
 
 
+def test_smb_signing_agrees_across_tools_and_counts_as_relayable(db_session, test_project):
+    """The lab's Samba host: NetExec says (signing:False), nmap's
+    smb2-security-mode says "enabled but not required".  NetExec stored
+    "disabled", nmap "enabled" — the last import won, and after nmap the relay
+    condition (``disabled`` only) no longer flagged the host."""
+    from app.parsers.netexec_parser import NetexecParser
+    from app.services.host_condition_sets import smb_unsigned_host_ids
+
+    NetexecParser(db_session).parse_file(
+        str(NATIVE / "netexec-samba.txt"), "netexec-samba.txt", project_id=test_project.id)
+    host = db_session.query(models.Host).filter_by(project_id=test_project.id, ip_address="172.30.77.10").one()
+    assert host.smb_signing == "not_required"
+    assert smb_unsigned_host_ids(db_session, test_project.id) == {host.id}
+
+    from lxml import etree
+    from app.parsers.nmap_parser import NmapXMLParser
+
+    hostscript = etree.fromstring(
+        '<hostscript><script id="smb2-security-mode" output="&#xa;  3:1:1: &#xa;    '
+        'Message signing enabled but not required"/></hostscript>'
+    )
+    assert NmapXMLParser._detect_smb_signing(hostscript) == host.smb_signing
+
+
 # --- RDAP ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ["rdap-native.json", "rdap-compact.json"])

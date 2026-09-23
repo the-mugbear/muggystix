@@ -36,6 +36,7 @@ from sqlalchemy.types import String as SAString
 from app.db import models
 from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
+from app.services import smb_signing as smb_signing_states
 from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
 from app.db.models_vulnerability import Vulnerability
 
@@ -251,15 +252,18 @@ def webtitle_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
 
 
 def smb_unsigned_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host whose recorded SMB-signing posture is ``disabled`` (project-scoped).
+    """Host whose recorded SMB-signing posture does not REQUIRE signing —
+    ``not_required`` or ``disabled``, i.e. open to NTLM relay (v2.387.0; it
+    matched ``disabled`` only, so every host nmap reported "enabled but not
+    required" was missed).  Project-scoped.
 
-    Expressed as an id-subquery rather than a bare ``Host.smb_signing ==
-    'disabled'`` so ``NOT has:smb_unsigned`` includes hosts whose signing
-    posture is unknown (NULL) instead of silently dropping them via the
-    NOT-IN/NULL footgun."""
+    Expressed as an id-subquery rather than a bare ``Host.smb_signing IN …``
+    so ``NOT has:smb_unsigned`` includes hosts whose signing posture is
+    unknown (NULL) instead of silently dropping them via the NOT-IN/NULL
+    footgun."""
     _H = aliased(models.Host)
     sub = db.query(_H.id).filter(
-        _H.project_id == project_id, _H.smb_signing == "disabled"
+        _H.project_id == project_id, _H.smb_signing.in_(smb_signing_states.RELAYABLE)
     )
     return models.Host.id.in_(sub)
 

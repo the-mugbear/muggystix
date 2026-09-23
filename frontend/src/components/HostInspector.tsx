@@ -1606,8 +1606,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     <span className="inline-flex items-center gap-xxs font-medium text-destructive" title="SMB message signing disabled — NTLM relay-vulnerable">
                       <AlertTriangle className="size-3.5" aria-hidden /> Signing disabled
                     </span>
-                  ) : host.smb_signing === 'enabled' ? (
-                    <span className="text-warning" title="SMB signing enabled but not required">Signing enabled (not required)</span>
+                  ) : host.smb_signing === 'not_required' || host.smb_signing === 'enabled' ? (
+                    // v5.274.0 — 'not_required' is the stored state for "enabled
+                    // but not required" from nmap and (signing:False) from
+                    // NetExec; still relay-exposable.
+                    <span className="inline-flex items-center gap-xxs text-warning" title="SMB signing is not required — NTLM relay is still possible">
+                      <AlertTriangle className="size-3.5" aria-hidden /> Signing not required
+                    </span>
                   ) : host.smb_signing === 'required' ? (
                     <span className="text-foreground">Signing required</span>
                   ) : <span className="text-muted-foreground">—</span>}

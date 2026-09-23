@@ -18,6 +18,7 @@ from app.services.confidence_service import (
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.parsers.parser_utils import correlate_scan
+from app.services import smb_signing as smb_signing_states
 import logging
 
 logger = logging.getLogger(__name__)
@@ -303,12 +304,15 @@ class NetexecParser:
         # netexec reports the SMB signing posture inline, e.g.
         # "(signing:False)" / "(signing:True)".  Extract to the queryable
         # host column rather than leaving it in the raw line.
+        # v2.387.0 — (signing:True) is "required", (signing:False) "not
+        # required" (see app.services.smb_signing); they were written as
+        # "enabled" / "disabled", the opposite of nmap's "enabled".
         smb_signing = None
         low = full_line.lower()
         if "signing:false" in low:
-            smb_signing = "disabled"
+            smb_signing = smb_signing_states.NOT_REQUIRED
         elif "signing:true" in low:
-            smb_signing = "enabled"
+            smb_signing = smb_signing_states.REQUIRED
 
         return {
             'ip_address': ip,

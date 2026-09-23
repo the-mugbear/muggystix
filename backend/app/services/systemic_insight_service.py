@@ -112,7 +112,7 @@ _CONDITIONS = [
     ("weak_auth", "Guest / anonymous authentication succeeds",
      "Unauthenticated access succeeds on these hosts. Confirm whether it is intended before treating it as an access-control gap.",
      7, "Disable guest/null sessions; require authenticated, least-privilege access."),
-    ("smb_signing", "SMB message signing disabled",
+    ("smb_signing", "SMB message signing not required",
      "Exposed to NTLM relay and lateral movement. Recurrence may point to a shared SMB configuration baseline.",
      7, "Enable and require SMB signing across the estate."),
 ]

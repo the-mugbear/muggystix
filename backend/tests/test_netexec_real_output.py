@@ -37,7 +37,7 @@ def test_hyphenated_and_fqdn_hostnames_are_parsed(db_session, test_project, tmp_
     hosts, _ = _parse(db_session, test_project, tmp_path, text)
     assert set(hosts) == {"10.9.1.1", "10.9.1.2", "10.9.1.3"}
     assert hosts["10.9.1.1"].hostname == "WIN-7A8BC9D"
-    assert hosts["10.9.1.1"].smb_signing == "disabled"
+    assert hosts["10.9.1.1"].smb_signing == "not_required"  # (signing:False), v2.387.0
 
 
 def test_ansi_coloured_capture_is_parsed(db_session, test_project, tmp_path):
@@ -49,7 +49,7 @@ def test_ansi_coloured_capture_is_parsed(db_session, test_project, tmp_path):
     assert cd.looks_like_netexec(line.encode(), "capture.txt")
     hosts, _ = _parse(db_session, test_project, tmp_path, line)
     assert hosts["10.9.2.1"].hostname == "DC01"
-    assert hosts["10.9.2.1"].smb_signing == "enabled"
+    assert hosts["10.9.2.1"].smb_signing == "required"  # (signing:True), v2.387.0
 
 
 def test_log_file_prefix_is_parsed(db_session, test_project, tmp_path):
@@ -66,7 +66,7 @@ def test_samba_banner_keeps_name_and_signing(db_session, test_project, tmp_path)
         "(name:NAS) (domain:NAS) (signing:False) (SMBv1:False)"
     )
     hosts, _ = _parse(db_session, test_project, tmp_path, line)
-    assert hosts["10.9.4.1"].smb_signing == "disabled"
+    assert hosts["10.9.4.1"].smb_signing == "not_required"
 
 
 def _results(db, scan):
@@ -91,7 +91,7 @@ def test_later_lines_about_a_host_are_kept(db_session, test_project, tmp_path, b
     host = hosts["10.9.5.1"]
     # The banner describes the host whichever line came first.
     assert host.hostname == "SRV-01"
-    assert host.smb_signing == "disabled"
+    assert host.smb_signing == "not_required"
     ports = {
         (p.port_number, p.protocol, p.service_name)
         for p in db_session.query(models.Port).filter(models.Port.host_id == host.id)

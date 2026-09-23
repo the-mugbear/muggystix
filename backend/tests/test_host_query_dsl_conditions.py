@@ -35,7 +35,7 @@ def _seed(db, project_id):
 
     eol = _host(db, project_id, "10.0.0.1", os_name="Windows XP Professional")
     smb = _host(db, project_id, "10.0.0.2", os_name="Ubuntu", smb_signing="disabled")
-    smb_ok = _host(db, project_id, "10.0.0.3", os_name="Ubuntu", smb_signing="enabled")
+    smb_ok = _host(db, project_id, "10.0.0.3", os_name="Ubuntu", smb_signing="required")
     smb_null = _host(db, project_id, "10.0.0.4", os_name="Ubuntu")  # smb_signing NULL
     clear = _host(db, project_id, "10.0.0.5", os_name="Ubuntu")
     cert = _host(db, project_id, "10.0.0.6", os_name="Ubuntu")

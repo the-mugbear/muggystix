@@ -137,9 +137,10 @@ export interface Host {
   os_vendor?: string | null;
   os_accuracy?: number | string | null;
   // SMB message-signing posture (typed column parsed from nmap
-  // smb-security-mode / netexec): 'disabled' is relay-vulnerable, 'enabled'
-  // is on-but-not-required, 'required' is enforced. Null when not observed.
-  smb_signing?: 'disabled' | 'enabled' | 'required' | string | null;
+  // smb-security-mode / netexec; backend app/services/smb_signing.py):
+  // 'required' is enforced; 'not_required' (on but not required) and
+  // 'disabled' are relay-exposable. Null when not observed.
+  smb_signing?: 'disabled' | 'not_required' | 'required' | string | null;
   ports: Port[];
   vulnerability_summary?: HostVulnerabilitySummary;
   vulnerabilities?: HostVulnerability[];

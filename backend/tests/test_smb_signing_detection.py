@@ -22,9 +22,10 @@ def _hostscript(script_id: str, output: str) -> etree._Element:
     # smb-security-mode classic output
     ("smb-security-mode", "\n  message_signing: disabled (dangerous, but default)", "disabled"),
     ("smb-security-mode", "\n  message_signing: required", "required"),
-    ("smb-security-mode", "\n  message_signing: supported", "enabled"),
+    # v2.387.0 — "supported" / "enabled but not required" is not_required.
+    ("smb-security-mode", "\n  message_signing: supported", "not_required"),
     # smb2-security-mode phrasing
-    ("smb2-security-mode", "Message signing enabled but not required", "enabled"),
+    ("smb2-security-mode", "Message signing enabled but not required", "not_required"),
     ("smb2-security-mode", "Message signing enabled and required", "required"),
     # unrelated script → no signal
     ("smb-os-discovery", "OS: Windows 10", None),

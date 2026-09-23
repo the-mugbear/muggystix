@@ -78,13 +78,16 @@ def eol_os_host_ids(db: Session, project_id: int) -> Set[int]:
 
 
 def smb_unsigned_host_ids(db: Session, project_id: int) -> Set[int]:
-    """Hosts whose recorded SMB-signing posture is ``disabled``."""
+    """Hosts that do not require SMB signing (``not_required`` or
+    ``disabled`` — relayable; v2.387.0, was ``disabled`` only)."""
+    from app.services import smb_signing as smb_signing_states
+
     return {
         hid
         for (hid,) in db.query(models.Host.id)
         .filter(
             models.Host.project_id == project_id,
-            models.Host.smb_signing == "disabled",
+            models.Host.smb_signing.in_(smb_signing_states.RELAYABLE),
         )
         .all()
     }

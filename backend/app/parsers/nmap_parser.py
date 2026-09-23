@@ -13,6 +13,7 @@ from app.db import models
 from app.parsers.parser_utils import epoch_to_utc
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
+from app.services import smb_signing as smb_signing_states
 from app.services.subnet_correlation import SubnetCorrelationService
 import logging
 import time
@@ -456,12 +457,14 @@ class NmapXMLParser:
         # smb2-security-mode: "Message signing enabled but not required" / "... and required"
         if "signing" not in text and "message_signing" not in text:
             return None
+        # v2.387.0 — "enabled but not required" / "supported" is not_required
+        # (it was "enabled", which NetExec used for the opposite).
         if "disabled" in text:
-            return "disabled"
+            return smb_signing_states.DISABLED
         if "required" in text and "not required" not in text:
-            return "required"
+            return smb_signing_states.REQUIRED
         if "enabled" in text or "supported" in text:
-            return "enabled"
+            return smb_signing_states.NOT_REQUIRED
         return None
 
     def _process_host_scripts(self, hostscript_elem: Optional[etree.Element], host_id: int, scan_id: int):

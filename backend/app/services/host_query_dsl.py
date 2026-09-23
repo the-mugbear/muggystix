@@ -380,7 +380,8 @@ _HAS_KEYWORDS = {
     "eol": (lambda ctx: P.eol_os_predicate(ctx.db, ctx.project_id),
             "Runs an end-of-life operating system."),
     "smb_unsigned": (lambda ctx: P.smb_unsigned_predicate(ctx.db, ctx.project_id),
-                     "SMB message signing disabled (NTLM-relay / lateral-movement exposure)."),
+                     "SMB message signing not required — disabled, or on but not required "
+                     "(NTLM-relay / lateral-movement exposure)."),
     "weak_auth": (lambda ctx: P.weak_auth_predicate(ctx.db, ctx.project_id),
                   "A guest / anonymous / null-session login succeeded (NetExec)."),
     "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id),
@@ -806,6 +807,6 @@ EXAMPLES: List[dict] = [
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
     {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},
-    {"label": "SMB signing disabled", "q": "has:smb_unsigned"},
+    {"label": "SMB signing not required", "q": "has:smb_unsigned"},
     {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
 ]
