@@ -131,9 +131,10 @@ def test_streamed_exports_cover_every_host_across_chunks(db_session, test_projec
     assert payload["summary"]["total_open_ports"] == 5
     assert payload["summary"]["truncated"] is False
     assert {"findings", "hotspots", "systemic"} <= set(payload)
-    # Same records and findings the in-memory path builds for these hosts.
+    # Same records and findings the in-memory path (the markdown bundle's)
+    # builds for these hosts.
     gen = ReportGenerator(db_session, test_user, project_id=test_project.id)
-    old = gen.generate_json_report(gen.get_hosts_for_report({}, cap=10))
+    old, _artifacts = gen._build_export_dataset(gen.get_hosts_for_report({}, cap=10), {})
     roundtrip = lambda v: json.loads(json.dumps(v, default=str))  # noqa: E731
     assert payload["hosts"] == roundtrip(sorted(old["hosts"], key=lambda h: h["identity"]["ip_address"]))
     assert payload["findings"] == roundtrip(old["findings"])

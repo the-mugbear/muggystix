@@ -561,9 +561,11 @@ class ReportGenerator:
 
     def write_json_report(self, filters: Dict[str, Any], report_type: str, out) -> int:
         """Write the JSON report for every matching host to the binary file
-        ``out``; returns the host count.  Same content as
-        ``generate_json_report`` — records one per line inside ``hosts``, and
-        ``summary`` after them because it is counted while they stream."""
+        ``out``; returns the host count.  Each host record is the shared
+        export record (the same object the bundles emit), one per line inside
+        ``hosts``; ``summary`` follows them because it is counted while they
+        stream.  ``report_type='inventory'`` omits the project-wide findings,
+        hotspots and systemic roll-ups."""
         is_comprehensive = report_type != "inventory"
         host_ids = self._matching_host_ids(filters)
         write = lambda text: out.write(text.encode("utf-8"))  # noqa: E731
@@ -1118,40 +1120,6 @@ class ReportGenerator:
             f'<section class="host-dossier" id="host-{host_id}" data-search="{search_blob}">'
             f'{head}{"".join(blocks)}</section>'
         )
-
-    def generate_json_report(
-        self, hosts: List[models.Host], report_type: str = "comprehensive",
-    ) -> Dict[str, Any]:
-        """Generate JSON host report.  ``report_type='inventory'`` omits the
-        project-wide findings + hotspots roll-ups (host records are unchanged)."""
-        is_comprehensive = report_type != "inventory"
-        # Host-centric schema: each host record carries its correlated dossier
-        # (canonical findings + resolved source, untriaged scanner observations,
-        # execution findings, tester summaries, notes, ports) via the shared
-        # export record — the same object the bundle/agent-package emit.
-        context = self._build_export_context(hosts)
-        records = [self._build_host_export_record(host, context, {}) for host in hosts]
-        report_data = {
-            "generated_at": datetime.now().isoformat(),
-            "report_type": "comprehensive" if is_comprehensive else "inventory",
-            "summary": {
-                "total_hosts": len(hosts),
-                "hosts_up": len([h for h in hosts if h.state == 'up']),
-                "hosts_down": len([h for h in hosts if h.state == 'down']),
-                "total_open_ports": sum(len([p for p in (h.ports or []) if p.state == 'open']) for h in hosts),
-                # True when the filter matched more than the in-memory cap and
-                # this payload was truncated (use the CSV inventory for the
-                # complete set).
-                "truncated": self.report_truncated,
-                "host_cap": self.applied_host_cap or self.MAX_REPORT_HOSTS,
-            },
-            "hosts": records,
-        }
-        if is_comprehensive:
-            report_data["findings"] = self._findings_for_report(hosts)
-            report_data["hotspots"] = self._build_hotspots()
-            report_data["systemic"] = self._build_systemic()
-        return report_data
 
     def _findings_for_report(self, hosts: List[models.Host]) -> List[Dict[str, Any]]:
         """Findings affecting the report's hosts (thin wrapper over the
@@ -2079,28 +2047,6 @@ class ReportGenerator:
     </div>
 </body>
 </html>"""
-
-    def generate_agent_package(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
-        """Generate a ZIP package optimized for agentic workflows."""
-        dataset, artifacts = self._build_export_dataset(hosts, filters)
-
-        archive = io.BytesIO()
-        with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as bundle:
-            bundle.writestr("manifest.json", json.dumps(dataset["manifest"], indent=2))
-            bundle.writestr("schema.json", json.dumps(self._build_schema_reference(), indent=2))
-            bundle.writestr("scans.json", json.dumps(dataset["scans"], indent=2))
-            bundle.writestr("hotspots.json", json.dumps(self._build_hotspots(), indent=2, default=str))
-            bundle.writestr("systemic.json", json.dumps(self._build_systemic(), indent=2, default=str))
-            ndjson_lines = "\n".join(json.dumps(host, separators=(",", ":")) for host in dataset["hosts"])
-            bundle.writestr("hosts.ndjson", f"{ndjson_lines}\n" if ndjson_lines else "")
-            # The canonical findings collection — counted in the manifest but
-            # previously never written.  Each host record carries its
-            # ``canonical_findings`` with finding ids that cross-reference here.
-            bundle.writestr("findings.json", json.dumps(dataset["findings"], indent=2, default=str))
-            for artifact_path, content in artifacts.items():
-                bundle.writestr(artifact_path, content)
-
-        return archive.getvalue()
 
     def generate_markdown_bundle(self, hosts: List[models.Host], filters: Dict[str, Any]) -> bytes:
         """Generate a ZIP bundle for human-readable sharing across applications."""

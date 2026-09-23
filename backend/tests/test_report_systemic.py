@@ -5,6 +5,8 @@ is reachable two ways through the export layer: as a section of the
 comprehensive report (JSON / HTML / markdown) and as the standalone executive
 HTML export (``GET /reports/systemic.html``).  These pin both.
 """
+import io
+import json
 from unittest.mock import MagicMock
 
 from app.db import models
@@ -55,15 +57,17 @@ def test_executive_html_contains_blind_spot(db_session, test_project, test_user)
 
 def test_comprehensive_json_includes_systemic(db_session, test_project, test_user):
     _estate_with_eol_blind_spot(db_session, test_project.id)
-    gen = _gen(db_session, test_project.id, test_user.id)
-    hosts = db_session.query(models.Host).filter_by(project_id=test_project.id).all()
-    data = gen.generate_json_report(hosts, report_type="comprehensive")
+    def json_report(report_type):
+        out = io.BytesIO()
+        _gen(db_session, test_project.id, test_user.id).write_json_report({}, report_type, out)
+        return json.loads(out.getvalue())
+
+    data = json_report("comprehensive")
     assert "systemic" in data
     assert data["systemic"]["adopted"] is True
     assert any(b["key"] == "eol_os" for b in data["systemic"]["blind_spots"])
     # Inventory reports omit the project-wide roll-ups.
-    inv = _gen(db_session, test_project.id, test_user.id).generate_json_report(hosts, report_type="inventory")
-    assert "systemic" not in inv
+    assert "systemic" not in json_report("inventory")
 
 
 def test_systemic_markdown_lines(db_session, test_project, test_user):
