@@ -2366,6 +2366,10 @@ class NetexecResultResponse(BaseModel):
     # frontend renders it defensively.
     shares: Optional[Any] = None
     first_seen: Optional[datetime] = None
+    # v2.390.0 — which tool (netexec | smbmap), "(Pwn3d!)" and SMBv1.
+    tool: str = "netexec"
+    local_admin: Optional[bool] = None
+    smbv1: Optional[bool] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2421,6 +2425,9 @@ def list_host_netexec_results(
             # fix this attribute access raised AttributeError and 500'd
             # the netexec card.
             first_seen=r.discovered_at,
+            tool=r.tool or "netexec",
+            local_admin=r.local_admin,
+            smbv1=r.smbv1,
         )
         for r in rows
     ]

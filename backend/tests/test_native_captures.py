@@ -129,6 +129,45 @@ def test_smbmap_1_10_host_line(db_session, test_project):
     hosts = [db_session.get(models.Host, h.host_id).ip_address for h in history]
     assert hosts == ["172.30.77.10"]
 
+    # v2.390.0 — the share table and the session, which were dropped.
+    from app.db.models_confidence import NetexecResult
+
+    result = db_session.query(NetexecResult).filter_by(scan_id=scan.id).one()
+    assert (result.tool, result.protocol, result.port) == ("smbmap", "smb", 445)
+    assert result.shares == [
+        {"name": "public", "permissions": "READ ONLY", "remark": "Parser lab read-only public share"},
+        {"name": "restricted", "permissions": "NO ACCESS", "remark": "Parser lab authenticated-only share"},
+        {"name": "IPC$", "permissions": "NO ACCESS", "remark": "IPC Service (Parser Lab Samba)"},
+    ]
+    # "Status: NULL Session" — a login with a blank identity, which weak-auth flags.
+    assert (result.auth_success, result.username) == (True, "")
+    from app.services.host_condition_sets import weak_auth_host_ids
+
+    assert result.host_id in weak_auth_host_ids(db_session, test_project.id)
+
+
+def test_netexec_local_admin_and_smbv1(db_session, test_project, tmp_path):
+    """v2.390.0 — "(Pwn3d!)" and "(SMBv1:True)" were in the line and nowhere else."""
+    from app.db.models_confidence import NetexecResult
+    from app.db.models_vulnerability import VulnerabilitySource
+    from app.parsers.netexec_parser import NetexecParser
+
+    f = tmp_path / "nxc.txt"
+    f.write_text(
+        "SMB   10.9.8.7   445   FILE01   [*] Windows Server 2016 Build 14393 x64 (name:FILE01) "
+        "(domain:corp.local) (signing:False) (SMBv1:True)\n"
+        "SMB   10.9.8.7   445   FILE01   [+] corp.local\\admin:Passw0rd! (Pwn3d!)\n"
+    )
+    scan = NetexecParser(db_session).parse_file(str(f), "nxc.txt", project_id=test_project.id)
+    rows = db_session.query(NetexecResult).filter_by(scan_id=scan.id).all()
+    banner = next(r for r in rows if r.auth_success is None)
+    login = next(r for r in rows if r.auth_success)
+    assert (banner.smbv1, banner.local_admin) == (True, None)
+    assert (login.username, login.local_admin) == ("admin", True)
+    [vuln] = _vulns(db_session, scan)
+    assert (vuln.title, vuln.source, vuln.severity.value) == ("SMBv1 enabled", VulnerabilitySource.NETEXEC, "medium")
+    assert vuln.port_id is not None
+
 
 @pytest.mark.parametrize("name", ["netexec-samba.txt", "netexec-samba-log.txt"])
 def test_netexec_share_table_is_kept(name, db_session, test_project):

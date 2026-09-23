@@ -155,9 +155,15 @@ class NetexecResult(Base):
     # Raw output for debugging
     raw_output = Column(Text)
 
-    # Confidence indicators
-    connection_stable = Column(Boolean, default=True)
-    multiple_confirmations = Column(Boolean, default=False)
+    # v2.390.0 (migration a4c6e8f0b2d3) — which tool observed this: SMBMap's
+    # shares land here too, beside NetExec's, rather than in a parallel table.
+    tool = Column(String(20), nullable=False, default="netexec", server_default="netexec")
+    # NetExec's "(Pwn3d!)": the credential is a local administrator.
+    local_admin = Column(Boolean, nullable=True)
+    # NetExec's "(SMBv1:True|False)" from the SMB banner; None when not stated.
+    smbv1 = Column(Boolean, nullable=True)
+    # (connection_stable / multiple_confirmations were constants nothing read;
+    # dropped in the same migration.)
 
     # Timestamps
     discovered_at = Column(DateTime(timezone=True), server_default=func.now())

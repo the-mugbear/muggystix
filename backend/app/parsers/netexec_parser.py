@@ -17,7 +17,8 @@ from app.services.confidence_service import (
     ConfidenceService, ScanType, DataSource, ConfidenceScore
 )
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.parsers.parser_utils import correlate_scan
+from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
+from app.parsers.parser_utils import correlate_scan, upsert_vulnerability
 from app.services import smb_signing as smb_signing_states
 import logging
 
@@ -321,6 +322,8 @@ class NetexecParser:
             'domain': domain.strip(),
             'os_name': os_info.strip(),
             'smb_signing': smb_signing,
+            # v2.390.0 — "(SMBv1:True|False)"; "(SMBv1:None)" says nothing.
+            'smbv1': True if 'smbv1:true' in low else False if 'smbv1:false' in low else None,
             'protocol': 'smb',
             'confidence_factors': {
                 'enumeration_success': True,
@@ -363,6 +366,8 @@ class NetexecParser:
             'username': username,
             'domain': domain,
             'details': details.strip(),
+            # v2.390.0 — "(Pwn3d!)": the credential is a local administrator.
+            'local_admin': True if '(pwn3d!)' in details.lower() else None,
             'confidence_factors': {
                 'authentication_verified': True,
                 'connection_confirmed': True
@@ -456,6 +461,26 @@ class NetexecParser:
         if 'port' in host_data:
             self._process_port_with_confidence(
                 host.id, scan_id, host_data, confidence
+            )
+
+        # v2.390.0 — "(SMBv1:True)" is a weakness in its own right (the
+        # EternalBlue family needs it): a scanner observation on the SMB port,
+        # not just a word in the stored banner line.
+        if host_data.get('smbv1') is True:
+            port_row = (
+                self.db.query(models.Port)
+                .filter(models.Port.host_id == host.id, models.Port.port_number == host_data.get('port'))
+                .first()
+            )
+            upsert_vulnerability(
+                db=self.db, host_id=host.id, scan_id=scan_id,
+                source=VulnerabilitySource.NETEXEC,
+                title="SMBv1 enabled",
+                severity=VulnerabilitySeverity.MEDIUM,
+                plugin_id="smbv1_enabled",
+                port_id=port_row.id if port_row else None,
+                description="NetExec reported the SMB service accepts SMBv1 (SMBv1:True), the protocol "
+                            "the EternalBlue family of exploits targets.",
             )
 
         return host
@@ -640,8 +665,9 @@ class NetexecParser:
             username=host_data.get('username'),
             shares=host_data.get('shares'),
             raw_output=raw_output[:10000],  # Limit size
-            connection_stable=True,
-            multiple_confirmations=len(host_data.get('confidence_factors', {})) > 2
+            tool=host_data.get('tool', 'netexec'),
+            local_admin=host_data.get('local_admin'),
+            smbv1=host_data.get('smbv1'),
         )
 
         self.db.add(result)

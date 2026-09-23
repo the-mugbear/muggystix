@@ -107,10 +107,24 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
             port {result.port}
           </span>
         )}
+        {/* v5.276.0 — which tool said so (SMBMap rows sit beside NetExec's). */}
+        {result.tool && result.tool !== 'netexec' && (
+          <span className="text-caption text-muted-foreground">{result.tool === 'smbmap' ? 'SMBMap' : result.tool}</span>
+        )}
         {result.auth_success != null && (
           <Badge variant={result.auth_success ? 'success' : 'outline'}>
-            {result.auth_success ? 'Authenticated' : 'Auth failed'}
+            {result.auth_success
+              ? (result.username === '' ? 'Null session' : result.username?.toLowerCase() === 'guest' ? 'Guest session' : 'Authenticated')
+              : 'Auth failed'}
           </Badge>
+        )}
+        {result.local_admin && (
+          <Badge variant="destructive" title="NetExec reported (Pwn3d!): this credential is a local administrator">
+            Local admin
+          </Badge>
+        )}
+        {result.smbv1 && (
+          <Badge variant="warning" title="The SMB service accepts SMBv1">SMBv1</Badge>
         )}
         {host && (
           <span className="min-w-0 truncate text-caption text-muted-foreground">
@@ -192,8 +206,8 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
   return (
     <InspectorSection
       id="host-detail-netexec"
-      title="NetExec enumeration"
-      titleHint="Credentialed protocol probes (SMB / LDAP / WinRM / RDP) — authentication outcome and enumerated shares."
+      title="SMB / AD enumeration"
+      titleHint="NetExec and SMBMap: protocol probes (SMB / LDAP / WinRM / RDP) — the session or login outcome, local-admin access, SMBv1, and the shares with their permissions."
       icon={<KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       count={rows ? observed.length : null}
     >

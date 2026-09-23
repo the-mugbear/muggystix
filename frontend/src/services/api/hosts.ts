@@ -1008,6 +1008,10 @@ export interface NetexecResult {
   domain_name?: string | null;
   shares?: unknown;
   first_seen?: string | null;
+  /** v5.276.0 — 'netexec' | 'smbmap'; "(Pwn3d!)"; SMBv1 accepted. */
+  tool?: string;
+  local_admin?: boolean | null;
+  smbv1?: boolean | null;
 }
 
 export const getHostNetexecResults = async (hostId: number): Promise<NetexecResult[]> => {

@@ -32,4 +32,18 @@ describe('NetExecCard shares', () => {
     expect(screen.getByText('2 files listed')).toBeInTheDocument();
     expect(screen.queryByText(/"permissions"/)).not.toBeInTheDocument();
   });
+
+  it('names the tool, the session, local-admin access and SMBv1', async () => {
+    getHostNetexecResults.mockResolvedValue([
+      { ...row(1, [{ name: 'public', permissions: 'READ ONLY', remark: null }]), tool: 'smbmap', username: '', auth_success: true },
+      { ...row(2, null), local_admin: true, username: 'admin' },
+      { ...row(3, null), auth_success: null, smbv1: true },
+    ]);
+    render(<NetExecCard hostId={6} count={3} />);
+    expect(await screen.findByText('SMBMap')).toBeInTheDocument();
+    expect(screen.getByText('Null session')).toBeInTheDocument();
+    expect(screen.getByText('Local admin')).toBeInTheDocument();
+    expect(screen.getByText('SMBv1')).toBeInTheDocument();
+    expect(screen.queryByText('Auth failed')).not.toBeInTheDocument();
+  });
 });
