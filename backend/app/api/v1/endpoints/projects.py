@@ -30,7 +30,7 @@ _STATUS_HELP = (
 
 
 def _normalise_status(value: Optional[str]) -> Optional[str]:
-    # v2.398.x — 'in_progress' was a second name for 'active' (every reader
+    # v2.399.0 — 'in_progress' was a second name for 'active' (every reader
     # treated the two alike); an older client may still send it.
     return "active" if value == "in_progress" else value
 

@@ -499,7 +499,7 @@ def test_a_new_draft_lists_the_projects_analysts_and_admins_as_the_team(client, 
 
 
 def test_the_report_names_people_by_full_name_not_username(client, db_session, test_project, people):
-    """v2.398.x — a team entry keeps the name written when it was added, so
+    """v2.399.0 — a team entry keeps the name written when it was added, so
     one added while the account had no full name printed the username for
     good.  The report now uses the account's current full name for an entry
     whose name is empty or its username; a name someone typed stays."""

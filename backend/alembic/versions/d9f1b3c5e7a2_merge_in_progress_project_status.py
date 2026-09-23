@@ -1,4 +1,4 @@
-"""Project status: 'in_progress' merged into 'active' (v2.398.0)
+"""Project status: 'in_progress' merged into 'active' (v2.399.0)
 
 A project had two statuses for "under way" — active and in_progress — and
 every reader (Portfolio, Oversight, the attention signals, the activity

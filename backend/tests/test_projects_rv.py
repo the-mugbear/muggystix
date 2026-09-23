@@ -63,7 +63,7 @@ def test_create_archived_project_sets_is_archived(client, db_session):
 
 
 def test_in_progress_is_the_old_name_for_active(client, db_session):
-    """v2.398.0 — 'in_progress' duplicated 'active' (every reader treated them
+    """v2.399.0 — 'in_progress' duplicated 'active' (every reader treated them
     alike) and was merged into it; an older client sending it gets 'active'."""
     r = client.post("/api/v1/projects/", json={"name": "status-alias", "status": "in_progress"})
     assert r.status_code == 201, r.text
