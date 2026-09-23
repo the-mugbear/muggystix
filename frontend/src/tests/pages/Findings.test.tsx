@@ -31,6 +31,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 
 import * as api from '../../services/api';
 import Findings from '../../pages/Findings';
+import { TooltipProvider } from '../../components/ui/tooltip';
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
@@ -64,13 +65,16 @@ const setResponse = (items: ReturnType<typeof makeFinding>[], total = items.leng
   currentResponse = { items, total, severity_counts: EMPTY_SEV_COUNTS };
 };
 
-const renderFindings = () =>
+// The page's (i) tips are Radix Tooltips, which need the app-level provider.
+const renderFindings = (url = '/findings') =>
   render(
-    <MemoryRouter initialEntries={['/findings']}>
-      <Routes>
-        <Route path="/findings" element={<Findings />} />
-      </Routes>
-    </MemoryRouter>,
+    <TooltipProvider>
+      <MemoryRouter initialEntries={[url]}>
+        <Routes>
+          <Route path="/findings" element={<Findings />} />
+        </Routes>
+      </MemoryRouter>
+    </TooltipProvider>,
   );
 
 /** Types into the search box — a plain <input>, and a genuine
@@ -271,13 +275,7 @@ describe('Findings — M1: row links carry the queue', () => {
   });
 
   it('the detail href carries filters + page + sort so the detail can return to this exact queue', async () => {
-    render(
-      <MemoryRouter initialEntries={['/findings?status=all&severity=high&page=3&sort=severity&dir=desc']}>
-        <Routes>
-          <Route path="/findings" element={<Findings />} />
-        </Routes>
-      </MemoryRouter>,
-    );
+    renderFindings('/findings?status=all&severity=high&page=3&sort=severity&dir=desc');
     const link = await screen.findByRole('link', { name: /Finding 1/ });
     const href = link.getAttribute('href') ?? '';
     expect(href.startsWith('/findings/1?from=')).toBe(true);
@@ -293,5 +291,77 @@ describe('Findings — M1: row links carry the queue', () => {
     renderFindings();
     const link = await screen.findByRole('link', { name: /Finding 1/ });
     expect(link.getAttribute('href')).toBe('/findings/1');
+  });
+});
+
+// v5.267.0 — the list follows the Posture layout (UI_STYLE_GUIDE §7): no
+// Card, one-line caption with the vocabulary on an (i), the title carrying
+// its first host, quiet status text, compact age, no Source column.
+describe('Findings — presentation', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listProjectMembers.mockResolvedValue([]);
+    mocked.listFindings.mockImplementation(async () => currentResponse);
+  });
+
+  it('puts the vocabulary behind an (i), not in a paragraph under the title', async () => {
+    setResponse([makeFinding(1)]);
+    renderFindings();
+    await screen.findByText('Finding 1');
+    expect(screen.getByRole('button', { name: 'What the statuses mean' })).toBeInTheDocument();
+    expect(screen.queryByText(/stay on each host until promoted/)).toBeNull();
+  });
+
+  it('renders the table on the page without a Card, and without a Source column', async () => {
+    setResponse([makeFinding(1)]);
+    const { container } = renderFindings();
+    await screen.findByText('Finding 1');
+    expect(container.querySelector('.shadow-raised')).toBeNull();
+    const headers = screen.getAllByRole('columnheader').map((h) => h.textContent?.trim());
+    expect(headers).toEqual(expect.arrayContaining(['Severity', 'Title', 'Status', 'Hosts', 'Owner', 'Age']));
+    expect(headers).not.toContain('Source');
+    // Source stays a filter.
+    expect(screen.getByLabelText('Source')).toBeInTheDocument();
+  });
+
+  it('shows the first host, "+N" and the endpoint states under the title', async () => {
+    setResponse([
+      makeFinding(1, {
+        host_count: 3,
+        hosts: [
+          { id: 1, host_id: 42, ip_address: '10.0.0.5', hostname: 'db01' },
+          { id: 2, host_id: 43, ip_address: '10.0.0.6', hostname: null },
+        ],
+        endpoint_status_counts: { open: 2, remediated: 1 },
+      }),
+    ]);
+    renderFindings();
+    const caption = await screen.findByTestId('finding-hosts-1');
+    expect(caption.textContent).toContain('10.0.0.5');
+    expect(caption.textContent).toContain('db01');
+    expect(caption.textContent).toContain('+2');
+    expect(caption.textContent).toContain('open on 2 of 3');
+    expect(screen.getByRole('link', { name: '10.0.0.5' }).getAttribute('href')).toBe('/hosts/42');
+    // The full host list is on hover.
+    expect(caption.getAttribute('title')).toBe('10.0.0.5 (db01), 10.0.0.6');
+  });
+
+  it('shows age as a compact value with the full date on hover', async () => {
+    const created = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000 - 60_000).toISOString();
+    setResponse([makeFinding(1, { created_at: created })]);
+    renderFindings();
+    await screen.findByText('Finding 1');
+    const age = screen.getByText('31d');
+    expect(age.getAttribute('title')).toBe(new Date(created).toLocaleString());
+  });
+
+  it('renders status as a quiet picker with no per-row history button', async () => {
+    setResponse([makeFinding(1, { status: 'confirmed' })]);
+    renderFindings();
+    await screen.findByText('Finding 1');
+    const trigger = screen.getByRole('combobox', { name: 'Status for Finding 1' });
+    expect(trigger.textContent).toContain('Confirmed');
+    expect(trigger.className).toContain('border-0');
+    expect(screen.queryByRole('button', { name: /history/i })).toBeNull();
   });
 });

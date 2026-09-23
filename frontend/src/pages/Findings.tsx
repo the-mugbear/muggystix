@@ -7,7 +7,6 @@
  * up" lands on.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { formatDistanceToNow } from 'date-fns';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
@@ -37,7 +36,6 @@ import { Badge } from '../components/ui/badge';
 import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
 import { DataTablePagination } from '../components/ui/data-table';
 import {
@@ -49,7 +47,7 @@ import {
   DialogTitle,
 } from '../components/ui/dialog';
 import { Textarea } from '../components/ui/textarea';
-import { FindingHistoryButton } from '../components/FindingHistoryButton';
+import { InfoTip } from '../components/ui/info-tip';
 import { Label } from '../components/ui/label';
 import {
   Select,
@@ -71,12 +69,21 @@ import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusF
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
-// Relative age from an ISO timestamp; falls back safely on a missing/invalid
-// value rather than rendering "Invalid Date".
-const formatAge = (iso: string | null | undefined): string => {
+// Compact age ("31d") from an ISO timestamp — the full date goes in the
+// cell's title. Falls back safely on a missing/invalid value rather than
+// rendering "Invalid Date"; a future timestamp (clock skew) reads "now".
+const compactAge =(iso: string | null | undefined, now: number = Date.now()): string => {
   if (!iso) return '—';
-  const d = new Date(iso);
-  return Number.isNaN(d.getTime()) ? '—' : formatDistanceToNow(d, { addSuffix: true });
+  const t = new Date(iso).getTime();
+  if (Number.isNaN(t)) return '—';
+  const mins = Math.floor((now - t) / 60_000);
+  if (mins < 1) return 'now';
+  if (mins < 60) return `${mins}m`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h`;
+  const days = Math.floor(hours / 24);
+  if (days < 365) return `${days}d`;
+  return `${Math.floor(days / 365)}y`;
 };
 
 type SummaryPrompt =
@@ -409,20 +416,25 @@ const Findings: React.FC = () => {
     <div className="p-md md:p-lg">
       <div className="mb-md">
         <h1 className="text-page-title font-semibold">Findings</h1>
-        <p className="text-metadata text-muted-foreground">
-          Promoted notes and triaged results across this project — the record everything rolls up by.
-        </p>
-        {/* v5.225.0 — the three populations, named the same way everywhere
-            (design review item 7). */}
-        <p className="mt-xxs text-caption text-muted-foreground">
-          Not the raw <strong>scanner observations</strong> — those stay on each host until promoted.
-          Open and Retest are <strong>under investigation</strong>; <strong>Confirmed</strong> is validated;
-          False positive, Accepted risk and Remediated are <strong>closed</strong>. A finding&apos;s status is the
-          issue&apos;s; each affected host keeps its own state on the finding page.
+        {/* v5.267.0 — one line; the vocabulary (v5.225.0, the three
+            populations named the same way everywhere) sits on the (i). */}
+        <p className="flex flex-wrap items-center gap-xxs text-metadata text-muted-foreground">
+          The issues triaged in this project — the record reports are built from.
+          <InfoTip
+            label="What the statuses mean"
+            text={
+              <>
+                Not the raw scanner observations — those stay on each host until promoted. Open and Retest are
+                under investigation; Confirmed is validated; False positive, Accepted risk and Remediated are closed.
+                A finding&apos;s status is the issue&apos;s; each affected host keeps its own state on the finding page.
+              </>
+            }
+          />
         </p>
       </div>
 
-      <div className="mb-md flex flex-wrap items-end gap-sm">
+      {/* Filters: one row closed by a rule (UI_STYLE_GUIDE §7). */}
+      <div className="mb-md flex flex-wrap items-end gap-sm border-b border-border pb-sm">
         <div className="min-w-56 flex-1">
           <Label htmlFor="findings-search">Search</Label>
           <div className="relative">
@@ -556,10 +568,10 @@ const Findings: React.FC = () => {
         </div>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          {/* overflow-x-auto per the Table primitive's documented usage —
-              keeps the fixed-width columns from forcing page-level overflow. */}
+      {/* v5.267.0 — the table sits on the page, not in a Card (UI_STYLE_GUIDE
+          §7). overflow-x-auto per the Table primitive's documented usage —
+          keeps the fixed-width columns from forcing page-level overflow. */}
+      <section aria-label="Findings">
           <div className="overflow-x-auto">
           <Table className="table-fixed">
             <TableHeader>
@@ -584,13 +596,15 @@ const Findings: React.FC = () => {
                     />
                   )}
                 </TableHead>
-                <SortHead field="severity" label="Severity" className="w-28" />
+                {/* The title (with its first host beneath) takes the width;
+                    the rest are compact values. Source is a filter, not a
+                    column — it rarely decides what to work on next. */}
+                <SortHead field="severity" label="Severity" className="w-24" />
                 <SortHead field="title" label="Title" />
-                <SortHead field="status" label="Status" className="w-32" />
-                <SortHead field="source" label="Source" className="w-24" />
-                <SortHead field="host_count" label="Hosts" className="w-48" />
-                <TableHead className="w-40">Owner</TableHead>
-                <SortHead field="created_at" label="Age" className="w-28" />
+                <SortHead field="status" label="Status" className="w-36" />
+                <SortHead field="host_count" label="Hosts" className="w-20" />
+                <TableHead className="w-36">Owner</TableHead>
+                <SortHead field="created_at" label="Age" className="w-20" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -598,14 +612,14 @@ const Findings: React.FC = () => {
                   keeps prior rows visible (no full-table flash). */}
               {loading && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     <Loader2 className="mx-auto size-5 animate-spin" aria-hidden />
                   </TableCell>
                 </TableRow>
               )}
               {!loading && error && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-lg text-center text-destructive">
+                  <TableCell colSpan={7} className="py-lg text-center text-destructive">
                     <AlertTriangle className="mx-auto mb-xs size-5" aria-hidden />
                     {error}
                   </TableCell>
@@ -613,7 +627,7 @@ const Findings: React.FC = () => {
               )}
               {!loading && !error && findings.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
+                  <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
                     {hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'
                       : 'No findings yet. Promote a note from a host (Notes → Promote to finding) to record one here.'}
@@ -648,72 +662,73 @@ const Findings: React.FC = () => {
                     >
                       {f.title}
                     </Link>
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex items-center gap-xxs">
-                      {canManage ? (
-                        <Select
-                          value={f.status}
-                          onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
-                        >
-                          <SelectTrigger
-                            className="h-7 text-caption"
-                            aria-label={`Status for ${f.title}`}
-                          >
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                              <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      ) : (
-                        <Badge variant="muted">{STATUS_LABEL[f.status]}</Badge>
-                      )}
-                      <FindingHistoryButton findingId={f.id} />
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-caption text-muted-foreground">{f.source}</TableCell>
-                  <TableCell>
-                    {f.hosts.length === 0 ? (
-                      <span className="text-muted-foreground">—</span>
-                    ) : (
+                    {/* Caption line: where it is — the first host, "+N" more,
+                        and (v5.225.0) the endpoint states when they are not
+                        all open, so the finding's status never stands for
+                        every host. */}
+                    {f.hosts.length > 0 && (
                       <span
-                        className="block truncate text-caption"
+                        className="block truncate text-caption text-muted-foreground"
+                        data-testid={`finding-hosts-${f.id}`}
                         title={f.hosts
-                          .map((h) => h.ip_address + (h.hostname ? ` (${h.hostname})` : ''))
+                          .map((h) => (h.ip_address ?? '—') + (h.hostname ? ` (${h.hostname})` : ''))
                           .join(', ')}
                       >
                         <Link
                           to={`/hosts/${f.hosts[0].host_id}`}
-                          className="font-mono text-info hover:underline"
+                          className="font-mono hover:text-foreground hover:underline"
                         >
-                          {f.hosts[0].ip_address}
+                          {safeFallback(f.hosts[0].ip_address)}
                         </Link>
-                        {f.host_count > 1 && (
-                          <span className="text-muted-foreground"> +{f.host_count - 1}</span>
-                        )}
-                        {/* v5.225.0 — when the endpoints are not all open, say so
-                            beside the count rather than let the finding's status
-                            stand for every host. */}
+                        {f.hosts[0].hostname && <span> {f.hosts[0].hostname}</span>}
+                        {f.host_count > 1 && <span> +{f.host_count - 1}</span>}
                         {describeEndpointStates(f.endpoint_status_counts, f.host_count) && (
-                          <span className="block truncate text-caption text-muted-foreground">
-                            {describeEndpointStates(f.endpoint_status_counts, f.host_count)}
-                          </span>
+                          <span> · {describeEndpointStates(f.endpoint_status_counts, f.host_count)}</span>
                         )}
                       </span>
                     )}
                   </TableCell>
                   <TableCell>
-                    <span className="block truncate">{safeFallback(f.owner_name, 'Unassigned')}</span>
+                    {/* Status reads as quiet text; clicking it opens the
+                        picker (terminal choices still prompt for the "why").
+                        The history lives on the finding page. */}
+                    {canManage ? (
+                      <Select
+                        value={f.status}
+                        onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
+                      >
+                        <SelectTrigger
+                          className="h-auto w-auto max-w-full justify-start gap-xxs border-0 bg-transparent p-0 text-caption text-foreground shadow-none underline decoration-dotted underline-offset-4 hover:decoration-solid [&>svg]:size-3"
+                          aria-label={`Status for ${f.title}`}
+                        >
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+                            <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    ) : (
+                      <span className="block truncate text-caption">{STATUS_LABEL[f.status]}</span>
+                    )}
                   </TableCell>
-                  <TableCell className="text-caption text-muted-foreground">
+                  <TableCell className="text-caption tabular-nums text-muted-foreground">
+                    {f.host_count > 0 ? f.host_count.toLocaleString() : '—'}
+                  </TableCell>
+                  <TableCell className="text-caption">
+                    <span className={f.owner_name ? 'block truncate' : 'block truncate text-muted-foreground'}>
+                      {safeFallback(f.owner_name, 'Unassigned')}
+                    </span>
+                  </TableCell>
+                  <TableCell className="text-caption tabular-nums text-muted-foreground">
                     <span
                       className="block truncate"
-                      title={f.created_at ? new Date(f.created_at).toLocaleString() : undefined}
+                      title={f.created_at && !Number.isNaN(new Date(f.created_at).getTime())
+                        ? new Date(f.created_at).toLocaleString()
+                        : undefined}
                     >
-                      {formatAge(f.created_at)}
+                      {compactAge(f.created_at)}
                     </span>
                   </TableCell>
                 </TableRow>
@@ -722,7 +737,7 @@ const Findings: React.FC = () => {
           </Table>
           </div>
           {!error && total > 0 && (
-            <div className="border-t border-border p-xs">
+            <div className="border-t border-border py-xs">
               <DataTablePagination
                 pageIndex={page}
                 pageSize={pageSize}
@@ -734,8 +749,7 @@ const Findings: React.FC = () => {
               />
             </div>
           )}
-        </CardContent>
-      </Card>
+      </section>
 
       {/* Terminal-disposition "why" prompt — the summary lands on the
           finding's history trail as the audit rationale. */}
