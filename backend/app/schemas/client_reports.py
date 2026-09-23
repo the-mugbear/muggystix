@@ -56,11 +56,26 @@ class ReportProfileOut(ReportProfileBody):
     testers_from_project: bool = False
 
 
+class ReportTemplateAssetOut(BaseModel):
+    """An image the template itself expects (logo, cover art), from its
+    template.json — never finding evidence.  ``path`` is relative to
+    ``report-templates/<name>/``."""
+    id: str
+    path: str
+    label: str
+    description: str = ""
+    note: str = ""
+    required: bool = False
+    formats: List[str] = []
+    present: bool = False
+
+
 class ReportTemplateOut(BaseModel):
     name: str
     title: str
     description: str
     formats: List[str]
+    assets: List[ReportTemplateAssetOut] = []
 
 
 class ReportFileOut(BaseModel):

@@ -9,8 +9,17 @@ A folder is a template when it holds ``template.json``:
       "description": "…",
       "entry": "report.qmd",
       "formats": ["html", "docx", "pdf"],
-      "postprocess": {"docx": "scripts/fix-docx-report.py"}
+      "postprocess": {"docx": "scripts/fix-docx-report.py"},
+      "assets": [{"id": "logo", "path": "img/logo.png", "label": "Company logo",
+                  "description": "…where it appears…", "required": false,
+                  "formats": ["html", "pdf"], "note": "…"}]
     }
+
+``assets`` are the template's own images (logos, cover art — never evidence).
+Each is reported with ``present`` so the Reports page can say which are
+installed before a report is generated; a REQUIRED one that is missing blocks
+preview, issue and render.  Validation lives in ``quarto_render`` (the renderer
+stays standalone for template authors).
 
 Templates come from the repository, never from users: nothing here accepts an
 uploaded template, and a name is only ever resolved to a folder directly under
@@ -31,6 +40,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.config import settings
+from app.services import quarto_render
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 FORMATS = ("html", "docx", "pdf")
@@ -53,12 +63,16 @@ class ReportTemplate:
     entry: str
     formats: tuple
     postprocess: Dict[str, str] = field(default_factory=dict)
+    assets: tuple = ()
 
     def as_dict(self) -> dict:
         return {
             "name": self.name, "title": self.title, "description": self.description,
-            "formats": list(self.formats),
+            "formats": list(self.formats), "assets": [dict(a) for a in self.assets],
         }
+
+    def missing_required_assets(self) -> List[dict]:
+        return [a for a in self.assets if a["required"] and not a["present"]]
 
 
 def templates_root() -> Path:
@@ -82,10 +96,14 @@ def _load(folder: Path) -> ReportTemplate:
         target = (folder / str(script)).resolve()
         if fmt in FORMATS and target.is_file() and target.is_relative_to(folder.resolve()):
             post[fmt] = str(script)
+    try:
+        assets = tuple(quarto_render.template_assets(folder, data))
+    except quarto_render.TemplateAssetError as exc:
+        raise TemplateError(f"{folder.name}: template.json: {exc}")
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
-        postprocess=post,
+        postprocess=post, assets=assets,
     )
 
 

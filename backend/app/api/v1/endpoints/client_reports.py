@@ -128,6 +128,20 @@ def _template_or_422(name: Optional[str]) -> templates.ReportTemplate:
         raise HTTPException(status_code=422, detail=str(exc))
 
 
+def _renderable_template_or_409(name: Optional[str]) -> templates.ReportTemplate:
+    """The template, refusing (409) when an image its manifest marks REQUIRED
+    is not installed — the message names each file and where it goes.  An
+    optional image that is missing never blocks: the template leaves it out."""
+    template = _template_or_422(name)
+    missing = template.missing_required_assets()
+    if missing:
+        raise HTTPException(
+            status_code=409,
+            detail=templates.quarto_render.missing_assets_message(template.name, missing),
+        )
+    return template
+
+
 def _issued_baseline(db: Session, project: Project, baseline_id: Optional[int]) -> Report:
     svc = ClientReportService(db)
     if baseline_id is None:
@@ -421,7 +435,7 @@ def preview_report(
     report = _load(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report has its files already.")
-    template = _template_or_422(report.template)
+    template = _renderable_template_or_409(report.template)
     if body.format not in template.formats:
         raise HTTPException(status_code=422, detail=f"The '{template.name}' template does not produce {body.format}.")
     return _enqueue(db, project=project, user=current_user, fmt=f"report-{body.format}", report_id=report.id)
@@ -440,7 +454,7 @@ def issue_report(
     """A project admin's sign-off: freeze what the report says, number it, and
     render its files.  After this the report never changes."""
     report = _load(db, project, report_id)
-    template = _template_or_422(report.template)
+    template = _renderable_template_or_409(report.template)
     try:
         report = ClientReportService(db).issue(
             report.id, project.id, user_id=current_user.id,
@@ -508,6 +522,7 @@ def rerender_report(
         )
     if report.render_status == RenderStatus.PENDING and _live_issue_job(db, report):
         raise HTTPException(status_code=409, detail="The files are being rendered.")
+    _renderable_template_or_409(report.template)
     report.render_status = RenderStatus.PENDING
     report.render_error = None
     job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,

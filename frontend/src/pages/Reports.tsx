@@ -28,9 +28,10 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
-import PostureSection from '../components/posture/PostureSection';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
+import TemplateImages from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -261,8 +262,13 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   };
 
   const templateTitle = (name: string | null) => templates.find((t) => t.name === name)?.title ?? name ?? '—';
+  // The images of the template new reports use — the one being chosen while editing.
+  const imagesFor = (draft ? draft.template : profile?.template) ?? null;
+  const imagesTemplate = templates.find((t) => t.name === imagesFor);
+  const imagesMissing = (imagesTemplate?.assets ?? []).filter((a) => !a.present).length;
 
   return (
+    <>
     <PostureSection
       title="Defaults for new reports"
       description="Every new draft starts from these; each report can change its own copy."
@@ -312,6 +318,15 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </form>
       )}
     </PostureSection>
+    {(profile || draft) && (
+      <PostureSection
+        title={<>Template images{imagesMissing > 0 && <SectionCount>{imagesMissing} missing</SectionCount>}</>}
+        description={`The logo and other images ${imagesTemplate ? `“${imagesTemplate.title}”` : 'the template'} places, besides the findings' evidence — install them before generating a report.`}
+      >
+        <TemplateImages template={imagesTemplate} templateName={imagesFor} />
+      </PostureSection>
+    )}
+    </>
   );
 };
 

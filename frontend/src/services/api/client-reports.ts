@@ -43,11 +43,29 @@ export interface ReportProfile extends EngagementSettings {
   testers_from_project?: boolean;
 }
 
+/** An image the template itself expects (logo, cover art) — declared in its
+ *  template.json, never finding evidence.  `path` is relative to
+ *  `report-templates/<template name>/` on the server. */
+export interface ReportTemplateAsset {
+  id: string;
+  path: string;
+  label: string;
+  description: string;
+  /** Extra guidance from the template author (e.g. a Word header lives in reference.docx). */
+  note: string;
+  /** A missing required image blocks preview, issue and render. */
+  required: boolean;
+  formats: ClientReportFormat[];
+  /** The file is installed where the manifest says. */
+  present: boolean;
+}
+
 export interface ReportTemplate {
   name: string;
   title: string;
   description: string;
   formats: ClientReportFormat[];
+  assets?: ReportTemplateAsset[];
 }
 
 export interface ReportFile {
