@@ -1,15 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   ArrowDownToLine,
   Building2,
-  ChevronDown,
-  ChevronUp,
   Loader2,
   Pencil,
   Plus,
-  RefreshCw,
   Rocket,
   Save,
   Search,
@@ -21,7 +18,6 @@ import {
 import {
   getDefaultScope,
   uploadSubnetFile,
-  correlateAllHosts,
   addScopeSubnets,
   updateSubnet,
   deleteSubnet,
@@ -41,9 +37,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { useReconPlan } from '../hooks/useReconPlan';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import {
   Dialog,
   DialogContent,
@@ -65,7 +59,6 @@ import {
 } from '../components/ui/table';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import { InfoTip } from '../components/ui/info-tip';
 import { cn } from '../utils/cn';
 import {
   SubnetLabelManagerDialog,
@@ -74,19 +67,44 @@ import {
 } from '../components/SubnetLabelManager';
 import SiteManagerDialog from '../components/SiteManagerDialog';
 import ScopeDomainsCard from '../components/ScopeDomainsCard';
+import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureSection from '../components/posture/PostureSection';
+import { buildHostsUrl } from '../utils/drilldownLinks';
 
-type CoverageTone = 'success' | 'warning' | 'destructive' | 'muted';
+const plural = (n: number, one: string, many = `${one}s`) =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
-const coverageTone = (pct: number, hasScope: boolean): CoverageTone => {
-  if (!hasScope) return 'muted';
-  if (pct >= 90) return 'success';
-  if (pct >= 50) return 'warning';
-  if (pct > 0) return 'destructive';
-  return 'muted';
-};
+/**
+ * The page's lead (v5.269.0): where the discovered hosts stand against the
+ * declared scope, in one sentence.  Out of scope colours it; the fix is a
+ * decision (declare it, or leave it untested), never "scan these".
+ */
+export function scopeLead(c: ScopeCoverageSummary): { sentence: string; tone: LeadTone } {
+  if (c.total_subnets === 0 && c.total_domains === 0) {
+    return {
+      sentence: 'No scope declared yet — add the subnets or domains you are authorized to assess, or upload a scope file.',
+      tone: 'neutral',
+    };
+  }
+  if (c.total_hosts === 0) {
+    return {
+      sentence: `No hosts discovered yet; ${plural(c.total_subnets, 'subnet')} and ${plural(c.total_domains, 'domain')} declared.`,
+      tone: 'neutral',
+    };
+  }
+  const parts = [
+    `${c.scoped_hosts.toLocaleString()} of ${plural(c.total_hosts, 'host')} ${c.scoped_hosts === 1 ? 'is' : 'are'} inside scoped subnets`,
+    c.name_reachable_hosts > 0 ? `${c.name_reachable_hosts.toLocaleString()} reached only through an in-scope name` : null,
+    c.out_of_scope_hosts > 0 ? `${c.out_of_scope_hosts.toLocaleString()} outside every scope` : null,
+  ].filter((p): p is string => !!p);
+  return {
+    sentence: `${parts.join('; ')}.`,
+    tone: c.out_of_scope_hosts > 0 ? 'warning' : 'clear',
+  };
+}
 
 const Scopes: React.FC = () => {
-  const navigate = useNavigate();
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const recon = useReconPlan();
@@ -95,18 +113,12 @@ const Scopes: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [uploading, setUploading] = useState(false);
-  const [correlating, setCorrelating] = useState(false);
   const [coverage, setCoverage] = useState<ScopeCoverageSummary | null>(null);
 
   const [uploadError, setUploadError] = useState<string | null>(null);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [uploadOpen, setUploadOpen] = useState(false);
   const [domainsRefreshKey, setDomainsRefreshKey] = useState(0);
-
-  const [coverageOpen, setCoverageOpen] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return false;
-    return window.localStorage.getItem('scopes.coverageOpen') === 'true';
-  });
 
   const [exportScopeId, setExportScopeId] = useState<number | null>(null);
   const [exportScopeName, setExportScopeName] = useState('');
@@ -377,14 +389,6 @@ const Scopes: React.FC = () => {
     }
   };
 
-  const toggleCoverage = () => {
-    const next = !coverageOpen;
-    setCoverageOpen(next);
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem('scopes.coverageOpen', next ? 'true' : 'false');
-    }
-  };
-
   const onDrop = async (acceptedFiles: File[]) => {
     const file = acceptedFiles[0];
     if (!file) return;
@@ -420,31 +424,6 @@ const Scopes: React.FC = () => {
     multiple: false,
   });
 
-  const handleCorrelateAll = async () => {
-    const ok = await confirm({
-      title: 'Correlate all hosts',
-      body: 'This will re-compute host-to-subnet mappings for every host in the project. For large datasets it may take several seconds.',
-      severity: 'warning',
-      confirmLabel: 'Correlate',
-    });
-    if (!ok) return;
-    try {
-      setCorrelating(true);
-      setError(null);
-      const result = await correlateAllHosts();
-      if (result?.message) {
-        setStatusMessage(result.message);
-        setTimeout(() => setStatusMessage(null), 3000);
-      }
-      await loadData();
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Failed to correlate hosts to subnets.'));
-      console.error('Error correlating hosts:', err);
-    } finally {
-      setCorrelating(false);
-    }
-  };
-
   const handleOpenScopeExport = (scopeId: number, scopeName: string) => {
     setExportScopeId(scopeId);
     setExportScopeName(scopeName);
@@ -458,12 +437,21 @@ const Scopes: React.FC = () => {
     );
   }
 
-  const tone = coverage ? coverageTone(coverage.coverage_percentage, coverage.has_scope_configuration) : 'muted';
+  const coverageLead = coverage ? scopeLead(coverage) : null;
+  const subnetCount = scope ? (scope.subnets_total ?? scope.subnets.length) : 0;
 
   return (
     <div className="p-md md:p-lg">
-      <div className="mb-xs flex flex-col gap-xs sm:flex-row sm:items-center sm:justify-between">
-        <h1 className="text-page-title font-semibold">Scope</h1>
+      <div className="mb-md flex flex-wrap items-start gap-sm">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-page-title font-semibold">Scope</h1>
+          <p className="text-metadata text-muted-foreground">
+            The subnets, addresses and domains this project is authorized to assess.
+          </p>
+        </div>
+        {/* v5.269.0 — no "Correlate Hosts": every import, subnet add, CIDR
+            change and scope-file upload links hosts to subnets itself, and a
+            deleted subnet's links cascade.  The endpoint stays for scripts. */}
         <div className="flex flex-wrap gap-xs">
           <Button
             variant="outline"
@@ -475,34 +463,22 @@ const Scopes: React.FC = () => {
           >
             <Upload className="size-4" aria-hidden /> Upload File
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={handleCorrelateAll}
-            disabled={correlating}
-            className="text-success hover:text-success"
-          >
-            {correlating ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden />
-            ) : (
-              <RefreshCw className="size-4" aria-hidden />
-            )}
-            {correlating ? 'Correlating…' : 'Correlate Hosts'}
+          <Button variant="outline" size="sm" onClick={() => setShowOutOfScopeDialog(true)}>
+            <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
           </Button>
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => setShowOutOfScopeDialog(true)}
-          >
-            <ArrowDownToLine className="size-4" aria-hidden /> Export OOS
-          </Button>
+          {scope != null && (
+            <Button
+              size="sm"
+              disabled={scope.subnets.length === 0}
+              onClick={() => recon.openFor(scope.id, 'Project scope')}
+              aria-label="Start agentic reconnaissance"
+              title={scope.subnets.length === 0 ? 'Add a subnet first — recon runs against declared subnets.' : undefined}
+            >
+              <Rocket className="size-4" aria-hidden /> Start Agentic Recon
+            </Button>
+          )}
         </div>
       </div>
-      <p className="mb-md text-metadata text-muted-foreground">
-        Subnets and individual addresses this project is authorized to assess. Add entries one at a
-        time, upload a file, or label existing entries (e.g. &quot;UK DMZ&quot;) so the agentic
-        recon prompt can reason about zones.
-      </p>
 
       {uploadError && (
         <Alert variant="destructive" className="mb-sm">
@@ -520,231 +496,80 @@ const Scopes: React.FC = () => {
         </Alert>
       )}
 
-      {coverage && (
-        <Card className="mb-md">
-          <CardContent className="p-sm">
-            {/* The toggle and the badges are siblings (not badges inside the
-                toggle) so each (i) can be a real button — nested buttons are
-                invalid and unreachable by keyboard. */}
-            <div className="flex w-full flex-wrap items-center gap-sm">
-              <button
-                type="button"
-                onClick={toggleCoverage}
-                aria-expanded={coverageOpen}
-                className="inline-flex items-center gap-xs rounded-control text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      {/* v5.269.0 — the Posture layout (UI_STYLE_GUIDE §7): one sentence,
+          one strip of measures, then sections.  Was a collapsible card of
+          coloured badges over two more cards. */}
+      <div className="flex min-w-0 flex-col gap-lg">
+        {coverage && coverageLead && (
+          <>
+            <PostureLead
+              tone={coverageLead.tone}
+              restsOn="Coverage is by address: a host is in scope when a declared subnet contains it. An in-scope name never makes the address it resolves to in scope."
+            >
+              {coverageLead.sentence}
+            </PostureLead>
+            <div className="grid gap-y-md divide-border sm:grid-cols-3 lg:grid-cols-5 lg:divide-x">
+              <PostureMeasure
+                label="In scope"
+                info="Hosts whose address is inside at least one declared subnet."
+                value={coverage.scoped_hosts.toLocaleString()}
               >
-                <span className="text-section-title font-semibold">Scope Coverage</span>
-                <span className="inline-flex size-7 items-center justify-center rounded-control text-muted-foreground">
-                  {coverageOpen ? (
-                    <ChevronUp className="size-4" aria-hidden />
-                  ) : (
-                    <ChevronDown className="size-4" aria-hidden />
-                  )}
-                </span>
-              </button>
-              <span className="inline-flex items-center gap-xxs">
-                <Badge variant={tone}>{coverage.coverage_percentage.toFixed(1)}% covered</Badge>
-                <InfoTip
-                  label="About coverage"
-                  text="Share of hosts that fall inside a declared subnet. Hosts reached only through an in-scope name are not counted here — name scope never confers subnet scope."
-                />
-              </span>
-              <Badge variant="outline">{coverage.total_hosts} hosts</Badge>
-              <span className="inline-flex items-center gap-xxs">
-                <Badge variant="outline" className="border-success/40 text-success">
-                  {coverage.scoped_hosts} in scope
-                </Badge>
-                <InfoTip label="About in scope" text="Hosts whose address is inside at least one declared subnet." />
-              </span>
-              {coverage.name_reachable_hosts > 0 && (
-                <span className="inline-flex items-center gap-xxs">
-                  <Badge variant="info-outline">
-                    {coverage.name_reachable_hosts} via in-scope name
-                  </Badge>
-                  <InfoTip
-                    label="About via in-scope name"
-                    text="Hosts in no declared subnet that an in-scope name currently resolves to. A third state: not out of scope, but not subnet-in-scope either — the name is approved, the address is not. Declare the subnet if the address itself should be in scope."
-                  />
-                </span>
-              )}
-              {coverage.out_of_scope_hosts > 0 && (
-                <span className="inline-flex items-center gap-xxs">
-                  <Badge variant="outline" className="border-destructive/40 text-destructive">
-                    {coverage.out_of_scope_hosts} out of scope
-                  </Badge>
-                  <InfoTip
-                    label="About out of scope"
-                    text="Hosts in no declared subnet and not reached by any in-scope name."
-                  />
-                </span>
-              )}
-              <Badge variant="outline">{coverage.total_subnets} subnets</Badge>
-              {coverage.total_domains > 0 && (
-                <span className="inline-flex items-center gap-xxs">
-                  <Badge variant="outline">{coverage.total_domains} domains</Badge>
-                  <InfoTip
-                    label="About domains"
-                    text="Domain-scope entries declared below. They put names in scope, independently of subnets."
-                  />
-                </span>
-              )}
+                of {coverage.total_hosts.toLocaleString()} host{coverage.total_hosts === 1 ? '' : 's'}
+              </PostureMeasure>
+              <PostureMeasure
+                label="Via an in-scope name"
+                info="Hosts in no declared subnet that an in-scope name currently resolves to. A third state: not out of scope, but not subnet-in-scope either — the name is approved, the address is not. Declare the subnet if the address itself should be in scope."
+                value={coverage.name_reachable_hosts.toLocaleString()}
+              >
+                name approved, address not
+              </PostureMeasure>
+              <PostureMeasure
+                label="Out of scope"
+                info="Hosts in no declared subnet and not reached by any in-scope name."
+                value={coverage.out_of_scope_hosts.toLocaleString()}
+                to={coverage.out_of_scope_hosts > 0 ? buildHostsUrl({ outOfScopeOnly: true }) : undefined}
+                toLabel="Out-of-scope hosts — view"
+              >
+                {coverage.out_of_scope_hosts > 0 ? 'confirm whether they are in scope' : 'none'}
+              </PostureMeasure>
+              <PostureMeasure
+                label="Subnets"
+                info="Subnet and single-address entries declared below."
+                value={coverage.total_subnets.toLocaleString()}
+              />
+              <PostureMeasure
+                label="Domains"
+                info="Domain-scope entries declared below. They put names in scope, independently of subnets."
+                value={coverage.total_domains.toLocaleString()}
+              />
             </div>
+          </>
+        )}
 
-            {coverageOpen && (
-              <div className="pt-sm">
-                {coverage.out_of_scope_hosts > 0 ? (
-                  <div>
-                    <p className="mb-xs text-metadata font-semibold">
-                      Hosts discovered outside configured scopes
-                    </p>
-                    <ul className="max-h-60 divide-y divide-border overflow-auto rounded-control border border-border">
-                      {coverage.recent_out_of_scope_hosts.map((host) => {
-                        const lastSeen = host.last_seen
-                          ? new Date(host.last_seen).toLocaleString()
-                          : 'Unknown';
-                        const scanLabel = host.last_scan_filename
-                          ? host.last_scan_filename
-                          : host.last_scan_id
-                          ? `Scan #${host.last_scan_id}`
-                          : null;
-                        return (
-                          <li key={`oos-${host.host_id}`}>
-                            <button
-                              type="button"
-                              onClick={() => navigate(`/hosts/${host.host_id}`)}
-                              className="flex w-full flex-col gap-xxs px-sm py-xs text-left hover:bg-accent focus:outline-none focus-visible:bg-accent"
-                            >
-                              <span className="flex items-center justify-between gap-xs">
-                                <span className="font-mono text-metadata">{host.ip_address}</span>
-                                {host.hostname && (
-                                  <span className="max-w-[60%] truncate text-caption text-muted-foreground">
-                                    {host.hostname}
-                                  </span>
-                                )}
-                              </span>
-                              <span className="text-caption text-muted-foreground">
-                                Last seen {lastSeen}
-                                {scanLabel && ` · ${scanLabel}`}
-                              </span>
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
-                    {coverage.out_of_scope_hosts > coverage.recent_out_of_scope_hosts.length && (
-                      <p className="mt-xs text-caption text-muted-foreground">
-                        Showing the most recent {coverage.recent_out_of_scope_hosts.length} of{' '}
-                        {coverage.out_of_scope_hosts} hosts.
-                      </p>
-                    )}
-                    <Button
-                      variant="link"
-                      size="sm"
-                      className="mt-xs h-auto p-0"
-                      onClick={() => navigate('/hosts?out_of_scope=true')}
-                    >
-                      View all out-of-scope hosts
-                    </Button>
-                  </div>
-                ) : coverage.has_scope_configuration ? (
-                  <Alert variant="success" className="mt-xs">
-                    <AlertDescription>All hosts currently map to defined scopes.</AlertDescription>
-                  </Alert>
-                ) : (
-                  <Alert variant="info" className="mt-xs">
-                    <AlertDescription>
-                      No subnet entries yet. Add one above or upload a scope file.
-                    </AlertDescription>
-                  </Alert>
-                )}
-
-                {coverage.top_technologies && coverage.top_technologies.length > 0 && (
-                  <div className="mt-md">
-                    <p className="mb-xs text-metadata font-semibold">Top technologies observed</p>
-                    <div className="flex flex-wrap gap-xxs">
-                      {coverage.top_technologies.map((t) => (
-                        <button
-                          key={t.name}
-                          type="button"
-                          onClick={() => navigate(`/hosts?tech=${encodeURIComponent(t.name)}`)}
-                          className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          <Badge
-                            variant="outline"
-                            className="cursor-pointer border-info/40 text-info hover:bg-info/10"
-                          >
-                            {t.name} · {t.host_count}
-                          </Badge>
-                        </button>
-                      ))}
-                    </div>
-                    <p className="mt-xxs text-caption text-muted-foreground">
-                      Click a chip to filter Hosts by that technology. Derived from httpx /
-                      eyewitness / nikto ingest.
-                    </p>
-                  </div>
-                )}
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
-          coverage card on change (name-reachable hosts move between states). */}
-      {scope != null && (
-        <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} />
-      )}
-
-      {scope == null ? (
-        <Card>
-          <CardContent className="p-lg text-center text-metadata text-muted-foreground">
-            Loading project scope…
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent className="p-0">
-            <div className="flex flex-wrap items-center gap-xs border-b border-border p-sm">
-              <span className="flex-1 text-metadata text-muted-foreground">
-                {(scope.subnets_total ?? scope.subnets.length).toLocaleString()} entr
-                {(scope.subnets_total ?? scope.subnets.length) === 1 ? 'y' : 'ies'}
+        {scope == null ? (
+          <p className="text-metadata text-muted-foreground">Loading project scope…</p>
+        ) : (
+          <PostureSection
+            title={<span>Subnets and addresses</span>}
+            description="Label entries (e.g. “UK DMZ”) and assign sites so the recon prompt and Posture can reason about zones."
+            actions={<>
+              <span className="tabular-nums text-muted-foreground">
+                {subnetCount.toLocaleString()} entr{subnetCount === 1 ? 'y' : 'ies'}
                 {debouncedSubnetSearch.trim() ? ' matching' : ''}
               </span>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    size="sm"
-                    disabled={scope.subnets.length === 0}
-                    onClick={() => recon.openFor(scope.id, 'Project scope')}
-                    aria-label="Start agentic reconnaissance"
-                  >
-                    <Rocket className="size-4" aria-hidden /> Start Agentic Recon
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Start agentic reconnaissance</TooltipContent>
-              </Tooltip>
-              <Tooltip>
-                <TooltipTrigger asChild>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => handleOpenScopeExport(scope.id, 'Project scope')}
-                    aria-label="Export scope"
-                  >
-                    <ArrowDownToLine className="size-4" aria-hidden />
-                  </Button>
-                </TooltipTrigger>
-                <TooltipContent>Export scope as txt / csv / json</TooltipContent>
-              </Tooltip>
-              {/* v4.52.1 — "View hosts in scope" drill-in removed.  In
-                  the single-default-scope world a project's scope holds
-                  every host; /hosts?subnets=<all CIDRs> resolves to
-                  exactly the same view as plain /hosts, so the icon was
-                  only adding noise to the toolbar. */}
-            </div>
-
-            <div className="flex flex-col gap-xs border-b border-border bg-accent/30 p-sm sm:flex-row sm:items-end">
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-7"
+                onClick={() => handleOpenScopeExport(scope.id, 'Project scope')}
+                aria-label="Export scope"
+                title="Export scope as txt / csv / json"
+              >
+                <ArrowDownToLine className="size-4" aria-hidden /> Export
+              </Button>
+            </>}
+          >
+            <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-end">
               <div className="flex-1">
                 <Label htmlFor="new-cidr">CIDR or IP</Label>
                 <Input
@@ -770,7 +595,7 @@ const Scopes: React.FC = () => {
                   }}
                 />
               </div>
-              <Button onClick={handleAddSubnet} disabled={!newCidr.trim() || addingSubnet}>
+              <Button variant="outline" onClick={handleAddSubnet} disabled={!newCidr.trim() || addingSubnet}>
                 {addingSubnet ? (
                   <Loader2 className="size-4 animate-spin" aria-hidden />
                 ) : (
@@ -779,7 +604,7 @@ const Scopes: React.FC = () => {
                 Add
               </Button>
               <Button
-                variant="outline"
+                variant="ghost"
                 onClick={() => setLabelManagerOpen(true)}
                 className="shrink-0 whitespace-nowrap"
                 aria-label="Manage project subnet labels"
@@ -788,7 +613,7 @@ const Scopes: React.FC = () => {
                 Manage labels
               </Button>
               <Button
-                variant="outline"
+                variant="ghost"
                 onClick={() => setSiteManagerOpen(true)}
                 className="shrink-0 whitespace-nowrap"
                 aria-label="Manage site criticality and coverage"
@@ -802,7 +627,7 @@ const Scopes: React.FC = () => {
                 can jump to an entry instead of paging.  Debounced; resets
                 to page 0 and drives subnets_total so "Showing N of T" and
                 "Load more" stay correct under the filter. */}
-            <div className="flex items-center gap-xs border-b border-border px-sm py-xs">
+            <div className="mb-xs flex items-center gap-xs">
               <div className="relative min-w-0 flex-1">
                 <Search
                   className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -833,7 +658,7 @@ const Scopes: React.FC = () => {
                 subnet is checked.  Mirrors the ScopeDetail surface so
                 the affordance is in the same place on both pages. */}
             {selectedSubnetIds.size > 0 && (
-              <div className="flex flex-wrap items-center gap-xs border-b border-border bg-muted/30 px-sm py-xs">
+              <div className="mb-xs flex flex-wrap items-center gap-xs border-l-4 border-l-info py-xxs pl-sm">
                 <span className="text-metadata">
                   {selectedSubnetIds.size} subnet{selectedSubnetIds.size === 1 ? '' : 's'} selected
                 </span>
@@ -873,7 +698,9 @@ const Scopes: React.FC = () => {
             )}
 
             <div className="overflow-x-auto">
-              <Table>
+              {/* Fixed layout (UI_STYLE_GUIDE): an unbounded description or
+                  label set wraps inside its column instead of widening it. */}
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">
@@ -883,11 +710,11 @@ const Scopes: React.FC = () => {
                         aria-label="Select all subnets for bulk label apply"
                       />
                     </TableHead>
-                    <TableHead className="w-1/5">Subnet / IP</TableHead>
-                    <TableHead className="w-24 text-right">Hosts</TableHead>
+                    <TableHead className="w-[18%]">Subnet / IP</TableHead>
+                    <TableHead className="w-20 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
-                    <TableHead className="w-40">Site</TableHead>
-                    <TableHead className="min-w-[180px]">Labels</TableHead>
+                    <TableHead className="w-36">Site</TableHead>
+                    <TableHead className="w-[20%]">Labels</TableHead>
                     <TableHead className="w-32">Added</TableHead>
                     <TableHead className="w-32 text-right">Actions</TableHead>
                   </TableRow>
@@ -1094,9 +921,85 @@ const Scopes: React.FC = () => {
                   </Button>
                 </div>
               )}
-          </CardContent>
-        </Card>
-      )}
+          </PostureSection>
+        )}
+
+        {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
+            coverage numbers on change (name-reachable hosts move between states). */}
+        {scope != null && (
+          <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} />
+        )}
+
+        {coverage && coverage.out_of_scope_hosts > 0 && (
+          <PostureSection
+            title={<span>Hosts outside every scope</span>}
+            description="Discovered at addresses no declared subnet or in-scope name covers. Confirm whether they are in scope before testing them; declare the subnet if they are."
+            actions={(
+              <Link to={buildHostsUrl({ outOfScopeOnly: true })} className="text-info hover:underline">
+                View all out-of-scope hosts
+              </Link>
+            )}
+          >
+            <ul className="divide-y divide-border/60">
+              {coverage.recent_out_of_scope_hosts.map((host) => {
+                const lastSeen = host.last_seen ? new Date(host.last_seen).toLocaleString() : 'Unknown';
+                const scanLabel = host.last_scan_filename
+                  ? host.last_scan_filename
+                  : host.last_scan_id
+                  ? `Scan #${host.last_scan_id}`
+                  : null;
+                return (
+                  <li key={`oos-${host.host_id}`} className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs py-xxs">
+                    <Link
+                      to={`/hosts/${host.host_id}`}
+                      className="shrink-0 font-mono text-metadata text-foreground hover:underline"
+                    >
+                      {host.ip_address}
+                    </Link>
+                    {host.hostname && (
+                      <span className="min-w-0 max-w-[40%] truncate text-caption text-muted-foreground" title={host.hostname}>
+                        {host.hostname}
+                      </span>
+                    )}
+                    <span
+                      className="ml-auto min-w-0 truncate text-caption text-muted-foreground"
+                      title={scanLabel ?? undefined}
+                    >
+                      last seen {lastSeen}
+                      {scanLabel && ` · ${scanLabel}`}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
+            {coverage.out_of_scope_hosts > coverage.recent_out_of_scope_hosts.length && (
+              <p className="mt-xs text-caption text-muted-foreground">
+                Showing the most recent {coverage.recent_out_of_scope_hosts.length} of{' '}
+                {coverage.out_of_scope_hosts.toLocaleString()} hosts.
+              </p>
+            )}
+          </PostureSection>
+        )}
+
+        {coverage?.top_technologies && coverage.top_technologies.length > 0 && (
+          <PostureSection
+            title={<span>Technologies observed</span>}
+            description="From httpx / EyeWitness / Nikto imports. Each opens the hosts running it."
+          >
+            <p className="flex flex-wrap gap-x-sm gap-y-xxs text-metadata">
+              {coverage.top_technologies.map((t) => (
+                <Link
+                  key={t.name}
+                  to={`/hosts?tech=${encodeURIComponent(t.name)}`}
+                  className="text-info hover:underline"
+                >
+                  {t.name} <span className="tabular-nums text-muted-foreground">{t.host_count}</span>
+                </Link>
+              ))}
+            </p>
+          </PostureSection>
+        )}
+      </div>
 
       {exportScopeId !== null && (
         <ScopeExport

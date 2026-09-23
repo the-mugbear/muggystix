@@ -351,7 +351,7 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | GET | `/scopes/{scope_id}` | Scope detail. |
 | DELETE | `/scopes/{scope_id}` | |
 | POST | `/scopes/upload-subnets` | Analyst+. Upload a scope file: CIDR/IP rows → subnets, domain rows (`*.example.com` = include subdomains) → scope domains. 2 MB cap, 10 000 entry cap. |
-| POST | `/scopes/correlate-all` | Analyst+. Re-run host ↔ subnet correlation for the project. |
+| POST | `/scopes/correlate-all` | Analyst+. Re-run host ↔ subnet correlation for the project. A repair tool only: imports, subnet adds / CIDR changes and scope-file uploads correlate by themselves, so the Scope page no longer offers it (5.269.0). |
 | GET | `/scopes/coverage?limit=25` | Scope coverage rollups. |
 | GET | `/scopes/{scope_id}/host-mappings` | Host-to-subnet mappings for a scope. |
 | POST | `/scopes/{scope_id}/subnets` | Add CIDR entries. Each CIDR capped at 64 chars. |

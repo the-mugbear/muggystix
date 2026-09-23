@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Globe, Loader2, Plus, Trash2 } from 'lucide-react';
+import { Loader2, Plus, Trash2 } from 'lucide-react';
 
 import {
   addScopeDomains,
@@ -13,7 +13,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent } from './ui/card';
+import { PostureSection } from './posture/PostureSection';
 import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -30,7 +30,7 @@ import { InfoTip } from './ui/info-tip';
 
 /**
  * ScopeDomainsCard — the domains declared in scope, alongside the subnet
- * table (v5.193.0).
+ * table (v5.193.0); a PostureSection since v5.269.0 (the name is historical).
  *
  * Exact-name membership and "include subdomains" are separate on purpose:
  * approving portal.example.com does not approve dev.portal.example.com.  Name
@@ -183,64 +183,62 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
   };
 
   return (
-    <Card className="mb-md">
+    // v5.269.0 — a section, not a card (UI_STYLE_GUIDE §7).
+    <PostureSection
+      title={<>
+        <span>Domains in scope</span>
+        <InfoTip text={TIPS.domains} label="About domain scope" />
+      </>}
+      description="Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope."
+      actions={rows && (
+        <span className="inline-flex items-center gap-xxs text-muted-foreground">
+          <span className="tabular-nums">{total.toLocaleString()} entr{total === 1 ? 'y' : 'ies'}</span>
+          <span aria-hidden>·</span>
+          <span className="tabular-nums">{namesInScope.toLocaleString()} names in scope</span>
+          <InfoTip text={TIPS.namesInScope} label="About names in scope" />
+        </span>
+      )}
+    >
       {confirmDialog}
-      <CardContent className="p-0">
-        <div className="flex flex-wrap items-center gap-xs border-b border-border p-sm">
-          <Globe className="size-4 text-primary" aria-hidden />
-          <span className="font-medium">Domains in scope</span>
-          <InfoTip text={TIPS.domains} label="About domain scope" />
-          {rows && <Badge variant="outline">{total.toLocaleString()}</Badge>}
-          {rows && (
-            <span className="inline-flex items-center gap-xxs">
-              <Badge variant="info-outline">{namesInScope.toLocaleString()} names in scope</Badge>
-              <InfoTip text={TIPS.namesInScope} label="About names in scope" />
-            </span>
-          )}
-          <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
-            Names covered here are in scope; the addresses they resolve to are not made subnet-in-scope.
-          </span>
+      <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-end">
+        <div className="min-w-0 flex-1">
+          <Label htmlFor="new-scope-domain">Domain (one or more; *.example.com allowed)</Label>
+          <Input
+            id="new-scope-domain"
+            value={domainInput}
+            onChange={(e) => setDomainInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !adding) handleAdd();
+            }}
+            placeholder="portal.example.com, *.lab.example.com"
+            className="font-mono"
+          />
         </div>
-
-        <div className="flex flex-col gap-xs border-b border-border bg-accent/30 p-sm sm:flex-row sm:items-end">
-          <div className="min-w-0 flex-1">
-            <Label htmlFor="new-scope-domain">Domain (one or more; *.example.com allowed)</Label>
-            <Input
-              id="new-scope-domain"
-              value={domainInput}
-              onChange={(e) => setDomainInput(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !adding) handleAdd();
-              }}
-              placeholder="portal.example.com, *.lab.example.com"
-              className="font-mono"
-            />
-          </div>
-          <span className="flex items-center gap-xs text-metadata">
-            <label className="flex items-center gap-xs">
-              <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
-              Include subdomains
-            </label>
-            <InfoTip text={TIPS.includeSub} label="About include subdomains" />
-          </span>
-          <Button size="sm" onClick={handleAdd} disabled={adding || !domainInput.trim()}>
-            {adding ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Plus className="size-4" aria-hidden />}
-            Add
-          </Button>
-        </div>
+        <span className="flex items-center gap-xs text-metadata">
+          <label className="flex items-center gap-xs">
+            <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
+            Include subdomains
+          </label>
+          <InfoTip text={TIPS.includeSub} label="About include subdomains" />
+        </span>
+        <Button size="sm" variant="outline" onClick={handleAdd} disabled={adding || !domainInput.trim()}>
+          {adding ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Plus className="size-4" aria-hidden />}
+          Add
+        </Button>
+      </div>
 
         {error && (
-          <Alert variant="destructive" className="m-sm">
+          <Alert variant="destructive" className="mb-sm">
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
 
         {rows === null ? (
-          <div className="p-md text-center text-metadata text-muted-foreground">Loading domains…</div>
+          <p className="text-metadata text-muted-foreground">Loading domains…</p>
         ) : rows.length === 0 ? (
-          <div className="p-md text-center text-metadata text-muted-foreground">
+          <p className="text-metadata text-muted-foreground">
             No domains declared. Subnet scope is unaffected; imported names stay out of scope until a domain covers them.
-          </div>
+          </p>
         ) : (
           <div className="overflow-x-auto">
             <Table style={{ tableLayout: 'fixed' }} className="min-w-[560px]">
@@ -295,7 +293,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
               </TableBody>
             </Table>
             {rows.length < total && (
-              <div className="flex items-center justify-between border-t border-border p-sm text-metadata text-muted-foreground">
+              <div className="flex items-center justify-between border-t border-border pt-sm text-metadata text-muted-foreground">
                 <span>
                   Showing {rows.length.toLocaleString()} of {total.toLocaleString()}
                 </span>
@@ -307,8 +305,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
             )}
           </div>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 

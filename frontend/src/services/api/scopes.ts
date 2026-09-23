@@ -238,11 +238,6 @@ export const getScopeCoverage = async (limit: number = 25): Promise<ScopeCoverag
   return response.data;
 };
 
-export const correlateAllHosts = async () => {
-  const response = await api.post(`${p()}/scopes/correlate-all`);
-  return response.data;
-};
-
 export const getScopeHostList = async (scopeId: number, format: 'txt' | 'csv' | 'json' = 'txt'): Promise<string> => {
   const response = await api.get(`${p()}/export/scope/${scopeId}?format_type=${format}`, { responseType: 'text' });
   return response.data;
