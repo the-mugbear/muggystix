@@ -272,10 +272,7 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | DELETE | `/scans/{scan_id}` | Admin. Deletes scan + history rows; hosts seen in other scans are preserved. |
 | GET | `/scans/{scan_id}/hosts/count` | Host count only (lightweight for list views). |
 | GET | `/scans/{scan_id}/command-explanation` | Human-readable explanation of the scan's command line. |
-| GET | `/scans/out-of-scope` | Hosts parsed but not matching any scope. |
-| DELETE | `/scans/out-of-scope` | Admin. Bulk removal of out-of-scope records. |
-| GET | `/scans/{scan_id}/out-of-scope` | Per-scan OOS hosts. |
-| GET | `/scans/{scan_id}/out-of-scope/count` | |
+| GET | `/scans/out-of-scope` | Hosts outside every scope CIDR (derived from subnet correlation, paginated). |
 
 ### 4.3 Hosts
 

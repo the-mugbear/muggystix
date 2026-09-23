@@ -802,60 +802,6 @@ class DashboardStats(BaseModel):
     note_activity: Optional[NoteActivitySummary] = None
 
 
-class PortOfInterestSummary(BaseModel):
-    port: int
-    protocol: str
-    label: str
-    category: str
-    weight: int
-    open_host_count: int
-    rationale: str
-    recommended_action: str
-
-
-class PortOfInterestHostEntry(BaseModel):
-    port: int
-    protocol: str
-    label: str
-    service: str
-    weight: int
-    category: str
-
-
-class HostRiskExposure(BaseModel):
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    ports_of_interest: List[PortOfInterestHostEntry]
-    critical: int
-    high: int
-    medium: int
-    low: int
-    risk_score: int
-    port_score: int
-    vulnerability_score: int
-
-
-class VulnerabilityHotspot(BaseModel):
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    critical: int
-    high: int
-    medium: int
-    low: int
-    risk_score: int
-
-
-class PortsOfInterestInsights(BaseModel):
-    summary: List[PortOfInterestSummary]
-    top_hosts: List[HostRiskExposure]
-
-
-class RiskInsightResponse(BaseModel):
-    ports_of_interest: PortsOfInterestInsights
-    vulnerability_hotspots: List[VulnerabilityHotspot]
-
 class FileUploadResponse(BaseModel):
     job_id: int
     filename: str

@@ -1,11 +1,8 @@
-import base64
-import json
 import uuid
 from datetime import datetime
 from typing import Dict, Any, List
 
 from app.core.config import settings
-from app.services.subnet_calculator import SubnetCalculator
 
 class ReportTemplates:
     """Professional report templates for BlueStick exports"""
@@ -819,112 +816,13 @@ class ReportTemplates:
     @staticmethod
     def generate_executive_summary(report_data: Dict[str, Any]) -> str:
         """Generate executive summary based on report data"""
-        report_type = report_data.get('report_type', '')
-
-        if report_type == 'scope_report':
-            return ReportTemplates._generate_scope_executive_summary(report_data)
-        elif report_type == 'scan_report':
-            return ReportTemplates._generate_scan_executive_summary(report_data)
-        elif report_type == 'out_of_scope_findings':
-            return ReportTemplates._generate_out_of_scope_summary(report_data)
-        elif report_type == 'test_plan_execution':
+        # ``test_plan_execution`` is the only report type ExportService builds
+        # (the scope / scan / out-of-scope types were never produced; their
+        # templates were removed in v2.395.0).
+        if report_data.get('report_type') == 'test_plan_execution':
             return ReportTemplates._generate_execution_executive_summary(report_data)
-        else:
-            return "This report provides a comprehensive analysis of network discovery results."
-    
-    @staticmethod
-    def _generate_scope_executive_summary(data: Dict[str, Any]) -> str:
-        """Generate executive summary for scope reports"""
-        stats = data.get('statistics', {})
-        scope = data.get('scope', {})
-        
-        # Calculate subnet metrics if available
-        subnet_metrics = []
-        for subnet_data in scope.get('subnets', []):
-            cidr = subnet_data.get('cidr', '')
-            if cidr:
-                metrics = SubnetCalculator.calculate_subnet_metrics(cidr)
-                metrics['cidr'] = cidr
-                subnet_metrics.append(metrics)
-        
-        aggregates = SubnetCalculator.calculate_scope_aggregates([
-            {
-                'total_addresses': m['total_addresses'], 
-                'usable_addresses': m['usable_addresses'],
-                'discovered_hosts': 0,  # We'll update this with actual data
-                'utilization_percentage': 0,
-                'risk_level': 'unknown'
-            } 
-            for m in subnet_metrics
-        ])
-        
-        summary = f"""
-        <div class="executive-summary">
-            <h3>Executive Summary</h3>
-            <p><strong>Scope:</strong> {ReportTemplates._escape_html(scope.get('name', 'Unknown'))} contains {stats.get('total_subnets', 0)}
-            subnet(s) with a total address space of {aggregates.get('total_usable_addresses', 0):,} usable IP addresses.</p>
-            
-            <p><strong>Discovery Results:</strong> Network scanning discovered {stats.get('total_hosts', 0)} 
-            active hosts across {stats.get('total_scans', 0)} scan(s), indicating network utilization and 
-            potential security exposure points.</p>
-            
-            <p><strong>Web Services:</strong> {stats.get('total_eyewitness_results', 0)} web services were 
-            identified and catalogued, providing insight into web-based attack surfaces.</p>
-            
-            <p><strong>Out-of-Scope Findings:</strong> {stats.get('out_of_scope_hosts', 0)} hosts were 
-            discovered outside the defined scope, requiring investigation to ensure comprehensive coverage.</p>
-            
-            <p><strong>Security Implications:</strong> Each discovered host represents a potential attack vector. 
-            Priority should be given to securing exposed services and ensuring proper network segmentation.</p>
-        </div>
-        """
-        return summary
-    
-    @staticmethod
-    def _generate_scan_executive_summary(data: Dict[str, Any]) -> str:
-        """Generate executive summary for scan reports"""
-        scan = data.get('scan', {})
-        hosts = data.get('hosts', [])
-        
-        open_ports_count = sum(len([p for p in host.get('ports', []) if p.get('state') == 'open']) for host in hosts)
-        
-        summary = f"""
-        <div class="executive-summary">
-            <h3>Executive Summary</h3>
-            <p><strong>Scan Overview:</strong> This {scan.get('tool_name', 'network')} scan 
-            ({scan.get('filename', 'N/A')}) discovered {len(hosts)} active hosts with a total of 
-            {open_ports_count} open ports across the target network.</p>
-            
-            <p><strong>Security Exposure:</strong> Each open port represents a potential entry point for 
-            attackers. Critical services should be reviewed for necessity, proper configuration, and access controls.</p>
-            
-            <p><strong>Risk Assessment:</strong> Hosts with multiple open ports or common attack vectors 
-            (SSH, RDP, web services) require immediate security review and hardening measures.</p>
-        </div>
-        """
-        return summary
-    
-    @staticmethod
-    def _generate_out_of_scope_summary(data: Dict[str, Any]) -> str:
-        """Generate executive summary for out-of-scope reports"""
-        total_findings = data.get('total_out_of_scope_hosts', 0)
-        by_tool = data.get('findings_by_tool', {})
-        
-        summary = f"""
-        <div class="executive-summary">
-            <h3>Executive Summary</h3>
-            <p><strong>Scope Verification:</strong> {total_findings} hosts were discovered outside 
-            the defined project scope during network reconnaissance activities.</p>
-            
-            <p><strong>Discovery Sources:</strong> These findings originate from {len(by_tool)} different 
-            scanning tools, indicating comprehensive coverage may have extended beyond intended boundaries.</p>
-            
-            <p><strong>Action Required:</strong> Out-of-scope discoveries should be reviewed to determine 
-            if scope expansion is needed or if scanning parameters require adjustment for future assessments.</p>
-        </div>
-        """
-        return summary
-    
+        return "This report provides a comprehensive analysis of network discovery results."
+
     @staticmethod
     def generate_recommendations(report_data: Dict[str, Any]) -> str:
         """Generate security recommendations based on report data"""
@@ -938,15 +836,6 @@ class ReportTemplates:
             "Conduct regular vulnerability assessments",
             "Implement proper access controls and authentication"
         ])
-        
-        # Report-specific recommendations
-        if report_data.get('report_type') == 'scope_report':
-            hosts = report_data.get('hosts', [])
-            if any('22' in str(p.get('port_number', '')) for host in hosts for p in host.get('ports', [])):
-                recommendations.append("Review SSH access and implement key-based authentication")
-            if any('80' in str(p.get('port_number', '')) or '443' in str(p.get('port_number', '')) 
-                   for host in hosts for p in host.get('ports', [])):
-                recommendations.append("Audit web applications for security vulnerabilities")
         
         html = '<div class="recommendations" id="recommendations"><h4>Security Recommendations</h4>'
         for i, rec in enumerate(recommendations[:8], 1):  # Limit to top 8
@@ -1071,17 +960,7 @@ class ReportTemplates:
 
         stats_cards = []
 
-        # Common stats for all report types
-        if 'total_hosts' in stats:
-            stats_cards.append(f'<div class="stat-card"><div class="stat-value">{stats["total_hosts"]}</div><div class="stat-label">Discovered Hosts</div></div>')
-        if 'total_scans' in stats:
-            stats_cards.append(f'<div class="stat-card"><div class="stat-value">{stats["total_scans"]}</div><div class="stat-label">Scans Analyzed</div></div>')
-        if 'total_subnets' in stats:
-            stats_cards.append(f'<div class="stat-card"><div class="stat-value">{stats["total_subnets"]}</div><div class="stat-label">Network Subnets</div></div>')
-        if 'out_of_scope_hosts' in stats:
-            stats_cards.append(f'<div class="stat-card"><div class="stat-value">{stats["out_of_scope_hosts"]}</div><div class="stat-label">Out-of-Scope</div></div>')
-
-        # Test plan execution stats
+        # Test plan execution stats (the only report this template renders)
         if 'total_entries' in stats:
             stats_cards.append(f'<div class="stat-card"><div class="stat-value">{stats["total_entries"]}</div><div class="stat-label">Hosts in Plan</div></div>')
         if 'tests_executed' in stats:
@@ -1110,289 +989,12 @@ class ReportTemplates:
     
     @staticmethod
     def _generate_content_sections(data: Dict[str, Any]) -> str:
-        """Generate main content sections based on report type"""
-        report_type = data.get('report_type', '')
-        
-        if report_type == 'scope_report':
-            content = ReportTemplates._generate_scope_content(data)
-        elif report_type == 'scan_report':
-            content = ReportTemplates._generate_scan_content(data)
-        elif report_type == 'out_of_scope_findings':
-            content = ReportTemplates._generate_out_of_scope_content(data)
-        elif report_type == 'test_plan_execution':
-            content = ReportTemplates._generate_execution_content(data)
-        else:
-            return ""
-        if not content:
-            return ""
-        if 'id="details"' not in content:
-            # Anchor the nav's "Details" link at the first real .section
-            # element rather than a detached, zero-height placeholder div
-            # — the previous approach (<div id="details"></div>{content})
-            # made the nav land at an invisible anchor before the section
-            # header, which read as broken navigation.
-            first_section_marker = '<div class="section">'
-            if first_section_marker in content:
-                content = content.replace(
-                    first_section_marker,
-                    '<div class="section" id="details">',
-                    1,
-                )
-            else:
-                content = f'<div id="details"></div>{content}'
-        return content
-    
-    @staticmethod
-    def _generate_scope_content(data: Dict[str, Any]) -> str:
-        """Generate scope-specific content sections"""
-        content = ""
-        
-        # Subnet Information
-        scope = data.get('scope', {})
-        if scope.get('subnets'):
-            content += """
-            <div class="section">
-                <div class="section-header">🌐 Network Subnets</div>
-                <div class="section-content">
-                    <div class="interactive-table-wrapper">
-                        <div class="table-controls">
-                            <input type="text" class="table-search" placeholder="Filter subnets..." aria-label="Filter subnet rows">
-                            <span class="table-hint">Click column headers to sort</span>
-                        </div>
-                        <table class="interactive-table">
-                            <thead>
-                                <tr>
-                                    <th>CIDR Block</th>
-                                    <th>Description</th>
-                                    <th>Address Space</th>
-                                    <th>Network Type</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-            """
-            
-            # Subnet CIDR + description are operator/import-supplied strings —
-            # escape them like every other external value in the report (the
-            # scan/oos paths already do; this path previously did not).
-            esc = ReportTemplates._escape_html
-            for subnet in scope['subnets']:
-                metrics = SubnetCalculator.calculate_subnet_metrics(subnet.get('cidr', ''))
-                content += f"""
-                <tr>
-                    <td><code>{esc(subnet.get('cidr', 'N/A'))}</code></td>
-                    <td>{esc(subnet.get('description', 'No description'))}</td>
-                    <td>{metrics['usable_addresses']:,} usable ({metrics['total_addresses']:,} total)</td>
-                    <td>{'Private' if metrics['is_private'] else 'Public'}</td>
-                </tr>
-                """
-            
-            content += "</tbody></table></div></div></div>"
-        
-        # Host Information
-        hosts = data.get('hosts', [])
-        if hosts:
-            content += ReportTemplates._generate_hosts_table(hosts)
-        
-        # Out-of-scope hosts
-        oos_hosts = data.get('out_of_scope_hosts', [])
-        if oos_hosts:
-            content += ReportTemplates._generate_out_of_scope_table(oos_hosts)
-        
-        return content
-    
-    @staticmethod
-    def _generate_scan_content(data: Dict[str, Any]) -> str:
-        """Generate scan-specific content sections"""
-        content = ""
-
-        # Scan Information — every field is scanner/operator-controlled
-        # (filename can come from a manual upload, command_line is the
-        # raw scanner invocation, tool_name is parsed metadata), so each
-        # value MUST be HTML-escaped before interpolation to keep an
-        # exported HTML report from executing scanner-supplied markup
-        # when an analyst opens it.
-        scan = data.get('scan', {})
-        esc = ReportTemplates._escape_html
-        content += f"""
-        <div class="section">
-            <div class="section-header">🔍 Scan Details</div>
-            <div class="section-content">
-                <table>
-                    <tr><td><strong>Filename:</strong></td><td>{esc(scan.get('filename', 'N/A'))}</td></tr>
-                    <tr><td><strong>Tool:</strong></td><td>{esc(scan.get('tool_name', 'N/A'))}</td></tr>
-                    <tr><td><strong>Scan Type:</strong></td><td>{esc(scan.get('scan_type', 'N/A'))}</td></tr>
-                    <tr><td><strong>Command Line:</strong></td><td><code>{esc(scan.get('command_line', 'N/A'))}</code></td></tr>
-                    <tr><td><strong>Created:</strong></td><td>{esc(scan.get('created_at', 'N/A'))}</td></tr>
-                </table>
-            </div>
-        </div>
-        """
-
-        # Host Results
-        hosts = data.get('hosts', [])
-        if hosts:
-            content += ReportTemplates._generate_hosts_table(hosts)
-
-        return content
-    
-    @staticmethod
-    def _generate_out_of_scope_content(data: Dict[str, Any]) -> str:
-        """Generate out-of-scope findings content"""
-        findings_by_tool = data.get('findings_by_tool', {})
-        esc = ReportTemplates._escape_html
-
-        content = ""
-        for tool, findings in findings_by_tool.items():
-            if findings:
-                # `tool` originates in scanner output (parsed source key).
-                # Escape both the displayed title-cased form and the
-                # aria-label form so neither can break out of HTML.
-                tool_label_safe = esc(tool.title())
-                tool_aria_safe = esc(tool)
-                content += f"""
-                <div class="section">
-                    <div class="section-header">🔍 {tool_label_safe} Findings</div>
-                    <div class="section-content">
-                        <div class="interactive-table-wrapper">
-                            <div class="table-controls">
-                                <input type='text' class='table-search' placeholder='Filter findings...' aria-label='Filter {tool_aria_safe} out-of-scope findings'>
-                                <span class="table-hint">Click column headers to sort</span>
-                            </div>
-                            <table class="interactive-table">
-                            <thead>
-                                <tr>
-                                    <th>IP Address</th>
-                                    <th>Hostname</th>
-                                    <th>Ports</th>
-                                    <th>Reason</th>
-                                    <th>Found Date</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                """
-
-                for finding in findings:
-                    # ports_info is a JSON-stringified blob; JSON STRING
-                    # VALUES can carry attacker-controlled chars (an
-                    # nmap-banner-grabbed `<svg onload=alert(1)>` lands
-                    # verbatim in the JSON), so escape the whole thing.
-                    ports_info = (
-                        json.dumps(finding.get('ports', {}))
-                        if finding.get('ports')
-                        else 'None'
-                    )
-                    found_at_raw = finding.get('found_at')
-                    found_at = found_at_raw[:10] if found_at_raw else 'N/A'
-                    content += f"""
-                    <tr class="out-of-scope">
-                        <td><code>{esc(finding.get('ip_address', 'N/A'))}</code></td>
-                        <td>{esc(finding.get('hostname', 'N/A'))}</td>
-                        <td><small>{esc(ports_info)}</small></td>
-                        <td>{esc(finding.get('reason', 'N/A'))}</td>
-                        <td>{esc(found_at)}</td>
-                    </tr>
-                    """
-
-                content += "</tbody></table></div></div></div>"
-
-        return content
-    
-    @staticmethod
-    def _generate_hosts_table(hosts: List[Dict]) -> str:
-        """Generate hosts table section"""
-        if not hosts:
-            return ""
-        
-        content = """
-        <div class="section">
-            <div class="section-header">Discovered Hosts</div>
-            <div class="section-content">
-                <div class="interactive-table-wrapper">
-                    <div class="table-controls">
-                        <input type="text" class="table-search" placeholder="Filter hosts..." aria-label="Filter host rows">
-                        <span class="table-hint">Click column headers to sort</span>
-                    </div>
-                    <table class="interactive-table">
-                    <thead>
-                        <tr>
-                            <th>IP Address</th>
-                            <th>Hostname</th>
-                            <th>Operating System</th>
-                            <th>Open Ports</th>
-                            <th>Services</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """
-        
-        esc = ReportTemplates._escape_html
-        for host in hosts[:50]:  # Limit to first 50 hosts for readability
-            open_ports = [p for p in host.get('ports', []) if p.get('state') == 'open']
-            ports_str = ', '.join([f"{p.get('port_number', '')}/{p.get('protocol', '')}"
-                                  for p in open_ports[:10]])  # Limit ports display
-
-            services_str = ', '.join([p.get('service_name', 'unknown')
-                                    for p in open_ports[:5] if p.get('service_name')])
-
-            # Hostname / os_name / service_name are all scanner-derived
-            # and can carry markup; escape everything before
-            # interpolation to keep exported HTML reports XSS-safe.
-            content += f"""
-            <tr>
-                <td><code>{esc(host.get('ip_address', 'N/A'))}</code></td>
-                <td>{esc(host.get('hostname', 'N/A'))}</td>
-                <td>{esc(host.get('os_name', 'Unknown'))}</td>
-                <td><small>{esc(ports_str)}</small></td>
-                <td><small>{esc(services_str)}</small></td>
-            </tr>
-            """
-        
-        if len(hosts) > 50:
-            content += f"<tr data-static-row='true'><td colspan='5'><em>... and {len(hosts) - 50} more hosts</em></td></tr>"
-        
-        content += "</tbody></table></div></div></div>"
-        return content
-    
-    @staticmethod
-    def _generate_out_of_scope_table(oos_hosts: List[Dict]) -> str:
-        """Generate out-of-scope hosts table"""
-        if not oos_hosts:
-            return ""
-        
-        content = """
-        <div class="section">
-            <div class="section-header">⚠️ Out-of-Scope Hosts</div>
-            <div class="section-content">
-                <div class="interactive-table-wrapper">
-                    <div class="table-controls">
-                        <input type="text" class="table-search" placeholder="Filter out-of-scope hosts..." aria-label="Filter out-of-scope hosts">
-                        <span class="table-hint">Click column headers to sort</span>
-                    </div>
-                    <table class="interactive-table">
-                    <thead>
-                        <tr>
-                            <th>IP Address</th>
-                            <th>Hostname</th>
-                            <th>Tool Source</th>
-                            <th>Reason</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-        """
-        
-        esc = ReportTemplates._escape_html
-        for host in oos_hosts:
-            content += f"""
-            <tr class="out-of-scope">
-                <td><code>{esc(host.get('ip_address', 'N/A'))}</code></td>
-                <td>{esc(host.get('hostname', 'N/A'))}</td>
-                <td>{esc(host.get('tool_source', 'N/A'))}</td>
-                <td>{esc(host.get('reason', 'N/A'))}</td>
-            </tr>
-            """
-
-        content += "</tbody></table></div></div></div>"
-        return content
+        """The report's detail sections.  Only the test plan execution report
+        exists; its content opens with the ``id="details"`` section the nav
+        links to."""
+        if data.get('report_type') == 'test_plan_execution':
+            return ReportTemplates._generate_execution_content(data)
+        return ""
 
     # ------------------------------------------------------------------
     # Test Plan Execution Report

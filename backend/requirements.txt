@@ -6,8 +6,9 @@ alembic==1.16.5
 pydantic[email]==2.11.9
 python-multipart==0.0.20
 lxml==6.0.1
-python-dateutil==2.9.0.post0
 typing-extensions==4.15.0
+# Not imported by BlueStick: pinned because email-validator (pydantic[email])
+# requires it.
 dnspython==2.8.0
 pytest==8.4.2
 pytest-cov==7.0.0
@@ -15,8 +16,6 @@ pytest-asyncio==1.2.0
 httpx==0.28.1
 click==8.3.0
 starlette==1.6.0
-typer==0.19.1
-passlib[bcrypt]==1.7.4
 bcrypt==3.2.2
 PyJWT==2.8.0
 cryptography>=41.0.0

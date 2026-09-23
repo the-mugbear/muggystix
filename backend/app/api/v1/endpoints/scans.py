@@ -26,9 +26,9 @@ from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.format_registry import format_label
 from app.services.host_query_common import escape_like
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_auth import UserRole, User
+from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 
 logger = logging.getLogger(__name__)
@@ -37,10 +37,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
 # --- Response schemas for untyped endpoints ---
-
-class PurgeResponse(BaseModel):
-    purged: int = Field(..., description="Number of records deleted")
-
 
 class MessageResponse(BaseModel):
     message: str
@@ -1398,31 +1394,6 @@ def get_all_out_of_scope_hosts(
     )
 
 
-@router.delete(
-    "/out-of-scope",
-    response_model=PurgeResponse,
-    responses=_ADMIN_RESPONSES,
-    dependencies=[Depends(require_project_role(ProjectRole.ADMIN))],
-    summary="Purge all out-of-scope hosts (admin)",
-)
-def purge_out_of_scope_hosts(
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Delete all records from the out_of_scope_hosts table for this project. Requires admin role."""
-    try:
-        deleted = db.query(models.OutOfScopeHost).filter(
-            models.OutOfScopeHost.project_id == project.id
-        ).delete(synchronize_session=False)
-        db.commit()
-        logger.info("Purged %d out-of-scope hosts for project %d", deleted, project.id)
-        return {"purged": deleted}
-    except Exception as exc:  # pragma: no cover - defensive cleanup
-        db.rollback()
-        logger.error("Failed to purge out-of-scope hosts: %s", exc)
-        raise HTTPException(status_code=500, detail="Unable to purge out-of-scope records")
-
-
 _SCAN_DIFF_ROW_CAP = 500
 
 
@@ -1996,30 +1967,6 @@ def get_scan_dns_records(
     return Paginated.build(items=items, total=total, skip=skip, limit=limit)
 
 
-@router.get("/{scan_id}/out-of-scope", response_model=List[OutOfScopeHost])
-def get_scan_out_of_scope_hosts(
-    scan_id: int,
-    # v2.86.4 — pagination caps added.
-    skip: int = Query(0, ge=0),
-    limit: int = Query(100, ge=1, le=500),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get out-of-scope hosts for a specific scan with pagination"""
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    hosts = db.query(models.OutOfScopeHost).filter(
-        models.OutOfScopeHost.scan_id == scan_id
-    ).order_by(models.OutOfScopeHost.ip_address)\
-     .offset(skip).limit(limit).all()
-
-    return hosts
-
 @router.get(
     "/{scan_id}/command-explanation",
     response_model=CommandExplanationResponse,
@@ -2292,28 +2239,4 @@ def get_scan_hosts_count(
         query = query.filter(models.Host.state == state)
 
     count = query.count()
-    return {"total": count}
-
-@router.get(
-    "/{scan_id}/out-of-scope/count",
-    response_model=CountResponse,
-    responses={**_AUTH_RESPONSES, 404: {"description": "Scan not found"}},
-    summary="Count out-of-scope hosts in scan",
-)
-def get_scan_out_of_scope_count(
-    scan_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """Get total count of out-of-scope hosts for a scan (for pagination)."""
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
-        raise HTTPException(status_code=404, detail="Scan not found")
-
-    count = db.query(models.OutOfScopeHost).filter(
-        models.OutOfScopeHost.scan_id == scan_id
-    ).count()
     return {"total": count}

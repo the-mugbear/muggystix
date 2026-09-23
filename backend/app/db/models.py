@@ -817,37 +817,6 @@ class DNSRecord(Base):
     )
 
 
-class OutOfScopeHost(Base):
-    """DEPRECATED — no writer since host deduplication landed; always empty.
-
-    Out-of-scope is now derived (``app/services/scope_coverage.py``): a host
-    with no ``host_subnet_mappings`` row.  ``GET /scans/out-of-scope`` read
-    this table until v2.239.0 and therefore reported "nothing is out of scope"
-    for every project.  The only remaining reference is the admin purge
-    endpoint, which can only ever delete zero rows.  Dropping the table and
-    that endpoint needs sign-off; until then nothing should start writing it.
-    """
-
-    __tablename__ = "out_of_scope_hosts"
-
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False)
-    ip_address = Column(String, nullable=False, index=True)
-    hostname = Column(String)
-    ports = Column(JSON)  # Store port information as JSON
-    tool_source = Column(String)  # Which tool found this host
-    reason = Column(String)  # Why it's out of scope
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Relationships
-    scan = relationship("Scan")
-
-    __table_args__ = (
-        Index("idx_out_of_scope_hosts_scan", "scan_id"),
-    )
-
-
 class ParseError(Base):
     __tablename__ = "parse_errors"
 

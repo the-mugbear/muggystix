@@ -1,11 +1,11 @@
 """Regression tests for the shared HTML report template generators.
 
-Covers the v2.80.1 security fix: every scanner/operator-derived value
-interpolated into ``ReportTemplates._generate_*`` HTML must be escaped
-via ``_escape_html`` so an exported HTML report can't execute
-attacker-supplied markup when an analyst opens it in their browser.
+The per-report escaping tests for the scope / scan / out-of-scope report
+types went with those types in v2.395.0 (they were never produced); the
+test plan execution report's escaping is pinned in
+``test_execution_report.py``.
 
-Also covers the nav-link conditionality (no dead ``#metrics`` link when
+Covers the nav-link conditionality (no dead ``#metrics`` link when
 no statistics section is rendered) and the ``id="details"`` placement
 fix (the anchor must land on the first real ``.section`` rather than a
 detached empty div).
@@ -16,155 +16,23 @@ from __future__ import annotations
 import re
 from unittest.mock import MagicMock
 
-import pytest
-
 from app.services.report_templates import ReportTemplates
-
-
-XSS = '<script>alert("x")</script>'
-ESCAPED = '&lt;script&gt;alert(&quot;x&quot;)&lt;/script&gt;'
-
-
-def _assert_no_raw_script(html: str, label: str) -> None:
-    """Every variant of a raw <script> tag must be gone from the output.
-
-    Allowed: an escaped form (``&lt;script&gt;``). Disallowed: any
-    appearance of the literal ``<script>`` sequence (case-insensitive,
-    with optional whitespace) anywhere in the rendered HTML.
-    """
-    assert not re.search(r'<\s*script', html, re.IGNORECASE), (
-        f"{label}: a literal <script> tag survived escaping — HTML report XSS regression"
-    )
-
-
-class TestScanContentEscaping:
-    def test_scan_metadata_fields_escaped(self):
-        html = ReportTemplates._generate_scan_content({
-            'scan': {
-                'filename': XSS,
-                'tool_name': XSS,
-                'scan_type': XSS,
-                'command_line': XSS,
-                'created_at': XSS,
-            },
-            'hosts': [],
-        })
-        _assert_no_raw_script(html, '_generate_scan_content')
-        # The escaped form should appear at least once (proves escaping ran)
-        assert ESCAPED in html
-
-
-class TestScopeContentEscaping:
-    def test_subnet_description_escaped(self):
-        html = ReportTemplates._generate_scope_content({
-            'scope': {
-                'subnets': [
-                    # cidr is a valid network so SubnetCalculator doesn't bail;
-                    # description is operator free-text — the injection vector
-                    # this path previously interpolated without escaping.
-                    {'cidr': '10.0.0.0/24', 'description': XSS},
-                ],
-            },
-            'hosts': [],
-            'out_of_scope_hosts': [],
-        })
-        _assert_no_raw_script(html, '_generate_scope_content')
-        assert ESCAPED in html
-
-    def test_scope_executive_summary_name_escaped(self):
-        html = ReportTemplates._generate_scope_executive_summary({
-            'scope': {'name': XSS, 'subnets': []},
-            'statistics': {'total_subnets': 1, 'total_hosts': 2, 'total_scans': 1},
-        })
-        _assert_no_raw_script(html, '_generate_scope_executive_summary')
-        assert ESCAPED in html
-
-
-class TestOutOfScopeContentEscaping:
-    def test_finding_fields_escaped(self):
-        html = ReportTemplates._generate_out_of_scope_content({
-            'findings_by_tool': {
-                # The tool key itself is rendered into the section
-                # header + the aria-label; both must be escaped.
-                XSS: [
-                    {
-                        'ip_address': XSS,
-                        'hostname': XSS,
-                        # ports gets JSON-stringified; a malicious
-                        # service banner inside the JSON would land
-                        # verbatim in the cell without escaping.
-                        'ports': {'80/tcp': XSS},
-                        'reason': XSS,
-                        'found_at': f'{XSS}1234',
-                    }
-                ],
-            },
-        })
-        _assert_no_raw_script(html, '_generate_out_of_scope_content')
-
-
-class TestHostsTableEscaping:
-    def test_host_row_fields_escaped(self):
-        html = ReportTemplates._generate_hosts_table([
-            {
-                'ip_address': XSS,
-                'hostname': XSS,
-                'os_name': XSS,
-                'ports': [
-                    {
-                        'state': 'open',
-                        'port_number': '80',
-                        'protocol': 'tcp',
-                        # Scanner-derived service names can carry markup
-                        # from banner-grabs; must be escaped in the
-                        # joined services string too.
-                        'service_name': XSS,
-                    }
-                ],
-            }
-        ])
-        _assert_no_raw_script(html, '_generate_hosts_table')
-        assert ESCAPED in html
-
-
-class TestOutOfScopeTableEscaping:
-    def test_oos_host_row_fields_escaped(self):
-        html = ReportTemplates._generate_out_of_scope_table([
-            {
-                'ip_address': XSS,
-                'hostname': XSS,
-                'tool_source': XSS,
-                'reason': XSS,
-            }
-        ])
-        _assert_no_raw_script(html, '_generate_out_of_scope_table')
-        assert ESCAPED in html
 
 
 class TestNavConditionality:
     """Nav links must only point at sections that were actually rendered.
 
     Previously the shared report nav unconditionally included
-    ``<a href="#metrics">``, which made out-of-scope reports (no
-    statistics block) navigate to a missing target.
+    ``<a href="#metrics">``, which navigated to a missing target when no
+    statistics block was rendered.  The test plan execution report is the
+    only report this template renders.
     """
 
-    def test_out_of_scope_report_omits_metrics_link(self):
-        # An out-of-scope report payload with no `statistics` key MUST
-        # NOT render the Metrics nav link (no stats section is generated).
+    def test_report_without_statistics_omits_metrics_link(self):
         html = ReportTemplates.generate_professional_html_report({
-            'report_type': 'out_of_scope_findings',
-            'findings_by_tool': {
-                'nmap': [
-                    {
-                        'ip_address': '10.0.0.5',
-                        'hostname': 'host.example',
-                        'ports': {'80/tcp': 'http'},
-                        'reason': 'subnet not in scope',
-                        'found_at': '2026-05-29',
-                    }
-                ],
-            },
+            'report_type': 'test_plan_execution',
+            'plan': {'title': 'Plan'},
+            'entries': [],
         })
         # The summary anchor is always present.
         assert '<a href="#summary">Summary</a>' in html
@@ -173,16 +41,10 @@ class TestNavConditionality:
 
     def test_report_with_statistics_includes_metrics_link(self):
         html = ReportTemplates.generate_professional_html_report({
-            'report_type': 'scan_report',
-            'statistics': {'total_hosts': 12, 'total_scans': 1},
-            'scan': {
-                'filename': 'scan.xml',
-                'tool_name': 'nmap',
-                'scan_type': '-sS',
-                'command_line': 'nmap -sS 10.0.0.0/24',
-                'created_at': '2026-05-29',
-            },
-            'hosts': [],
+            'report_type': 'test_plan_execution',
+            'plan': {'title': 'Plan'},
+            'statistics': {'total_entries': 3, 'tests_executed': 5},
+            'entries': [],
         })
         assert '<a href="#metrics">' in html
         # Every href="#X" must have a matching id="X" somewhere in the doc.
@@ -260,15 +122,8 @@ class TestDetailsAnchorPlacement:
 
     def test_details_id_lives_on_first_section(self):
         content = ReportTemplates._generate_content_sections({
-            'report_type': 'scan_report',
-            'scan': {
-                'filename': 'scan.xml',
-                'tool_name': 'nmap',
-                'scan_type': '-sS',
-                'command_line': 'nmap -sS 10.0.0.0/24',
-                'created_at': '2026-05-29',
-            },
-            'hosts': [],
+            'report_type': 'test_plan_execution',
+            'entries': [],
         })
         # The first .section opens with id="details" — no detached
         # <div id="details"></div> placeholder.

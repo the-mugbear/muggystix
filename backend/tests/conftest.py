@@ -44,8 +44,7 @@ from app.db.models_auth import User, UserRole
 settings.REQUIRE_2FA = False
 
 # A real bcrypt hash so password-verifying endpoints (change-password,
-# etc.) don't blow up with passlib UnknownHashError on a placeholder
-# string.  Tests that need to authenticate as the fixture user can use
+# etc.) have something that can match (a placeholder string never does).  Tests that need to authenticate as the fixture user can use
 # TEST_USER_PASSWORD.
 TEST_USER_PASSWORD = "Test-Password-123!"
 TEST_USER_PW_HASH = get_password_hash(TEST_USER_PASSWORD)

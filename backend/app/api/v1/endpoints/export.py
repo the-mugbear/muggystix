@@ -5,7 +5,6 @@ from sqlalchemy import text as sql_text
 from app.db.session import get_db
 from app.services.csv_utils import safe_csv_row
 from app.services import scope_coverage
-from app.services.export_service import ExportService
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole

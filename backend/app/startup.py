@@ -449,7 +449,7 @@ def ensure_default_project() -> None:
     with SessionLocal() as db:
         tables = [
             "hosts_v2", "scans", "scopes", "ingestion_jobs",
-            "parse_errors", "dns_records", "out_of_scope_hosts",
+            "parse_errors", "dns_records",
         ]
         orphan_count = 0
         for tbl in tables:

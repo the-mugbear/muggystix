@@ -1,14 +1,12 @@
 """
 Agent API — agentic reconnaissance ingest workflow (v2.11.0+).
 
-These endpoints accept a scope-bound API key (api_keys.scope_id set)
-and gate on ``require_recon_scope``.  The agent's workflow is
-unrelated to test plans: discover hosts, upload raw scanner output,
-poll for parse completion, iterate, complete.
-
-Test-plan-scoped keys are rejected here, and recon keys are rejected
-on plan endpoints, so the two workflows are cleanly isolated at the
-auth layer.
+The agent's session opens a reconnaissance phase on a scope
+(``POST /agent/recon/start``), then discovers hosts, uploads raw scanner
+output, polls for parse completion, iterates and completes.  Since v2.337.0
+the key is project-scoped and the phase is resolved from the session
+(``agent_session_service.resolve_recon_phase``); the per-workflow
+``require_recon_scope`` guard is gone.
 """
 
 from datetime import datetime, timezone

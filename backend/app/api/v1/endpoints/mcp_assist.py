@@ -16,7 +16,7 @@ sampling, or the resources/prompts surfaces.  Implemented directly as a FastAPI
 route, which keeps the whole thing
 **in-process**, which is the important property: every tool call loops straight
 back into the app's own ``/api/v1/agent/assist/*`` (and ``/agent/hosts/*``)
-endpoints via an ASGI transport, so authentication (``require_assist_scope`` +
+endpoints via an ASGI transport, so authentication (the key's session +
 ``enforce_agent_operator_access``), the agent-API audit log middleware, and the
 recon streaming caps all run **unchanged**.  The MCP layer makes no security decision
 of its own — it forwards the caller's ``X-API-Key`` and lets the real endpoint
@@ -292,7 +292,8 @@ async def _loopback(
     """Call this app's own endpoint in-process via ASGI (no socket, no nginx).
 
     Runs the full middleware stack, so the agent-API audit log records the call
-    and ``require_assist_scope`` enforces auth exactly as for an external curl.
+    and ``enforce_agent_operator_access`` enforces auth exactly as for an
+    external curl.
 
     ``caller`` / ``user_agent`` carry the ORIGINAL client's identity into the
     loopback (v2.271.0).  Without them every MCP-driven call was audited as

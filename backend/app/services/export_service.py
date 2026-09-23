@@ -1,4 +1,3 @@
-import json
 import csv
 import io
 from datetime import datetime, timezone
@@ -33,49 +32,10 @@ class ExportService:
         # text instead of being evaluated as a spreadsheet formula on
         # open.  Pre-fix this path called ``writer.writerow`` directly,
         # bypassing the guard already in reports.py.
-        if data['report_type'] == 'scope_report' or data['report_type'] == 'scan_report':
-            # Create CSV for hosts
-            writer = csv.writer(output)
-            # Static header — no untrusted values.
-            writer.writerow([
-                'IP Address', 'Hostname', 'State', 'OS', 'Open Ports',
-                'Subnets', 'DNS Records', 'Scan ID'
-            ])
-
-            for host in data.get('hosts', []):
-                ports_str = '; '.join([f"{p['port_number']}/{p['protocol']}" for p in host['ports']])
-                subnets_str = '; '.join(host.get('subnets', []))
-                dns_str = '; '.join([f"{r['record_type']}: {r['value']}" for r in host['dns_records']])
-
-                safe_csv_row(writer, [
-                    host['ip_address'],
-                    host['hostname'] or '',
-                    host['state'] or '',
-                    host['os_name'] or '',
-                    ports_str,
-                    subnets_str,
-                    dns_str,
-                    host['scan_id']
-                ])
-
-        elif data['report_type'] == 'out_of_scope_findings':
-            writer = csv.writer(output)
-            writer.writerow([
-                'IP Address', 'Hostname', 'Tool Source', 'Reason', 'Ports', 'Found At'
-            ])
-
-            for finding in data.get('findings', []):
-                ports_str = json.dumps(finding['ports']) if finding['ports'] else ''
-                safe_csv_row(writer, [
-                    finding['ip_address'],
-                    finding['hostname'] or '',
-                    finding.get('tool_name', ''),
-                    finding['reason'] or '',
-                    ports_str,
-                    finding['found_at'] or ''
-                ])
-
-        elif data['report_type'] == 'test_plan_execution':
+        # ``test_plan_execution`` is the only report this service builds (the
+        # scope / scan / out-of-scope report types were never produced and
+        # their branches were removed in v2.395.0).
+        if data['report_type'] == 'test_plan_execution':
             writer = csv.writer(output)
             writer.writerow([
                 'Host IP', 'Hostname', 'Priority', 'Phase', 'Entry Status',
@@ -142,10 +102,7 @@ class ExportService:
         If ``session_id`` is None, the most-recently-started session for
         the plan is used.  Supported formats: json, csv, html.
         """
-        from app.db.models_agent import (
-            TestPlan, TestPlanEntry, ExecutionSession,
-            TestExecutionResult, HostSanityCheck,
-        )
+        from app.db.models_agent import TestPlan, ExecutionSession
 
         plan = self.db.query(TestPlan).filter(TestPlan.id == plan_id).first()
         if not plan:
@@ -215,7 +172,6 @@ class ExportService:
             .filter(TestPlanEntry.test_plan_id == plan.id)
             .all()
         )
-        entry_map = {e.id: e for e in entries}
 
         results = (
             self.db.query(TestExecutionResult)

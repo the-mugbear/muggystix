@@ -24,10 +24,9 @@ Each entry:
 **``workflows`` is an entry-point affordance, not a security boundary.**  Hiding
 a tool from a key that cannot use it stops the model from trying a call whose
 403 it would read as its own bug.  It decides nothing: every dispatch still
-loops back through the real endpoint, and ``require_plan_scope`` /
-``require_recon_scope`` / ``require_assist_scope`` /
-``require_execution_session_scope`` plus the router-level
-``enforce_agent_operator_access`` make the actual decision there.  The MCP layer
+loops back through the real endpoint, where the router-level
+``enforce_agent_operator_access`` and the object-level gates (approved plan,
+a run belongs to the session that opened it) make the actual decision.  The MCP layer
 makes no security decision anywhere, and this file must not become the place it
 starts.
 

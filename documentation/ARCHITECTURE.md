@@ -189,7 +189,6 @@ backend/app/
 │   ├── ip_trie.py
 │   ├── vulnerability_service.py
 │   ├── confidence_service.py
-│   ├── risk_insight_service.py
 │   ├── posture_service.py        # /posture composition (label + conclusion + heatmap + disposition)
 │   ├── engagement_metrics_service.py # cross-project counts: targets, tested, findings, judged / not-yet-judged
 │   │                             # observations, defect rate, period activity, contributors, testers, growth
@@ -272,7 +271,7 @@ Uploads flow through an asynchronous worker so the request path never blocks on 
 5. **Terminal state.** Success → `status='completed'`, `scan_id` set, `tool_name` set. Parse failure → `status='failed'`, `retry_count++`, `last_error` populated with a trimmed traceback or the user message. Unexpected exception → same, but with a `traceback` last_error.
 6. **Orphan reaping.** Every ~12 idle ticks (~1 min), the worker runs `reap_orphaned_jobs()` — transitions any `processing` job whose heartbeat is older than 3× `INGESTION_JOB_TIMEOUT` to `failed` with a clear "worker crashed" message and bumps `retry_count`. Closes the gap when a worker dies mid-parse.
 
-Parsed hosts flow through `host_deduplication_service` (dedupe by IP within project), `subnet_correlation` (bind hosts to scopes via an IP trie), and `vulnerability_service` (enrichment). `risk_insight_service` and `ports_of_interest` compute the derived tables that power the dashboard.
+Parsed hosts flow through `host_deduplication_service` (dedupe by IP within project), `subnet_correlation` (bind hosts to scopes via an IP trie), and `vulnerability_service` (enrichment). `ports_of_interest` is the catalog of exposed services that the subnet insights and Operations read.
 
 ---
 

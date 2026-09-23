@@ -7,10 +7,10 @@ operator wants to query their project — "which hosts expose FTP?",
 "summarize my critical findings", "what did the last recon turn up?"
 — without minting a plan key and triggering plan-approval ceremony.
 
-All endpoints gate on ``require_assist_scope`` (api_keys.assist_session_id
-set).  Plan, recon, and execution keys are rejected here, mirroring
-the cleanly-separated workflow boundaries on the other agent
-surfaces.
+Since v2.337.0 a key binds to one project-scoped ``AgentSession`` and these
+endpoints are gated like every agent route: the router-level
+``enforce_agent_operator_access`` and the operator's project role (the
+per-workflow ``require_assist_scope`` guard is gone).
 
 Scope of v1 (this file): read-only.  No execution authority, no
 plan creation, no follow mutation.  Future work (bulk-follow, scan-

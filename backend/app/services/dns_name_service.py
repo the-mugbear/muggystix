@@ -195,10 +195,6 @@ def wildcard_base(fqdn: str) -> str:
     return fqdn[len(WILDCARD_PREFIX):] if fqdn.startswith(WILDCARD_PREFIX) else fqdn
 
 
-def is_wildcard_pattern(raw: Optional[str]) -> bool:
-    return (raw or "").strip().startswith(WILDCARD_PREFIX)
-
-
 def hostname_from_url(url: Optional[str]) -> Optional[str]:
     """The URL's hostname when it is a NAME (not an IP literal), else None."""
     if not url:

@@ -1085,9 +1085,9 @@ def complete_execution_session(
     body: ExecutionSessionCompleteRequest,
     request: Request,
     session_id: int = Path(..., gt=0),
-    # v2.310.0 — the shared workflow guard for session-id-keyed execution
-    # routes. It replaces the inline checks that drifted apart between this
-    # route and its sibling; see require_execution_session_scope.
+    # The handler refuses a run the key's session did not open
+    # (``session.agent_session_id``); the v2.310.0
+    # ``require_execution_session_scope`` guard went in v2.337.0.
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):

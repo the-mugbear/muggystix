@@ -117,7 +117,7 @@ def get_current_user(
     # v2.91.4 (third code review #3) — switched from `async def` to
     # plain `def`.  Pre-fix this dep was `async def` but every call
     # inside it (verify_token / db.query.first() / db.commit())
-    # is synchronous psycopg2 / passlib work.  FastAPI runs `async
+    # is synchronous psycopg2 / bcrypt work.  FastAPI runs `async
     # def` deps directly on the event loop, so on every
     # authenticated request the loop blocked on two SELECTs + an
     # UPDATE; a slow DB stalled unrelated requests on the same

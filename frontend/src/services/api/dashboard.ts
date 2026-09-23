@@ -1,16 +1,12 @@
 /**
  * Dashboard + Operations-workbench API client.
  *
- * Dashboard summary stats, the personal-work surface (My Queue / Team
- * Review / My Tasks / Workbench since-last-visit), new-scans-since, and
- * agent-activity analytics.
+ * Dashboard summary stats, the Operations workbench (`GET /workbench`: my
+ * queue, tasks, notes, findings, team review, since-last-visit, the
+ * investigation queue, follow-ups, blockers) and agent-activity analytics.
  *
  * Extracted from the api.ts monolith.  Consumers still import these from
  * ``../services/api`` — the barrel re-exports this module.
- *
- * NOTE: risk-insights (RiskInsightResponse etc.) stays in api.ts for now
- * because it depends on the PortOfInterest* types that live with the
- * scope/host code; it'll move when those domains are extracted.
  */
 import { api, p } from './client';
 
@@ -338,14 +334,6 @@ export const getMyActivity = async (
   return response.data;
 };
 
-// --- New scans since last dashboard visit ---
-
-export interface NewScansSinceResponse {
-  count: number;
-  latest_scan_id: number | null;
-  latest_scan_filename: string | null;
-  latest_scan_created_at: string | null;
-}
 export interface AgentActivityStatusBreakdown {
   success: number;
   client_error: number;

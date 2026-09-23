@@ -8,22 +8,38 @@ import jwt
 from jwt.exceptions import InvalidTokenError, ExpiredSignatureError
 import bcrypt
 import secrets
-from passlib.context import CryptContext
 from fastapi import HTTPException, status
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
-from app.db.models_auth import User, UserSession, AuditLog, UserRole
+from app.db.models_auth import User, UserSession, AuditLog
 
-# Password hashing
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Password hashing — bcrypt directly (v2.395.0; passlib 1.7.4, last released
+# 2020, only wrapped it).  The behaviour is passlib's: ``$2b$`` hashes at cost
+# 12, stored ``$2a$`` / ``$2y$`` hashes still verify, a password is used up to
+# bcrypt's 72-byte limit (longer ones were always truncated there, so existing
+# hashes keep matching), and a NUL byte is refused rather than silently ending
+# the password.  One deliberate difference: a malformed stored hash now reads
+# as a failed login instead of raising.
+_BCRYPT_ROUNDS = 12
+_BCRYPT_MAX_BYTES = 72
+
+
+def _password_bytes(password: str) -> bytes:
+    data = password.encode("utf-8")
+    if b"\x00" in data:
+        raise ValueError("A password may not contain a NUL byte.")
+    return data[:_BCRYPT_MAX_BYTES]
+
 
 # Pre-computed bcrypt hash used to equalize timing when authenticate_user()
 # rejects a request for "user does not exist / inactive / locked" reasons.
 # Verifying against this still pays the full bcrypt cost so attackers cannot
 # distinguish those branches from "user exists but wrong password" via timing.
-_DUMMY_PASSWORD_HASH = pwd_context.hash("dummy-password-for-timing-equalization")
+_DUMMY_PASSWORD_HASH = bcrypt.hashpw(
+    _password_bytes("dummy-password-for-timing-equalization"), bcrypt.gensalt(_BCRYPT_ROUNDS),
+).decode("ascii")
 
 # JWT settings — use JWT_SECRET_KEY consistently for token signing
 _configured_secret = getattr(settings, 'JWT_SECRET_KEY', None)
@@ -56,13 +72,18 @@ ACCESS_TOKEN_EXPIRE_MINUTES = getattr(settings, 'ACCESS_TOKEN_EXPIRE_MINUTES', 4
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    """Verify a password against its hash"""
-    return pwd_context.verify(plain_password, hashed_password)
+    """Verify a password against its bcrypt hash."""
+    try:
+        return bcrypt.checkpw(_password_bytes(plain_password), (hashed_password or "").encode("ascii"))
+    except ValueError:
+        # A NUL byte in the attempt, or a stored value that is not a bcrypt
+        # hash: neither can match.
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    """Generate password hash"""
-    return pwd_context.hash(password)
+    """Hash a password with bcrypt (``$2b$``, cost 12)."""
+    return bcrypt.hashpw(_password_bytes(password), bcrypt.gensalt(_BCRYPT_ROUNDS)).decode("ascii")
 
 
 def validate_password_strength(password: str) -> Dict[str, Any]:
@@ -153,16 +174,16 @@ def authenticate_user(db: Session, username: str, password: str) -> Optional[Use
 
     if not user:
         # Equalize timing: still pay bcrypt cost so unknown vs known usernames are indistinguishable.
-        pwd_context.verify(password, _DUMMY_PASSWORD_HASH)
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
 
     if not user.is_active:
-        pwd_context.verify(password, _DUMMY_PASSWORD_HASH)
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
 
     # Check if account is locked
     if user.locked_until and user.locked_until > datetime.now(timezone.utc):
-        pwd_context.verify(password, _DUMMY_PASSWORD_HASH)
+        verify_password(password, _DUMMY_PASSWORD_HASH)
         return None
 
     if not verify_password(password, user.hashed_password):

@@ -179,8 +179,6 @@ EXPECTED_ONDELETE = {
     ('notifications', 'user_id'): 'CASCADE',
     ('operations_cursors', 'project_id'): 'CASCADE',
     ('operations_cursors', 'user_id'): 'CASCADE',
-    ('out_of_scope_hosts', 'project_id'): 'CASCADE',
-    ('out_of_scope_hosts', 'scan_id'): 'CASCADE',
     ('parse_errors', 'project_id'): 'CASCADE',
     ('port_confidence', 'port_id'): 'CASCADE',
     ('port_confidence', 'scan_id'): 'CASCADE',

@@ -139,66 +139,6 @@ export const getScanHostSnapshots = async (
   }
 };
 
-export interface PortOfInterestSummary {
-  port: number;
-  protocol: string;
-  label: string;
-  category: string;
-  weight: number;
-  open_host_count: number;
-  rationale: string;
-  recommended_action: string;
-}
-
-export interface PortOfInterestHostEntry {
-  port: number;
-  protocol: string;
-  label: string;
-  service: string;
-  weight: number;
-  category: string;
-}
-
-export interface HostRiskExposure {
-  host_id: number;
-  ip_address: string;
-  hostname: string | null;
-  ports_of_interest: PortOfInterestHostEntry[];
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  risk_score: number;
-  port_score: number;
-  vulnerability_score: number;
-}
-
-export interface VulnerabilityHotspot {
-  host_id: number;
-  ip_address: string;
-  hostname: string | null;
-  critical: number;
-  high: number;
-  medium: number;
-  low: number;
-  risk_score: number;
-}
-
-export interface RiskInsightResponse {
-  ports_of_interest: {
-    summary: PortOfInterestSummary[];
-    top_hosts: HostRiskExposure[];
-  };
-  vulnerability_hotspots: VulnerabilityHotspot[];
-}
-
-
-
-export const getRiskInsights = async (): Promise<RiskInsightResponse> => {
-  const response = await api.get(`${p()}/dashboard/risk-insights`);
-  return response.data;
-};
-
 // --- Saved Hosts page filter views (per-user, per-project) ---
 
 export interface ProjectMember {

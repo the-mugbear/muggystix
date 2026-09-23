@@ -1,28 +1,23 @@
-from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, joinedload
-from sqlalchemy import func, desc, case, and_, or_, false
+from sqlalchemy import func, desc, case, and_
 from app.db.session import get_db
 from app.db import models
-from app.db.models import FollowStatus, HostFollow
 from app.db.models_vulnerability import Vulnerability
-from app.db.models_agent import TestPlan, TestPlanEntry
 from app.schemas.schemas import (
     DashboardStats,
     ScanSummary,
     SubnetStats,
     VulnerabilityStats,
-    RiskInsightResponse,
     NoteActivitySummary,
     NoteActivityEntry,
     ReviewProgress,
 )
 from app.services.subnet_calculator import SubnetCalculator
 from app.services.vulnerability_service import VulnerabilityService
-from app.services.risk_insight_service import RiskInsightService
 from app.services.host_follow_service import HostFollowService
 # v2.244.0 — the personal-work routes (my-tasks / my-attention / team-review /
 # new-scans-since) were removed: GET /workbench batches all four from the same
@@ -277,37 +272,8 @@ def get_dashboard_stats(
         vulnerability_stats=vulnerability_stats,
         note_activity=note_activity,
     )
-@router.get(
-    "/risk-insights",
-    response_model=RiskInsightResponse,
-    summary="Risk insights — top hosts, ports of interest, vulnerability hotspots",
-)
-def get_risk_insights(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-    # v2.86.4 — top-N style endpoint; bound at 50 so a stray call can't
-    # ask for all insights at once.
-    limit: int = Query(10, ge=1, le=50),
-):
-    service = RiskInsightService(db)
-    return service.generate_insights(limit=limit, project_id=project.id)
-# ---------------------------------------------------------------------------
-# "New scans since last visit" alert.
-#
-# The frontend stores its own "last dashboard visit" timestamp in
-# localStorage and passes it to this endpoint as `since`.  The backend
-# returns a count and the most recent filename so the dashboard can
-# render an alert ("3 new scans uploaded since your last visit — open
-# Latest Scan").  No DB schema change needed: the frontend owns the
-# "I've seen up to" cursor, the backend just answers point queries.
-# ---------------------------------------------------------------------------
 
-class NewScansSinceResponse(BaseModel):
-    count: int
-    latest_scan_id: Optional[int] = None
-    latest_scan_filename: Optional[str] = None
-    latest_scan_created_at: Optional[datetime] = None
+
 # ---------------------------------------------------------------------------
 # Network topology — project → scope → subnet graph for the topology view.
 # Bounded by design: subnets carry host counts (not host-level nodes), and
