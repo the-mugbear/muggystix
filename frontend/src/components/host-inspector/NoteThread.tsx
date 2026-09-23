@@ -13,7 +13,8 @@ import {
   SelectTrigger,
   SelectValue,
 } from '../ui/select';
-import { Textarea } from '../ui/textarea';
+import MentionText from '../MentionText';
+import MentionTextarea from '../MentionTextarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 import { cn } from '../../utils/cn';
 import NoteAttachments, { type NoteAttachmentsHandle } from './NoteAttachments';
@@ -245,7 +246,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
             a screen of markdown). Long bodies open on demand; the threshold is
             on the text, not a DOM measurement. */}
         <p className={cn('whitespace-pre-wrap break-words text-body', longBody && !bodyOpen && 'line-clamp-4')}>
-          {note.body}
+          <MentionText text={note.body} />
         </p>
         {longBody && (
           <button type="button" onClick={() => setBodyOpen((v) => !v)} aria-expanded={bodyOpen}
@@ -284,7 +285,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         <div className={cn('mt-sm flex flex-col', mine ? 'items-start' : 'items-end')}>
           <div className="w-full max-w-[85%] border-l-2 border-primary pl-sm">
             <p className="text-caption text-muted-foreground">Replying to {replyTo.author}</p>
-            <Textarea rows={2} aria-label={`Reply to ${replyTo.author}`} placeholder="Write your reply…"
+            <MentionTextarea rows={2} aria-label={`Reply to ${replyTo.author}`} placeholder="Write your reply…"
               value={replyBody} onChange={(e) => onReplyBodyChange(e.target.value)} disabled={noteSubmitting}
               className="mt-xxs" />
             <div className="mt-xs flex justify-end gap-xs">

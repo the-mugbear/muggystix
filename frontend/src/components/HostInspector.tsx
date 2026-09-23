@@ -951,6 +951,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         body: noteBody.trim(),
         status: noteStatus,
       });
+      if (response.mention_warning) toast.warning(response.mention_warning);
       const uploaded: NoteAttachment[] = [];
       const failed: PendingImage[] = [];
       for (const img of toUpload) {
@@ -1049,7 +1050,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       setNotes((prev) => [newNote, ...prev]);
       setReplyTo(null);
       setReplyBody('');
-      toast.success('Reply posted.');
+      if (newNote.mention_warning) toast.warning(newNote.mention_warning);
+      else toast.success('Reply posted.');
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to post reply.'));
     } finally {

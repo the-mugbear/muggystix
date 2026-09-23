@@ -5,9 +5,8 @@ Handles @mention parsing, notification creation, and delivery for the
 pentest coordination platform.
 """
 
-import re
 import logging
-from typing import List, Optional
+from typing import Iterable, List, Optional, Set
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -20,8 +19,45 @@ from app.db.models import Annotation
 
 logger = logging.getLogger(__name__)
 
-# Match @username patterns — alphanumeric + underscores, 1-50 chars
-MENTION_PATTERN = re.compile(r"@(\w{1,50})\b")
+
+def _continues_name(ch: str) -> bool:
+    return ch.isalnum() or ch == "_"
+
+
+def find_mentions(body: str, usernames: Iterable[str]) -> Set[str]:
+    """The usernames ``body`` @mentions, matched against a KNOWN list.
+
+    A pattern like ``@(\\w+)`` cannot be used: usernames are free text
+    (``eval-ana``, ``j.smith``), and ``\\w`` stops at the hyphen, so
+    ``@eval-ana`` resolved to ``eval`` and notified nobody.  Instead each
+    ``@`` is compared with the candidate names, longest first,
+    case-insensitively.  A match must end at a boundary: ``@ana`` does not
+    match inside ``@anabel`` or ``@ana-maria``, but does before punctuation
+    (``@ana.``, ``@ana,``).  An ``@`` inside a word (an e-mail address) is
+    not a mention.
+    """
+    if not body or "@" not in body:
+        return set()
+    names = sorted({u for u in usernames if u}, key=len, reverse=True)
+    lowered = [(n, n.lower()) for n in names]
+    low = body.lower()
+    found: Set[str] = set()
+    at = body.find("@")
+    while at != -1:
+        prev = body[at - 1] if at > 0 else ""
+        if not (prev and (_continues_name(prev) or prev in ".-")):
+            for name, lname in lowered:
+                if not low.startswith(lname, at + 1):
+                    continue
+                end = at + 1 + len(lname)
+                nxt = body[end] if end < len(body) else ""
+                after = body[end + 1] if end + 1 < len(body) else ""
+                if _continues_name(nxt) or (nxt in (".", "-") and _continues_name(after)):
+                    continue
+                found.add(name)
+                break
+        at = body.find("@", at + 1)
+    return found
 
 
 class NotificationService:
@@ -29,32 +65,41 @@ class NotificationService:
         self.db = db
 
     def parse_mentions(self, body: str, project_id: int) -> List[User]:
-        """Extract @username patterns from ``body`` and resolve to User
-        objects whose membership includes ``project_id``.
+        """Resolve the @mentions in ``body`` to active members of
+        ``project_id`` (see ``find_mentions`` for the matching rule).
 
         Security fix: previously matched any active username globally,
         which leaked Project A context (project_id, host label, note
-        body) to a user who only belonged to Project B.  Scoping to
-        members of the note's own project closes that authorization
-        boundary break.
+        body) to a user who only belonged to Project B.  Only members of
+        the note's own project are candidates.
         """
-        if not body:
+        if not body or "@" not in body:
             return []
 
-        usernames = set(MENTION_PATTERN.findall(body))
-        if not usernames:
-            return []
-
-        return (
+        members = (
             self.db.query(User)
             .join(ProjectMembership, ProjectMembership.user_id == User.id)
             .filter(
-                User.username.in_(usernames),
                 User.is_active.is_(True),
                 ProjectMembership.project_id == project_id,
             )
             .all()
         )
+        names = find_mentions(body, (u.username for u in members))
+        return [u for u in members if u.username in names]
+
+    def _note_context(self, note: Annotation) -> dict:
+        """Where a note lives, for a notification: the label a title reads
+        and the ids the Activity page deep-links with."""
+        if note.finding_id is not None:
+            finding = note.finding
+            title = finding.title if finding is not None else f"finding #{note.finding_id}"
+            if len(title) > 80:
+                title = title[:79] + "…"
+            return {"label": f"finding “{title}”", "host_id": None, "finding_id": note.finding_id}
+        host = note.host
+        label = host.ip_address if host else f"host #{note.host_id}"
+        return {"label": label, "host_id": note.host_id, "finding_id": None}
 
     def process_note_mentions(
         self,
@@ -62,11 +107,15 @@ class NotificationService:
         actor: User,
         project: Project,
     ) -> List[Notification]:
-        """Parse mentions from a note, create NoteMention records, and
-        generate notifications for each mentioned user.
+        """Parse mentions from a note (on a host or a finding), record them,
+        and notify each mentioned user.
 
         ``project`` is required (was ``Optional`` pre-2.48.2) so mention
         resolution can scope to project membership — see parse_mentions.
+
+        Only a user NEWLY mentioned in this note is notified: an edit that
+        keeps an existing @mention does not ping that user again (the
+        ``note_mentions`` row is the record that they were told).
 
         Returns the list of created Notification objects.
         """
@@ -74,43 +123,115 @@ class NotificationService:
         if not mentioned_users:
             return []
 
+        already = {
+            uid for (uid,) in self.db.query(NoteMention.user_id)
+            .filter(NoteMention.note_id == note.id).all()
+        }
+        ctx = self._note_context(note)
         notifications = []
-        project_id = project.id
-        project_name = project.name
-
-        # Get the host IP for context
-        host = note.host
-        host_label = host.ip_address if host else f"host #{note.host_id}"
-
         for user in mentioned_users:
-            # Don't notify yourself
-            if user.id == actor.id:
+            # Don't notify yourself, nor anyone this note already told.
+            if user.id == actor.id or user.id in already:
                 continue
-
-            # Create mention record (idempotent)
-            existing = self.db.query(NoteMention).filter(
-                NoteMention.note_id == note.id,
-                NoteMention.user_id == user.id,
-            ).first()
-            if not existing:
-                mention = NoteMention(note_id=note.id, user_id=user.id)
-                self.db.add(mention)
-
-            # Create notification
+            self.db.add(NoteMention(note_id=note.id, user_id=user.id))
             notification = Notification(
                 user_id=user.id,
-                project_id=project_id,
+                project_id=project.id,
                 type="mention",
-                title=f"@{actor.username} mentioned you on {host_label}",
+                title=f"@{actor.username} mentioned you on {ctx['label']}"[:255],
                 body=note.body[:200] if note.body else None,
                 source_type="note",
                 source_id=note.id,
-                host_id=note.host_id,
+                host_id=ctx["host_id"],
+                finding_id=ctx["finding_id"],
                 actor_id=actor.id,
             )
             self.db.add(notification)
             notifications.append(notification)
 
+        return notifications
+
+    def notify_discussion_participants(
+        self,
+        note: Annotation,
+        actor: User,
+        project: Project,
+        exclude_user_ids: Optional[set] = None,
+    ) -> List[Notification]:
+        """Tell the people already in a conversation that it moved on, so a
+        reply reaches them without an @mention.
+
+        - A comment on a FINDING goes to everyone who has commented on that
+          finding, its author (``created_by_id``) and its owner — the finding
+          page shows one conversation, so its participants are the whole
+          thread.
+        - A REPLY to a host note goes to everyone who has written in that
+          thread.  A new top-level host note has no thread yet; the host's
+          reviewers hear about it through ``notify_host_followers_of_note``.
+
+        Skips the author and ``exclude_user_ids`` (those @mentioned, who were
+        already told), and anyone no longer an active project member.
+        """
+        exclude = set(exclude_user_ids or set())
+        exclude.add(actor.id)
+
+        if note.finding_id is not None:
+            recipients = {
+                uid for (uid,) in self.db.query(Annotation.user_id)
+                .filter(Annotation.finding_id == note.finding_id, Annotation.user_id.isnot(None))
+                .distinct().all()
+            }
+            finding = note.finding
+            if finding is not None:
+                recipients.update(u for u in (finding.created_by_id, finding.owner_id) if u)
+            ntype = "finding_comment"
+        elif note.parent_id is not None:
+            root_id = note.thread_root_id or note.parent_id
+            recipients = {
+                uid for (uid,) in self.db.query(Annotation.user_id)
+                .filter(
+                    (Annotation.thread_root_id == root_id) | (Annotation.id == root_id),
+                    Annotation.user_id.isnot(None),
+                )
+                .distinct().all()
+            }
+            ntype = "note_reply"
+        else:
+            return []
+
+        recipients -= exclude
+        if not recipients:
+            return []
+        # Only current, active members of this project: someone removed from
+        # the project must not keep receiving its note bodies.
+        recipients = {
+            uid for (uid,) in self.db.query(ProjectMembership.user_id)
+            .join(User, User.id == ProjectMembership.user_id)
+            .filter(
+                ProjectMembership.project_id == project.id,
+                ProjectMembership.user_id.in_(recipients),
+                User.is_active.is_(True),
+            ).all()
+        }
+
+        ctx = self._note_context(note)
+        verb = "replied" if note.parent_id is not None else "commented"
+        notifications = []
+        for uid in recipients:
+            notification = Notification(
+                user_id=uid,
+                project_id=project.id,
+                type=ntype,
+                title=f"@{actor.username} {verb} on {ctx['label']}"[:255],
+                body=note.body[:200] if note.body else None,
+                source_type="note",
+                source_id=note.id,
+                host_id=ctx["host_id"],
+                finding_id=ctx["finding_id"],
+                actor_id=actor.id,
+            )
+            self.db.add(notification)
+            notifications.append(notification)
         return notifications
 
     def notify_status_change(

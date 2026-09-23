@@ -316,6 +316,8 @@ export interface Annotation {
   attachments?: NoteAttachment[];
   created_at: string;
   updated_at?: string | null;
+  /** Set when the note saved but its notifications could not be sent. */
+  mention_warning?: string | null;
 }
 
 export interface NoteAttachment {

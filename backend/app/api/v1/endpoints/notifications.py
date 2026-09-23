@@ -30,6 +30,7 @@ class NotificationResponse(BaseModel):
     source_type: Optional[str] = None
     source_id: Optional[int] = None
     host_id: Optional[int] = None
+    finding_id: Optional[int] = None
     actor_id: Optional[int] = None
     is_read: bool = False
     read_at: Optional[datetime] = None

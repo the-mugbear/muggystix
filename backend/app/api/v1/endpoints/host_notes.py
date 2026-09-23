@@ -394,11 +394,17 @@ def create_host_note(
     try:
         notification_service = NotificationService(db)
         mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
-        # Also alert anyone reviewing this host (minus the author + anyone just
-        # @mentioned, so nobody's pinged twice) that a new note landed on it.
-        mentioned_ids = {n.user_id for n in mention_notifs}
+        # A reply reaches everyone already in the thread without an @mention;
+        # then anyone reviewing this host hears a note landed on it.  Each
+        # step skips those already told, so nobody is pinged twice.
+        told = {n.user_id for n in mention_notifs}
+        told |= {
+            n.user_id for n in notification_service.notify_discussion_participants(
+                note, current_user, project, exclude_user_ids=told,
+            )
+        }
         notification_service.notify_host_followers_of_note(
-            note, current_user, project, exclude_user_ids=mentioned_ids,
+            note, current_user, project, exclude_user_ids=told,
         )
         # v2.302.0 — staged INSIDE this transaction, immediately before the
         # commit that makes the note real. The outbox row and the note are now

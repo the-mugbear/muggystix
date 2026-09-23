@@ -125,6 +125,9 @@ class Notification(Base):
     # of a dead /hosts?note= link. Plain int (no FK) — like source_id, it's a
     # soft polymorphic reference, not a constraint.
     host_id = Column(Integer, nullable=True, index=True)
+    # v2.397.0 — the finding a finding-comment notification points at
+    # (/findings/<finding_id>#note-<source_id>); soft reference like host_id.
+    finding_id = Column(Integer, nullable=True, index=True)
     # v2.86.1 — ondelete=SET NULL so deleting the actor preserves the
     # notification (audit-trail) but nulls the actor link.  Without this,
     # deleting any user who has ever produced a notification fails with

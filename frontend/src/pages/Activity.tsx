@@ -233,6 +233,8 @@ const Activity: React.FC = () => {
       navigate(`/hosts?scan_ids=${n.source_id}`);
     } else if (n.source_type === 'report_job' && n.source_id) {
       navigate(`/hosts?reports=1&job=${n.source_id}`);
+    } else if (n.source_type === 'note' && n.finding_id && n.source_id) {
+      navigate(`/findings/${n.finding_id}#note-${n.source_id}`);
     } else if (n.source_type === 'note' && n.host_id && n.source_id) {
       navigate(`/hosts/${n.host_id}#note-${n.source_id}`);
     } else if (n.host_id) {

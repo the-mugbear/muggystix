@@ -18,8 +18,9 @@ import {
   uploadFindingNoteAttachment,
 } from '../services/api';
 import NoteAttachments, { type NoteAttachmentsHandle } from './host-inspector/NoteAttachments';
+import MentionText from './MentionText';
+import MentionTextarea from './MentionTextarea';
 import { Button } from './ui/button';
-import { Textarea } from './ui/textarea';
 import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
@@ -86,6 +87,19 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
 
   useEffect(() => { void load(); }, [load]);
 
+  // A notification links to /findings/:id#note-:noteId — bring that comment
+  // into view once the thread has loaded.
+  const scrolledTo = useRef<string | null>(null);
+  useEffect(() => {
+    const hash = window.location.hash;
+    if (!notes || !hash.startsWith('#note-') || scrolledTo.current === hash) return;
+    const el = document.getElementById(hash.slice(1));
+    if (el) {
+      scrolledTo.current = hash;
+      el.scrollIntoView?.({ block: 'center' });
+    }
+  }, [notes]);
+
   const startReply = (note: Annotation) => {
     setReplyTo(note);
     setTimeout(() => composerRef.current?.focus(), 0);
@@ -140,6 +154,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     setSubmitting(true);
     try {
       const note = await createFindingNote(findingId, body, replyTo?.id ?? null);
+      if (note.mention_warning) toast.warning(note.mention_warning);
       const failed: PendingFile[] = [];
       for (const entry of fresh) {
         const f = await attachOne(entry, note.id);
@@ -168,6 +183,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     setNoteBusy(editing.id);
     try {
       const updated = await updateFindingNote(findingId, editing.id, text);
+      if (updated.mention_warning) toast.warning(updated.mention_warning);
       setNotes((prev) => (prev ? prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)) : prev));
       setEditing(null);
     } catch (err) {
@@ -226,6 +242,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     return (
       <MessageBubble
         key={note.id}
+        id={`note-${note.id}`}
         mine={authored}
         author={safeFallback(note.author_name, 'Unknown analyst')}
         actorType={note.actor_type}
@@ -286,7 +303,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
       >
         {isEditing ? (
           <div className="space-y-xs">
-            <Textarea
+            <MentionTextarea
               autoFocus
               rows={3}
               value={editing.text}
@@ -305,7 +322,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
             </div>
           </div>
         ) : (
-          note.body && <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
+          note.body && <p className="whitespace-pre-wrap break-words text-body"><MentionText text={note.body} /></p>
         )}
         <NoteAttachments
           ref={(h) => { if (h) attachRefs.current.set(note.id, h); else attachRefs.current.delete(note.id); }}
@@ -385,7 +402,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
                 </button>
               </div>
             )}
-            <Textarea
+            <MentionTextarea
               ref={composerRef}
               rows={3}
               placeholder="Add a comment — repro steps, rationale, or paste a screenshot…"
@@ -394,6 +411,10 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
               onPaste={onPaste}
               aria-label="New comment"
             />
+            <p className="text-caption text-muted-foreground">
+              <strong>@username</strong> notifies a teammate · everyone who has commented here, the
+              finding&apos;s author and its owner hear about new comments
+            </p>
             {failedCount > 0 && (
               <p className="text-caption text-destructive" role="status">
                 Comment saved · {failedCount} attachment{failedCount === 1 ? '' : 's'} failed — retry or remove.

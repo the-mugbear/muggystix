@@ -28,6 +28,8 @@ from app.services.report_text import REPORT_TEXT_FIELDS
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
 from app.services.note_attachment_service import purge_note_files, store_image_attachment
+from app.services.notification_service import NotificationService
+from app.services.webhook_dispatcher import stage_dispatch
 from app.schemas.schemas import (
     Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
 )
@@ -600,6 +602,47 @@ def remove_finding_endpoint(
 # that evidence.  Reuses the host-note Annotation machinery on a finding_id
 # target (see FindingService.{list,create}_finding_note).
 
+_NOTIFY_WARNING = (
+    "Comment saved, but notifications could not be delivered. "
+    "Mentioned users and others in the discussion may not have been alerted."
+)
+
+
+def _notify_finding_comment(
+    db: Session, note: Annotation, actor: User, project: Project, *, created: bool,
+) -> Optional[str]:
+    """Best-effort notifications for a finding comment, after the comment
+    itself has committed (the host-note contract, audit H3): @mentioned
+    members first, then — for a NEW comment — everyone already in the
+    discussion.  A failure never loses the comment; it comes back as a
+    warning the client shows."""
+    try:
+        svc = NotificationService(db)
+        mentions = svc.process_note_mentions(note, actor, project) or []
+        if created:
+            svc.notify_discussion_participants(
+                note, actor, project, exclude_user_ids={n.user_id for n in mentions},
+            )
+        if mentions:
+            stage_dispatch(
+                db,
+                project_id=project.id,
+                event="note_mention",
+                title=f"@{actor.username} mentioned {len(mentions)} user(s) on finding #{note.finding_id}",
+                body=(note.body or "")[:280],
+                context={"finding_id": note.finding_id, "note_id": note.id},
+            )
+        db.commit()
+        return None
+    except Exception:
+        logger.exception(
+            "Finding comment notifications failed",
+            extra={"note_id": note.id, "finding_id": note.finding_id, "author_id": actor.id},
+        )
+        db.rollback()
+        return _NOTIFY_WARNING
+
+
 @router.get(
     "/findings/{finding_id}/notes",
     response_model=List[AnnotationSchema],
@@ -638,7 +681,9 @@ def create_finding_note(
     except ValueError as exc:
         # parent_id validation failure (cross-finding threading attempt).
         raise HTTPException(status_code=400, detail=str(exc))
-    return _serialize_note(note)
+    warning = _notify_finding_comment(db, note, current_user, project, created=True)
+    serialized = _serialize_note(note)
+    return serialized.model_copy(update={"mention_warning": warning}) if warning else serialized
 
 
 @router.patch(
@@ -669,11 +714,14 @@ def update_finding_note(
         raise HTTPException(status_code=422, detail="A comment cannot be empty")
     note.body = body
     db.commit()
+    # An @mention added by the edit notifies that user; ones already there don't.
+    warning = _notify_finding_comment(db, note, current_user, project, created=False)
     note = (
         db.query(Annotation).options(*note_load_options())
         .filter(Annotation.id == note_id).populate_existing().one()
     )
-    return _serialize_note(note)
+    serialized = _serialize_note(note)
+    return serialized.model_copy(update={"mention_warning": warning}) if warning else serialized
 
 
 @router.delete(

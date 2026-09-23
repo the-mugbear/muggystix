@@ -21,7 +21,7 @@ import { Label } from '../ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../ui/select';
-import { Textarea } from '../ui/textarea';
+import MentionTextarea from '../MentionTextarea';
 
 export interface ComposerImage {
   url: string;
@@ -77,7 +77,7 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
         </Alert>
       )}
       <Label htmlFor={`host-${hostId}-note-body`} className="sr-only">Note</Label>
-      <Textarea
+      <MentionTextarea
         id={`host-${hostId}-note-body`}
         rows={open ? 3 : 1}
         className={cn(!open && 'min-h-0 resize-none')}
@@ -159,7 +159,7 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
             </Select>
           </div>
           <p className="min-w-0 flex-1 text-caption text-muted-foreground">
-            <strong>@username</strong> notifies a teammate · <strong>paste a screenshot</strong> (Ctrl/Cmd+V) to attach it
+            <strong>@username</strong> notifies a teammate · replies reach everyone in the thread · <strong>paste a screenshot</strong> (Ctrl/Cmd+V) to attach it
           </p>
           <Button size="sm" onClick={onSubmit} disabled={submitting}>
             {submitting ? (
