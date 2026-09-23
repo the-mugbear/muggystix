@@ -14,7 +14,7 @@ from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
 from lxml import etree
 
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
-from sqlalchemy import text
+from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -49,8 +49,8 @@ class MasscanParser:
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         """Dispatch to format-specific parsers based on file extension."""
         self._project_id = kwargs.get("project_id")
-        # v2.390.0 — `--banners` output: (ip, port, proto, kind, banner).
-        self._banners: List[Tuple[str, int, str, str, str]] = []
+        # v2.390.0 — `--banners` output: (ip, port, proto, kind) → the latest banner.
+        self._banners: Dict[Tuple[str, int, str, str], str] = {}
         start = time.time()
         scan = self._create_scan_record(filename)
         # JSON records and list lines carry per-record epoch timestamps; the
@@ -684,37 +684,64 @@ class MasscanParser:
         # XML carries the bytes escaped ("\x0d\x0a"); JSON already decoded them.
         text = re.sub(r"\\x0d\\x0a|\\x0a", "\n", str(banner)).replace("\\x0d", "").replace("\r", "").strip()
         if text and hasattr(self, "_banners"):
-            self._banners.append((ip, port, protocol or "tcp", (kind or "banner").strip() or "banner", text[:20000]))
+            # Keyed, so a repeated banner replaces the earlier one instead of
+            # accumulating (the list held every banner of the file).
+            self._banners[(ip, port, protocol or "tcp", (kind or "banner").strip() or "banner")] = text[:20000]
+
+    _BANNER_CHUNK = 1000
 
     def _store_banners(self, scan_id: int) -> None:
         """v2.390.0 — `--banners` output as script output on its port
         (``masscan-<kind>``: http.server, title, http, ssh …), shown in the
         inspector beside nmap's.  It was read past and dropped in all three
         formats.  Runs after the ports are persisted; a port the bulk insert
-        did not create (not open) is skipped."""
+        did not create (not open) is skipped.
+
+        Batched per 1,000 addresses: the ports in one query, their existing
+        masscan scripts in one more, one flush.  It was a query per banner
+        (plus the script lookup and a flush each) — ~5 statements per banner,
+        minutes for ``--banners`` over a /16 (review 2026-09-23 R5)."""
         if not self._banners:
             return
-        latest: Dict[Tuple[str, int, str, str], str] = {}
-        for ip, port, proto, kind, text in self._banners:
-            latest[(ip, port, proto, kind)] = text
-        from app.services.host_deduplication_service import HostDeduplicationService
-
-        dedup = HostDeduplicationService(self.db)
-        port_ids: Dict[Tuple[str, int, str], Optional[int]] = {}
-        for (ip, port, proto, kind), text in latest.items():
-            key = (ip, port, proto)
-            if key not in port_ids:
-                row = (
-                    self.db.query(models.Port.id)
+        by_ip: Dict[str, List[Tuple[int, str, str, str]]] = {}
+        for (ip, port, proto, kind), text in self._banners.items():
+            by_ip.setdefault(ip, []).append((port, proto, kind, text))
+        ips = list(by_ip)
+        for start in range(0, len(ips), self._BANNER_CHUNK):
+            chunk = ips[start:start + self._BANNER_CHUNK]
+            port_ids = {
+                (ip, number, proto): pid
+                for pid, ip, number, proto in (
+                    self.db.query(models.Port.id, models.Host.ip_address, models.Port.port_number, models.Port.protocol)
                     .join(models.Host, models.Host.id == models.Port.host_id)
-                    .filter(models.Host.project_id == self._project_id, models.Host.ip_address == ip,
-                            models.Port.port_number == port, models.Port.protocol == proto)
-                    .first()
+                    .filter(models.Host.project_id == self._project_id, models.Host.ip_address.in_(chunk))
+                    .all()
                 )
-                port_ids[key] = row[0] if row else None
-            if port_ids[key] is not None:
-                dedup.add_or_update_script(port_ids[key], scan_id, {"script_id": f"masscan-{kind}", "output": text})
-        self.db.flush()
+            }
+            wanted = {
+                (port_ids[(ip, port, proto)], f"masscan-{kind}"): text
+                for ip in chunk for port, proto, kind, text in by_ip[ip]
+                if (ip, port, proto) in port_ids
+            }
+            if not wanted:
+                continue
+            existing = {
+                (s.port_id, s.script_id): s
+                for s in self.db.query(models.Script).filter(
+                    models.Script.port_id.in_({pid for pid, _ in wanted}),
+                    models.Script.script_id.like("masscan-%"),
+                )
+            }
+            for (pid, script_id), text in wanted.items():
+                row = existing.get((pid, script_id))
+                if row is not None:
+                    row.output = text
+                    row.last_seen = func.now()
+                    row.scan_id = scan_id
+                else:
+                    self.db.add(models.Script(port_id=pid, script_id=script_id, output=text, scan_id=scan_id))
+            self.db.flush()
+        self._banners = {}
 
     def _extract_xml_host(self, host_elem: etree._Element) -> Optional[Dict[str, Any]]:
         address_elem = host_elem.find("address")
