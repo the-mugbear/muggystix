@@ -59,10 +59,14 @@ def test_portfolio_surfaces_critical_and_pending_review(
     body = r.json()
     card = _card_for(body, test_project.id)
 
-    assert "critical_findings" in card["attention_reasons"]
+    # An untriaged critical scanner row: not a finding yet, but still a
+    # critical signal on the project.
+    assert "critical_unjudged" in card["attention_reasons"]
+    assert "critical_findings" not in card["attention_reasons"]
     assert "pending_review" in card["attention_reasons"]
     assert card["pending_plan_reviews"] == 1
-    assert card["vuln_summary"]["critical"] == 1
+    assert card["unjudged_observations"]["critical"] == 1
+    assert card["findings"]["critical"] == 0
     assert card["health"] == "critical"
     assert card["user_role"] == "admin"  # global admin, no membership row
 

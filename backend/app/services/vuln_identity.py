@@ -24,6 +24,10 @@ failure mode of being too strict is simply that an issue stays split, which is
 the behaviour that already exists. A row with neither identifier keys to itself
 rather than pooling with other unidentifiable rows — absence of information is
 not evidence of sameness.
+
+The key is STORED in two places — ``Finding.dedup_key`` and (v2.376.0)
+``Vulnerability.issue_key`` — so changing ``normalize_title`` or ``issue_key``
+needs a migration that recomputes both, or old rows stop matching new ones.
 """
 from __future__ import annotations
 

@@ -12,7 +12,7 @@ import { api } from './client';
 // Portfolio Dashboard
 // ---------------------------------------------------------------------------
 
-export interface VulnSummaryBrief {
+export interface SeverityBrief {
   critical: number;
   high: number;
   medium: number;
@@ -34,7 +34,13 @@ export interface ProjectCard {
   is_stale: boolean;
   review_progress_pct: number;
   unreviewed_hosts: number;
-  vuln_summary: VulnSummaryBrief;
+  /** Hosts in review or reviewed, each once. */
+  hosts_tested: number;
+  /** Findings = ISSUES (one finding on many hosts counts once; false
+   *  positives excluded). Unjudged observations = scanner rows (issue × host)
+   *  no finding covers on their host. Different units: never subtract. */
+  findings: SeverityBrief;
+  unjudged_observations: SeverityBrief;
   /** Derived rollup: 'critical' | 'warning' | 'stale' | 'healthy'. */
   health: string;
   // P4 control-plane signals.

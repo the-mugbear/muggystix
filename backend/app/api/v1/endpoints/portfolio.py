@@ -11,7 +11,7 @@ from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
-from sqlalchemy import func, text, distinct
+from sqlalchemy import func, distinct
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -23,6 +23,7 @@ from app.db.models_agent import (
     TestPlan, TestPlanEntry, ExecutionSession, ReconSession,
 )
 from app.services.agent_session_metrics import blocked_exec_session_counts
+from app.services.engagement_metrics_service import project_engagement
 from app.api.v1.endpoints.auth import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -35,7 +36,7 @@ STALE_THRESHOLD_DAYS = 14
 # Schemas
 # ---------------------------------------------------------------------------
 
-class VulnSummaryBrief(BaseModel):
+class SeverityBrief(BaseModel):
     critical: int = 0
     high: int = 0
     medium: int = 0
@@ -57,7 +58,14 @@ class ProjectCard(BaseModel):
     is_stale: bool = False
     review_progress_pct: float = 0.0
     unreviewed_hosts: int = 0
-    vuln_summary: VulnSummaryBrief = VulnSummaryBrief()
+    # v2.376.0 — targets tested = hosts in review or reviewed (each once).
+    hosts_tested: int = 0
+    # Two severity representations (engagement_metrics_service): findings are
+    # ISSUES (one finding on 40 hosts counts once, false positives excluded);
+    # not-yet-judged observations are scanner rows (issue × host) that no
+    # finding covers on their host.  Different units — never subtract them.
+    findings: SeverityBrief = SeverityBrief()
+    unjudged_observations: SeverityBrief = SeverityBrief()
     health: str = "healthy"  # healthy, warning, critical, stale
     # P4 control-plane fields — workflow/attention signals so the
     # cross-project table can answer "what needs attention, and what can
@@ -138,13 +146,6 @@ def get_portfolio_dashboard(
     # Batch queries for all projects at once
     # ------------------------------------------------------------------
 
-    # Host counts
-    host_counts = dict(
-        db.query(models.Host.project_id, func.count(models.Host.id))
-        .filter(models.Host.project_id.in_(project_ids))
-        .group_by(models.Host.project_id)
-        .all()
-    )
     up_host_counts = dict(
         db.query(models.Host.project_id, func.count(models.Host.id))
         .filter(
@@ -187,54 +188,12 @@ def get_portfolio_dashboard(
         .all()
     )
 
-    # Review progress: count of reviewed hosts per project
-    reviewed_counts = dict(
-        db.query(models.HostFollow.host_id, models.HostFollow.status)
-        # We need per-project, so join through host
-        .join(models.Host, models.HostFollow.host_id == models.Host.id)
-        .filter(models.Host.project_id.in_(project_ids))
-        .with_entities(
-            models.Host.project_id,
-            func.count(func.distinct(models.HostFollow.host_id)),
-        )
-        .filter(models.HostFollow.status == "reviewed")
-        .group_by(models.Host.project_id)
-        .all()
-    )
-
-    # Vulnerability counts by severity per project
-    # Cast the PG enum to text before lower() to avoid enum type mismatch
-    vuln_rows = (
-        db.query(
-            models.Host.project_id,
-            func.lower(text("vulnerabilities.severity::text")),
-            func.count(),
-        )
-        .select_from(models.Host)
-        .join(models.Host.vulnerabilities)
-        .filter(
-            models.Host.project_id.in_(project_ids),
-            # Only severities the rollup actually keeps — don't aggregate the
-            # info/unknown majority (the bulk of Nessus output) just to discard
-            # it in the loop below. Cost otherwise scales with org-wide vuln
-            # count, not visible projects, for admins.
-            func.lower(text("vulnerabilities.severity::text")).notin_(("info", "unknown")),
-        )
-        .group_by(models.Host.project_id, text("2"))
-        .all()
-    )
-    vuln_map: Dict[int, VulnSummaryBrief] = {}
-    for pid, sev, cnt in vuln_rows:
-        if pid not in vuln_map:
-            vuln_map[pid] = VulnSummaryBrief()
-        if sev in ("critical",):
-            vuln_map[pid].critical += cnt
-        elif sev in ("high",):
-            vuln_map[pid].high += cnt
-        elif sev in ("medium",):
-            vuln_map[pid].medium += cnt
-        elif sev in ("low",):
-            vuln_map[pid].low += cnt
+    # Targets, review counts, findings and judged / not-yet-judged scanner
+    # observations — the shared definitions (engagement_metrics_service), so
+    # this page and Oversight report the same numbers for a project.  The
+    # severity blocks used to be raw scanner rows, which kept a host-level
+    # false-positive dismissal counting as "critical".
+    engagement = project_engagement(db, project_ids)
 
     # ------------------------------------------------------------------
     # P4 control-plane signals — all batched (one GROUP BY each).
@@ -339,13 +298,21 @@ def get_portfolio_dashboard(
     projects_without_admin = 0
 
     for p in projects:
-        hc = host_counts.get(p.id, 0)
+        e = engagement[p.id]
+        hc = e.host_count
         uhc = up_host_counts.get(p.id, 0)
         opc = open_port_counts.get(p.id, 0)
         sc = scan_stats.get(p.id, 0)
         ls = last_scans.get(p.id)
-        rc = reviewed_counts.get(p.id, 0)
-        vs = vuln_map.get(p.id, VulnSummaryBrief())
+        rc = e.hosts_reviewed
+        findings = SeverityBrief(**e.findings.as_dict())
+        unjudged = SeverityBrief(**e.observations_unjudged.as_dict())
+        # A critical/high signal is a finding at that severity OR scanner
+        # output at that severity nobody has judged yet.  A row dismissed as a
+        # false positive on its host is judged, so it no longer keeps a
+        # project red.
+        has_critical = findings.critical > 0 or unjudged.critical > 0
+        has_high = findings.high > 0 or unjudged.high > 0
 
         unreviewed = max(0, hc - rc)
         review_pct = round((rc / hc) * 100, 1) if hc else 0.0
@@ -368,9 +335,9 @@ def get_portfolio_dashboard(
             )
 
         # Health indicator
-        if vs.critical > 0:
+        if has_critical:
             health = "critical"
-        elif vs.high > 0 or (hc > 0 and review_pct < 50):
+        elif has_high or (hc > 0 and review_pct < 50):
             health = "warning"
         elif is_stale:
             health = "stale"
@@ -396,10 +363,14 @@ def get_portfolio_dashboard(
         # Attention reasons — a project can trip several at once.  Stable
         # codes; the frontend maps them to labels + row actions.
         reasons: List[str] = []
-        if vs.critical > 0:
+        if findings.critical > 0:
             reasons.append("critical_findings")
-        if vs.high > 0:
+        if findings.high > 0:
             reasons.append("high_findings")
+        if unjudged.critical > 0:
+            reasons.append("critical_unjudged")
+        if unjudged.high > 0:
+            reasons.append("high_unjudged")
         if pending_reviews > 0:
             reasons.append("pending_review")
         if blocked_sessions > 0:
@@ -419,7 +390,7 @@ def get_portfolio_dashboard(
         total_unreviewed += unreviewed
         if reasons:
             projects_requiring_attention += 1
-        if vs.critical > 0:
+        if has_critical:
             projects_with_critical += 1
         if is_stale:
             stale_projects += 1
@@ -445,7 +416,9 @@ def get_portfolio_dashboard(
             is_stale=is_stale,
             review_progress_pct=review_pct,
             unreviewed_hosts=unreviewed,
-            vuln_summary=vs,
+            hosts_tested=e.hosts_tested,
+            findings=findings,
+            unjudged_observations=unjudged,
             health=health,
             attention_reasons=reasons,
             pending_plan_reviews=pending_reviews,

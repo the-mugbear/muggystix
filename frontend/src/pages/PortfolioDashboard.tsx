@@ -57,14 +57,26 @@ const healthMeta = (health: string | null | undefined): { tone: Tone; label: str
 // One-line explanation of WHAT drove the (single, worst-signal) health
 // rollup — surfaced as the Health badge's tooltip so "Critical" isn't an
 // unexplained label.  Mirrors the backend derivation order.
+// A critical/high signal is a finding at that severity OR scanner output at
+// that severity nobody has judged yet — name whichever applies.
+const severityWhy = (card: ProjectCard, sev: 'critical' | 'high'): string => {
+  const f = card.findings[sev];
+  const u = card.unjudged_observations[sev];
+  const parts: string[] = [];
+  if (f > 0) parts.push(`${f} ${sev} finding${f === 1 ? '' : 's'}`);
+  if (u > 0) parts.push(`${u} ${sev} scanner observation${u === 1 ? '' : 's'} not yet judged`);
+  return parts.join(' · ');
+};
+const hasSeverity = (card: ProjectCard, sev: 'critical' | 'high'): boolean =>
+  card.findings[sev] > 0 || card.unjudged_observations[sev] > 0;
+
 const healthWhy = (card: ProjectCard): string => {
-  const v = card.vuln_summary;
   switch (card.health) {
     case 'critical':
-      return `${v.critical} critical finding${v.critical === 1 ? '' : 's'}`;
+      return severityWhy(card, 'critical');
     case 'warning':
-      return v.high > 0
-        ? `${v.high} high finding${v.high === 1 ? '' : 's'}`
+      return hasSeverity(card, 'high')
+        ? severityWhy(card, 'high')
         : `${Math.round(card.review_progress_pct)}% of hosts reviewed`;
     case 'stale':
       return card.days_since_last_scan != null
@@ -106,7 +118,7 @@ const freshness = (card: ProjectCard): string =>
 // §26 — per-card predicates behind each attention rollup. The displayed count
 // and the filtered grid use the SAME condition so they reconcile.
 const ATTN_PREDICATE: Record<string, (p: ProjectCard) => boolean> = {
-  critical: (p) => p.vuln_summary.critical > 0,
+  critical: (p) => hasSeverity(p, 'critical'),
   stale: (p) => p.is_stale,
   no_data: (p) => p.host_count === 0,
   pending: (p) => p.pending_plan_reviews > 0,
@@ -243,8 +255,10 @@ const ProjectTile: React.FC<{
 }> = ({ card, onOpen, onMembers }) => {
   const hm = healthMeta(card.health);
   const color = healthHsl(card.health);
-  const v = card.vuln_summary;
-  const vulnTotal = v.critical + v.high + v.medium + v.low;
+  const f = card.findings;
+  const findingTotal = f.critical + f.high + f.medium + f.low;
+  const u = card.unjudged_observations;
+  const unjudgedTotal = u.critical + u.high + u.medium + u.low;
   const pct = Math.round(card.review_progress_pct);
   return (
     <Card className="flex flex-col overflow-hidden border-l-4" style={{ borderLeftColor: color }}>
@@ -270,15 +284,29 @@ const ProjectTile: React.FC<{
           </button>
         </div>
 
-        {/* Exposure */}
+        {/* Findings (issues) + the scanner output still waiting for a
+            judgment. Different units — shown side by side, never subtracted. */}
         <div>
           <div className="mb-xxs flex items-baseline justify-between gap-xs">
-            <span className="text-caption text-muted-foreground">Exposure</span>
-            <span className="text-caption tabular-nums text-muted-foreground">{vulnTotal.toLocaleString()} vulns</span>
+            <span className="text-caption text-muted-foreground">Findings</span>
+            <span className="text-caption tabular-nums text-muted-foreground">
+              {findingTotal.toLocaleString()} issue{findingTotal === 1 ? '' : 's'}
+            </span>
           </div>
-          {vulnTotal > 0
-            ? <SeverityBar counts={v} variant="inline" />
-            : <p className="text-caption text-muted-foreground">No vulnerabilities detected.</p>}
+          {findingTotal > 0
+            ? <SeverityBar counts={f} variant="inline" />
+            : <p className="text-caption text-muted-foreground">No findings recorded.</p>}
+          {unjudgedTotal > 0 && (
+            <p className="mt-xxs text-caption text-muted-foreground"
+              title="Scanner observations (issue × host) that no finding covers on their host yet">
+              Not yet judged:{' '}
+              {(['critical', 'high', 'medium', 'low'] as const)
+                .filter((s) => u[s] > 0)
+                .map((s) => `${u[s].toLocaleString()} ${s}`)
+                .join(' · ')}{' '}
+              scanner observation{unjudgedTotal === 1 ? '' : 's'}
+            </p>
+          )}
         </div>
 
         {/* Review coverage */}
@@ -291,8 +319,12 @@ const ProjectTile: React.FC<{
             <div className="h-full rounded-full"
               style={{ width: `${pct}%`, background: pct < 50 ? 'hsl(var(--warning))' : 'hsl(var(--info))' }} />
           </div>
-          {card.unreviewed_hosts > 0 && (
-            <p className="mt-xxs text-caption text-muted-foreground">{card.unreviewed_hosts.toLocaleString()} unreviewed</p>
+          {card.host_count > 0 && (
+            <p className="mt-xxs text-caption text-muted-foreground"
+              title="Tested = hosts in review or reviewed, each counted once">
+              {card.hosts_tested.toLocaleString()} of {card.host_count.toLocaleString()} tested
+              {card.unreviewed_hosts > 0 && <> · {card.unreviewed_hosts.toLocaleString()} unreviewed</>}
+            </p>
           )}
         </div>
 
@@ -407,7 +439,8 @@ const PortfolioDashboard: React.FC = () => {
     return [...list].sort((a, b) => {
       const hr = (HEALTH_RANK[a.health] ?? 9) - (HEALTH_RANK[b.health] ?? 9);
       if (hr !== 0) return hr;
-      const cr = b.vuln_summary.critical - a.vuln_summary.critical;
+      const crit = (p: ProjectCard) => p.findings.critical + p.unjudged_observations.critical;
+      const cr = crit(b) - crit(a);
       if (cr !== 0) return cr;
       const ar = b.attention_reasons.length - a.attention_reasons.length;
       if (ar !== 0) return ar;
