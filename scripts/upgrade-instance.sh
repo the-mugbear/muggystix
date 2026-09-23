@@ -26,6 +26,7 @@
 #   <UPLOAD_DIR>  (./uploads) scan storage, report artifacts, seed manifests
 #   NGINX_CONFIG             only if .env points at a custom nginx conf
 #   .deploy-rollback-state   so deploy.sh option 7 still knows the prior build
+#   report-templates/*/…     the images each template.json declares (a logo…)
 #
 # Then it hands off to ./scripts/deploy.sh option 1 (pre-deploy DB backup,
 # rollback image tags, rebuild, recreate, health wait) and verifies the
@@ -231,6 +232,35 @@ if [[ -n "$NGINX_CONF" && "$NGINX_CONF" != "./ssl-nginx.conf" && "$NGINX_CONF" !
 fi
 
 carry_file ".deploy-rollback-state" || info "No .deploy-rollback-state in the old folder (option 7 rollback history starts fresh)."
+
+# Report-template images the operator installed (a logo, …).  Each template
+# declares the ones it expects in template.json → assets; they are not in
+# version control, so a fresh source tree has none.  Carried only when the new
+# tree lacks the file: one the new release ships wins, with a warning.
+while IFS= read -r rel; do
+    [[ -n "$rel" && -f "$OLD/$rel" ]] || continue
+    if [[ -f "$PROJECT_ROOT/$rel" ]]; then
+        cmp -s "$OLD/$rel" "$PROJECT_ROOT/$rel" \
+            && ok "$rel already present and identical — skipped" \
+            || warn "$rel ships with the new release and differs from the old instance's — kept the new one (old: $OLD/$rel)"
+    else
+        carry_file "$rel"
+    fi
+done < <(python3 - "$PROJECT_ROOT" <<'PY' 2>/dev/null || true
+import json, pathlib, re, sys
+root = pathlib.Path(sys.argv[1]) / "report-templates"
+ok = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
+for manifest in sorted(root.glob("*/template.json")):
+    try:
+        assets = json.loads(manifest.read_text(encoding="utf-8")).get("assets") or []
+    except (OSError, ValueError):
+        continue
+    for a in assets:
+        path = str(a.get("path") or "") if isinstance(a, dict) else ""
+        if ok.match(path) and ".." not in path.split("/"):
+            print(f"report-templates/{manifest.parent.name}/{path}")
+PY
+)
 
 # Uploads: the live data directory.  Moved (instant, same filesystem) unless
 # --copy-uploads.  Respects UPLOAD_DIR when .env overrides the default.
