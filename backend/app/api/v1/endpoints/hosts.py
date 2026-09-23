@@ -1461,6 +1461,12 @@ def get_host_v2(
         .filter(NetexecResult.host_id == host_id)
         .scalar()
     ) or 0
+    # v2.390.0 — distinct URLs content discovery found (one row per scan).
+    serialized["web_path_count"] = (
+        db.query(func.count(distinct(models.WebPath.url)))
+        .filter(models.WebPath.host_id == host_id)
+        .scalar()
+    ) or 0
     # v2.341.0 — how many informational rows exist and whether this response
     # carries them, so the inspector can offer "N informational · show".
     serialized["informational_count"] = informational_count
@@ -2256,6 +2262,60 @@ class WebInterfaceResponse(BaseModel):
     scan_filename: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WebPathResponse(BaseModel):
+    """One path content discovery found on this host (v2.390.0), the latest
+    observation of its URL, and how many scans reported it."""
+    url: str
+    path: str
+    status_code: Optional[int] = None
+    size: Optional[int] = None
+    source: str
+    port: Optional[int] = None
+    last_seen: Optional[datetime] = None
+    scans: int = 1
+
+
+@router.get(
+    "/{host_id:int}/web-paths",
+    response_model=List[WebPathResponse],
+    summary="Paths found by content discovery (ffuf / gobuster / feroxbuster / dirsearch / dirbuster)",
+)
+def list_host_web_paths(
+    host_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    host = (
+        db.query(models.Host.id)
+        .filter(models.Host.id == host_id, models.Host.project_id == project.id)
+        .first()
+    )
+    if not host:
+        raise HTTPException(status_code=404, detail="Host not found")
+    latest: Dict[str, Any] = {}
+    counts: Dict[str, int] = {}
+    for row, port_number in (
+        db.query(models.WebPath, models.Port.port_number)
+        .outerjoin(models.Port, models.Port.id == models.WebPath.port_id)
+        .filter(models.WebPath.host_id == host_id)
+        .order_by(models.WebPath.id)
+        .all()
+    ):
+        counts[row.url] = counts.get(row.url, 0) + 1
+        latest[row.url] = (row, port_number)
+    return sorted(
+        (
+            WebPathResponse(
+                url=r.url, path=r.path, status_code=r.status_code, size=r.size, source=r.source,
+                port=p, last_seen=r.first_seen, scans=counts[r.url],
+            )
+            for r, p in latest.values()
+        ),
+        key=lambda w: (w.port or 0, w.path),
+    )
 
 
 @router.get(

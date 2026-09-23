@@ -247,6 +247,56 @@ def test_smb_signing_agrees_across_tools_and_counts_as_relayable(db_session, tes
     assert NmapXMLParser._detect_smb_signing(hostscript) == host.smb_signing
 
 
+# --- content discovery --------------------------------------------------------
+
+def test_content_discovery_keeps_nmaps_service_and_stores_paths(db_session, test_project, tmp_path):
+    """v2.390.0 — ffuf's "https" beat nmap's "http" under the longer-name rule
+    and NULLed nmap's product/version; the paths lived in service_extrainfo."""
+    import json
+    from app.parsers.dirbuster_parser import DirBusterParser
+
+    host = models.Host(project_id=test_project.id, ip_address="10.9.7.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    db_session.add(models.Port(host_id=host.id, port_number=443, protocol="tcp", state="open",
+                               service_name="http", service_product="nginx", service_version="1.24.0",
+                               service_conf=10))
+    db_session.commit()
+
+    f = tmp_path / "ffuf.json"
+    f.write_text(json.dumps({"results": [
+        {"url": "https://10.9.7.1/admin", "status": 401, "length": 512},
+        {"url": "https://10.9.7.1/backup.zip", "status": 200, "length": 90210},
+    ]}))
+    scan = DirBusterParser(db_session).parse_file(str(f), "ffuf.json", project_id=test_project.id)
+
+    port = db_session.query(models.Port).filter_by(host_id=host.id, port_number=443).one()
+    assert (port.service_name, port.service_product, port.service_version) == ("http", "nginx", "1.24.0")
+    rows = db_session.query(models.WebPath).filter_by(scan_id=scan.id).order_by(models.WebPath.path).all()
+    assert [(r.path, r.status_code, r.size, r.url) for r in rows] == [
+        ("/admin", 401, 512, "https://10.9.7.1/admin"),
+        ("/backup.zip", 200, 90210, "https://10.9.7.1/backup.zip"),
+    ]
+    assert all(r.port_id == port.id for r in rows)
+
+
+def test_web_paths_endpoint_and_detail_count(client, db_session, test_project, tmp_path):
+    import json
+    from app.parsers.dirbuster_parser import DirBusterParser
+
+    f = tmp_path / "ffuf.json"
+    f.write_text(json.dumps({"results": [{"url": "http://10.9.7.2/admin", "status": 403, "length": 10}]}))
+    DirBusterParser(db_session).parse_file(str(f), "ffuf.json", project_id=test_project.id)
+    DirBusterParser(db_session).parse_file(str(f), "ffuf-again.json", project_id=test_project.id)
+    db_session.commit()
+    host = db_session.query(models.Host).filter_by(ip_address="10.9.7.2").one()
+
+    base = f"/api/v1/projects/{test_project.id}/hosts/{host.id}"
+    assert client.get(base).json()["web_path_count"] == 1
+    [row] = client.get(f"{base}/web-paths").json()
+    assert (row["path"], row["status_code"], row["port"], row["scans"], row["source"]) == ("/admin", 403, 80, 2, "ffuf")
+
+
 # --- RDAP ----------------------------------------------------------------------
 
 @pytest.mark.parametrize("name", ["rdap-native.json", "rdap-compact.json"])

@@ -561,6 +561,9 @@ class Host(HostBase):
     # v2.45.7: count of NetExec credentialed-enumeration rows observed
     # on this host.  Gates the HostInspector NetExec card.
     netexec_result_count: int = 0
+    # v2.390.0 — distinct paths content-discovery tools found (web_paths);
+    # gates the inspector's "Discovered paths" section.  Detail only.
+    web_path_count: int = 0
     # v2.71.0 — project tags attached to this host (selectin-loaded) and
     # the users it's assigned to (populated by the list/detail endpoints).
     tags: List[HostTagInfo] = []

@@ -264,6 +264,11 @@ EXPECTED_ONDELETE = {
     ('web_interfaces', 'port_id'): 'SET NULL',
     ('web_interfaces', 'project_id'): 'CASCADE',
     ('web_interfaces', 'scan_id'): 'CASCADE',
+    # v2.390.0 — content-discovery paths (migration b5d7f9a1c3e4).
+    ('web_paths', 'host_id'): 'CASCADE',
+    ('web_paths', 'port_id'): 'SET NULL',
+    ('web_paths', 'project_id'): 'CASCADE',
+    ('web_paths', 'scan_id'): 'CASCADE',
 }
 
 

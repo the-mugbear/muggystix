@@ -83,6 +83,7 @@ import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpe
 import { StructuredTestCard } from './ProposedTestList';
 import EntryResultsPanel from './EntryResultsPanel';
 import WebInterfacesCard from './WebInterfacesCard';
+import WebPathsCard from './WebPathsCard';
 import NseScriptsCard from './NseScriptsCard';
 import NetExecCard from './NetExecCard';
 import HostFindingsCard from './HostFindingsCard';
@@ -2579,6 +2580,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       )}
 
       <WebInterfacesCard hostId={host.id} count={host.web_interface_count ?? 0} />
+      <WebPathsCard hostId={host.id} count={host.web_path_count ?? 0} />
 
       {/* v5.193.0 — every name bound to this address (the host row shows
           one display name; a load balancer carries many). v5.241.0 — the DNS

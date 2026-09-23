@@ -635,6 +635,34 @@ class WebInterface(Base):
     name = relationship("DNSName", foreign_keys=[name_id])
 
 
+class WebPath(Base):
+    """A path a content-discovery tool found on a web service (v2.390.0).
+
+    ffuf / gobuster / feroxbuster / dirsearch / dirbuster results used to be
+    joined into one string in ``ports_v2.service_extrainfo`` ("[401] /console
+    (512B); …", capped at 50) — unqueryable, and lost whenever nmap had
+    already named the port.  One row per (scan, url): the per-scan evidence
+    trail, like ``web_interfaces``.
+    """
+    __tablename__ = "web_paths"
+
+    id = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
+    host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
+    port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="SET NULL"), nullable=True, index=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    source = Column(String(32), nullable=False)          # ffuf | gobuster | feroxbuster | dirsearch | dirbuster
+    url = Column(String, nullable=False)                 # the full URL requested
+    path = Column(String, nullable=False, index=True)    # its path, for search / filtering
+    status_code = Column(Integer, index=True)
+    size = Column(Integer)
+    first_seen = Column(DateTime(timezone=True), server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("scan_id", "url", name="uq_web_paths_scan_url"),
+    )
+
+
 class DNSName(Base):
     """A named asset — an FQDN the engagement knows about (v2.322.0).
 

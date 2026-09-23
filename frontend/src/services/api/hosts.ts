@@ -163,6 +163,8 @@ export interface Host {
   // Count of NetExec credentialed-enumeration rows — gates the
   // HostInspector NetExec card.
   netexec_result_count?: number;
+  /** v5.276.0 — distinct paths content discovery found (detail only). */
+  web_path_count?: number;
   // Count of recorded host-field data conflicts (scans disagreed on a value;
   // ConflictHistory rows) — drives the Hosts-list "conflict" data-quality badge.
   conflict_count?: number;
@@ -1013,6 +1015,23 @@ export interface NetexecResult {
   local_admin?: boolean | null;
   smbv1?: boolean | null;
 }
+
+/** v5.276.0 — a path content discovery found (latest observation per URL). */
+export interface WebPath {
+  url: string;
+  path: string;
+  status_code?: number | null;
+  size?: number | null;
+  source: string;
+  port?: number | null;
+  last_seen?: string | null;
+  scans: number;
+}
+
+export const getHostWebPaths = async (hostId: number): Promise<WebPath[]> => {
+  const response = await api.get(`${p()}/hosts/${hostId}/web-paths`);
+  return response.data;
+};
 
 export const getHostNetexecResults = async (hostId: number): Promise<NetexecResult[]> => {
   const response = await api.get(`${p()}/hosts/${hostId}/netexec`);

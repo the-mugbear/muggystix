@@ -49,7 +49,9 @@ def test_name_with_one_known_address_attaches_to_that_host(db_session, test_proj
     assert [h.ip_address for h in hosts] == ["10.7.0.5"]
     port = db_session.query(models.Port).filter(models.Port.host_id == hosts[0].id).one()
     assert port.port_number == 80
-    assert "/admin" in port.service_extrainfo and "/login" in port.service_extrainfo
+    # v2.390.0 — paths are web_paths rows, not a string in service_extrainfo.
+    paths = {p.path for p in db_session.query(models.WebPath).filter(models.WebPath.host_id == hosts[0].id)}
+    assert {"/admin", "/login"} <= paths
 
 
 def test_name_with_several_addresses_is_not_guessed(db_session, test_project, tmp_path):

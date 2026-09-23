@@ -362,35 +362,60 @@ class DirBusterParser:
         scan: models.Scan,
     ) -> None:
         for (ip, port, scheme), findings in hosts.items():
-            service = "https" if scheme == "https" else "http"
-            # Build a summary of discovered paths for service_extrainfo
-            path_lines = []
-            for f in findings:
-                code = f.get("status_code") or "???"
-                path = f.get("path") or "/"
-                size = f.get("size")
-                entry = f"[{code}] {path}"
-                if size is not None:
-                    entry += f" ({size}B)"
-                path_lines.append(entry)
-            extrainfo = "; ".join(path_lines[:50])  # cap to avoid huge strings
-            if len(findings) > 50:
-                extrainfo += f"; ... and {len(findings) - 50} more"
+            # v2.390.0 — the port is only NAMED here when nobody has named it:
+            # under the longer-name rule the tool's "https" beat nmap's "http"
+            # and NULLed nmap's product / version / method.  And the paths are
+            # rows (web_paths), not a capped string in service_extrainfo that
+            # was lost whenever nmap had already named the port.
+            port_entry = {"port_number": port, "protocol": "tcp", "state": "open"}
+            if not self._port_already_named(ip, port):
+                port_entry["service_name"] = "https" if scheme == "https" else "http"
 
-            persist_host_observation(
+            persisted = persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,
                 ip_address=ip,
                 project_id=self._project_id,
-                ports=[{
-                    "port_number": port,
-                    "protocol": "tcp",
-                    "state": "open",
-                    "service_name": service,
-                    "service_extrainfo": extrainfo,
-                }],
+                ports=[port_entry],
                 isolate=True,
             )
+            if not persisted:
+                continue
+            host, port_map = persisted
+            port_row = port_map.get((port, "tcp"))
+            default_port = 443 if scheme == "https" else 80
+            base = f"{scheme}://{ip}" + ("" if port == default_port else f":{port}")
+            seen: set = set()
+            for f in findings:
+                path = f.get("path") or "/"
+                url = base + (path if path.startswith("/") else f"/{path}")
+                if url in seen:
+                    continue
+                seen.add(url)
+                self.db.add(models.WebPath(
+                    project_id=self._project_id, host_id=host.id,
+                    port_id=port_row.id if port_row else None, scan_id=scan.id,
+                    source=scan.tool_name or "dirbuster", url=url, path=path,
+                    status_code=f.get("status_code"), size=f.get("size"),
+                ))
+            self.db.flush()
+
+    def _port_already_named(self, ip: str, port: int) -> bool:
+        """Whether a scan already recorded a service name on this port."""
+        return (
+            self.db.query(models.Port.id)
+            .join(models.Host, models.Host.id == models.Port.host_id)
+            .filter(
+                models.Host.project_id == self._project_id,
+                models.Host.ip_address == ip,
+                models.Port.port_number == port,
+                models.Port.protocol == "tcp",
+                models.Port.service_name.isnot(None),
+                models.Port.service_name != "",
+            )
+            .first()
+            is not None
+        )
 
     @staticmethod
     def _coerce_int(value: object) -> Optional[int]:
