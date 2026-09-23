@@ -24,7 +24,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import PostureSection from './posture/PostureSection';
 import { Input } from './ui/input';
 
 const TagManagement: React.FC = () => {
@@ -116,18 +116,19 @@ const TagManagement: React.FC = () => {
   if (!projectId) return null;
 
   return (
-    <Card className="mb-md">
-      {confirmEl}
-      <CardHeader className="flex flex-row items-center justify-between gap-sm">
-        <CardTitle className="min-w-0">
-          Host Tags{currentProject ? ` — ${currentProject.name}` : ''}
-        </CardTitle>
-        <Button size="sm" variant="outline" onClick={() => void reload()} disabled={loading}>
+    // v5.265.0 — a section of Project settings, not a card; the page header
+    // names the project, so the heading no longer repeats it.
+    <PostureSection
+      title="Host tags"
+      actions={
+        <Button size="sm" variant="ghost" onClick={() => void reload()} disabled={loading}>
           <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
           Refresh
         </Button>
-      </CardHeader>
-      <CardContent>
+      }
+    >
+      {confirmEl}
+      <div>
         <p className="mb-sm text-caption text-muted-foreground">
           Tags are created by applying them to hosts (Hosts → select → Tag). Rename or delete
           them here.
@@ -237,8 +238,8 @@ const TagManagement: React.FC = () => {
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 

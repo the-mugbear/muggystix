@@ -22,7 +22,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import PostureSection from './posture/PostureSection';
 import { Checkbox } from './ui/checkbox';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
@@ -162,15 +162,17 @@ const WebhookSettings: React.FC = () => {
   const canCreate = name.trim().length > 0 && /^https?:\/\//i.test(url.trim());
 
   return (
-    <Card className="mb-md">
-      {confirmEl}
-      <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Outbound Webhooks{currentProject ? ` — ${currentProject.name}` : ''}</CardTitle>
+    // v5.265.0 — a section of Project settings, not a card.
+    <PostureSection
+      title="Outbound webhooks"
+      actions={
         <Button size="sm" variant="outline" onClick={() => setShowForm((s) => !s)}>
           <Plus className="size-4" aria-hidden /> Add webhook
         </Button>
-      </CardHeader>
-      <CardContent>
+      }
+    >
+      {confirmEl}
+      <div>
         <p className="mb-sm text-caption text-muted-foreground">
           POST a JSON payload (Slack-incoming-webhook compatible) to an external URL on selected
           events. Delivery is best-effort; an optional secret signs each request
@@ -262,8 +264,8 @@ const WebhookSettings: React.FC = () => {
             ))}
           </ul>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 

@@ -23,6 +23,8 @@ export interface Project {
   created_at: string;
   updated_at: string | null;
   member_count: number | null;
+  /** v5.265.0 — the caller's role in this project ('admin' for a global admin). */
+  my_role?: 'admin' | 'analyst' | 'auditor' | 'viewer' | null;
   /** v5.215.0 — the project's own choice about severity-0 Nessus findings
    *  (null = none made) and the value an upload actually uses, which folds in
    *  the deployment default. Ports are still derived from skipped items. */

@@ -256,7 +256,12 @@ export const NAV_PAGES: NavPage[] = [
   // Settings hub
   {
     id: 'project-settings', path: '/project-settings', label: 'Project', requiredRole: 'analyst', hub: 'settings',
-    palette: { label: 'Project Settings', Icon: SettingsIcon, keywords: ['members'], order: 14 },
+    palette: { label: 'Project Settings', Icon: SettingsIcon, keywords: ['members', 'webhooks', 'tags', 'dates'], order: 14 },
+  },
+  {
+    // v5.265.0 — every project (create, open settings); global admins only.
+    id: 'all-projects', path: '/settings/projects', label: 'All projects', requiredRole: 'admin', hub: 'settings',
+    palette: { label: 'All projects', Icon: Folder, keywords: ['create project', 'new project', 'projects'], order: 14.5 },
   },
   {
     id: 'llm-settings', path: '/llm-settings', label: 'LLM Providers', requiredRole: 'viewer', hub: 'settings',

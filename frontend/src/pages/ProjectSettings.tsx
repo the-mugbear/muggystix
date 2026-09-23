@@ -1,57 +1,46 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { Trash2, Loader2 } from 'lucide-react';
+/**
+ * /project-settings (v5.265.0) — settings for ONE project: the one chosen at
+ * the top of the page.
+ *
+ * It used to list every project and manage the members of whichever row was
+ * clicked, while tags, webhooks and deliveries below followed the top-bar
+ * project — two projects on one page, silently.  Now every section is about
+ * the current project, the header says which, and the cross-project list
+ * (create, open another project's settings) is its own page, All projects,
+ * for global administrators.
+ *
+ * Sections over thin rules, not cards (UI_STYLE_GUIDE §7): Details, Members,
+ * Host tags, Outbound webhooks, Webhook deliveries, and a delete area at the
+ * end.  What the caller may change follows their role in the project
+ * (`my_role` from the API) — the server enforces the same.
+ */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+import { Loader2, Trash2, UserPlus } from 'lucide-react';
+
 import { useProject } from '../contexts/ProjectContext';
-import {
-  getProjects,
-  createProject,
-  updateProject,
-  Project,
-} from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
+import { updateProject } from '../services/api';
 import api from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
 import { safeFallback } from '../utils/uiStyles';
-import { NavigableTableRow } from '../components/NavigableTableRow';
-import { formatStatusLabel, getProjectStatusChipColor } from '../utils/statusMeta';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PostureSection from '../components/posture/PostureSection';
 import WebhookSettings from '../components/WebhookSettings';
 import WebhookDeliveries from '../components/WebhookDeliveries';
 import TagManagement from '../components/TagManagement';
 import { Button } from '../components/ui/button';
+import { Combobox } from '../components/ui/combobox';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
-import { Badge } from '../components/ui/badge';
-import { Alert, AlertDescription } from '../components/ui/alert';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '../components/ui/table';
-import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '../components/ui/tooltip';
-import { cn } from '../utils/cn';
 
 interface Member {
   id: number;
@@ -59,7 +48,8 @@ interface Member {
   username: string;
   full_name: string | null;
   role: string;
-  joined_at: string;
+  joined_at?: string | null;
+  created_at?: string | null;
 }
 
 interface DirectoryEntry {
@@ -68,716 +58,407 @@ interface DirectoryEntry {
   full_name: string | null;
 }
 
-const MEMBER_ROLES = ['admin', 'analyst', 'auditor', 'viewer'];
+export const PROJECT_ROLES: Array<{ value: string; label: string; can: string }> = [
+  { value: 'admin', label: 'Admin', can: 'project settings and members, plus everything below' },
+  { value: 'analyst', label: 'Analyst', can: 'uploads, scopes, triage, test plans, report drafts' },
+  { value: 'auditor', label: 'Auditor', can: 'read everything, exports and reports' },
+  { value: 'viewer', label: 'Viewer', can: 'read the inventory' },
+];
+const roleLabel = (r: string) => PROJECT_ROLES.find((x) => x.value === r)?.label ?? r;
 
-const PROJECT_STATUSES = [
+export const PROJECT_STATUSES = [
   { value: 'active', label: 'Active' },
-  { value: 'in_progress', label: 'In Progress' },
+  { value: 'in_progress', label: 'In progress' },
   { value: 'completed', label: 'Completed' },
   { value: 'archived', label: 'Archived' },
 ];
 
-const formatDate = (s: string | null | undefined): string => {
-  if (!s) return '—';
-  try {
-    return new Date(s).toLocaleDateString();
-  } catch {
-    return '—';
-  }
-};
+const day = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : '—');
+const memberName = (m: { full_name: string | null; username: string }) => m.full_name || m.username;
 
-/** Translate MUI chip color names to v4 Badge variants. */
-const STATUS_VARIANT: Record<string, 'success' | 'info' | 'warning' | 'muted' | 'destructive'> = {
-  success: 'success',
-  info: 'info',
-  warning: 'warning',
-  default: 'muted',
-  error: 'destructive',
-  primary: 'info',
-  secondary: 'muted',
-};
+interface Details { name: string; description: string; status: string; start: string; end: string }
 
 const ProjectSettings: React.FC = () => {
-  const { refreshProjects, currentProject } = useProject();
+  const { currentProject, projects, refreshProjects } = useProject();
+  const { user } = useAuth();
   const toast = useToast();
+  const navigate = useNavigate();
   const [confirmEl, confirm] = useConfirm();
 
-  // Projects list
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [selectedProject, setSelectedProject] = useState<Project | null>(null);
+  const isGlobalAdmin = user?.role === 'admin';
+  const canAdmin = currentProject?.my_role === 'admin' || isGlobalAdmin;
 
-  // Create project
-  const [createOpen, setCreateOpen] = useState(false);
-  const [newName, setNewName] = useState('');
-  const [newDescription, setNewDescription] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [createError, setCreateError] = useState<string | null>(null);
+  // --- Details -----------------------------------------------------------
+  // Keyed on the values, not the object's identity: a refresh that hands
+  // back an equal project must not reset what is being typed.
+  const p = currentProject;
+  const fromProject = useCallback((): Details => ({
+    name: p?.name ?? '',
+    description: p?.description ?? '',
+    status: p?.status ?? 'active',
+    start: p?.start_date ? p.start_date.split('T')[0] : '',
+    end: p?.end_date ? p.end_date.split('T')[0] : '',
+  }), [p?.name, p?.description, p?.status, p?.start_date, p?.end_date]); // eslint-disable-line react-hooks/exhaustive-deps
+  const [details, setDetails] = useState<Details>(fromProject);
+  const [savingDetails, setSavingDetails] = useState(false);
+  useEffect(() => { setDetails(fromProject()); }, [fromProject]);
+  const detailsDirty = JSON.stringify(details) !== JSON.stringify(fromProject());
 
-  // Members
-  const [members, setMembers] = useState<Member[]>([]);
-  const [membersLoading, setMembersLoading] = useState(false);
-
-  // Edit project
-  const [editOpen, setEditOpen] = useState(false);
-  const [editProject, setEditProject] = useState<Project | null>(null);
-  const [editName, setEditName] = useState('');
-  const [editDescription, setEditDescription] = useState('');
-  const [editStatus, setEditStatus] = useState('active');
-  const [editStartDate, setEditStartDate] = useState('');
-  const [editEndDate, setEditEndDate] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [editError, setEditError] = useState<string | null>(null);
-
-  // Add member
-  const [addMemberOpen, setAddMemberOpen] = useState(false);
-  const [newMemberUserId, setNewMemberUserId] = useState<string>('');
-  const [newMemberRole, setNewMemberRole] = useState('viewer');
-  const [addingMember, setAddingMember] = useState(false);
-  const [addMemberError, setAddMemberError] = useState<string | null>(null);
-  const [userDirectory, setUserDirectory] = useState<DirectoryEntry[]>([]);
-  const [directoryLoading, setDirectoryLoading] = useState(false);
-
-  const loadProjects = useCallback(async () => {
-    setLoading(true);
-    setError(null);
+  const saveDetails = async () => {
+    if (!currentProject) return;
+    if (!details.name.trim()) { toast.error('A project needs a name.'); return; }
+    if (details.start && details.end && details.end < details.start) {
+      toast.error('The end date is before the start date.');
+      return;
+    }
+    setSavingDetails(true);
     try {
-      const data = await getProjects();
-      setProjects(data);
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Failed to load projects.'));
+      await updateProject(currentProject.id, {
+        name: details.name.trim(),
+        description: details.description.trim(),
+        status: details.status,
+        start_date: details.start ? new Date(details.start).toISOString() : null,
+        end_date: details.end ? new Date(details.end).toISOString() : null,
+      });
+      await refreshProjects();
+      toast.success('Project details saved.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not save the project details.'));
     } finally {
-      setLoading(false);
+      setSavingDetails(false);
     }
-  }, []);
+  };
 
-  useEffect(() => {
-    loadProjects();
-  }, [loadProjects]);
-
-  // Auto-select a project on load so the Members section is visible
-  // without requiring the user to click a row first.  Prefer the
-  // currently-active project (from the topbar selector), then fall
-  // through to "the only project" when there's just one — the common
-  // single-tenant case where requiring a click was a discoverability
-  // dead-end ("created a new admin but can't add them to a project").
-  useEffect(() => {
-    if (selectedProject || projects.length === 0) return;
-    const initial =
-      (currentProject && projects.find((p) => p.id === currentProject.id)) ||
-      (projects.length === 1 ? projects[0] : null);
-    if (initial) {
-      setSelectedProject(initial);
-      loadMembers(initial.id);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projects, currentProject?.id]);
-
-  const loadMembers = useCallback(async (projectId: number) => {
-    setMembersLoading(true);
+  // --- Members -----------------------------------------------------------
+  const [members, setMembers] = useState<Member[] | null>(null);
+  const [membersError, setMembersError] = useState<string | null>(null);
+  const projectId = currentProject?.id;
+  const loadMembers = useCallback(async () => {
+    if (!projectId) return;
     try {
       const res = await api.get(`/projects/${projectId}/members`);
       setMembers(res.data);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to load members.'));
-      setMembers([]);
-    } finally {
-      setMembersLoading(false);
+      setMembersError(null);
+    } catch (err) {
+      setMembersError(formatApiError(err, 'Could not load the members.'));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [projectId]);
+  useEffect(() => { setMembers(null); void loadMembers(); }, [loadMembers]);
 
-  const handleSelectProject = (project: Project) => {
-    setSelectedProject(project);
-    loadMembers(project.id);
-  };
-
-  // Create project
-  const handleCreate = async () => {
-    if (!newName.trim()) return;
-    setCreating(true);
-    setCreateError(null);
+  const [addOpen, setAddOpen] = useState(false);
+  const [directory, setDirectory] = useState<DirectoryEntry[] | null>(null);
+  const [newUser, setNewUser] = useState<string | null>(null);
+  const [newRole, setNewRole] = useState('analyst');
+  const [adding, setAdding] = useState(false);
+  const openAdd = async () => {
+    setNewUser(null);
+    setNewRole('analyst');
+    setAddOpen(true);
     try {
-      await createProject(newName.trim(), newDescription.trim() || undefined);
-      setCreateOpen(false);
-      setNewName('');
-      setNewDescription('');
-      await loadProjects();
+      setDirectory((await api.get('/users/directory')).data);
+    } catch {
+      setDirectory([]);
+    }
+  };
+  const candidates = useMemo(
+    () => (directory ?? []).filter((u) => !(members ?? []).some((m) => m.user_id === u.id)),
+    [directory, members],
+  );
+  const addMember = async () => {
+    if (!currentProject || !newUser) return;
+    setAdding(true);
+    try {
+      await api.post(`/projects/${currentProject.id}/members`, { user_id: Number(newUser), role: newRole });
+      setAddOpen(false);
+      await loadMembers();
       await refreshProjects();
-      toast.success('Project created.');
-    } catch (err: unknown) {
-      setCreateError(formatApiError(err, 'Failed to create project.'));
+      toast.success('Member added.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not add the member.'));
     } finally {
-      setCreating(false);
+      setAdding(false);
     }
   };
 
-  // Edit project
-  const handleOpenEdit = (project: Project) => {
-    setEditProject(project);
-    setEditName(project.name);
-    setEditDescription(project.description || '');
-    setEditStatus(project.status || 'active');
-    setEditStartDate(project.start_date ? project.start_date.split('T')[0] : '');
-    setEditEndDate(project.end_date ? project.end_date.split('T')[0] : '');
-    setEditError(null);
-    setEditOpen(true);
-  };
-
-  const handleSaveEdit = async () => {
-    if (!editProject) return;
-    setSaving(true);
-    setEditError(null);
-    try {
-      await updateProject(editProject.id, {
-        name: editName.trim() || undefined,
-        description: editDescription.trim() || undefined,
-        status: editStatus,
-        start_date: editStartDate ? new Date(editStartDate).toISOString() : null,
-        end_date: editEndDate ? new Date(editEndDate).toISOString() : null,
+  const admins = (members ?? []).filter((m) => m.role === 'admin');
+  const changeRole = async (m: Member, role: string) => {
+    if (!currentProject || role === m.role) return;
+    const self = m.user_id === user?.id;
+    const lastAdmin = m.role === 'admin' && admins.length === 1;
+    if (self || lastAdmin) {
+      const ok = await confirm({
+        title: self ? 'Change your own role?' : `${memberName(m)} is the only project admin`,
+        body: self
+          ? `You will be a ${roleLabel(role)} on this project. ${role === 'admin' ? '' : 'Unless you are a global administrator, you will no longer be able to change settings or members here.'}`
+          : `Making them a ${roleLabel(role)} leaves the project with no project admin; only a global administrator could then manage its members.`,
+        severity: 'danger',
+        confirmLabel: `Make ${self ? 'me' : 'them'} ${roleLabel(role)}`,
       });
-      setEditOpen(false);
-      await loadProjects();
-      await refreshProjects();
-      toast.success('Project updated.');
-    } catch (err: unknown) {
-      setEditError(formatApiError(err, 'Failed to update project.'));
-    } finally {
-      setSaving(false);
+      if (!ok) return;
+    }
+    try {
+      await api.put(`/projects/${currentProject.id}/members/${m.user_id}`, { role });
+      setMembers((prev) => (prev ?? []).map((x) => (x.user_id === m.user_id ? { ...x, role } : x)));
+      if (self) await refreshProjects();
+      toast.success(`${memberName(m)} is now ${roleLabel(role)}.`);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not change the role.'));
     }
   };
 
-  const handleDeleteProject = async (project: Project) => {
-    // Typed-name confirmation since deletion drops every scan, host,
-    // scope, finding, plan, and execution session under this project.
-    // Mirrors the test-plan delete pattern (TestPlanLayout) — heavy
-    // destructive operations require the user to type the exact name.
+  const removeMember = async (m: Member) => {
+    if (!currentProject) return;
     const ok = await confirm({
-      title: `Delete project "${project.name}"?`,
+      title: `Remove ${memberName(m)}?`,
+      body: `${memberName(m)} loses access to ${currentProject.name}. Their notes, findings and reviews stay. They can be added again later.`,
+      severity: 'danger',
+      confirmLabel: 'Remove',
+    });
+    if (!ok) return;
+    try {
+      await api.delete(`/projects/${currentProject.id}/members/${m.user_id}`);
+      setMembers((prev) => (prev ?? []).filter((x) => x.user_id !== m.user_id));
+      await refreshProjects();
+      toast.success('Member removed.');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not remove the member.'));
+    }
+  };
+
+  // --- Delete ------------------------------------------------------------
+  const deleteProject = async () => {
+    if (!currentProject) return;
+    const ok = await confirm({
+      title: `Delete project "${currentProject.name}"?`,
       body: (
         <>
           <p>
-            This deletes the project and <strong>all</strong> data scoped to it: scans, hosts,
-            scopes, findings, test plans, execution sessions, and recon runs. This cannot be
-            undone.
+            This deletes the project and <strong>all</strong> data in it: scans, hosts, scopes, findings, reports,
+            test plans, execution sessions and recon runs. This cannot be undone.
           </p>
-          <p className="mt-xs">
-            Type the project name exactly to confirm.
-          </p>
+          <p className="mt-xs">Type the project name exactly to confirm.</p>
         </>
       ),
-      resourceName: project.name,
+      resourceName: currentProject.name,
       severity: 'danger',
       confirmLabel: 'Delete project',
       confirmTypedName: true,
     });
     if (!ok) return;
     try {
-      await api.delete(`/projects/${project.id}`);
-      // If we just deleted the currently-selected one, clear local
-      // selection so the next refreshProjects() picks a new one via
-      // the MRU ring (the deleted id will be dropped from the picker).
-      if (selectedProject?.id === project.id) setSelectedProject(null);
-      await loadProjects();
+      await api.delete(`/projects/${currentProject.id}`);
       await refreshProjects();
-      toast.success(`Project "${project.name}" deleted.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to delete project.'));
+      toast.success(`Project "${currentProject.name}" deleted.`);
+      navigate('/operations');
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not delete the project.'));
     }
   };
 
-  // Add member
-  const loadUserDirectory = useCallback(async () => {
-    setDirectoryLoading(true);
-    try {
-      const res = await api.get('/users/directory');
-      setUserDirectory(res.data);
-    } catch {
-      setUserDirectory([]);
-    } finally {
-      setDirectoryLoading(false);
-    }
-  }, []);
-
-  const openAddMemberDialog = () => {
-    setNewMemberUserId('');
-    setNewMemberRole('viewer');
-    setAddMemberError(null);
-    setAddMemberOpen(true);
-    loadUserDirectory();
-  };
-
-  const handleAddMember = async () => {
-    if (!selectedProject || !newMemberUserId) return;
-    setAddingMember(true);
-    setAddMemberError(null);
-    try {
-      await api.post(`/projects/${selectedProject.id}/members`, {
-        user_id: Number(newMemberUserId),
-        role: newMemberRole,
-      });
-      setAddMemberOpen(false);
-      setNewMemberUserId('');
-      setNewMemberRole('viewer');
-      await loadMembers(selectedProject.id);
-      toast.success('Member added.');
-    } catch (err: unknown) {
-      setAddMemberError(formatApiError(err, 'Failed to add member.'));
-    } finally {
-      setAddingMember(false);
-    }
-  };
-
-  const handleRoleChange = async (member: Member, newRole: string) => {
-    if (!selectedProject) return;
-    try {
-      // Backend exposes PUT for this resource (full role replacement);
-      // a PATCH here returns 405 Method Not Allowed.  Caught during
-      // 4.1.0 regression — the old code path predated the backend
-      // route shape but was never wired up to anything that actually
-      // round-tripped.
-      await api.put(`/projects/${selectedProject.id}/members/${member.user_id}`, {
-        role: newRole,
-      });
-      setMembers((prev) =>
-        prev.map((m) => (m.user_id === member.user_id ? { ...m, role: newRole } : m)),
-      );
-      toast.success(`Role updated to ${newRole}.`);
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update role.'));
-    }
-  };
-
-  const handleRemoveMember = async (member: Member) => {
-    if (!selectedProject) return;
-    const ok = await confirm({
-      title: 'Remove member?',
-      body: `${member.username} will lose access to this project. They can be re-added later.`,
-      severity: 'danger',
-      confirmLabel: 'Remove',
-    });
-    if (!ok) return;
-    try {
-      await api.delete(`/projects/${selectedProject.id}/members/${member.user_id}`);
-      setMembers((prev) => prev.filter((m) => m.user_id !== member.user_id));
-      toast.success('Member removed.');
-    } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to remove member.'));
-    }
-  };
-
-  const availableDirectoryUsers = userDirectory.filter(
-    (u) => !members.some((m) => m.user_id === u.id),
-  );
+  if (!currentProject) {
+    return (
+      <div className="p-md md:p-lg">
+        <h1 className="text-page-title">Project settings</h1>
+        <p className="mt-xs text-metadata text-muted-foreground">Choose a project at the top of the page to see its settings.</p>
+      </div>
+    );
+  }
 
   return (
-    <div className="mx-auto max-w-6xl p-md md:p-lg">
-      <h1 className="mb-md text-page-title">Project Settings</h1>
+    <div className="mx-auto max-w-6xl space-y-lg p-md md:p-lg">
+      <header className="flex flex-wrap items-start justify-between gap-md">
+        <div className="min-w-0">
+          <h1 className="text-page-title">Project settings</h1>
+          <p className="mt-xxs max-w-3xl break-words text-metadata text-muted-foreground">
+            For <span className="font-medium text-foreground">{currentProject.name}</span> — the project chosen at the top
+            of the page. Switch project there to change another one.
+            {!canAdmin && ' Only a project admin can change these settings.'}
+          </p>
+        </div>
+        {isGlobalAdmin && (
+          <Button asChild variant="outline" size="sm"><Link to="/settings/projects">All projects</Link></Button>
+        )}
+      </header>
 
-      {/* Projects table */}
-      <Card className="mb-md">
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Projects</CardTitle>
-          <Button size="sm" onClick={() => setCreateOpen(true)}>
-            Create Project
+      <PostureSection title="Details" description="The dates are the engagement window: they appear on client reports and scope the Oversight filters.">
+        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void saveDetails(); }}>
+          <div className="grid gap-md md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="min-w-0 space-y-xxs">
+              <Label htmlFor="ps-name">Name</Label>
+              <Input id="ps-name" maxLength={100} value={details.name} disabled={!canAdmin || savingDetails}
+                onChange={(e) => setDetails({ ...details, name: e.target.value })} />
+            </div>
+            <div className="min-w-0 space-y-xxs">
+              <Label htmlFor="ps-status">Status</Label>
+              <Select value={details.status} onValueChange={(v) => setDetails({ ...details, status: v })}
+                disabled={!canAdmin || savingDetails}>
+                <SelectTrigger id="ps-status"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {PROJECT_STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="min-w-0 space-y-xxs">
+            <Label htmlFor="ps-desc">Description</Label>
+            <Textarea id="ps-desc" rows={2} value={details.description} disabled={!canAdmin || savingDetails}
+              onChange={(e) => setDetails({ ...details, description: e.target.value })} />
+          </div>
+          <div className="grid gap-md sm:grid-cols-2 md:max-w-lg">
+            <div className="space-y-xxs">
+              <Label htmlFor="ps-start">Start date</Label>
+              <Input id="ps-start" type="date" value={details.start} disabled={!canAdmin || savingDetails}
+                onChange={(e) => setDetails({ ...details, start: e.target.value })} />
+            </div>
+            <div className="space-y-xxs">
+              <Label htmlFor="ps-end">End date</Label>
+              <Input id="ps-end" type="date" value={details.end} disabled={!canAdmin || savingDetails}
+                onChange={(e) => setDetails({ ...details, end: e.target.value })} />
+            </div>
+          </div>
+          {canAdmin && (
+            <div className="flex items-center gap-xs">
+              <Button type="submit" size="sm" disabled={!detailsDirty || savingDetails}>
+                {savingDetails && <Loader2 className="size-4 animate-spin" aria-hidden />} Save details
+              </Button>
+              <Button type="button" variant="ghost" size="sm" disabled={!detailsDirty || savingDetails}
+                onClick={() => setDetails(fromProject())}>
+                Undo changes
+              </Button>
+            </div>
+          )}
+        </form>
+      </PostureSection>
+
+      <PostureSection
+        title={`Members${members ? ` (${members.length})` : ''}`}
+        description={<>What each role may do: {PROJECT_ROLES.map((r, i) => (
+          <React.Fragment key={r.value}>{i > 0 && ' · '}<span className="font-medium text-foreground">{r.label}</span> — {r.can}</React.Fragment>
+        ))}. Global administrators may do everything in every project.</>}
+        actions={canAdmin ? (
+          <Button size="sm" variant="outline" onClick={() => void openAdd()}>
+            <UserPlus className="size-4" aria-hidden /> Add member
           </Button>
-        </CardHeader>
-        <CardContent>
-          {error && (
-            <Alert variant="destructive" className="mb-sm">
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
-          {loading ? (
-            <div className="flex justify-center py-lg">
-              <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
-            </div>
-          ) : projects.length === 0 ? (
-            <p className="py-md text-center text-metadata text-muted-foreground">
-              No projects yet. Create one to get started.
-            </p>
-          ) : (
-            <div className="overflow-x-auto rounded-panel border border-border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Name</TableHead>
-                    <TableHead>Description</TableHead>
-                    <TableHead className="text-center">Members</TableHead>
-                    <TableHead>Start</TableHead>
-                    <TableHead>End</TableHead>
-                    <TableHead className="text-center">Status</TableHead>
-                    <TableHead className="text-center">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {projects.map((project) => {
-                    const statusLabel =
-                      PROJECT_STATUSES.find((s) => s.value === project.status)?.label ||
-                      formatStatusLabel(project.status, 'Active');
-                    const statusVariant =
-                      STATUS_VARIANT[getProjectStatusChipColor(project.status)] || 'muted';
-                    const isSelected = selectedProject?.id === project.id;
-                    // v2.43.0 — UX review #2: NavigableTableRow + explicit
-                    // button in the primary cell.  Selection is an in-page
-                    // action (not nav), so a <button> drives it.
-                    return (
-                      <NavigableTableRow
-                        key={project.id}
-                        selected={isSelected}
-                        data-state={isSelected ? 'selected' : undefined}
-                      >
-                        <TableCell className="font-medium p-0">
-                          <button
-                            type="button"
-                            onClick={() => handleSelectProject(project)}
-                            className="block w-full px-md py-xs text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                            aria-pressed={isSelected}
-                            aria-label={`Select project ${project.name}`}
-                          >
-                            {project.name}
-                          </button>
-                        </TableCell>
-                        <TableCell>
-                          <p className="line-clamp-2 text-metadata text-muted-foreground">
-                            {safeFallback(project.description)}
-                          </p>
-                        </TableCell>
-                        <TableCell className="text-center">{project.member_count ?? '—'}</TableCell>
-                        <TableCell>{formatDate(project.start_date)}</TableCell>
-                        <TableCell>{formatDate(project.end_date)}</TableCell>
-                        <TableCell className="text-center">
-                          <Badge variant={statusVariant}>{statusLabel}</Badge>
-                        </TableCell>
-                        <TableCell className="text-center">
-                          <div className="flex flex-wrap justify-center gap-xs">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleOpenEdit(project);
-                              }}
-                            >
-                              Edit
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="destructive"
-                              // Delete is gated server-side too — the
-                              // last remaining project cannot be
-                              // deleted. Surfaced as a button on every
-                              // row; the typed-name confirm in
-                              // handleDeleteProject is the friction
-                              // that matters.
-                              disabled={projects.length <= 1}
-                              title={
-                                projects.length <= 1
-                                  ? 'Cannot delete the only project'
-                                  : undefined
-                              }
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleDeleteProject(project);
-                              }}
-                            >
-                              Delete
-                            </Button>
-                          </div>
-                        </TableCell>
-                      </NavigableTableRow>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          )}
-        </CardContent>
-      </Card>
-
-      {/* Members */}
-      {!selectedProject && projects.length > 1 && !loading && (
-        <Alert variant="info" className="mb-md">
-          <AlertDescription>
-            Click a row in the Projects table above to manage its members.
-          </AlertDescription>
-        </Alert>
-      )}
-      {selectedProject && (
-        <Card className="mb-md">
-          <CardHeader className="flex flex-row items-center justify-between">
-            <CardTitle>Members — {selectedProject.name}</CardTitle>
-            <Button size="sm" variant="outline" onClick={openAddMemberDialog}>
-              Add Member
-            </Button>
-          </CardHeader>
-          <CardContent>
-            {membersLoading ? (
-              <div className="flex justify-center py-lg">
-                <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
-              </div>
-            ) : members.length === 0 ? (
-              <p className="py-md text-center text-metadata text-muted-foreground">
-                No members in this project.
-              </p>
-            ) : (
-              <div className="overflow-x-auto rounded-panel border border-border">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Username</TableHead>
-                      <TableHead>Full Name</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Joined</TableHead>
-                      <TableHead className="text-center">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {members.map((m) => (
-                      <TableRow key={m.user_id}>
-                        <TableCell className="font-medium">{m.username}</TableCell>
-                        <TableCell>{safeFallback(m.full_name)}</TableCell>
-                        <TableCell>
-                          <Select value={m.role} onValueChange={(v) => handleRoleChange(m, v)}>
-                            <SelectTrigger className="w-32">
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {MEMBER_ROLES.map((role) => (
-                                <SelectItem key={role} value={role}>
-                                  {role.charAt(0).toUpperCase() + role.slice(1)}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell>{formatDate(m.joined_at)}</TableCell>
-                        <TableCell className="text-center">
-                          <Tooltip>
-                            <TooltipTrigger asChild>
-                              <Button
-                                variant="ghost"
-                                size="icon"
-                                onClick={() => handleRemoveMember(m)}
-                                aria-label={`Remove ${m.username} from project`}
-                                className="text-muted-foreground hover:text-destructive"
-                              >
-                                <Trash2 className="size-4" aria-hidden />
-                              </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>Remove member</TooltipContent>
-                          </Tooltip>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Create Project Dialog */}
-      <Dialog open={createOpen} onOpenChange={(next) => !next && !creating && setCreateOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Create Project</DialogTitle>
-          </DialogHeader>
-          {createError && (
-            <Alert variant="destructive">
-              <AlertDescription>{createError}</AlertDescription>
-            </Alert>
-          )}
-          <div className="flex flex-col gap-md">
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="proj-name">Project Name</Label>
-              <Input
-                id="proj-name"
-                value={newName}
-                onChange={(e) => setNewName(e.target.value)}
-                required
-                autoFocus
-              />
-            </div>
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="proj-desc">Description</Label>
-              <Textarea
-                id="proj-desc"
-                rows={3}
-                value={newDescription}
-                onChange={(e) => setNewDescription(e.target.value)}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)} disabled={creating}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreate} disabled={creating || !newName.trim()}>
-              {creating ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Creating…</> : 'Create'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Add Member Dialog */}
-      <Dialog
-        open={addMemberOpen}
-        onOpenChange={(next) => !next && !addingMember && setAddMemberOpen(false)}
+        ) : undefined}
       >
+        {membersError ? (
+          <div className="flex flex-wrap items-center gap-sm">
+            <p className="text-caption text-destructive">{membersError}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadMembers()}>Retry</Button>
+          </div>
+        ) : members === null ? (
+          <p className="inline-flex items-center gap-xs text-caption text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden /> Loading members…
+          </p>
+        ) : members.length === 0 ? (
+          <p className="text-metadata text-muted-foreground">Nobody is a member yet — only global administrators can open this project.</p>
+        ) : (
+          <table className="w-full border-collapse text-metadata" style={{ tableLayout: 'fixed' }} aria-label="Project members">
+            <thead>
+              <tr className="text-left text-caption text-muted-foreground">
+                <th className="pb-xxs pr-md font-medium">Member</th>
+                <th className="w-44 pb-xxs pr-md font-medium">Role</th>
+                <th className="w-28 pb-xxs pr-md font-medium">Joined</th>
+                <th className="w-12 pb-xxs" aria-label="Remove" />
+              </tr>
+            </thead>
+            <tbody>
+              {members.map((m) => (
+                <tr key={m.user_id} className="border-t border-border/60 align-middle">
+                  <td className="py-xs pr-md">
+                    <span className="block truncate font-medium text-foreground" title={memberName(m)}>
+                      {memberName(m)}{m.user_id === user?.id && <span className="font-normal text-muted-foreground"> (you)</span>}
+                    </span>
+                    {m.full_name && <span className="block truncate text-caption text-muted-foreground">{m.username}</span>}
+                  </td>
+                  <td className="py-xs pr-md">
+                    {canAdmin ? (
+                      <Select value={m.role} onValueChange={(v) => void changeRole(m, v)}>
+                        <SelectTrigger className="h-8 w-36 text-caption" aria-label={`Role of ${memberName(m)}`}>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {PROJECT_ROLES.map((r) => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
+                        </SelectContent>
+                      </Select>
+                    ) : roleLabel(m.role)}
+                  </td>
+                  <td className="py-xs pr-md text-caption text-muted-foreground">{day(m.joined_at ?? m.created_at)}</td>
+                  <td className="py-xs text-right">
+                    {canAdmin && (
+                      <Button variant="ghost" size="icon" className="size-8 text-muted-foreground hover:text-destructive"
+                        onClick={() => void removeMember(m)} aria-label={`Remove ${memberName(m)} from the project`}>
+                        <Trash2 className="size-4" aria-hidden />
+                      </Button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </PostureSection>
+
+      <TagManagement />
+      <WebhookSettings />
+      <WebhookDeliveries />
+
+      {isGlobalAdmin && (
+        <PostureSection title="Delete this project"
+          description="Removes the project and everything in it, for everyone. Global administrators only.">
+          <div className="flex flex-wrap items-center gap-sm">
+            <Button variant="destructive" size="sm" onClick={() => void deleteProject()} disabled={projects.length <= 1}>
+              <Trash2 className="size-4" aria-hidden /> Delete {safeFallback(currentProject.name, 'project')}
+            </Button>
+            {projects.length <= 1 && (
+              <span className="text-caption text-muted-foreground">The only project cannot be deleted.</span>
+            )}
+          </div>
+        </PostureSection>
+      )}
+
+      <Dialog open={addOpen} onOpenChange={(v) => !v && !adding && setAddOpen(false)}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Add Member</DialogTitle>
+            <DialogTitle>Add a member</DialogTitle>
+            <DialogDescription>They can open {currentProject.name} with the role you choose.</DialogDescription>
           </DialogHeader>
-          {addMemberError && (
-            <Alert variant="destructive">
-              <AlertDescription>{addMemberError}</AlertDescription>
-            </Alert>
-          )}
-          <div className="flex flex-col gap-md">
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="member-user">User</Label>
-              <Select value={newMemberUserId} onValueChange={setNewMemberUserId}>
-                <SelectTrigger
-                  id="member-user"
-                  disabled={directoryLoading || availableDirectoryUsers.length === 0}
-                >
-                  <SelectValue
-                    placeholder={
-                      directoryLoading
-                        ? 'Loading…'
-                        : availableDirectoryUsers.length === 0
-                          ? 'No available users'
-                          : 'Pick a user'
-                    }
-                  />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableDirectoryUsers.map((u) => (
-                    <SelectItem key={u.id} value={String(u.id)}>
-                      {u.full_name ? `${u.username} — ${u.full_name}` : u.username}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+          <div className="space-y-md">
+            <div className="space-y-xxs">
+              <Label id="ps-new-user-label" htmlFor="ps-new-user">Person</Label>
+              <Combobox
+                id="ps-new-user"
+                options={candidates.map((u) => ({
+                  value: String(u.id), label: memberName(u), description: u.full_name ? u.username : undefined,
+                  keywords: [u.username, u.full_name ?? ''],
+                }))}
+                value={newUser}
+                onChange={setNewUser}
+                placeholder={directory === null ? 'Loading people…' : candidates.length ? 'Search people…' : 'Everyone is already a member'}
+                searchPlaceholder="Name or username"
+                disabled={directory === null || candidates.length === 0}
+              />
             </div>
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="member-role">Role</Label>
-              <Select value={newMemberRole} onValueChange={setNewMemberRole}>
-                <SelectTrigger id="member-role">
-                  <SelectValue />
-                </SelectTrigger>
+            <div className="space-y-xxs">
+              <Label htmlFor="ps-new-role">Role</Label>
+              <Select value={newRole} onValueChange={setNewRole}>
+                <SelectTrigger id="ps-new-role"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  {MEMBER_ROLES.map((role) => (
-                    <SelectItem key={role} value={role}>
-                      {role.charAt(0).toUpperCase() + role.slice(1)}
-                    </SelectItem>
-                  ))}
+                  {PROJECT_ROLES.map((r) => <SelectItem key={r.value} value={r.value}>{r.label}</SelectItem>)}
                 </SelectContent>
               </Select>
+              <p className="text-caption text-muted-foreground">{PROJECT_ROLES.find((r) => r.value === newRole)?.can}</p>
             </div>
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setAddMemberOpen(false)} disabled={addingMember}>
-              Cancel
-            </Button>
-            <Button onClick={handleAddMember} disabled={addingMember || !newMemberUserId}>
-              {addingMember ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Adding…</> : 'Add'}
+            <Button variant="outline" onClick={() => setAddOpen(false)} disabled={adding}>Cancel</Button>
+            <Button onClick={() => void addMember()} disabled={adding || !newUser}>
+              {adding && <Loader2 className="size-4 animate-spin" aria-hidden />} Add member
             </Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Edit Project Dialog */}
-      <Dialog open={editOpen} onOpenChange={(next) => !next && !saving && setEditOpen(false)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Edit Project</DialogTitle>
-          </DialogHeader>
-          {editError && (
-            <Alert variant="destructive">
-              <AlertDescription>{editError}</AlertDescription>
-            </Alert>
-          )}
-          <div className="flex flex-col gap-md">
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="edit-proj-name">Project Name</Label>
-              <Input
-                id="edit-proj-name"
-                value={editName}
-                onChange={(e) => setEditName(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="edit-proj-desc">Description</Label>
-              <Textarea
-                id="edit-proj-desc"
-                rows={2}
-                value={editDescription}
-                onChange={(e) => setEditDescription(e.target.value)}
-              />
-            </div>
-            <div className="flex flex-col gap-xs">
-              <Label htmlFor="edit-proj-status">Status</Label>
-              <Select value={editStatus} onValueChange={setEditStatus}>
-                <SelectTrigger id="edit-proj-status">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {PROJECT_STATUSES.map((s) => (
-                    <SelectItem key={s.value} value={s.value}>
-                      {s.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="grid grid-cols-1 gap-md sm:grid-cols-2">
-              <div className="flex flex-col gap-xs">
-                <Label htmlFor="edit-proj-start">Start Date</Label>
-                <Input
-                  id="edit-proj-start"
-                  type="date"
-                  value={editStartDate}
-                  onChange={(e) => setEditStartDate(e.target.value)}
-                />
-              </div>
-              <div className="flex flex-col gap-xs">
-                <Label htmlFor="edit-proj-end">End Date</Label>
-                <Input
-                  id="edit-proj-end"
-                  type="date"
-                  value={editEndDate}
-                  onChange={(e) => setEditEndDate(e.target.value)}
-                />
-              </div>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setEditOpen(false)} disabled={saving}>
-              Cancel
-            </Button>
-            <Button onClick={handleSaveEdit} disabled={saving}>
-              {saving ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Saving…</> : 'Save'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Host tags — rename/delete; creation happens by tagging hosts (v2.243.0). */}
-      {currentProject && <TagManagement />}
-
-      {/* Outbound webhooks — scoped to the active project (v2.73.0). */}
-      {currentProject && <WebhookSettings />}
-
-      {/* Delivery outbox — the difference between "configured" and "working" (v2.243.0). */}
-      {currentProject && <WebhookDeliveries />}
-
       {confirmEl}
-      {/* prevent ESLint unused on the cn import — kept for future variants */}
-      <span className={cn('hidden')} />
     </div>
   );
 };

@@ -108,6 +108,7 @@ const Profile = lazy(() => import('./pages/Profile'));
 const SystemSettings = lazy(() => import('./pages/SystemSettings'));
 const ToolReference = lazy(() => import('./pages/ToolReference'));
 const ProjectSettings = lazy(() => import('./pages/ProjectSettings'));
+const AllProjects = lazy(() => import('./pages/AllProjects'));
 const PortfolioDashboard = lazy(() => import('./pages/PortfolioDashboard'));
 const Oversight = lazy(() => import('./pages/Oversight'));
 const TestPlans = lazy(() => import('./pages/TestPlans'));
@@ -636,6 +637,14 @@ function App() {
                              the IA says shouldn't expose it. */
                           <ProtectedRoute requiredRole="analyst">
                             <ProjectSettings />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/settings/projects"
+                        element={
+                          <ProtectedRoute requiredRole="admin">
+                            <AllProjects />
                           </ProtectedRoute>
                         }
                       />

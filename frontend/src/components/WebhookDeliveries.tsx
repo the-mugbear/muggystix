@@ -23,7 +23,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import PostureSection from './posture/PostureSection';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from './ui/select';
@@ -118,16 +118,15 @@ const WebhookDeliveries: React.FC = () => {
   const failedCount = rows.filter((r) => (r.status || '').toLowerCase() === 'failed').length;
 
   return (
-    <Card className="mb-md">
-      <CardHeader className="flex flex-row items-center justify-between gap-sm">
-        <CardTitle className="min-w-0">
-          Webhook Deliveries
-          {failedCount > 0 && (
-            <Badge variant="outline" className="ml-xs border-destructive/40 text-destructive">
-              {failedCount} failed
-            </Badge>
-          )}
-        </CardTitle>
+    // v5.265.0 — a section of Project settings, not a card.
+    <PostureSection
+      title={<>
+        Webhook deliveries
+        {failedCount > 0 && (
+          <Badge variant="destructive-outline" className="normal-case tracking-normal">{failedCount} failed</Badge>
+        )}
+      </>}
+      actions={
         <div className="flex shrink-0 items-center gap-xs">
           <Select value={status} onValueChange={setStatus}>
             <SelectTrigger className="h-8 w-[150px]">
@@ -139,13 +138,14 @@ const WebhookDeliveries: React.FC = () => {
               ))}
             </SelectContent>
           </Select>
-          <Button size="sm" variant="outline" onClick={() => void reload()} disabled={loading}>
+          <Button size="sm" variant="ghost" onClick={() => void reload()} disabled={loading}>
             <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
             Refresh
           </Button>
         </div>
-      </CardHeader>
-      <CardContent>
+      }
+    >
+      <div>
         <p className="mb-sm text-caption text-muted-foreground">
           The last 100 delivery attempts for this project. A configured webhook that has
           stopped delivering shows up here and nowhere else.
@@ -254,8 +254,8 @@ const WebhookDeliveries: React.FC = () => {
             </table>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 

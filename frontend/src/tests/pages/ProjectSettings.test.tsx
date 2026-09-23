@@ -1,0 +1,96 @@
+/**
+ * Project settings (5.265.0) — one project (the current one), sections not
+ * cards, and only what the caller's role allows.
+ */
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+const apiMock = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), put: vi.fn(), delete: vi.fn() }));
+const updateProjectMock = vi.hoisted(() => vi.fn());
+vi.mock('../../services/api', () => ({ default: apiMock, updateProject: updateProjectMock }));
+vi.mock('../../components/TagManagement', () => ({ default: () => null }));
+vi.mock('../../components/WebhookSettings', () => ({ default: () => null }));
+vi.mock('../../components/WebhookDeliveries', () => ({ default: () => null }));
+const confirmMock = vi.fn();
+vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
+vi.mock('../../contexts/ToastContext', () => ({
+  useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
+}));
+let myRole = 'admin';
+const refreshProjects = vi.fn();
+// A NEW object on every call, on purpose: the page must not loop or reset its
+// form when a refresh hands back an equal project.
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({
+    currentProject: {
+      id: 3, name: 'Demo — Insights Eval', description: null, status: 'active',
+      start_date: null, end_date: null, my_role: myRole,
+    },
+    projects: [{ id: 3 }, { id: 4 }],
+    refreshProjects,
+  }),
+}));
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, role: 'member' } }) }));
+
+import ProjectSettings from '../../pages/ProjectSettings';
+
+const members = [
+  { id: 1, user_id: 1, username: 'ana', full_name: 'Ana', role: 'admin', created_at: '2026-09-01T00:00:00Z' },
+  { id: 2, user_id: 2, username: 'ben', full_name: null, role: 'analyst', created_at: '2026-09-01T00:00:00Z' },
+];
+
+const renderPage = () => render(<MemoryRouter><ProjectSettings /></MemoryRouter>);
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  myRole = 'admin';
+  apiMock.get.mockResolvedValue({ data: members });
+  apiMock.put.mockResolvedValue({ data: {} });
+});
+
+describe('Project settings', () => {
+  it('is about the current project only, in sections', async () => {
+    const { container } = renderPage();
+    expect(await screen.findByText('Ana')).toBeInTheDocument();
+    expect(screen.getByText(/For/)).toHaveTextContent('For Demo — Insights Eval — the project chosen at the top of the page.');
+    expect(apiMock.get).toHaveBeenCalledWith('/projects/3/members');
+    expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
+    // No project list here any more; a non-global admin gets no delete area.
+    expect(screen.queryByText('All projects')).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete this project')).not.toBeInTheDocument();
+  });
+
+  it('saves the engagement dates', async () => {
+    updateProjectMock.mockResolvedValue({});
+    renderPage();
+    await screen.findByText('Ana');
+    fireEvent.change(screen.getByLabelText('Start date'), { target: { value: '2026-09-01' } });
+    fireEvent.change(screen.getByLabelText('End date'), { target: { value: '2026-09-19' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save details' }));
+    await waitFor(() => expect(updateProjectMock).toHaveBeenCalledWith(3, expect.objectContaining({
+      start_date: new Date('2026-09-01').toISOString(), end_date: new Date('2026-09-19').toISOString(),
+    })));
+  });
+
+  it('asks before you change your own role', async () => {
+    confirmMock.mockResolvedValue(false);
+    renderPage();
+    await screen.findByText('Ana');
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Role of Ana' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Viewer' }));
+    await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Change your own role?' })));
+    expect(apiMock.put).not.toHaveBeenCalled();
+  });
+
+  it('is read-only for an analyst', async () => {
+    myRole = 'analyst';
+    renderPage();
+    await screen.findByText('Ana');
+    expect(screen.getByLabelText('Name')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save details' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add member/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Role of Ana' })).not.toBeInTheDocument();
+    expect(screen.getByText(/Only a project admin can change these settings/)).toBeInTheDocument();
+  });
+});

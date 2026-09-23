@@ -70,6 +70,9 @@ class ProjectResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime] = None
     member_count: Optional[int] = None
+    # v2.383.0 — the CALLER's role in this project ("admin" for a global
+    # admin), so settings pages can offer only what the caller may do.
+    my_role: Optional[str] = None
     # v2.341.0 — the project's own choice (null = none made) and the value an
     # upload actually uses, which folds in the deployment default.
     skip_informational_findings: Optional[bool] = None
@@ -201,13 +204,27 @@ def list_projects(
         .all()
     ) if projects else {}
 
+    my_roles = dict(
+        db.query(ProjectMembership.project_id, ProjectMembership.role)
+        .filter(ProjectMembership.user_id == current_user.id,
+                ProjectMembership.project_id.in_([p.id for p in projects]))
+        .all()
+    ) if projects else {}
+
     result = []
     for p in projects:
         resp = ProjectResponse.model_validate(p)
         resp.member_count = member_counts.get(p.id, 0)
+        resp.my_role = _my_role(current_user, my_roles.get(p.id))
         result.append(resp)
 
     return result
+
+
+def _my_role(user: User, membership_role) -> Optional[str]:
+    if user.role == UserRole.ADMIN:
+        return "admin"
+    return getattr(membership_role, "value", membership_role)
 
 
 @router.post(
@@ -282,19 +299,19 @@ def get_project(
         raise HTTPException(status_code=404, detail="Project not found")
 
     # Check access
-    if current_user.role != UserRole.ADMIN:
-        membership = db.query(ProjectMembership).filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.user_id == current_user.id,
-        ).first()
-        if not membership:
-            raise HTTPException(status_code=403, detail="Not a member of this project")
+    membership = db.query(ProjectMembership).filter(
+        ProjectMembership.project_id == project_id,
+        ProjectMembership.user_id == current_user.id,
+    ).first()
+    if current_user.role != UserRole.ADMIN and not membership:
+        raise HTTPException(status_code=403, detail="Not a member of this project")
 
     count = db.query(func.count(ProjectMembership.id)).filter(
         ProjectMembership.project_id == project.id
     ).scalar()
     resp = ProjectResponse.model_validate(project)
     resp.member_count = count
+    resp.my_role = _my_role(current_user, membership.role if membership else None)
     return resp
 
 

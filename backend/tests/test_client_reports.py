@@ -360,3 +360,13 @@ def test_the_summary_names_the_report_details_still_empty(client, test_project):
         "engagement type", "system description", "distribution list", "project dates",
     ]
     assert r.json()["settings"]["applications"] == "- https://app.example.com"
+
+
+def test_projects_say_what_role_the_caller_has(client, test_project, people, act_as):
+    """v2.383.0 — settings pages offer only what the caller may do."""
+    act_as(people["analyst"])
+    row = next(p for p in client.get("/api/v1/projects/").json() if p["id"] == test_project.id)
+    assert row["my_role"] == "analyst"
+    assert client.get(f"/api/v1/projects/{test_project.id}").json()["my_role"] == "analyst"
+    act_as(people["admin"])
+    assert client.get(f"/api/v1/projects/{test_project.id}").json()["my_role"] == "admin"
