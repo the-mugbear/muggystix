@@ -123,7 +123,7 @@ const WebhookDeliveries: React.FC = () => {
       title={<>
         Webhook deliveries
         {failedCount > 0 && (
-          <Badge variant="destructive-outline" className="normal-case tracking-normal">{failedCount} failed</Badge>
+          <Badge variant="destructive-outline">{failedCount} failed</Badge>
         )}
       </>}
       actions={

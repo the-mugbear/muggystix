@@ -44,7 +44,7 @@ import { followHost, updateTestPlanEntry } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
-import { PostureSection } from './posture/PostureSection';
+import { PostureSection, SectionCount } from './posture/PostureSection';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
@@ -310,7 +310,7 @@ const FollowupsSection: React.FC<{
     <PostureSection
       title={<>
         <span>Needs another look</span>
-        <span className="font-normal tabular-nums normal-case tracking-normal">{data.total.toLocaleString()}</span>
+        <SectionCount>{data.total.toLocaleString()}</SectionCount>
       </>}
       description={<>
         Reviewed hosts with an open question, or that changed after the review
@@ -438,7 +438,7 @@ const InvestigateSection: React.FC<{
     <PostureSection
       title={<>
         <span>Worth a look</span>
-        <span className="font-normal tabular-nums normal-case tracking-normal">{data.queue_total.toLocaleString()}</span>
+        <SectionCount>{data.queue_total.toLocaleString()}</SectionCount>
       </>}
       description="Hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet."
     >
@@ -625,9 +625,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
         title={<>
           <span>My work</span>
           {summary && (
-            <span className={cn('font-normal normal-case tracking-normal', overdue > 0 ? 'text-destructive' : 'text-muted-foreground')}>
-              {summary}
-            </span>
+            <SectionCount className={overdue > 0 ? 'text-destructive' : undefined}>{summary}</SectionCount>
           )}
         </>}
         // v5.243.0 — when the workbench last loaded.
