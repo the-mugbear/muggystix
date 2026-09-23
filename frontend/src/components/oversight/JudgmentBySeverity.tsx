@@ -1,7 +1,8 @@
 /**
  * Findings and the judging of scanner output, one row per severity
- * (5.259.0).  Each row: the findings (issues) at that severity, a bar of the
- * scanner observations split into judged / not yet judged, and the share of
+ * (5.259.0).  Each row: the findings (issues) at that severity, the total
+ * scanner observations beside them (5.270.1), a bar of those observations
+ * split into judged / not yet judged, and the share of
  * tested targets with a finding at that severity (the API's defect_rate).
  *
  * Findings are issues and observations are issue × host — the bar is the
@@ -25,14 +26,17 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
     <div className="overflow-x-auto">
       <table className="w-full min-w-[640px] table-fixed text-metadata" aria-label="Findings and scanner observations by severity">
         <colgroup>
-          <col style={{ width: '12%' }} /><col style={{ width: '14%' }} /><col /><col style={{ width: '14%' }} />
+          <col style={{ width: '12%' }} /><col style={{ width: '11%' }} /><col style={{ width: '14%' }} /><col /><col style={{ width: '14%' }} />
         </colgroup>
         <thead>
           <tr className="text-caption text-muted-foreground">
             <th className="pb-xs text-left font-medium">Severity</th>
             <th className="pb-xs text-right font-medium" title="Distinct findings; one finding on many hosts counts once; false positives excluded">Findings</th>
+            {/* v5.270.1 — the total beside the findings (user request): the
+                bar showed only the share still waiting. */}
+            <th className="pb-xs text-right font-medium" title="Every scanner observation at that severity — one per issue per host, judged or not">Scanner observations</th>
             <th className="pb-xs pl-lg text-left font-medium">
-              Scanner observations —{' '}
+              Judged —{' '}
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: JUDGED }} aria-hidden />judged</span>{' · '}
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: NOT_JUDGED }} aria-hidden />not yet judged</span>
             </th>
@@ -57,9 +61,10 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
                   </span>
                 </td>
                 <td className="py-xs text-right font-semibold tabular-nums">{s.findings[k].toLocaleString()}</td>
+                <td className="py-xs text-right font-semibold tabular-nums">{total.toLocaleString()}</td>
                 <td className="py-xs pl-lg">
                   {total === 0 ? (
-                    <span className="text-caption text-muted-foreground">No scanner observations</span>
+                    <span className="text-caption text-muted-foreground">Nothing to judge</span>
                   ) : (
                     <div className="flex min-w-0 items-center gap-sm">
                       <div className="flex h-3 min-w-0 flex-1 gap-[2px]" role="img"
@@ -74,7 +79,7 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
                         )}
                       </div>
                       <span className="shrink-0 text-caption tabular-nums text-muted-foreground">
-                        <span className="font-semibold text-foreground">{open.toLocaleString()}</span> of {total.toLocaleString()} not yet judged
+                        <span className="font-semibold text-foreground">{open.toLocaleString()}</span> not yet judged
                       </span>
                     </div>
                   )}

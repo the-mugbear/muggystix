@@ -98,6 +98,10 @@ describe('Oversight', () => {
     const severity = screen.getByRole('table', { name: /by severity/ });
     expect(within(severity).getByRole('img', { name: 'High: 20 judged, 70 not yet judged of 90 scanner observations' })).toBeInTheDocument();
     expect(within(severity).getByText('50%')).toBeInTheDocument();      // high defect rate
+    // 5.270.1 — the scanner-observation total has its own column beside Findings.
+    const highRow = within(severity).getByText('High').closest('tr')!;
+    expect(within(highRow).getAllByRole('cell')[2]).toHaveTextContent(/^90$/);
+    expect(within(severity).getAllByRole('columnheader')[2]).toHaveTextContent('Scanner observations');
     // Growth: the readout shows the latest bucket until the pointer moves.
     expect(screen.getByText(/2026-08-30/, { selector: '#growth-readout span' })).toBeInTheDocument();
     expect(screen.getAllByRole('img', { name: /^Recorded targets \(cumulative\): 28/ })).toHaveLength(1);
@@ -147,6 +151,11 @@ describe('Oversight — projects table columns', () => {
       'Findings and their state', 'Scanner observations', 'Tested hosts with a finding',
     ]));
     expect(within(table).queryByText(/defect/i)).not.toBeInTheDocument();
+    // 5.270.1 — seven columns (window and admins under the project), so the
+    // last one is not pushed out of view at a normal width.
+    expect(headers).toHaveLength(7);
+    expect(headers).not.toContain('Window');
+    expect(table.className).not.toContain('min-w-[1180px]');
     for (const label of ['findings and their state', 'scanner observations', 'tested hosts with a finding']) {
       expect(within(table).getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
     }

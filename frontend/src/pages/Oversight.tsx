@@ -182,18 +182,20 @@ const ProjectsTable: React.FC<{
   onOpen: (row: OversightProjectRow) => void;
   caption: string;
 }> = ({ rows, onOpen, caption }) => (
-  <div className="overflow-x-auto rounded-panel border border-border">
-    <Table aria-label={caption} className="min-w-[1180px]" style={{ tableLayout: 'fixed' }}>
+  // v5.270.1 — seven columns, not nine: the window and the project admins
+  // are facts ABOUT the project, so they sit under its name.  At 1,180 px
+  // minimum the table scrolled at a normal window width and hid "Activity ·
+  // attention"; it now fits at 960 px.  No bordered box (sections, not cards).
+  <div className="overflow-x-auto border-t border-border">
+    <Table aria-label={caption} className="min-w-[960px]" style={{ tableLayout: 'fixed' }}>
       <colgroup>
-        <col style={{ width: '15%' }} /><col style={{ width: '8%' }} /><col style={{ width: '10%' }} />
-        <col style={{ width: '9%' }} /><col style={{ width: '7%' }} /><col style={{ width: '15%' }} />
-        <col style={{ width: '15%' }} /><col style={{ width: '9%' }} /><col style={{ width: '12%' }} />
+        <col style={{ width: '19%' }} /><col style={{ width: '10%' }} /><col style={{ width: '8%' }} />
+        <col style={{ width: '17%' }} /><col style={{ width: '17%' }} /><col style={{ width: '11%' }} />
+        <col style={{ width: '18%' }} />
       </colgroup>
       <TableHeader>
         <TableRow>
-          <TableHead>Project</TableHead>
-          <TableHead>Window</TableHead>
-          <TableHead>Project admins</TableHead>
+          <TableHead><HeadWithInfo label="Project" info="The project, its status and engagement window, and its project admins (someone with the admin role on it)." /></TableHead>
           <TableHead><HeadWithInfo label="Targets tested" info={COLUMN_INFO.tested} /></TableHead>
           <TableHead><HeadWithInfo label="In review · reviewed" info={COLUMN_INFO.review} /></TableHead>
           <TableHead><HeadWithInfo label="Findings and their state" info={COLUMN_INFO.findings} /></TableHead>
@@ -210,15 +212,12 @@ const ProjectsTable: React.FC<{
                 className="block max-w-full truncate text-left font-medium text-foreground hover:text-info focus:outline-none focus-visible:underline">
                 {r.name}
               </button>
-              <span className="text-caption text-muted-foreground">{formatStatusLabel(r.status)}</span>
-            </TableCell>
-            <TableCell className="text-caption tabular-nums">
-              {day(r.start_date) ? <>{day(r.start_date)}<br />{day(r.end_date) ?? 'open'}</> : <span className="text-muted-foreground">No dates</span>}
-            </TableCell>
-            <TableCell>
+              <span className="block truncate text-caption tabular-nums text-muted-foreground">
+                {formatStatusLabel(r.status)} · {day(r.start_date) ? `${day(r.start_date)} – ${day(r.end_date) ?? 'open'}` : 'no dates'}
+              </span>
               {r.admins.length
-                ? <span className="block truncate" title={r.admins.join(', ')}>{r.admins.join(', ')}</span>
-                : <Badge variant="destructive">No project admin</Badge>}
+                ? <span className="block truncate text-caption text-muted-foreground" title={`Project admins: ${r.admins.join(', ')}`}>Admin: {r.admins.join(', ')}</span>
+                : <span className="mt-xxs block"><Badge variant="destructive">No project admin</Badge></span>}
             </TableCell>
             <TableCell className="tabular-nums">
               {r.host_count ? <>{n(r.hosts_tested)} / {n(r.host_count)} <span className="text-muted-foreground">({pct(r.hosts_tested, r.host_count)})</span></> : <span className="text-muted-foreground">No targets</span>}
@@ -254,7 +253,7 @@ const ProjectsTable: React.FC<{
           </TableRow>
         ))}
         {rows.length === 0 && (
-          <TableRow><TableCell colSpan={9} className="py-md text-center text-muted-foreground">No matching projects.</TableCell></TableRow>
+          <TableRow><TableCell colSpan={7} className="py-md text-center text-muted-foreground">No matching projects.</TableCell></TableRow>
         )}
       </TableBody>
     </Table>
