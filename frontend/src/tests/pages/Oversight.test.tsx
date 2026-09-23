@@ -23,7 +23,9 @@ const LONG = 'engagement-with-a-very-long-name-'.repeat(6);
 const project = (over: Record<string, unknown>) => ({
   id: 1, name: 'P', status: 'active', start_date: null, end_date: null, admins: ['Ada'],
   host_count: 10, hosts_tested: 4, hosts_in_review: 1, hosts_reviewed: 3,
-  findings: sev(), finding_affected_targets: 0, observations_unjudged: sev(),
+  findings: sev(), finding_states: { under_investigation: 0, confirmed: 0, closed: 0 },
+  findings_false_positive: 0, finding_affected_targets: 0,
+  observations: sev(), observations_judged: sev(), observations_unjudged: sev(),
   defect_rate: { critical: 0, high: 0, medium: 0, low: 0 }, last_scan_at: null,
   pending_plan_reviews: 0, blocked_sessions: 0, targets_added: 0, reviews_concluded: 0,
   imports: 0, contributors: 0, attention_reasons: [],
@@ -48,7 +50,8 @@ const response = {
     targets_tested: 12, targets_in_review: 2, targets_reviewed: 10,
     reviews_concluded: 4, imports: 6, contributors: 3, unattributed_events: 0,
     severity: {
-      findings: sev(2, 5, 1, 0), finding_affected_targets: 7,
+      findings: sev(2, 5, 1, 0), finding_states: { under_investigation: 3, confirmed: 4, closed: 1 },
+      findings_false_positive: 2, finding_affected_targets: 7,
       observations: sev(40, 90, 10, 3), observations_judged: sev(30, 20, 0, 0),
       observations_unjudged: sev(10, 70, 10, 3), tested_targets: 12,
       defect_targets: sev(3, 6, 1, 0), defect_rate: { critical: 25, high: 50, medium: 8.3, low: 0 },
@@ -112,6 +115,56 @@ describe('Oversight', () => {
     expect(within(table).getByText('Orphaned')).toBeInTheDocument();
     expect(within(table).queryByText('Closed')).not.toBeInTheDocument();
     expect(screen.getByText(/1 of 3 projects/)).toBeInTheDocument();
+  });
+});
+
+// The projects table says what each number counts: the total scanner
+// observations with their judged split, where each finding stands, and the
+// share of tested hosts with a finding — no "Defect" jargon.
+describe('Oversight — projects table columns', () => {
+  const detailed = project({
+    id: 4, name: 'Detailed',
+    findings: sev(2, 3, 1, 0),
+    finding_states: { under_investigation: 2, confirmed: 3, closed: 1 },
+    findings_false_positive: 2,
+    observations: sev(10, 20, 5, 1), observations_judged: sev(4, 12, 5, 1),
+    observations_unjudged: sev(6, 8, 0, 0),
+    defect_rate: { critical: 25, high: 50, medium: 0, low: 0 },
+  });
+  beforeEach(() => {
+    dashboardMock.mockReset().mockResolvedValue({ ...response, projects: [detailed] });
+  });
+
+  const openTable = async () => {
+    render(<MemoryRouter initialEntries={['/oversight?tab=projects']}><Oversight /></MemoryRouter>);
+    return screen.findByRole('table', { name: 'All projects in the cohort' });
+  };
+
+  it('headers name what they count, each with an (i), and never say "defect"', async () => {
+    const table = await openTable();
+    const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent);
+    expect(headers).toEqual(expect.arrayContaining([
+      'Findings and their state', 'Scanner observations', 'Tested hosts with a finding',
+    ]));
+    expect(within(table).queryByText(/defect/i)).not.toBeInTheDocument();
+    for (const label of ['findings and their state', 'scanner observations', 'tested hosts with a finding']) {
+      expect(within(table).getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
+    }
+  });
+
+  it('a row shows every finding by state and the total scanner observations with the judged split', async () => {
+    await openTable();
+    const findings = screen.getByTestId('findings-cell');
+    expect(findings).toHaveTextContent('6 findings');
+    expect(findings).toHaveTextContent('2 under investigation');
+    expect(findings).toHaveTextContent('3 confirmed');
+    expect(findings).toHaveTextContent('1 closed');
+    expect(findings).toHaveTextContent('+ 2 false positives, not counted');
+    const observations = screen.getByTestId('observations-cell');
+    expect(observations).toHaveTextContent('36 total');
+    expect(observations).toHaveTextContent('22 judged · 14 not yet judged');
+    expect(screen.getByText('25% critical')).toBeInTheDocument();
+    expect(screen.getByText('50% high')).toBeInTheDocument();
   });
 });
 

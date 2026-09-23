@@ -1,8 +1,8 @@
 /**
  * Findings and the judging of scanner output, one row per severity
  * (5.259.0).  Each row: the findings (issues) at that severity, a bar of the
- * scanner observations split into judged / not yet judged, and the defect
- * rate over tested targets.
+ * scanner observations split into judged / not yet judged, and the share of
+ * tested targets with a finding at that severity (the API's defect_rate).
  *
  * Findings are issues and observations are issue × host — the bar is the
  * observations' own part-to-whole and the findings count sits beside it,
@@ -36,8 +36,8 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: JUDGED }} aria-hidden />judged</span>{' · '}
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: NOT_JUDGED }} aria-hidden />not yet judged</span>
             </th>
-            <th className="pb-xs text-right font-medium" title={`Share of the ${s.tested_targets.toLocaleString()} tested targets with at least one finding at that severity`}>
-              Defect rate
+            <th className="pb-xs text-right font-medium" title={`Share of the ${s.tested_targets.toLocaleString()} tested targets with at least one finding at that severity (not a false positive there)`}>
+              Tested targets with a finding
             </th>
           </tr>
         </thead>

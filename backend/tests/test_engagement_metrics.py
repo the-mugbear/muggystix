@@ -13,6 +13,7 @@ from sqlalchemy import case
 from app.db import models
 from app.db.models import FollowStatus, HostFollow
 from app.db.models_auth import User, UserRole
+from app.db.models_findings import Finding, FindingHost
 from app.db.models_vulnerability import (
     Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
 )
@@ -161,3 +162,27 @@ def test_every_requested_project_is_present(db_session):
     assert project_engagement(db_session, []) == {}
     e = project_engagement(db_session, [987654])[987654]
     assert e.host_count == 0 and e.findings.critical == 0
+
+
+def test_finding_states_add_up_to_the_findings_and_false_positives_stand_apart(db_session, test_project):
+    """Under investigation (open/retest) + confirmed + closed (accepted risk /
+    remediated) == the findings total; a false positive — by its own status or
+    on every endpoint — is counted apart, never in a state."""
+    pid = test_project.id
+    h = models.Host(project_id=pid, ip_address="10.9.3.1", state="up")
+    db_session.add(h)
+    db_session.flush()
+    for i, (status, host_status) in enumerate((
+        ("open", "open"), ("retest", "open"), ("confirmed", "open"), ("accepted_risk", "open"),
+        ("remediated", "remediated"), ("false_positive", "open"), ("open", "false_positive"),
+    )):
+        f = Finding(project_id=pid, title=f"f{i}", severity="high", status=status, source="manual")
+        db_session.add(f)
+        db_session.flush()
+        db_session.add(FindingHost(finding_id=f.id, host_id=h.id, host_status=host_status))
+    db_session.flush()
+
+    e = project_engagement(db_session, [pid])[pid]
+    assert e.finding_states.as_dict() == {"under_investigation": 2, "confirmed": 1, "closed": 2}
+    assert sum(e.finding_states.as_dict().values()) == e.findings.high == 5
+    assert e.findings_false_positive == 2

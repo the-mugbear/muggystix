@@ -9,7 +9,8 @@ One request returns the whole cohort — summary, every project row and every
 tester row — computed from the shared services, so the totals and the tables
 can never disagree and sorting always covers every matching project.  Counting
 rules live in ``engagement_metrics_service`` (targets, testing, findings,
-judged / not-yet-judged observations, defect rate, contributors) and
+finding states, judged / not-yet-judged observations, the share of tested
+targets with a finding (``defect_rate``), contributors) and
 ``project_signals_service`` (approvals, runs, admins, "quiet").
 
 Dates are UTC calendar days: ``start`` and ``end`` are both included.  Figures
@@ -32,7 +33,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
 from app.services.engagement_metrics_service import (
-    SEVERITIES, SeverityCounts, Window, growth_series, organisation_accounts,
+    SEVERITIES, SeverityCounts, StateCounts, Window, growth_series, organisation_accounts,
     period_activity, project_engagement, projects_with_tester, tester_rows,
 )
 from app.services.project_signals_service import IN_PROGRESS_STATUSES, project_signals
@@ -51,6 +52,14 @@ class Severity(BaseModel):
     high: int = 0
     medium: int = 0
     low: int = 0
+
+
+class FindingStates(BaseModel):
+    """Findings by where they stand; the three add up to the findings total
+    (false positives are not results and are counted apart)."""
+    under_investigation: int = 0     # open / retest
+    confirmed: int = 0
+    closed: int = 0                  # accepted risk / remediated
 
 
 class SeverityRate(BaseModel):
@@ -80,8 +89,16 @@ class ProjectRow(BaseModel):
     hosts_in_review: int = 0
     hosts_reviewed: int = 0
     findings: Severity = Severity()
+    finding_states: FindingStates = FindingStates()
+    findings_false_positive: int = 0
     finding_affected_targets: int = 0
+    # Scanner observations (issue × host, raw tool output): every one, and
+    # the judged / not-yet-judged split of the same rows.
+    observations: Severity = Severity()
+    observations_judged: Severity = Severity()
     observations_unjudged: Severity = Severity()
+    # "Tested targets with a finding": % of tested targets with at least one
+    # non-false-positive finding endpoint at that severity (was "defect").
     defect_rate: SeverityRate = SeverityRate()
     last_scan_at: Optional[datetime] = None
     pending_plan_reviews: int = 0
@@ -125,6 +142,8 @@ class TesterRowOut(BaseModel):
 
 class SeverityBlock(BaseModel):
     findings: Severity
+    finding_states: FindingStates = FindingStates()
+    findings_false_positive: int = 0
     finding_affected_targets: int
     observations: Severity
     observations_judged: Severity
@@ -210,6 +229,10 @@ def _sev(c: SeverityCounts) -> Severity:
     return Severity(**c.as_dict())
 
 
+def _states(c: StateCounts) -> FindingStates:
+    return FindingStates(**c.as_dict())
+
+
 def _window(start: Optional[date], end: Optional[date], today: date) -> Window:
     if start and end and start > end:
         raise HTTPException(status_code=422, detail="start must be on or before end")
@@ -288,8 +311,9 @@ def get_oversight_dashboard(
     tot_findings, tot_obs, tot_judged, tot_unjudged, tot_defect = (
         SeverityCounts(), SeverityCounts(), SeverityCounts(), SeverityCounts(), SeverityCounts(),
     )
+    tot_states = StateCounts()
     tot = dict(current=0, through_end=0, added=0, tested=0, in_review=0, reviewed=0,
-               concluded=0, imports=0, affected=0)
+               concluded=0, imports=0, affected=0, false_positive=0)
     for p in cohort:
         e, a, s = engagement[p.id], activity[p.id], signals[p.id]
         critical = e.findings.critical > 0 or e.observations_unjudged.critical > 0
@@ -321,7 +345,10 @@ def get_oversight_dashboard(
             start_date=p.start_date, end_date=p.end_date, admins=s.admins,
             host_count=e.host_count, hosts_tested=e.hosts_tested,
             hosts_in_review=e.hosts_in_review, hosts_reviewed=e.hosts_reviewed,
-            findings=_sev(e.findings), finding_affected_targets=e.finding_affected_targets,
+            findings=_sev(e.findings), finding_states=_states(e.finding_states),
+            findings_false_positive=e.findings_false_positive,
+            finding_affected_targets=e.finding_affected_targets,
+            observations=_sev(e.observations), observations_judged=_sev(e.observations_judged),
             observations_unjudged=_sev(e.observations_unjudged),
             defect_rate=_rate(defects[p.id].defect_targets, e.hosts_tested),
             last_scan_at=s.last_scan_at,
@@ -331,6 +358,8 @@ def get_oversight_dashboard(
             attention_reasons=reasons,
         ))
         tot_findings.merge(e.findings)
+        tot_states.merge(e.finding_states)
+        tot["false_positive"] += e.findings_false_positive
         tot_obs.merge(e.observations)
         tot_judged.merge(e.observations_judged)
         tot_unjudged.merge(e.observations_unjudged)
@@ -355,7 +384,8 @@ def get_oversight_dashboard(
         reviews_concluded=tot["concluded"], imports=tot["imports"],
         contributors=contributors, unattributed_events=unattributed,
         severity=SeverityBlock(
-            findings=_sev(tot_findings), finding_affected_targets=tot["affected"],
+            findings=_sev(tot_findings), finding_states=_states(tot_states),
+            findings_false_positive=tot["false_positive"], finding_affected_targets=tot["affected"],
             observations=_sev(tot_obs), observations_judged=_sev(tot_judged),
             observations_unjudged=_sev(tot_unjudged), tested_targets=tot["tested"],
             defect_targets=_sev(tot_defect), defect_rate=_rate(tot_defect, tot["tested"]),

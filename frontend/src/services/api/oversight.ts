@@ -12,6 +12,16 @@ export interface OversightSeverity {
   low: number;
 }
 
+/** Findings by where they stand — the three add up to the findings total;
+ *  false positives are not results and are counted apart. */
+export interface OversightFindingStates {
+  /** open / retest */
+  under_investigation: number;
+  confirmed: number;
+  /** accepted risk / remediated */
+  closed: number;
+}
+
 /** Percent of tested targets; null when nothing has been tested. */
 export interface OversightSeverityRate {
   critical: number | null;
@@ -33,8 +43,16 @@ export interface OversightProjectRow {
   hosts_in_review: number;
   hosts_reviewed: number;
   findings: OversightSeverity;
+  finding_states: OversightFindingStates;
+  findings_false_positive: number;
   finding_affected_targets: number;
+  /** Every scanner observation (issue × host), and the judged / not yet
+   *  judged split of the same rows. Informational is left out. */
+  observations: OversightSeverity;
+  observations_judged: OversightSeverity;
   observations_unjudged: OversightSeverity;
+  /** "Tested targets with a finding": % of tested targets with at least one
+   *  non-false-positive finding endpoint at that severity. */
   defect_rate: OversightSeverityRate;
   last_scan_at: string | null;
   pending_plan_reviews: number;
@@ -92,6 +110,8 @@ export interface OversightSummary {
   unattributed_events: number;
   severity: {
     findings: OversightSeverity;
+    finding_states: OversightFindingStates;
+    findings_false_positive: number;
     finding_affected_targets: number;
     observations: OversightSeverity;
     observations_judged: OversightSeverity;

@@ -108,34 +108,103 @@ const sortProjects = (rows: OversightProjectRow[], sort: ProjectSort): Oversight
   return [...rows].sort(cmp[sort]);
 };
 
+const sum = (s: OversightSeverity) => s.critical + s.high + s.medium + s.low;
+const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 ? one : many}`;
+
+// Every column says what it counts in its label; the (i) gives the exact rule.
+// Vocabulary (utils/findingStatus): findings are analysts' conclusions, one per
+// issue; scanner observations are what the tools reported, one per issue per
+// host. The two are never added together.
+const COLUMN_INFO = {
+  tested: 'Hosts in review or reviewed by anyone, of the hosts in the inventory — each counted once. Watching is not testing. Current.',
+  review: 'Hosts in review · hosts reviewed. Current.',
+  findings: "Findings are analysts' conclusions, one per issue however many hosts it is on (critical to low). Their state: under investigation = open or retest; confirmed = validated; closed = accepted risk or remediated — the three add up to the total. False positives are not results and are counted apart.",
+  observations: 'What the scanners reported, one per issue per host, critical to low (informational left out). Judged = a finding covers the observation on its host (promoted, dismissed there, or accepted); not yet judged = nobody has decided on it. Judged + not yet judged = the total.',
+  withFinding: 'Of the tested hosts (in review or reviewed), the share with at least one critical — or high — finding that is not a false positive on that host. Both sides are tested hosts only, so it never passes 100%. Current.',
+} as const;
+
+/** How many findings, and where each stands; severity underneath. */
+const FindingsCell: React.FC<{ r: OversightProjectRow }> = ({ r }) => {
+  const total = sum(r.findings);
+  const st = r.finding_states;
+  return (
+    <>
+      {total === 0 ? (
+        <span className="text-muted-foreground">No findings</span>
+      ) : (
+        <>
+          <p className="font-medium tabular-nums">{plural(total, 'finding')}</p>
+          <ul className="text-caption tabular-nums text-muted-foreground">
+            <li className={st.under_investigation ? 'text-foreground' : undefined}>{n(st.under_investigation)} under investigation</li>
+            <li className={st.confirmed ? 'text-foreground' : undefined}>{n(st.confirmed)} confirmed</li>
+            <li>{n(st.closed)} closed</li>
+          </ul>
+          <div className="mt-xxs text-caption"><SevCells s={r.findings} /></div>
+        </>
+      )}
+      {r.findings_false_positive > 0 && (
+        <p className="text-caption text-muted-foreground">+ {plural(r.findings_false_positive, 'false positive')}, not counted</p>
+      )}
+    </>
+  );
+};
+
+/** Every scanner observation, and how many are judged; the critical and
+ *  high ones still waiting underneath. */
+const ObservationsCell: React.FC<{ r: OversightProjectRow }> = ({ r }) => {
+  const total = sum(r.observations);
+  const notYet = sum(r.observations_unjudged);
+  if (total === 0) return <span className="text-muted-foreground">None imported</span>;
+  return (
+    <>
+      <p className="font-medium tabular-nums">{n(total)} total</p>
+      <p className="text-caption tabular-nums text-muted-foreground">
+        {n(sum(r.observations_judged))} judged · <span className={notYet ? 'text-foreground' : undefined}>{n(notYet)} not yet judged</span>
+      </p>
+      {r.observations_unjudged.critical + r.observations_unjudged.high > 0 && (
+        <p className="mt-xxs text-caption text-muted-foreground">
+          not yet judged: <SevCells s={r.observations_unjudged} only={['critical', 'high']} />
+        </p>
+      )}
+    </>
+  );
+};
+
+const HeadWithInfo: React.FC<{ label: string; info: string }> = ({ label, info }) => (
+  <span className="inline-flex items-start gap-xxs">
+    <span>{label}</span>
+    <InfoTip text={info} label={`About ${label.toLowerCase()}`} />
+  </span>
+);
+
 const ProjectsTable: React.FC<{
   rows: OversightProjectRow[];
   onOpen: (row: OversightProjectRow) => void;
   caption: string;
 }> = ({ rows, onOpen, caption }) => (
   <div className="overflow-x-auto rounded-panel border border-border">
-    <Table aria-label={caption} className="min-w-[1100px]">
+    <Table aria-label={caption} className="min-w-[1180px]" style={{ tableLayout: 'fixed' }}>
       <colgroup>
-        <col style={{ width: '18%' }} /><col style={{ width: '9%' }} /><col style={{ width: '11%' }} />
-        <col style={{ width: '10%' }} /><col style={{ width: '9%' }} /><col style={{ width: '13%' }} />
-        <col style={{ width: '8%' }} /><col style={{ width: '8%' }} /><col style={{ width: '14%' }} />
+        <col style={{ width: '15%' }} /><col style={{ width: '8%' }} /><col style={{ width: '10%' }} />
+        <col style={{ width: '9%' }} /><col style={{ width: '7%' }} /><col style={{ width: '15%' }} />
+        <col style={{ width: '15%' }} /><col style={{ width: '9%' }} /><col style={{ width: '12%' }} />
       </colgroup>
       <TableHeader>
         <TableRow>
           <TableHead>Project</TableHead>
           <TableHead>Window</TableHead>
           <TableHead>Project admins</TableHead>
-          <TableHead title="Tested (in review or reviewed) of recorded targets — current">Targets tested</TableHead>
-          <TableHead title="In review · reviewed — current">Review</TableHead>
-          <TableHead title="Findings (issues) — current">Findings</TableHead>
-          <TableHead title="Critical · high scanner observations no finding covers on their host — current">Not judged C·H</TableHead>
-          <TableHead title="Share of tested targets with a critical or high finding — current">Defect C·H</TableHead>
+          <TableHead><HeadWithInfo label="Targets tested" info={COLUMN_INFO.tested} /></TableHead>
+          <TableHead><HeadWithInfo label="In review · reviewed" info={COLUMN_INFO.review} /></TableHead>
+          <TableHead><HeadWithInfo label="Findings and their state" info={COLUMN_INFO.findings} /></TableHead>
+          <TableHead><HeadWithInfo label="Scanner observations" info={COLUMN_INFO.observations} /></TableHead>
+          <TableHead><HeadWithInfo label="Tested hosts with a finding" info={COLUMN_INFO.withFinding} /></TableHead>
           <TableHead>Activity · attention</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
         {rows.map((r) => (
-          <TableRow key={r.id}>
+          <TableRow key={r.id} className="align-top">
             <TableCell>
               <button type="button" onClick={() => onOpen(r)} title={r.name}
                 className="block max-w-full truncate text-left font-medium text-foreground hover:text-info focus:outline-none focus-visible:underline">
@@ -156,9 +225,18 @@ const ProjectsTable: React.FC<{
               {r.targets_added > 0 && <div className="text-caption text-muted-foreground">+{n(r.targets_added)} in period</div>}
             </TableCell>
             <TableCell className="tabular-nums">{n(r.hosts_in_review)} · {n(r.hosts_reviewed)}</TableCell>
-            <TableCell><SevCells s={r.findings} /></TableCell>
-            <TableCell><SevCells s={r.observations_unjudged} only={['critical', 'high']} /></TableCell>
-            <TableCell className="tabular-nums">{rate(r.defect_rate.critical)} · {rate(r.defect_rate.high)}</TableCell>
+            <TableCell data-testid="findings-cell"><FindingsCell r={r} /></TableCell>
+            <TableCell data-testid="observations-cell"><ObservationsCell r={r} /></TableCell>
+            <TableCell className="text-caption tabular-nums">
+              {r.defect_rate.critical == null && r.defect_rate.high == null ? (
+                <span className="text-muted-foreground">Nothing tested</span>
+              ) : (
+                <>
+                  <p>{rate(r.defect_rate.critical)} critical</p>
+                  <p>{rate(r.defect_rate.high)} high</p>
+                </>
+              )}
+            </TableCell>
             <TableCell>
               <span className="block text-caption text-muted-foreground">
                 {r.last_scan_at ? `Last import ${formatRelativeTime(r.last_scan_at, { absoluteAfterDays: 30 })}` : 'No imports'}
@@ -527,9 +605,9 @@ const Oversight: React.FC = () => {
             </div>
 
             <PostureSection
-              title={<>Findings and scanner output <InfoTip text="Findings are analysts' conclusions, one per issue, false positives excluded. Scanner observations are what the tools reported, one per issue per host: judged when a finding covers the observation on its host (promoted, dismissed there, or accepted), otherwise not yet judged. The defect rate is the share of tested targets with a finding at that severity." /></>}
+              title={<>Findings and scanner output <InfoTip text="Findings are analysts' conclusions, one per issue, false positives excluded. Scanner observations are what the tools reported, one per issue per host: judged when a finding covers the observation on its host (promoted, dismissed there, or accepted), otherwise not yet judged. &quot;Tested targets with a finding&quot; is the share of tested targets with at least one finding at that severity that is not a false positive there." /></>}
               description={basis === 'period'
-                ? `Only findings and scanner observations first recorded ${periodLabel}; their judged state and the defect rate are today's.`
+                ? `Only findings and scanner observations first recorded ${periodLabel}; their judged state and the share of tested targets with a finding are today's.`
                 : 'The latest state of every finding and scanner observation in these projects.'}
               actions={
                 <div className="inline-flex rounded-control border border-border p-[2px]" role="group" aria-label="Severity figures">
@@ -609,7 +687,7 @@ const Oversight: React.FC = () => {
               <Select value={sort} onValueChange={(v) => setSort(v as ProjectSort)}>
                 <SelectTrigger className="w-52" aria-label="Sort projects"><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="critical">Critical, then high</SelectItem>
+                  <SelectItem value="critical">Most critical, then high</SelectItem>
                   <SelectItem value="name">Name</SelectItem>
                   <SelectItem value="targets">Most targets</SelectItem>
                   <SelectItem value="tested">Highest share tested</SelectItem>

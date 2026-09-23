@@ -132,7 +132,12 @@ def test_testing_findings_and_defect_rate(client, db_session, test_project):
     assert row["finding_affected_targets"] == 2
     # Of 2 tested targets: h1 has a critical and a high; h4 is not tested.
     assert row["defect_rate"] == {"critical": 50.0, "high": 50.0, "medium": 0.0, "low": 0.0}
+    # Where the findings stand: all three confirmed, the dismissed one apart.
+    assert row["finding_states"] == {"under_investigation": 0, "confirmed": 3, "closed": 0}
+    assert row["findings_false_positive"] == 1
     sev = body["summary"]["severity"]
+    assert sev["finding_states"] == row["finding_states"]
+    assert sev["findings_false_positive"] == 1
     assert sev["tested_targets"] == 2
     assert all(v is None or v <= 100 for v in sev["defect_rate"].values())
 
@@ -320,3 +325,22 @@ def test_period_severity_basis_counts_what_was_recorded_in_the_dates(client, db_
     assert period["summary"]["severity"]["findings"]["high"] == 1
     # The defect rate is current in both.
     assert current["summary"]["severity"]["defect_rate"] == period["summary"]["severity"]["defect_rate"]
+
+
+def test_rows_carry_every_scanner_observation_and_the_judged_split(client, db_session, test_project):
+    """The table's Scanner observations column: the total and the judged /
+    not-yet-judged split of the SAME rows, so judged + not yet = total."""
+    p = test_project
+    h = _host(db_session, p, "10.20.9.1")
+    scan = models.Scan(project_id=p.id, filename="n.nessus")
+    db_session.add(scan)
+    db_session.flush()
+    for title, sev in (("A", VulnerabilitySeverity.CRITICAL), ("B", VulnerabilitySeverity.HIGH),
+                       ("C", VulnerabilitySeverity.MEDIUM), ("D", VulnerabilitySeverity.INFO)):
+        db_session.add(Vulnerability(title=title, severity=sev, source=VulnerabilitySource.NESSUS,
+                                     host_id=h.id, scan_id=scan.id))
+    db_session.commit()
+    row = _row(client.get(URL).json(), p.id)
+    assert row["observations"] == {"critical": 1, "high": 1, "medium": 1, "low": 0}  # info left out
+    for k in ("critical", "high", "medium", "low"):
+        assert row["observations_judged"][k] + row["observations_unjudged"][k] == row["observations"][k]

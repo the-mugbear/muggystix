@@ -25,9 +25,15 @@ What is counted (PORTFOLIO.md, "Metrics and counting rules"):
   here, accepted risk, …).  A finding that covers the issue only on OTHER hosts
   leaves this row not yet judged.  ``tests/test_engagement_metrics.py`` pins
   the SQL to ``_vuln_coverage`` so the two cannot drift.
-* **Defect rate** — of the tested targets, those with at least one
-  non-false-positive finding endpoint at a severity.  Both sides are tested
-  hosts only, so the rate can never pass 100%.
+* **Finding states** — the same findings (same filters) by where they stand:
+  *under investigation* (open / retest), *confirmed*, *closed* (accepted risk
+  / remediated), so the three add up to the findings total.  False positives
+  are not results and are counted apart (``findings_false_positive``: a
+  finding dismissed by its own status or on every endpoint).
+* **Tested targets with a finding** (the API's ``defect_rate``) — of the tested
+  targets, those with at least one non-false-positive finding endpoint at a
+  severity.  Both sides are tested hosts only, so the rate can never pass
+  100%.
 
 With a ``tester_id`` the review, finding, observation and defect figures are
 limited to the hosts THAT person has in review or reviewed (host_count stays
@@ -84,6 +90,36 @@ class SeverityCounts:
         return {s: getattr(self, s) for s in SEVERITIES}
 
 
+FINDING_STATES = ("under_investigation", "confirmed", "closed")
+# findingStatus.ts's populations; false_positive is not a result (see above).
+_STATE_OF = {
+    FindingStatus.OPEN.value: "under_investigation",
+    FindingStatus.RETEST.value: "under_investigation",
+    FindingStatus.CONFIRMED.value: "confirmed",
+    FindingStatus.ACCEPTED_RISK.value: "closed",
+    FindingStatus.REMEDIATED.value: "closed",
+}
+
+
+@dataclass
+class StateCounts:
+    under_investigation: int = 0
+    confirmed: int = 0
+    closed: int = 0
+
+    def add_status(self, status: str, n: int) -> None:
+        state = _STATE_OF.get(enum_value(status))
+        if state:
+            setattr(self, state, getattr(self, state) + int(n or 0))
+
+    def merge(self, other: "StateCounts") -> None:
+        for k in FINDING_STATES:
+            setattr(self, k, getattr(self, k) + getattr(other, k))
+
+    def as_dict(self) -> Dict[str, int]:
+        return {k: getattr(self, k) for k in FINDING_STATES}
+
+
 @dataclass
 class ProjectEngagement:
     host_count: int = 0
@@ -91,6 +127,8 @@ class ProjectEngagement:
     hosts_reviewed: int = 0
     hosts_tested: int = 0
     findings: SeverityCounts = field(default_factory=SeverityCounts)
+    finding_states: StateCounts = field(default_factory=StateCounts)
+    findings_false_positive: int = 0
     finding_affected_targets: int = 0
     observations: SeverityCounts = field(default_factory=SeverityCounts)
     observations_judged: SeverityCounts = field(default_factory=SeverityCounts)
@@ -235,9 +273,10 @@ def project_engagement(
     ):
         out[pid].hosts_tested = n
 
-    finding_filters = [Finding.project_id.in_(ids), Finding.severity.in_(SEVERITIES), finding_is_a_result()]
+    base_finding_filters = [Finding.project_id.in_(ids), Finding.severity.in_(SEVERITIES)]
     if recorded_in is not None:
-        finding_filters.append(recorded_in.clause(Finding.created_at))
+        base_finding_filters.append(recorded_in.clause(Finding.created_at))
+    finding_filters = [*base_finding_filters, finding_is_a_result()]
     if scoped_hosts is not None:
         finding_filters.append(exists().where(
             FindingHost.finding_id == Finding.id,
@@ -251,6 +290,28 @@ def project_engagement(
         .all()
     ):
         out[pid].findings.add(severity, n)
+    # The same findings by state — the three states add up to the total above.
+    for pid, status, n in (
+        db.query(Finding.project_id, Finding.status, func.count(Finding.id))
+        .filter(*finding_filters)
+        .group_by(Finding.project_id, Finding.status)
+        .all()
+    ):
+        out[pid].finding_states.add_status(status, n)
+    # False positives, counted apart: a finding dismissed by its own status or
+    # on every endpoint.  With a tester, those touching the tester's hosts.
+    fp_filters = [*base_finding_filters, ~finding_is_a_result()]
+    if scoped_hosts is not None:
+        fp_filters.append(exists().where(
+            FindingHost.finding_id == Finding.id, FindingHost.host_id.in_(scoped_hosts),
+        ))
+    for pid, n in (
+        db.query(Finding.project_id, func.count(Finding.id))
+        .filter(*fp_filters)
+        .group_by(Finding.project_id)
+        .all()
+    ):
+        out[pid].findings_false_positive = n
 
     endpoint_filters = [
         Finding.project_id.in_(ids),
