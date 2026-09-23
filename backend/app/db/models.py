@@ -933,7 +933,10 @@ class IngestionJob(Base):
     # the format does not reveal it.  Keys are app/services/format_registry.py.
     detected_file_type = Column(String(64), nullable=True)
     format_override = Column(String(64), nullable=True)
-    final_file_type = Column(String(64), nullable=True, index=True)
+    # Indexed as ``idx_ingestion_jobs_final_file_type`` (__table_args__), the
+    # name migration c3f8a1d2b7e4 created — ``index=True`` would name it
+    # ``ix_…`` and fail ``alembic check``.
+    final_file_type = Column(String(64), nullable=True)
     source_tool = Column(String(64), nullable=True)
     # v2.86.2 — operator-set "I've seen this" marker for failed jobs.
     # Pre-fix, failed jobs sat in the Ingestion Queue forever with no
@@ -947,6 +950,10 @@ class IngestionJob(Base):
 
     scan = relationship("Scan")
     parse_error = relationship("ParseError")
+
+    __table_args__ = (
+        Index("idx_ingestion_jobs_final_file_type", "final_file_type"),
+    )
 
 
 class ReportJob(Base):

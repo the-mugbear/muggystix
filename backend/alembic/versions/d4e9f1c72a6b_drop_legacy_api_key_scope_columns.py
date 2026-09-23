@@ -86,10 +86,16 @@ def upgrade() -> None:
 def downgrade() -> None:
     # Schema-only reversal: the binding VALUES lived only in these columns and
     # are not recoverable, but the structure is (nullable, so no backfill).
+    # Recreate each FK under the name its creating revision gave it, or that
+    # revision's own downgrade cannot drop it: the baseline's were unnamed
+    # (Postgres' default ``api_keys_<col>_fkey``); c4d70a8b6e2f and
+    # e7f3c95a2b18 named theirs ``fk_api_keys_<col>``.
+    named = {"recon_session_id", "assist_session_id"}
     for col, target in _LEGACY_COLS:
         op.add_column("api_keys", sa.Column(col, sa.Integer(), nullable=True))
         op.create_foreign_key(
-            f"api_keys_{col}_fkey", "api_keys", target, [col], ["id"], ondelete="CASCADE",
+            f"fk_api_keys_{col}" if col in named else f"api_keys_{col}_fkey",
+            "api_keys", target, [col], ["id"], ondelete="CASCADE",
         )
         op.create_index(f"ix_api_keys_{col}", "api_keys", [col])
     op.drop_index("uq_api_key_agent_session_active", table_name="api_keys")

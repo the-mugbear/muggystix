@@ -102,7 +102,10 @@ class Finding(Base):
     # and the GreenBone row for one issue converge on ONE finding instead of
     # forking two. Deliberately excludes the scanner, which is provenance
     # rather than identity.
-    dedup_key = Column(String(255), nullable=True, index=True)
+    # The issue key of the observations this finding covers — the same width
+    # as ``vulnerabilities.issue_key`` (a narrower column made long
+    # title-keyed issues impossible to promote; migration e2a4c6f8b0d1).
+    dedup_key = Column(String(600), nullable=True, index=True)
 
     # v2.379.0 — the finding's REPORT TEXT: what the client report says about
     # the issue.  Authored content (same rule as the title: its author, a

@@ -118,6 +118,26 @@ def test_promoting_again_joins_and_never_changes_status(client, db_session, test
     assert {fh.host_id for fh in db_session.query(FindingHost).filter_by(finding_id=fid)} == {h1.id, h2.id}
 
 
+def test_a_long_title_keyed_issue_can_be_promoted(client, db_session, test_project, estate):
+    """Review 2026-09-23 C5: ``findings.dedup_key`` was 255 wide while the
+    issue key it must equal is 600, so a Nikto-style title (URI + message)
+    over 255 characters raised StringDataRightTruncation on promote."""
+    h1 = estate["hosts"][0]
+    title = "/cgi-bin/" + "a" * 280 + ": the server returns a verbose error page"
+    _vuln(db_session, h1, estate["scan"].id, title, source="nikto")
+    key = next(r["issue_key"] for r in client.get(_url(test_project)).json()["items"]
+               if r["title"] == title)
+    assert len(key) > 255
+
+    r = client.post(_url(test_project, "/promote"), json={"items": [{"issue_key": key}]})
+    assert r.status_code == 200, r.text
+    finding = db_session.get(Finding, r.json()["results"][0]["finding_id"])
+    # Stored whole, so it still matches its observation: the issue is judged.
+    assert finding.dedup_key == key
+    listed = {row["issue_key"] for row in client.get(_url(test_project)).json()["items"]}
+    assert key not in listed
+
+
 def test_a_bad_item_changes_nothing(client, db_session, test_project, estate):
     h3 = estate["hosts"][2]
     r = client.post(_url(test_project, "/promote"), json={"items": [
