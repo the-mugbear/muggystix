@@ -55,7 +55,7 @@ describe('Activity — finding comments and row times', () => {
     const link = await screen.findByRole('link', { name: 'Open the discussion on Default creds on the admin panel' });
     expect(link).toHaveAttribute('href', '/findings/37#note-88');
     expect(within(link).getByText('@ben admin/admin still works')).toBeInTheDocument();
-    expect(within(link).getByText('3 comments')).toBeInTheDocument();
+    expect(within(link).getByText('3 messages')).toBeInTheDocument();
     expect(within(link).getByText('with ben')).toBeInTheDocument();
     // The host threads are still there.
     expect(await screen.findByText('host thread')).toBeInTheDocument();
@@ -103,7 +103,7 @@ describe('Activity — threads as rows', () => {
 
     // The latest message is the row's text; the older one is not repeated.
     expect(within(rows[0] as HTMLElement).queryByText(/needs follow-up/)).not.toBeInTheDocument();
-    expect(within(rows[0] as HTMLElement).getByText('2 entries')).toBeInTheDocument();
+    expect(within(rows[0] as HTMLElement).getByText('2 messages')).toBeInTheDocument();
     expect(within(rows[0] as HTMLElement).getByText('with alice')).toBeInTheDocument();
     // (The old card printed it twice: "Latest update: …" and the entry itself.)
     expect(screen.getAllByText(/Only entry here\./)).toHaveLength(1);
@@ -123,7 +123,7 @@ describe('Activity — threads as rows', () => {
     const { container } = render(<MemoryRouter><Activity /></MemoryRouter>);
     await screen.findByText('Newest reply.');
     const row = container.querySelector('a[data-thread]') as HTMLElement;
-    expect(within(row).getByText('5 entries')).toBeInTheDocument();
+    expect(within(row).getByText('5 messages')).toBeInTheDocument();
   });
 
   it('the status counts filter the feed, as the stat cards did', async () => {

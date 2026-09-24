@@ -1,5 +1,10 @@
 /**
- * Collaboration → Activity — the project's host-note threads, latest first.
+ * Collaboration → Activity — the project's discussions, latest first: host-note
+ * threads AND finding comments in ONE feed (v5.295.0).  Finding comments were
+ * a separate block above the notes, with their own time format and count noun;
+ * now both are rows of the same shape in the same day groups — subject, status
+ * chip + author, the latest message (mentions marked), time of day and a count
+ * of "messages" (the one noun that is true of a note entry and a comment).
  *
  * The Posture layout (UI_STYLE_GUIDE §7): a one-line header, ONE filter row
  * closed by a rule (the status breakdown is a line of clickable counts under
@@ -48,7 +53,8 @@ import { InlineLoader } from '../components/ui/inline-loader';
 import { formatRelativeTime as relativeTime, formatTimestamp } from '../utils/relativeTime';
 import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
-import { STATUS_LABEL } from '../utils/findingStatus';
+import { MentionText } from '../components/MentionText';
+import { STATUS_LABEL, populationOf, type FindingPopulation } from '../utils/findingStatus';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
@@ -82,6 +88,24 @@ type NoteThreadGroup = {
   threadNoteCount: number;
   imageCount: number;
 };
+
+/** One row of the feed: a host-note thread or a finding's discussion. */
+type FeedItem =
+  | { kind: 'note'; key: string; at: string; thread: NoteThreadGroup }
+  | { kind: 'finding'; key: string; at: string; discussion: FindingDiscussion };
+
+/** How many finding discussions the feed asks for (the endpoint's maximum). */
+const DISCUSSION_LIMIT = 100;
+
+/** A finding's status as the row's chip, in the tone of its population
+ *  (utils/findingStatus): under investigation, confirmed, closed. */
+const FINDING_CHIP: Record<FindingPopulation, 'info' | 'warning' | 'muted'> = {
+  investigating: 'info',
+  confirmed: 'warning',
+  closed: 'muted',
+};
+
+const messages = (n: number) => `${n.toLocaleString()} message${n === 1 ? '' : 's'}`;
 
 /** Short age, switching to a date past a month — "412d ago" tells a reader
  *  less than the date does. */
@@ -190,6 +214,23 @@ const Activity: React.FC = () => {
     fetchActivity(0);
   }, [fetchActivity]);
 
+  // Finding discussions: the same search and author; they have no note
+  // status, so while one is chosen they are left out (and the page says so).
+  const [discussions, setDiscussions] = useState<{ items: FindingDiscussion[]; total: number } | null>(null);
+  const [discussionError, setDiscussionError] = useState<string | null>(null);
+  useEffect(() => {
+    const controller = new AbortController();
+    getFindingDiscussions(
+      { search: debouncedSearch || undefined, author_id: authorFilter ? Number(authorFilter) : undefined, limit: DISCUSSION_LIMIT },
+      controller.signal,
+    )
+      .then((d) => { if (!controller.signal.aborted) { setDiscussions(d); setDiscussionError(null); } })
+      .catch((err) => {
+        if (!controller.signal.aborted) setDiscussionError(formatApiError(err, 'Finding comments could not be loaded.'));
+      });
+    return () => controller.abort();
+  }, [debouncedSearch, authorFilter]);
+
   // FRX·H6: scroll the notifications panel into view when arriving from the bell.
   useEffect(() => {
     if (mentionsFilter !== 'mine') return;
@@ -291,27 +332,61 @@ const Activity: React.FC = () => {
       .sort((a, b) => new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime());
   }, [notes]);
 
-  // Threads grouped by the day they were last active, latest day first.
+  // Finding discussions join the feed unless a note status is chosen.
+  const discussionItems = useMemo(
+    () => (statusFilter ? [] : (discussions?.items ?? []).filter((d) => d.last_activity_at)),
+    [discussions, statusFilter],
+  );
+
+  // ONE feed, latest first.  Notes are loaded a page at a time, so past the
+  // oldest loaded note (while notes remain) an unloaded note could belong
+  // between two finding rows: finding rows older than that wait for Load more
+  // instead of appearing out of order.  (Finding discussions come in one
+  // request of the most recent DISCUSSION_LIMIT; past that the page says so.)
+  const { feed, heldBack } = useMemo(() => {
+    const noteHorizon = notes.length < totalNotes && notes.length > 0
+      ? Math.min(...notes.map((n) => new Date(getNoteTimestamp(n)).getTime()))
+      : null;
+    const all: FeedItem[] = [
+      ...threadGroups.map((t): FeedItem => ({ kind: 'note', key: `note:${t.key}`, at: t.latestTimestamp, thread: t })),
+      ...discussionItems.map((d): FeedItem => ({
+        kind: 'finding', key: `finding:${d.finding_id}`, at: d.last_activity_at as string, discussion: d,
+      })),
+    ].sort((a, b) => new Date(b.at).getTime() - new Date(a.at).getTime());
+    let held = 0;
+    const shown = all.filter((item) => {
+      if (item.kind === 'finding' && noteHorizon !== null && new Date(item.at).getTime() < noteHorizon) {
+        held += 1;
+        return false;
+      }
+      return true;
+    });
+    return { feed: shown, heldBack: held };
+  }, [threadGroups, discussionItems, notes, totalNotes]);
+  const discussionsCapped = !statusFilter && !!discussions && discussions.total > discussions.items.length;
+
+  // Rows grouped by the day they were last active, latest day first.
   const days = useMemo(() => {
-    const out: Array<{ key: string; label: string; threads: NoteThreadGroup[] }> = [];
-    for (const t of threadGroups) {
-      const k = dayKey(t.latestTimestamp);
+    const out: Array<{ key: string; label: string; items: FeedItem[] }> = [];
+    for (const item of feed) {
+      const k = dayKey(item.at);
       const last = out[out.length - 1];
-      if (last && last.key === k) last.threads.push(t);
-      else out.push({ key: k, label: dayLabel(t.latestTimestamp), threads: [t] });
+      if (last && last.key === k) last.items.push(item);
+      else out.push({ key: k, label: dayLabel(item.at), items: [item] });
     }
     return out;
-  }, [threadGroups]);
+  }, [feed]);
 
   const hostCount = useMemo(() => new Set(notes.map((n) => n.host_id)).size, [notes]);
+  const findingRowsShown = feed.filter((i) => i.kind === 'finding').length;
   const filtered = Boolean(statusFilter || authorFilter || debouncedSearch);
 
-  // j/k (↓/↑) move a row cursor through the threads (days in order), Enter
-  // opens the thread on its host — as on Hosts.
-  const threadIndex = useMemo(() => new Map(threadGroups.map((t, i) => [t.key, i])), [threadGroups]);
+  // j/k (↓/↑) move a row cursor through the feed (days in order), Enter opens
+  // the row — a thread on its host, a discussion on its finding.
+  const feedIndex = useMemo(() => new Map(feed.map((item, i) => [item.key, i])), [feed]);
   const { cursorRowProps } = useListCursor(
-    loading ? 0 : threadGroups.length,
-    (i) => navigate(threadHref(threadGroups[i])),
+    loading ? 0 : feed.length,
+    (i) => navigate(feedHref(feed[i])),
     { resetKey: `${statusFilter}|${authorFilter}|${debouncedSearch}` },
   );
 
@@ -326,11 +401,12 @@ const Activity: React.FC = () => {
           </p>
         </div>
         {/* "in view": the thread and host figures are computed over what is
-            loaded so far, not the full set. */}
-        <p className="text-caption text-muted-foreground" aria-live="polite">
-          {totalNotes.toLocaleString()} note{totalNotes === 1 ? '' : 's'}
-          {notes.length < totalNotes && <> · showing {notes.length.toLocaleString()}</>}
-          {' · '}{threadGroups.length} thread{threadGroups.length === 1 ? '' : 's'} on {hostCount} host{hostCount === 1 ? '' : 's'} in view
+            loaded so far, not the full set.  Both kinds of discussion are
+            counted — the line used to leave finding comments out. */}
+        <p className="text-caption text-muted-foreground" aria-live="polite" aria-label="Discussions in view">
+          {threadGroups.length} host-note thread{threadGroups.length === 1 ? '' : 's'} on {hostCount} host{hostCount === 1 ? '' : 's'}
+          {' · '}{findingRowsShown} finding discussion{findingRowsShown === 1 ? '' : 's'} in view
+          {notes.length < totalNotes && <> · {notes.length.toLocaleString()} of {totalNotes.toLocaleString()} notes loaded</>}
         </p>
       </header>
 
@@ -402,7 +478,7 @@ const Activity: React.FC = () => {
             value={statusFilter || 'all'}
             onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
           >
-            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Note status">
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Host note status">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -432,7 +508,10 @@ const Activity: React.FC = () => {
             </Select>
           )}
         </ListFilterBar>
-        <p className="mt-xs flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground" aria-label="Notes by status">
+        {/* What these count is said, not implied: host-note threads have a
+            status; a finding comment has none (its finding does). */}
+        <p className="mt-xs flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground" aria-label="Host notes by status">
+          <span>Host notes:</span>
           {(['open', 'in_progress', 'resolved'] as const).map((s, i) => (
             <React.Fragment key={s}>
               {i > 0 && <span aria-hidden>·</span>}
@@ -449,15 +528,27 @@ const Activity: React.FC = () => {
               </button>
             </React.Fragment>
           ))}
+          {statusFilter && (discussions?.total ?? 0) > 0 && (
+            <>
+              <span aria-hidden>·</span>
+              <span role="status">
+                finding comments are hidden while a note status is chosen — they have none.{' '}
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('')}
+                  className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                >
+                  Show all
+                </button>
+              </span>
+            </>
+          )}
         </p>
       </div>
 
-      {/* v5.294.0 (UX review) — finding comments beside the host notes: the
-          page listed host-note threads only, so a comment on a finding, and a
-          mention in one, never appeared on the page the bell opens. The note
-          status filter is about host threads; search and author apply here. */}
-      <FindingDiscussions search={debouncedSearch} authorId={authorFilter ? Number(authorFilter) : undefined}
-        statusFiltered={Boolean(statusFilter)} />
+      {discussionError && (
+        <p role="status" className="text-metadata text-muted-foreground">{discussionError}</p>
+      )}
 
       {fetchError && (
         <Alert variant="destructive">
@@ -475,7 +566,7 @@ const Activity: React.FC = () => {
         <p className="inline-flex items-center gap-xs text-metadata text-muted-foreground" role="status">
           <Loader2 className="size-4 animate-spin" aria-hidden /> Loading activity…
         </p>
-      ) : threadGroups.length === 0 ? (
+      ) : feed.length === 0 ? (
         <div className="flex max-w-2xl items-start gap-sm border-l-4 border-border py-xs pl-md">
           <MessageSquare className="mt-0.5 size-5 shrink-0 text-muted-foreground" aria-hidden />
           <div className="min-w-0">
@@ -484,8 +575,8 @@ const Activity: React.FC = () => {
             </p>
             <p className="mt-xxs text-metadata text-muted-foreground">
               {filtered
-                ? 'No notes match these filters. Try a different status or clear the filters to see everything.'
-                : 'Notes added to hosts during review appear here as threads, with your team’s replies.'}
+                ? 'Nothing matches these filters. Try a different status or clear the filters to see everything.'
+                : 'Notes added to hosts and comments on findings appear here, with your team’s replies.'}
             </p>
             <div className="mt-sm">
               {filtered ? (
@@ -506,14 +597,28 @@ const Activity: React.FC = () => {
                 {day.label}
               </h2>
               <ul className="divide-y divide-border/60">
-                {day.threads.map((thread) => (
-                  <li key={thread.key} {...cursorRowProps(threadIndex.get(thread.key) ?? -1)}>
-                    <ThreadRow thread={thread} />
+                {day.items.map((item) => (
+                  <li key={item.key} {...cursorRowProps(feedIndex.get(item.key) ?? -1)}>
+                    {item.kind === 'note'
+                      ? <ThreadRow thread={item.thread} />
+                      : <DiscussionRow discussion={item.discussion} />}
                   </li>
                 ))}
               </ul>
             </section>
           ))}
+          {heldBack > 0 && (
+            <p className="text-caption text-muted-foreground">
+              {heldBack} older finding discussion{heldBack === 1 ? '' : 's'} will appear in order as more notes load.
+            </p>
+          )}
+          {discussionsCapped && (
+            <p className="text-caption text-muted-foreground">
+              Finding discussions: the {discussions?.items.length.toLocaleString()} most recent of{' '}
+              {discussions?.total.toLocaleString()} are listed — search narrows them, or{' '}
+              <Link to="/findings" className="text-primary hover:underline">open Findings</Link>.
+            </p>
+          )}
           {notes.length < totalNotes && (
             <div className="flex justify-center pt-sm">
               <Button
@@ -535,108 +640,50 @@ const Activity: React.FC = () => {
 
 const threadHref = (thread: NoteThreadGroup) => `/hosts/${thread.hostId}#note-${thread.threadRootId}`;
 
-const DISCUSSION_PREVIEW = 5;
+const discussionHref = (d: FindingDiscussion) => `/findings/${d.finding_id}${d.latest ? `#note-${d.latest.note_id}` : ''}`;
 
-/** Comments on findings, one row per finding's discussion, newest first. */
-const FindingDiscussions: React.FC<{ search: string; authorId?: number; statusFiltered: boolean }> = ({
-  search, authorId, statusFiltered,
-}) => {
-  const [data, setData] = useState<{ items: FindingDiscussion[]; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [expanded, setExpanded] = useState(false);
+const feedHref = (item: FeedItem) => (item.kind === 'note' ? threadHref(item.thread) : discussionHref(item.discussion));
 
-  useEffect(() => {
-    const controller = new AbortController();
-    setExpanded(false);
-    getFindingDiscussions({ search: search || undefined, author_id: authorId, limit: 20 }, controller.signal)
-      .then((d) => { if (!controller.signal.aborted) { setData(d); setError(null); } })
-      .catch((err) => {
-        if (!controller.signal.aborted) setError(formatApiError(err, 'Finding comments could not be loaded.'));
-      });
-    return () => controller.abort();
-  }, [search, authorId]);
+/** The one row grid both kinds share: subject | chip + author, message | time + count. */
+const ROW_CLASS =
+  'group grid min-w-0 grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-start gap-x-md py-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
-  if (error) {
-    return <p role="status" className="text-metadata text-muted-foreground">{error}</p>;
-  }
-  // Nothing to show and nothing filtered: the section is absent rather than
-  // an empty heading above the host threads.
-  if (!data || (data.items.length === 0 && !search && authorId == null)) return null;
-  const rows = expanded ? data.items : data.items.slice(0, DISCUSSION_PREVIEW);
-
+/** A finding's discussion as a feed row, in the same shape as a thread row:
+ *  the finding (title + severity) is the subject; its status is the chip
+ *  where a thread shows its own. */
+const DiscussionRow: React.FC<{ discussion: FindingDiscussion }> = ({ discussion: d }) => {
+  const author = d.latest?.author_name || 'Unknown analyst';
+  const others = d.participants.filter((n) => n !== d.latest?.author_name);
+  const at = d.last_activity_at;
   return (
-    <section aria-label="Finding comments">
-      <h2 className="flex flex-wrap items-baseline gap-x-xs border-b border-border pb-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-        Comments on findings
-        <span className="font-normal normal-case tracking-normal">{data.total.toLocaleString()}</span>
-        {statusFiltered && (
-          <span className="font-normal normal-case tracking-normal">· the note status filter does not apply here</span>
-        )}
-      </h2>
-      {data.items.length === 0 ? (
-        <p className="py-xs text-metadata text-muted-foreground">No finding comments match.</p>
-      ) : (
-        <ul className="divide-y divide-border/60">
-          {rows.map((d) => (
-            <li key={d.finding_id}>
-              <Link
-                to={`/findings/${d.finding_id}${d.latest ? `#note-${d.latest.note_id}` : ''}`}
-                className="group grid min-w-0 grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-start gap-x-md py-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                aria-label={`Open the discussion on ${d.title}`}
-              >
-                <span className="min-w-0">
-                  <span className="block truncate text-metadata font-semibold text-foreground group-hover:text-info" title={d.title}>
-                    {d.title}
-                  </span>
-                  <span className="flex min-w-0 items-center gap-xxs">
-                    <SeverityBadge severity={d.severity} />
-                    <span className="truncate text-caption text-muted-foreground">{STATUS_LABEL[d.status] ?? d.status}</span>
-                  </span>
-                </span>
-                <span className="min-w-0">
-                  <span className="flex min-w-0 flex-wrap items-center gap-xs">
-                    <span className="text-caption font-medium text-foreground">{d.latest?.author_name || 'Unknown analyst'}</span>
-                    {d.latest && <AgentAuthorBadge actorType={d.latest.actor_type} />}
-                    {d.participants.filter((n) => n !== d.latest?.author_name).length > 0 && (
-                      <span className="truncate text-caption text-muted-foreground">
-                        with {d.participants.filter((n) => n !== d.latest?.author_name).join(', ')}
-                      </span>
-                    )}
-                  </span>
-                  <span className="mt-xxs line-clamp-2 break-words text-metadata text-muted-foreground group-hover:text-foreground">
-                    {excerpt(d.latest?.body ?? '')}
-                  </span>
-                </span>
-                <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
-                  <time dateTime={d.last_activity_at ?? undefined} title={formatTimestamp(d.last_activity_at)}>
-                    {formatRelativeTime(d.last_activity_at)}
-                  </time>
-                  <span>{d.comment_count} comment{d.comment_count === 1 ? '' : 's'}</span>
-                </span>
-              </Link>
-            </li>
-          ))}
-        </ul>
-      )}
-      {(data.items.length > DISCUSSION_PREVIEW || data.total > rows.length) && (
-        <div className="mt-xxs flex flex-wrap items-center gap-x-md text-caption">
-          {data.items.length > DISCUSSION_PREVIEW && (
-            <button
-              type="button"
-              aria-expanded={expanded}
-              onClick={() => setExpanded((v) => !v)}
-              className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {expanded ? 'Show fewer' : `Show ${data.items.length - DISCUSSION_PREVIEW} more`}
-            </button>
+    <Link to={discussionHref(d)} data-discussion={d.finding_id} aria-label={`Open the discussion on ${d.title}`} className={ROW_CLASS}>
+      <span className="min-w-0">
+        <span className="block truncate text-metadata font-semibold text-foreground group-hover:text-info" title={d.title}>
+          {d.title}
+        </span>
+        <span className="flex min-w-0 items-center gap-xxs">
+          <SeverityBadge severity={d.severity} />
+          <span className="truncate text-caption text-muted-foreground">Finding</span>
+        </span>
+      </span>
+      <span className="min-w-0">
+        <span className="flex min-w-0 flex-wrap items-center gap-xs">
+          <Badge variant={FINDING_CHIP[populationOf(d.status)] ?? 'muted'}>{STATUS_LABEL[d.status] ?? d.status}</Badge>
+          <span className="text-caption font-medium text-foreground">{author}</span>
+          {d.latest && <AgentAuthorBadge actorType={d.latest.actor_type} />}
+          {others.length > 0 && (
+            <span className="truncate text-caption text-muted-foreground">with {others.join(', ')}</span>
           )}
-          {data.total > rows.length && (
-            <span className="text-muted-foreground">Showing {rows.length} of {data.total.toLocaleString()}</span>
-          )}
-          <Link to="/findings" className="text-primary hover:underline">All findings</Link>
-        </div>
-      )}
-    </section>
+        </span>
+        <span className="mt-xxs line-clamp-2 break-words text-metadata text-muted-foreground group-hover:text-foreground">
+          <MentionText text={excerpt(d.latest?.body ?? '')} />
+        </span>
+      </span>
+      <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
+        <time dateTime={at ?? undefined} title={formatTimestamp(at)}>{timeOfDay(at)}</time>
+        <span>{messages(d.comment_count)}</span>
+      </span>
+    </Link>
   );
 };
 
@@ -651,7 +698,7 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
       to={threadHref(thread)}
       data-thread={thread.key}
       aria-label={`Open the thread on ${host}${thread.hostname ? ` (${thread.hostname})` : ''}`}
-      className="group grid min-w-0 grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-start gap-x-md py-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+      className={ROW_CLASS}
     >
       <span className="min-w-0">
         <span className="block truncate font-mono text-metadata font-semibold text-foreground group-hover:text-info" title={host}>
@@ -673,7 +720,7 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
           )}
         </span>
         <span className="mt-xxs line-clamp-2 break-words text-metadata text-muted-foreground group-hover:text-foreground">
-          {excerpt(latest.body)}
+          <MentionText text={excerpt(latest.body)} />
         </span>
       </span>
       <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
@@ -681,7 +728,7 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
           {timeOfDay(thread.latestTimestamp)}
         </time>
         <span>
-          {thread.threadNoteCount} entr{thread.threadNoteCount === 1 ? 'y' : 'ies'}
+          {messages(thread.threadNoteCount)}
           {thread.hostNoteCount > thread.threadNoteCount ? ` · ${thread.hostNoteCount} on host` : ''}
         </span>
         {thread.imageCount > 0 && (
