@@ -25,7 +25,11 @@ import {
   listProjectMembers,
   listReportTemplates,
   saveReportProfile,
+  updateClientReport,
 } from '../services/api';
+import { formatDate, formatTimestamp } from '../utils/relativeTime';
+import TimeAgo from '../components/TimeAgo';
+import { Input } from '../components/ui/input';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -44,18 +48,83 @@ import {
 } from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
 
-const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
+const day = (iso: string | null) => formatDate(iso);
 
 /** "Draft #12 · started 23 Sep 2026, 14:05 · template default" — what sets
  *  apart drafts that share a title (v5.288.0). The time is there because two
  *  drafts are often started the same day. */
 export const draftMeta = (r: Pick<ClientReport, 'id' | 'created_at' | 'template'>): string => {
-  const started = r.created_at && !Number.isNaN(new Date(r.created_at).getTime())
-    ? new Date(r.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
-    : null;
+  const started = formatTimestamp(r.created_at, null);
   return [`Draft #${r.id}`, started ? `started ${started}` : null, r.template ? `template ${r.template}` : null]
     .filter(Boolean)
     .join(' · ');
+};
+
+/**
+ * A draft's title with an in-place rename (v5.294.0, UX review): drafts start
+ * under the project's default title, so several read the same; naming one
+ * used to mean opening it and saving the whole form.  A shared title is
+ * flagged so the operator knows why the line under it matters.
+ */
+const DraftTitle: React.FC<{
+  report: ClientReport;
+  duplicate: boolean;
+  onRenamed: (r: ClientReport) => void;
+}> = ({ report, duplicate, onRenamed }) => {
+  const toast = useToast();
+  const [value, setValue] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const save = async () => {
+    const title = (value ?? '').trim();
+    if (!title) { toast.error('A report needs a title.'); return; }
+    if (title === report.title) { setValue(null); return; }
+    setSaving(true);
+    try {
+      onRenamed(await updateClientReport(report.id, { title }));
+      setValue(null);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not rename the draft.'));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (value !== null) {
+    return (
+      <form className="flex min-w-0 items-center gap-xs" onSubmit={(e) => { e.preventDefault(); void save(); }}>
+        <Input
+          autoFocus value={value} maxLength={255} disabled={saving}
+          onChange={(e) => setValue(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Escape') setValue(null); }}
+          aria-label={`New title for draft #${report.id}`}
+          className="h-7 min-w-0 flex-1 text-metadata"
+        />
+        <Button type="submit" size="sm" className="h-7" disabled={saving}>
+          {saving && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Save
+        </Button>
+        <Button type="button" variant="ghost" size="sm" className="h-7" onClick={() => setValue(null)} disabled={saving}>
+          Cancel
+        </Button>
+      </form>
+    );
+  }
+  return (
+    <span className="flex min-w-0 items-center gap-xxs">
+      <Link to={`/reports/${report.id}`} className="min-w-0 truncate text-info hover:underline" title={report.title}>
+        {report.title}
+      </Link>
+      {duplicate && (
+        <span className="shrink-0 text-caption text-muted-foreground" title="Another draft has this title">(same title)</span>
+      )}
+      {report.can_edit && (
+        <Button variant="ghost" size="icon" className="size-6 shrink-0" onClick={() => setValue(report.title)}
+          aria-label={`Rename draft #${report.id}`} title="Rename">
+          <Pencil className="size-3.5" aria-hidden />
+        </Button>
+      )}
+    </span>
+  );
 };
 
 export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'revision_of'>): string => {
@@ -122,6 +191,8 @@ const Reports: React.FC = () => {
 
   const drafts = data?.items.filter((r) => r.status === 'draft') ?? [];
   const issued = data?.items.filter((r) => r.status !== 'draft') ?? [];
+  const titleCounts = new Map<string, number>();
+  for (const r of drafts) titleCounts.set(r.title, (titleCounts.get(r.title) ?? 0) + 1);
   const latest = issued.find((r) => r.id === data?.latest_issued_id) ?? null;
 
   // A failed load is said: the lead read "Loading…" forever.
@@ -141,17 +212,27 @@ const Reports: React.FC = () => {
           <PostureLead tone="info" className="mt-xs max-w-3xl">{lead}</PostureLead>
         </div>
         {data?.can_create && (
-          <div className="flex shrink-0 flex-wrap gap-xs">
-            <Button onClick={() => void create('full')} disabled={creating !== null}>
-              {creating === 'full' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
-              New report
-            </Button>
-            <Button variant="outline" onClick={() => void create('addendum')}
-              disabled={creating !== null || !latest}
-              title={latest ? `Report what changed since #${latest.number}` : 'An addendum needs an issued report to compare against'}>
-              {creating === 'addendum' && <Loader2 className="size-4 animate-spin" aria-hidden />}
-              New addendum{latest ? ` to #${latest.number}` : ''}
-            </Button>
+          <div className="flex shrink-0 flex-col items-end gap-xxs">
+            <div className="flex flex-wrap gap-xs">
+              <Button onClick={() => void create('full')} disabled={creating !== null}>
+                {creating === 'full' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <FilePlus2 className="size-4" aria-hidden />}
+                New report
+              </Button>
+              <Button variant="outline" onClick={() => void create('addendum')}
+                disabled={creating !== null || !latest}
+                aria-describedby={latest ? undefined : 'addendum-why'}
+                title={latest ? `Report what changed since #${latest.number}` : undefined}>
+                {creating === 'addendum' && <Loader2 className="size-4 animate-spin" aria-hidden />}
+                New addendum{latest ? ` to #${latest.number}` : ''}
+              </Button>
+            </div>
+            {/* A disabled button shows no tooltip — say why in text
+                (UX review 2026-09-24). */}
+            {!latest && (
+              <p id="addendum-why" className="text-caption text-muted-foreground">
+                Issue a report first — an addendum reports what changed since one.
+              </p>
+            )}
           </div>
         )}
       </header>
@@ -183,7 +264,10 @@ const Reports: React.FC = () => {
                   {drafts.map((r) => (
                     <TableRow key={r.id}>
                       <TableCell className="min-w-0">
-                        <Link to={`/reports/${r.id}`} className="block truncate text-info hover:underline" title={r.title}>{r.title}</Link>
+                        <DraftTitle report={r} duplicate={(titleCounts.get(r.title) ?? 0) > 1}
+                          onRenamed={(updated) => setData((d) => (d
+                            ? { ...d, items: d.items.map((x) => (x.id === updated.id ? { ...x, title: updated.title } : x)) }
+                            : d))} />
                         {/* Drafts often share the default title; this line
                             tells them apart from what the list already
                             carries (v5.288.0) — no per-draft request. */}
@@ -193,7 +277,9 @@ const Reports: React.FC = () => {
                       </TableCell>
                       <TableCell className="truncate text-caption">{reportKindLabel(r)}</TableCell>
                       <TableCell className="truncate text-caption">{safeFallback(r.created_by_name, '—')}</TableCell>
-                      <TableCell className="text-caption">{day(r.updated_at ?? r.created_at)}</TableCell>
+                      <TableCell className="text-caption">
+                        <TimeAgo value={r.updated_at ?? r.created_at} absoluteAfterDays={30} />
+                      </TableCell>
                     </TableRow>
                   ))}
                 </TableBody>

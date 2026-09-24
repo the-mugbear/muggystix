@@ -38,6 +38,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
+import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -61,7 +62,7 @@ import { FileButtons, reportKindLabel } from './Reports';
 const FORMAT_LABEL: Record<ReportFileFormat, string> = {
   html: 'HTML', docx: 'Word', qmd: 'QMD source (.zip)', pdf: 'PDF',
 };
-const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
+const when = (iso: string | null) => formatTimestamp(iso);
 
 interface Form {
   title: string;

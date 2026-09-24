@@ -130,11 +130,35 @@ describe('Reports list', () => {
     expect(mocked.getClientReport).not.toHaveBeenCalled();
   });
 
+  // UX review 2026-09-24: drafts under the same default title could only be
+  // renamed by opening each one.
+  it('renames a draft in place and flags drafts that share a title', async () => {
+    const title = 'Demo — security assessment report';
+    mocked.listClientReports.mockResolvedValue({
+      items: [report({ id: 12, title }), report({ id: 13, title })],
+      latest_issued_id: null, can_create: true, can_issue: false,
+    });
+    renderList();
+    await screen.findByTestId('draft-meta-12');
+    expect(screen.getAllByText('(same title)')).toHaveLength(2);
+
+    mocked.updateClientReport.mockResolvedValue(report({ id: 12, title: 'Internal network — round 2' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Rename draft #12' }));
+    const input = screen.getByLabelText('New title for draft #12');
+    fireEvent.change(input, { target: { value: 'Internal network — round 2' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => expect(mocked.updateClientReport).toHaveBeenCalledWith(12, { title: 'Internal network — round 2' }));
+    expect(await screen.findByRole('link', { name: 'Internal network — round 2' })).toBeInTheDocument();
+    expect(screen.queryByText('(same title)')).not.toBeInTheDocument();
+  });
+
   it('offers no addendum before anything is issued, and nothing to an auditor', async () => {
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: false });
     const { unmount } = renderList();
     expect(await screen.findByText('No report has been issued for this project yet.')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /New addendum/ })).toBeDisabled();
+    // A disabled button has no tooltip to read: the reason is on the page.
+    expect(screen.getByText(/Issue a report first/)).toBeInTheDocument();
     unmount();
 
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: false, can_issue: false });
