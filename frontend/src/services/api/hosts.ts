@@ -802,6 +802,35 @@ export const validateHostQuery = async (q: string, signal?: AbortSignal): Promis
   return response.data;
 };
 
+export interface HostQueryValueSuggestion {
+  value: string;
+  // What the operator knows the value by (a scan's filename, an ASN's name).
+  label: string | null;
+  // Hosts carrying the value; null where a count would mean nothing.
+  count: number | null;
+}
+
+export interface HostQuerySuggestResponse {
+  field: string;
+  // False for a field with nothing to enumerate (note text, time windows).
+  supported: boolean;
+  values: HostQueryValueSuggestion[];
+  timed_out?: boolean;
+}
+
+/** One field's values containing `prefix`, project-wide (v2.405.0). */
+export const suggestHostQueryValues = async (
+  field: string,
+  prefix: string,
+  signal?: AbortSignal,
+): Promise<HostQuerySuggestResponse> => {
+  const response = await api.get(`${p()}/hosts/query/suggest`, {
+    params: { field, prefix, limit: 20 },
+    signal,
+  });
+  return response.data;
+};
+
 export const listHostQueryHistory = async (limit = 20): Promise<HostQueryHistoryEntry[]> => {
   const response = await api.get(`${p()}/hosts/query/history`, { params: { limit } });
   return response.data;

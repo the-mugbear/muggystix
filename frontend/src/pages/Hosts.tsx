@@ -819,10 +819,18 @@ export default function Hosts() {
 
   // Facet values for the command-bar autocomplete, keyed by the DSL
   // value_source.  Tag/label suggest by NAME (the DSL resolves them by
-  // name), unlike the id-based panel.
+  // name), unlike the id-based panel.  These show instantly; the bar replaces
+  // them with `GET /hosts/query/suggest` (project-wide, uncapped by the
+  // active filters) once that answers (5.291.0).
   const queryValueSuggestions = useMemo(() => {
     const map: Record<string, string[]> = {};
-    if (filterData?.common_ports) map.port = filterData.common_ports.map((p) => String(p.port));
+    // Open ports only: a plain `port:N` matches open ports (v2.403.0), so a
+    // closed-only port would insert a condition that matches nothing.
+    if (filterData?.common_ports) {
+      map.port = [...new Set(
+        filterData.common_ports.filter((p) => p.state === 'open').map((p) => String(p.port)),
+      )];
+    }
     if (filterData?.services) map.service = filterData.services.map((s) => s.name);
     if (filterData?.operating_systems) map.os = filterData.operating_systems.map((o) => o.name);
     if (filterData?.technologies) map.tech = filterData.technologies.map((t) => t.name);
@@ -830,6 +838,10 @@ export default function Hosts() {
     if (filterData?.subnet_labels) map.label = filterData.subnet_labels.map((l) => l.name);
     if (filterData?.sites) map.site = filterData.sites.map((s) => s.name);
     if (filterData?.scans) map.scan = filterData.scans.map((s) => String(s.id));
+    if (filterData?.subnets) map.cidr = filterData.subnets.map((s) => s.cidr);
+    if (filterData?.orgs) map.org = filterData.orgs.map((o) => o.name);
+    if (filterData?.asns) map.asn = filterData.asns.map((a) => String(a.asn));
+    if (filterData?.countries) map.country = filterData.countries.map((c) => c.country);
     return map;
   }, [filterData]);
 
@@ -839,12 +851,17 @@ export default function Hosts() {
   // HostCommandBar matches on the label too, so typing `scan:openvas` finds
   // the id and inserts it.
   const queryValueLabels = useMemo(() => {
-    if (!filterData?.scans) return undefined;
+    if (!filterData?.scans && !filterData?.asns) return undefined;
     const scan: Record<string, string> = {};
-    for (const s of filterData.scans) {
+    for (const s of filterData?.scans ?? []) {
       scan[String(s.id)] = s.tool_name ? `${s.filename} (${s.tool_name})` : s.filename;
     }
-    return { scan };
+    // An AS number is known by its name, as a scan is by its file.
+    const asn: Record<string, string> = {};
+    for (const a of filterData?.asns ?? []) {
+      if (a.as_name) asn[String(a.asn)] = a.as_name;
+    }
+    return { scan, asn };
   }, [filterData]);
 
   // Row click opens the side-sheet instead of navigating away from the

@@ -336,8 +336,10 @@ class FieldSpec:
     name: str
     builder: Builder
     aliases: List[str] = dc_field(default_factory=list)
-    # Drives frontend autocomplete: which /hosts/filters/data array (if
-    # any) supplies value suggestions, or "enum"/"free".
+    # Drives autocomplete: the source ``host_query_suggest`` enumerates this
+    # field's values from (``GET /hosts/query/suggest``), "enum" (the values
+    # are ``enum_values``), "window" (an ISO time window — the frontend offers
+    # ready-made ones) or "free" (nothing to enumerate: note text).
     value_source: str = "free"
     trgm: bool = False
     enum_values: List[str] = dc_field(default_factory=list)
@@ -606,9 +608,10 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("state", lambda c, v: P.state_predicate(v), value_source="enum",
               enum_values=["up", "down", "unknown"],
               description="Host up / down / unknown (any host/port scanner)."),
-    FieldSpec("ip", lambda c, v: P.ip_predicate(v),
+    FieldSpec("ip", lambda c, v: P.ip_predicate(v), value_source="ip",
               description="Host IP address (substring match)."),
     FieldSpec("hostname", lambda c, v: P.hostname_predicate(v), aliases=["host"],
+              value_source="hostname",
               description="Host name — nmap, DNS/PTR records, reverse lookups."),
     FieldSpec("os", lambda c, v: P.os_predicate(v), value_source="os",
               description="OS name or family — nmap OS detection (-O / -A)."),
@@ -622,10 +625,11 @@ _FIELD_SPECS: List[FieldSpec] = [
                           "closed or filtered port nmap only guesses the name from the port "
                           "number, so those match only when asked: `service:ssh@closed`, "
                           "`service:ssh@any`."),
-    FieldSpec("version", _b_version, aliases=["product"], trgm=True,
+    FieldSpec("version", _b_version, aliases=["product"], trgm=True, value_source="version",
               description="Service product or version on an OPEN port, e.g. \"OpenSSH 7\" — "
                           "nmap -sV. `@state` as for port: (`version:\"OpenSSH 7@any\"`)."),
     FieldSpec("path", lambda c, v: P.webpath_predicate(c.db, v), aliases=["webpath"], trgm=True,
+              value_source="path",
               description="A path content discovery found — ffuf, gobuster, feroxbuster, dirsearch."),
     FieldSpec("portstate", lambda c, v: P.portstate_predicate(c.db, v), value_source="enum",
               enum_values=["open", "closed", "filtered"],
@@ -642,19 +646,19 @@ _FIELD_SPECS: List[FieldSpec] = [
     # Network attribution (ingested from RDAP). Scope validation against the
     # outside world rather than against the CIDRs someone typed into the scope.
     FieldSpec("org", lambda c, v: P.attribution_org_predicate(c.db, v),
-              aliases=["owner"], value_source="free", trgm=True,
+              aliases=["owner"], value_source="org", trgm=True,
               description="Registered owner of the host's netblock (RDAP). "
                           "`NOT org:\"Acme\"` finds hosts not registered to the client."),
     FieldSpec("certorg", lambda c, v: P.cert_org_predicate(c.db, v),
-              value_source="free", trgm=True,
+              value_source="certorg", trgm=True,
               description="Organization on the host's TLS certificate — CA-validated, "
                           "so stronger evidence of control than a self-declared registry "
                           "record. Absent on DV certs."),
     FieldSpec("asn", lambda c, v: P.attribution_asn_predicate(c.db, v),
-              value_source="free",
+              value_source="asn",
               description="Autonomous system number the host's netblock belongs to."),
     FieldSpec("country", lambda c, v: P.attribution_country_predicate(c.db, v),
-              value_source="free",
+              value_source="country",
               description="ISO country the host's netblock is registered in (RDAP) — "
                           "e.g. `country:US`. `NOT country:US` surfaces foreign-hosted "
                           "assets for scope validation."),
@@ -681,7 +685,7 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
               description="What a finished review concluded — e.g. `conclusion:needs_evidence` "
                           "is every reviewed host whose question is still open."),
-    FieldSpec("assigned", _b_assigned, aliases=["assignee"],
+    FieldSpec("assigned", _b_assigned, aliases=["assignee"], value_source="user",
               description="Host assignment — “me”, “any”, “none”, a username, or a user id."),
     FieldSpec("scan", _b_scan, value_source="scan",
               description="A scan that observed the host — by numeric id. Type the "
@@ -690,35 +694,35 @@ _FIELD_SPECS: List[FieldSpec] = [
     # v2.363.0 — time windows, (start, end].  They exist so a "since your last
     # visit" count on Operations opens exactly the hosts it counted; the counts
     # and these fields share one definition in host_query_predicates.
-    FieldSpec("firstseen", _b_firstseen, value_source="free",
+    FieldSpec("firstseen", _b_firstseen, value_source="window",
               description="Hosts FIRST observed in a time window — new records. Quote the "
                           "ISO time: `firstseen:\"2026-09-19T20:00:00Z\"` (since then) or "
                           "`firstseen:\"<start>..<end>\"`."),
-    FieldSpec("changedsince", _b_changedsince, value_source="free",
+    FieldSpec("changedsince", _b_changedsince, value_source="window",
               description="Hosts already known before the window that gained a port or a "
                           "scanner observation in it — a change to an existing target, not "
                           "a new record. Same value form as firstseen:."),
-    FieldSpec("vulnsince", _b_vulnsince, value_source="free",
+    FieldSpec("vulnsince", _b_vulnsince, value_source="window",
               description="Hosts with a scanner observation recorded in a time window, "
                           "optionally of one severity matched on the same row: "
                           "`vulnsince:\"critical@<start>..<end>\"`."),
     FieldSpec("has", _b_has, value_source="enum", enum_values=sorted(_HAS_KEYWORDS),
               description="Derived boolean flag — takes one of the values below.",
               enum_descriptions={k: _HAS_KEYWORDS[k][1] for k in _HAS_KEYWORDS}),
-    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True,
+    FieldSpec("cve", lambda c, v: P.cve_predicate(c.db, v, c.project_id), trgm=True, value_source="cve",
               description="A finding’s CVE id (substring) — Nessus, OpenVAS, Nikto."),
-    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True,
+    FieldSpec("vuln", lambda c, v: P.vuln_predicate(c.db, v, c.project_id), trgm=True, value_source="vuln",
               description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
-    FieldSpec("issue", lambda c, v: P.issue_predicate(c.db, v, c.project_id),
+    FieldSpec("issue", lambda c, v: P.issue_predicate(c.db, v, c.project_id), value_source="issue",
               description="Exactly one scanner-observation issue, by the key the Findings page "
                           "groups observations by (quote it: `issue:\"title:smb signing not "
                           "required\"`). Exact match, unlike vuln:."),
     FieldSpec("exploitport", _b_exploitport, value_source="port",
               description="A port carrying a finding flagged exploitable by a vulnerability "
                           "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),
-    FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True,
+    FieldSpec("header", lambda c, v: P.header_predicate(c.db, v), trgm=True, value_source="header",
               description="HTTP Server response header — httpx."),
-    FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True,
+    FieldSpec("webtitle", lambda c, v: P.webtitle_predicate(c.db, v), trgm=True, value_source="webtitle",
               description="Web page <title> — httpx, eyewitness."),
     FieldSpec("note", lambda c, v: P.note_predicate(c.db, v, c.project_id), trgm=True,
               description="Note / annotation body text — written by analysts."),

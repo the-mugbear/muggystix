@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -17,10 +17,18 @@ import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { useQueryAssist } from './useQueryAssist';
-import { quote } from './dslFromFilters';
+import { useQueryValueSuggest } from './useQueryValueSuggest';
+import {
+  applyCompletion,
+  completionContext,
+  fieldSuggestions,
+  findField,
+  valueSuggestions as buildValueSuggestions,
+  type QuerySuggestion,
+  type ValuePoolEntry,
+} from './queryCompletion';
 import { cn } from '../../utils/cn';
 import { useSearchFocus } from '../../hooks/useSearchFocus';
-import type { HostQueryField } from '../../services/api';
 
 export interface HostCommandBarProps {
   /** Committed query value (filters.query). */
@@ -42,67 +50,10 @@ export interface HostCommandBarProps {
 
 const COMMIT_DEBOUNCE_MS = 450;
 
-/** The last whitespace-delimited token of `text` (what autocomplete acts on). */
-function lastToken(text: string): { token: string; head: string } {
-  const m = text.match(/(\S*)$/);
-  const token = m ? m[1] : '';
-  return { token, head: text.slice(0, text.length - token.length) };
-}
-
-function buildSuggestions(
-  draft: string,
-  fields: HostQueryField[],
-  valueSuggestions: Record<string, string[]> | undefined,
-  valueLabels: Record<string, Record<string, string>> | undefined,
-): { display: string; insert: string }[] {
-  const { token } = lastToken(draft);
-  if (!token) return [];
-  const colon = token.indexOf(':');
-  if (colon === -1) {
-    // Suggest field names + aliases that start with the partial token.
-    const lower = token.toLowerCase();
-    const out: { display: string; insert: string }[] = [];
-    for (const f of fields) {
-      for (const name of [f.name, ...f.aliases]) {
-        if (name.startsWith(lower)) out.push({ display: `${name}:`, insert: `${name}:` });
-      }
-    }
-    return out.slice(0, 8);
-  }
-  // After `field:` — suggest enum values / facet values for that field.
-  const fieldName = token.slice(0, colon).toLowerCase();
-  const partial = token.slice(colon + 1).toLowerCase();
-  const spec = fields.find((f) => f.name === fieldName || f.aliases.includes(fieldName));
-  if (!spec) return [];
-  const pool =
-    spec.enum_values.length > 0
-      ? spec.enum_values
-      : (valueSuggestions?.[spec.value_source] ?? []);
-  // A value's human label, from the schema (enum fields carry their own) or
-  // from the page (facet values whose stored form isn't what an operator
-  // knows them by — `scan:` is an id, but nobody remembers scan 33).
-  const labelFor = (v: string): string | undefined =>
-    spec.enum_descriptions?.[v] ?? valueLabels?.[spec.value_source]?.[v];
-  return pool
-    // Match the label too, so typing what you actually know — `scan:openvas`
-    // — finds the id you don't. Without this, an id-valued field is only
-    // searchable by the one thing the operator came here NOT knowing.
-    .filter((v) => {
-      if (v.toLowerCase().includes(partial)) return true;
-      const label = labelFor(v);
-      return label ? label.toLowerCase().includes(partial) : false;
-    })
-    .slice(0, 8)
-    // Quote values with spaces/commas/quotes so e.g. "Windows Server 2019"
-    // inserts as os:"Windows Server 2019", not os:Windows AND Server AND 2019.
-    // Annotate values that carry meaning (has:, scan:) with their label.
-    .map((v) => {
-      const label = labelFor(v);
-      return {
-        display: label ? `${v} — ${label}` : v,
-        insert: `${spec.name}:${quote(v)}`,
-      };
-    });
+/** A suggestion row's accessible name: the value, what it means, how many. */
+function optionLabel(s: QuerySuggestion): string {
+  const main = [s.display, s.detail].filter(Boolean).join(' — ');
+  return s.count != null ? `${main}, ${s.count} ${s.count === 1 ? 'host' : 'hosts'}` : main;
 }
 
 /**
@@ -125,6 +76,17 @@ export default function HostCommandBar({
   // Highlighted suggestion for keyboard navigation (-1 = none). Reset whenever
   // the draft changes so a fresh suggestion list starts unhighlighted.
   const [activeIndex, setActiveIndex] = useState(-1);
+  // Completion acts at the caret, not the end of the text (5.291.0), so
+  // editing inside `(a OR b)` completes there.
+  const [caret, setCaret] = useState(value.length);
+  // Escape hides the list until the text or caret moves again. (It used to
+  // clear `focused`, which only a fresh focus set back — the list stayed gone
+  // for the rest of the edit.)
+  const [dismissed, setDismissed] = useState(false);
+  // Where to put the caret after the next render (a suggestion was applied).
+  const pendingCaret = useRef<number | null>(null);
+  // The text a suggestion last produced (see the suggestions filter).
+  const appliedText = useRef<string | null>(null);
   const listboxId = 'hosts-query-suggestions';
   const inputRef = useRef<HTMLInputElement>(null);
   // The "/" keyboard shortcut focuses the command bar (it used to focus the
@@ -146,7 +108,7 @@ export default function HostCommandBar({
 
   // Keep the draft in sync when the value changes externally (saved view,
   // convert button, history apply, URL restore).
-  useEffect(() => { setDraft(value); }, [value]);
+  useEffect(() => { setDraft(value); setCaret(value.length); }, [value]);
 
   // Debounced commit: update the page filters as the user types, but only
   // when the draft is empty or parses cleanly — never push a broken query
@@ -163,11 +125,46 @@ export default function HostCommandBar({
     return () => clearTimeout(timer);
   }, [draft, validation, validatedQuery, validating, value, onChange]);
 
-  const suggestions = useMemo(
-    () => (schema ? buildSuggestions(draft, schema.fields, valueSuggestions, valueLabels) : []),
-    [draft, schema, valueSuggestions, valueLabels],
+  const context = useMemo(() => completionContext(draft, Math.min(caret, draft.length)), [draft, caret]);
+  const valueSpec = schema && context.kind === 'value' ? findField(schema.fields, context.field) : undefined;
+  const remoteValues = useQueryValueSuggest(
+    valueSpec?.name ?? null,
+    valueSpec?.value_source ?? null,
+    context.kind === 'value' ? context.partial : '',
   );
-  useEffect(() => { setActiveIndex(-1); }, [draft]);
+
+  const suggestions = useMemo((): QuerySuggestion[] => {
+    if (!schema) return [];
+    let rows: QuerySuggestion[] = [];
+    if (context.kind === 'field') {
+      rows = fieldSuggestions(context, schema.fields, draft.slice(0, context.from).trim() !== '');
+    } else if (context.kind === 'value' && valueSpec) {
+      // The server's answer when it is in; the page's facets until then (and
+      // when it fails) — labelled, so `scan:openvas` finds the id you don't know.
+      const src = valueSpec.value_source;
+      const pool: ValuePoolEntry[] = remoteValues
+        ?? (valueSuggestions?.[src] ?? []).map((v) => ({ value: v, label: valueLabels?.[src]?.[v] }));
+      rows = buildValueSuggestions(context, valueSpec, pool);
+    }
+    // Right after a pick, re-offering what was just inserted is noise. A value
+    // the operator TYPED stays listed: its row confirms it (`scan:41` → the file).
+    if (draft !== appliedText.current) return rows;
+    return rows.filter((s) => draft.slice(s.from, s.to) !== s.insert);
+  }, [schema, context, valueSpec, remoteValues, valueSuggestions, valueLabels, draft]);
+
+  useEffect(() => { setActiveIndex(-1); setDismissed(false); }, [draft, caret]);
+
+  useLayoutEffect(() => {
+    if (pendingCaret.current == null) return;
+    const at = pendingCaret.current;
+    pendingCaret.current = null;
+    inputRef.current?.setSelectionRange(at, at);
+  }, [draft]);
+
+  useEffect(() => {
+    if (activeIndex < 0) return;
+    document.getElementById(`${listboxId}-opt-${activeIndex}`)?.scrollIntoView?.({ block: 'nearest' });
+  }, [activeIndex]);
 
   const commit = () => {
     const trimmed = draft.trim();
@@ -178,43 +175,44 @@ export default function HostCommandBar({
     if (trimmed) recordQuery(trimmed, validation?.match_count ?? null);
   };
 
-  const applySuggestion = (insert: string) => {
-    const { head } = lastToken(draft);
-    setDraft(`${head}${insert}`);
+  const applySuggestion = (s: QuerySuggestion) => {
+    const next = applyCompletion(draft, s);
+    pendingCaret.current = next.caret;
+    appliedText.current = next.text;
+    setDraft(next.text);
+    setCaret(next.caret);
     setActiveIndex(-1);
     inputRef.current?.focus();
   };
 
+  const syncCaret = (el: HTMLInputElement) => setCaret(el.selectionStart ?? el.value.length);
+
   // Click a field in the syntax popover to append `field:` to the query and
   // focus the input so the user can type the value.
-  const insertField = (name: string) => {
-    setDraft((prev) => {
-      const trimmed = prev.replace(/\s+$/, '');
-      return `${trimmed}${trimmed ? ' ' : ''}${name}:`;
-    });
-    inputRef.current?.focus();
-  };
+  const insertField = (name: string) => appendToken(`${name}:`);
 
   // Append a complete token (e.g. ``has:web``) to the draft — used by the
-  // syntax popover's enum-value rows.  Sets the draft (does not commit), like
-  // insertField.
-  const insertToken = (token: string) => {
-    setDraft((prev) => {
-      const trimmed = prev.replace(/\s+$/, '');
-      return `${trimmed}${trimmed ? ' ' : ''}${token}`;
-    });
+  // syntax popover's field and enum-value rows.  Sets the draft (does not
+  // commit) and puts the caret after it, where completion then acts.
+  const appendToken = (token: string) => {
+    const trimmed = draft.replace(/\s+$/, '');
+    const next = `${trimmed}${trimmed ? ' ' : ''}${token}`;
+    pendingCaret.current = next.length;
+    setDraft(next);
+    setCaret(next.length);
     inputRef.current?.focus();
   };
 
   const applyQuery = (q: string) => {
     setDraft(q);
+    setCaret(q.length);
     onChange(q);
     setHistoryOpen(false);
     inputRef.current?.focus();
   };
 
   const invalid = !!trimmedDraft && validationFresh && !!validation && !validation.valid;
-  const showSuggest = focused && suggestions.length > 0;
+  const showSuggest = focused && !dismissed && suggestions.length > 0;
 
   return (
     <div className="space-y-xs">
@@ -229,10 +227,18 @@ export default function HostCommandBar({
             spellCheck={false}
             autoCorrect="off"
             autoCapitalize="off"
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => { setDraft(e.target.value); syncCaret(e.target); }}
+            onSelect={(e) => syncCaret(e.currentTarget)}
             onFocus={() => setFocused(true)}
             onBlur={() => setTimeout(() => setFocused(false), 120)}
             onKeyDown={(e) => {
+              // Tab takes the highlighted suggestion; with none highlighted it
+              // moves focus as usual.
+              if (e.key === 'Tab' && !e.shiftKey && showSuggest && activeIndex >= 0) {
+                e.preventDefault();
+                applySuggestion(suggestions[activeIndex]);
+                return;
+              }
               if (showSuggest && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
                 e.preventDefault();
                 const n = suggestions.length;
@@ -247,13 +253,13 @@ export default function HostCommandBar({
                 e.preventDefault();
                 // Enter on a highlighted suggestion accepts it; otherwise commit.
                 if (showSuggest && activeIndex >= 0 && activeIndex < suggestions.length) {
-                  applySuggestion(suggestions[activeIndex].insert);
+                  applySuggestion(suggestions[activeIndex]);
                 } else {
                   commit();
                 }
                 return;
               }
-              if (e.key === 'Escape') { setFocused(false); setActiveIndex(-1); }
+              if (e.key === 'Escape') { setDismissed(true); setActiveIndex(-1); }
             }}
             // Short enough to fit the bar at desktop widths (the old one lost
             // its end); the "/" shortcut is on the input's tooltip and in the
@@ -312,7 +318,7 @@ export default function HostCommandBar({
                 type="button"
                 aria-label="Clear query"
                 className="text-muted-foreground hover:text-foreground"
-                onClick={() => { setDraft(''); onChange(''); }}
+                onClick={() => { setDraft(''); setCaret(0); onChange(''); }}
               >
                 <X className="size-3.5" aria-hidden />
               </button>
@@ -328,20 +334,30 @@ export default function HostCommandBar({
             >
               {suggestions.map((s, i) => (
                 <li
-                  key={s.insert}
+                  key={`${s.insert}\u0000${s.from}`}
                   id={`${listboxId}-opt-${i}`}
                   role="option"
                   aria-selected={i === activeIndex}
+                  aria-label={optionLabel(s)}
+                  title={s.detail ? `${s.display} — ${s.detail}` : s.display}
                   // onMouseDown (not onClick) + preventDefault keeps input focus
                   // so the blur-close doesn't fire before the selection lands.
-                  onMouseDown={(e) => { e.preventDefault(); applySuggestion(s.insert); }}
+                  onMouseDown={(e) => { e.preventDefault(); applySuggestion(s); }}
                   onMouseEnter={() => setActiveIndex(i)}
                   className={cn(
-                    'flex w-full cursor-pointer items-center px-sm py-xxs text-left font-mono text-metadata',
+                    'flex w-full min-w-0 cursor-pointer items-baseline gap-sm px-sm py-xxs text-left text-metadata',
                     i === activeIndex ? 'bg-accent' : 'hover:bg-accent',
                   )}
                 >
-                  {s.display}
+                  <span className="max-w-[60%] shrink-0 truncate font-mono">{s.display}</span>
+                  {s.detail && (
+                    <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">{s.detail}</span>
+                  )}
+                  {s.count != null && (
+                    <span className="ml-auto shrink-0 text-caption tabular-nums text-muted-foreground" aria-hidden>
+                      {s.count}
+                    </span>
+                  )}
                 </li>
               ))}
             </ul>
@@ -478,7 +494,7 @@ export default function HostCommandBar({
                         <button
                           key={`${f.name}:${v}`}
                           type="button"
-                          onClick={() => insertToken(`${f.name}:${v}`)}
+                          onClick={() => appendToken(`${f.name}:${v}`)}
                           className="flex w-full items-baseline gap-xs rounded py-xxs pl-md pr-xs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring"
                         >
                           <code className="shrink-0 font-mono text-caption text-muted-foreground">{f.name}:{v}</code>

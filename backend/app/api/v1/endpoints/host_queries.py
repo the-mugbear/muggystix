@@ -11,6 +11,8 @@ file-size policy limit):
   when valid, return the live match count.  Always HTTP 200; validity
   lives in the body so the frontend can lint inline without treating a
   bad draft query as an error response.
+* ``GET  /hosts/query/suggest``   — one field's values containing what was
+  typed, project-wide, for the value autocomplete (v2.405.0).
 * ``GET/POST/DELETE /hosts/query/history`` — the recent-queries list.
 
 Mounted at the ``/hosts`` prefix; the host-detail route is typed
@@ -42,6 +44,7 @@ from app.services.host_query_dsl import (
     parse_query,
     schema as dsl_schema,
 )
+from app.services.host_query_suggest import MAX_SUGGESTIONS, suggest as suggest_values
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +95,26 @@ class QueryValidateResponse(BaseModel):
     error: Optional[QueryErrorSchema] = None
     leaf_count: Optional[int] = None
     match_count: Optional[int] = None
+
+
+class QuerySuggestion(BaseModel):
+    value: str
+    # What the operator knows the value by, when that isn't the value itself
+    # (a scan's filename, an ASN's name, a user's full name, a has: meaning).
+    label: Optional[str] = None
+    # Hosts carrying the value; None where a count would mean nothing.
+    count: Optional[int] = None
+
+
+class QuerySuggestResponse(BaseModel):
+    field: str
+    # False for an unknown field or one with nothing to enumerate (note text,
+    # time windows) — the command bar then shows its own hints.
+    supported: bool
+    values: List[QuerySuggestion]
+    # True when the lookup hit the statement timeout: the list is empty
+    # because it was too expensive, not because nothing matches.
+    timed_out: bool = False
 
 
 class QueryHistoryEntry(BaseModel):
@@ -181,6 +204,40 @@ def validate_query(
         leaf_count=count_leaves(node),
         match_count=match_count,
     )
+
+
+@router.get(
+    "/query/suggest",
+    response_model=QuerySuggestResponse,
+    summary="Values of one query field that contain the typed text",
+)
+def suggest_query_values(
+    field: str = Query(..., min_length=1, max_length=40),
+    prefix: str = Query("", max_length=200),
+    limit: int = Query(20, ge=1, le=MAX_SUGGESTIONS),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Backs the command bar's value autocomplete: the page's facet lists are
+    capped and cascaded by the active filters, so a rare port or a CVE could
+    not be completed from them. Fires while typing (debounced), so it is
+    capped like the validate count: on a statement timeout the list is empty
+    and ``timed_out`` says why."""
+    try:
+        if db.bind is not None and db.bind.dialect.name == "postgresql":
+            db.execute(text("SET LOCAL statement_timeout = '2000'"))
+        return suggest_values(
+            db, project_id=project.id, current_user=current_user,
+            field=field, prefix=prefix, limit=limit,
+        )
+    except OperationalError as exc:
+        db.rollback()
+        pgcode = getattr(getattr(exc, "orig", None), "pgcode", None)
+        if pgcode != "57014":
+            logger.exception("suggest_query_values failed (non-timeout)")
+            raise
+        return QuerySuggestResponse(field=field, supported=True, values=[], timed_out=True)
 
 
 # ---------------------------------------------------------------------------

@@ -39,6 +39,8 @@ vi.mock('../../services/api', () => ({
   recordHostQuery: vi.fn(),
   deleteHostQuery: vi.fn(),
   clearHostQueryHistory: vi.fn(),
+  // 5.291.0 — value autocomplete asks the server; nothing to add here.
+  suggestHostQueryValues: vi.fn(async (field: string) => ({ field, supported: false, values: [] })),
   // The bulk bar (shown once a row is checked) loads its tag / member lists.
   listHostTags: vi.fn(async () => []),
   listProjectMembers: vi.fn(async () => []),

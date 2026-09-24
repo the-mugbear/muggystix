@@ -10,6 +10,7 @@ vi.mock('../../services/api', () => ({
   recordHostQuery: vi.fn(),
   deleteHostQuery: vi.fn(),
   clearHostQueryHistory: vi.fn(),
+  suggestHostQueryValues: vi.fn(),
 }));
 
 import * as api from '../../services/api';
@@ -32,6 +33,8 @@ beforeEach(() => {
   mocked.listHostQueryHistory.mockResolvedValue([]);
   mocked.validateHostQuery.mockResolvedValue({ valid: true, match_count: 3, leaf_count: 1 });
   mocked.recordHostQuery.mockResolvedValue({ id: 1, q: 'port:80', result_count: 3, created_at: 'x' });
+  // Default: the server has nothing to add, so the page's facets stand.
+  mocked.suggestHostQueryValues.mockResolvedValue({ field: 'port', supported: false, values: [] });
 });
 
 function setup(overrides: Partial<React.ComponentProps<typeof HostCommandBar>> = {}) {
@@ -171,6 +174,74 @@ describe('HostCommandBar', () => {
 
       const listbox = await screen.findByRole('listbox');
       expect(within(listbox).getByRole('option', { name: '33' })).toBeInTheDocument();
+    });
+  });
+
+  // 5.291.0 — completion reads the slot at the caret, not the last word.
+  describe('context-aware completion', () => {
+    it('completes a field inside parentheses', async () => {
+      const user = userEvent.setup();
+      setup();
+      await user.type(screen.getByLabelText('Host query'), '(po');
+      const listbox = await screen.findByRole('listbox');
+      await user.click(within(listbox).getByRole('option', { name: 'port:' }));
+      expect(screen.getByLabelText('Host query')).toHaveValue('(port:');
+    });
+
+    it('offers AND / OR / NOT after a complete term and inserts the operator', async () => {
+      const user = userEvent.setup();
+      setup();
+      await user.type(screen.getByLabelText('Host query'), 'has:web ');
+      const listbox = await screen.findByRole('listbox');
+      await user.click(within(listbox).getByRole('option', { name: /^OR —/ }));
+      expect(screen.getByLabelText('Host query')).toHaveValue('has:web OR ');
+    });
+
+    it('asks the server for values the page facets do not have, and shows host counts', async () => {
+      mocked.suggestHostQueryValues.mockImplementation(async (field: string, prefix: string) => ({
+        field, supported: true, values: prefix === '84' ? [{ value: '8443', label: null, count: 2 }] : [],
+      }));
+      const user = userEvent.setup();
+      // The page only knows the common ports.
+      setup({ valueSuggestions: { port: ['80', '443'] } });
+      await user.type(screen.getByLabelText('Host query'), 'port:84');
+      await waitFor(() =>
+        expect(mocked.suggestHostQueryValues).toHaveBeenCalledWith('port', '84', expect.anything()),
+      );
+      const option = await screen.findByRole('option', { name: '8443, 2 hosts' });
+      await user.click(option);
+      expect(screen.getByLabelText('Host query')).toHaveValue('port:8443');
+    });
+
+    it('keeps the page facets on screen when the server lookup fails', async () => {
+      mocked.suggestHostQueryValues.mockRejectedValue(new Error('offline'));
+      const user = userEvent.setup();
+      setup({ valueSuggestions: { port: ['80', '443'] } });
+      await user.type(screen.getByLabelText('Host query'), 'port:4');
+      expect(await screen.findByRole('option', { name: '443' })).toBeInTheDocument();
+    });
+
+    it('Escape hides the list until the next edit (it used to stay hidden)', async () => {
+      const user = userEvent.setup();
+      setup();
+      const input = screen.getByLabelText('Host query');
+      await user.type(input, 'po');
+      await screen.findByRole('listbox');
+      await user.keyboard('{Escape}');
+      expect(screen.queryByRole('listbox')).not.toBeInTheDocument();
+      await user.type(input, 'r');
+      expect(await screen.findByRole('listbox')).toBeInTheDocument();
+    });
+
+    it('Tab accepts the highlighted suggestion', async () => {
+      const user = userEvent.setup();
+      setup();
+      const input = screen.getByLabelText('Host query');
+      await user.type(input, 'ha');
+      await screen.findByRole('listbox');
+      await user.keyboard('{ArrowDown}{Tab}');
+      expect(input).toHaveValue('has:');
+      expect(input).toHaveFocus();
     });
   });
 
