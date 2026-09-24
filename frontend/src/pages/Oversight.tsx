@@ -64,10 +64,11 @@ const SEV_LABEL: Record<Sev, string> = { critical: 'Critical', high: 'High', med
 const STATUSES = ['active', 'completed', 'archived'];
 const ALL = '__all__';
 const PAGE_SIZE = 25;
+const PREVIEW_SIZE = 5;
 
 const REASON_LABEL: Record<string, string> = {
   critical: 'Critical', high: 'High', pending_review: 'Pending approval',
-  blocked_session: 'Blocked run', no_admin: 'No project admin', quiet: 'Active but quiet',
+  blocked_session: 'Blocked run', no_admin: 'No project admin', quiet: 'No import in 14 days',
   no_data: 'No inventory',
 };
 
@@ -120,7 +121,7 @@ const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 
 // issue; scanner observations are what the tools reported, one per issue per
 // host. The two are never added together.
 const COLUMN_INFO = {
-  tested: 'Hosts in review or reviewed by anyone, of the hosts in the inventory — each counted once. Watching is not testing. Current.',
+  tested: 'Hosts in review or reviewed by anyone, of the hosts in the inventory — each counted once. Watching is not testing. Current. Wider than Portfolio\'s "Hosts with review concluded", which counts reviewed hosts only.',
   review: 'Hosts in review · hosts reviewed. Current.',
   findings: "Findings are analysts' conclusions, one per issue however many hosts it is on (critical to low). Their state: under investigation = open or retest; confirmed = validated; closed = accepted risk or remediated — the three add up to the total. False positives are not results and are counted apart.",
   observations: 'What the scanners reported, one per issue per host, critical to low (informational left out). Judged = a finding covers the observation on its host (promoted, dismissed there, or accepted); not yet judged = nobody has decided on it. Judged + not yet judged = the total.',
@@ -276,8 +277,9 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
     return next;
   });
   return (
-    <div className="overflow-x-auto rounded-panel border border-border">
-      <Table aria-label={caption} className="min-w-[900px]">
+    // No bordered box (sections, not cards) — the same rule as the projects table.
+    <div className="overflow-x-auto border-t border-border" data-testid="testers-table">
+      <Table aria-label={caption} className="min-w-[900px]" style={{ tableLayout: 'fixed' }}>
         <colgroup>
           <col style={{ width: '24%' }} /><col style={{ width: '9%' }} /><col style={{ width: '10%' }} />
           <col style={{ width: '9%' }} /><col style={{ width: '20%' }} /><col style={{ width: '9%' }} /><col style={{ width: '19%' }} />
@@ -432,12 +434,15 @@ const Oversight: React.FC = () => {
     return sortProjects(rows, sort);
   }, [data, search, attn, sort]);
 
-  const inProgressPreview = useMemo(
-    () => sortProjects((data?.projects ?? []).filter((r) => r.status === 'active'), 'critical').slice(0, 5),
+  // The Overview's two tables are previews (the first PREVIEW_SIZE); the
+  // section says "N of M shown" whenever rows are left out.
+  const inProgressAll = useMemo(
+    () => sortProjects((data?.projects ?? []).filter((r) => r.status === 'active'), 'critical'),
     [data],
   );
+  const inProgressPreview = inProgressAll.slice(0, PREVIEW_SIZE);
   const testerPreview = useMemo(
-    () => [...(data?.testers ?? [])].sort((a, b) => (b.reviewed + b.in_review) - (a.reviewed + a.in_review) || name(a).localeCompare(name(b))).slice(0, 5),
+    () => [...(data?.testers ?? [])].sort((a, b) => (b.reviewed + b.in_review) - (a.reviewed + a.in_review) || name(a).localeCompare(name(b))).slice(0, PREVIEW_SIZE),
     [data],
   );
   const sortedTesters = useMemo(
@@ -622,21 +627,26 @@ const Oversight: React.FC = () => {
             <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
               <PostureMeasure label="Projects" value={n(s.projects_total)}
                 info="Registered projects matching the filters, archived included. In progress = active; complete = completed or archived. Current, whatever the dates.">
-                <p className="truncate">{n(s.projects_in_progress)} in progress · {n(s.projects_complete)} complete</p>
+                {/* Captions wrap: nothing meaningful is cut off with an ellipsis. */}
+                <p className="break-words">{n(s.projects_in_progress)} in progress · {n(s.projects_complete)} complete</p>
               </PostureMeasure>
               <PostureMeasure label="Recorded targets" value={n(s.targets_through_end)}
                 info={`Hosts in these projects' inventories, first recorded ${throughLabel.toLowerCase()} — one per IP per project; ports, CIDR ranges and DNS names never add targets. A host removed with its scan is not counted, so this is "recorded", not a lifetime total.`}>
-                <p className="truncate">+{n(s.targets_added)} first recorded in the period</p>
+                <p className="break-words">+{n(s.targets_added)} first recorded in the period</p>
               </PostureMeasure>
-              <PostureMeasure label="Targets tested" value={`${n(s.targets_tested)} / ${n(s.targets_current)}`}
-                info="Current hosts in review or reviewed by anyone, each counted once. Watching is not testing.">
-                <p className="truncate">{pct(s.targets_tested, s.targets_current)} · {n(s.targets_in_review)} in review · {n(s.reviews_concluded)} reviews concluded in the period</p>
+              <PostureMeasure label="Targets tested (in review or reviewed)" value={`${n(s.targets_tested)} / ${n(s.targets_current)}`}
+                info="Current hosts in review or reviewed by anyone, each counted once. Watching is not testing. Wider than Portfolio's &quot;Hosts with review concluded&quot;, which counts reviewed hosts only — so this number is the larger of the two.">
+                <p className="break-words">
+                  {pct(s.targets_tested, s.targets_current)} · {n(s.targets_in_review)} in review ·{' '}
+                  {plural(s.reviews_concluded, 'review')} concluded in the period
+                </p>
               </PostureMeasure>
-              <PostureMeasure label="Contributors" value={n(s.contributors)}
-                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count.">
-                <p className="truncate">
-                  {n(s.imports)} scans imported
-                  {s.unattributed_events > 0 && ` · ${n(s.unattributed_events)} actions with no recorded author`}
+              <PostureMeasure label="Contributors in the period" value={n(s.contributors)}
+                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count. Not the same set as Testers: a tester is anyone who currently has a target in review or reviewed, whatever the dates, so someone who only imported scans is a contributor but not a tester.">
+                <p className="break-words">
+                  {plural(s.imports, 'scan')} imported
+                  {s.unattributed_events > 0 && ` · ${plural(s.unattributed_events, 'action')} with no recorded author`}
+                  {' · '}{plural(data.testers.length, 'tester')} (targets in review or reviewed)
                 </p>
               </PostureMeasure>
             </div>
@@ -670,22 +680,24 @@ const Oversight: React.FC = () => {
 
             <PostureSection title="Needs attention now" description="Current. The groups overlap, so they are never added up. Each count opens the projects behind it.">
               <ul className="flex flex-wrap gap-x-lg gap-y-xs text-metadata">
+                {/* Singular or plural by the count. "Quiet" is about the
+                    project's activity (no import), never the age of evidence. */}
                 {[
-                  { code: 'critical', label: 'with a critical', value: data.attention.critical_projects, unit: 'projects' },
-                  { code: 'pending_review', label: 'awaiting approval', value: data.attention.pending_approval_plans, unit: 'plans' },
-                  { code: 'blocked_session', label: 'blocked', value: data.attention.blocked_runs, unit: 'runs' },
-                  { code: 'no_admin', label: 'without a project admin', value: data.attention.no_admin_projects, unit: 'projects' },
-                  { code: 'quiet', label: 'active but quiet for 14 days', value: data.attention.quiet_projects, unit: 'projects' },
-                  { code: 'no_data', label: 'with no inventory', value: data.attention.no_inventory_projects, unit: 'projects' },
+                  { code: 'critical', value: data.attention.critical_projects, one: 'project', label: 'with a critical finding or critical scanner output not yet judged' },
+                  { code: 'pending_review', value: data.attention.pending_approval_plans, one: 'plan', label: 'awaiting approval' },
+                  { code: 'blocked_session', value: data.attention.blocked_runs, one: 'run', label: 'blocked' },
+                  { code: 'no_admin', value: data.attention.no_admin_projects, one: 'project', label: 'without a project admin' },
+                  { code: 'quiet', value: data.attention.quiet_projects, one: 'active project', label: 'with no import in 14 days' },
+                  { code: 'no_data', value: data.attention.no_inventory_projects, one: 'project', label: 'with no inventory' },
                 ].map((a) => (
-                  <li key={a.code}>
+                  <li key={a.code} data-testid={`attention-${a.code}`}>
                     {a.value > 0 ? (
                       <button type="button" onClick={() => setParam({ tab: 'projects', attention: a.code })}
                         className="rounded text-left hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                        <span className="font-semibold tabular-nums text-foreground">{n(a.value)}</span> {a.unit} {a.label}
+                        <span className="font-semibold tabular-nums text-foreground">{n(a.value)}</span> {a.value === 1 ? a.one : `${a.one}s`} {a.label}
                       </button>
                     ) : (
-                      <span className="text-muted-foreground"><span className="tabular-nums">0</span> {a.unit} {a.label}</span>
+                      <span className="text-muted-foreground"><span className="tabular-nums">0</span> {a.one}s {a.label}</span>
                     )}
                   </li>
                 ))}
@@ -694,8 +706,18 @@ const Oversight: React.FC = () => {
 
             <PostureSection
               title="Projects in progress"
-              description="Worst first: critical, then high — findings or scanner output not yet judged."
-              actions={<button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'projects', attention: null })}>All projects →</button>}
+              description={`Worst first: critical, then high — findings or scanner output not yet judged.${
+                inProgressAll.length > inProgressPreview.length ? ` Only the ${n(inProgressPreview.length)} worst are shown here.` : ''}`}
+              actions={
+                <span className="flex flex-wrap items-baseline gap-xs">
+                  {inProgressAll.length > inProgressPreview.length && (
+                    <span className="text-muted-foreground" data-testid="in-progress-shown">
+                      {n(inProgressPreview.length)} of {n(inProgressAll.length)} shown
+                    </span>
+                  )}
+                  <button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'projects', attention: null })}>All projects →</button>
+                </span>
+              }
             >
               {statusFilter === 'completed' || statusFilter === 'archived'
                 ? <p className="text-caption text-muted-foreground">The status filter excludes projects in progress. <button type="button" className="text-info hover:underline" onClick={() => setParam({ status: null })}>Clear it</button></p>
@@ -704,8 +726,17 @@ const Oversight: React.FC = () => {
 
             <PostureSection
               title="Testers"
-              description="Most targets in review or reviewed first."
-              actions={<button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'testers' })}>All testers →</button>}
+              description="Anyone who currently has a target in review or reviewed, whatever the dates — not the same set as Contributors in the period. Most targets in review or reviewed first."
+              actions={
+                <span className="flex flex-wrap items-baseline gap-xs">
+                  {data.testers.length > testerPreview.length && (
+                    <span className="text-muted-foreground" data-testid="testers-shown">
+                      {n(testerPreview.length)} of {n(data.testers.length)} shown
+                    </span>
+                  )}
+                  <button type="button" className="text-info hover:underline" onClick={() => setParam({ tab: 'testers' })}>All testers →</button>
+                </span>
+              }
             >
               <TestersTable rows={testerPreview} caption="Most active testers" expandable={false} />
             </PostureSection>
@@ -753,7 +784,9 @@ const Oversight: React.FC = () => {
 
           <TabsContent value="testers" className="space-y-sm">
             <p className="text-caption text-muted-foreground">
-              A tester is anyone with a target in review or reviewed. Findings are counted through the targets each person worked on,
+              A tester is anyone who currently has a target in review or reviewed, whatever the dates. That is a different set from
+              the Overview's Contributors in the period (anyone who imported, wrote a note, triaged a finding, approved a plan or
+              concluded a review in the dates), so the two counts need not match. Findings are counted through the targets each person worked on,
               so two reviewers of one host both get credit and these rows do not add up to the project totals.
               Removing a user also removes their review records.
             </p>

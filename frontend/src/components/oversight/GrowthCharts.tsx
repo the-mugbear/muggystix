@@ -175,9 +175,9 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
       {/* Readout: values lead, labels follow. */}
       <p className="text-caption text-muted-foreground" aria-live="polite" id="growth-readout">
         <span className="font-medium text-foreground">{unitLabel(unit, p.start)}</span>
-        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.cumulative_targets.toLocaleString()}</span> recorded targets
+        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.cumulative_targets.toLocaleString()}</span> recorded {p.cumulative_targets === 1 ? 'target' : 'targets'}
         {' · '}<span className="font-semibold text-foreground tabular-nums">+{p.targets_added.toLocaleString()}</span> first recorded
-        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.reviews_concluded.toLocaleString()}</span> reviews concluded
+        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.reviews_concluded.toLocaleString()}</span> {p.reviews_concluded === 1 ? 'review' : 'reviews'} concluded
         {hover == null && <span> (latest; hover or use ← → to move)</span>}
       </p>
       <div tabIndex={0} onKeyDown={onKey} aria-describedby="growth-readout"
@@ -191,7 +191,8 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
           width={width} hover={hover} onHover={setHover} showDates />
       </div>
       <p className="text-caption text-muted-foreground">
-        In these dates: {totals.added.toLocaleString()} targets first recorded, {totals.reviews.toLocaleString()} reviews concluded.
+        In these dates: {totals.added.toLocaleString()} {totals.added === 1 ? 'target' : 'targets'} first recorded,{' '}
+        {totals.reviews.toLocaleString()} {totals.reviews === 1 ? 'review' : 'reviews'} concluded.
         Counts surviving host records; a host removed with its scan is not counted.{' '}
         <button type="button" className="text-info hover:underline" onClick={() => setShowTable((s) => !s)} aria-expanded={showTable}>
           {showTable ? 'Hide table' : 'Show as table'}

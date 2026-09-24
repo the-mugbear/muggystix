@@ -92,7 +92,7 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
       </table>
     </div>
     <p className="mt-xs text-caption text-muted-foreground">
-      {s.finding_affected_targets.toLocaleString()} targets carry a finding. Findings are issues and observations are issue × host,
+      {s.finding_affected_targets.toLocaleString()} {s.finding_affected_targets === 1 ? 'target carries' : 'targets carry'} a finding. Findings are issues and observations are issue × host,
       so they are compared, never subtracted. Informational and unknown severities are left out.
     </p>
   </div>

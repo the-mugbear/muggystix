@@ -76,7 +76,8 @@ const severityWhy = (card: ProjectCard, sev: 'critical' | 'high'): string => {
   return parts.join(' · ');
 };
 
-const healthWhy = (card: ProjectCard): string => {
+/** The reason under the health label, or null when the label says it all. */
+const healthWhy = (card: ProjectCard): string | null => {
   switch (card.health) {
     case 'critical':
       return severityWhy(card, 'critical');
@@ -84,10 +85,11 @@ const healthWhy = (card: ProjectCard): string => {
       return severityWhy(card, 'high');
     case 'stale':
       return card.days_since_last_scan != null
-        ? `Still marked active; nothing imported for ${card.days_since_last_scan} days. Finished? Mark it completed.`
+        ? `Still marked active; no import for ${card.days_since_last_scan} days. Finished? Mark it completed.`
         : 'Still marked active; nothing imported yet.';
     case 'healthy':
-      return card.host_count === 0 ? 'No hosts imported yet.' : 'Nothing critical or high found or waiting to be judged.';
+      // "No critical or high" already says it; only the empty project needs more.
+      return card.host_count === 0 ? 'No hosts imported yet.' : null;
     default:
       // Null / malformed health must not read as "no risk".
       return 'Health data unavailable.';
@@ -103,7 +105,7 @@ const SHOW_OPTIONS: { key: string; label: string; pred: (p: ProjectCard) => bool
   { key: 'high', label: 'With critical or high', pred: (p) => hasSeverity(p, 'critical') || hasSeverity(p, 'high') },
   { key: 'pending', label: 'Plans awaiting approval', pred: (p) => p.pending_plan_reviews > 0 },
   { key: 'blocked', label: 'Blocked runs', pred: (p) => p.blocked_sessions > 0 },
-  { key: 'stale', label: 'Active but quiet', pred: (p) => p.is_stale },
+  { key: 'stale', label: 'Active, no import in 14 days', pred: (p) => p.is_stale },
   { key: 'no_data', label: 'No hosts yet', pred: (p) => p.host_count === 0 },
 ];
 
@@ -117,7 +119,8 @@ const findingsLine = (p: ProjectCard): string => {
 
 const unjudgedLine = (p: ProjectCard): string | null => {
   const parts = SEVS.filter((s) => p.unjudged_observations[s] > 0).map((s) => `${n(p.unjudged_observations[s])} ${s}`);
-  return parts.length ? `Not yet judged: ${parts.join(' · ')} scanner observations` : null;
+  // Label first, so no noun has to agree with a list of numbers.
+  return parts.length ? `Scanner observations not yet judged: ${parts.join(' · ')}` : null;
 };
 
 const ProjectsTable: React.FC<{
@@ -143,7 +146,7 @@ const ProjectsTable: React.FC<{
           <TableHead>
             <span className="inline-flex items-center gap-xxs">
               Review
-              <InfoTip text="Hosts reviewed, in review, and not started, out of every host in the project. Each host counts once." />
+              <InfoTip text="Hosts reviewed (review concluded), in review, and not started, out of every host in the project. Each host counts once." />
             </span>
           </TableHead>
           <TableHead>Hosts</TableHead>
@@ -153,6 +156,7 @@ const ProjectsTable: React.FC<{
       <TableBody>
         {rows.map((p) => {
           const unjudged = unjudgedLine(p);
+          const why = healthWhy(p);
           return (
             <TableRow key={p.id} className="align-top" data-project-id={p.id}>
               <TableCell>
@@ -172,10 +176,10 @@ const ProjectsTable: React.FC<{
               <TableCell className="min-w-0">
                 <p className={cn('break-words text-metadata', HEALTH_TEXT[p.health] ?? HEALTH_TEXT.unknown)}>
                   <span className="font-semibold">{HEALTH_LABEL[p.health] ?? HEALTH_LABEL.unknown}</span>
-                  {(p.health === 'critical' || p.health === 'warning') && <> — {healthWhy(p)}</>}
+                  {(p.health === 'critical' || p.health === 'warning') && why && <> — {why}</>}
                 </p>
-                {p.health !== 'critical' && p.health !== 'warning' && (
-                  <p className="break-words text-caption text-muted-foreground">{healthWhy(p)}</p>
+                {p.health !== 'critical' && p.health !== 'warning' && why && (
+                  <p className="break-words text-caption text-muted-foreground">{why}</p>
                 )}
                 <p className="break-words text-caption text-muted-foreground">{findingsLine(p)}</p>
                 {unjudged && <p className="break-words text-caption text-muted-foreground">{unjudged}</p>}
@@ -195,11 +199,13 @@ const ProjectsTable: React.FC<{
                 <p className="text-muted-foreground">{n(p.up_host_count)} up</p>
               </TableCell>
               <TableCell className="text-caption">
-                <span className="flex flex-wrap gap-xxs">
-                  {p.pending_plan_reviews > 0 && <Badge variant="warning">{plural(p.pending_plan_reviews, 'plan')} to approve</Badge>}
-                  {p.blocked_sessions > 0 && <Badge variant="destructive">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
-                  {p.active_sessions > 0 && <Badge variant="info">{plural(p.active_sessions, 'active run')}</Badge>}
-                  {p.open_tasks > 0 && <Badge variant="muted">{plural(p.open_tasks, 'open task')}</Badge>}
+                {/* One chip style for every waiting item — outlined, left-aligned —
+                    so a neutral count never reads as loose, indented text. */}
+                <span className="flex flex-wrap justify-start gap-xxs" data-testid="waiting-chips">
+                  {p.pending_plan_reviews > 0 && <Badge variant="warning-outline">{plural(p.pending_plan_reviews, 'plan')} to approve</Badge>}
+                  {p.blocked_sessions > 0 && <Badge variant="destructive-outline">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
+                  {p.active_sessions > 0 && <Badge variant="info-outline">{plural(p.active_sessions, 'active run')}</Badge>}
+                  {p.open_tasks > 0 && <Badge variant="outline">{plural(p.open_tasks, 'open task')}</Badge>}
                 </span>
                 {/* Provenance, not a judgment: an import date is never coloured. */}
                 <p className="mt-xxs text-muted-foreground">
@@ -319,6 +325,8 @@ const PortfolioDashboard: React.FC = () => {
   const withHighOnly = all.filter((p) => !hasSeverity(p, 'critical') && hasSeverity(p, 'high')).length;
   const leadTone = withCritical > 0 ? 'critical' : withHighOnly > 0 ? 'warning' : all.length ? 'clear' : 'neutral';
   const notStartedTotal = s ? Math.max(0, s.total_hosts - s.total_reviewed - s.total_in_review) : 0;
+  // Portfolio lists non-archived projects only, so every one not in progress is completed.
+  const completedProjects = s ? Math.max(0, s.total_projects - s.active_projects) : 0;
   const filtered = !!(statusFilter || show || search.trim());
 
   return (
@@ -398,9 +406,11 @@ const PortfolioDashboard: React.FC = () => {
           ) : (
             <>
               <PostureLead tone={leadTone}
-                restsOn={`${n(s.total_reviewed)} of ${n(s.total_hosts)} hosts reviewed and ${n(s.total_in_review)} in review, across ${plural(all.length, 'project')}.`}>
+                restsOn={`${n(s.total_reviewed)} of ${n(s.total_hosts)} hosts with review concluded and ${n(s.total_in_review)} in review, across ${plural(all.length, 'project')}.`}>
+                {/* A finding is already a judgement; only the scanner output
+                    half is "not yet judged". */}
                 {withCritical > 0
-                  ? `${n(withCritical)} of ${plural(all.length, 'project')} ${withCritical === 1 ? 'has' : 'have'} a critical finding or critical scanner output nobody has judged yet.`
+                  ? `${n(withCritical)} of ${plural(all.length, 'project')} ${withCritical === 1 ? 'has' : 'have'} a critical finding or critical scanner output not yet judged.`
                   : withHighOnly > 0
                     ? `No critical signal; ${n(withHighOnly)} of ${plural(all.length, 'project')} ${withHighOnly === 1 ? 'has' : 'have'} high findings or high scanner output not yet judged.`
                     : `Nothing critical or high has been found, or is waiting to be judged, in your ${plural(all.length, 'project')}.`}
@@ -408,14 +418,15 @@ const PortfolioDashboard: React.FC = () => {
 
               <div className="grid gap-md border-b border-border pb-md sm:grid-cols-2 lg:grid-cols-4 lg:divide-x lg:divide-border">
                 <PostureMeasure label="Projects in progress" value={n(s.active_projects)}
-                  info="Projects whose status is active. Quiet = still marked active with nothing imported for a fortnight — a question for the manager, not a verdict on the evidence.">
-                  {plural(s.total_projects, 'project')} in total
+                  info="Projects whose status is active; the rest listed here are completed. Archived projects are not on Portfolio. &quot;No import in 14 days&quot; is about the project's activity, never the evidence: still marked active with nothing imported for 14 days — is it finished? Mark it completed.">
+                  {/* What is NOT in progress, and the one question the count raises. */}
+                  {completedProjects === 0 ? 'None completed' : `${n(completedProjects)} completed`}
                   {s.stale_projects > 0 && (
-                    <> · <button type="button" className="text-info hover:underline" onClick={() => setParam('show', 'stale')}>{n(s.stale_projects)} active but quiet</button></>
+                    <> · <button type="button" className="text-info hover:underline" onClick={() => setParam('show', 'stale')}>{n(s.stale_projects)} active, no import in 14 days</button></>
                   )}
                 </PostureMeasure>
-                <PostureMeasure label="Hosts reviewed" value={<>{n(s.total_reviewed)} <span className="text-metadata font-normal text-muted-foreground">of {n(s.total_hosts)}</span></>}
-                  info="Hosts whose review is concluded, out of every host in your projects. In review = someone has started; not started = nobody has.">
+                <PostureMeasure label="Hosts with review concluded" value={<>{n(s.total_reviewed)} <span className="text-metadata font-normal text-muted-foreground">of {n(s.total_hosts)}</span></>}
+                  info="Hosts whose review someone has concluded (marked reviewed), out of every host in your projects. In review = someone has started; not started = nobody has. Not the same as Oversight's &quot;Targets tested&quot;, which counts hosts in review AND reviewed.">
                   {n(s.total_in_review)} in review · {n(notStartedTotal)} not started
                 </PostureMeasure>
                 <PostureMeasure label="Critical and high findings"
@@ -423,7 +434,7 @@ const PortfolioDashboard: React.FC = () => {
                   info="Findings are judged issues: one finding on many hosts counts once; false positives are left out. Beside them, the critical and high scanner observations (issue × host) no finding covers yet — different units, never added together.">
                   {n(s.findings.critical)} critical · {n(s.findings.high)} high
                   <br />
-                  {n(s.unjudged_observations.critical + s.unjudged_observations.high)} critical/high scanner observations not yet judged
+                  {plural(s.unjudged_observations.critical + s.unjudged_observations.high, 'critical/high scanner observation')} not yet judged
                 </PostureMeasure>
                 <PostureMeasure label="Waiting on someone" value={n(s.pending_approvals_total + s.blocked_sessions_total)}
                   info="Agent test plans awaiting a human approval, and execution runs that are paused or failed.">

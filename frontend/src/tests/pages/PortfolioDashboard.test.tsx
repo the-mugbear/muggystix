@@ -64,8 +64,13 @@ describe('Portfolio', () => {
 
   it('leads with a sentence and four measures, never a card per number', async () => {
     await renderPage();
-    expect(screen.getByText(/2 of 3 projects have a critical finding or critical scanner output/)).toBeInTheDocument();
-    expect(screen.getByText('9 of 30 hosts reviewed and 6 in review, across 3 projects.')).toBeInTheDocument();
+    // A finding is already a judgement: only the scanner output is "not yet judged".
+    expect(screen.getByText('2 of 3 projects have a critical finding or critical scanner output not yet judged.')).toBeInTheDocument();
+    expect(screen.queryByText(/nobody has judged/)).not.toBeInTheDocument();
+    expect(screen.getByText('9 of 30 hosts with review concluded and 6 in review, across 3 projects.')).toBeInTheDocument();
+    // Named so it cannot be read as Oversight's "Targets tested" (in review + reviewed).
+    expect(screen.getByText('Hosts with review concluded')).toBeInTheDocument();
+    expect(screen.queryByText('Hosts reviewed')).not.toBeInTheDocument();
     expect(screen.getByText('6 in review · 15 not started')).toBeInTheDocument();
     expect(screen.getByText(/3 critical\/high scanner observations not yet judged/)).toBeInTheDocument();
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
@@ -95,5 +100,49 @@ describe('Portfolio', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     table = screen.getByRole('table', { name: /worst first/ });
     expect(within(table).getAllByRole('row')).toHaveLength(4);
+  });
+
+  it('says what is NOT in progress instead of repeating the total', async () => {
+    await renderPage();
+    expect(screen.getByText('None completed')).toBeInTheDocument();
+    expect(screen.queryByText(/in total/)).not.toBeInTheDocument();
+  });
+
+  it('counts the completed projects and names the quiet rule as project activity', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      summary: { ...summary, total_projects: 5, active_projects: 3, stale_projects: 1 },
+      projects,
+    });
+    await renderPage();
+    expect(screen.getByText(/^2 completed/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1 active, no import in 14 days' })).toBeInTheDocument();
+  });
+
+  it('a project with nothing critical or high says so once', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      summary,
+      projects: [card({ id: 3, name: 'All judged' }), card({ id: 4, name: 'Empty', host_count: 0 })],
+    });
+    await renderPage();
+    const table = screen.getByRole('table', { name: /worst first/ });
+    expect(within(table).getAllByText('No critical or high')).toHaveLength(2);
+    expect(within(table).queryByText(/Nothing critical or high/)).not.toBeInTheDocument();
+    // Only the empty project needs the extra line.
+    expect(within(table).getAllByText('No hosts imported yet.')).toHaveLength(1);
+  });
+
+  it('every waiting item is the same outlined chip, open tasks included', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      summary,
+      projects: [card({ id: 5, name: 'Busy', pending_plan_reviews: 1, blocked_sessions: 1, active_sessions: 1, open_tasks: 1 })],
+    });
+    render(<MemoryRouter><PortfolioDashboard /></MemoryRouter>);
+    await screen.findByText('Busy');
+    const chips = within(screen.getByTestId('waiting-chips')).getAllByText(/./);
+    expect(chips.map((c) => c.textContent)).toEqual(['1 plan to approve', '1 blocked run', '1 active run', '1 open task']);
+    for (const chip of chips) {
+      expect(chip.className).toMatch(/\bborder-(warning|destructive|info|border)\b/);
+      expect(chip.className).not.toMatch(/\bbg-/);
+    }
   });
 });

@@ -31,6 +31,8 @@ export interface SummaryOptions {
 
 const SEVS = ['critical', 'high', 'medium', 'low'] as const;
 const n = (v: number) => v.toLocaleString('en-US');
+/** "1 review" / "2 reviews" — every counted noun agrees with its number. */
+const pl = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 ? one : many}`;
 const pct = (num: number, den: number) => (den > 0 ? `${Math.round((100 * num) / den)}%` : '—');
 const rate = (r: number | null) => (r == null ? '—' : `${r}%`);
 const total = (s: OversightSeverity) => s.critical + s.high + s.medium + s.low;
@@ -76,11 +78,11 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
     + ` — ${n(s.targets_in_review)} in review, ${n(s.targets_reviewed)} reviewed`,
   );
   lines.push(
-    `${bullet}${bold('In the period')}: +${n(s.targets_added)} targets first recorded; ${n(s.reviews_concluded)} reviews concluded;`
-    + ` ${n(s.imports)} scans imported; ${n(s.contributors)} contributor${s.contributors === 1 ? '' : 's'}`,
+    `${bullet}${bold('In the period')}: +${pl(s.targets_added, 'target')} first recorded; ${pl(s.reviews_concluded, 'review')} concluded;`
+    + ` ${pl(s.imports, 'scan')} imported; ${pl(s.contributors, 'contributor')}`,
   );
   lines.push(
-    `${bullet}${bold('Findings')}: ${n(findingsTotal)} (${bySeverity(sev.findings)}) on ${n(sev.finding_affected_targets)} targets`
+    `${bullet}${bold('Findings')}: ${n(findingsTotal)} (${bySeverity(sev.findings)}) on ${pl(sev.finding_affected_targets, 'target')}`
     + ` — ${n(sev.finding_states.under_investigation)} under investigation, ${n(sev.finding_states.confirmed)} confirmed,`
     + ` ${n(sev.finding_states.closed)} closed; ${n(sev.findings_false_positive)} false positive${sev.findings_false_positive === 1 ? '' : 's'} not counted`,
   );
@@ -105,7 +107,7 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
       ));
     } else {
       rows.forEach((r) => lines.push(
-        `${bullet}${r.name} (${statusWord(r.status)}): ${n(r.hosts_tested)} of ${n(r.host_count)} targets tested`
+        `${bullet}${r.name} (${statusWord(r.status)}): ${n(r.hosts_tested)} of ${pl(r.host_count, 'target')} tested`
         + ` (${pct(r.hosts_tested, r.host_count)}) · findings ${compact(r.findings)}`
         + ` · defect rate C ${rate(r.defect_rate.critical)} / H ${rate(r.defect_rate.high)}`,
       ));
@@ -124,8 +126,8 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
       ));
     } else {
       rows.forEach((t) => lines.push(
-        `${bullet}${personName(t)}: ${n(t.tested)} targets tested, ${n(t.reviewed)} reviewed (${n(t.reviewed_in_period)} in the period)`
-        + ` across ${n(t.active_projects)} project${t.active_projects === 1 ? '' : 's'} · findings ${compact(t.findings)}`,
+        `${bullet}${personName(t)}: ${pl(t.tested, 'target')} tested, ${n(t.reviewed)} reviewed (${n(t.reviewed_in_period)} in the period)`
+        + ` across ${pl(t.active_projects, 'project')} · findings ${compact(t.findings)}`,
       ));
     }
   }

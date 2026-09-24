@@ -122,6 +122,87 @@ describe('Oversight', () => {
   });
 });
 
+describe('Oversight — wording a reader can reconcile', () => {
+  beforeEach(() => { dashboardMock.mockReset().mockResolvedValue(response); });
+
+  it('every attention count agrees with its noun, and the phrases are complete', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...response,
+      attention: {
+        critical_projects: 1, pending_approval_plans: 1, blocked_runs: 2,
+        no_admin_projects: 0, quiet_projects: 1, no_inventory_projects: 3,
+      },
+    });
+    await renderPage();
+    const text = (code: string) => screen.getByTestId(`attention-${code}`).textContent;
+    expect(text('critical')).toBe('1 project with a critical finding or critical scanner output not yet judged');
+    expect(text('pending_review')).toBe('1 plan awaiting approval');
+    expect(text('blocked_session')).toBe('2 runs blocked');
+    expect(text('no_admin')).toBe('0 projects without a project admin');
+    // Project activity, never the age of evidence.
+    expect(text('quiet')).toBe('1 active project with no import in 14 days');
+    expect(text('no_data')).toBe('3 projects with no inventory');
+    expect(screen.queryByText(/quiet/i)).not.toBeInTheDocument();
+  });
+
+  it('measure captions wrap instead of being cut off, and agree with their numbers', async () => {
+    dashboardMock.mockReset().mockResolvedValue({
+      ...response,
+      summary: { ...response.summary, reviews_concluded: 1, imports: 1, unattributed_events: 1 },
+    });
+    await renderPage();
+    const tested = screen.getByText(/1 review concluded in the period/);
+    expect(tested.className).not.toContain('truncate');
+    const contributors = screen.getByText(/1 scan imported · 1 action with no recorded author · 1 tester/);
+    expect(contributors.className).not.toContain('truncate');
+  });
+
+  it('labels tested targets and contributors so neither is mistaken for another count', async () => {
+    await renderPage();
+    expect(screen.getByText('Targets tested (in review or reviewed)')).toBeInTheDocument();
+    // 3 contributors vs 1 tester: the page says they are different sets.
+    expect(screen.getByText('Contributors in the period')).toBeInTheDocument();
+    expect(screen.getByText(/6 scans imported · 1 tester \(targets in review or reviewed\)/)).toBeInTheDocument();
+    expect(screen.getByText(/not the same set as Contributors in the period/)).toBeInTheDocument();
+  });
+
+  it('the in-progress preview says how many it shows when it leaves projects out', async () => {
+    const many = Array.from({ length: 6 }, (_, i) => project({ id: 10 + i, name: `Proj ${i}` }));
+    dashboardMock.mockReset().mockResolvedValue({
+      ...response, projects: [...many, project({ id: 99, name: 'Closed', status: 'completed' })],
+    });
+    await renderPage();
+    expect(screen.getByTestId('in-progress-shown')).toHaveTextContent('5 of 6 shown');
+    const preview = screen.getByRole('table', { name: /in progress/ });
+    expect(within(preview).getAllByRole('row')).toHaveLength(6); // header + 5
+  });
+
+  it('no "N of M shown" when the preview holds everything', async () => {
+    await renderPage();
+    expect(screen.queryByTestId('in-progress-shown')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('testers-shown')).not.toBeInTheDocument();
+  });
+
+  it('the tester preview says how many it shows, and sits in no card', async () => {
+    const tester = response.testers[0];
+    const testers = Array.from({ length: 7 }, (_, i) => ({ ...tester, user_id: 100 + i, username: `t${i}`, full_name: null }));
+    dashboardMock.mockReset().mockResolvedValue({ ...response, testers });
+    await renderPage();
+    expect(screen.getByTestId('testers-shown')).toHaveTextContent('5 of 7 shown');
+    const box = screen.getAllByTestId('testers-table')[0];
+    expect(box.className).not.toContain('rounded-panel');
+    // No full name: the username stands in.
+    expect(within(box).getByText('t0')).toBeInTheDocument();
+  });
+
+  it('shows people by full name', async () => {
+    await renderPage();
+    const box = screen.getAllByTestId('testers-table')[0];
+    expect(within(box).getByText('Ana Tester')).toBeInTheDocument();
+    expect(within(box).queryByText('ana')).not.toBeInTheDocument();
+  });
+});
+
 // The projects table says what each number counts: the total scanner
 // observations with their judged split, where each finding stands, and the
 // share of tested hosts with a finding — no "Defect" jargon.
