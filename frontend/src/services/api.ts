@@ -355,36 +355,6 @@ export const getAuditStats = async (): Promise<AuditStats> => {
 };
 
 // ---------------------------------------------------------------------------
-// Network topology (v2.75.0)
-// ---------------------------------------------------------------------------
-
-export interface TopoNode {
-  id: string;
-  type: 'project' | 'scope' | 'subnet' | 'unscoped' | string;
-  label: string;
-  host_count: number;
-  meta: Record<string, unknown>;
-}
-
-export interface TopoEdge {
-  id: string;
-  source: string;
-  target: string;
-}
-
-export interface TopologyResponse {
-  nodes: TopoNode[];
-  edges: TopoEdge[];
-  truncated: boolean;
-}
-
-export const getTopology = async (): Promise<TopologyResponse> => {
-  const response = await api.get(`${p()}/dashboard/topology`);
-  return response.data;
-};
-
-
-// ---------------------------------------------------------------------------
 // Host workflow lineage (v3 alpha.9) — recon sessions that discovered
 // this host + plan entries referencing it + execution sessions that
 // have run results against any of those entries.  One round trip;

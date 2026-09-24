@@ -187,9 +187,9 @@ const sections: GuideSection[] = [
   },
   {
     id: 'posture',
-    title: 'Posture, Insights & Topology',
+    title: 'Posture & Insights',
     Icon: Gauge,
-    summary: 'Manager roll-ups, per-subnet hygiene, estate-wide blind spots, and the network map.',
+    summary: 'Manager roll-ups, per-subnet hygiene, and estate-wide blind spots.',
     content: (
       <div>
         <Para>
@@ -201,10 +201,6 @@ const sections: GuideSection[] = [
           <li><strong>Insights</strong> — per-subnet exposure, neglect, and hygiene (EOL OS, weak TLS, risky services) so you can spot the worst-tended corners of the estate.</li>
           <li><strong>Systemic</strong> — estate-wide patterns and blind spots: outliers, common vectors, and where a single weakness is spread across many hosts.</li>
         </UnorderedList>
-        <Para>
-          The <strong>Topology</strong> page (Inventory hub) renders the discovered hosts and subnets
-          as a navigable network map for a visual sense of structure.
-        </Para>
         <Para>
           For the day-to-day analyst view, <strong>Operations</strong> stays your home base (your
           queue, pending approvals, recent notes); <strong>Portfolio</strong> rolls posture up across

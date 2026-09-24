@@ -502,7 +502,7 @@ When editing the current frontend:
 | Command palette | `cmdk` — `src/components/CommandPalette.tsx` (shipped) and `Combobox` |
 | Icons | `lucide-react` (default); `AppIcons.tsx` for custom hand-rolled SVGs |
 | Dates | `date-fns` for formatting; there is no date-picker dependency (`react-day-picker` was removed unused in 5.247.1) |
-| Graphs | `reactflow` (Topology map). No chart library — charts are hand-rolled SVG/CSS (`components/posture/PostureCharts.tsx`, `ui/SeverityBar.tsx`) |
+| Graphs | No graph or chart library — charts are hand-rolled SVG/CSS (`components/posture/PostureCharts.tsx`, `ui/SeverityBar.tsx`); `reactflow` was removed with the Topology page in 5.285.0 |
 | File drop | `react-dropzone` (`components/scans/UploadReviewDialog.tsx`) |
 | Theming | CSS variables set by `theme/cssVars.ts`, palette in `theme/palettes.ts` |
 

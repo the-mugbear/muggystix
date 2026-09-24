@@ -189,9 +189,6 @@ export const NAV_PAGES: NavPage[] = [
     id: 'scopes', path: '/scopes', label: 'Scopes', requiredRole: 'analyst', hub: 'inventory',
     palette: { Icon: ScopeIcon, order: 6 },
   },
-  {
-    id: 'network-topology', path: '/network-topology', label: 'Topology', requiredRole: 'viewer', hub: 'inventory',
-  },
   // Posture hub — the analytical roll-up + its drill-downs. Tab order here is
   // the strip order: Posture (landing) | Insights | Systemic.
   {

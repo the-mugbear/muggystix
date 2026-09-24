@@ -56,7 +56,7 @@ const sections: GuideSection[] = [
         </Para>
         <UnorderedList>
           <li><strong>Operations</strong> — your analyst home base: project stats, your review queue, pending approvals, and recent team notes.</li>
-          <li><strong>Inventory</strong> — the data itself: <strong>Scans</strong>, <strong>Hosts</strong>, <strong>Findings</strong>, <strong>Scopes</strong>, and network <strong>Topology</strong>.</li>
+          <li><strong>Inventory</strong> — the data itself: <strong>Scans</strong>, <strong>Hosts</strong>, <strong>Findings</strong>, and <strong>Scopes</strong>.</li>
           <li><strong>Posture</strong> — the analytical roll-up: the manager-facing <strong>Posture</strong> dashboard, plus <strong>Insights</strong> (per-subnet hygiene) and <strong>Systemic</strong> (estate-wide blind spots).</li>
           <li><strong>Workflows</strong> — agent-driven work: <strong>Recon Runs</strong>, <strong>Test Plans</strong>, <strong>Executions</strong>, and <strong>Agent Runs</strong>.</li>
           <li><strong>Collaboration</strong> — <strong>Activity</strong> (notes across the project), <strong>Tool Activity</strong>, and <strong>Agent Feedback</strong>.</li>

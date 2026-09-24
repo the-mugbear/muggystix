@@ -55,7 +55,6 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/llm-settings', kind: 'cards' },
   { pattern: '/integrations', kind: 'cards' },
   { pattern: '/operations', kind: 'cards' },
-  { pattern: '/network-topology', kind: 'cards' },
   { pattern: '/inventory', kind: 'cards' },
   { pattern: '/workflows', kind: 'cards' },
   { pattern: '/collaboration', kind: 'cards' },
@@ -92,7 +91,6 @@ const RouteSkeleton: React.FC = () => {
 const Scans = lazy(() => import('./pages/Scans'));
 const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
-const NetworkTopology = lazy(() => import('./pages/NetworkTopology'));
 const Hosts = lazy(() => import('./pages/Hosts'));
 const Activity = lazy(() => import('./pages/Activity'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
@@ -518,14 +516,6 @@ function App() {
                       <Route
                         path="/scopes/:scopeId"
                         element={<Navigate to="/scopes" replace />}
-                      />
-                      <Route
-                        path="/network-topology"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <NetworkTopology />
-                          </ProtectedRoute>
-                        }
                       />
                       <Route
                         path="/posture"

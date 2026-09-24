@@ -377,7 +377,7 @@ frontend/src/
 ├── pages/                   # route-level views — `ls frontend/src/pages` is the source; by hub:
 │   │ Operations · PortfolioDashboard · Oversight (global admins)
 │   │ Inventory:  Hosts, HostDetail, Scans, ScanDetail, ScanDiff, Names, Findings,
-│   │             FindingDetail, Scopes, ParseErrors (Ingestion Results), NetworkTopology
+│   │             FindingDetail, Scopes, ParseErrors (Ingestion Results)
 │   │ Posture:    SecurityPosture, Segments, Patterns, Evidence
 │   │ Workflows:  TestPlans, TestPlanCompare, PlanCompare, ExecutionsList, ExecutionDetail,
 │   │             ReconRunsList, ReconRunDetail, ReconCompare, AssistSessions
