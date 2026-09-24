@@ -43,6 +43,11 @@ vi.mock('../../services/api', () => ({
   updateTestPlanEntry: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
 }));
 
+const toastMock = vi.hoisted(() => ({
+  success: vi.fn(), warning: vi.fn(), error: vi.fn(), info: vi.fn(), show: vi.fn(),
+}));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
+
 vi.mock('../../components/WebInterfacesCard', () => ({ default: () => null }));
 vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
@@ -127,6 +132,22 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     await waitFor(() => expect(screen.queryByText(/attachment failed/)).not.toBeInTheDocument());
     expect(screen.queryByAltText('Pasted image 1')).not.toBeInTheDocument();
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:img-1');
+  });
+
+  it('v5.290.0: after saving, says who a mention notified and which @name reached nobody', async () => {
+    api.createAnnotation.mockResolvedValue({
+      id: 90, body: '@eval-ben @eval-ana look', status: 'open', attachments: [],
+      mentions_notified: [{ username: 'eval-ben', name: 'Ben Okafor' }],
+      unmatched_mentions: ['eval-ana'],
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText('Note'), { target: { value: '@eval-ben @eval-ana look' } });
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Notified Ben Okafor'));
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      "@eval-ana isn't a member of this project — they were not notified",
+    );
   });
 
   it('C3 regression: a retry targets the note the file failed on, not a later note', async () => {

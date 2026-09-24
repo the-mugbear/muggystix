@@ -65,6 +65,18 @@ describe('MentionTextarea', () => {
     expect(onEscape).toHaveBeenCalledTimes(1);
   });
 
+  it('warns under the box when an @name matches no member, but not while it is being typed', () => {
+    render(<Harness />);
+    const box = screen.getByLabelText('Comment') as HTMLTextAreaElement;
+    type(box, '@eval-cy');
+    expect(screen.queryByText(/isn't a member/)).toBeNull(); // still typing it
+    type(box, '@eval-cy please retest, @eval-ana');
+    const hint = screen.getByText("@eval-cy isn't a member of this project — they won't be notified");
+    expect(box.getAttribute('aria-describedby')).toBe(hint.id);
+    type(box, '@eval-ana please retest');
+    expect(screen.queryByText(/isn't a member/)).toBeNull();
+  });
+
   it('shows nothing for an e-mail address or a finished mention', () => {
     render(<Harness />);
     const box = screen.getByLabelText('Comment') as HTMLTextAreaElement;

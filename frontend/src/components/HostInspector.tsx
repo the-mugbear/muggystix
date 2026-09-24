@@ -108,6 +108,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
+import { announceMentionOutcome } from '../utils/mentions';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { DetailSkeleton } from './PageSkeleton';
 import { useConfirm } from '../hooks/useConfirm';
@@ -956,6 +957,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         status: noteStatus,
       });
       if (response.mention_warning) toast.warning(response.mention_warning);
+      else announceMentionOutcome(toast, response);
       const uploaded: NoteAttachment[] = [];
       const failed: PendingImage[] = [];
       for (const img of toUpload) {
@@ -1055,7 +1057,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       setReplyTo(null);
       setReplyBody('');
       if (newNote.mention_warning) toast.warning(newNote.mention_warning);
-      else toast.success('Reply posted.');
+      else if (!announceMentionOutcome(toast, newNote)) toast.success('Reply posted.');
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to post reply.'));
     } finally {
