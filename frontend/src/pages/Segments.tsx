@@ -40,6 +40,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
+import LastUpdated from '../components/LastUpdated';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
@@ -129,6 +130,7 @@ const Segments: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [offset, setOffset] = useState(0);
   const [nonce, setNonce] = useState(0);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   // A project switch starts over: first page, and the lens is chosen again.
@@ -145,6 +147,7 @@ const Segments: React.FC = () => {
         setSites(pos.value.sites.adopted ? pos.value.sites.items : []);
         setSitesError(null);
       } else setSitesError(formatApiError(pos.reason, 'Could not load the sites.'));
+      if (sub.status === 'fulfilled' || pos.status === 'fulfilled') setLoadedAt(new Date());
       setLoading(false);
     });
     return () => { cancelled = true; };
@@ -171,7 +174,7 @@ const Segments: React.FC = () => {
   const firstLoad = loading && !subnetData && !subnetError;
 
   return (
-    <div className="space-y-md p-md">
+    <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Segments</h1>
@@ -187,9 +190,7 @@ const Segments: React.FC = () => {
           <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !subnetData?.adopted}>
             <Download className="size-3.5" aria-hidden /> JSON
           </Button>
-          <Button size="sm" variant="outline" onClick={reload} disabled={loading}>
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-          </Button>
+          <LastUpdated compact lastFetched={loadedAt} onRefresh={reload} isLoading={loading} label="segments" />
         </div>
       </div>
 

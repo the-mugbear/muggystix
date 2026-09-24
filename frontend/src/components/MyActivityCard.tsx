@@ -8,15 +8,15 @@
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2, Loader2, MessageSquare, Play, RefreshCw, Search, ShieldAlert,
+  CheckCircle2, Loader2, MessageSquare, Play, RefreshCw, ShieldAlert,
 } from 'lucide-react';
 
 import { getMyActivity, type ActivityEvent, type ActivityEventKind } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { formatDate } from '../utils/relativeTime';
 import { PostureSection } from './posture/PostureSection';
 import UpdatedAt from './UpdatedAt';
 import { Button } from './ui/button';
-import { Input } from './ui/input';
 import { Alert, AlertDescription } from './ui/alert';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -66,7 +66,7 @@ function dayBucket(iso: string): string {
   if (days <= 0) return 'Today';
   if (days === 1) return 'Yesterday';
   if (days < 7) return `${days}d ago`;
-  return d.toLocaleDateString();
+  return formatDate(d);
 }
 
 function timeOf(iso: string): string {
@@ -87,36 +87,26 @@ export const MyActivityCard: React.FC<{
   // Self-fetching, so it keeps its own load time (v5.243.0); a failed refetch
   // keeps the previous events under its error.
   const [loadedAt, setLoadedAt] = React.useState<Date | null>(null);
+  // v5.294.0 (UX review) — one filter, the type. A free-text box and a time
+  // range as well made a side rail read like a search page; the feed is the
+  // last twenty events, already grouped by day, so recency is on screen and
+  // finding something older is the full lists' job.
   const [typeFilter, setTypeFilter] = React.useState<TypeFilter>('all');
-  const [days, setDays] = React.useState<'all' | '7' | '30'>('all');
-  const [searchInput, setSearchInput] = React.useState('');
-  const [search, setSearch] = React.useState('');
-
-  // Debounce the free-text box so typing doesn't refetch per keystroke.
-  React.useEffect(() => {
-    const t = setTimeout(() => setSearch(searchInput.trim()), 300);
-    return () => clearTimeout(t);
-  }, [searchInput]);
 
   const load = React.useCallback(() => {
     setLoading(true);
-    getMyActivity({
-      limit: 20,
-      kinds: TYPE_KINDS[typeFilter],
-      days: days === 'all' ? undefined : Number(days),
-      search: search || undefined,
-    })
+    getMyActivity({ limit: 20, kinds: TYPE_KINDS[typeFilter] })
       .then((res) => { setEvents(res.items); setError(null); setLoadedAt(new Date()); })
       .catch((err) => setError(formatApiError(err, 'Failed to load your activity.')))
       .finally(() => setLoading(false));
-  }, [typeFilter, days, search]);
+  }, [typeFilter]);
 
   React.useEffect(() => { load(); }, [load, refreshKey]);
   // Reset the preview when the filtered result set changes.
   const [expanded, setExpanded] = React.useState(false);
-  React.useEffect(() => { setExpanded(false); }, [typeFilter, days, search]);
+  React.useEffect(() => { setExpanded(false); }, [typeFilter]);
 
-  const hasFilters = typeFilter !== 'all' || days !== 'all' || search !== '';
+  const hasFilters = typeFilter !== 'all';
 
   // Preview a few rows so this card stays the same height as "My work" (which
   // also previews 8); "Show more" reveals the rest of the loaded feed.
@@ -141,41 +131,20 @@ export const MyActivityCard: React.FC<{
     <PostureSection
       title={<span>My recent activity</span>}
       description="What you’ve worked on — notes, findings, and reviews."
-      actions={<UpdatedAt at={loadedAt} stale={!!error} />}
+      actions={<>
+        <UpdatedAt at={loadedAt} stale={!!error} />
+        <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as TypeFilter)}>
+          <SelectTrigger className="h-7 w-28 text-caption" aria-label="Activity type"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All types</SelectItem>
+            <SelectItem value="notes">Notes</SelectItem>
+            <SelectItem value="findings">Findings</SelectItem>
+            <SelectItem value="reviews">Reviews</SelectItem>
+            <SelectItem value="runs">Runs</SelectItem>
+          </SelectContent>
+        </Select>
+      </>}
     >
-
-        {/* Recall filters (§27): narrow by type / recency / free text. */}
-        <div className="mb-sm flex flex-wrap items-center gap-xs">
-          <div className="relative min-w-40 flex-1">
-            <Search className="pointer-events-none absolute left-sm top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground" aria-hidden />
-            <Input
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search my work…"
-              aria-label="Search my activity"
-              className="h-8 pl-lg text-caption"
-            />
-          </div>
-          <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as TypeFilter)}>
-            <SelectTrigger className="h-8 w-28 text-caption" aria-label="Activity type"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All types</SelectItem>
-              <SelectItem value="notes">Notes</SelectItem>
-              <SelectItem value="findings">Findings</SelectItem>
-              <SelectItem value="reviews">Reviews</SelectItem>
-              <SelectItem value="runs">Runs</SelectItem>
-            </SelectContent>
-          </Select>
-          <Select value={days} onValueChange={(v) => setDays(v as 'all' | '7' | '30')}>
-            <SelectTrigger className="h-8 w-24 text-caption" aria-label="Time range"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">Any time</SelectItem>
-              <SelectItem value="7">7 days</SelectItem>
-              <SelectItem value="30">30 days</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
 
         {loading && !events ? (
           <div className="flex items-center gap-xs" role="status" aria-live="polite">

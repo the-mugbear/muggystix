@@ -169,6 +169,25 @@ describe('Evidence — domain × segment matrix', () => {
     expect(calls[calls.length - 1][0].rationale).toContain(caution);
   });
 
+  // UX review 2026-09-24: the outside-scope column was tinted and hatched like
+  // every gap, which read as "collect evidence here" for unauthorized hosts.
+  it('draws the outside-scope column neutral and says to confirm scope', async () => {
+    await renderPage();
+    const matrix = screen.getByText('Where the gaps are').closest('section')!;
+    const outside = Array.from(matrix.querySelectorAll<HTMLElement>('[data-outside-scope]'));
+    expect(outside).toHaveLength(2);
+    for (const cell of outside) {
+      expect(cell.style.backgroundColor).toBe('');
+      expect(cell.style.backgroundImage).toBe('');
+    }
+    // An in-scope hatched cell still reads as a gap.
+    const inScopeNone = Array.from(matrix.querySelectorAll<HTMLElement>('[data-state="none"]'))
+      .find((el) => !el.hasAttribute('data-outside-scope'))!;
+    expect(inScopeNone.style.backgroundImage).not.toBe('');
+    expect(within(matrix).getByText('confirm in scope')).toBeInTheDocument();
+    expect(within(matrix).getByText(/left untinted: they are not a gap to close/)).toBeInTheDocument();
+  });
+
   it('treats unmapped hosts as ordinary when the project declares no scope at all', async () => {
     coverageMock.mockResolvedValue({
       ...coverage,

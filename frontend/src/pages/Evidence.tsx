@@ -38,6 +38,7 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
+import LastUpdated from '../components/LastUpdated';
 import PostureSection from '../components/posture/PostureSection';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureEmpty from '../components/posture/PostureEmpty';
@@ -219,6 +220,11 @@ const CoverageMatrix: React.FC<{
   const hidden = matrix.segments.length - columns.length;
   const unit = matrix.group_by === 'subnet' ? 'subnet' : 'site';
   const totals = new Map(data.domains.map((d) => [d.key, d.coverage]));
+  // v5.294.0 (UX review) — hosts outside every scoped subnet are not a gap to
+  // close: nobody has confirmed they are authorized. Their cells are drawn
+  // neutral (no tint, no hatch), so the matrix never reads as "collect here".
+  const unscoped = isUnscoped(matrix);
+  const hasOutside = columns.some((s) => unscoped(s.key));
   return (
     <div className="overflow-x-auto">
       {/* Sized to its columns, not stretched across the page. */}
@@ -236,8 +242,14 @@ const CoverageMatrix: React.FC<{
               <th key={seg.key} className="p-xs text-center align-bottom">
                 {/* Two lines before clamping: "Outside scoped subnets" was cut
                     to "Outside scoped subn…" in a 9rem column. */}
-                <span className="line-clamp-2 break-words text-caption font-medium text-foreground" title={seg.label}>{seg.label}</span>
+                <span className="line-clamp-2 break-words text-caption font-medium text-foreground"
+                  title={unscoped(seg.key) ? `${seg.label} — confirm these hosts are in scope before collecting anything against them` : seg.label}>
+                  {seg.label}
+                </span>
                 <span className="block text-caption text-muted-foreground">{seg.hosts.toLocaleString()} host{seg.hosts === 1 ? '' : 's'}</span>
+                {unscoped(seg.key) && (
+                  <span className="block text-caption italic text-muted-foreground">confirm in scope</span>
+                )}
               </th>
             ))}
           </tr>
@@ -271,19 +283,24 @@ const CoverageMatrix: React.FC<{
                   const seg = columns[i];
                   const active = selection?.domain === row.domain && selection.segment === cell.segment;
                   const state = cell.eligible === 0 ? 'na' : cell.gap === 0 ? 'assessed' : cell.assessed === 0 ? 'none' : 'partial';
+                  const outside = unscoped(cell.segment);
                   const title = state === 'na'
                     ? `${row.label} does not apply to any host in ${seg.label}`
-                    : `${row.label} · ${seg.label}: ${cell.assessed} of ${cell.eligible} eligible hosts assessed`;
+                    : `${row.label} · ${seg.label}: ${cell.assessed} of ${cell.eligible} eligible hosts assessed`
+                      + (outside && state !== 'assessed' ? ' — confirm these hosts are in scope first' : '');
                   return (
                     <td key={cell.segment} className="p-0 text-center align-middle">
                       <div className={cn('m-0.5 rounded px-xs py-1', active && 'ring-2 ring-ring')}
-                        style={gapCellStyle(cell.eligible, cell.assessed)} title={title} data-state={state}>
+                        style={outside ? undefined : gapCellStyle(cell.eligible, cell.assessed)}
+                        title={title} data-state={state} data-outside-scope={outside || undefined}>
                         {state === 'na' ? (
                           <span className="text-caption italic text-muted-foreground">n/a</span>
                         ) : state === 'assessed' ? (
                           <span className="tabular-nums text-muted-foreground">{cell.assessed}/{cell.eligible}</span>
                         ) : (
-                          <button type="button" className={cn(selectButton, 'font-medium text-foreground')} aria-pressed={active}
+                          <button type="button"
+                            className={cn(selectButton, outside ? 'text-muted-foreground' : 'font-medium text-foreground')}
+                            aria-pressed={active}
                             aria-label={`${title} — show the ${cell.gap} not assessed`}
                             onClick={() => onSelect({
                               domain: row.domain, domainLabel: row.label,
@@ -311,6 +328,7 @@ const CoverageMatrix: React.FC<{
         )}
         Cells: assessed / eligible hosts. Tinted = some eligible hosts not assessed (darker = a larger share);
         hatched = none assessed; n/a = the domain applies to no host there. Select a tinted or hatched cell for its hosts.
+        {hasOutside && ' Hosts outside every scoped subnet are left untinted: they are not a gap to close until someone confirms they are in scope.'}
         {matrix.group_by === 'subnet' && ' No sites are defined, so hosts are grouped by their most-specific subnet.'}
       </p>
     </div>
@@ -353,13 +371,14 @@ const Evidence: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const reload = useCallback(() => setNonce((n) => n + 1), []);
 
   useEffect(() => {
     const controller = new AbortController();
     setLoading(true);
     getEvidenceCoverage({ signal: controller.signal })
-      .then((d) => { if (!controller.signal.aborted) { setData(d); setError(null); } })
+      .then((d) => { if (!controller.signal.aborted) { setData(d); setError(null); setLoadedAt(new Date()); } })
       .catch((e) => { if (!controller.signal.aborted) setError(formatApiError(e, 'Could not load evidence coverage.')); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
@@ -388,7 +407,7 @@ const Evidence: React.FC = () => {
   const actions = useMemo(() => new Map((data?.domains ?? []).map((d) => [d.key, d.action?.text])), [data]);
 
   return (
-    <div className="space-y-md p-md">
+    <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Evidence</h1>
@@ -397,9 +416,7 @@ const Evidence: React.FC = () => {
             to them, and where the gaps are.
           </p>
         </div>
-        <Button size="sm" variant="outline" onClick={reload} disabled={loading}>
-          <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-        </Button>
+        <LastUpdated compact lastFetched={loadedAt} onRefresh={reload} isLoading={loading} label="evidence" />
       </div>
 
       {loading && !data ? (

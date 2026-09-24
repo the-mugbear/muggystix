@@ -511,7 +511,7 @@ describe('Operations page', () => {
     renderPage();
     await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledTimes(1));
-    const refresh = await screen.findByRole('button', { name: /^Refresh$/ });
+    const refresh = await screen.findByRole('button', { name: 'Refresh Operations' });
     await waitFor(() => expect(refresh).not.toBeDisabled());
     fireEvent.click(refresh);
     await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(2));

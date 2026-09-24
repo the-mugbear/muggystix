@@ -33,6 +33,7 @@ import { Button } from '../components/ui/button';
 // Plain-English "what is this / how it's derived" help — every measure
 // explains itself on an explicit (i), never on hover alone.
 import { InfoTip } from '../components/ui/info-tip';
+import LastUpdated from '../components/LastUpdated';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
 import PostureSection from '../components/posture/PostureSection';
@@ -84,6 +85,7 @@ const SecurityPosture: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
 
   const [reloadNonce, setReloadNonce] = useState(0);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const toast = useToast();
   const [briefing, setBriefing] = useState(false);
   // "Create briefing" — the executive systemic report, from this page rather
@@ -113,7 +115,7 @@ const SecurityPosture: React.FC = () => {
     getPosture({ signal: controller.signal })
       .then((d) => {
         if (controller.signal.aborted) return;
-        setData(d); setError(null);
+        setData(d); setError(null); setLoadedAt(new Date());
       })
       .catch((e) => {
         if (controller.signal.aborted) return;
@@ -131,7 +133,7 @@ const SecurityPosture: React.FC = () => {
   useEffect(() => { setData(null); setError(null); }, [currentProject?.id]);
 
   return (
-    <div className="space-y-md p-md">
+    <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Security Posture</h1>
@@ -148,9 +150,7 @@ const SecurityPosture: React.FC = () => {
                 : <FileText className="size-3.5" aria-hidden />}
               Create briefing
             </Button>
-            <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-            </Button>
+            <LastUpdated compact lastFetched={loadedAt} onRefresh={load} isLoading={loading} label="posture" />
           </div>
           {data && <EvidenceCurrency evidence={data.evidence} />}
         </div>
