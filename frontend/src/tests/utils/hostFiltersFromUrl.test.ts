@@ -25,6 +25,17 @@ describe('hostFiltersFromUrl', () => {
     expect(sortBy).toBeNull();
   });
 
+  // v5.290.0 — drives the "Restored your last filters" notice.
+  it('says when the filters came from the saved session rather than the URL', () => {
+    const saved = { filters: { sites: ['3'] } };
+    expect(hostFiltersFromUrl(url(''), saved).restoredFromSession).toBe(true);
+    expect(hostFiltersFromUrl(url('reports=1'), saved).restoredFromSession).toBe(true);
+    expect(hostFiltersFromUrl(url('ports=443'), saved).restoredFromSession).toBe(false);
+    expect(hostFiltersFromUrl(url(''), null).restoredFromSession).toBe(false);
+    // An empty saved session restores nothing worth announcing.
+    expect(hostFiltersFromUrl(url(''), { filters: {}, followFilter: 'all' }).restoredFromSession).toBe(false);
+  });
+
   it('a parameter that is not a host filter does not make the URL authoritative', () => {
     const { filters } = hostFiltersFromUrl(url('reports=1'), { filters: { sites: ['3'] } });
     expect(filters).toEqual({ sites: ['3'] });

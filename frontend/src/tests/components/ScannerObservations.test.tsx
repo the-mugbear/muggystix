@@ -148,6 +148,26 @@ describe('ScannerObservations', () => {
     );
   });
 
+  // v5.290.0 — the action bar used to be inserted above the table on the first
+  // tick, pushing every row down so the second click hit the wrong issue.
+  it('ticking an issue does not move the table: the action slot is there before and after', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    const slot = screen.getByTestId('observations-bulk-slot');
+    const slotClass = slot.className;
+    expect(slot).toHaveTextContent('Select issues to promote them to findings');
+    const table = screen.getByRole('table');
+    const precedingBefore = table.closest('.overflow-x-auto')!.parentElement!.children.length;
+
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Select SMB Signing not required' }));
+
+    expect(screen.getByTestId('observations-bulk-slot')).toBe(slot);
+    expect(slot.className).toBe(slotClass);
+    expect(slot).toHaveTextContent('1 issue selected');
+    expect(within(slot).getByRole('button', { name: 'Promote to findings' })).toBeInTheDocument();
+    expect(table.closest('.overflow-x-auto')!.parentElement!.children.length).toBe(precedingBefore);
+  });
+
   it('a viewer can read the list but not select or promote', async () => {
     renderIt(false);
     await screen.findByText('SMB Signing not required');

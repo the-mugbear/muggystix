@@ -262,6 +262,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
               type="search"
               value={searchInput}
               onChange={(e) => setSearchInput(e.target.value)}
+              spellCheck={false}
+              autoCorrect="off"
+              autoCapitalize="off"
               placeholder="Search titles or CVE…"
               className="pl-xl"
             />
@@ -297,18 +300,39 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         </div>
       </div>
 
-      {canManage && chosen.length > 0 && (
+      {/* v5.290.0 — the action bar's slot is always there, at a fixed height:
+          inserting the bar on the first tick pushed every row down, so the
+          second click landed on the wrong issue.  Empty, it holds a hint. */}
+      {canManage && (
         <div
-          className="sticky z-10 mb-sm flex flex-wrap items-center gap-sm border-b border-border bg-background py-xs"
+          className="sticky z-10 mb-sm flex h-11 min-w-0 flex-nowrap items-center gap-sm overflow-hidden border-b border-border bg-background py-xs"
           style={stickyBelowChrome}
+          role="region"
+          aria-label="Bulk actions"
+          data-testid="observations-bulk-slot"
         >
-          <span className="text-metadata">
-            <strong>{plural(chosen.length, 'issue')}</strong> selected · {plural(chosenHosts, 'host')}
+          <span className="min-w-0 truncate text-metadata" aria-live="polite">
+            {chosen.length > 0 ? (
+              <>
+                <strong>{plural(chosen.length, 'issue')}</strong> selected · {plural(chosenHosts, 'host')}
+              </>
+            ) : (
+              <span className="text-muted-foreground">Select issues to promote them to findings</span>
+            )}
           </span>
-          <Button size="sm" onClick={() => setConfirmOpen(true)}>Promote to findings</Button>
-          <Button size="sm" variant="ghost" onClick={() => { setSelected(new Map()); setHostChoice(new Map()); }}>
-            Clear
-          </Button>
+          {chosen.length > 0 && (
+            <>
+              <Button size="sm" className="shrink-0" onClick={() => setConfirmOpen(true)}>Promote to findings</Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="shrink-0"
+                onClick={() => { setSelected(new Map()); setHostChoice(new Map()); }}
+              >
+                Clear
+              </Button>
+            </>
+          )}
         </div>
       )}
 

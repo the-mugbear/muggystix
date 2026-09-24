@@ -233,6 +233,11 @@ export default function Hosts() {
     });
   }, [setFilters]);
   const [isInitialized, setIsInitialized] = useState(false);
+  // v5.290.0 — the filters a bare /hosts visit restored from the session.  The
+  // notice shows only while `filters` is still that very object: any change
+  // (a chip, a view, Clear) replaces it and the notice is gone for the visit.
+  const [restoredFilters, setRestoredFilters] = useState<HostFilterOptions | null>(null);
+  const showRestoredNotice = restoredFilters !== null && filters === restoredFilters;
   const [sortBy, setSortBy] = useState<HostSortOption>('critical_desc');
   const [vulnError, setVulnError] = useState(false);
   const [page, setPage] = useState(0);
@@ -494,22 +499,32 @@ export default function Hosts() {
     } catch {
       savedState = null;
     }
-    const { filters: initialFilters, sortBy: restoredSort } = hostFiltersFromUrl(urlParams, savedState);
+    const {
+      filters: initialFilters,
+      sortBy: restoredSort,
+      restoredFromSession,
+    } = hostFiltersFromUrl(urlParams, savedState);
     if (restoredSort) setSortBy(restoredSort);
 
     // Re-show the "project default applied" banner after a refresh: the restored
     // filters ARE the default, so set skipActiveClearRef so the filters-change
     // effect doesn't clear it on this (non-user) restore.
+    let restoredDefault: string | null = null;
     try {
-      const restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
+      restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
       if (restoredDefault && Object.keys(initialFilters).length > 0) {
         skipActiveClearRef.current = true;
         setAppliedProjectDefault(restoredDefault);
+      } else {
+        restoredDefault = null;
       }
     } catch {
       /* ignore */
     }
 
+    // v5.290.0 — a nav link to a bare /hosts reopens the session's filters;
+    // say so, unless the project-default banner already explains them.
+    if (restoredFromSession && !restoredDefault) setRestoredFilters(initialFilters);
     setFilters(initialFilters);
     setIsInitialized(true);
   }, [isInitialized, location.search]);
@@ -1482,6 +1497,21 @@ export default function Hosts() {
           </div>
         )}
 
+        {/* v5.290.0 — a bare /hosts visit reopens the session's filters (by
+            design); a nav link landing on a filtered list must say why. */}
+        {showRestoredNotice && (
+          <div
+            className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground"
+            data-testid="hosts-restored-notice"
+          >
+            <span className="truncate">Restored your last filters</span>
+            <span aria-hidden>·</span>
+            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
+              Clear
+            </Button>
+          </div>
+        )}
+
         {/* Applied conditions.  Capped while the strip is sticky — an unbounded
             chip list would grow the pinned area over the table. */}
         {activeFilterChips.length > 0 && (
@@ -1612,20 +1642,33 @@ export default function Hosts() {
           {/* Bulk-action bar — shown once one or more rows are selected.
               Hidden while results are stale (a failed refetch): acting on rows
               that may not match the active query is the trap this guards. */}
-          {selectedIds.length > 0 && !showingStaleResults && (
-            <HostBulkBar
-              selectedIds={selectedIds}
-              selectedIps={selectedIps}
-              totalMatching={totalHosts}
-              queryContext={exportQueryContext}
-              onClear={() => setRowSelection({})}
-              onApplied={() => {
-                setRowSelection({});
-                fetchHosts();
-                fetchFilterData(buildFacetParams());
-              }}
-            />
-          )}
+          {/* v5.290.0 — the bar's slot is always rendered at a fixed height:
+              inserting the bar on the first tick pushed every row ~40px down,
+              so the second checkbox click landed on the wrong host. */}
+          <div className="h-11 min-w-0" role="region" aria-label="Bulk actions" data-testid="hosts-bulk-slot">
+            {selectedIds.length > 0 && !showingStaleResults ? (
+              <HostBulkBar
+                selectedIds={selectedIds}
+                selectedIps={selectedIps}
+                totalMatching={totalHosts}
+                queryContext={exportQueryContext}
+                onClear={() => setRowSelection({})}
+                onApplied={() => {
+                  setRowSelection({});
+                  fetchHosts();
+                  fetchFilterData(buildFacetParams());
+                }}
+              />
+            ) : (
+              <p className="flex h-full min-w-0 items-center rounded-control border border-dashed border-border px-sm text-caption text-muted-foreground">
+                <span className="truncate">
+                  {showingStaleResults
+                    ? 'Bulk actions are paused until a refresh succeeds.'
+                    : 'Select rows to act on them — copy IPs, tag, assign, review or plan.'}
+                </span>
+              </p>
+            )}
+          </div>
           {/* Host table — sole renderer (desktop-only product; horizontal
               scroll handles narrow widths, no separate mobile card view).
               Dimmed (not interaction-blocked) while stale: drill-down into a

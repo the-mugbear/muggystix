@@ -230,28 +230,39 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const hasTagSelection = checkedTagIds.size > 0 || newTagName.trim().length > 0;
 
   return (
-    <div className="flex flex-wrap items-center gap-xs rounded-control border border-primary/40 bg-primary/5 px-sm py-xs">
-      <Badge variant="default">{effectiveCount.toLocaleString()} selected</Badge>
+    // v5.290.0 — one line at a fixed height (the page reserves this slot even
+    // with nothing selected, so the table never moves under the cursor).  A
+    // narrow window scrolls the bar sideways instead of wrapping it taller.
+    <div className="flex h-full min-w-0 flex-nowrap items-center gap-xs overflow-x-auto rounded-control border border-primary/40 bg-primary/5 px-sm py-xs">
+      <Badge variant="default" className="shrink-0" aria-live="polite">
+        {effectiveCount.toLocaleString()} selected
+      </Badge>
 
       {canSelectAll && (
-        <Button size="sm" variant="ghost" onClick={() => setAllMatching(true)} disabled={working}>
+        <Button size="sm" variant="ghost" className="shrink-0" onClick={() => setAllMatching(true)} disabled={working}>
           {matchingIsCapped
             ? `Select the first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching`
             : `Select all ${totalMatching.toLocaleString()} matching`}
         </Button>
       )}
-      {allMatching && (
-        <span className={cn('text-caption', matchingIsCapped ? 'text-warning' : 'text-muted-foreground')}>
-          {matchingIsCapped
-            ? `The first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching hosts — bulk actions stop there. Narrow the filters to reach the rest.`
-            : 'Every host matching the current filters, on every page.'}
-        </span>
-      )}
+      {allMatching && (() => {
+        const note = matchingIsCapped
+          ? `The first ${BULK_SELECT_CAP.toLocaleString()} of ${totalMatching.toLocaleString()} matching hosts — bulk actions stop there. Narrow the filters to reach the rest.`
+          : 'Every host matching the current filters, on every page.';
+        return (
+          <span
+            className={cn('min-w-0 truncate text-caption', matchingIsCapped ? 'text-warning' : 'text-muted-foreground')}
+            title={note}
+          >
+            {note}
+          </span>
+        );
+      })()}
       {!allMatching && (
-        <span className="text-caption text-muted-foreground">checked rows only</span>
+        <span className="shrink-0 text-caption text-muted-foreground">checked rows only</span>
       )}
 
-      <div className="ml-auto flex flex-wrap items-center gap-xs">
+      <div className="ml-auto flex shrink-0 flex-nowrap items-center gap-xs">
         {working && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
 
         {/* Copy IPs — quick target-list to clipboard for external tools. */}

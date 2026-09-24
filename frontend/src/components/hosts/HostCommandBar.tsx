@@ -224,6 +224,11 @@ export default function HostCommandBar({
           <Input
             ref={inputRef}
             value={draft}
+            // v5.290.0 — a query (`service:postgresql`) is not prose: no
+            // browser spell-check underlines, autocorrect or auto-capitals.
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
             onChange={(e) => setDraft(e.target.value)}
             onFocus={() => setFocused(true)}
             onBlur={() => setTimeout(() => setFocused(false), 120)}

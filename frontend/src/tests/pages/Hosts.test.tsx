@@ -532,6 +532,88 @@ describe('Hosts', () => {
       ),
     );
   });
+
+  // v5.290.0 — seen in a live browser test: the bulk bar was inserted above
+  // the table on the first tick, pushing every row ~40px down, so the second
+  // click landed on the wrong host.
+  it('selecting a row does not move the table: the bulk-action slot is there before and after', async () => {
+    renderHosts();
+    await screen.findByRole('table');
+    const slot = screen.getByTestId('hosts-bulk-slot');
+    const slotClass = slot.className;
+    expect(slot).toHaveTextContent(/Select rows to act on them/);
+    const precedingBefore = slot.parentElement!.children.length;
+
+    await waitFor(() => {
+      const box = screen.getByRole('checkbox', { name: 'Select 10.0.0.3' });
+      if (box.getAttribute('aria-checked') !== 'true') fireEvent.click(box);
+      expect(screen.getByText('1 selected')).toBeInTheDocument();
+    });
+
+    expect(screen.getByTestId('hosts-bulk-slot')).toBe(slot);
+    expect(slot.className).toBe(slotClass);
+    expect(within(slot).getByText('1 selected')).toBeInTheDocument();
+    expect(slot.parentElement!.children.length).toBe(precedingBefore);
+  });
+
+  // v5.290.0 — a bare /hosts visit (a nav link) reopens the session's filters
+  // on purpose; the page must say so, and stop saying so once they change.
+  it('says the filters were restored from the session, until they are changed', async () => {
+    sessionStorage.setItem(
+      projectScopedKey('hostFiltersState'),
+      JSON.stringify({ filters: { hasCriticalVulns: true } }),
+    );
+    routerState.search = '';
+    renderHosts();
+
+    const notice = await screen.findByTestId('hosts-restored-notice');
+    expect(notice).toHaveTextContent('Restored your last filters');
+    expect(within(notice).getByRole('button', { name: 'Clear' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByRole('button', { name: /^Clear filter:/ })[0]);
+    await waitFor(() => expect(screen.queryByTestId('hosts-restored-notice')).toBeNull());
+  });
+
+  it('its Clear clears the restored filters', async () => {
+    sessionStorage.setItem(
+      projectScopedKey('hostFiltersState'),
+      JSON.stringify({ filters: { hasCriticalVulns: true } }),
+    );
+    renderHosts();
+    const notice = await screen.findByTestId('hosts-restored-notice');
+    fireEvent.click(within(notice).getByRole('button', { name: 'Clear' }));
+    await waitFor(() => expect(screen.queryByTestId('hosts-restored-notice')).toBeNull());
+    await waitFor(() => {
+      const calls = mockedApi.getHosts.mock.calls;
+      expect((calls[calls.length - 1]?.[0] as Record<string, any>).has_critical_vulns).toBeUndefined();
+    });
+  });
+
+  // v5.290.0 — `service:postgresql` came up red-underlined.
+  it('the host query is not spell-checked, autocorrected or auto-capitalised', async () => {
+    renderHosts();
+    const input = await screen.findByLabelText('Host query');
+    expect(input).toHaveAttribute('spellcheck', 'false');
+    expect(input).toHaveAttribute('autocorrect', 'off');
+    expect(input).toHaveAttribute('autocapitalize', 'off');
+  });
+
+  it('shows no restored-filters notice when the filters came from the URL', async () => {
+    sessionStorage.setItem(
+      projectScopedKey('hostFiltersState'),
+      JSON.stringify({ filters: { hasHighVulns: true } }),
+    );
+    routerState.search = '?has_critical_vulns=true';
+    renderHosts();
+    await waitFor(() =>
+      expect(mockedApi.getHosts).toHaveBeenCalledWith(
+        expect.objectContaining({ has_critical_vulns: true }),
+        expect.anything(),
+      ),
+    );
+    await screen.findByRole('table');
+    expect(screen.queryByTestId('hosts-restored-notice')).toBeNull();
+  });
 });
 
 // v5.270.0 — the table states things quietly: review state as text (the

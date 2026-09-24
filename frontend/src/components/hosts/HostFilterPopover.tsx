@@ -119,6 +119,9 @@ function ValueList({
           <Input
             value={needle}
             onChange={(e) => setNeedle(e.target.value)}
+            spellCheck={false}
+            autoCorrect="off"
+            autoCapitalize="off"
             placeholder={`Find in ${label.toLowerCase()}…`}
             aria-label={`Find in ${label}`}
             className="h-8 pl-7 text-caption"
@@ -582,6 +585,9 @@ function Catalog({
           autoFocus
           value={needle}
           onChange={(e) => setNeedle(e.target.value)}
+          spellCheck={false}
+          autoCorrect="off"
+          autoCapitalize="off"
           placeholder="Find a filter… (port, severity, unreviewed, ASN)"
           aria-label="Find a filter"
           className="h-9 pl-7"

@@ -98,7 +98,16 @@ const SORT_FROM_PARAM: Record<string, HostSortOption> = {
 export function hostFiltersFromUrl(
   urlParams: URLSearchParams,
   savedState: SavedHostFilterState | null,
-): { filters: HostFilterOptions; sortBy: HostSortOption | null } {
+): {
+  filters: HostFilterOptions;
+  sortBy: HostSortOption | null;
+  /**
+   * v5.290.0 — the filters came from the saved session, not from the URL: a
+   * bare /hosts visit (a nav link) that opens on a filtered list.  The page
+   * says so ("Restored your last filters · Clear") until they are changed.
+   */
+  restoredFromSession: boolean;
+} {
   const saved = urlCarriesHostFilters(urlParams) ? null : savedState;
   const filters: HostFilterOptions = saved?.filters ? { ...saved.filters } : {};
   const set = (key: keyof HostFilterOptions, value: unknown) => {
@@ -147,5 +156,11 @@ export function hostFiltersFromUrl(
 
   if (urlParams.get('assigned_to') === 'me') filters.assignedToMe = true;
 
-  return { filters, sortBy: SORT_FROM_PARAM[urlParams.get('sort_by') ?? ''] ?? null };
+  return {
+    filters,
+    sortBy: SORT_FROM_PARAM[urlParams.get('sort_by') ?? ''] ?? null,
+    // With a saved session in play the URL carried no host parameter, so every
+    // filter present came from the session.
+    restoredFromSession: saved !== null && Object.keys(filters).length > 0,
+  };
 }
