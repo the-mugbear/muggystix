@@ -557,7 +557,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </div>
 
           <EngagementSettingsFields idPrefix="report" value={form.settings} members={members} currentUser={currentUser}
-            disabled={!editable || saving} onChange={(settings) => setForm({ ...form, settings })} />
+            readOnly={!editable} disabled={saving} onChange={(settings) => setForm({ ...form, settings })} />
 
           {editable && (
             <div className="flex flex-wrap items-center gap-xs">

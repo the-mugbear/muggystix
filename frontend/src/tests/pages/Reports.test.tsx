@@ -231,6 +231,29 @@ describe('Report detail — issued', () => {
     await waitFor(() => expect(navigateSpy).toHaveBeenCalledWith('/reports/12'));
   });
 
+  it('v5.290.0 — shows the details as issued, with no add or remove control at all', async () => {
+    mocked.getClientReport.mockResolvedValue(report({
+      status: 'issued', number: 1, files: [pdf], render_status: 'done', issued_at: '2026-09-21T00:00:00Z',
+      can_edit: false, can_issue: false,
+      settings: {
+        ...settings,
+        testers: [{ user_id: 1, name: 'Ana', role: 'Lead', email: null }],
+        distribution: [{ name: 'CISO', email: null }],
+      },
+    }));
+    mocked.listProjectMembers.mockResolvedValue([
+      { id: 1, project_id: 1, user_id: 1, username: 'ana', full_name: 'Ana', role: 'admin', created_at: '' },
+      { id: 2, project_id: 1, user_id: 2, username: 'ben', full_name: 'Ben', role: 'analyst', created_at: '' },
+    ]);
+    renderDetail();
+    expect(await screen.findByDisplayValue('Ana')).toBeDisabled();
+    expect(screen.getByDisplayValue('CISO')).toBeDisabled();
+    for (const name of [/Add the project's members/, /Someone else/, /Add recipient/, /Add yourself/, /^Remove /]) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+    }
+    expect(screen.queryByLabelText('Add a project member to the team')).not.toBeInTheDocument();
+  });
+
   it('shows a failed render and renders again', async () => {
     mocked.getClientReport.mockResolvedValue(report({
       status: 'issued', number: 2, render_status: 'failed', render_error: 'Quarto failed', can_edit: false, can_issue: false,

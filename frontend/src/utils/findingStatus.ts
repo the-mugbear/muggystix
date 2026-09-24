@@ -55,9 +55,15 @@ export const SCANNER_OBSERVATIONS_LABEL = 'Scanner observations';
 export const populationOf = (status: FindingStatus): FindingPopulation =>
   status === 'confirmed' ? 'confirmed' : TERMINAL_STATUSES.has(status) ? 'closed' : 'investigating';
 
-/** The per-endpoint state on an affected host — separate from the finding's. */
+/**
+ * The per-endpoint state on an affected host — separate from the finding's.
+ *
+ * v5.290.0 — the API value `open` reads "Still present" (the host still has
+ * the issue), never "Open": beside a finding labelled Confirmed, "Open here"
+ * read as the finding status Open.  Display only; the API values are unchanged.
+ */
 export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
-  open: 'Open here',
+  open: 'Still present',
   remediated: 'Remediated here',
   retest: 'Retest here',
   // v5.238.0 — about this endpoint only; the finding's other hosts keep theirs.
@@ -65,9 +71,9 @@ export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
 };
 
 /**
- * "Open on 3 of 5 · 1 remediated · 1 retest" — how the endpoints stand, so
- * a finding's status is never read as one state for every host.  Null when
- * every endpoint is open (nothing to add to the count).
+ * "Still present on 3 of 5 · 1 remediated · 1 retest" — how the endpoints
+ * stand, so a finding's status is never read as one state for every host.
+ * Null when every endpoint is still present (nothing to add to the count).
  */
 export const describeEndpointStates = (
   counts: Partial<Record<string, number>> | null | undefined,
@@ -79,7 +85,7 @@ export const describeEndpointStates = (
   const retest = counts.retest ?? 0;
   const falsePositive = counts.false_positive ?? 0;
   if (open === total) return null;
-  const parts: string[] = [`open on ${open} of ${total}`];
+  const parts: string[] = [`still present on ${open} of ${total}`];
   if (remediated) parts.push(`${remediated} remediated`);
   if (retest) parts.push(`${retest} retest`);
   if (falsePositive) parts.push(`${falsePositive} false positive there`);

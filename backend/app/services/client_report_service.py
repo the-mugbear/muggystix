@@ -227,6 +227,40 @@ class ClientReportService:
             settings["testers"] = self.project_team(project_id)
         return settings
 
+    @staticmethod
+    def settings_from_issued(report: Report) -> Dict[str, Any]:
+        """The engagement details an issued report went out with — what a
+        revision of it, or an addendum to it, starts from (v2.404.0; before,
+        an addendum started from the profile and a revision of an addendum
+        inherited that addendum's empty details).
+
+        ``Report.settings`` cannot change once issued (PATCH refuses), so it
+        is the frozen form as written; the snapshot's ``engagement`` fills any
+        key it lacks (a report issued before a key existed).  Copies — the new
+        draft never shares a list with the issued report."""
+        own = report.settings or {}
+        frozen = (((report.snapshot or {}).get("dataset") or {}).get("engagement")) or {}
+        settings: Dict[str, Any] = {}
+        for key in SETTINGS_KEYS:
+            value = own.get(key)
+            if value in (None, "", []):
+                value = frozen.get(key)
+            if key in ("testers", "distribution"):
+                value = [dict(e) for e in (value or []) if isinstance(e, dict)]
+            settings[key] = value
+        return settings
+
+    def settings_for_addendum(self, baseline: Report) -> Dict[str, Any]:
+        """An addendum's details: its baseline's, as issued — the same client,
+        classification, team and distribution the client already has.  A
+        detail the baseline left empty takes the project's report default."""
+        settings = self.settings_from_issued(baseline)
+        defaults = self.settings_from_profile(baseline.project_id)
+        for key in SETTINGS_KEYS:
+            if settings.get(key) in (None, "", []):
+                settings[key] = defaults.get(key)
+        return settings
+
     # ------------------------------------------------------------------
     # Live state
     # ------------------------------------------------------------------

@@ -28,16 +28,19 @@ describe('describeEndpointStates', () => {
   });
 
   it('says how the endpoints stand when they differ', () => {
-    expect(describeEndpointStates({ open: 3, remediated: 1, retest: 1 }, 5)).toBe('open on 3 of 5 · 1 remediated · 1 retest');
-    expect(describeEndpointStates({ remediated: 2 }, 2)).toBe('open on 0 of 2 · 2 remediated');
+    expect(describeEndpointStates({ open: 3, remediated: 1, retest: 1 }, 5)).toBe('still present on 3 of 5 · 1 remediated · 1 retest');
+    expect(describeEndpointStates({ remediated: 2 }, 2)).toBe('still present on 0 of 2 · 2 remediated');
   });
 
   it('labels an endpoint state as the host\'s, not the issue\'s', () => {
+    // v5.290.0 — "open" is the finding status Open's word; an endpoint that
+    // still has the issue reads "Still present".
+    expect(ENDPOINT_STATUS_LABEL.open).toBe('Still present');
     expect(ENDPOINT_STATUS_LABEL.remediated).toBe('Remediated here');
     expect(ENDPOINT_STATUS_LABEL.false_positive).toBe('False positive here');
   });
 
   it('counts a host-only false positive as that host\'s, not the finding\'s', () => {
-    expect(describeEndpointStates({ open: 2, false_positive: 1 }, 3)).toBe('open on 2 of 3 · 1 false positive there');
+    expect(describeEndpointStates({ open: 2, false_positive: 1 }, 3)).toBe('still present on 2 of 3 · 1 false positive there');
   });
 });
