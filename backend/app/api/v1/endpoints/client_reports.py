@@ -28,7 +28,7 @@ from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatu
 from app.db.session import get_db
 from app.schemas.client_reports import (
     EngagementSettings, PreviewRequest, ReportCreate, ReportFileOut, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportUpdate, Tester,
+    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportTemplateProblemOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import ClientReportService, ReportStateError
@@ -210,6 +210,13 @@ def _live_issue_job(db: Session, report: Report) -> bool:
 @router.get("/templates", response_model=List[ReportTemplateOut])
 def list_report_templates():
     return [ReportTemplateOut(**t.as_dict()) for t in templates.list_templates()]
+
+
+@router.get("/templates/problems", response_model=List[ReportTemplateProblemOut])
+def list_report_template_problems():
+    """Folders under report-templates/ that are not offered, and why — so a
+    template with a mistake says so instead of simply not appearing."""
+    return [ReportTemplateProblemOut(**p) for p in templates.template_problems()]
 
 
 def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:

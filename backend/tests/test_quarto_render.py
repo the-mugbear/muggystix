@@ -153,10 +153,18 @@ HOSTILE_MD = (
 )
 
 
+# v2.409.0 — every template shipped in report-templates/ is held to the same
+# contract, not only the first one.
+SHIPPED_TEMPLATES = sorted(
+    p for p in (TEMPLATE.parent.iterdir() if TEMPLATE else []) if (p / "template.json").is_file()
+)
+
+
 @needs_template
 @needs_quarto
-def test_hostile_text_stays_text_in_every_format(tmp_path):
-    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+@pytest.mark.parametrize("template", SHIPPED_TEMPLATES, ids=lambda p: p.name)
+def test_hostile_text_stays_text_in_every_format(tmp_path, template):
+    data = json.loads((template / "sample-data.json").read_text())
     # The title and heading reach the document METADATA — where Quarto expands
     # shortcodes even in escaped text; they must come from data, via the filter.
     data["report"]["title"] = "Report " + HOSTILE
@@ -164,11 +172,14 @@ def test_hostile_text_stays_text_in_every_format(tmp_path):
     data["engagement"]["client_name"] = HOSTILE
     data["findings"][0]["title"] = HOSTILE
     data["findings"][0]["description"] = HOSTILE_MD
+    # Every template prints a recommendation; not every one the description
+    # or the executive summary.
+    data["findings"][0]["recommendation"] = HOSTILE_MD
     data["executive_summary"] = HOSTILE_MD
-    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    manifest = json.loads((template / "template.json").read_text())
 
     files = quarto_render.render(
-        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path,
+        template, manifest.get("entry", "report.qmd"), data, ["html", "docx"], tmp_path,
         postprocess=manifest.get("postprocess"), timeout=240,
     )
     html = files["html"].read_text(encoding="utf-8")

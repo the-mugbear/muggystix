@@ -1,0 +1,143 @@
+<#
+  BlueStick client report — executive brief.
+
+  For leadership: what was assessed, what was found, how serious it is, and
+  what to do about each finding.  It deliberately leaves out evidence, steps
+  to reproduce and host lists — those are in the Penetration test report,
+  which the same draft can switch to at any time (Reports → the draft →
+  Template).
+
+  The same data as every template (see sample-data.json) and the same rules
+  as report-templates/pentest/report.qmd, whose header comment explains the
+  delimiters and the helpers (md, todo, asset, plain).  In short: a printed
+  value is escaped, written Markdown only through md(), and never any data in
+  the YAML front matter — bluestick-meta names the data instead.
+#>
+---
+title: "Security assessment brief"
+bluestick-meta:
+  title: report.title
+  subtitle: report.heading
+date: << plain(report.date) >>
+engine: markdown
+filters:
+  - quarto
+  - _bluestick/fields.lua
+format:
+  html:
+    theme: cosmo
+    fontsize: 11pt
+    page-layout: article
+    embed-resources: true
+    include-in-header:
+      - text: |
+          <style>
+          table { width: 100%; }
+          td, th { vertical-align: top; }
+          img.bs-logo { border: none; padding: 0; max-width: 2in; height: auto; }
+          mark.bs-todo { background: #ffe066; color: #1a1a1a; padding: 0 .25em; }
+          </style>
+<% if asset("logo") %>
+    include-before-body:
+      - text: |
+          <p class="bs-logo-wrap"><img class="bs-logo" src="<< asset("logo") >>" alt="Logo"></p>
+<% endif %>
+  docx:
+    reference-doc: reference.docx
+---
+
+<% if report.draft %>
+::: {.callout-warning}
+**Draft** — built from the live findings on << plain(report.date) >>. Not for distribution. Search for **TODO** to find what is still missing.
+:::
+
+<% endif %>
+{{< pagebreak >}}
+
+| | |
+|:---------------|:--|
+| Client | << engagement.client_name or todo("Client name") >> |
+| Assessment | << project.name >><% if engagement.engagement_type %> — << engagement.engagement_type >><% endif %> |
+| Dates | <% if project.start_date and project.end_date %><< project.start_date >> to << project.end_date >><% else %><< todo("Set the project's start and end dates") >><% endif %> |
+| Classification | << engagement.classification or todo("Classification") >> |
+| Report | << report.title >><% if report.number %> (report << report.number >>)<% endif %> |
+
+<% if report.kind == "addendum" %>
+<# An addendum is the changes table and nothing else: leadership wants to know
+   what moved, and the Penetration test report carries the detail. #>
+<% set new = findings|selectattr("change", "equalto", "new")|list %>
+<% set grown = findings|selectattr("change", "equalto", "new_hosts")|list %>
+# What changed since report << report.baseline.number >>
+
+<< md("executive_summary", todo="Summarise what changed since the last report, and what it means.") >>
+
+<% if new or grown or delta.withdrawn %>
+| Change | Ref | Finding | Severity |
+|:---------------------|:------|:---------------------------------------------|:-----------|
+<% for f in new %>
+| New finding | << f.ref >> | << f.title >> | << f.severity_label >> |
+<% endfor %>
+<% for f in grown %>
+| Found on << f.new_affected|length >> more system(s) | << f.ref >> | << f.title >> | << f.severity_label >> |
+<% endfor %>
+<% for w in delta.withdrawn %>
+| Withdrawn | << w.ref >> | << w.title >> | << w.severity_label >> |
+<% endfor %>
+<% else %>
+Nothing has changed since report << report.baseline.number >>.
+<% endif %>
+<% else %>
+# Summary
+
+<< md("executive_summary", todo="Write the summary: what was assessed, what was found, and what to do first.") >>
+
+# Findings at a glance
+
+| Critical | High | Medium | Low | Informational |
+|:------------:|:------------:|:------------:|:------------:|:----------------:|
+| << counts.critical >> | << counts.high >> | << counts.medium >> | << counts.low >> | << counts.info >> |
+
+<% set actionable = findings|rejectattr("severity", "equalto", "info")|list %>
+<% if actionable %>
+
+| Ref | Finding | Severity | Systems | Status |
+|:------|:---------------------------------------------|:-----------|:--------|:----------------------|
+<% for f in actionable %>
+| << f.ref >> | << f.title >> | << f.severity_label >> | << f.affected_count >> | << f.status_note or "Confirmed" >> |
+<% endfor %>
+<% else %>
+No findings above informational severity.
+<% endif %>
+
+# Scope
+
+<% if scope.subnets or scope.domains %>
+<% if scope.subnets %>
+<< scope.subnets|length >> network(s): << scope.subnets|map(attribute="cidr")|join(", ") >>.
+<% endif %>
+<% if scope.domains %>
+<< scope.domains|length >> domain(s): << scope.domains|map(attribute="domain")|join(", ") >>.
+<% endif %>
+<% else %>
+<< todo("No scope is recorded — define the project's scoped networks and domains", block=True) >>
+<% endif %>
+
+# What to do
+
+<% for f in actionable %>
+## << f.ref >> — << f.title >> (<< f.severity_label >>)
+
+<% if f.status_note %>
+*<< f.status_note >>.*
+
+<% endif %>
+<< md(f, "recommendation", todo="Say what to change to fix it.") >>
+
+<% else %>
+Nothing to action above informational severity.
+<% endfor %>
+<% endif %>
+
+---
+
+*A security assessment is a point-in-time analysis of the systems tested during the dates above. The full report, with evidence and affected systems for every finding, is available on request.*

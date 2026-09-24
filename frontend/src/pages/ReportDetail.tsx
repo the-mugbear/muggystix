@@ -459,6 +459,13 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 <span className="text-caption text-muted-foreground">The only template installed.</span>
               )}
             </div>
+            {/* What the chosen template is for (v5.295.0) — with several
+                installed, the title alone does not say which reader it serves. */}
+            {template?.description && templates.length > 1 && (
+              <p className="max-w-3xl break-words text-caption text-muted-foreground" data-testid="template-description">
+                {template.description}
+              </p>
+            )}
             {assetsBlock ? (
               <div className="space-y-xxs">
                 <p className="text-caption text-destructive">

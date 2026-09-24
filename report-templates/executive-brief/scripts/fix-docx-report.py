@@ -1,0 +1,350 @@
+#!/usr/bin/env python3
+"""
+Post-process the Word report — the two things Word styles cannot do:
+
+1. A tight border around every screenshot.  A paragraph border (a style
+   setting) spans the whole text width, and a DrawingML outline (a:ln) sits on
+   the shape boundary and renders unevenly on pictures, so each image
+   paragraph is wrapped in a single-cell table sized to the image, whose cell
+   border frames it exactly.
+
+2. The template's own images (v2.407.0).  The shipped reference.docx carries
+   placeholder pictures in its headers and footers, named `bluestick-<asset
+   id>` (the drawing's name, not its alt text): YOUR LOGO → `logo`, the title
+   page's COVER IMAGE → `cover`.  When that asset is installed (template.json
+   → assets, e.g. img/cover.jpg), it takes the placeholder's place, scaled to
+   fit the placeholder's box without distortion.  An operator's own Word
+   styles file (branding/reference.docx) has no such names, so its pictures
+   are left alone.
+
+Everything else the original prototype's script did is now either a style in
+reference.docx or no longer needed (checked by rendering the template with
+screenshots, 2026-09-23):
+  - flattening Quarto's wrapper tables around cross-referenced tables, figures
+    and listings, moving their captions out and pulling images out of them —
+    the template uses no #tbl-/#fig-/#lst- blocks, so Quarto emits no wrappers
+    (every one of those steps changed nothing);
+  - centring captions and images — the ImageCaption, TableCaption, Figure and
+    Captioned Figure styles in reference.docx are centred;
+  - left-aligning every table cell — Pandoc already aligns each column as the
+    Markdown table says, and forcing everything left undid the columns the
+    template centres (the severity counts);
+  - left-aligning code blocks — Source Code is left-aligned by default.
+
+Usage:
+    python fix-docx-report.py <input.docx> [-o OUTPUT] [-v]
+"""
+
+import argparse
+import json
+import os
+import re
+import shutil
+import struct
+import sys
+import tempfile
+import xml.etree.ElementTree as ET
+import zipfile
+
+WML = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
+NS = f"{{{WML}}}"
+DML = "http://schemas.openxmlformats.org/drawingml/2006/main"
+
+# Keep Word's conventional prefixes when ElementTree writes document.xml back
+# (otherwise every element comes out as ns0:… — valid, but not what Word or
+# other tools write, and some tools expect w:).
+for _prefix, _uri in {
+    "w": WML,
+    "r": "http://schemas.openxmlformats.org/officeDocument/2006/relationships",
+    "wp": "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing",
+    "a": DML,
+    "pic": "http://schemas.openxmlformats.org/drawingml/2006/picture",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
+    "v": "urn:schemas-microsoft-com:vml",
+    "o": "urn:schemas-microsoft-com:office:office",
+    "w10": "urn:schemas-microsoft-com:office:word",
+    "wp14": "http://schemas.microsoft.com/office/word/2010/wordprocessingDrawing",
+    "mc": "http://schemas.openxmlformats.org/markup-compatibility/2006",
+}.items():
+    ET.register_namespace(_prefix, _uri)
+
+
+def add_image_borders(body):
+    """Wrap each top-level image paragraph in a single-cell table with a tight
+    border.  The cell border sits outside the cell content, giving the
+    tightest possible frame — unlike a:ln, which is centred on the shape
+    boundary and can render asymmetrically on pictures."""
+    targets = []
+    for idx, child in enumerate(list(body)):
+        if child.tag != f"{NS}p":
+            continue
+        drawing = child.find(f".//{NS}drawing")
+        if drawing is None:
+            continue
+
+        # The image's size from wp:extent (EMU → twips).
+        width_emu = height_emu = None
+        for extent in drawing.iter():
+            if extent.tag.endswith("}extent") and extent.get("cx") and extent.get("cy"):
+                width_emu, height_emu = int(extent.get("cx")), int(extent.get("cy"))
+                break
+        if width_emu is None:
+            continue
+
+        # No other outline or paragraph border competing with the frame.
+        for spPr in drawing.iter():
+            if spPr.tag.endswith("}spPr"):
+                for ln in spPr.findall(f"{{{DML}}}ln"):
+                    spPr.remove(ln)
+                break
+        pPr = child.find(f"{NS}pPr")
+        if pPr is None:
+            pPr = ET.SubElement(child, f"{NS}pPr")
+        for pBdr in pPr.findall(f"{NS}pBdr"):
+            pPr.remove(pBdr)
+        # No paragraph spacing, so the cell fits the image exactly.
+        for sp in pPr.findall(f"{NS}spacing"):
+            pPr.remove(sp)
+        spacing = ET.SubElement(pPr, f"{NS}spacing")
+        spacing.set(f"{NS}before", "0")
+        spacing.set(f"{NS}after", "0")
+
+        targets.append((idx, child, width_emu // 635, height_emu // 635))
+
+    children = list(body)
+    for idx, img_p, width, height in targets:
+        tbl = ET.Element(f"{NS}tbl")
+        tblPr = ET.SubElement(tbl, f"{NS}tblPr")
+        tblW = ET.SubElement(tblPr, f"{NS}tblW")
+        tblW.set(f"{NS}w", str(width))
+        tblW.set(f"{NS}type", "dxa")
+        ET.SubElement(tblPr, f"{NS}jc").set(f"{NS}val", "center")
+        borders = ET.SubElement(tblPr, f"{NS}tblBorders")
+        for side in ("top", "left", "bottom", "right"):
+            b = ET.SubElement(borders, f"{NS}{side}")
+            b.set(f"{NS}val", "single")
+            b.set(f"{NS}sz", "6")  # 3/4 pt
+            b.set(f"{NS}color", "000000")
+            b.set(f"{NS}space", "0")
+        margins = ET.SubElement(tblPr, f"{NS}tblCellMar")  # 2 twips ≈ 0.035 mm
+        for side in ("top", "left", "bottom", "right"):
+            m = ET.SubElement(margins, f"{NS}{side}")
+            m.set(f"{NS}w", "2")
+            m.set(f"{NS}type", "dxa")
+        ET.SubElement(ET.SubElement(tbl, f"{NS}tblGrid"), f"{NS}gridCol").set(f"{NS}w", str(width))
+        tr = ET.SubElement(tbl, f"{NS}tr")
+        # An exact row height matching the image removes the baseline gap.
+        tr_height = ET.SubElement(ET.SubElement(tr, f"{NS}trPr"), f"{NS}trHeight")
+        tr_height.set(f"{NS}val", str(height))
+        tr_height.set(f"{NS}hRule", "exact")
+        ET.SubElement(tr, f"{NS}tc").append(img_p)
+        children[idx] = tbl
+
+    for child in list(body):
+        body.remove(child)
+    for elem in children:
+        body.append(elem)
+    return len(targets)
+
+
+# --- 2. the template's own images --------------------------------------------
+
+# Where each asset is when the template folder has no readable template.json
+# (the report's source bundle leaves it out).
+DEFAULT_ASSETS = {"logo": "img/logo.png", "cover": "img/cover.jpg"}
+CONTENT_TYPES = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif"}
+_JPEG_SOF = {0xC0, 0xC1, 0xC2, 0xC3, 0xC5, 0xC6, 0xC7, 0xC9, 0xCA, 0xCB, 0xCD, 0xCE, 0xCF}
+
+
+def image_info(data):
+    """(kind, width, height) of a PNG, JPEG or GIF, else None — read from the
+    file's header, so no imaging library is needed."""
+    if data[:8] == b"\x89PNG\r\n\x1a\n" and len(data) >= 24:
+        w, h = struct.unpack(">II", data[16:24])
+        return ("png", w, h) if w and h else None
+    if data[:6] in (b"GIF87a", b"GIF89a") and len(data) >= 10:
+        w, h = struct.unpack("<HH", data[6:10])
+        return ("gif", w, h) if w and h else None
+    if data[:2] == b"\xff\xd8":
+        i = 2
+        while i + 9 < len(data):
+            if data[i] != 0xFF:
+                i += 1
+                continue
+            marker = data[i + 1]
+            if marker in _JPEG_SOF:
+                h, w = struct.unpack(">HH", data[i + 5:i + 9])
+                return ("jpeg", w, h) if w and h else None
+            if marker in (0xD8, 0x01) or 0xD0 <= marker <= 0xD7:
+                i += 2
+                continue
+            i += 2 + struct.unpack(">H", data[i + 2:i + 4])[0]
+    return None
+
+
+def installed_assets(base):
+    """{asset id: (kind, width, height, bytes)} for each installed image."""
+    paths = dict(DEFAULT_ASSETS)
+    try:
+        with open(os.path.join(base, "template.json"), encoding="utf-8") as f:
+            for a in json.load(f).get("assets") or []:
+                if isinstance(a, dict) and a.get("id") and a.get("path") and not a.get("replaces"):
+                    paths[str(a["id"])] = str(a["path"])
+    except (OSError, ValueError):
+        pass
+    found = {}
+    for asset_id, rel in paths.items():
+        path = os.path.join(base, rel)
+        if os.path.isfile(path) and not os.path.islink(path):
+            with open(path, "rb") as f:
+                data = f.read()
+            info = image_info(data)
+            if info:
+                found[asset_id] = (*info, data)
+    return found
+
+
+def apply_template_images(tmpdir, assets):
+    """Put each installed asset in place of the placeholder drawings named
+    `bluestick-<id>` in the headers and footers.  Returns the parts to add
+    to the package, the placeholder pictures removed from it (nothing points
+    at them any more) and the number of drawings replaced."""
+    word = os.path.join(tmpdir, "word")
+    new_parts, removed, replaced = [], [], 0
+    if not assets:
+        return new_parts, removed, replaced
+    replaced_targets = set()  # the placeholder pictures' media parts
+    for part in sorted(os.listdir(word)):
+        if not re.match(r"^(header|footer)\d+\.xml$", part):
+            continue
+        rels_path = os.path.join(word, "_rels", part + ".rels")
+        if not os.path.isfile(rels_path):
+            continue
+        with open(os.path.join(word, part), encoding="utf-8") as f:
+            xml = f.read()
+        with open(rels_path, encoding="utf-8") as f:
+            rels = f.read()
+        count = 0
+
+        def swap(m):
+            nonlocal rels, count
+            block = m.group(0)
+            name = re.search(r'<wp:docPr [^>]*\bname="bluestick-([A-Za-z0-9_-]+)"', block)
+            embed = re.search(r'r:embed="([^"]+)"', block)
+            extent = re.search(r'<wp:extent cx="(\d+)" cy="(\d+)"', block)
+            if not (name and embed and extent) or name.group(1) not in assets:
+                return block
+            kind, width, height, data = assets[name.group(1)]
+            media = f"media/bluestick-{name.group(1)}.{kind}"
+            target = os.path.join(word, media)
+            if not os.path.exists(target):
+                with open(target, "wb") as f:
+                    f.write(data)
+                new_parts.append(f"word/{media}")
+            def retarget(r):
+                replaced_targets.add(r.group(2))
+                return r.group(1) + media + r.group(3)
+            rels = re.sub(
+                r'(<Relationship\b[^>]*\bId="%s"[^>]*?\bTarget=")([^"]*)(")' % re.escape(embed.group(1)),
+                retarget, rels,
+            )
+            # Fit the placeholder's box, keeping the image's proportions.
+            box_w, box_h = int(extent.group(1)), int(extent.group(2))
+            scale = min(box_w / width, box_h / height)
+            cx, cy = str(int(width * scale)), str(int(height * scale))
+            block = re.sub(r'<wp:extent cx="\d+" cy="\d+"', f'<wp:extent cx="{cx}" cy="{cy}"', block)
+            block = re.sub(r'<a:ext cx="\d+" cy="\d+"', f'<a:ext cx="{cx}" cy="{cy}"', block)
+            # A floating picture (the title page image) stays centred in the
+            # placeholder's box — a portrait photo in a landscape box would
+            # otherwise sit against the box's left edge.
+            for axis, spare in (("H", box_w - int(cx)), ("V", box_h - int(cy))):
+                block = re.sub(
+                    r"(<wp:position%s\b[^>]*>\s*<wp:posOffset>)(-?\d+)(</wp:posOffset>)" % axis,
+                    lambda p: f"{p.group(1)}{int(p.group(2)) + spare // 2}{p.group(3)}", block,
+                )
+            count += 1
+            return block
+
+        xml = re.sub(r"<w:drawing>.*?</w:drawing>", swap, xml, flags=re.S)
+        if count:
+            with open(os.path.join(word, part), "w", encoding="utf-8") as f:
+                f.write(xml)
+            with open(rels_path, "w", encoding="utf-8") as f:
+                f.write(rels)
+            replaced += count
+
+    if new_parts:
+        # A placeholder picture nothing points at any more leaves the package.
+        rels_dir = os.path.join(word, "_rels")
+        still_used = "".join(
+            open(os.path.join(rels_dir, n), encoding="utf-8").read() for n in os.listdir(rels_dir) if n.endswith(".rels")
+        )
+        for target in sorted(replaced_targets):
+            part = f"word/{target}"
+            if target.startswith("media/") and f'Target="{target}"' not in still_used:
+                os.remove(os.path.join(tmpdir, part))
+                removed.append(part)
+
+        # Every image kind used needs a content type; a removed part's
+        # override goes with it.
+        ct_path = os.path.join(tmpdir, "[Content_Types].xml")
+        with open(ct_path, encoding="utf-8") as f:
+            ct = f.read()
+        for part in new_parts:
+            ext = part.rsplit(".", 1)[1]
+            if not re.search(r'<Default Extension="%s"' % ext, ct, re.I):
+                ct = ct.replace("</Types>", f'<Default Extension="{ext}" ContentType="{CONTENT_TYPES[ext]}"/></Types>')
+        for part in removed:
+            ct = re.sub(r'<Override PartName="/%s"[^>]*/>' % re.escape(part), "", ct)
+        with open(ct_path, "w", encoding="utf-8") as f:
+            f.write(ct)
+    return new_parts, removed, replaced
+
+
+def fix_document(docx_path, verbose=False, assets_dir="."):
+    tmpdir = tempfile.mkdtemp()
+    try:
+        with zipfile.ZipFile(docx_path, "r") as zf:
+            names = zf.namelist()
+            zf.extractall(tmpdir)
+
+        doc_xml = os.path.join(tmpdir, "word", "document.xml")
+        tree = ET.parse(doc_xml)
+        body = tree.getroot().find(f"{NS}body")
+        count = add_image_borders(body)
+        tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
+
+        new_parts, removed, replaced = apply_template_images(tmpdir, installed_assets(assets_dir))
+
+        # Same parts, same order ([Content_Types].xml first, as Word expects).
+        with zipfile.ZipFile(docx_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for name in [n for n in names if n not in removed] + new_parts:
+                zf.write(os.path.join(tmpdir, name), name)
+
+        if verbose:
+            print(f"  Added a border to {count} image(s), placed {replaced} template image(s) → {docx_path}")
+        return count
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="Frame every screenshot in a Quarto-generated docx and put the template's installed images in place of its placeholders.")
+    parser.add_argument("input", help="The docx Quarto produced.")
+    parser.add_argument("-o", "--output", default=None, help="Output path (default: overwrite the input).")
+    parser.add_argument("--assets-dir", default=".",
+                        help="The template folder holding template.json and the images (default: the current folder).")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Say what was changed.")
+    return parser.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    if not os.path.exists(args.input):
+        print(f"Error: {args.input} not found")
+        sys.exit(1)
+    output_path = args.output or args.input
+    if output_path != args.input:
+        shutil.copy2(args.input, output_path)
+    fix_document(output_path, verbose=args.verbose, assets_dir=args.assets_dir)

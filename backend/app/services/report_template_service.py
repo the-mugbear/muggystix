@@ -122,6 +122,34 @@ def list_templates() -> List[ReportTemplate]:
     return out
 
 
+def template_problems() -> List[Dict[str, str]]:
+    """The folders under the templates root that are NOT offered, and why
+    (v2.409.0).  ``list_templates`` skips them so one broken folder never
+    hides the others, but skipping silently left a template author with a
+    template that simply did not appear.  Folders starting with ``.`` or
+    ``_`` are the author's own business and are not reported."""
+    root = templates_root()
+    if not root.is_dir():
+        return []
+    out: List[Dict[str, str]] = []
+    for folder in sorted(p for p in root.iterdir() if p.is_dir()):
+        if folder.name.startswith((".", "_")):
+            continue
+        if not _NAME.match(folder.name):
+            out.append({"name": folder.name, "error": (
+                "The folder name must be lower-case letters, digits, '-' or '_' "
+                "(at most 64 characters, starting with a letter or digit)."
+            )})
+        elif not (folder / "template.json").is_file():
+            out.append({"name": folder.name, "error": "The folder has no template.json."})
+        else:
+            try:
+                _load(folder)
+            except TemplateError as exc:
+                out.append({"name": folder.name, "error": str(exc)})
+    return out
+
+
 def get_template(name: Optional[str]) -> ReportTemplate:
     """The named template, or ``TemplateError`` — never a path outside the root."""
     name = (name or "").strip()

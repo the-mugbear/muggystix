@@ -80,6 +80,12 @@ class ReportTemplateOut(BaseModel):
     assets: List[ReportTemplateAssetOut] = []
 
 
+class ReportTemplateProblemOut(BaseModel):
+    """A folder under report-templates/ that is not offered, and why."""
+    name: str
+    error: str
+
+
 class ReportFileOut(BaseModel):
     format: str
     filename: str

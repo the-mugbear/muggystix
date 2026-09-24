@@ -1,0 +1,37 @@
+{
+  "title": "Executive brief",
+  "description": "A short report for leadership: the executive summary, the findings at a glance (severity, systems affected, status), the scope, and what to do about each finding — no evidence, reproduction steps or host lists. Addenda show only the changes table.",
+  "entry": "report.qmd",
+  "formats": ["docx", "html"],
+  "postprocess": {
+    "docx": "scripts/fix-docx-report.py"
+  },
+  "assets": [
+    {
+      "id": "logo",
+      "path": "img/logo.png",
+      "label": "Company logo",
+      "description": "Word: in place of the YOUR LOGO placeholder on the title page and in the header of every page, scaled to fit a 1.7 × 0.5 inch box. HTML: above the report title, up to 2 inches wide. A PNG with a transparent background reads best. Each template carries its own branding: install it here even if the Penetration test report already has one.",
+      "required": false,
+      "formats": ["html", "docx"]
+    },
+    {
+      "id": "cover",
+      "path": "img/cover.jpg",
+      "label": "Title page image",
+      "description": "Word: in place of the COVER IMAGE placeholder on the title page, scaled to fit a 7.5 × 5 inch box (a 3:2 landscape picture fills it).",
+      "required": false,
+      "formats": ["docx"],
+      "note": "Without it the title page shows the grey COVER IMAGE placeholder; to have no picture there, remove it from your own Word styles file."
+    },
+    {
+      "id": "reference-docx",
+      "path": "branding/reference.docx",
+      "replaces": "reference.docx",
+      "label": "Word styles (reference.docx)",
+      "description": "Fonts, colours, heading and table styles, page size, the title page and the header/footer of the Word brief. Start from a copy of the shipped reference.docx, change its styles in Word (not its body text) and save it here.",
+      "required": false,
+      "formats": ["docx"]
+    }
+  ]
+}

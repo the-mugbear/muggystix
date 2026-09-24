@@ -1,0 +1,10 @@
+# Rendered reports and Quarto's intermediate files (see Makefile)
+_output/
+*_files/
+.quarto/
+.luarc.json
+# An operator's branding (template.json → assets): installed per deployment,
+# carried across upgrades by upgrade-instance.sh, never committed.
+branding/
+img/logo.png
+img/cover.jpg

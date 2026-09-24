@@ -1,0 +1,6 @@
+{
+  "title": "Remediation worklist",
+  "description": "For the people who fix things: one section per affected system listing the findings on it, worst first, then how to fix each finding once. Accepted risks, remediated findings and informational findings are listed at the end, not dropped. Addenda list only the systems and findings that are new since the baseline report.",
+  "entry": "report.qmd",
+  "formats": ["html", "docx", "qmd"]
+}

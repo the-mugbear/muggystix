@@ -1,0 +1,155 @@
+{
+  "schema": 1,
+  "report": {
+    "id": 1,
+    "kind": "full",
+    "title": "Example Corp — security assessment report",
+    "heading": "Example Corp",
+    "number": 1,
+    "draft": false,
+    "date": "2026-09-23",
+    "issued_at": "2026-09-23T10:00:00+00:00",
+    "template": "remediation-worklist",
+    "authors": ["Alex Tester", "Sam Analyst"],
+    "baseline": null,
+    "revision_of": null
+  },
+  "project": {
+    "name": "Example Corp internal assessment",
+    "start_date": "2026-09-01",
+    "end_date": "2026-09-19"
+  },
+  "engagement": {
+    "client_name": "Example Corp",
+    "classification": "Confidential",
+    "engagement_type": "Internal network penetration test",
+    "testers": [
+      {"user_id": 1, "name": "Alex Tester", "role": "Technical lead", "email": "lead@example.com"},
+      {"user_id": 2, "name": "Sam Analyst", "role": "Tester", "email": "tester@example.com"}
+    ],
+    "distribution": [
+      {"name": "Chief Information Security Officer", "email": "ciso@example.com"}
+    ],
+    "system_description": "The assessment covered the **corporate server network** and the public web portal.",
+    "applications": "- https://portal.example.com (customer portal)\n- https://api.example.com/v2",
+    "thick_clients": null,
+    "other_targets": null
+  },
+  "executive_summary": "The assessment found **one critical** and **one high** severity issue that give an attacker on the internal network control of the file server and read access to the directory.\n\n1. Patch the file server.\n2. Disable anonymous LDAP binds.",
+  "scope": {
+    "subnets": [
+      {"cidr": "192.0.2.0/24", "description": "Server VLAN", "site": "HQ"}
+    ],
+    "domains": [
+      {"domain": "example.com", "include_subdomains": true}
+    ]
+  },
+  "severity_order": ["critical", "high", "medium", "low", "info"],
+  "severity_labels": {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Informational"},
+  "counts": {"critical": 1, "high": 1, "medium": 1, "low": 0, "info": 1, "total": 4},
+  "findings": [
+    {
+      "_path": "findings.0",
+      "id": 11,
+      "ref": "F-01",
+      "title": "Remote code execution in the file server's SMB service",
+      "severity": "critical",
+      "severity_label": "Critical",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": 9.8,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+      "description": "The SMB service on the file server runs a version with a known remote code execution flaw.",
+      "impact": "An attacker on the internal network can run commands as SYSTEM on the file server.",
+      "recommendation": "Apply the vendor's security update and restrict SMB to the hosts that need it.",
+      "references": "- https://www.example.com/advisory/2026-001",
+      "steps_to_reproduce": "1. Scan the server VLAN for SMB.\n2. Confirm the vulnerable version with a safe check.\n\n```bash\nnmap -p445 --script smb-vuln-check 192.0.2.10\n```",
+      "affected": [
+        {"address": "192.0.2.10", "hostname": "files01", "name": null, "port": "445/tcp", "state": null},
+        {"address": "192.0.2.20", "hostname": "dc01", "name": "dc01.example.com", "port": "445/tcp", "state": null}
+      ],
+      "affected_count": 2,
+      "new_affected": [],
+      "change": null,
+      "evidence": [],
+      "corroboration": ["Nessus", "OpenVAS"]
+    },
+    {
+      "_path": "findings.1",
+      "id": 12,
+      "ref": "F-02",
+      "title": "Anonymous LDAP bind returns the directory",
+      "severity": "high",
+      "severity_label": "High",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": 7.5,
+      "cvss_vector": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:N/A:N",
+      "description": "Both domain controllers accept anonymous LDAP binds and return user and group objects.",
+      "impact": "Anyone on the network can list every account, which makes password attacks targeted.",
+      "recommendation": "Disable anonymous binds on the domain controllers.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {"address": "192.0.2.20", "hostname": "dc01", "name": "dc01.example.com", "port": "389/tcp", "state": null},
+        {"address": "192.0.2.21", "hostname": "dc02", "name": "dc02.example.com", "port": "389/tcp", "state": "Remediated"}
+      ],
+      "affected_count": 2,
+      "new_affected": [],
+      "change": null,
+      "evidence": [],
+      "corroboration": []
+    },
+    {
+      "_path": "findings.2",
+      "id": 13,
+      "ref": "F-03",
+      "title": "TLS 1.0 accepted by the web portal",
+      "severity": "medium",
+      "severity_label": "Medium",
+      "status": "accepted_risk",
+      "status_note": "Risk accepted",
+      "cvss_score": null,
+      "cvss_vector": null,
+      "description": "The portal still negotiates TLS 1.0.",
+      "impact": null,
+      "recommendation": "Disable TLS 1.0 and 1.1.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {"address": "198.51.100.5", "hostname": null, "name": "portal.example.com", "port": "443/tcp", "state": null}
+      ],
+      "affected_count": 1,
+      "new_affected": [],
+      "change": null,
+      "evidence": [],
+      "corroboration": []
+    },
+    {
+      "_path": "findings.3",
+      "id": 14,
+      "ref": "F-04",
+      "title": "Web server version disclosed in headers",
+      "severity": "info",
+      "severity_label": "Informational",
+      "status": "confirmed",
+      "status_note": null,
+      "cvss_score": null,
+      "cvss_vector": null,
+      "description": "The portal's Server header names the software and version.",
+      "impact": null,
+      "recommendation": "Remove the version from the Server header.",
+      "references": null,
+      "steps_to_reproduce": null,
+      "affected": [
+        {"address": "198.51.100.5", "hostname": null, "name": "portal.example.com", "port": "443/tcp", "state": null}
+      ],
+      "affected_count": 1,
+      "new_affected": [],
+      "change": null,
+      "evidence": [],
+      "corroboration": []
+    }
+  ],
+  "delta": null
+}

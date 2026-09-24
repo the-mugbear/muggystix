@@ -18,11 +18,13 @@ import {
   ProjectMember,
   ReportProfile,
   ReportTemplate,
+  ReportTemplateProblem,
   createClientReport,
   downloadClientReportFile,
   getReportProfile,
   listClientReports,
   listProjectMembers,
+  listReportTemplateProblems,
   listReportTemplates,
   saveReportProfile,
   updateClientReport,
@@ -343,6 +345,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const [profile, setProfile] = useState<ReportProfile | null>(null);
   const [draft, setDraft] = useState<ReportProfile | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
+  const [problems, setProblems] = useState<ReportTemplateProblem[]>([]);
   const [members, setMembers] = useState<ProjectMember[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
@@ -353,8 +356,11 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       .then(([p, t]) => { if (!cancelled) { setProfile(p); setTemplates(t); } })
       .catch((err) => { if (!cancelled) setError(formatApiError(err, 'Could not load the report defaults.')); });
     if (canEdit) listProjectMembers().then((m) => { if (!cancelled) setMembers(m); }).catch(() => {});
+    // Only an administrator can put a folder on the server, so only they are
+    // told which ones could not be offered.
+    if (isAdmin) listReportTemplateProblems().then((p) => { if (!cancelled) setProblems(p); }).catch(() => {});
     return () => { cancelled = true; };
-  }, [canEdit]);
+  }, [canEdit, isAdmin]);
 
   const save = async () => {
     if (!draft) return;
@@ -424,7 +430,7 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </form>
       )}
     </PostureSection>
-    {profile && <TemplatesSection templates={templates} defaultName={profile.template} isAdmin={isAdmin} />}
+    {profile && <TemplatesSection templates={templates} problems={problems} defaultName={profile.template} isAdmin={isAdmin} />}
     </>
   );
 };
@@ -434,8 +440,10 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
  * files it uses besides the findings' evidence. A template is a folder under
  * `report-templates/`, read on each request — there is no upload.
  */
-const TemplatesSection: React.FC<{ templates: ReportTemplate[]; defaultName: string | null; isAdmin: boolean }> = ({
-  templates, defaultName, isAdmin,
+const TemplatesSection: React.FC<{
+  templates: ReportTemplate[]; problems: ReportTemplateProblem[]; defaultName: string | null; isAdmin: boolean;
+}> = ({
+  templates, problems, defaultName, isAdmin,
 }) => {
   const ordered = [...templates].sort((a, b) => Number(b.name === defaultName) - Number(a.name === defaultName));
   return (
@@ -468,12 +476,53 @@ const TemplatesSection: React.FC<{ templates: ReportTemplate[]; defaultName: str
           })}
         </div>
       )}
+      {/* A folder that is there but not offered used to vanish without a
+          word (v5.295.0): the author had no way to learn why. */}
+      {isAdmin && problems.length > 0 && (
+        <div className="mt-sm border-l-4 border-l-warning py-xxs pl-sm" role="status">
+          <p className="text-caption font-medium text-foreground">
+            {problems.length === 1 ? '1 folder is' : `${problems.length} folders are`} in{' '}
+            <span className="font-mono">report-templates/</span> but not offered:
+          </p>
+          <ul className="mt-xxs space-y-xxs">
+            {problems.map((p) => (
+              <li key={p.name} className="min-w-0 break-words text-caption text-muted-foreground">
+                <span className="font-mono text-foreground">{p.name}</span> — {p.error}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       {isAdmin && (
-        <p className="mt-sm max-w-3xl text-caption text-muted-foreground">
-          To add a template, copy its folder, with its <span className="font-mono">template.json</span>, into{' '}
-          <span className="font-mono">report-templates/</span> on the server. It is listed here on the next reload; no rebuild
-          is needed.
-        </p>
+        <details className="mt-sm max-w-3xl text-caption text-muted-foreground">
+          <summary className="cursor-pointer font-medium text-foreground">Add a template</summary>
+          <ol className="mt-xs list-decimal space-y-xxs pl-lg">
+            <li>
+              Copy an existing template&apos;s folder on the server. <span className="font-mono">remediation-worklist</span>{' '}
+              is the starter: the smallest <span className="font-mono">template.json</span>, no images, and a{' '}
+              <span className="font-mono">report.qmd</span> whose comments explain each part.
+            </li>
+            <li>
+              Rename the folder (lower-case letters, digits, <span className="font-mono">-</span> or{' '}
+              <span className="font-mono">_</span>) and give <span className="font-mono">template.json</span> its own title and
+              description — they are what people choose by here and on each draft.
+            </li>
+            <li>
+              Edit <span className="font-mono">report.qmd</span> and render it with its{' '}
+              <span className="font-mono">sample-data.json</span> (<span className="font-mono">make</span> in the folder)
+              until it reads right.
+            </li>
+            <li>
+              Put the folder in <span className="font-mono">report-templates/</span>. It is listed here on the next reload — no
+              rebuild or restart. A folder with a mistake is listed above with what to fix.
+            </li>
+          </ol>
+          <p className="mt-xs">
+            The full guide — every <span className="font-mono">template.json</span> key, the data a template receives and the
+            rules that keep written text from becoming template code — is{' '}
+            <span className="font-mono">report-templates/README.md</span> in the BlueStick source.
+          </p>
+        </details>
       )}
     </PostureSection>
   );

@@ -1,5 +1,11 @@
 # Report templates — examples
 
+> Not the client report templates. Those are in the repository's root
+> `report-templates/` (Penetration test report, Executive brief, Remediation
+> worklist): BlueStick renders them from the Reports page, and
+> `report-templates/README.md` explains how to add one. The files here are
+> Markdown an **agent** fills in.
+
 These are **starting points to copy onto your own machine**, not something
 BlueStick hosts or serves. The workflow is:
 

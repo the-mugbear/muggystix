@@ -19,6 +19,7 @@ vi.mock('../../services/api', () => ({
   rerenderClientReport: vi.fn(),
   reviseClientReport: vi.fn(),
   listReportTemplates: vi.fn(),
+  listReportTemplateProblems: vi.fn(),
   getReportProfile: vi.fn(),
   saveReportProfile: vi.fn(),
   downloadClientReportFile: vi.fn(),
@@ -80,6 +81,7 @@ beforeEach(() => {
   mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
   mocked.listProjectMembers.mockResolvedValue([]);
+  mocked.listReportTemplateProblems.mockResolvedValue([]);
 });
 
 const renderList = () => render(<MemoryRouter><Reports /></MemoryRouter>);
@@ -358,6 +360,20 @@ describe('Report detail — layout review (v5.286.0)', () => {
     expect(screen.getByLabelText('Executive summary')).toHaveValue('Not saved yet.');
   });
 
+  it('says what the chosen template is for when there is a choice', async () => {
+    mocked.listReportTemplates.mockResolvedValue([
+      { name: 'pentest', title: 'Penetration test report', description: 'Findings-first client report.', formats: ['html', 'docx'] },
+      { name: 'executive-brief', title: 'Executive brief', description: 'A short report for leadership.', formats: ['docx', 'html'] },
+    ]);
+    mocked.getClientReport.mockResolvedValue(report());
+    mocked.updateClientReport.mockResolvedValue(report({ template: 'executive-brief' }));
+    renderDetail();
+    expect(await screen.findByTestId('template-description')).toHaveTextContent('Findings-first client report.');
+    fireEvent.keyDown(screen.getByRole('combobox', { name: 'Template' }), { key: 'Enter' });
+    fireEvent.click(await screen.findByRole('option', { name: 'Executive brief' }));
+    await waitFor(() => expect(screen.getByTestId('template-description')).toHaveTextContent('A short report for leadership.'));
+  });
+
   it('offers a global admin who is not a member to add themself to the team', async () => {
     mocked.getClientReport.mockResolvedValue(report());
     mocked.updateClientReport.mockResolvedValue(report());
@@ -507,7 +523,20 @@ describe('Template images', () => {
     expect(screen.getByText('report-templates/pentest/img/logo.png')).toHaveAttribute(
       'title', 'report-templates/pentest/img/logo.png',
     );
-    expect(screen.getByText(/To add a template, copy its folder/)).toBeInTheDocument();
+    expect(screen.getByText('Add a template')).toBeInTheDocument();
+    expect(screen.getByText(/is the starter: the smallest/)).toBeInTheDocument();
+  });
+
+  it('tells an admin which template folders are not offered, and why', async () => {
+    mocked.listReportTemplateProblems.mockResolvedValue([
+      { name: 'My Template', error: 'The folder name must be lower-case letters, digits, …' },
+      { name: 'draft-brief', error: 'The folder has no template.json.' },
+    ]);
+    mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
+    renderList();
+    expect(await screen.findByText(/2 folders are/)).toBeInTheDocument();
+    expect(screen.getByText('draft-brief')).toBeInTheDocument();
+    expect(screen.getByText(/The folder has no template\.json\./)).toBeInTheDocument();
   });
 
   it('shows server paths and install steps only to a global admin', async () => {
@@ -517,7 +546,8 @@ describe('Template images', () => {
     renderList();
     expect(await screen.findByText('Missing · required')).toBeInTheDocument();
     expect(screen.queryByText('report-templates/pentest/img/logo.png')).not.toBeInTheDocument();
-    expect(screen.queryByText(/To add a template/)).not.toBeInTheDocument();
+    expect(screen.queryByText('Add a template')).not.toBeInTheDocument();
+    expect(mocked.listReportTemplateProblems).not.toHaveBeenCalled();
     expect(screen.getByText(/An administrator installs these files on the server/)).toBeInTheDocument();
   });
 });

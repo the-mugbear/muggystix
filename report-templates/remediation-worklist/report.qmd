@@ -1,0 +1,170 @@
+<#
+  BlueStick client report — remediation worklist.
+
+  THIS IS THE STARTER TEMPLATE.  Copy this folder to begin your own:
+  report-templates/README.md walks through every file.  This one uses the
+  smallest template.json there is (title, description, entry, formats), no
+  images, no Word styles file (Quarto's default styles) and no
+  post-processing script.
+
+  How a template works, in four lines:
+    1. BlueStick builds the report's data — sample-data.json is an example.
+    2. It fills THIS file with that data using Jinja (delimiters below).
+    3. Quarto renders the result to HTML, Word and/or the .qmd source.
+    4. Written text (a finding's recommendation…) is added last by a filter,
+       so nothing a user typed ever becomes template code.
+
+  The delimiters (spelled out, because writing them here would run them):
+    statements   less-than percent  …  percent greater-than   (if, for, set)
+    values       two less-thans     …  two greater-thans      (printed, escaped)
+    comments     less-than hash     …  hash greater-than      (like this one)
+
+  The rules that keep a report safe — the renderer enforces most of them:
+    - A printed value is ESCAPED, so a title such as *bold* prints literally.
+    - Written Markdown (description, impact, recommendation…) only through
+      md(finding, "field") — never print it as a value.
+    - Never print data in the YAML front matter below: Quarto expands
+      shortcodes there.  bluestick-meta names the data instead.
+    - Never print a value inside `code` or a code block.
+#>
+---
+title: "Remediation worklist"
+bluestick-meta:
+  title: report.title
+  subtitle: report.heading
+date: << plain(report.date) >>
+engine: markdown
+filters:
+  - quarto
+  - _bluestick/fields.lua
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    theme: cosmo
+    embed-resources: true
+    include-in-header:
+      - text: |
+          <style>
+          table { width: 100%; }
+          mark.bs-todo { background: #ffe066; color: #1a1a1a; padding: 0 .25em; }
+          </style>
+  docx:
+    toc: true
+    toc-depth: 2
+---
+
+<% if report.draft %>
+::: {.callout-warning}
+**Draft** — built from the live findings on << plain(report.date) >>. Not for distribution.
+:::
+
+<% endif %>
+<#
+  The data lists FINDINGS, each with the systems it affects.  A worklist wants
+  the opposite: SYSTEMS, each with its findings.  This block turns it round.
+
+  - No macros: a macro's output is printed like a value and so escaped.  The
+    choice of rows is an inline `set`; reusable layout would be an include.
+  - Findings arrive worst first (severity, then CVSS score), so each system's
+    findings are listed worst first without sorting.
+  - In an addendum only what is new counts: the affected systems of a NEW
+    finding, and the NEW systems of a finding reported before.
+  - A system whose row says Remediated is already fixed: it is not work.
+  - Mutating a dict or list inside a loop (`hosts.update`, `.append`) is how
+    Jinja collects across loop iterations; `set` inside a loop does not leak.
+#>
+<% set rank = {} %>
+<% for s in severity_order %><% set _ = rank.update({s: loop.index}) %><% endfor %>
+<% set hosts = {} %>
+<% set fixes = [] %>
+<% for f in findings if f.severity != "info" and f.status == "confirmed" %>
+<% if report.kind == "addendum" %>
+<% set rows = f.affected if f.change == "new" else (f.new_affected if f.change == "new_hosts" else []) %>
+<% else %>
+<% set rows = f.affected %>
+<% endif %>
+<% set open_rows = rows|rejectattr("state", "equalto", "Remediated")|list %>
+<% if open_rows %><% set _ = fixes.append(f) %><% endif %>
+<% for e in open_rows %>
+<% if e.address not in hosts %>
+<% set _ = hosts.update({e.address: {"system": e, "rank": rank[f.severity], "items": []}}) %>
+<% endif %>
+<% set h = hosts[e.address] %>
+<% if rank[f.severity] < h.rank %><% set _ = h.update({"rank": rank[f.severity]}) %><% endif %>
+<% set _ = h["items"].append({"f": f, "port": e.port}) %>
+<% endfor %>
+<% endfor %>
+<# Worst system first, then by address (sort is stable, so sort twice). #>
+<% set worklist = hosts.values()|sort(attribute="system.address")|sort(attribute="rank") %>
+# How to use this list
+
+<% if report.kind == "addendum" %>
+This addendum to *<< report.baseline.title >>* lists only the work that is new since report << report.baseline.number >>: systems where a new finding was found, and further systems for findings reported before.
+<% else %>
+Each section below is one system and the findings to fix on it, worst first. How to fix each finding is described once, under **How to fix**, and linked from every system it affects.
+<% endif %>
+
+<% if worklist %>
+| System | Name | Findings | Worst |
+|:------------------|:----------------------------------|:---------|:-----------|
+<% for h in worklist %>
+| [<< h.system.address >>](#system-<< loop.index >>) | << h.system.name or h.system.hostname or "" >> | << h["items"]|length >> | << h["items"][0].f.severity_label >> |
+<% endfor %>
+<% else %>
+Nothing to fix: no confirmed finding has an open affected system in this report.
+<% endif %>
+
+<% for h in worklist %>
+## << h.system.address >><% if h.system.name or h.system.hostname %> — << h.system.name or h.system.hostname >><% endif %> {#system-<< loop.index >>}
+
+| Ref | Finding | Severity | Port |
+|:------|:---------------------------------------------|:-----------|:------------|
+<% for it in h["items"] %>
+| [<< it.f.ref >>](#fix-<< it.f.id >>) | << it.f.title >> | << it.f.severity_label >> | << it.port or "" >> |
+<% endfor %>
+
+<% endfor %>
+<% if fixes %>
+{{< pagebreak >}}
+
+# How to fix
+
+<% for f in fixes %>
+## << f.ref >> — << f.title >> (<< f.severity_label >>) {#fix-<< f.id >>}
+
+<< md(f, "recommendation", todo="Say what to change to fix it.") >>
+
+<% endfor %>
+<% endif %>
+<#
+  Nothing silently disappears: whatever the worklist left out is named here.
+#>
+<% set accepted = findings|selectattr("status", "equalto", "accepted_risk")|list %>
+<% set remediated = findings|selectattr("status", "equalto", "remediated")|list %>
+<% set info = findings|selectattr("severity", "equalto", "info")|list %>
+<# Systems already fixed on a finding that is still open elsewhere. #>
+<% set fixed = [] %>
+<% for f in fixes %>
+<% for e in f.affected if e.state == "Remediated" %>
+<% set _ = fixed.append({"f": f, "e": e}) %>
+<% endfor %>
+<% endfor %>
+<% if accepted or remediated or info or fixed %>
+# Not on this list
+
+| Ref | Finding | Why |
+|:------|:---------------------------------------------|:------------------------------|
+<% for f in accepted %>
+| << f.ref >> | << f.title >> | Risk accepted |
+<% endfor %>
+<% for f in remediated %>
+| << f.ref >> | << f.title >> | Remediated during the assessment |
+<% endfor %>
+<% for x in fixed %>
+| << x.f.ref >> | << x.f.title >> | Already fixed on << x.e.address >><% if x.e.name or x.e.hostname %> (<< x.e.name or x.e.hostname >>)<% endif %> |
+<% endfor %>
+<% for f in info if f.status == "confirmed" %>
+| << f.ref >> | << f.title >> | Informational — nothing to fix |
+<% endfor %>
+<% endif %>

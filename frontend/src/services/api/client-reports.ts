@@ -182,6 +182,15 @@ export const reviseClientReport = async (id: number): Promise<ClientReport> =>
 export const listReportTemplates = async (): Promise<ReportTemplate[]> =>
   (await api.get<ReportTemplate[]>(`${base()}/templates`)).data;
 
+/** A folder under report-templates/ that is not offered, and why (v2.409.0). */
+export interface ReportTemplateProblem {
+  name: string;
+  error: string;
+}
+
+export const listReportTemplateProblems = async (): Promise<ReportTemplateProblem[]> =>
+  (await api.get<ReportTemplateProblem[]>(`${base()}/templates/problems`)).data;
+
 /** The project's analysts and admins as an assessment team (name, role, email). */
 export const getProjectReportTeam = async (): Promise<ReportTester[]> =>
   (await api.get<ReportTester[]>(`${base()}/team`)).data;
