@@ -250,8 +250,13 @@ export default function HostCommandBar({
               }
               if (e.key === 'Escape') { setFocused(false); setActiveIndex(-1); }
             }}
-            placeholder="Search hosts or query (port:80 port:443 AND NOT tag:test) — press / to focus"
+            // Short enough to fit the bar at desktop widths (the old one lost
+            // its end); the "/" shortcut is on the input's tooltip and in the
+            // syntax help.
+            placeholder="Search hosts or query — port:80 AND NOT tag:test"
+            title="Search hosts or write a query. Press / to focus."
             aria-label="Host query"
+            aria-keyshortcuts="/"
             aria-invalid={invalid ? true : undefined}
             role="combobox"
             aria-expanded={showSuggest}
@@ -441,7 +446,8 @@ export default function HostCommandBar({
                 Combine fields with <code>AND</code> / <code>OR</code> / <code>NOT</code> and parentheses.
                 Comma = OR within a field (<code>port:80,443</code>); repeating a field = AND
                 (<code>port:80 port:443</code> ⇒ both). Bare text is a free-text search.
-                <strong> Click a field to add it.</strong>
+                <strong> Click a field to add it.</strong> Press <kbd className="font-mono">/</kbd> anywhere
+                on the page to focus the query bar.
               </p>
               <div className="max-h-64 space-y-px overflow-y-auto">
                 {(schema?.fields ?? []).map((f) => (

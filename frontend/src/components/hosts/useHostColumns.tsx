@@ -25,6 +25,7 @@ import { formatRelativeTime } from '../../utils/relativeTime';
 import {
   exposureChips,
 } from '../../utils/portsOfInterest';
+import { matchedEndpoints, type EndpointMatchCriteria } from '../../utils/endpointMatch';
 
 // Map a tag's palette key to a coloured dot.  Unknown / null colours
 // fall back to a neutral dot — the backend stores whatever string the
@@ -95,6 +96,8 @@ const StateDot: React.FC<{ state: string | null | undefined }> = ({ state }) => 
         : 'State: unknown — liveness not confirmed (e.g. masscan / naabu / DNS)';
   return (
     <span
+      role="img"
+      data-host-state={state === 'up' || state === 'down' ? state : 'unknown'}
       className={cn('mt-1 inline-block size-2 shrink-0 rounded-full', cls)}
       title={title}
       aria-label={title}
@@ -431,6 +434,12 @@ export interface UseHostColumnsOptions {
    * render as plain non-interactive text.
    */
   onAddFilter?: (pivot: HostFilterPivot) => void;
+  /**
+   * The active port / service / version conditions (`endpointMatchCriteria`).
+   * When set, the Exposure cell names the port(s) that made the row match —
+   * the risk-ranked chips alone never said why a "service ftp" row was listed.
+   */
+  endpointMatch?: EndpointMatchCriteria | null;
 }
 
 /**
@@ -469,6 +478,7 @@ export function useHostColumns({
   onFollowChange,
   onOpen,
   onAddFilter,
+  endpointMatch = null,
 }: UseHostColumnsOptions): ColumnDef<Host>[] {
   return useMemo<ColumnDef<Host>[]>(
     () => [
@@ -652,8 +662,32 @@ export function useHostColumns({
           const host = row.original;
           const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
           const chips = exposureChips(host.ports);
+          const matched = matchedEndpoints(host.ports, endpointMatch);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
+              {/* Why this row is in the list when an endpoint condition is
+                  applied: the port(s) that satisfy it, ahead of the
+                  risk-ranked chips (which may not include it at all). */}
+              {matched.length > 0 && (
+                <div
+                  className="flex min-w-0 flex-wrap items-center gap-xxs"
+                  data-testid="endpoint-match"
+                  title={`Matches the endpoint condition: ${matched.map((m) => (m.state ? `${m.label} (${m.state})` : m.label)).join(', ')}`}
+                >
+                  <span className="text-caption text-muted-foreground">Matched</span>
+                  {matched.slice(0, 2).map((m) => (
+                    <span
+                      key={m.key}
+                      className="inline-flex max-w-full items-center rounded-chip border border-info/40 bg-info/10 px-xs py-px font-mono text-caption text-info"
+                    >
+                      <span className="truncate">{m.state ? `${m.label} · ${m.state}` : m.label}</span>
+                    </span>
+                  ))}
+                  {matched.length > 2 && (
+                    <span className="text-caption text-muted-foreground">+{matched.length - 2}</span>
+                  )}
+                </div>
+              )}
               {/* "40 open ports", not "40 open / 45": the total counted
                   closed and filtered sightings, which nobody reads here. */}
               <div className="text-caption text-muted-foreground">
@@ -790,6 +824,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [updatingHostId, onFollowChange, onOpen, onAddFilter],
+    [updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch],
   );
 }
