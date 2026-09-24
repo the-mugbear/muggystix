@@ -76,7 +76,7 @@ const ProjectMultiSelect: React.FC<Props> = ({ options, value, onChange, disable
         <Button
           type="button"
           variant="outline"
-          className="h-9 w-56 justify-between font-normal"
+          className="h-8 w-56 justify-between text-metadata font-normal"
           aria-label={`Projects: ${label}`}
           disabled={disabled}
         >

@@ -93,23 +93,30 @@ describe('Portfolio', () => {
 
   // At ~1500px the Waiting header and "36 in review · 351 not started" wrapped
   // while Hosts (a single number) held 12% of the width.
-  it('sizes the short columns to their content and keeps review and the Waiting header on one line', async () => {
+  it('fits the table to the content width with "What testing found" the widest column', async () => {
     await renderPage();
     const table = screen.getByRole('table', { name: /worst first/ });
     const col = (name: string) => table.querySelector(`col[data-col="${name}"]`) as HTMLElement;
-    expect(col('hosts').style.width).toBe('5rem');
-    expect(col('review').style.width).toBe('14rem');
-    expect(col('waiting').style.width).toBe('16rem');
     expect(col('found').style.width).toBe(''); // takes the remaining width
-    // v5.289.0 — the last rebalance left "What testing found" narrow. At a
-    // 1500px content width (16px rem) it must be the widest column.
+    // v5.294.0 (B2) — a 1040px minimum scrolled the Waiting column 114px out
+    // of view at a 1246px viewport (content ~916px). No minimum now, and the
+    // columns leave "What testing found" a usable width there.
+    expect(table.className).not.toMatch(/min-w-/);
+    expect(table.closest('.overflow-x-auto')).toBeNull();
     const px = (w: string, total: number) => (w.endsWith('%') ? (parseFloat(w) / 100) * total : parseFloat(w) * 16);
-    const fixed = ['project', 'review', 'hosts', 'waiting'].map((c) => px(col(c).style.width, 1500));
-    const found = 1500 - fixed.reduce((a, b) => a + b, 0);
-    expect(found).toBeGreaterThan(Math.max(...fixed));
-    expect(found).toBeGreaterThanOrEqual(640); // the longest reason line on one line
-    expect(within(table).getByRole('columnheader', { name: /Waiting · last import/ })).toHaveClass('whitespace-nowrap');
-    expect(within(table).getAllByText('2 in review · 5 not started')[0]).toHaveClass('whitespace-nowrap');
+    const foundAt = (total: number) => {
+      const fixed = ['project', 'review', 'hosts', 'waiting'].map((c) => px(col(c).style.width, total));
+      return { found: total - fixed.reduce((a, b) => a + b, 0), fixed };
+    };
+    expect(foundAt(916).found).toBeGreaterThanOrEqual(280);
+    // v5.289.0 — at a 1500px content width it stays the widest column, wide
+    // enough for the longest reason line on one line.
+    const wide = foundAt(1500);
+    expect(wide.found).toBeGreaterThan(Math.max(...wide.fixed));
+    expect(wide.found).toBeGreaterThanOrEqual(640);
+    // The short columns wrap rather than push the table wider.
+    expect(within(table).getByRole('columnheader', { name: /Waiting · last import/ })).not.toHaveClass('whitespace-nowrap');
+    expect(within(table).getAllByText('2 in review · 5 not started')[0]).toHaveClass('break-words');
   });
 
   it('a measure filters the table to the projects it counts; Reset shows them all', async () => {

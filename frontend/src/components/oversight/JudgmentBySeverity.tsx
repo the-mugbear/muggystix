@@ -2,8 +2,10 @@
  * Findings and the judging of scanner output, one row per severity
  * (5.259.0).  Each row: the findings (issues) at that severity, the total
  * scanner observations beside them (5.270.1), a bar of those observations
- * split into judged / not yet judged, and the share of
- * tested targets with a finding at that severity (the API's defect_rate).
+ * split into judged / not yet judged, and the share of hosts taken into
+ * review (in review or reviewed) with a finding at that severity (the API's
+ * defect_rate over its `tested_targets`; v5.294.0 renamed the words, not the
+ * count — "tested" means a recorded test result everywhere else).
  *
  * Findings are issues and observations are issue × host — the bar is the
  * observations' own part-to-whole and the findings count sits beside it,
@@ -40,8 +42,8 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: JUDGED }} aria-hidden />judged</span>{' · '}
               <span className="inline-flex items-center gap-xxs"><span className="inline-block h-2 w-3 rounded-sm" style={{ background: NOT_JUDGED }} aria-hidden />not yet judged</span>
             </th>
-            <th className="pb-xs text-right font-medium" title={`Share of the ${s.tested_targets.toLocaleString()} tested targets with at least one finding at that severity (not a false positive there)`}>
-              Tested targets with a finding
+            <th className="pb-xs text-right font-medium" title={`Share of the ${s.tested_targets.toLocaleString()} hosts taken into review (in review or reviewed) with at least one finding at that severity (not a false positive there)`}>
+              Taken into review, with a finding
             </th>
           </tr>
         </thead>
@@ -92,7 +94,7 @@ export const JudgmentBySeverity: React.FC<{ severity: OversightSummary['severity
       </table>
     </div>
     <p className="mt-xs text-caption text-muted-foreground">
-      {s.finding_affected_targets.toLocaleString()} {s.finding_affected_targets === 1 ? 'target carries' : 'targets carry'} a finding. Findings are issues and observations are issue × host,
+      {s.finding_affected_targets.toLocaleString()} {s.finding_affected_targets === 1 ? 'host carries' : 'hosts carry'} a finding. Findings are issues and observations are issue × host,
       so they are compared, never subtracted. Informational and unknown severities are left out.
     </p>
   </div>

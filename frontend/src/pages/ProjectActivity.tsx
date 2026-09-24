@@ -10,9 +10,14 @@
  * hygiene boxes, the call tiles and the card around every block are gone; the
  * call chart renders only when there were calls, and the model breakdown only
  * when an agent reported its model or tool.
+ *
+ * v5.294.0 (UX review) — one page for runs AND sessions. Agent Sessions listed
+ * the same sessions in another format with other controls; it is now this
+ * page's "Sessions" view (`?view=sessions`, components/agent-sessions). The
+ * title stays "Agent Runs", the name the nav and the palette use.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { RefreshCw, Search, ChevronRight, Loader2, RotateCcw, Square } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
@@ -33,11 +38,15 @@ import { formatApiError } from '../utils/apiErrors';
 import PostureLead, { LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
+import AgentSessionsList from '../components/agent-sessions/AgentSessionsList';
+import LastUpdated from '../components/LastUpdated';
+import ListFilterBar, { FILTER_TRIGGER_CLASS } from '../components/ListFilterBar';
+import RunKindBadge from '../components/RunKindBadge';
+import TimeAgo from '../components/TimeAgo';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { CodeBlock } from '../components/ui/code-block';
-import { Label } from '../components/ui/label';
 import {
   Select,
   SelectContent,
@@ -59,10 +68,10 @@ import {
   TooltipTrigger,
 } from '../components/ui/tooltip';
 import { cn } from '../utils/cn';
-import { formatRelativeTime } from '../utils/relativeTime';
+import { formatTimestamp } from '../utils/relativeTime';
 
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
-  { value: '', label: 'All sessions' },
+  { value: '', label: 'All workflows' },
   // v2.337.0 — one project session does every kind of work; the four below are
   // legacy per-workflow rows from before the consolidation.
   { value: 'project', label: 'Session' },
@@ -76,21 +85,6 @@ const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline' | 'muted';
 
-function kindBadgeVariant(kind: AgentSessionKind): BadgeVariant {
-  switch (kind) {
-    case 'project':
-      return 'default';
-    case 'recon':
-      return 'secondary';
-    case 'plan_generation':
-      return 'info';
-    case 'execution':
-      return 'success';
-    case 'assist':
-      return 'warning';
-  }
-}
-
 function statusBadgeVariant(status: string): BadgeVariant {
   const s = status.toLowerCase();
   if (s === 'active' || s === 'in_progress') return 'success';
@@ -100,19 +94,7 @@ function statusBadgeVariant(status: string): BadgeVariant {
   return 'muted';
 }
 
-function fmtTime(iso?: string | null): string {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-}
-
-/** Short relative age ("5m ago"). Shared with every other surface —
- *  this was one of four byte-identical copies before v5.179.0. */
-const fmtRelative = (iso?: string | null): string =>
-  formatRelativeTime(iso, { withSeconds: true });
+const fmtTime = (iso?: string | null): string => formatTimestamp(iso);
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -463,8 +445,22 @@ const ApiCallSection: React.FC<{
   );
 };
 
+type PageView = 'runs' | 'sessions';
+
 const ProjectActivity: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const view: PageView = searchParams.get('view') === 'sessions' ? 'sessions' : 'runs';
+  const setView = (next: PageView) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'sessions') params.set('view', 'sessions');
+    else params.delete('view');
+    setSearchParams(params, { replace: true });
+  };
+  const [lastFetched, setLastFetched] = useState<Date | null>(null);
+  // The Sessions view's Resume / End need the session as Agent Runs knows it
+  // (key expiry, renewal deadline); loaded while that view is open.
+  const [projectSessions, setProjectSessions] = useState<Map<number, AgentSessionRow>>(new Map());
   const [rows, setRows] = useState<AgentSessionRow[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ModelToolSummaryRow[] | null>(null);
@@ -520,6 +516,7 @@ const ProjectActivity: React.FC = () => {
       setTotal(list.total);
       setSummary(sum.summary);
       setApiSummary(apiSum);
+      setLastFetched(new Date());
     } catch (e: unknown) {
       setError(formatApiError(e, 'Failed to load project activity.'));
     } finally {
@@ -531,6 +528,22 @@ const ProjectActivity: React.FC = () => {
     fetchAll();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchAll, refreshNonce]);
+
+  useEffect(() => {
+    if (view !== 'sessions') return;
+    let cancelled = false;
+    listAgentSessions({ kind: 'project', limit: 200 })
+      .then((list) => {
+        if (!cancelled) setProjectSessions(new Map(list.sessions.map((s) => [s.id, s])));
+      })
+      .catch(() => { /* no Resume / End buttons; the list itself still loads */ });
+    return () => { cancelled = true; };
+  }, [view, refreshNonce]);
+
+  // A filter whose every option is "all" filters nothing: offered once an
+  // agent has reported a model (or a tool), or while one is chosen.
+  const showModelFilter = knownModels.length > 0 || modelFilter !== '';
+  const showToolFilter = knownTools.length > 0 || toolFilter !== '';
 
   // v5.212.0 — the operator's kill switch for a unified project session. The
   // per-workflow rows have their own detail pages; a project session had none,
@@ -637,6 +650,47 @@ const ProjectActivity: React.FC = () => {
     }
   };
 
+  /** Resume + End for a project session — the same two buttons in both views. */
+  const sessionActions = (r: AgentSessionRow) => (
+    <div className="flex items-center gap-xxs">
+      {canResume(r) && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => setResumeRow(r)}
+              aria-label={`Resume agent session ${r.id}`}
+            >
+              <RotateCcw className="size-4 text-primary" aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Resume (reconnect an agent to this session)</TooltipContent>
+        </Tooltip>
+      )}
+      {canEnd(r) && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => handleEnd(r)}
+              disabled={endingId === r.id}
+              aria-label={`End agent session ${r.id}`}
+            >
+              {endingId === r.id ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden />
+              ) : (
+                <Square className="size-4 text-warning" aria-hidden />
+              )}
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>End session (revokes its key)</TooltipContent>
+        </Tooltip>
+      )}
+    </div>
+  );
+
   const hygiene = apiSummary?.session_hygiene ?? null;
   const stalledRuns = rows.filter(isStalledRun).length;
   // v5.288.0 — the Model · Tool column only when some row on screen carries
@@ -654,33 +708,21 @@ const ProjectActivity: React.FC = () => {
       <div className="flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Runs</h1>
-          {/* v5.288.0 — this page and Agent Sessions overlap (a session is a
-              row on both), so each says what it is for and points at the
-              other. Wraps rather than truncating: it is the page's job line. */}
+          {/* Wraps rather than truncating: it is the page's job line. */}
           <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
-            Everything agents have done on this project, in time order: each agent session
-            (with its key state, and Resume / End) and every recon, plan or execution run
-            across workflows, with its own status. For one session&rsquo;s authority, notes
-            and API calls, see{' '}
-            <Link to="/assist-sessions" className="text-primary underline-offset-4 hover:underline">
-              Agent Sessions
-            </Link>
-            .
+            Everything agents have done on this project. <strong className="font-medium text-foreground">Runs</strong>{' '}
+            lists every session and every recon, plan or execution run in time order, each with its
+            own status; <strong className="font-medium text-foreground">Sessions</strong> lists the keys
+            operators handed agents — what each was for, the role it acts with, what it produced.
           </p>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setRefreshNonce((n) => n + 1)}
-          disabled={loading}
-        >
-          {loading ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-          ) : (
-            <RefreshCw className="size-4" aria-hidden />
-          )}
-          Refresh
-        </Button>
+        <LastUpdated
+          compact
+          lastFetched={lastFetched}
+          onRefresh={() => setRefreshNonce((n) => n + 1)}
+          isLoading={loading}
+          label="agent runs"
+        />
       </div>
 
       <RunsLead
@@ -704,14 +746,50 @@ const ProjectActivity: React.FC = () => {
         </Alert>
       )}
 
+      {/* v5.294.0 — the two views of one page (Agent Sessions was a page of
+          its own listing the same sessions). */}
+      <div
+        className="inline-flex self-start overflow-hidden rounded-control border border-border"
+        role="group"
+        aria-label="What the page lists"
+      >
+        {([
+          { value: 'runs', label: 'Runs' },
+          { value: 'sessions', label: 'Sessions' },
+        ] as const).map((opt) => (
+          <button
+            key={opt.value}
+            type="button"
+            aria-pressed={view === opt.value}
+            onClick={() => setView(opt.value)}
+            className={cn(
+              'h-8 px-sm text-metadata transition-colors',
+              view === opt.value
+                ? 'bg-primary text-primary-foreground'
+                : 'bg-background text-foreground hover:bg-accent',
+            )}
+          >
+            {opt.label}
+          </button>
+        ))}
+      </div>
+
+      {view === 'sessions' ? (
+        <PostureSection title="Sessions">
+          <AgentSessionsList
+            refreshNonce={refreshNonce}
+            renderActions={(s) => {
+              const run = projectSessions.get(s.id);
+              return run ? sessionActions(run) : null;
+            }}
+          />
+        </PostureSection>
+      ) : (
       <PostureSection
         title="Runs"
         actions={(
           <>
             {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
-            <span className="text-muted-foreground">
-              {rows.length} of {total} shown
-            </span>
             {rows.length < total && !loading && (
               <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
                 Load older runs
@@ -720,16 +798,17 @@ const ProjectActivity: React.FC = () => {
           </>
         )}
       >
-        <div className="flex flex-wrap items-end gap-sm border-b border-border pb-sm" data-testid="runs-filters">
-          <div className="w-48">
-            <Label htmlFor="pa-kind">Workflow</Label>
+        <ListFilterBar summary={`${rows.length} of ${total} shown`} className="mb-0">
+          <div data-testid="runs-filters" className="contents">
             <Select
               value={kindFilter || 'all'}
               onValueChange={(v) =>
                 setKindFilter(v === 'all' ? '' : (v as AgentSessionKind))
               }
             >
-              <SelectTrigger id="pa-kind"><SelectValue /></SelectTrigger>
+              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter runs by workflow">
+                <SelectValue />
+              </SelectTrigger>
               <SelectContent>
                 {KIND_OPTIONS.map((o) => (
                   <SelectItem key={o.value || 'all'} value={o.value || 'all'}>
@@ -738,70 +817,74 @@ const ProjectActivity: React.FC = () => {
                 ))}
               </SelectContent>
             </Select>
+            {showModelFilter && (
+              <Select
+                value={modelFilter || 'all'}
+                onValueChange={(v) => setModelFilter(v === 'all' ? '' : v)}
+              >
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter runs by model">
+                  <SelectValue placeholder="All models" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All models</SelectItem>
+                  {knownModels.map((m) => (
+                    <SelectItem key={m} value={m}>{m}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+            {showToolFilter && (
+              <Select
+                value={toolFilter || 'all'}
+                onValueChange={(v) => setToolFilter(v === 'all' ? '' : v)}
+              >
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter runs by tool">
+                  <SelectValue placeholder="All tools" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All tools</SelectItem>
+                  {knownTools.map((t) => (
+                    <SelectItem key={t} value={t}>{t}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
           </div>
-          <div className="w-52">
-            <Label htmlFor="pa-model">Model</Label>
-            <Select
-              value={modelFilter || 'all'}
-              onValueChange={(v) => setModelFilter(v === 'all' ? '' : v)}
-            >
-              <SelectTrigger id="pa-model"><SelectValue placeholder="All models" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All models</SelectItem>
-                {knownModels.map((m) => (
-                  <SelectItem key={m} value={m}>{m}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="w-48">
-            <Label htmlFor="pa-tool">Tool</Label>
-            <Select
-              value={toolFilter || 'all'}
-              onValueChange={(v) => setToolFilter(v === 'all' ? '' : v)}
-            >
-              <SelectTrigger id="pa-tool"><SelectValue placeholder="All tools" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All tools</SelectItem>
-                {knownTools.map((t) => (
-                  <SelectItem key={t} value={t}>{t}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+        </ListFilterBar>
 
-        <div className="overflow-x-auto">
-          <Table className="min-w-[1000px]">
+        {/* v5.294.0 — the column budget fits the content width (it used to
+            set a 1000px minimum and scroll sideways); Subject takes the rest. */}
+        <Table data-testid="runs-table">
             <TableHeader>
               <TableRow>
-                <TableHead className="w-28">Workflow</TableHead>
+                <TableHead className="w-32">Workflow</TableHead>
                 {/* Status carries the key / ended line under its chip. */}
-                <TableHead className="w-52">Status</TableHead>
-                <TableHead className="w-28">Started</TableHead>
-                {showModel && <TableHead className="w-52">Model · Tool</TableHead>}
-                <TableHead className="w-56">User · Agent</TableHead>
+                <TableHead className="w-44">Status</TableHead>
+                <TableHead className="w-20">Started</TableHead>
+                {showModel && <TableHead className="w-40">Model · Tool</TableHead>}
+                <TableHead className="w-40">User · Agent</TableHead>
                 <TableHead>Subject</TableHead>
                 {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
-                <TableHead className="w-24" />
+                <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {rows.map((r) => {
                 const stalled = isStalledRun(r);
+                // v5.294.0 — one honest state. The badge read "active · session
+                // ended", which says two opposite things; the run is stalled,
+                // and the line under it says why.
                 const ks = stalled
                   ? {
-                      text: 'stalled — its session ended; resume or close the run',
+                      text: `still ${r.status.toLowerCase().replace('_', ' ')} but its session ended — resume or close the run`,
                       tone: 'warn' as const,
                     }
                   : keyState(r) ?? endedState(r);
                 const userName = r.user_full_name?.trim() || r.user_username || null;
                 return (
                   <TableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
-                    <TableCell>
-                      <Badge variant={kindBadgeVariant(r.kind)} className="whitespace-nowrap">
-                        {r.kind === 'plan_generation' ? 'plan-gen' : r.kind === 'project' ? 'session' : r.kind}
-                      </Badge>
+                    <TableCell className="overflow-hidden">
+                      <RunKindBadge kind={r.kind} className="max-w-full" />
                     </TableCell>
                     <TableCell className="overflow-hidden">
                       {/* whitespace-nowrap prevents the badge from
@@ -810,7 +893,7 @@ const ProjectActivity: React.FC = () => {
                         variant={stalled ? 'warning' : statusBadgeVariant(r.status)}
                         className="whitespace-nowrap"
                       >
-                        {stalled ? `${r.status} · session ended` : r.status}
+                        {stalled ? 'Stalled' : r.status}
                       </Badge>
                       {/* v5.214.0 — "active" alone cannot tell a live agent
                           from one that died a day ago; the key's state can. */}
@@ -826,15 +909,8 @@ const ProjectActivity: React.FC = () => {
                         </p>
                       )}
                     </TableCell>
-                    <TableCell>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <span className="text-caption text-muted-foreground">
-                            {fmtRelative(r.started_at) || '—'}
-                          </span>
-                        </TooltipTrigger>
-                        <TooltipContent>{fmtTime(r.started_at)}</TooltipContent>
-                      </Tooltip>
+                    <TableCell className="truncate">
+                      <TimeAgo value={r.started_at} className="text-caption text-muted-foreground" />
                     </TableCell>
                     {showModel && (
                       <TableCell>
@@ -912,43 +988,7 @@ const ProjectActivity: React.FC = () => {
                     </TableCell>
                     <TableCell>
                       {r.kind === 'project' ? (
-                        <div className="flex items-center gap-xxs">
-                          {canResume(r) && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => setResumeRow(r)}
-                                  aria-label={`Resume agent session ${r.id}`}
-                                >
-                                  <RotateCcw className="size-4 text-primary" aria-hidden />
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>Resume (reconnect an agent to this session)</TooltipContent>
-                            </Tooltip>
-                          )}
-                          {canEnd(r) && (
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  onClick={() => handleEnd(r)}
-                                  disabled={endingId === r.id}
-                                  aria-label={`End agent session ${r.id}`}
-                                >
-                                  {endingId === r.id ? (
-                                    <Loader2 className="size-4 animate-spin" aria-hidden />
-                                  ) : (
-                                    <Square className="size-4 text-warning" aria-hidden />
-                                  )}
-                                </Button>
-                              </TooltipTrigger>
-                              <TooltipContent>End session (revokes its key)</TooltipContent>
-                            </Tooltip>
-                          )}
-                        </div>
+                        sessionActions(r)
                       ) : (
                         <Tooltip>
                           <TooltipTrigger asChild>
@@ -1007,8 +1047,8 @@ const ProjectActivity: React.FC = () => {
               )}
             </TableBody>
           </Table>
-        </div>
       </PostureSection>
+      )}
 
       <ModelRollupSection rows={summary} />
     </div>

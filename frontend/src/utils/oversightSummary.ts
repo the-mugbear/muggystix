@@ -2,12 +2,17 @@
  * The Oversight figures as text to paste into an email or a chat (v5.273.0).
  *
  * The set is the manager's metrics notebook (PORTFOLIO.md): projects complete
- * and in progress, targets and targets tested, review counts, findings by
+ * and in progress, hosts and hosts taken into review, review counts, findings by
  * severity and the defect rate — overall, per project and per tester — for
  * the filters the page shows.  Built from the loaded dashboard, never
  * recomputed: the numbers are the ones on the screen, under the same
  * definitions (a footer states them, since a pasted figure travels without
  * its (i)).  Pure, so it is tested without the page.
+ *
+ * v5.294.0 (UX review) — the page's words: "hosts", not "targets", and hosts
+ * in review or reviewed are "taken into review", never "tested" (which means
+ * a recorded test result on Posture). The counts and the API fields are the
+ * same; the "as of" moment is in the one date format, still in UTC.
  */
 import type {
   OversightProjectRow,
@@ -61,7 +66,9 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
   const bold = (t: string) => (md ? `**${t}**` : t);
   const heading = (t: string) => (md ? `**${t}**` : t);
   const bullet = md ? '- ' : '• ';
-  const asOf = `${data.generated_at.slice(0, 16).replace('T', ' ')} UTC`;
+  const asOf = `${new Date(data.generated_at).toLocaleString('en-US', {
+    dateStyle: 'medium', timeStyle: 'short', timeZone: 'UTC',
+  })} UTC`;
   const basis = data.severity_basis === 'period'
     ? 'findings and observations first recorded in the period'
     : 'findings and observations as they stand now';
@@ -74,22 +81,22 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
   lines.push('');
   lines.push(`${bullet}${bold('Projects')}: ${n(s.projects_total)} (${n(s.projects_in_progress)} in progress, ${n(s.projects_complete)} complete)`);
   lines.push(
-    `${bullet}${bold('Targets')}: ${n(s.targets_current)} recorded; ${n(s.targets_tested)} tested (${pct(s.targets_tested, s.targets_current)})`
+    `${bullet}${bold('Hosts')}: ${n(s.targets_current)} recorded; ${n(s.targets_tested)} taken into review (${pct(s.targets_tested, s.targets_current)})`
     + ` — ${n(s.targets_in_review)} in review, ${n(s.targets_reviewed)} reviewed`,
   );
   lines.push(
-    `${bullet}${bold('In the period')}: +${pl(s.targets_added, 'target')} first recorded; ${pl(s.reviews_concluded, 'review')} concluded;`
+    `${bullet}${bold('In the period')}: +${pl(s.targets_added, 'host')} first recorded; ${pl(s.reviews_concluded, 'review')} concluded;`
     + ` ${pl(s.imports, 'scan')} imported; ${pl(s.contributors, 'contributor')}`,
   );
   lines.push(
-    `${bullet}${bold('Findings')}: ${n(findingsTotal)} (${bySeverity(sev.findings)}) on ${pl(sev.finding_affected_targets, 'target')}`
+    `${bullet}${bold('Findings')}: ${n(findingsTotal)} (${bySeverity(sev.findings)}) on ${pl(sev.finding_affected_targets, 'host')}`
     + ` — ${n(sev.finding_states.under_investigation)} under investigation, ${n(sev.finding_states.confirmed)} confirmed,`
     + ` ${n(sev.finding_states.closed)} closed`
     // v5.289.0 — "0 false positives not counted" read oddly; say it only when there are some.
     + (sev.findings_false_positive > 0 ? ` (${pl(sev.findings_false_positive, 'false positive')} excluded)` : ''),
   );
   lines.push(
-    `${bullet}${bold('Defect rate')} (tested targets with a finding, of ${n(sev.tested_targets)} tested): ${rates(sev.defect_rate)}`,
+    `${bullet}${bold('Defect rate')} (hosts taken into review with a finding, of ${n(sev.tested_targets)}): ${rates(sev.defect_rate)}`,
   );
   lines.push(
     `${bullet}${bold('Scanner observations not yet judged')}: critical ${n(sev.observations_unjudged.critical)},`
@@ -101,7 +108,7 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
     lines.push(heading(`Per project (${n(data.projects.length)})`));
     const rows = orderedProjects(data.projects);
     if (md) {
-      lines.push('| Project | Status | Tested | Findings (C / H / M / L) | Defect rate (C / H) |');
+      lines.push('| Project | Status | Taken into review | Findings (C / H / M / L) | Defect rate (C / H) |');
       lines.push('| --- | --- | --- | --- | --- |');
       rows.forEach((r) => lines.push(
         `| ${cell(r.name)} | ${statusWord(r.status)} | ${n(r.hosts_tested)} of ${n(r.host_count)} (${pct(r.hosts_tested, r.host_count)})`
@@ -109,7 +116,7 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
       ));
     } else {
       rows.forEach((r) => lines.push(
-        `${bullet}${r.name} (${statusWord(r.status)}): ${n(r.hosts_tested)} of ${pl(r.host_count, 'target')} tested`
+        `${bullet}${r.name} (${statusWord(r.status)}): ${n(r.hosts_tested)} of ${pl(r.host_count, 'host')} taken into review`
         + ` (${pct(r.hosts_tested, r.host_count)}) · findings ${compact(r.findings)}`
         + ` · defect rate C ${rate(r.defect_rate.critical)} / H ${rate(r.defect_rate.high)}`,
       ));
@@ -121,14 +128,14 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
     lines.push(heading(`Per tester (${n(data.testers.length)})`));
     const rows = orderedTesters(data.testers);
     if (md) {
-      lines.push('| Tester | Projects | Tested | Reviewed (in period) | Findings (C / H / M / L) |');
+      lines.push('| Tester | Projects | Taken into review | Reviewed (in period) | Findings (C / H / M / L) |');
       lines.push('| --- | --- | --- | --- | --- |');
       rows.forEach((t) => lines.push(
         `| ${cell(personName(t))} | ${n(t.projects_tested)} | ${n(t.tested)} | ${n(t.reviewed)} (${n(t.reviewed_in_period)}) | ${compact(t.findings)} |`,
       ));
     } else {
       rows.forEach((t) => lines.push(
-        `${bullet}${personName(t)}: ${pl(t.tested, 'target')} tested, ${n(t.reviewed)} reviewed (${n(t.reviewed_in_period)} in the period)`
+        `${bullet}${personName(t)}: ${pl(t.tested, 'host')} taken into review, ${n(t.reviewed)} reviewed (${n(t.reviewed_in_period)} in the period)`
         + ` across ${pl(t.projects_tested, 'project')} · findings ${compact(t.findings)}`,
       ));
     }
@@ -137,8 +144,9 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
   lines.push('');
   lines.push(
     (md ? '_' : '')
-    + 'Findings are judged issues: one finding counts once however many targets it affects, and false positives are left out.'
-    + ' A scanner observation is raw scanner output nobody has judged yet. Defect rate = share of tested targets with a finding at that severity.'
+    + 'Findings are judged issues: one finding counts once however many hosts it affects, and false positives are left out.'
+    + ' A scanner observation is raw scanner output nobody has judged yet. Taken into review = in review or reviewed.'
+    + ' Defect rate = share of hosts taken into review with a finding at that severity.'
     + (md ? '_' : ''),
   );
   return lines.join('\n');

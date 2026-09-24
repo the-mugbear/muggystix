@@ -1,6 +1,8 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { FolderOpen, RefreshCw, Search, Users } from 'lucide-react';
+import { FolderOpen, RefreshCw, Users } from 'lucide-react';
+import LastUpdated from '../components/LastUpdated';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
 import ProjectMembersSheet from '../components/ProjectMembersSheet';
 import PortfolioTeam from '../components/PortfolioTeam';
 import {
@@ -11,12 +13,11 @@ import {
 import { useProject } from '../contexts/ProjectContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatStatusLabel } from '../utils/statusMeta';
-import { formatRelativeTime } from '../utils/relativeTime';
+import TimeAgo from '../components/TimeAgo';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
-import { Input } from '../components/ui/input';
 import PostureLead from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
@@ -128,26 +129,23 @@ const ProjectsTable: React.FC<{
   onOpen: (p: ProjectCard) => void;
   onMembers: (p: ProjectCard) => void;
 }> = ({ rows, onOpen, onMembers }) => (
-  <div className="overflow-x-auto border-t border-border">
-    <Table aria-label="Your projects, worst first" className="min-w-[1040px]" style={{ tableLayout: 'fixed' }}>
-      {/* v5.288.0 — the short-content columns are sized to their content
-          (Review's "1,234 in review · 12,345 not started", the Waiting header
-          on one line, a host count) and "What testing found" takes the rest.
-          As percentages Hosts was wider than it needed and Review / Waiting
-          wrapped at ~1500px.
-          v5.289.0 — that overshot: at a narrower content width "What testing
-          found" was left ~270px and its reason line took 3–4 lines. Now the
-          fixed columns total 35rem (Review 14rem — "36 in review · 351 not
-          started" on one line; Hosts 5rem; Waiting 16rem so two chips sit side
-          by side) and Project gives up 4%: at 1500px "What testing found" gets
-          ~670px, the largest share, enough for "Critical — 12 critical findings
-          · 69 critical scanner observations not yet judged" on one line. */}
+  <div className="border-t border-border">
+    <Table aria-label="Your projects, worst first">
+      {/* v5.288.0 — the short-content columns are sized to their content and
+          "What testing found" takes the rest. v5.289.0 fixed them at 35rem
+          with a 1040px table minimum.
+          v5.294.0 (UX review) — that minimum scrolled the page's last column
+          (Waiting) 114px out of view at a 1246px viewport, where the content
+          is ~916px wide. The table now has no minimum: the fixed columns total
+          ~28rem (Review 12rem, its second line allowed to wrap; Hosts 4.5rem;
+          Waiting 12rem, its chips stacking) and Project 16%, leaving "What
+          testing found" ~310px there and the largest share at any width. */}
       <colgroup>
-        <col style={{ width: '18%' }} data-col="project" />
+        <col style={{ width: '16%' }} data-col="project" />
         <col data-col="found" />
-        <col style={{ width: '14rem' }} data-col="review" />
-        <col style={{ width: '5rem' }} data-col="hosts" />
-        <col style={{ width: '16rem' }} data-col="waiting" />
+        <col style={{ width: '12rem' }} data-col="review" />
+        <col style={{ width: '4.5rem' }} data-col="hosts" />
+        <col style={{ width: '12rem' }} data-col="waiting" />
       </colgroup>
       <TableHeader>
         <TableRow>
@@ -165,7 +163,7 @@ const ProjectsTable: React.FC<{
             </span>
           </TableHead>
           <TableHead>Hosts</TableHead>
-          <TableHead className="whitespace-nowrap">Waiting · last import</TableHead>
+          <TableHead className="whitespace-normal">Waiting · last import</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -205,7 +203,7 @@ const ProjectsTable: React.FC<{
                 ) : (
                   <>
                     <p className="text-metadata text-foreground">{n(p.hosts_reviewed)} of {n(p.host_count)} reviewed</p>
-                    <p className="whitespace-nowrap text-muted-foreground">{n(p.hosts_in_review)} in review · {n(notStarted(p))} not started</p>
+                    <p className="break-words text-muted-foreground">{n(p.hosts_in_review)} in review · {n(notStarted(p))} not started</p>
                   </>
                 )}
               </TableCell>
@@ -216,15 +214,15 @@ const ProjectsTable: React.FC<{
               <TableCell className="text-caption">
                 {/* One chip style for every waiting item — outlined, left-aligned —
                     so a neutral count never reads as loose, indented text. */}
-                <span className="flex flex-wrap justify-start gap-xxs" data-testid="waiting-chips">
-                  {p.pending_plan_reviews > 0 && <Badge variant="warning-outline">{plural(p.pending_plan_reviews, 'plan')} to approve</Badge>}
-                  {p.blocked_sessions > 0 && <Badge variant="destructive-outline">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
-                  {p.active_sessions > 0 && <Badge variant="info-outline">{plural(p.active_sessions, 'active run')}</Badge>}
-                  {p.open_tasks > 0 && <Badge variant="outline">{plural(p.open_tasks, 'open task')}</Badge>}
+                <span className="flex min-w-0 flex-wrap justify-start gap-xxs" data-testid="waiting-chips">
+                  {p.pending_plan_reviews > 0 && <Badge variant="warning-outline" className="max-w-full">{plural(p.pending_plan_reviews, 'plan')} to approve</Badge>}
+                  {p.blocked_sessions > 0 && <Badge variant="destructive-outline" className="max-w-full">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
+                  {p.active_sessions > 0 && <Badge variant="info-outline" className="max-w-full">{plural(p.active_sessions, 'active run')}</Badge>}
+                  {p.open_tasks > 0 && <Badge variant="outline" className="max-w-full">{plural(p.open_tasks, 'open task')}</Badge>}
                 </span>
                 {/* Provenance, not a judgment: an import date is never coloured. */}
                 <p className="mt-xxs text-muted-foreground">
-                  {p.last_scan_at ? `Last import ${formatRelativeTime(p.last_scan_at, { absoluteAfterDays: 30 })}` : 'No imports'}
+                  {p.last_scan_at ? <>Last import <TimeAgo value={p.last_scan_at} absoluteAfterDays={30} /></> : 'No imports'}
                 </p>
               </TableCell>
             </TableRow>
@@ -353,30 +351,17 @@ const PortfolioDashboard: React.FC = () => {
             Your projects: what testing has found, how far review has got, and what is waiting on someone.
           </p>
         </div>
-        <div className="flex flex-col items-end gap-xs">
-          <div className="flex items-center gap-sm">
-            {viewTabs}
-            <Button size="sm" variant="outline" onClick={reload} disabled={loading}>
-              <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
-            </Button>
-          </div>
-          {fetchedAt && (
-            <span className="text-caption text-muted-foreground">
-              Updated {formatRelativeTime(fetchedAt, { justNowBelowMs: 60_000 })}
-            </span>
-          )}
+        <div className="flex flex-wrap items-center gap-sm">
+          <LastUpdated compact lastFetched={fetchedAt} onRefresh={reload} isLoading={loading} label="portfolio" />
+          {viewTabs}
         </div>
       </div>
 
       {/* Filters: one row above everything they scope, closed by a rule. */}
-      <div className="flex flex-wrap items-end gap-sm border-b border-border pb-sm">
-        <div className="relative min-w-56 flex-1">
-          <Search className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-          <Input type="search" aria-label="Search projects" placeholder="Search projects…" value={search}
-            onChange={(e) => setSearch(e.target.value)} className="pl-xl" />
-        </div>
+      <ListFilterBar>
+        <ListFilterSearch value={search} onChange={setSearch} placeholder="Search projects…" label="Search projects" />
         <Select value={show || 'all'} onValueChange={(v) => setParam('show', v === 'all' ? '' : v)}>
-          <SelectTrigger className="w-56" aria-label="Show projects"><SelectValue /></SelectTrigger>
+          <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-56`} aria-label="Show projects"><SelectValue /></SelectTrigger>
           <SelectContent>
             <SelectItem value="all">All projects ({all.length})</SelectItem>
             {SHOW_OPTIONS.map((o) => (
@@ -385,9 +370,9 @@ const PortfolioDashboard: React.FC = () => {
           </SelectContent>
         </Select>
         <Select value={statusFilter || 'all'} onValueChange={(v) => setParam('status', v === 'all' ? '' : v)}>
-          <SelectTrigger className="w-44" aria-label="Filter projects by status"><SelectValue /></SelectTrigger>
+          <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter projects by status"><SelectValue /></SelectTrigger>
           <SelectContent>
-            <SelectItem value="all">Any status</SelectItem>
+            <SelectItem value="all">All statuses</SelectItem>
             {Object.entries(statusCounts).map(([status, count]) => (
               <SelectItem key={status} value={status}>{formatStatusLabel(status)} ({count})</SelectItem>
             ))}
@@ -398,7 +383,7 @@ const PortfolioDashboard: React.FC = () => {
             Reset
           </Button>
         )}
-      </div>
+      </ListFilterBar>
 
       {error && (
         <Alert variant="destructive">
@@ -441,7 +426,7 @@ const PortfolioDashboard: React.FC = () => {
                   )}
                 </PostureMeasure>
                 <PostureMeasure label="Hosts with review concluded" value={<>{n(s.total_reviewed)} <span className="text-metadata font-normal text-muted-foreground">of {n(s.total_hosts)}</span></>}
-                  info="Hosts whose review someone has concluded (marked reviewed), out of every host in your projects. In review = someone has started; not started = nobody has. Not the same as Oversight's &quot;Targets tested&quot;, which counts hosts in review AND reviewed.">
+                  info="Hosts whose review someone has concluded (marked reviewed), out of every host in your projects. In review = someone has started; not started = nobody has. Not the same as Oversight's &quot;Hosts taken into review&quot;, which counts hosts in review AND reviewed. A host is tested only when a test result is recorded on it.">
                   {n(s.total_in_review)} in review · {n(notStartedTotal)} not started
                 </PostureMeasure>
                 <PostureMeasure label="Critical and high findings"

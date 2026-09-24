@@ -4,7 +4,7 @@
  * (titles and authors wrap, author by full name) and progress says what it
  * counts ("1 of 4 entries done") instead of a bare "0%".
  */
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -132,11 +132,34 @@ describe('TestPlans', () => {
     expect(title).toHaveClass('line-clamp-2');
     expect(title).not.toHaveClass('truncate');
     expect(screen.getByText('Ada Administrator')).toHaveClass('break-words');
-    expect(screen.getByRole('table')).toHaveStyle({ tableLayout: 'fixed' });
+    // The Table primitive is table-fixed by default (style guide §8).
+    expect(screen.getByRole('table')).toHaveClass('table-fixed');
     expect(screen.getByLabelText('Search test plans')).toHaveAttribute(
       'placeholder',
       'Search title or author',
     );
     await waitFor(() => expect(mockedApi.getTestPlans).toHaveBeenCalled());
+  });
+
+  it('fits the table to the content width (B2)', async () => {
+    // A 960px minimum inside a scroller: 34px of sideways scroll at a 1246px
+    // viewport, the Created column behind it.
+    renderPage();
+    await screen.findByText(/Named endpoint exposure/);
+    const table = screen.getByTestId('plans-table');
+    expect(table.className).not.toMatch(/min-w-/);
+    expect(table.closest('.overflow-x-auto')).toBeNull();
+  });
+
+  it('puts the page actions top-right and the filters on the shared filter row', async () => {
+    renderPage();
+    await screen.findByText(/Named endpoint exposure/);
+    const actions = screen.getByTestId('page-actions');
+    expect(within(actions).getByRole('button', { name: /Generate with AI/ })).toBeInTheDocument();
+    expect(within(actions).getByRole('button', { name: /Compare/ })).toBeInTheDocument();
+    // The search and the status filter are no longer in the action group.
+    expect(within(actions).queryByLabelText('Search test plans')).toBeNull();
+    const status = screen.getByLabelText('Filter test plans by status');
+    expect(status).toHaveTextContent('All statuses');
   });
 });

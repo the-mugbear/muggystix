@@ -285,7 +285,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "oversight",
-        "description": "Global administrators only. The programme dashboard behind the Oversight page: every registered project (archived included) filtered by UTC dates, project, status, tester and engagement window — projects in progress and complete, recorded and tested targets, findings, judged / not-yet-judged scanner observations, defect rate, contributors, per-tester results and organisation account totals. One request returns the whole cohort.",
+        "description": "Global administrators only. The programme dashboard behind the Oversight page: every registered project (archived included) filtered by UTC dates, project, status, tester and engagement window — projects in progress and complete, recorded hosts and hosts taken into review (in review or reviewed; the fields keep their `targets_*` names), findings, judged / not-yet-judged scanner observations, defect rate, contributors, per-tester results and organisation account totals. One request returns the whole cohort.",
     },
     # The "agents" provisioning tag went with its router in v2.295.0.  There is
     # nothing to provision: agent rows are created by each workflow's own start

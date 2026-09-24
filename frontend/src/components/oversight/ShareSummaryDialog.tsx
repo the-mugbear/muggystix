@@ -74,7 +74,7 @@ const ShareSummaryDialog: React.FC<Props> = ({ open, onOpenChange, data, periodL
         <DialogHeader>
           <DialogTitle>Copy summary</DialogTitle>
           <DialogDescription>
-            The figures on this page for the current filters — projects, targets tested, reviews, findings by severity and
+            The figures on this page for the current filters — projects, hosts taken into review, reviews, findings by severity and
             the defect rate — ready to paste into an email or a chat.
           </DialogDescription>
         </DialogHeader>

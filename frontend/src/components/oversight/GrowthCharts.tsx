@@ -1,7 +1,8 @@
 /**
- * Target growth — three single-series charts on one shared date axis
- * (small multiples, 5.259.0): recorded targets (cumulative line), targets
- * first recorded per bucket, reviews concluded per bucket.
+ * Host growth — three single-series charts on one shared date axis
+ * (small multiples, 5.259.0): recorded hosts (cumulative line), hosts
+ * first recorded per bucket, reviews concluded per bucket.  (v5.294.0 — "hosts",
+ * not "targets", the word every other page uses; dates in the one format.)
  *
  * Why three and not one: a cumulative total and per-bucket counts are
  * different scales, and one plot with two y-axes invents a relationship; two
@@ -15,6 +16,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import type { OversightGrowthPoint } from '../../services/api/oversight';
+import { formatDate } from '../../utils/relativeTime';
 
 const ACCENT = 'hsl(var(--info))';
 const H = 72;              // plot height per chart
@@ -29,8 +31,15 @@ const niceMax = (v: number): number => {
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
 };
 
+/** A bucket's start in the one date format: "Aug 29, 2026", or its month. */
+export const bucketDate = (unit: string, start: string): string => {
+  if (unit !== 'month') return formatDate(start.slice(0, 10));
+  const [y, m] = start.slice(0, 7).split('-').map(Number);
+  return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
+};
+
 const unitLabel = (unit: string, start: string) =>
-  unit === 'week' ? `Week of ${start}` : unit === 'month' ? start.slice(0, 7) : start;
+  unit === 'week' ? `Week of ${bucketDate(unit, start)}` : bucketDate(unit, start);
 
 /** Container width, with a fallback where ResizeObserver is missing (tests).
  *
@@ -67,9 +76,10 @@ interface SeriesProps {
   hover: number | null;
   onHover: (i: number | null) => void;
   showDates: boolean;
+  unit: string;
 }
 
-const Series: React.FC<SeriesProps> = ({ title, points, value, kind, width, hover, onHover, showDates }) => {
+const Series: React.FC<SeriesProps> = ({ title, points, value, kind, width, hover, onHover, showDates, unit }) => {
   const n = points.length;
   const plotW = Math.max(1, width - PAD_L - PAD_R);
   const band = plotW / Math.max(1, n);
@@ -136,8 +146,8 @@ const Series: React.FC<SeriesProps> = ({ title, points, value, kind, width, hove
         )}
         {showDates && n > 0 && (
           <>
-            <text x={PAD_L} y={H + 16} className="fill-muted-foreground text-[11px]">{points[0].start}</text>
-            <text x={PAD_L + plotW} y={H + 16} textAnchor="end" className="fill-muted-foreground text-[11px]">{points[n - 1].start}</text>
+            <text x={PAD_L} y={H + 16} className="fill-muted-foreground text-[11px]">{bucketDate(unit, points[0].start)}</text>
+            <text x={PAD_L + plotW} y={H + 16} textAnchor="end" className="fill-muted-foreground text-[11px]">{bucketDate(unit, points[n - 1].start)}</text>
           </>
         )}
         <rect x={PAD_L} y={0} width={plotW} height={H} fill="transparent"
@@ -167,7 +177,7 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
   ), [points]);
 
   if (points.length === 0) {
-    return <p className="text-metadata text-muted-foreground">No targets recorded in these projects yet.</p>;
+    return <p className="text-metadata text-muted-foreground">No hosts recorded in these projects yet.</p>;
   }
 
   return (
@@ -175,23 +185,23 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
       {/* Readout: values lead, labels follow. */}
       <p className="text-caption text-muted-foreground" aria-live="polite" id="growth-readout">
         <span className="font-medium text-foreground">{unitLabel(unit, p.start)}</span>
-        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.cumulative_targets.toLocaleString()}</span> recorded {p.cumulative_targets === 1 ? 'target' : 'targets'}
+        {' · '}<span className="font-semibold text-foreground tabular-nums">{p.cumulative_targets.toLocaleString()}</span> recorded {p.cumulative_targets === 1 ? 'host' : 'hosts'}
         {' · '}<span className="font-semibold text-foreground tabular-nums">+{p.targets_added.toLocaleString()}</span> first recorded
         {' · '}<span className="font-semibold text-foreground tabular-nums">{p.reviews_concluded.toLocaleString()}</span> {p.reviews_concluded === 1 ? 'review' : 'reviews'} concluded
         {hover == null && <span> (latest; hover or use ← → to move)</span>}
       </p>
       <div tabIndex={0} onKeyDown={onKey} aria-describedby="growth-readout"
-        aria-label="Target growth charts — use the left and right arrow keys to move between dates"
+        aria-label="Host growth charts — use the left and right arrow keys to move between dates"
         className="space-y-sm rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Series title="Recorded targets (cumulative)" points={points} value={(q) => q.cumulative_targets} kind="line"
-          width={width} hover={hover} onHover={setHover} showDates={false} />
-        <Series title={`Targets first recorded per ${unit}`} points={points} value={(q) => q.targets_added} kind="columns"
-          width={width} hover={hover} onHover={setHover} showDates={false} />
+        <Series title="Recorded hosts (cumulative)" points={points} value={(q) => q.cumulative_targets} kind="line"
+          width={width} hover={hover} onHover={setHover} showDates={false} unit={unit} />
+        <Series title={`Hosts first recorded per ${unit}`} points={points} value={(q) => q.targets_added} kind="columns"
+          width={width} hover={hover} onHover={setHover} showDates={false} unit={unit} />
         <Series title={`Reviews concluded per ${unit}`} points={points} value={(q) => q.reviews_concluded} kind="columns"
-          width={width} hover={hover} onHover={setHover} showDates />
+          width={width} hover={hover} onHover={setHover} showDates unit={unit} />
       </div>
       <p className="text-caption text-muted-foreground">
-        In these dates: {totals.added.toLocaleString()} {totals.added === 1 ? 'target' : 'targets'} first recorded,{' '}
+        In these dates: {totals.added.toLocaleString()} {totals.added === 1 ? 'host' : 'hosts'} first recorded,{' '}
         {totals.reviews.toLocaleString()} {totals.reviews === 1 ? 'review' : 'reviews'} concluded.
         Counts surviving host records; a host removed with its scan is not counted.{' '}
         <button type="button" className="text-info hover:underline" onClick={() => setShowTable((s) => !s)} aria-expanded={showTable}>
@@ -201,11 +211,11 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
       {showTable && (
         <div className="max-h-72 overflow-auto rounded-panel border border-border">
           <table className="w-full table-fixed text-caption">
-            <caption className="sr-only">Target growth by {unit}</caption>
+            <caption className="sr-only">Host growth by {unit}</caption>
             <thead className="sticky top-0 bg-background text-muted-foreground">
               <tr>
                 <th className="px-sm py-xxs text-left font-medium">{unit === 'day' ? 'Day' : unit === 'week' ? 'Week of' : 'Month'}</th>
-                <th className="px-sm py-xxs text-right font-medium">Recorded targets</th>
+                <th className="px-sm py-xxs text-right font-medium">Recorded hosts</th>
                 <th className="px-sm py-xxs text-right font-medium">First recorded</th>
                 <th className="px-sm py-xxs text-right font-medium">Reviews concluded</th>
               </tr>
@@ -213,7 +223,7 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
             <tbody>
               {points.map((q) => (
                 <tr key={q.start} className="border-t border-border">
-                  <td className="px-sm py-xxs">{unit === 'month' ? q.start.slice(0, 7) : q.start}</td>
+                  <td className="px-sm py-xxs">{bucketDate(unit, q.start)}</td>
                   <td className="px-sm py-xxs text-right tabular-nums">{q.cumulative_targets.toLocaleString()}</td>
                   <td className="px-sm py-xxs text-right tabular-nums">{q.targets_added.toLocaleString()}</td>
                   <td className="px-sm py-xxs text-right tabular-nums">{q.reviews_concluded.toLocaleString()}</td>
