@@ -196,7 +196,60 @@ describe('Scans — layout', () => {
     renderPage();
     const link = await screen.findByRole('link', { name: /1 failed import needs attention/ });
     expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
-    expect(screen.getByTestId('ingestion-queue')).toHaveTextContent('1 failed');
+    expect(screen.getByTestId('ingestion-queue')).toHaveTextContent('1 needs attention');
+  });
+
+  // Local Network, 2026-09-24: the queue box said "1 failed" (its 25 most
+  // recent jobs) while the lead and Ingestion Results said 4 need attention.
+  it('the queue box and the lead give the same needs-attention figure', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 4, imports_not_imported: 0,
+    });
+    api.getRecentIngestionJobs.mockResolvedValue([
+      { id: 71, status: 'failed', original_filename: 'broken.xml', created_at: '2026-09-19T10:00:00Z', message: 'not XML' },
+    ]);
+    renderPage();
+    await screen.findByRole('link', { name: /4 failed or partial imports need attention/ });
+    const queue = screen.getByTestId('ingestion-queue');
+    expect(queue).toHaveTextContent('4 need attention');
+    expect(queue).not.toHaveTextContent('1 failed');
+    expect(within(queue).getByRole('link', { name: '4 need attention' }))
+      .toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(queue).toHaveTextContent('Show 1 recent job');
+  });
+
+  it('keeps a failure a later upload imported out of the queue, and says so in the lead', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 0, imports_not_imported: 0, imports_superseded: 4,
+    });
+    api.getRecentIngestionJobs.mockResolvedValue([
+      {
+        id: 478, status: 'failed', original_filename: 'smbmap-samba.txt', created_at: '2026-09-19T10:00:00Z',
+        superseded_by_job_id: 484,
+      },
+    ]);
+    renderPage();
+    const link = await screen.findByRole('link', { name: '4 failed imports since re-imported' });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=superseded');
+    expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
+    expect(leadText()).not.toMatch(/nothing failed|need attention/);
+  });
+
+  it('shows the specific cause of a failure in the queue, not the generic sentence', async () => {
+    api.getRecentIngestionJobs.mockResolvedValue([
+      {
+        id: 478, status: 'failed', original_filename: 'smbmap-samba.txt', created_at: '2026-09-19T10:00:00Z',
+        error_message: "Failed to parse the file 'smbmap-samba.txt'. The file format may not be supported or the file may be corrupted.",
+        failure_reason: 'SMBMap parser found 0 hosts in smbmap-samba.txt; file is empty or not smbmap output.',
+      },
+    ]);
+    renderPage();
+    const queue = await screen.findByTestId('ingestion-queue');
+    fireEvent.click(within(queue).getByRole('button', { name: /show 1 recent job/i }));
+    expect(queue).toHaveTextContent('SMBMap parser found 0 hosts');
+    expect(queue).not.toHaveTextContent(/format may not be supported/);
   });
 
   // v5.271.0 — a closed review of 26 files: the queue read the 25 most recent
@@ -279,6 +332,27 @@ describe('Scans — layout', () => {
     // The explanation is an info tip, not a paragraph under the lead.
     expect(screen.getByRole('button', { name: 'About these figures' })).toBeInTheDocument();
     expect(screen.queryByText(/Every imported file counts/)).not.toBeInTheDocument();
+  });
+
+  // Local Network, 2026-09-24: "(25 discarded, 1 failed, dismissed)".
+  it('names dismissed failures as such, pluralised', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 40, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 40 },
+      imports_need_attention: 0, imports_not_imported: 26,
+      imports_not_imported_by_reason: { discarded: 25, dismissed: 1 },
+    });
+    const { unmount } = renderPage();
+    await screen.findByRole('link', { name: '26 never imported' });
+    expect(leadText()).toMatch(/26 never imported \(25 discarded, 1 dismissed failure\)/);
+    expect(leadText()).not.toMatch(/failed, dismissed/);
+    unmount();
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 40, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 40 },
+      imports_need_attention: 0, imports_not_imported: 3, imports_not_imported_by_reason: { dismissed: 3 },
+    });
+    renderPage();
+    await screen.findByRole('link', { name: '3 never imported' });
+    expect(leadText()).toMatch(/3 never imported \(3 dismissed failures\)/);
   });
 
   it('says "nothing failed" only when the project has no failed job at all', async () => {

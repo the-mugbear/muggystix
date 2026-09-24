@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db import models
+from app.services.import_attention_service import superseded_import_condition
 
 logger = logging.getLogger(__name__)
 
@@ -39,6 +40,9 @@ def _queue_snapshot(db: Session, model, stale_cutoff_seconds: int) -> dict:
     failed_q = db.query(func.count(model.id)).filter(model.status == "failed")
     if hasattr(model, "dismissed_at"):
         failed_q = failed_q.filter(model.dismissed_at.is_(None))
+    if model is models.IngestionJob:
+        # v2.403.0 — nor ones whose file a later job imported (superseded).
+        failed_q = failed_q.filter(~superseded_import_condition())
     failed = int(failed_q.scalar() or 0)
 
     oldest_created: Optional[datetime] = (
@@ -103,7 +107,7 @@ def _failed_ingestion_by_project(db: Session) -> list:
     rows = (
         db.query(Job.project_id, Project.name, func.count(Job.id))
         .join(Project, Project.id == Job.project_id)
-        .filter(Job.status == "failed", Job.dismissed_at.is_(None))
+        .filter(Job.status == "failed", Job.dismissed_at.is_(None), ~superseded_import_condition())
         .group_by(Job.project_id, Project.name)
         .order_by(func.count(Job.id).desc(), Project.name)
         .all()

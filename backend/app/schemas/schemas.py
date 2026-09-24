@@ -857,6 +857,13 @@ class IngestionJobSchema(BaseModel):
     # v2.385.0 — the upload batch the file arrived in, so a batch row on
     # /scans can list and review its files still waiting for review.
     batch_id: Optional[int] = None
+    # v2.403.0 — derived, set by import_attention_service.annotate_jobs on
+    # the lists that show them (absent → null elsewhere).  A failed or
+    # partial job whose file a later job imported cleanly names that job;
+    # `failure_reason` is the parser's specific cause, not the generic
+    # "Failed to parse the file …" sentence.
+    superseded_by_job_id: Optional[int] = None
+    failure_reason: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

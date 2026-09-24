@@ -57,6 +57,12 @@ export interface IngestionJob {
   /** v5.204.0 — the parser stopped early (truncated file). Distinct from
    *  skipped_count: a truncated file loses an unknown number of records. */
   partial?: boolean;
+  /** v5.289.0 — a failed or partial job whose file a LATER job of the
+   *  project imported cleanly names that job: it no longer needs attention. */
+  superseded_by_job_id?: number | null;
+  /** v5.289.0 — the parser's specific cause for a failed job ("SMBMap parser
+   *  found 0 hosts in …"), not the generic "Failed to parse the file …". */
+  failure_reason?: string | null;
 }
 
 
@@ -332,6 +338,24 @@ export const dismissIngestionJob = async (jobId: number): Promise<IngestionJob> 
   return response.data;
 };
 
+/** v5.289.0 — dismiss exactly these superseded failures (a later job imported
+ *  the same file). Ids no longer superseded, already dismissed or not the
+ *  caller's are skipped; the response says what was dismissed. */
+export const dismissSupersededJobs = async (
+  jobIds: number[],
+): Promise<{ dismissed: number; job_ids: number[] }> => {
+  const response = await api.post(`${p()}/upload/jobs/dismiss-superseded`, { job_ids: jobIds });
+  return response.data;
+};
+
+/** v5.289.0 — the jobs of an upload batch that did NOT import (failed,
+ *  discarded, expired, cancelled, still running…), dismissed ones included,
+ *  so an expanded batch can list which files failed and why. */
+export const getBatchUnimportedJobs = async (batchId: number): Promise<IngestionJob[]> => {
+  const response = await api.get(`${p()}/upload/jobs`, { params: { batch_id: batchId } });
+  return response.data;
+};
+
 // Cancel a queued/processing ingestion job. Backend (POST /upload/jobs/{id}/cancel)
 // marks it failed and the worker's atomic completion guard won't resurrect it;
 // rejects already-terminal jobs (409) and non-owner/non-admin (403).
@@ -393,6 +417,10 @@ export interface IngestionResultItem {
   parser_warnings?: string | null;
   /** Someone acknowledged this failed / partial import. */
   dismissed_at?: string | null;
+  /** v5.289.0 — a later job imported this file cleanly (superseded). */
+  superseded_by_job_id?: number | null;
+  /** v5.289.0 — the parser's specific cause for a failed job. */
+  failure_reason?: string | null;
   stats: {
     hosts_parsed: number;
     hosts_up: number;
@@ -414,6 +442,8 @@ export interface IngestionResultsResponse {
     /** v2.363.0 — failed or finished partial, and not dismissed: the same
      *  condition Operations counts as blocked. */
     total_needs_attention?: number;
+    /** v5.289.0 — failed or partial, not dismissed, file imported by a later job. */
+    total_superseded?: number;
     total_staged?: number;
     total_completed: number;
     total_failed: number;

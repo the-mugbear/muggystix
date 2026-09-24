@@ -1,9 +1,10 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
-import { getScans } from '../../services/api';
+import { getBatchUnimportedJobs, getScans } from '../../services/api';
 import type { IngestionJob, Scan, ScanBatchSummary } from '../../services/api';
 import { Badge } from '../ui/badge';
+import { BreakableName } from '../ui/breakable-name';
 import { Button } from '../ui/button';
 import { TableCell, TableRow } from '../ui/table';
 import { formatInstant, type TimeFormatOptions } from '../../utils/scanTime';
@@ -48,6 +49,42 @@ const portsLabel = (s: Scan): string | null => {
 
 const reasonLink = 'rounded underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
+/** v5.289.0 — a file row's time only when it is not the batch's own: every
+ *  row repeating the batch's minute was noise. */
+export function differsFromBatchTime(at: string | null | undefined, batchAt: string | null | undefined): boolean {
+  if (!at) return false;
+  if (!batchAt) return true;
+  return Math.abs(new Date(at).getTime() - new Date(batchAt).getTime()) > 60_000;
+}
+
+/**
+ * What became of a batch file that did not import (v5.289.0): its state in
+ * words, and the specific reason when there is one beyond the state.
+ */
+export function unimportedOutcome(job: IngestionJob): { label: string; tone: string; reason: string | null } {
+  const reason = (job.failure_reason || job.error_message || job.message || '').trim() || null;
+  if (job.superseded_by_job_id != null) {
+    return { label: 'Superseded', tone: 'text-muted-foreground', reason };
+  }
+  if (job.status === 'failed') {
+    if (reason?.startsWith('Discarded before import')) {
+      return { label: 'Discarded before import', tone: 'text-muted-foreground', reason: null };
+    }
+    if (reason?.startsWith('Staged upload expired')) {
+      return { label: 'Expired before import', tone: 'text-muted-foreground', reason: null };
+    }
+    return job.dismissed_at
+      ? { label: 'Failed (dismissed)', tone: 'text-muted-foreground', reason }
+      : { label: 'Failed', tone: 'text-destructive', reason };
+  }
+  if (job.status === 'cancelled') return { label: 'Cancelled', tone: 'text-muted-foreground', reason: null };
+  if (job.status === 'queued' || job.status === 'processing') {
+    return { label: 'Processing', tone: 'text-muted-foreground', reason: null };
+  }
+  if (job.status === 'staged') return { label: 'Waiting for review — not imported', tone: 'text-warning', reason: null };
+  return { label: job.status, tone: 'text-muted-foreground', reason };
+}
+
 /**
  * Where every file of a batch went (v5.288.0).  Imported + each reason a file
  * was not imported adds up to the files that reached the server
@@ -79,6 +116,11 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged, timeFormat,
 }) => {
   const [state, setState] = useState<Scan[] | 'loading' | 'error' | null>(null);
+  // v5.289.0 — the batch's files that did NOT import (failed, discarded,
+  // expired, cancelled…), so the operator sees WHICH files failed and why;
+  // an expanded batch listed only its imported files.  `null` = could not be
+  // read (said on its own row; the imported files still show).
+  const [unimported, setUnimported] = useState<IngestionJob[] | null>([]);
 
   const toggle = async () => {
     if (state) {
@@ -87,12 +129,19 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
     }
     setState('loading');
     try {
-      const files = await getScans(0, FILES_PER_BATCH, {
-        ...filters,
-        batchId: b.id,
-        sortBy: 'filename',
-        sortOrder: 'asc',
-      });
+      const [files, jobs] = await Promise.all([
+        getScans(0, FILES_PER_BATCH, {
+          ...filters,
+          batchId: b.id,
+          sortBy: 'filename',
+          sortOrder: 'asc',
+        }),
+        getBatchUnimportedJobs(b.id).catch((err) => {
+          console.error('Error loading the batch files that did not import:', err);
+          return null;
+        }),
+      ]);
+      setUnimported(jobs);
       // Collapsed while loading → stay collapsed.
       setState((prev) => (prev ? files : prev));
     } catch (err) {
@@ -122,8 +171,20 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   const cancelled = b.cancelled_files ?? 0;
   const reprocessed = b.reprocessed_files ?? 0;
   const refused = batchRefusedAtUpload(b);
+  const superseded = b.superseded_files ?? 0;
   const hasReason =
-    processing + staged + b.failed_files + discarded + expired + dismissedFailed + cancelled + refused > 0;
+    processing + staged + b.failed_files + superseded + discarded + expired + dismissedFailed + cancelled + refused > 0;
+  // Staged files are listed from `stagedJobs` (with their Review action).
+  const stagedIds = new Set(stagedJobs.map((j) => j.id));
+  const otherJobs = (unimported ?? []).filter((j) => !stagedIds.has(j.id));
+  const batchAt = b.created_at ?? b.first_uploaded ?? null;
+  // A child row's time, only when it differs from the batch's (v5.289.0).
+  const childTime = (at?: string | null) =>
+    differsFromBatchTime(at, batchAt) ? (
+      when(at)
+    ) : (
+      <span className="text-muted-foreground" title="Uploaded with the batch">—</span>
+    );
 
   const when = (iso?: string | null) => (iso ? formatInstant(new Date(iso), timeFormat) : null);
   // The upload time is the batch's creation (the moment the files were
@@ -208,15 +269,23 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           >
             {total === 0 ? (
               <span className="text-muted-foreground">Nothing imported</span>
+            ) : reprocessed > 0 && total === b.files ? (
+              // v5.289.0 — "Upload batch · 31 files" above "32 files imported ·
+              // incl. 1 re-processed" read as a contradiction: the re-import
+              // is counted beside the batch's own files, not inside them.
+              <>
+                {count(total - reprocessed, 'file')} imported
+                <span className="text-caption text-muted-foreground">
+                  {' '}+ {reprocessed.toLocaleString()} re-processed
+                </span>
+              </>
             ) : (
               <>
                 {count(b.files, 'file')} imported
                 {total > b.files && (
-                  <span className="text-caption text-muted-foreground"> (matching, of {total.toLocaleString()})</span>
-                )}
-                {reprocessed > 0 && (
                   <span className="text-caption text-muted-foreground">
-                    {' '}· incl. {reprocessed.toLocaleString()} re-processed
+                    {' '}(matching, of {(total - reprocessed).toLocaleString()}
+                    {reprocessed > 0 ? ` + ${reprocessed.toLocaleString()} re-processed` : ''})
                   </span>
                 )}
               </>
@@ -253,6 +322,17 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
             <p className="text-caption">
               <Link to="/parse-errors?status=needs_attention" className={`${reasonLink} text-destructive`}>
                 {b.failed_files.toLocaleString()} failed
+              </Link>
+            </p>
+          )}
+          {superseded > 0 && (
+            <p className="text-caption text-muted-foreground">
+              <Link
+                to="/parse-errors?status=superseded"
+                className={reasonLink}
+                title="Failed here, but a later upload of the same file imported it — nothing needs doing"
+              >
+                {superseded.toLocaleString()} failed, imported later (superseded)
               </Link>
             </p>
           )}
@@ -325,7 +405,16 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           </TableCell>
         </TableRow>
       )}
-      {Array.isArray(state) && state.length === 0 && stagedJobs.length === 0 && (
+      {Array.isArray(state) && unimported === null && (
+        <TableRow>
+          <TableCell colSpan={colSpan} className="bg-muted/30 p-sm">
+            <p className="text-caption text-muted-foreground">
+              The files of this batch that did not import could not be listed — see Ingestion Results.
+            </p>
+          </TableCell>
+        </TableRow>
+      )}
+      {Array.isArray(state) && state.length === 0 && stagedJobs.length === 0 && otherJobs.length === 0 && (
         <TableRow>
           <TableCell colSpan={colSpan} className="bg-muted/30 p-sm">
             <p className="text-metadata text-muted-foreground">
@@ -339,15 +428,60 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
       {/* v5.288.0 — the files are rows of the parent table's columns (Scan ·
           When · New hosts · Contributed), so they read under its headers;
           they were a header-less list whose figures landed anywhere. */}
-      {Array.isArray(state) && (state.length > 0 || stagedJobs.length > 0) && (
+      {Array.isArray(state) && (state.length > 0 || stagedJobs.length > 0 || otherJobs.length > 0) && (
         <>
+          {/* v5.289.0 — files that did not import come first, each with what
+              happened to it and why. */}
+          {otherJobs.map((job) => {
+            const outcome = unimportedOutcome(job);
+            return (
+              <TableRow key={`job-${job.id}`} className="bg-muted/30 align-top" data-batch-file data-batch-job={job.id}>
+                <TableCell className="min-w-0 pl-xl">
+                  <BreakableName as="span" name={job.original_filename} className="block font-mono text-metadata" />
+                </TableCell>
+                <TableCell className="min-w-0 text-caption tabular-nums text-muted-foreground">
+                  {childTime(job.created_at)}
+                </TableCell>
+                <TableCell className="text-caption text-muted-foreground">—</TableCell>
+                <TableCell className="min-w-0 text-caption">
+                  <p className={outcome.tone}>
+                    {outcome.label}
+                    {job.superseded_by_job_id != null && (
+                      <>
+                        {' — '}
+                        <Link to={`/parse-errors?job_id=${job.superseded_by_job_id}`} className={`${reasonLink} text-primary`}>
+                          imported by job #{job.superseded_by_job_id}
+                        </Link>
+                      </>
+                    )}
+                  </p>
+                  {outcome.reason && (
+                    <p className="line-clamp-2 break-words text-muted-foreground" title={outcome.reason} data-testid="batch-file-reason">
+                      {outcome.reason}
+                    </p>
+                  )}
+                </TableCell>
+                <TableCell>
+                  <div className="flex justify-end">
+                    <Link
+                      to={`/parse-errors?job_id=${job.id}`}
+                      className={`${reasonLink} text-caption text-primary`}
+                      aria-label={`Open ${job.original_filename} in Ingestion Results`}
+                    >
+                      Details
+                    </Link>
+                  </div>
+                </TableCell>
+              </TableRow>
+            );
+          })}
           {stagedJobs.map((job) => (
             <TableRow key={`staged-${job.id}`} className="bg-muted/30 align-top" data-batch-file>
               <TableCell className="min-w-0 pl-xl">
-                <span className="block break-all font-mono text-metadata">{job.original_filename}</span>
+                <BreakableName as="span" name={job.original_filename} className="block font-mono text-metadata" />
               </TableCell>
-              <TableCell className="min-w-0 text-caption text-muted-foreground">
-                {when(job.created_at) ?? '—'}
+              <TableCell className="min-w-0 text-caption tabular-nums text-muted-foreground">
+                {childTime(job.created_at)}
               </TableCell>
               <TableCell className="text-caption text-muted-foreground">—</TableCell>
               <TableCell className="min-w-0 text-caption text-warning">Waiting for review — not imported</TableCell>
@@ -376,16 +510,16 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                   <button
                     type="button"
                     onClick={() => onViewScan(s.id)}
-                    className="block max-w-full break-all text-left font-mono text-metadata text-primary hover:underline focus:outline-none focus-visible:underline"
+                    className="block max-w-full text-left font-mono text-metadata text-primary hover:underline focus:outline-none focus-visible:underline"
                   >
-                    {s.filename}
+                    <BreakableName name={s.filename} />
                   </button>
                   <span className="block truncate text-caption text-muted-foreground">
                     {s.tool_name || s.scan_type || '—'}
                   </span>
                 </TableCell>
                 <TableCell className="min-w-0 text-caption tabular-nums text-muted-foreground">
-                  {when(s.created_at) ?? '—'}
+                  {childTime(s.created_at)}
                 </TableCell>
                 <TableCell title="Hosts this file added to the inventory, out of all the hosts it observed">
                   {s.total_hosts === 0 ? (

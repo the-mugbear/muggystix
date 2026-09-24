@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowDownUp,
   RefreshCw,
@@ -19,6 +19,7 @@ import { Input } from '../components/ui/input';
 import {
   discardIngestionJob,
   dismissIngestionJob,
+  dismissSupersededJobs,
   getIngestionResults,
   getParseError,
   getScans,
@@ -36,6 +37,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from '../components/ui/badge';
+import { BreakableName } from '../components/ui/breakable-name';
 import { Button } from '../components/ui/button';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import {
@@ -106,6 +108,10 @@ export const failureReason = (item: IngestionResultItem): string | null => {
   const raw = (item.error?.error_message || item.error?.user_message || '').trim();
   if (raw.startsWith('Discarded before import')) return 'Discarded before import';
   if (raw.startsWith('Staged upload expired')) return 'Expired before import';
+  // v5.289.0 — the parser's specific cause (server-derived from the parse
+  // error: "SMBMap parser found 0 hosts in …"); the generic "Failed to parse
+  // the file …" user message only when nothing more specific was recorded.
+  if (item.failure_reason?.trim()) return item.failure_reason.trim();
   const line = (item.error?.user_message || raw).trim().split('\n')[0]?.trim();
   return line || 'Import failed — no message recorded';
 };
@@ -186,7 +192,15 @@ const ParseErrors: React.FC = () => {
   // v5.288.0 — 25, like the other lists (was 50).
   const pageSize = 25;
 
+  // v5.289.0 — which query the loaded `data` answers.  A "Superseded —
+  // imported by job #N" link changes the filter AND names a row in one
+  // navigation; the focus effect must wait for the new list, not search the
+  // old one and report the row missing.
+  const queryKey = `${statusFilter}|${debouncedSearchText}|${sortBy}|${sortOrder}|${page}`;
+  const [dataKey, setDataKey] = useState<string | null>(null);
+
   const loadData = async () => {
+    const key = queryKey;
     try {
       setLoading(true);
       setError(null);
@@ -199,6 +213,7 @@ const ParseErrors: React.FC = () => {
         sortOrder,
       });
       setData(result);
+      setDataKey(key);
     } catch (err: unknown) {
       setError(formatApiError(err, 'Failed to load ingestion results.'));
     } finally {
@@ -253,7 +268,7 @@ const ParseErrors: React.FC = () => {
   // param is cleared afterwards so a later manual collapse isn't undone by a
   // re-render, and so the URL doesn't keep re-focusing on refresh.
   useEffect(() => {
-    if ((focusErrorId === null && focusJobId === null) || loading) return;
+    if ((focusErrorId === null && focusJobId === null) || loading || dataKey !== queryKey) return;
     // Scans links with the PARSE ERROR id, so resolve it back to the row that
     // produced it. Matching it against `i.id` (the job id) meant the link
     // almost never focused anything, and on a numeric collision focused an
@@ -289,7 +304,7 @@ const ParseErrors: React.FC = () => {
         ?.scrollIntoView({ block: 'center' });
     });
     clearFocus();
-  }, [focusErrorId, focusJobId, loading, data, setSearchParams]);
+  }, [focusErrorId, focusJobId, loading, data, dataKey, queryKey, setSearchParams]);
 
   const summary = data?.summary;
   // v2.86.2 — items come pre-filtered + pre-sorted from the server; no
@@ -336,6 +351,40 @@ const ParseErrors: React.FC = () => {
       toast.error(`${failed} of ${dismissable.length} could not be dismissed — you can only dismiss your own uploads unless you are an admin.`);
     } else {
       toast.success(`Dismissed ${dismissable.length} import${dismissable.length === 1 ? '' : 's'}`);
+    }
+    void loadData();
+  };
+
+  // v5.289.0 — failures whose file a later job imported (superseded): they
+  // no longer need attention; clear the ones SHOWN in one action.  Exactly
+  // these ids are sent; the server skips any no longer superseded.
+  const supersededShown = items.filter((i) => !i.dismissed_at && i.superseded_by_job_id != null);
+  const dismissSuperseded = async () => {
+    const n = supersededShown.length;
+    const ok = await askConfirm({
+      title: `Dismiss ${n} superseded import${n === 1 ? '' : 's'}?`,
+      body: (
+        <>
+          Each of these {n} failed or partial import{n === 1 ? '' : 's'} was imported again, from the same
+          file, by a later job. Dismissing takes {n === 1 ? 'it' : 'them'} off the failure lists; the
+          rows stay here.
+        </>
+      ),
+      confirmLabel: `Dismiss ${n}`,
+    });
+    if (!ok) return;
+    setBulkDismissing(true);
+    try {
+      const res = await dismissSupersededJobs(supersededShown.map((i) => i.id));
+      if (res.dismissed === n) {
+        toast.success(`Dismissed ${n} superseded import${n === 1 ? '' : 's'}`);
+      } else {
+        toast.info(`Dismissed ${res.dismissed} of ${n} — the rest were no longer superseded, or not yours to dismiss`);
+      }
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not dismiss the superseded imports.'));
+    } finally {
+      setBulkDismissing(false);
     }
     void loadData();
   };
@@ -447,8 +496,16 @@ const ParseErrors: React.FC = () => {
               </button>
             );
           })}
-          {dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
+          {supersededShown.length > 0 && (
             <Button size="sm" variant="outline" className="ml-auto" disabled={bulkDismissing || loading}
+              onClick={() => void dismissSuperseded()}>
+              {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}
+              Dismiss {supersededShown.length} superseded
+            </Button>
+          )}
+          {dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
+            <Button size="sm" variant="outline" className={supersededShown.length > 0 ? undefined : 'ml-auto'}
+              disabled={bulkDismissing || loading}
               onClick={() => void dismissShown()}>
               {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}
               Dismiss the {dismissable.length} shown
@@ -464,24 +521,31 @@ const ParseErrors: React.FC = () => {
               page-level horizontal scroll (which the UI Style Guide bans).
               Scroll lives on this wrapper instead so only the table moves. */}
           <div className="overflow-x-auto">
-            <Table className="table-fixed w-full min-w-[1100px]">
+            {/* v5.289.0 — rebalanced: "UPLOADED" was clipped to "UPLOADE" at
+                a ~1450px window.  The fixed columns were 872px under a
+                1100px minimum, and the 80px ones could not hold their own
+                uppercase headers ("SERVICES", "DURATION"), which spilled right
+                until the last one was cut by the scroll container.  Every
+                fixed column now fits its header, their sum is 856px, and the
+                minimum is 1000px (the filename keeps at least 144px), so the
+                table fits beside the 240px sidebar from a ~1310px window up
+                without scrolling; narrower, the wrapper scrolls, never the page. */}
+            <Table className="table-fixed w-full min-w-[1000px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10" />
-                  {/* w-48 since v5.242.0: "completed" + "partial" sit side by
-                      side; since v5.288.0 a failed row's reason sits under them. */}
-                  <TableHead className="w-48">Status</TableHead>
-                  {/* v5.288.0 — the filename takes the remaining width (it was
-                      a fixed 224px, cutting "eyewitness_with_screenshot…"),
-                      and wraps. */}
+                  {/* A failed row's reason sits under its badges (v5.288.0). */}
+                  <TableHead className="w-44">Status</TableHead>
+                  {/* The filename takes the remaining width and wraps after
+                      separators (v5.288.0, v5.289.0). */}
                   <TableHead>Filename</TableHead>
                   <TableHead className="w-24">Tool</TableHead>
-                  <TableHead className="w-24">Hosts</TableHead>
-                  <TableHead className="w-24">Ports</TableHead>
-                  <TableHead className="w-20">Services</TableHead>
+                  <TableHead className="w-20">Hosts</TableHead>
+                  <TableHead className="w-20">Ports</TableHead>
+                  <TableHead className="w-24">Services</TableHead>
                   <TableHead className="w-20">Size</TableHead>
-                  <TableHead className="w-20">Duration</TableHead>
-                  <TableHead className="w-28">Uploaded</TableHead>
+                  <TableHead className="w-24">Duration</TableHead>
+                  <TableHead className="w-28 pr-md">Uploaded</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -553,6 +617,20 @@ const ParseErrors: React.FC = () => {
                                 </span>
                               )}
                             </div>
+                            {/* v5.289.0 — a later job imported the same file:
+                                this failure needs nothing, and says by whom. */}
+                            {item.superseded_by_job_id != null && (
+                              <p className="mt-xxs break-words text-caption text-success" data-testid="superseded-by">
+                                Superseded — imported by{' '}
+                                <Link
+                                  to={`/parse-errors?job_id=${item.superseded_by_job_id}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="rounded underline underline-offset-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                >
+                                  job #{item.superseded_by_job_id}
+                                </Link>
+                              </p>
+                            )}
                             {reason && (
                               <p
                                 className="mt-xxs line-clamp-2 break-words text-caption text-muted-foreground"
@@ -564,9 +642,12 @@ const ParseErrors: React.FC = () => {
                             )}
                           </TableCell>
                           <TableCell className="min-w-0">
-                            <p className="break-all font-mono text-caption" title={item.original_filename}>
-                              {item.original_filename}
-                            </p>
+                            <BreakableName
+                              as="p"
+                              name={item.original_filename}
+                              title={item.original_filename}
+                              className="font-mono text-caption"
+                            />
                           </TableCell>
                           {/* `truncate` doesn't work directly on a
                               display:table-cell — text must live in a
@@ -1004,11 +1085,20 @@ const statusChips = (summary: IngestionResultsResponse['summary'], active: strin
     {
       value: 'needs_attention', label: 'Needs attention', count: summary.total_needs_attention ?? 0,
       tone: 'text-warning',
-      hint: 'Failed, or finished partial, and not dismissed — what Operations lists as blocked',
+      hint: 'Failed, or finished partial, not dismissed, and not imported since by a later upload of the same file — what Operations lists as blocked',
     },
     { value: 'failed', label: 'Failed', count: summary.total_failed, tone: 'text-destructive', hint: 'Nothing from these files is in the inventory (dismissed ones included)' },
     { value: 'completed', label: 'Completed', count: summary.total_completed, hint: 'Imported — a partial import is marked on its row' },
   ];
+  // v5.289.0 — failures a later job imported from the same file: shown while
+  // any is undismissed (what "Dismiss N superseded" clears).
+  const superseded = summary.total_superseded ?? 0;
+  if (superseded > 0) {
+    chips.push({
+      value: 'superseded', label: 'Superseded', count: superseded,
+      hint: 'Failed or partial, not dismissed, but the same file was imported by a later job — nothing needs doing',
+    });
+  }
   if (staged > 0) chips.push({ value: 'staged', label: 'Awaiting format review', count: staged, hint: 'Uploaded, not started' });
   if (queued > 0) chips.push({ value: 'queued', label: 'Queued', count: queued, hint: 'Waiting for a worker' });
   if (processing > 0) chips.push({ value: 'processing', label: 'Processing', count: processing, hint: 'Being imported now' });

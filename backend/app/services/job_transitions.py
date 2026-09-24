@@ -252,6 +252,35 @@ class JobTransitions:
             setattr(job, k, v)
         return job
 
+    def acknowledge(
+        self,
+        db: Session,
+        job_id: int,
+        *,
+        precondition: Callable[[Any], Optional[str]],
+        column: str = "dismissed_at",
+        extra_conds: Sequence[Any] = (),
+        now: Optional[datetime] = None,
+    ) -> Optional[Any]:
+        """v2.403.0 — lock the row and stamp ``column`` (the operator's
+        dismissal) if ``precondition(job)`` returns ``None``; otherwise raise
+        :class:`JobNotTransitionable` with the reason it returned as the
+        ``status``.  The status is not changed.  A row already stamped is
+        returned untouched (idempotent).  Checked under the lock because what
+        makes a job dismissable (its status, a later import of its file) can
+        change while the request is in flight.  Returns the row, ``None`` if
+        not found."""
+        job = self._locked(db, job_id, *extra_conds)
+        if job is None:
+            return None
+        if getattr(job, column) is not None:
+            return job
+        reason = precondition(job)
+        if reason:
+            raise JobNotTransitionable(job_id, reason, ("dismissable",))
+        setattr(job, column, now or datetime.now(timezone.utc))
+        return job
+
     def retry(
         self,
         db: Session,
