@@ -187,7 +187,50 @@ describe('AssistSessions', () => {
     listAssistSessions.mockResolvedValue([]);
     renderPage();
 
-    expect(await screen.findByText('No assist sessions yet')).toBeInTheDocument();
+    expect(await screen.findByText('No agent sessions yet')).toBeInTheDocument();
+    // The recovery action goes where a session is actually started.
+    expect(screen.getByRole('link', { name: 'Start Agent Session' })).toHaveAttribute(
+      'href',
+      '/operations?start=agent-session',
+    );
+  });
+
+  it('is titled as the nav names it and links to where a session starts', async () => {
+    renderPage();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Agent Sessions' }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole('link', { name: 'Start a session on Operations' }),
+    ).toHaveAttribute('href', '/operations?start=agent-session');
+  });
+
+  it('shows who started a session by full name, falling back to the username', async () => {
+    listAssistSessions.mockResolvedValue([
+      row({ started_by_username: 'alice', started_by_full_name: 'Alice Liddell' }),
+      row({ id: 13, started_by_username: 'bob', started_by_full_name: null }),
+      row({ id: 14, started_by_username: 'carol', started_by_full_name: '  ' }),
+    ]);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('as Alice Liddell')).toBeInTheDocument());
+    expect(screen.getByText('Alice Liddell')).toBeInTheDocument();
+    expect(screen.queryByText('alice')).not.toBeInTheDocument();
+    expect(screen.getByText('as bob')).toBeInTheDocument();
+    expect(screen.getByText('as carol')).toBeInTheDocument();
+  });
+
+  it('renders a missing purpose as a quiet fallback, not as content', async () => {
+    listAssistSessions.mockResolvedValue([row({ purpose: null })]);
+    renderPage();
+
+    const fallback = await screen.findByText('No stated purpose');
+    expect(fallback).toHaveClass('text-muted-foreground');
+    // The linked cell adds no padding of its own on top of the link's, so its
+    // content lines up with the column header (both px-sm).
+    const cell = fallback.closest('td')!;
+    expect(cell.className).not.toMatch(/px-sm|px-md/);
+    expect(fallback.closest('a')!.className).toMatch(/\bpx-sm\b/);
   });
 
   it('surfaces a failed load rather than an empty list', async () => {
@@ -195,7 +238,7 @@ describe('AssistSessions', () => {
     renderPage();
 
     await waitFor(() =>
-      expect(screen.getByText(/Could not load assist sessions/)).toBeInTheDocument(),
+      expect(screen.getByText(/Could not load agent sessions/)).toBeInTheDocument(),
     );
   });
 });

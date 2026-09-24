@@ -164,6 +164,24 @@ beforeEach(() => {
 });
 
 describe('Operations page', () => {
+  it('opens the Start Agent Session dialog when linked with ?start=agent-session', async () => {
+    // The Agent Sessions page links here as "where a session is started".
+    render(
+      <MemoryRouter initialEntries={['/operations?start=agent-session']}>
+        <Operations />
+      </MemoryRouter>,
+    );
+    expect(
+      await screen.findByRole('dialog', { name: /Start Agent Session/ }),
+    ).toBeInTheDocument();
+  });
+
+  it('does not open the dialog without the param', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Project state')).toBeInTheDocument());
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  });
+
   it('renders the coverage tiles in the merged Project state card', async () => {
     renderPage();
     // RV-UI — "Security snapshot" + "Project coverage" merged into one

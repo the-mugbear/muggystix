@@ -92,7 +92,12 @@ export const NavigableTableCell = React.forwardRef<
     );
   }
   return (
-    <TableCell ref={ref} className={cn('p-0', className)} {...rest}>
+    // A bare <td>, not <TableCell>: `cn('p-0')` could not cancel TableCell's
+    // `px-sm py-xs` (tailwind-merge does not know the custom spacing tokens,
+    // and in CSS order `px-*` beats `p-0`), so the cell kept its padding AND
+    // the link added its own — the content sat a full step right of its
+    // column header. The link now carries exactly TableCell's padding.
+    <td ref={ref} className={cn('p-0 align-top', className)} {...rest}>
       {/* The Link fills the cell so the click target matches the
           visible cell area. Padding moves from the cell to the link
           to preserve the visual layout. */}
@@ -100,14 +105,14 @@ export const NavigableTableCell = React.forwardRef<
         to={to}
         aria-label={ariaLabel}
         className={cn(
-          'block px-md py-xs',
+          'block px-sm py-xs',
           'text-inherit no-underline',
           'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
         )}
       >
         {children}
       </Link>
-    </TableCell>
+    </td>
   );
 });
 NavigableTableCell.displayName = 'NavigableTableCell';

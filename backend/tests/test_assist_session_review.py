@@ -143,6 +143,30 @@ def test_the_list_says_which_sessions_actually_did_anything(
     assert rows[idle]["first_call_at"] is None
 
 
+def test_list_and_detail_name_the_operator_by_full_name(
+    client, db_session, test_project, test_user
+):
+    """The page shows who started a session by display name, falling back to
+    the username; both come from the same statement as the row, never a query
+    per row."""
+    sid = _start(client, test_project.id)["assist_session_id"]
+    _start(client, test_project.id)
+
+    rows = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions").json()
+    assert len(rows) == 2
+    for row in rows:
+        assert row["started_by_username"] == test_user.username
+        assert row["started_by_full_name"] == "Test Admin"
+    assert _detail(client, test_project.id, sid)["started_by_full_name"] == "Test Admin"
+
+    # No display name set: null, so the client falls back to the username.
+    test_user.full_name = None
+    db_session.commit()
+    rows = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions").json()
+    assert all(r["started_by_full_name"] is None for r in rows)
+    assert _detail(client, test_project.id, sid)["started_by_full_name"] is None
+
+
 def test_connection_state_comes_from_observed_calls_not_the_probe(
     client, db_session, test_project
 ):

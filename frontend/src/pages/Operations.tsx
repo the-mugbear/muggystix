@@ -993,6 +993,17 @@ const Operations: React.FC = () => {
   // Scopes (it's scope-level) and on the setup card above, plan-generate
   // on Test Plans.
   const [assistDialogOpen, setAssistDialogOpen] = useState(false);
+  // `?start=agent-session` opens the dialog on arrival — the Agent Sessions
+  // page links here as "where a session is started". The param is dropped
+  // once read so a refresh or Back does not reopen it.
+  const [pageParams, setPageParams] = useSearchParams();
+  useEffect(() => {
+    if (pageParams.get('start') !== 'agent-session') return;
+    setAssistDialogOpen(true);
+    const next = new URLSearchParams(pageParams);
+    next.delete('start');
+    setPageParams(next, { replace: true });
+  }, [pageParams, setPageParams]);
   // An active assist session is an outstanding agent key. Surface the count on
   // the entry point so an operator doesn't mint a second one without knowing
   // the first is still live — assist has no one-active-session constraint.
