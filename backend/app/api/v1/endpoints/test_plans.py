@@ -109,7 +109,11 @@ def _plan_to_summary(
         created_by_username=(
             plan.created_by_user.username if plan.created_by_user else None
         ),
+        created_by_full_name=(
+            (plan.created_by_user.full_name or None) if plan.created_by_user else None
+        ),
         entry_count=progress["total_entries"],
+        entries_done=progress["hosts_tested"],
         completion_pct=progress["completion_pct"],
         approved_by_id=plan.approved_by_id,
         approved_at=plan.approved_at,
@@ -810,7 +814,11 @@ def get_test_plan(
         created_by_username=(
             plan.created_by_user.username if plan.created_by_user else None
         ),
+        created_by_full_name=(
+            (plan.created_by_user.full_name or None) if plan.created_by_user else None
+        ),
         entry_count=progress["total_entries"],
+        entries_done=progress["hosts_tested"],
         completion_pct=progress["completion_pct"],
         approved_by_id=plan.approved_by_id,
         approved_at=plan.approved_at,

@@ -48,6 +48,14 @@ export interface AgentSessionRow {
    *  how many feedback submissions it made. Both null/0 on older backends. */
   end_reason?: 'agent' | 'operator' | 'lapsed' | string | null;
   feedback_count?: number;
+  /** v5.288.0 — the operator's display name; shown before the username. */
+  user_full_name?: string | null;
+  /** v5.288.0 — run rows (recon / execution / assist) only: the agent session
+   *  the run belongs to, and whether it can still act. `false` on an in-progress
+   *  run means the run outlived its session — nothing will move it until
+   *  someone resumes or closes it. Null/absent when not computed. */
+  agent_session_id?: number | null;
+  session_live?: boolean | null;
 }
 
 /** v5.214.0 — what a resume hands back: the same shape the start dialog

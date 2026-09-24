@@ -124,19 +124,30 @@ describe('AssistSessions', () => {
     expect(screen.getByText(/14 · 2/)).toBeInTheDocument();
   });
 
-  it('names the operator each session acted for', async () => {
-    // v5.189.0 — was "marks which sessions could write". Capability grants are
-    // gone: a session acts with its operator's own project permissions, so the
-    // operator IS the authority statement, and it is the thing a reviewer needs
-    // when the session's output carries that person's name.
+  it('states the authority as the operator’s project role, not their name', async () => {
+    // v5.288.0 — the column read "as <operator>", repeating Started by and
+    // wrapping on a long name. Authority is the operator's PROJECT ROLE — what
+    // the agent gate checks on every call.
     listAssistSessions.mockResolvedValue([
-      row({ started_by_username: 'alice' }),
-      row({ id: 13, started_by_username: 'bob' }),
+      row({ started_by_username: 'alice', operator_role: 'analyst' }),
+      row({ id: 13, started_by_username: 'bob', operator_role: 'global_admin' }),
+      row({ id: 14, started_by_username: 'carol', operator_role: null }),
     ]);
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('as alice')).toBeInTheDocument());
-    expect(screen.getByText('as bob')).toBeInTheDocument();
+    const analyst = await screen.findByText('Analyst role');
+    expect(analyst).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText('Global admin')).toBeInTheDocument();
+    expect(screen.getByText('No project role')).toBeInTheDocument();
+    expect(screen.queryByText(/^as /)).not.toBeInTheDocument();
+  });
+
+  it('says what it is for and links to Agent Runs', async () => {
+    renderPage();
+    expect(await screen.findByRole('link', { name: 'Agent Runs' })).toHaveAttribute(
+      'href',
+      '/agent-activity',
+    );
   });
 
   it('leads the detail with the notes the agent wrote', async () => {
@@ -213,11 +224,10 @@ describe('AssistSessions', () => {
     ]);
     renderPage();
 
-    await waitFor(() => expect(screen.getByText('as Alice Liddell')).toBeInTheDocument());
-    expect(screen.getByText('Alice Liddell')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText('Alice Liddell')).toBeInTheDocument());
     expect(screen.queryByText('alice')).not.toBeInTheDocument();
-    expect(screen.getByText('as bob')).toBeInTheDocument();
-    expect(screen.getByText('as carol')).toBeInTheDocument();
+    expect(screen.getByText('bob')).toBeInTheDocument();
+    expect(screen.getByText('carol')).toBeInTheDocument();
   });
 
   it('renders a missing purpose as a quiet fallback, not as content', async () => {

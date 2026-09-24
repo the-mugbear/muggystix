@@ -220,6 +220,15 @@ class AssistSessionRow(BaseModel):
     # statement as the username; null when the account has none set.  The page
     # shows it, falling back to the username.
     started_by_full_name: Optional[str] = None
+    # v2.402.0 — the authority the session acts with: the operator's project
+    # role (admin / analyst / auditor / viewer), or ``global_admin`` when the
+    # operator is a global admin without an admin membership (the agent gate
+    # lets a global admin through as ``require_project_role`` does).  Null when
+    # the operator is no longer a member — the key is refused on its next call.
+    # This is the role NOW, not at start: nothing records the role at start,
+    # and the gate re-resolves it on every call, so the current role is the one
+    # any further call would be checked against.
+    operator_role: Optional[str] = None
     started_at: Optional[datetime]
     ended_at: Optional[datetime]
     last_activity_at: Optional[datetime]
@@ -301,6 +310,20 @@ def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
         .first()
     )
     return membership is not None and membership.role == ProjectRole.ADMIN.value
+
+
+def _operator_role(global_role, membership_role: Optional[str]) -> Optional[str]:
+    """The authority a session's operator carries in this project (v2.402.0).
+
+    Mirrors ``enforce_agent_operator_access``: a global admin passes whatever
+    their membership says, so unless that membership already reads admin the
+    honest label is ``global_admin``; otherwise the membership role; otherwise
+    None (not a member — the key's next call is refused).
+    """
+    is_global_admin = global_role in (UserRole.ADMIN, UserRole.ADMIN.value)
+    if is_global_admin and membership_role != ProjectRole.ADMIN.value:
+        return "global_admin"
+    return membership_role or None
 
 
 # ---------------------------------------------------------------------------
@@ -542,9 +565,20 @@ def list_assist_sessions(
     stored_active = AssistSession.status == AssistSessionStatus.ACTIVE.value
 
     q = (
-        db.query(AssistSession, User.username, User.full_name)
+        db.query(
+            AssistSession,
+            User.username,
+            User.full_name,
+            User.role,
+            ProjectMembership.role,
+        )
         .options(joinedload(AssistSession.agent_session))
         .outerjoin(User, AssistSession.started_by_id == User.id)
+        .outerjoin(
+            ProjectMembership,
+            (ProjectMembership.user_id == AssistSession.started_by_id)
+            & (ProjectMembership.project_id == AssistSession.project_id),
+        )
         .filter(AssistSession.project_id == project.id)
     )
     if mine:
@@ -567,10 +601,10 @@ def list_assist_sessions(
         .all()
     )
 
-    session_ids = [s.id for s, _, _ in rows]
+    session_ids = [row[0].id for row in rows]
     expiry_by_session = key_expiry_for_sessions(db, session_ids)
     activity_by_session = _session_activity(db, session_ids)
-    notes_by_session = _note_counts(db, [s for s, _, _ in rows])
+    notes_by_session = _note_counts(db, [row[0] for row in rows])
 
     return [
         _session_row(
@@ -581,8 +615,9 @@ def list_assist_sessions(
             note_count=notes_by_session.get(s.id, 0),
             activity=activity_by_session.get(s.id),
             full_name=full_name,
+            operator_role=_operator_role(global_role, membership_role),
         )
-        for s, username, full_name in rows
+        for s, username, full_name, global_role, membership_role in rows
     ]
 
 
@@ -616,6 +651,7 @@ def _session_row(
     note_count: int = 0,
     activity: Optional["_SessionActivity"] = None,
     full_name: Optional[str] = None,
+    operator_role: Optional[str] = None,
 ) -> AssistSessionRow:
     """Map one session to its wire row.
 
@@ -647,6 +683,7 @@ def _session_row(
         started_by_id=session.started_by_id,
         started_by_username=username,
         started_by_full_name=(full_name or None),
+        operator_role=operator_role,
         started_at=session.started_at,
         ended_at=ended_at,
         last_activity_at=_latest(
@@ -783,13 +820,18 @@ def get_assist_session(
     if session is None:
         raise HTTPException(status_code=404, detail="Assist session not found")
 
-    username, full_name = (
-        db.query(User.username, User.full_name)
+    username, full_name, global_role, membership_role = (
+        db.query(User.username, User.full_name, User.role, ProjectMembership.role)
+        .outerjoin(
+            ProjectMembership,
+            (ProjectMembership.user_id == User.id)
+            & (ProjectMembership.project_id == project.id),
+        )
         .filter(User.id == session.started_by_id)
         .first()
         if session.started_by_id
         else None
-    ) or (None, None)
+    ) or (None, None, None, None)
     key_expires_at = (
         db.query(func.max(APIKey.expires_at))
         .filter(
@@ -848,6 +890,7 @@ def get_assist_session(
             note_count=note_total,
             activity=activity,
             full_name=full_name,
+            operator_role=_operator_role(global_role, membership_role),
         ).model_dump(),
         environment=probe.environment,
         environment_probed_at=probe.environment_probed_at,

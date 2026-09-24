@@ -875,6 +875,19 @@ class AgentSessionRow:
     # how many feedback submissions it made.  Project sessions only.
     end_reason: Optional[str] = None
     feedback_count: int = 0
+    # v2.402.0 — the operator's display name (users.full_name), shown in
+    # preference to the username; None when the account has none.
+    user_full_name: Optional[str] = None
+    # v2.402.0 — the agent session a run row belongs to, and whether that
+    # session can still act.  A recon / execution / assist row keeps its own
+    # status ("active") after the session whose key drove it has ended or its
+    # key has run out — the run outlives the session.  ``session_live`` says
+    # which: True = the session is active and holds a live or renewable key;
+    # False = it has ended or can no longer be renewed, so nothing will move
+    # this run on its own; None = not computed (project rows, or a run that is
+    # not in progress).  Workflow state, not evidence freshness.
+    agent_session_id: Optional[int] = None
+    session_live: Optional[bool] = None
 
     def to_dict(self) -> dict:
         return {
@@ -899,7 +912,69 @@ class AgentSessionRow:
             "renewable_until": self.renewable_until,
             "end_reason": self.end_reason,
             "feedback_count": self.feedback_count,
+            "user_full_name": self.user_full_name,
+            "agent_session_id": self.agent_session_id,
+            "session_live": self.session_live,
         }
+
+
+# Run statuses that mean "still in progress" — the only ones for which a
+# lapsed session is worth saying (a completed run needs no session).
+_RUN_IN_PROGRESS = {"active", "in_progress"}
+
+
+def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None:
+    """Set ``session_live`` on in-progress run rows (v2.402.0).
+
+    Two grouped queries whatever the page size: the parent sessions (status +
+    renewal deadline) and their live keys.  A legacy run with no parent
+    session falls back to its agent's keys — that is what authenticated it.
+    """
+    runs = [
+        r for r in rows
+        if r.kind in ("recon", "execution", "assist") and (r.status or "").lower() in _RUN_IN_PROGRESS
+    ]
+    if not runs:
+        return
+    now = datetime.now(timezone.utc)
+
+    def _aware(t):
+        return t if t is None or t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+    session_ids = sorted({r.agent_session_id for r in runs if r.agent_session_id is not None})
+    live_sessions: set = set()
+    if session_ids:
+        expiry = key_expiry_for_agent_sessions(db, session_ids)
+        for s in db.query(AgentSession).filter(AgentSession.id.in_(session_ids)).all():
+            if s.status != SESSION_ACTIVE:
+                continue
+            key_exp = _aware(expiry.get(s.id))
+            renew = session_renewal_deadline(s)
+            if (key_exp is not None and key_exp > now) or (renew is not None and renew > now):
+                live_sessions.add(s.id)
+
+    orphan_agents = sorted({r.agent_id for r in runs if r.agent_session_id is None and r.agent_id is not None})
+    live_agents: set = set()
+    if orphan_agents:
+        live_agents = {
+            agent_id
+            for (agent_id,) in (
+                db.query(APIKey.agent_id)
+                .filter(
+                    APIKey.agent_id.in_(orphan_agents),
+                    APIKey.is_active.is_(True),
+                    APIKey.expires_at.is_(None) | (APIKey.expires_at > now),
+                )
+                .distinct()
+                .all()
+            )
+        }
+
+    for r in runs:
+        if r.agent_session_id is not None:
+            r.session_live = r.agent_session_id in live_sessions
+        elif r.agent_id is not None:
+            r.session_live = r.agent_id in live_agents
 
 
 def _not_a_project_child(detail_agent_session_col):
@@ -1262,6 +1337,7 @@ def list_agent_sessions(
                 test_plan_id=None,
                 agent_name=s.agent.name if s.agent else None,
                 user_username=s.started_by.username if s.started_by else None,
+                user_full_name=(s.started_by.full_name or None) if s.started_by else None,
                 purpose=s.purpose,
                 renewable_until=session_renewal_deadline(s),
                 end_reason=s.end_reason,
@@ -1302,6 +1378,8 @@ def list_agent_sessions(
                 test_plan_id=None,
                 agent_name=s.agent.name if s.agent else None,
                 user_username=s.started_by.username if s.started_by else None,
+                user_full_name=(s.started_by.full_name or None) if s.started_by else None,
+                agent_session_id=s.agent_session_id,
             ))
 
     if "plan_generation" in want:
@@ -1346,6 +1424,8 @@ def list_agent_sessions(
                 test_plan_id=p.id,
                 agent_name=p.agent.name if p.agent else None,
                 user_username=p.created_by_user.username if p.created_by_user else None,
+                user_full_name=(p.created_by_user.full_name or None) if p.created_by_user else None,
+                agent_session_id=p.agent_session_id,
             ))
 
     if "execution" in want:
@@ -1374,6 +1454,8 @@ def list_agent_sessions(
                 test_plan_id=e.test_plan_id,
                 agent_name=e.agent.name if e.agent else None,
                 user_username=e.started_by.username if e.started_by else None,
+                user_full_name=(e.started_by.full_name or None) if e.started_by else None,
+                agent_session_id=e.agent_session_id,
             ))
 
     if "assist" in want:
@@ -1404,6 +1486,8 @@ def list_agent_sessions(
                 test_plan_id=None,
                 agent_name=a.agent.name if a.agent else None,
                 user_username=a.started_by.username if a.started_by else None,
+                user_full_name=(a.started_by.full_name or None) if a.started_by else None,
+                agent_session_id=a.agent_session_id,
             ))
 
     _attach_target_labels(db, rows)
@@ -1419,7 +1503,9 @@ def list_agent_sessions(
             r.id,
         )
     )
-    return rows[offset : offset + limit]
+    page = rows[offset : offset + limit]
+    _attach_session_liveness(db, page)
+    return page
 
 
 def summarise_by_model_tool(

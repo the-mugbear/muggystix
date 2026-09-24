@@ -107,24 +107,44 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) =>
     <Badge variant="muted">Ended</Badge>
   );
 
-/** Who the session acted for, which is the fact a reviewer checks first: its
- *  output carries that person's name, and its authority was theirs.
+const ROLE_LABELS: Record<string, string> = {
+  admin: 'Admin role',
+  analyst: 'Analyst role',
+  auditor: 'Auditor role',
+  viewer: 'Viewer role',
+  global_admin: 'Global admin',
+};
+
+/** The badge text for a session's authority. */
+const authorityLabel =(role: string | null | undefined): string =>
+  role ? ROLE_LABELS[role] ?? `${role} role` : 'No project role';
+
+/** The authority the session acts with — its operator's PROJECT ROLE.
  *
- *  v5.189.0 — this was a read-only/could-write badge sourced from the session's
- *  capability grant. Grants are gone: a session does what its operator may do,
- *  so the operator IS the authority statement. */
-const AuthorityBadge: React.FC<{ operator: string | null }> = ({ operator }) => {
-  if (!operator) return <Badge variant="outline">Unknown operator</Badge>;
+ *  v5.189.0 made this "as <operator>", which repeated Started by (and wrapped
+ *  on a long name). v5.288.0 — the role itself, which is what the agent gate
+ *  checks. It is the role NOW: the role at start is not recorded, and every
+ *  call is checked against the current one, so the tooltip says so. */
+const AuthorityBadge: React.FC<{ role: string | null | undefined; operator: string | null }> = ({
+  role,
+  operator,
+}) => {
+  const who = operator ?? 'the operator';
+  const explanation = !role
+    ? `${who} is no longer a member of this project, so any further call with this session's key is refused.`
+    : role === 'global_admin'
+      ? `${who} is a global admin, which the agent gate treats as full access to every project.`
+      : `The session acts with ${who}'s ${role} role on this project.`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Badge variant="outline" tabIndex={0}>
-          as {operator}
+        <Badge variant="outline" tabIndex={0} className="whitespace-nowrap">
+          {authorityLabel(role)}
         </Badge>
       </TooltipTrigger>
       <TooltipContent className="max-w-sm">
-        This session acted with {operator}&rsquo;s permissions on the project,
-        checked on every call.
+        {explanation} This is the operator&rsquo;s role now — it is checked on every
+        call, and the role at the session&rsquo;s start is not recorded.
       </TooltipContent>
     </Tooltip>
   );
@@ -185,7 +205,7 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
         <CardContent className="flex flex-col gap-sm p-md">
           <div className="flex flex-wrap items-center gap-xs">
             <StatusBadge status={session.status} />
-            <AuthorityBadge operator={operatorName(session)} />
+            <AuthorityBadge role={session.operator_role} operator={operatorName(session)} />
             {/* v5.203.0 — from observed calls, not the environment probe; the
                 probe is optional and proves nothing about the transport. Same
                 vocabulary as the start dialog's live-sessions panel so the two
@@ -426,10 +446,21 @@ const AssistSessions: React.FC = () => {
       <div className="mb-md flex flex-wrap items-center gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Sessions</h1>
+          {/* v5.288.0 — this page and Agent Runs overlap (a session is a row on
+              both), so each says what it is for and points at the other. */}
           <p className="text-metadata text-muted-foreground">
-            Every agent session in this project — what each one was for, whose
-            permissions it acted with, and what it produced. A session can query
-            the inventory and open recon, plan or execution work.{' '}
+            One row per agent session — the key an operator handed an agent —
+            with what it was for, the role it acts with, and what it produced
+            (notes written, API calls). A session can query the inventory and
+            open recon, plan or execution work; for those runs, their status and
+            the controls to resume or end a session, see{' '}
+            <Link
+              to="/agent-activity"
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              Agent Runs
+            </Link>
+            .{' '}
             <Link
               to={START_SESSION_PATH}
               className="text-primary underline-offset-4 hover:underline"
@@ -541,7 +572,7 @@ const AssistSessions: React.FC = () => {
                     <StatusBadge status={row.status} />
                   </TableCell>
                   <TableCell>
-                    <AuthorityBadge operator={operatorName(row)} />
+                    <AuthorityBadge role={row.operator_role} operator={operatorName(row)} />
                   </TableCell>
                   <TableCell
                     className="truncate text-metadata text-foreground"
