@@ -156,14 +156,15 @@ const WebhookDeliveries: React.FC = () => {
         )}
 
         {loading && rows.length === 0 && (
-          <p className="py-md text-center text-metadata text-muted-foreground">
+          <p className="text-metadata text-muted-foreground">
             <Loader2 className="mr-xs inline size-4 animate-spin" aria-hidden />
             Loading deliveries…
           </p>
         )}
 
+        {/* v5.288.0 — empty states left-aligned, like every other section. */}
         {!loading && !error && rows.length === 0 && (
-          <p className="py-md text-center text-metadata text-muted-foreground">
+          <p className="text-metadata text-muted-foreground">
             No delivery attempts recorded{status !== 'all' ? ` with status “${status}”` : ''}.
           </p>
         )}

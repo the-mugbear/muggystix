@@ -108,6 +108,10 @@ class NamesSummary(BaseModel):
     in_scope: int
     wildcards: int
     shared_addresses: int       # addresses with more than one name currently bound
+    # v2.402.0 — the NAMES the `shared` filter lists (a name whose current
+    # address another name also currently resolves to), so the filter chip
+    # carries its own count like every other chip.
+    shared_names: int = 0
 
 
 class HostNamesResponse(BaseModel):

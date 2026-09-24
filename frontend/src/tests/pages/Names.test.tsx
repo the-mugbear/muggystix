@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -70,11 +70,114 @@ describe('Names page export', () => {
     expect(screen.queryByRole('button', { name: /import names/i })).toBeNull();
   });
 
-  it('surfaces an export failure as a toast', async () => {
+  it('surfaces an export failure as a toast (export)', async () => {
     mocked.exportNames.mockRejectedValueOnce(new Error('nope'));
     renderAt('/names');
     await waitFor(() => expect(screen.getByText('portal.acme.com')).toBeInTheDocument());
     fireEvent.click(screen.getByRole('button', { name: 'Export names as text' }));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+  });
+});
+
+describe('Names page — screenshot review (v5.288.0)', () => {
+  const resolved = {
+    ...row,
+    id: 2,
+    fqdn: 'portal.example-corp.com',
+    in_scope: false,
+    last_seen: '2026-09-08T16:16:28Z',
+    current_addresses: [
+      { ip_address: '2606:2800:220:1:248:1893:25c8:1946', host_id: null, shared_with: 1, first_observed: null, last_observed: null },
+      { ip_address: '203.0.113.20', host_id: 5, shared_with: 0, first_observed: null, last_observed: null },
+    ],
+    previous_address_count: 1,
+    evidence: { A: 2, SCANNER: 3, CERT: 1 },
+    resolved: true,
+  };
+  const wildcard = { ...row, id: 3, fqdn: '*.example-corp.com', kind: 'wildcard' };
+  const short = { ...row, id: 4, fqdn: 'dc01' };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    role = 'analyst';
+    mocked.listNames.mockResolvedValue({ items: [resolved, wildcard, short], total: 3, skip: 0, limit: 100 });
+    mocked.getNamesSummary.mockResolvedValue({
+      total: 3, unresolved: 2, resolved: 1, in_scope: 2, wildcards: 1, shared_addresses: 4, shared_names: 6,
+    });
+  });
+
+  it('never truncates an address; the previous/shared chips sit on their own line', async () => {
+    renderAt('/names');
+    const v6 = await screen.findByText('2606:2800:220:1:248:1893:25c8:1946');
+    expect(v6.closest('.truncate')).toBeNull();
+    expect(screen.getByText('203.0.113.20').closest('.truncate')).toBeNull();
+    const prev = screen.getByText('+1 previous');
+    expect(prev.closest('li')).toBeNull();
+    expect(prev.getAttribute('title')).toMatch(/previously resolved/);
+  });
+
+  it('says "Out of scope" (not "no") and highlights "In scope"', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    const table = screen.getByRole('table');
+    expect(within(table).queryByText('no')).toBeNull();
+    expect(within(table).getAllByText('Out of scope')).toHaveLength(1);
+    expect(within(table).getAllByText('In scope')).toHaveLength(2);
+  });
+
+  it('shows last seen as date and time without seconds, full timestamp in the title', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    const d = new Date('2026-09-08T16:16:28Z');
+    const date = screen.getByText(d.toLocaleDateString());
+    expect(date.className).toMatch(/whitespace-nowrap/);
+    expect(date.parentElement!.getAttribute('title')).toBe(d.toLocaleString());
+    expect(date.parentElement!.textContent).not.toContain(d.toLocaleTimeString());
+  });
+
+  it('explains every evidence chip and offers one legend', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    const scanner = screen.getByText('scanner').closest('[title]')!;
+    expect(scanner.getAttribute('title')).toMatch(/scanner .*reported this name.*3 observations recorded/i);
+    expect(screen.getByText('A').closest('[title]')!.getAttribute('title')).toMatch(/IPv4.*2 observations/);
+    expect(screen.getByRole('button', { name: 'About the evidence chips' })).toBeInTheDocument();
+    expect(screen.getByText(/the number beside one counts how many were recorded/)).toBeInTheDocument();
+  });
+
+  it('uses one word for wildcards, marks short names, and says "every name"', async () => {
+    renderAt('/names');
+    await screen.findByText('*.example-corp.com');
+    expect(screen.queryByText('pattern')).toBeNull();
+    expect(screen.getByRole('button', { name: /^Wildcard\s*1$/ })).toBeInTheDocument();
+    expect(within(screen.getByRole('table')).getByText('wildcard')).toBeInTheDocument();
+    expect(screen.getByText('short name')).toBeInTheDocument();
+    expect(screen.getByText(/Every name this engagement knows about/)).toBeInTheDocument();
+    expect(screen.queryByText(/Every FQDN/)).toBeNull();
+  });
+
+  it('puts the shared-address count in its chip (names, as the filter lists)', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    await waitFor(() => expect(screen.getByRole('button', { name: /^Shared address\s*6$/ })).toBeInTheDocument());
+    expect(screen.queryByText(/4 shared addresses/)).toBeNull();
+  });
+
+  it('is a section, not a card, with no pager when everything fits and no title icon', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Previous' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Next' })).toBeNull();
+    expect(screen.queryByText(/Showing 1/)).toBeNull();
+    expect(screen.getByRole('heading', { level: 1, name: 'Names' }).querySelector('svg')).toBeNull();
+  });
+
+  it('shows the pager once the list spans more than one page', async () => {
+    mocked.listNames.mockResolvedValue({ items: [resolved], total: 250, skip: 0, limit: 100 });
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    expect(screen.getByRole('button', { name: 'Next' })).toBeEnabled();
+    expect(screen.getByText('1–100 of 250')).toBeInTheDocument();
   });
 });

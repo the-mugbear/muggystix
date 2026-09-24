@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Download, Globe, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
+import { Download, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteName,
@@ -26,8 +26,9 @@ import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
+import { InfoTip } from '../components/ui/info-tip';
+import { PostureSection, SectionCount } from '../components/posture/PostureSection';
 import {
   Dialog,
   DialogContent,
@@ -79,8 +80,10 @@ const STATE_OPTIONS: Array<{ value: NameStateFilter; label: string; hint: string
   { value: 'resolved', label: 'Resolved', hint: 'At least one A/AAAA observation' },
   { value: 'in_scope', label: 'In scope', hint: 'Covered by a domain declared in scope' },
   { value: 'out_of_scope', label: 'Out of scope', hint: 'No scope domain covers this name' },
-  { value: 'shared', label: 'Shared address', hint: 'Resolves to an address another name also resolves to' },
-  { value: 'wildcard', label: 'Wildcards', hint: 'Patterns (*.example.com) from certificates or enumeration' },
+  { value: 'shared', label: 'Shared address', hint: 'Names that resolve to an address another name also resolves to' },
+  // v5.288.0 — "Wildcard" on the chip AND on the row tag (was "Wildcards" /
+  // "pattern": two words for one thing).
+  { value: 'wildcard', label: 'Wildcard', hint: 'Wildcard names (*.example.com) from certificates or enumeration' },
 ];
 
 // Evidence kinds a reader recognises at a glance; anything else falls back to
@@ -91,8 +94,34 @@ const EVIDENCE_LABEL: Record<string, string> = {
   SCANNER: 'scanner',
   HTTP: 'http',
   CERT: 'cert',
+  TESTED: 'tested',
 };
-const EVIDENCE_ORDER = ['A', 'AAAA', 'CNAME', 'PTR', 'MX', 'NS', 'TXT', 'SRV', 'IMPORT', 'DISCOVERED', 'SCANNER', 'HTTP', 'CERT'];
+const EVIDENCE_ORDER = ['A', 'AAAA', 'CNAME', 'PTR', 'MX', 'NS', 'TXT', 'SRV', 'IMPORT', 'DISCOVERED', 'SCANNER', 'HTTP', 'CERT', 'TESTED'];
+
+// v5.288.0 — what each evidence chip means (the chips were unexplained).
+// Every kind is an observation from an upload or a recorded test; BlueStick
+// never resolves a name itself.
+const EVIDENCE_MEANING: Record<string, string> = {
+  A: 'DNS A record (IPv4 address) in uploaded resolver output',
+  AAAA: 'DNS AAAA record (IPv6 address) in uploaded resolver output',
+  CNAME: 'DNS CNAME record (alias) in uploaded resolver output',
+  PTR: 'Reverse DNS (PTR): an address whose reverse lookup gave this name',
+  MX: 'DNS MX record (mail server) in uploaded resolver output',
+  NS: 'DNS NS record (name server) in uploaded resolver output',
+  TXT: 'DNS TXT record in uploaded resolver output',
+  SRV: 'DNS SRV record (service location) in uploaded resolver output',
+  IMPORT: 'An operator imported this name (a pasted or uploaded list)',
+  DISCOVERED: 'An enumeration tool (amass, subfinder…) found the name, without an address',
+  SCANNER: 'A scanner (Nmap, Nessus…) reported this name for an address',
+  HTTP: 'The name was contacted over HTTP at an address (httpx…)',
+  CERT: 'A TLS certificate presented at an address carried this name',
+  TESTED: 'A test-plan command ran against this name at an address',
+};
+
+const evidenceChipTitle = (kind: string, count: number): string => {
+  const meaning = EVIDENCE_MEANING[kind] ?? `${kind} observation`;
+  return `${meaning} — ${count.toLocaleString()} observation${count === 1 ? '' : 's'} recorded`;
+};
 
 const fmtTime = (iso?: string | null): string => {
   if (!iso) return '—';
@@ -102,6 +131,29 @@ const fmtTime = (iso?: string | null): string => {
     return iso;
   }
 };
+
+/** v5.288.0 — "Last seen" in a table cell: date and hours:minutes on two
+ *  non-wrapping lines (the full locale string, seconds included, truncated on
+ *  every row at desktop widths); the full timestamp stays in the title. */
+const LastSeen: React.FC<{ iso?: string | null }> = ({ iso }) => {
+  if (!iso) return <span className="text-muted-foreground">—</span>;
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return <span>{iso}</span>;
+  return (
+    <span className="flex flex-col leading-tight" title={d.toLocaleString()}>
+      <span className="whitespace-nowrap">{d.toLocaleDateString()}</span>
+      <span className="whitespace-nowrap">{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+    </span>
+  );
+};
+
+/** A single-label name (dc01, file01) — reported by a scanner or SMB, not a
+ *  fully-qualified domain name. */
+const isShortName = (row: Pick<NameRow, 'fqdn' | 'kind'>) => row.kind !== 'wildcard' && !row.fqdn.includes('.');
+
+// Addresses shown per row before "+N more" (all of them are in the title and
+// the detail sheet); an address itself is never truncated.
+const ADDRESSES_SHOWN = 3;
 
 const sortEvidence = (evidence: Record<string, number>): Array<[string, number]> =>
   Object.entries(evidence).sort(([a], [b]) => {
@@ -117,15 +169,41 @@ const EvidenceChips: React.FC<{ evidence: Record<string, number>; max?: number }
   return (
     <span className="flex flex-wrap gap-2xs">
       {shown.map(([kind, count]) => (
-        <Badge key={kind} variant="outline" title={`${count} ${kind} observation${count === 1 ? '' : 's'}`}>
+        <Badge key={kind} variant="outline" title={evidenceChipTitle(kind, count)}>
           {EVIDENCE_LABEL[kind] ?? kind}
           {count > 1 && <span className="ml-2xs tabular-nums text-muted-foreground">{count}</span>}
         </Badge>
       ))}
-      {rest > 0 && <Badge variant="muted">+{rest}</Badge>}
+      {rest > 0 && (
+        <Badge
+          variant="muted"
+          title={`${rest} more kind${rest === 1 ? '' : 's'}: ${entries
+            .slice(max)
+            .map(([k, c]) => `${EVIDENCE_LABEL[k] ?? k} ${c}`)
+            .join(', ')}`}
+        >
+          +{rest}
+        </Badge>
+      )}
     </span>
   );
 };
+
+/** The legend behind the section's (i): every evidence kind in one place. */
+const EvidenceLegend: React.FC = () => (
+  <span className="flex flex-col gap-2xs">
+    <span>Each chip is a kind of observation; the number counts how many were recorded (shown when more than one).</span>
+    {EVIDENCE_ORDER.filter((k) => EVIDENCE_MEANING[k]).map((k) => (
+      <span key={k}>
+        <span className="font-medium">{EVIDENCE_LABEL[k] ?? k}</span> — {EVIDENCE_MEANING[k]}
+      </span>
+    ))}
+    <span>
+      <span className="font-medium">+N previous</span> — addresses the name resolved to before its latest resolution.{' '}
+      <span className="font-medium">shared</span> — another name also resolves to this address.
+    </span>
+  </span>
+);
 
 const AddressLine: React.FC<{ a: NameAddress }> = ({ a }) => (
   <li className="flex flex-wrap items-center gap-xs py-2xs">
@@ -387,7 +465,7 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
           <SideSheetTitle className="break-all font-mono">{detail?.fqdn ?? (loading ? 'Loading…' : 'Name')}</SideSheetTitle>
           <SideSheetDescription asChild>
             <div className="flex flex-wrap items-center gap-xs">
-              {detail?.kind === 'wildcard' && <Badge variant="muted">wildcard pattern</Badge>}
+              {detail?.kind === 'wildcard' && <Badge variant="muted">wildcard</Badge>}
               {detail && (
                 <Badge variant={detail.in_scope ? 'success-outline' : 'outline'}>
                   {detail.in_scope ? 'in scope' : 'not in scope'}
@@ -662,6 +740,8 @@ const Names: React.FC = () => {
         return summary.total - summary.in_scope;
       case 'wildcard':
         return summary.wildcards;
+      case 'shared':
+        return summary.shared_names ?? null;
       default:
         return null;
     }
@@ -669,6 +749,8 @@ const Names: React.FC = () => {
 
   const from = total === 0 ? 0 : page * PAGE_SIZE + 1;
   const to = Math.min(total, (page + 1) * PAGE_SIZE);
+  const multiPage = total > PAGE_SIZE;
+  const activeLabel = state === 'all' ? 'All names' : STATE_OPTIONS.find((o) => o.value === state)?.label ?? 'Names';
 
   // j/k (↓/↑) move a row cursor, Enter opens the name — as on Hosts.
   const { cursorRowProps } = useListCursor(
@@ -681,12 +763,10 @@ const Names: React.FC = () => {
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-center gap-sm">
         <div className="min-w-0 flex-1">
-          <h1 className="flex items-center gap-xs text-page-title font-semibold">
-            <Globe className="size-6 text-primary" aria-hidden /> Names
-          </h1>
+          <h1 className="text-page-title font-semibold">Names</h1>
           <p className="text-metadata text-muted-foreground">
-            Every FQDN this engagement knows about, resolved or not. Addresses shown are what uploaded evidence
-            says — BlueStick never resolves anything itself.
+            Every name this engagement knows about — domain names and short host names — resolved or not.
+            Addresses shown are what uploaded evidence says — BlueStick never resolves anything itself.
           </p>
         </div>
         {canEdit && (
@@ -723,6 +803,7 @@ const Names: React.FC = () => {
         </Button>
       </div>
 
+      <div className="mb-md border-b border-border pb-sm">
       <div className="mb-sm flex flex-wrap items-center gap-xs" role="group" aria-label="Name state filter">
         {STATE_OPTIONS.map((opt) => {
           const active = state === opt.value;
@@ -746,14 +827,9 @@ const Names: React.FC = () => {
             </Tooltip>
           );
         })}
-        {summary && summary.shared_addresses > 0 && (
-          <span className="ml-auto text-caption text-muted-foreground" title="Addresses that more than one name resolves to">
-            {summary.shared_addresses.toLocaleString()} shared address{summary.shared_addresses === 1 ? '' : 'es'}
-          </span>
-        )}
       </div>
 
-      <div className="mb-sm relative max-w-md">
+      <div className="relative max-w-md">
         <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
         <Input
           value={search}
@@ -763,6 +839,7 @@ const Names: React.FC = () => {
           aria-label="Search names"
         />
       </div>
+      </div>
 
       {error && (
         <Alert variant="destructive" className="mb-sm">
@@ -770,11 +847,30 @@ const Names: React.FC = () => {
         </Alert>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          <div className="flex items-center gap-xs border-b border-border p-sm text-metadata text-muted-foreground">
-            {total === 0 ? 'No names' : `Showing ${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`}
-            <span className="ml-auto flex gap-xs">
+      {/* v5.288.0 — a section over a thin rule, not a bordered card (§7); the
+          pager shows only when the list spans more than one page. */}
+      <PostureSection
+        title={
+          <>
+            {activeLabel}
+            {total > 0 && (
+              <SectionCount>
+                {multiPage
+                  ? `${from.toLocaleString()}–${to.toLocaleString()} of ${total.toLocaleString()}`
+                  : total.toLocaleString()}
+              </SectionCount>
+            )}
+          </>
+        }
+        description={
+          <span className="inline-flex flex-wrap items-center gap-x-xs">
+            Evidence chips name the kind of observation; the number beside one counts how many were recorded.
+            <InfoTip label="About the evidence chips" text={<EvidenceLegend />} />
+          </span>
+        }
+        actions={
+          multiPage ? (
+            <span className="flex gap-xs" role="group" aria-label="Pages">
               <Button size="sm" variant="outline" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
                 Previous
               </Button>
@@ -782,27 +878,29 @@ const Names: React.FC = () => {
                 Next
               </Button>
             </span>
-          </div>
+          ) : undefined
+        }
+      >
           {loading && rows.length === 0 ? (
-            <div className="p-sm">
+            <div>
               <TableSkeleton rows={8} />
             </div>
           ) : rows.length === 0 ? (
-            <div className="p-lg text-center text-metadata text-muted-foreground">
+            <div className="py-md text-metadata text-muted-foreground">
               {debouncedSearch.trim() || state !== 'all'
                 ? 'No names match the current filter.'
                 : 'No names yet. Import a list, or upload dnsx / amass / subfinder / httpx output.'}
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <Table style={{ tableLayout: 'fixed' }} className="min-w-[880px]">
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[30%]">Name</TableHead>
+                    <TableHead className="w-[28%]">Name</TableHead>
                     <TableHead className="w-[10%]">Scope</TableHead>
-                    <TableHead className="w-[24%]">Resolves to</TableHead>
+                    <TableHead className="w-[28%]">Resolves to</TableHead>
                     <TableHead className="w-[22%]">Evidence</TableHead>
-                    <TableHead className="w-[14%]">Last seen</TableHead>
+                    <TableHead className="w-[12%]">Last seen</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -813,56 +911,89 @@ const Names: React.FC = () => {
                       onClick={() => setSelectedId(row.id)}
                       aria-selected={selectedId === row.id}
                     >
-                      <TableCell className="truncate font-mono" title={row.fqdn}>
+                      <TableCell className="align-top font-mono">
                         {/* The row's keyboard path (data-table convention): a
-                            real button in the primary cell. */}
+                            real button in the primary cell.  A name is an
+                            identifier: it wraps, never truncates. */}
                         <button
                           type="button"
-                          className="max-w-full truncate rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          className="max-w-full break-all rounded text-left hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                           onClick={(e) => { e.stopPropagation(); setSelectedId(row.id); }}
                         >
                           {row.fqdn}
                         </button>
                         {row.kind === 'wildcard' && (
                           <Badge variant="muted" className="ml-xs">
-                            pattern
+                            wildcard
                           </Badge>
                         )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={row.in_scope ? 'success-outline' : 'outline'}>
-                          {row.in_scope ? 'in scope' : 'no'}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="truncate font-mono text-metadata">
-                        {row.current_addresses.length === 0 ? (
-                          <span className="font-sans text-muted-foreground">unresolved</span>
-                        ) : (
+                        {isShortName(row) && (
                           <span
-                            title={row.current_addresses.map((a) => a.ip_address).join(', ')}
-                            className="flex items-center gap-xs"
+                            className="ml-xs font-sans text-caption text-muted-foreground"
+                            title="A single-label name (no domain), as a scanner or SMB reported it — not a fully-qualified domain name"
                           >
-                            <span className="truncate">
-                              {row.current_addresses.map((a) => a.ip_address).join(', ')}
-                            </span>
-                            {row.previous_address_count > 0 && (
-                              <Badge variant="warning-outline" title="Addresses this name previously resolved to">
-                                +{row.previous_address_count} previous
-                              </Badge>
-                            )}
-                            {row.current_addresses.some((a) => a.shared_with > 0) && (
-                              <Badge variant="info-outline" title="Address shared with other names">
-                                shared
-                              </Badge>
-                            )}
+                            short name
                           </span>
                         )}
                       </TableCell>
-                      <TableCell>
+                      <TableCell className="align-top">
+                        {row.in_scope ? (
+                          <Badge variant="success-outline">In scope</Badge>
+                        ) : (
+                          <span className="text-metadata text-muted-foreground">Out of scope</span>
+                        )}
+                      </TableCell>
+                      <TableCell className="align-top font-mono text-metadata">
+                        {row.current_addresses.length === 0 ? (
+                          <span className="font-sans text-muted-foreground">unresolved</span>
+                        ) : (
+                          // v5.288.0 — an address is never truncated: one per
+                          // line (a long IPv6 wraps), the chips on their own
+                          // line below instead of squeezing it.
+                          <div
+                            className="flex min-w-0 flex-col gap-2xs"
+                            title={row.current_addresses.map((a) => a.ip_address).join(', ')}
+                          >
+                            <ul className="min-w-0">
+                              {row.current_addresses.slice(0, ADDRESSES_SHOWN).map((a) => (
+                                <li key={a.ip_address} className="break-all">
+                                  {a.ip_address}
+                                </li>
+                              ))}
+                              {row.current_addresses.length > ADDRESSES_SHOWN && (
+                                <li className="font-sans text-caption text-muted-foreground">
+                                  +{row.current_addresses.length - ADDRESSES_SHOWN} more
+                                </li>
+                              )}
+                            </ul>
+                            {(row.previous_address_count > 0 || row.current_addresses.some((a) => a.shared_with > 0)) && (
+                              <span className="flex flex-wrap gap-2xs font-sans">
+                                {row.previous_address_count > 0 && (
+                                  <Badge
+                                    variant="warning-outline"
+                                    title={`This name previously resolved to ${row.previous_address_count} other address${row.previous_address_count === 1 ? '' : 'es'} — open the name to see them`}
+                                  >
+                                    +{row.previous_address_count} previous
+                                  </Badge>
+                                )}
+                                {row.current_addresses.some((a) => a.shared_with > 0) && (
+                                  <Badge
+                                    variant="info-outline"
+                                    title="Another name also resolves to this address (a load balancer or virtual host) — open the name to see which"
+                                  >
+                                    shared
+                                  </Badge>
+                                )}
+                              </span>
+                            )}
+                          </div>
+                        )}
+                      </TableCell>
+                      <TableCell className="align-top">
                         <EvidenceChips evidence={row.evidence} />
                       </TableCell>
-                      <TableCell className="truncate text-metadata text-muted-foreground">
-                        {fmtTime(row.last_seen)}
+                      <TableCell className="align-top text-metadata text-muted-foreground">
+                        <LastSeen iso={row.last_seen} />
                       </TableCell>
                     </TableRow>
                   ))}
@@ -870,8 +1001,7 @@ const Names: React.FC = () => {
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </PostureSection>
 
       <ImportDialog open={importOpen} onOpenChange={setImportOpen} onImported={refreshAll} />
       <DetailSheet

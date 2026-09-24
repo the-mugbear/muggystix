@@ -104,6 +104,28 @@ export function scopeLead(c: ScopeCoverageSummary): { sentence: string; tone: Le
   };
 }
 
+/**
+ * An empty, editable subnet cell (v5.288.0): a muted "—" whose pencil appears
+ * on row hover or keyboard focus.  It replaced "Click to add description" /
+ * "Click to add site" placeholder text repeated on every row.  The button is
+ * always in the tab order and named for what it does.
+ */
+const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label, onClick }) => (
+  <button
+    type="button"
+    onClick={onClick}
+    aria-label={label}
+    title={label}
+    className="group/edit inline-flex items-center gap-2xs rounded text-metadata text-muted-foreground hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+  >
+    <span aria-hidden>—</span>
+    <Pencil
+      className="size-3.5 opacity-0 group-hover/row:opacity-100 group-focus-visible/edit:opacity-100"
+      aria-hidden
+    />
+  </button>
+);
+
 const Scopes: React.FC = () => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
@@ -470,7 +492,7 @@ const Scopes: React.FC = () => {
               setUploadOpen(true);
             }}
           >
-            <Upload className="size-4" aria-hidden /> Upload File
+            <Upload className="size-4" aria-hidden /> Upload scope file
           </Button>
           <Button variant="outline" size="sm" onClick={() => setShowOutOfScopeDialog(true)}>
             <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
@@ -742,7 +764,11 @@ const Scopes: React.FC = () => {
                       const isEditing = editingSubnetId === subnet.id;
                       const subnetLabels = subnet.labels ?? [];
                       return (
-                        <TableRow key={subnet.id} data-state={selectedSubnetIds.has(subnet.id) ? 'selected' : undefined}>
+                        <TableRow
+                          key={subnet.id}
+                          className="group/row"
+                          data-state={selectedSubnetIds.has(subnet.id) ? 'selected' : undefined}
+                        >
                           <TableCell>
                             <Checkbox
                               checked={selectedSubnetIds.has(subnet.id)}
@@ -780,13 +806,10 @@ const Scopes: React.FC = () => {
                             ) : subnet.description ? (
                               <span className="break-words text-metadata">{subnet.description}</span>
                             ) : (
-                              <button
-                                type="button"
+                              <EmptyCellEdit
+                                label={`Add a description for ${subnet.cidr}`}
                                 onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
-                                className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
-                              >
-                                Click to add description
-                              </button>
+                              />
                             )}
                           </TableCell>
                           <TableCell>
@@ -799,19 +822,16 @@ const Scopes: React.FC = () => {
                             ) : subnet.site ? (
                               <span className="break-words text-metadata">{subnet.site}</span>
                             ) : (
-                              <button
-                                type="button"
+                              <EmptyCellEdit
+                                label={`Add a site for ${subnet.cidr}`}
                                 onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
-                                className="text-metadata italic text-muted-foreground hover:text-foreground focus:outline-none focus-visible:underline"
-                              >
-                                Click to add site
-                              </button>
+                              />
                             )}
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap items-center gap-xxs">
                               {subnetLabels.length === 0 ? (
-                                <span className="text-caption text-muted-foreground">No labels</span>
+                                <span className="text-metadata text-muted-foreground" aria-label="No labels">—</span>
                               ) : (
                                 subnetLabels.map((lbl) => (
                                   <SubnetLabelChip key={lbl.id} label={lbl} />
@@ -828,6 +848,13 @@ const Scopes: React.FC = () => {
                                   variant="ghost"
                                   size="icon"
                                   aria-label={`Edit labels for ${subnet.cidr}`}
+                                  // v5.288.0 — with no labels the pencil shows on
+                                  // row hover or keyboard focus, not on every row.
+                                  className={
+                                    subnetLabels.length === 0
+                                      ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100'
+                                      : undefined
+                                  }
                                 >
                                   <Pencil className="size-3.5" aria-hidden />
                                 </Button>
@@ -1002,7 +1029,12 @@ const Scopes: React.FC = () => {
                   to={`/hosts?tech=${encodeURIComponent(t.name)}`}
                   className="text-info hover:underline"
                 >
-                  {t.name} <span className="tabular-nums text-muted-foreground">{t.host_count}</span>
+                  {/* v5.288.0 — "Nginx 1.24.0 · 1 host": a bare count read
+                      as part of the version. */}
+                  {t.name}{' '}
+                  <span className="tabular-nums text-muted-foreground">
+                    · {t.host_count.toLocaleString()} host{t.host_count === 1 ? '' : 's'}
+                  </span>
                 </Link>
               ))}
             </p>
@@ -1032,7 +1064,7 @@ const Scopes: React.FC = () => {
       >
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Upload Scope File</DialogTitle>
+            <DialogTitle>Upload scope file</DialogTitle>
             <DialogDescription>
               Append subnets and domains to this project's scope.  Accepts
               <code className="font-mono"> .txt </code>(one CIDR, IP or domain per line) or

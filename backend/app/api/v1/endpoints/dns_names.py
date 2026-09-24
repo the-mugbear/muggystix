@@ -236,6 +236,9 @@ def names_summary(
     resolved = base.filter(svc.resolving_exists_condition()).scalar() or 0
     in_scope = base.filter(svc.name_in_scope_condition(project.id)).scalar() or 0
     wildcards = base.filter(n.kind == "wildcard").scalar() or 0
+    # v2.402.0 — the same predicate as `?state=shared`, so the chip's count is
+    # exactly the rows the chip lists.
+    shared_names = base.filter(svc.shared_address_condition(project.id)).scalar() or 0
     r = models.DNSRecord
     shared_addresses = (
         db.query(func.count())
@@ -251,6 +254,7 @@ def names_summary(
     return NamesSummary(
         total=total, unresolved=max(total - resolved, 0), resolved=resolved,
         in_scope=in_scope, wildcards=wildcards, shared_addresses=shared_addresses,
+        shared_names=shared_names,
     )
 
 

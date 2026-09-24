@@ -106,4 +106,11 @@ describe('TagManagement', () => {
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(screen.queryByText(/No tags yet/i)).not.toBeInTheDocument();
   });
+
+  it('says there are no tags left-aligned, like every other section (v5.288.0)', async () => {
+    listHostTags.mockResolvedValue([]);
+    render(<TagManagement />);
+    const empty = await screen.findByText(/No tags yet/i);
+    expect(empty.className).not.toMatch(/text-center/);
+  });
 });
