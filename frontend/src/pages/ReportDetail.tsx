@@ -54,7 +54,7 @@ import { Label } from '../components/ui/label';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
-import { Textarea } from '../components/ui/textarea';
+import MarkdownField from '../components/MarkdownField';
 import { FileButtons, reportKindLabel } from './Reports';
 
 // `pdf` labels a file of a report issued before PDF was removed (5.293.0).
@@ -559,8 +559,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               )}
             </div>
             <p className="text-caption text-muted-foreground">Markdown. Written for this report only.</p>
-            <Textarea id="report-summary" rows={8} maxLength={65536} value={form.executive_summary}
-              disabled={!editable || saving} onChange={(e) => setForm({ ...form, executive_summary: e.target.value })} />
+            <MarkdownField id="report-summary" label={report.kind === 'addendum' ? 'Summary of changes' : 'Executive summary'}
+              rows={8} maxLength={65536} value={form.executive_summary} disabled={!editable || saving}
+              onChange={(v) => setForm((f) => (f ? { ...f, executive_summary: v } : f))} />
           </div>
 
           <EngagementSettingsFields idPrefix="report" value={form.settings} members={members} currentUser={currentUser}

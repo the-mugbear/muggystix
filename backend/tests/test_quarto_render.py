@@ -315,6 +315,78 @@ def test_an_installed_logo_heads_the_html(tmp_path):
     assert "data:image/png;base64" in html[logo_at:logo_at + 400]
 
 
+def _jpeg_header(width: int, height: int) -> bytes:
+    """SOI + a baseline frame header + EOI: enough for the size to be read."""
+    return (b"\xff\xd8\xff\xc0" + struct.pack(">HBHHB", 11, 8, height, width, 1)
+            + b"\x01\x11\x00\xff\xd9")
+
+
+def _word_drawings(docx: Path) -> list:
+    """(part, drawing name, media target, cx, cy) for each header/footer picture."""
+    import re
+    out = []
+    with zipfile.ZipFile(docx) as z:
+        for part in z.namelist():
+            m = re.match(r"^word/((?:header|footer)\d+\.xml)$", part)
+            if not m:
+                continue
+            rels_name = f"word/_rels/{m.group(1)}.rels"
+            rels = z.read(rels_name).decode() if rels_name in z.namelist() else ""
+            targets = dict(re.findall(r'Id="([^"]+)"[^>]*Target="([^"]+)"', rels))
+            for block in re.findall(r"<w:drawing>.*?</w:drawing>", z.read(part).decode(), re.S):
+                name = re.search(r'<wp:docPr [^>]*name="([^"]*)"', block).group(1)
+                embed = re.search(r'r:embed="([^"]+)"', block).group(1)
+                cx, cy = map(int, re.search(r'<wp:extent cx="(\d+)" cy="(\d+)"', block).groups())
+                out.append((part, name, targets.get(embed), cx, cy))
+    return out
+
+
+@needs_template
+@needs_quarto
+def test_the_word_placeholders_take_the_installed_logo_and_title_page_image(tmp_path):
+    """v2.407.0 — the title page image is a template image of its own, and
+    the logo reaches the Word report too: each takes the place of its
+    placeholder picture in reference.docx, scaled to fit without distortion.
+    Without them, the placeholders stay."""
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    plain_folder = tmp_path / "plain"
+    shutil.copytree(TEMPLATE, plain_folder, ignore=shutil.ignore_patterns("_output", "*_files", ".quarto", "img", "branding"))
+    plain = quarto_render.render(plain_folder, "report.qmd", data, ["docx"], tmp_path / "plain-out",
+                                 postprocess=manifest.get("postprocess"), timeout=240)["docx"]
+    before = _word_drawings(plain)
+    assert sorted(d[1] for d in before if d[1].startswith("bluestick-")) == ["bluestick-cover"] + ["bluestick-logo"] * 4
+    assert not any("bluestick-" in (d[2] or "") for d in before)
+
+    folder = tmp_path / "pentest"
+    shutil.copytree(plain_folder, folder)
+    (folder / "img").mkdir()
+    (folder / "img" / "logo.png").write_bytes(_png(40, 16))          # 2.5 : 1, narrower than its box
+    (folder / "img" / "cover.jpg").write_bytes(_jpeg_header(16, 9))  # 16 : 9, wider than its box
+    docx = quarto_render.render(folder, "report.qmd", data, ["docx"], tmp_path / "out",
+                                postprocess=manifest.get("postprocess"), timeout=240)["docx"]
+    with zipfile.ZipFile(docx) as z:
+        names = set(z.namelist())
+        assert z.read("word/media/bluestick-logo.png") == (folder / "img" / "logo.png").read_bytes()
+        assert "word/media/bluestick-cover.jpeg" in names
+        referenced = "".join(z.read(n).decode() for n in names if n.endswith(".rels"))
+    # Nothing is left pointing at a placeholder, and no unused picture ships.
+    for n in names:
+        if n.startswith("word/media/"):
+            assert n[len("word/"):] in referenced, n
+    # Each drawing against its own placeholder (the logo boxes differ slightly).
+    tagged = lambda ds: sorted((d for d in ds if d[1].startswith("bluestick-")), key=lambda d: (d[0], d[1]))
+    pairs = list(zip(tagged(before), tagged(_word_drawings(docx))))
+    assert len(pairs) == 5
+    for (_, _, _, box_w, box_h), (part, name, target, cx, cy) in pairs:
+        kind = name[len("bluestick-"):]
+        assert target == f"media/bluestick-{kind}.{'png' if kind == 'logo' else 'jpeg'}"
+        assert cx <= box_w and cy <= box_h
+        assert abs(cx / cy - (40 / 16 if kind == "logo" else 16 / 9)) < 0.01
+        # One side fills the box.
+        assert cx == box_w or abs(cy - box_h) <= 1
+
+
 def test_pdf_is_not_a_report_format():
     """v2.407.0 — the Word report carries the design and exports to PDF; a
     template that still lists pdf loses it rather than failing to load."""

@@ -18,6 +18,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../ui/select';
 import { Textarea } from '../ui/textarea';
+import MarkdownField from '../MarkdownField';
 
 export const emptySettings = (): EngagementSettings => ({
   client_name: null, classification: null, engagement_type: null,
@@ -204,8 +205,8 @@ const EngagementSettingsFields: React.FC<Props> = ({
         <p className="text-caption text-muted-foreground">
           What was assessed, in the client&apos;s terms. Markdown. The scope&apos;s networks and domains are listed after it.
         </p>
-        <Textarea id={`${idPrefix}-system`} rows={5} maxLength={32768} value={text('system_description')}
-          onChange={onText('system_description')} disabled={disabled} />
+        <MarkdownField id={`${idPrefix}-system`} label="System description" rows={5} maxLength={32768}
+          value={text('system_description')} onChange={(v) => set('system_description', v || null)} disabled={disabled} />
       </div>
 
       <fieldset className="min-w-0 space-y-xs">
