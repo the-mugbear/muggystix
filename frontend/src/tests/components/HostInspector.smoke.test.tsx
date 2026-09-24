@@ -160,6 +160,26 @@ describe('HostInspector — promoting a scanner observation', () => {
     ));
   });
 
+  // v5.289.0 — "Scanner observations 5 … from 6 scanner observations" read as
+  // a contradiction; the header names both units and explains the grouping.
+  it('names issues and scanner rows when rows of one issue are grouped', async () => {
+    const base = hostWithObservation.vulnerabilities[0];
+    (api.getHost as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      ...hostWithObservation,
+      vulnerabilities: [
+        base,
+        { ...base, id: 78, port_number: 5433 },   // same issue, another port
+        { ...base, id: 79, plugin_id: '200', title: 'Telnet Service Enabled', port_number: 23 },
+      ],
+      vulnerability_summary: { total_vulnerabilities: 3, critical: 0, high: 3, medium: 0, low: 0, info: 0 },
+    });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    const note = await screen.findByTestId('observation-grouping');
+    expect(note).toHaveTextContent('2 issues · from 3 scanner rows');
+    expect(screen.getByRole('button', { name: 'About issues and scanner rows' })).toBeInTheDocument();
+    expect(screen.queryByText(/from 3 scanner observations/)).not.toBeInTheDocument();
+  });
+
   it('can still be widened to every host carrying the issue, explicitly', async () => {
     await openPromote();
     fireEvent.click(await screen.findByRole('radio', { name: /All 2 hosts carrying this issue/ }));

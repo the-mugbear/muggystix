@@ -68,7 +68,7 @@ const response = {
     project({ id: 3, name: 'Closed', status: 'completed' }),
   ],
   testers: [{
-    user_id: 7, username: 'ana', full_name: 'Ana Tester', is_active: true, active_projects: 2,
+    user_id: 7, username: 'ana', full_name: 'Ana Tester', is_active: true, projects_tested: 2,
     tested: 6, in_review: 1, reviewed: 5, reviewed_in_period: 2, findings: sev(1, 2),
     open_tasks: 3, last_contribution_at: null,
     projects: [{ project_id: 1, project_name: LONG, role: null, tested: 6, in_review: 1, reviewed: 5,
@@ -288,7 +288,9 @@ describe('Oversight — severity basis and growth keyboard', () => {
     expect(text).toMatch(/Projects: 3 \(2 in progress, 1 complete\)/);
     expect(text).toMatch(/Targets: 30 recorded; 12 tested \(40%\) — 2 in review, 10 reviewed/);
     expect(text).toMatch(/Findings: 8 \(critical 2, high 5, medium 1, low 0\) on 7 targets/);
-    expect(text).toMatch(/2 false positives not counted/);
+    // v5.289.0 — reads naturally, and says nothing when there are none.
+    expect(text).toMatch(/closed \(2 false positives excluded\)/);
+    expect(text).not.toMatch(/not counted/);
     expect(text).toMatch(/Defect rate \(tested targets with a finding, of 12 tested\): critical 25%, high 50%, medium 8.3%, low 0%/);
     expect(text).toMatch(/Scanner observations not yet judged: critical 10, high 70 \(of 143 observations\)/);
     // In-progress projects first; the completed one last.
@@ -312,5 +314,19 @@ describe('Oversight — severity basis and growth keyboard', () => {
     expect(md).toMatch(/^\*\*Security testing update — all time\*\*/);
     expect(md).toMatch(/Tester: Ana · figures as of/);
     expect(md).toContain('| A \\| B | in progress | 4 of 10 (40%) | C 1 / H 2 / M 3 / L 4 | 0% / 0% |');
+  });
+
+  it('no false positives: the findings line ends at the states, and one is singular', async () => {
+    const { buildOversightSummary } = await import('../../utils/oversightSummary');
+    const opts = { format: 'text' as const, includeProjects: false, includeTesters: true, periodLabel: 'all time', filterLabels: [] };
+    const withFp = (fp: number) => ({
+      ...response, summary: { ...response.summary, severity: { ...response.summary.severity, findings_false_positive: fp } },
+    });
+    const none = buildOversightSummary(withFp(0) as never, opts);
+    expect(none).not.toMatch(/\d+ false positives?/);
+    expect(none).toMatch(/\d+ closed\n/);
+    expect(buildOversightSummary(withFp(1) as never, opts)).toMatch(/closed \(1 false positive excluded\)/);
+    // The tester's project count is where they test, never a 0 beside reviews.
+    expect(none).toMatch(/Ana Tester: .* across 2 projects/);
   });
 });

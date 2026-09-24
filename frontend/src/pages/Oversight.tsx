@@ -287,7 +287,7 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
         <TableHeader>
           <TableRow>
             <TableHead>Tester</TableHead>
-            <TableHead title="Current memberships on in-progress projects">Projects</TableHead>
+            <TableHead title="Projects (of those selected) where they have a target in review or reviewed">Projects</TableHead>
             <TableHead title="Hosts reviewed (current); in the period beneath">Reviewed</TableHead>
             <TableHead>In review</TableHead>
             <TableHead title="Findings (issues) on the hosts they reviewed or have in review — current">Findings on their targets</TableHead>
@@ -312,7 +312,7 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
                     {!t.is_active && <Badge variant="muted">Disabled</Badge>}
                   </span>
                 </TableCell>
-                <TableCell className="tabular-nums">{n(t.active_projects)}</TableCell>
+                <TableCell className="tabular-nums">{n(t.projects_tested)}</TableCell>
                 <TableCell className="tabular-nums">
                   {n(t.reviewed)}
                   {t.reviewed_in_period > 0 && <div className="text-caption text-muted-foreground">{n(t.reviewed_in_period)} in period</div>}

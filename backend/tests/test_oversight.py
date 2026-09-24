@@ -149,6 +149,9 @@ def test_testing_findings_and_defect_rate(client, db_session, test_project):
     assert (t["tested"], t["in_review"], t["reviewed"]) == (2, 1, 1)
     assert t["findings"] == {"critical": 1, "high": 1, "medium": 0, "low": 0}
     assert t["projects"][0]["role"] is None  # reviews hosts without a membership row
+    # ...and still counts the project they review in (v2.403.0: was memberships → 0).
+    assert t["projects_tested"] == 1
+    assert "active_projects" not in t
 
 
 def test_same_numbers_as_portfolio(client, db_session, test_project):
@@ -400,7 +403,9 @@ def test_a_subset_of_projects_adds_up_to_exactly_those_projects(client, db_sessi
     rows = {t["user_id"]: t for t in both["testers"]}
     assert rows[ben.id]["reviewed"] == 1
     assert {p["project_id"] for p in rows[ben.id]["projects"]} == {b.id}
+    assert rows[ben.id]["projects_tested"] == 1
     assert rows[ana.id]["tested"] == 2
+    assert rows[ana.id]["projects_tested"] == 2
     # Growth covers the subset too.
     assert sum(pt["targets_added"] for pt in both["growth"]["points"]) == 3 + 5
     # The option list still offers every project, so the subset can be changed.

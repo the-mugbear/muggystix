@@ -84,7 +84,9 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
   lines.push(
     `${bullet}${bold('Findings')}: ${n(findingsTotal)} (${bySeverity(sev.findings)}) on ${pl(sev.finding_affected_targets, 'target')}`
     + ` — ${n(sev.finding_states.under_investigation)} under investigation, ${n(sev.finding_states.confirmed)} confirmed,`
-    + ` ${n(sev.finding_states.closed)} closed; ${n(sev.findings_false_positive)} false positive${sev.findings_false_positive === 1 ? '' : 's'} not counted`,
+    + ` ${n(sev.finding_states.closed)} closed`
+    // v5.289.0 — "0 false positives not counted" read oddly; say it only when there are some.
+    + (sev.findings_false_positive > 0 ? ` (${pl(sev.findings_false_positive, 'false positive')} excluded)` : ''),
   );
   lines.push(
     `${bullet}${bold('Defect rate')} (tested targets with a finding, of ${n(sev.tested_targets)} tested): ${rates(sev.defect_rate)}`,
@@ -122,12 +124,12 @@ export function buildOversightSummary(data: OversightResponse, opts: SummaryOpti
       lines.push('| Tester | Projects | Tested | Reviewed (in period) | Findings (C / H / M / L) |');
       lines.push('| --- | --- | --- | --- | --- |');
       rows.forEach((t) => lines.push(
-        `| ${cell(personName(t))} | ${n(t.active_projects)} | ${n(t.tested)} | ${n(t.reviewed)} (${n(t.reviewed_in_period)}) | ${compact(t.findings)} |`,
+        `| ${cell(personName(t))} | ${n(t.projects_tested)} | ${n(t.tested)} | ${n(t.reviewed)} (${n(t.reviewed_in_period)}) | ${compact(t.findings)} |`,
       ));
     } else {
       rows.forEach((t) => lines.push(
         `${bullet}${personName(t)}: ${pl(t.tested, 'target')} tested, ${n(t.reviewed)} reviewed (${n(t.reviewed_in_period)} in the period)`
-        + ` across ${pl(t.active_projects, 'project')} · findings ${compact(t.findings)}`,
+        + ` across ${pl(t.projects_tested, 'project')} · findings ${compact(t.findings)}`,
       ));
     }
   }

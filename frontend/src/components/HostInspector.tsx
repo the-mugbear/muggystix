@@ -114,6 +114,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
+import { InfoTip } from './ui/info-tip';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import {
@@ -1301,9 +1302,17 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       count={vulnGroups.length}
       actions={(
         <>
+          {/* v5.289.0 — "5 … from 6 scanner observations" read as a
+              contradiction; name both units and say why they differ. */}
           {totalVulnerabilities > vulnGroups.length && (
-            <span className="text-caption text-muted-foreground">
-              from {totalVulnerabilities} scanner observations
+            <span className="inline-flex min-w-0 items-center gap-xxs text-caption text-muted-foreground" data-testid="observation-grouping">
+              <span className="min-w-0 truncate">
+                {vulnGroups.length} {vulnGroups.length === 1 ? 'issue' : 'issues'} · from {totalVulnerabilities} scanner rows
+              </span>
+              <InfoTip
+                label="About issues and scanner rows"
+                text="Scanners can report the same issue more than once on a host (on several ports, or from more than one scanner). Rows of the same issue are grouped into one line, so there are fewer issues than scanner rows."
+              />
             </span>
           )}
           {/* v5.215.0 — informational rows are hidden until asked; say how

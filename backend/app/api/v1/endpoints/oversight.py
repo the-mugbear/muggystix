@@ -131,7 +131,10 @@ class TesterRowOut(BaseModel):
     username: str
     full_name: Optional[str] = None
     is_active: bool = True
-    active_projects: int = 0         # current memberships on in-progress cohort projects
+    # Selected projects where they have a target in review or reviewed
+    # (v2.403.0; it was `active_projects`, memberships on in-progress projects,
+    # which read 0 beside reviews done without a membership row).
+    projects_tested: int = 0
     tested: int = 0
     in_review: int = 0
     reviewed: int = 0
@@ -412,14 +415,13 @@ def get_oversight_dashboard(
     )
 
     names = {p.id: p.name for p in all_projects}
-    in_progress_ids = {p.id for p in cohort if p.status in IN_PROGRESS_STATUSES}
     testers: List[TesterRowOut] = []
     for t in tester_rows(db, ids, window):
         if tester_id is not None and t.user_id != tester_id:
             continue
         testers.append(TesterRowOut(
             user_id=t.user_id, username=t.username, full_name=t.full_name, is_active=t.is_active,
-            active_projects=sum(1 for c in t.projects if c.role and c.project_id in in_progress_ids),
+            projects_tested=t.projects_tested(),
             tested=t.total("tested"), in_review=t.total("in_review"), reviewed=t.total("reviewed"),
             reviewed_in_period=t.total("reviewed_in_period"), findings=_sev(t.findings()),
             open_tasks=t.open_tasks, last_contribution_at=t.last_contribution_at,

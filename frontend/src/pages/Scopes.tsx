@@ -49,6 +49,7 @@ import {
 import { Checkbox } from '../components/ui/checkbox';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
+import { Textarea } from '../components/ui/textarea';
 import {
   Table,
   TableBody,
@@ -400,6 +401,42 @@ const Scopes: React.FC = () => {
     });
     fetchLabelCatalogue();
   };
+
+  // A subnet's label chips and their editor — in the Labels column, or inside
+  // the row's editor while the row is being edited (v5.289.0).
+  const renderLabels = (subnet: { id: number; cidr: string }, subnetLabels: SubnetLabelInfo[]) => (
+    <div className="flex flex-wrap items-center gap-xxs">
+      {subnetLabels.length === 0 ? (
+        <span className="text-metadata text-muted-foreground" aria-label="No labels">—</span>
+      ) : (
+        subnetLabels.map((lbl) => (
+          <SubnetLabelChip key={lbl.id} label={lbl} />
+        ))
+      )}
+      <SubnetLabelEditorPopover
+        subnetId={subnet.id}
+        subnetCidr={subnet.cidr}
+        currentLabels={subnetLabels}
+        catalogue={labelCatalogue}
+        onSaved={(next) => applyLabelEditToLocal(subnet.id, next)}
+      >
+        <Button
+          variant="ghost"
+          size="icon"
+          aria-label={`Edit labels for ${subnet.cidr}`}
+          // v5.288.0 — with no labels the pencil shows on
+          // row hover or keyboard focus, not on every row.
+          className={
+            subnetLabels.length === 0
+              ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100'
+              : undefined
+          }
+        >
+          <Pencil className="size-3.5" aria-hidden />
+        </Button>
+      </SubnetLabelEditorPopover>
+    </div>
+  );
 
   const handleDeleteSubnet = async (subnetId: number, cidr: string) => {
     if (!scope) return;
@@ -796,71 +833,73 @@ const Scopes: React.FC = () => {
                           <TableCell className="text-right tabular-nums text-metadata">
                             {subnet.host_count != null ? subnet.host_count.toLocaleString() : '—'}
                           </TableCell>
-                          <TableCell>
-                            {isEditing ? (
-                              <Input
-                                value={editDescDraft}
-                                onChange={(e) => setEditDescDraft(e.target.value)}
-                                placeholder="Zone notes, asset class, owner…"
-                              />
-                            ) : subnet.description ? (
-                              <span className="break-words text-metadata">{subnet.description}</span>
-                            ) : (
-                              <EmptyCellEdit
-                                label={`Add a description for ${subnet.cidr}`}
-                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
-                              />
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            {isEditing ? (
-                              <Input
-                                value={editSiteDraft}
-                                onChange={(e) => setEditSiteDraft(e.target.value)}
-                                placeholder="Site / location…"
-                              />
-                            ) : subnet.site ? (
-                              <span className="break-words text-metadata">{subnet.site}</span>
-                            ) : (
-                              <EmptyCellEdit
-                                label={`Add a site for ${subnet.cidr}`}
-                                onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
-                              />
-                            )}
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex flex-wrap items-center gap-xxs">
-                              {subnetLabels.length === 0 ? (
-                                <span className="text-metadata text-muted-foreground" aria-label="No labels">—</span>
-                              ) : (
-                                subnetLabels.map((lbl) => (
-                                  <SubnetLabelChip key={lbl.id} label={lbl} />
-                                ))
-                              )}
-                              <SubnetLabelEditorPopover
-                                subnetId={subnet.id}
-                                subnetCidr={subnet.cidr}
-                                currentLabels={subnetLabels}
-                                catalogue={labelCatalogue}
-                                onSaved={(next) => applyLabelEditToLocal(subnet.id, next)}
-                              >
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`Edit labels for ${subnet.cidr}`}
-                                  // v5.288.0 — with no labels the pencil shows on
-                                  // row hover or keyboard focus, not on every row.
-                                  className={
-                                    subnetLabels.length === 0
-                                      ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100'
-                                      : undefined
-                                  }
-                                >
-                                  <Pencil className="size-3.5" aria-hidden />
-                                </Button>
-                              </SubnetLabelEditorPopover>
-                            </div>
-                          </TableCell>
+                          {isEditing ? (
+                            // v5.289.0 — the Description column is the table's
+                            // flexible one and can be ~75px wide, so single-line
+                            // inputs showed "Zone notes, ass" / "DMZ / Internet-f".
+                            // While editing, the row's editor spans Description,
+                            // Site and Labels: the description wraps in a
+                            // textarea and the site input gets the full width.
+                            <TableCell colSpan={3} className="align-top">
+                              <div className="space-y-xs" data-testid={`subnet-editor-${subnet.id}`}>
+                                <div className="space-y-xxs">
+                                  <Label htmlFor={`subnet-desc-${subnet.id}`} className="text-caption text-muted-foreground">
+                                    Description
+                                  </Label>
+                                  <Textarea
+                                    id={`subnet-desc-${subnet.id}`}
+                                    value={editDescDraft}
+                                    onChange={(e) => setEditDescDraft(e.target.value)}
+                                    placeholder="Zone notes, asset class, owner…"
+                                    rows={2}
+                                    className="min-h-0 w-full resize-y"
+                                  />
+                                </div>
+                                <div className="flex flex-wrap items-end gap-sm">
+                                  <div className="min-w-[12rem] flex-1 space-y-xxs">
+                                    <Label htmlFor={`subnet-site-${subnet.id}`} className="text-caption text-muted-foreground">
+                                      Site
+                                    </Label>
+                                    <Input
+                                      id={`subnet-site-${subnet.id}`}
+                                      value={editSiteDraft}
+                                      onChange={(e) => setEditSiteDraft(e.target.value)}
+                                      placeholder="Site / location…"
+                                      className="w-full"
+                                    />
+                                  </div>
+                                  <div className="min-w-0 space-y-xxs">
+                                    <span className="block text-caption text-muted-foreground">Labels</span>
+                                    {renderLabels(subnet, subnetLabels)}
+                                  </div>
+                                </div>
+                              </div>
+                            </TableCell>
+                          ) : (
+                            <>
+                              <TableCell>
+                                {subnet.description ? (
+                                  <span className="break-words text-metadata">{subnet.description}</span>
+                                ) : (
+                                  <EmptyCellEdit
+                                    label={`Add a description for ${subnet.cidr}`}
+                                    onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
+                                  />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {subnet.site ? (
+                                  <span className="break-words text-metadata">{subnet.site}</span>
+                                ) : (
+                                  <EmptyCellEdit
+                                    label={`Add a site for ${subnet.cidr}`}
+                                    onClick={() => startEditSubnet(subnet.id, subnet.cidr, subnet.description, subnet.site ?? null)}
+                                  />
+                                )}
+                              </TableCell>
+                              <TableCell>{renderLabels(subnet, subnetLabels)}</TableCell>
+                            </>
+                          )}
                           <TableCell className="text-caption text-muted-foreground">
                             {new Date(subnet.created_at).toLocaleDateString()}
                           </TableCell>

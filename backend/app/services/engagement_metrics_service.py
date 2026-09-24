@@ -655,6 +655,13 @@ class TesterRow:
     def total(self, attr: str) -> int:
         return sum(getattr(p, attr) for p in self.projects)
 
+    def projects_tested(self) -> int:
+        """Projects (of those asked about) where this person has a target in
+        review or reviewed — whatever their membership (a global admin can
+        review without one), so it never reads 0 beside a review count
+        (v2.403.0)."""
+        return sum(1 for p in self.projects if p.tested > 0)
+
     def findings(self) -> SeverityCounts:
         f = SeverityCounts()
         for p in self.projects:

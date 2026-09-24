@@ -97,10 +97,17 @@ describe('Portfolio', () => {
     await renderPage();
     const table = screen.getByRole('table', { name: /worst first/ });
     const col = (name: string) => table.querySelector(`col[data-col="${name}"]`) as HTMLElement;
-    expect(col('hosts').style.width).toBe('6rem');
-    expect(col('review').style.width).toBe('16rem');
-    expect(col('waiting').style.width).toBe('15rem');
+    expect(col('hosts').style.width).toBe('5rem');
+    expect(col('review').style.width).toBe('14rem');
+    expect(col('waiting').style.width).toBe('16rem');
     expect(col('found').style.width).toBe(''); // takes the remaining width
+    // v5.289.0 — the last rebalance left "What testing found" narrow. At a
+    // 1500px content width (16px rem) it must be the widest column.
+    const px = (w: string, total: number) => (w.endsWith('%') ? (parseFloat(w) / 100) * total : parseFloat(w) * 16);
+    const fixed = ['project', 'review', 'hosts', 'waiting'].map((c) => px(col(c).style.width, 1500));
+    const found = 1500 - fixed.reduce((a, b) => a + b, 0);
+    expect(found).toBeGreaterThan(Math.max(...fixed));
+    expect(found).toBeGreaterThanOrEqual(640); // the longest reason line on one line
     expect(within(table).getByRole('columnheader', { name: /Waiting · last import/ })).toHaveClass('whitespace-nowrap');
     expect(within(table).getAllByText('2 in review · 5 not started')[0]).toHaveClass('whitespace-nowrap');
   });

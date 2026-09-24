@@ -83,7 +83,8 @@ export interface OversightTesterRow {
   username: string;
   full_name: string | null;
   is_active: boolean;
-  active_projects: number;
+  /** Selected projects where they have a target in review or reviewed (v5.289.0; was `active_projects`, memberships). */
+  projects_tested: number;
   tested: number;
   in_review: number;
   reviewed: number;

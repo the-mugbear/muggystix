@@ -3,7 +3,7 @@
  * stand, one strip of measures, sections without cards — and no "Correlate
  * Hosts" button (every write path correlates by itself).
  */
-import { render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -144,6 +144,26 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     const link = await screen.findByRole('link', { name: /Nginx 1\.24\.0/ });
     expect(link).toHaveTextContent('Nginx 1.24.0 · 1 host');
     expect(screen.getByRole('link', { name: /React/ })).toHaveTextContent('React · 3 hosts');
+  });
+
+  // v5.289.0 — the edit inputs sat in the ~75px Description column and a
+  // 144px Site column: "Zone notes, ass", "DMZ / Internet-f".
+  it('edits a subnet in one editor spanning Description, Site and Labels, the description wrapping', async () => {
+    const long = { ...scope.subnets[0], description: 'Zone notes, asset class and owner: payments DMZ, owned by the platform team', site: 'DMZ / Internet-facing edge (Frankfurt)' };
+    mocked.getDefaultScope.mockResolvedValue({ ...scope, subnets: [long] });
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit subnet 10.77.1.0/24' }));
+    const editor = screen.getByTestId('subnet-editor-11');
+    expect(editor.closest('td')).toHaveAttribute('colspan', '3');
+    const desc = within(editor).getByLabelText('Description');
+    expect(desc.tagName).toBe('TEXTAREA');
+    expect(desc).toHaveValue(long.description);
+    expect(within(editor).getByLabelText('Site')).toHaveValue(long.site);
+    expect(within(editor).getByRole('button', { name: 'Edit labels for 10.77.1.0/24' })).toBeInTheDocument();
+    // The row still has one cell per column: 8 columns = 6 cells + one spanning 3.
+    const cells = editor.closest('tr')!.querySelectorAll(':scope > td');
+    expect(cells).toHaveLength(6);
   });
 
   it('says what the upload button uploads', async () => {

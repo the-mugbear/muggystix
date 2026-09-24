@@ -18,7 +18,7 @@ from app.db.models_vulnerability import (
     Vulnerability, VulnerabilitySeverity, VulnerabilitySource,
 )
 from app.services.engagement_metrics_service import (
-    join_judged, observation_judged_on_host, project_engagement,
+    Window, join_judged, observation_judged_on_host, project_engagement, tester_rows,
 )
 from app.services.host_serialization import _vuln_coverage, issue_coverage_map
 
@@ -169,6 +169,37 @@ def test_review_counts_each_host_once(db_session, test_project):
     db_session.flush()
     e = project_engagement(db_session, [pid])[pid]
     assert (e.hosts_in_review, e.hosts_reviewed, e.hosts_tested) == (1, 2, 2)
+
+
+def test_tester_projects_count_where_they_review_not_their_memberships(db_session, test_project):
+    """v2.403.0: a tester's project count is the asked-about projects where
+    they have a target in review or reviewed.  It counted memberships on
+    in-progress projects, so a global admin reviewing without a membership row
+    read "Projects 0 · Reviewed 29"."""
+    from app.db.models_project import Project
+    other = Project(name="Second engagement", slug="second-engagement", status="active")
+    third = Project(name="Third engagement", slug="third-engagement", status="active")
+    db_session.add_all([other, third])
+    db_session.flush()
+    h1 = models.Host(project_id=test_project.id, ip_address="10.9.4.1", state="up")
+    h2 = models.Host(project_id=other.id, ip_address="10.9.4.2", state="up")
+    h3 = models.Host(project_id=third.id, ip_address="10.9.4.3", state="up")
+    db_session.add_all([h1, h2, h3])
+    db_session.flush()
+    u = _user(db_session, 7201, "no-membership-reviewer")
+    db_session.add_all([
+        HostFollow(user_id=u.id, host_id=h1.id, status=FollowStatus.REVIEWED, reviewed_at=datetime.now(timezone.utc)),
+        HostFollow(user_id=u.id, host_id=h2.id, status=FollowStatus.IN_REVIEW),
+        HostFollow(user_id=u.id, host_id=h3.id, status=FollowStatus.WATCHING),  # not testing
+    ])
+    db_session.flush()
+
+    every = {r.user_id: r for r in tester_rows(db_session, [test_project.id, other.id, third.id], Window())}
+    assert every[u.id].projects_tested() == 2
+    assert all(p.role is None for p in every[u.id].projects)
+    subset = {r.user_id: r for r in tester_rows(db_session, [other.id, third.id], Window())}
+    assert subset[u.id].projects_tested() == 1
+    assert subset[u.id].total("in_review") == 1
 
 
 def test_every_requested_project_is_present(db_session):

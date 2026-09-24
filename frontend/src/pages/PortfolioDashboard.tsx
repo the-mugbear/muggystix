@@ -134,13 +134,20 @@ const ProjectsTable: React.FC<{
           (Review's "1,234 in review · 12,345 not started", the Waiting header
           on one line, a host count) and "What testing found" takes the rest.
           As percentages Hosts was wider than it needed and Review / Waiting
-          wrapped at ~1500px. */}
+          wrapped at ~1500px.
+          v5.289.0 — that overshot: at a narrower content width "What testing
+          found" was left ~270px and its reason line took 3–4 lines. Now the
+          fixed columns total 35rem (Review 14rem — "36 in review · 351 not
+          started" on one line; Hosts 5rem; Waiting 16rem so two chips sit side
+          by side) and Project gives up 4%: at 1500px "What testing found" gets
+          ~670px, the largest share, enough for "Critical — 12 critical findings
+          · 69 critical scanner observations not yet judged" on one line. */}
       <colgroup>
-        <col style={{ width: '22%' }} data-col="project" />
+        <col style={{ width: '18%' }} data-col="project" />
         <col data-col="found" />
-        <col style={{ width: '16rem' }} data-col="review" />
-        <col style={{ width: '6rem' }} data-col="hosts" />
-        <col style={{ width: '15rem' }} data-col="waiting" />
+        <col style={{ width: '14rem' }} data-col="review" />
+        <col style={{ width: '5rem' }} data-col="hosts" />
+        <col style={{ width: '16rem' }} data-col="waiting" />
       </colgroup>
       <TableHeader>
         <TableRow>
