@@ -23,6 +23,14 @@ describe('hostConditionChips', () => {
     expect(labels({ ports: ['22'], hasOpenPorts: false })).toEqual(['Endpoint: port 22', 'No recorded open ports']);
   });
 
+  it('says the port / service condition means an open port unless a state is named', () => {
+    expect(labels({ services: ['ssh'] })).toEqual(['Endpoint: service ssh · open']);
+    expect(labels({ services: ['ssh'], portStates: ['closed'] })).toEqual(['Endpoint: service ssh · state closed']);
+    expect(labels({ services: ['ssh'], portStates: ['any'] })).toEqual(['Endpoint: service ssh · any state']);
+    // A bare state condition is not a port condition: no implied "open".
+    expect(labels({ portStates: ['closed'] })).toEqual(['Endpoint: state closed']);
+  });
+
   it('shows the selected severities as ONE ORed condition that clears together', () => {
     const chips = hostConditionChips({ hasCriticalVulns: true, hasHighVulns: true });
     expect(chips.map((c) => c.label)).toEqual(['Scanner severity: Critical or High']);

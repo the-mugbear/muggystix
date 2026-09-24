@@ -9,12 +9,18 @@
  * row can say "ftp 21/tcp" — no extra request, no per-row query.
  *
  * The rules mirror the backend predicates (`host_query_predicates`):
+ *   - OPEN BY DEFAULT (v5.289.0 / backend v2.403.0, `resolve_endpoint_states`):
+ *     a port / service / version condition matches an open port unless the
+ *     same condition names a state — `portStates` in the structured filter
+ *     (`any` = every state), `@state` on a query value (`service:ssh@closed`,
+ *     `port:22@any`).  For a closed or filtered port nmap fills the service
+ *     name from its port table, so "ssh 22/tcp · closed" proves nothing;
  *   - structured filter (`ports` / `services` / `portStates` / `hasOpenPorts`):
  *     ONE port row must satisfy every dimension (`port_match_subquery`);
  *     service = case-insensitive substring of `service_name`;
- *   - query `port:` = port number, any state (`port_predicate`);
+ *   - query `port:` = port number (`port_predicate`);
  *   - query `service:` / `svc:` = substring of `service_name` (`service_predicate`);
- *   - query `version:` / `product:` = an OPEN port whose product, version or
+ *   - query `version:` / `product:` = a port whose product, version or
  *     "product version" contains the value (`version_predicate`).
  * A negated query term (`NOT service:ftp`, or inside `NOT (…)`) never marks a
  * port as matched.  Port state alone ("has open ports") is not shown: every
@@ -56,6 +62,37 @@ export interface MatchedEndpoint {
 
 const contains = (haystack: string | null | undefined, needle: string) =>
   !!haystack && haystack.toLowerCase().includes(needle.toLowerCase());
+
+/** The explicit "every state" value (structured `portStates`, query `@any`). */
+export const PORT_STATE_ANY = 'any';
+/** States a condition may name — nmap's six plus `any` (backend `EXPLICIT_PORT_STATES`). */
+export const EXPLICIT_PORT_STATES = [
+  'open', 'closed', 'filtered', 'unfiltered', 'open|filtered', 'closed|filtered', PORT_STATE_ANY,
+];
+
+/**
+ * The port states a match accepts, or null for no restriction — the backend's
+ * `resolve_endpoint_states`: explicit states win (`any` lifts the restriction);
+ * none named + a port/service/version condition = open only.
+ */
+export function resolveEndpointStates(states: string[] | null | undefined, hasEndpoint: boolean): string[] | null {
+  const named = (states ?? []).map((s) => s.trim().toLowerCase()).filter(Boolean);
+  if (named.length) return named.includes(PORT_STATE_ANY) ? null : named;
+  return hasEndpoint ? ['open'] : null;
+}
+
+/** `"ssh@closed"` → `{ value: "ssh", state: "closed" }`; no known state suffix → state null. */
+export function splitPortState(raw: string): { value: string; state: string | null } {
+  const at = raw.lastIndexOf('@');
+  if (at > 0) {
+    const state = raw.slice(at + 1).trim().toLowerCase();
+    if (EXPLICIT_PORT_STATES.includes(state)) return { value: raw.slice(0, at), state };
+  }
+  return { value: raw, state: null };
+}
+
+const stateOk = (p: MatchablePort, states: string[] | null) =>
+  !states || states.includes((p.state ?? '').toLowerCase());
 
 // --- A tiny read of the query DSL: only the positive port/service/version leaves.
 
@@ -147,33 +184,40 @@ export function endpointMatchCriteria(filters: EndpointMatchFilters): EndpointMa
 
   const ports = (filters.ports ?? []).map((p) => Number(p)).filter((n) => Number.isInteger(n));
   const services = (filters.services ?? []).map((s) => s.trim()).filter(Boolean);
-  const states = (filters.portStates ?? []).map((s) => s.toLowerCase());
   // "No recorded open ports" makes the backend ignore the other port filters.
   if ((ports.length || services.length) && filters.hasOpenPorts !== false) {
+    const states = resolveEndpointStates(filters.portStates, true);
     const requireOpen = filters.hasOpenPorts === true;
     matchers.push((p) =>
       (!ports.length || ports.includes(p.port_number))
       && (!services.length || services.some((s) => contains(p.service_name, s)))
-      && (!states.length || states.includes((p.state ?? '').toLowerCase()))
+      && stateOk(p, states)
       && (!requireOpen || p.state === 'open'),
     );
   }
 
   if (filters.query?.trim()) {
     for (const term of positiveEndpointTerms(filters.query)) {
+      // Each value carries its own state (`port:22@closed,23` = 22 closed OR 23 open).
+      const values = term.values.map(splitPortState).map(({ value, state }) => ({
+        value,
+        states: resolveEndpointStates(state ? [state] : [], true),
+      }));
       if (term.field === 'port') {
-        const nums = term.values.map(Number).filter((n) => Number.isInteger(n));
-        if (nums.length) matchers.push((p) => nums.includes(p.port_number));
+        const nums = values
+          .map((v) => ({ n: Number(v.value), states: v.states }))
+          .filter((v) => Number.isInteger(v.n));
+        if (nums.length) matchers.push((p) => nums.some((v) => v.n === p.port_number && stateOk(p, v.states)));
       } else if (term.field === 'service') {
-        matchers.push((p) => term.values.some((v) => contains(p.service_name, v)));
+        matchers.push((p) => values.some((v) => contains(p.service_name, v.value) && stateOk(p, v.states)));
       } else {
         byProduct = true;
         matchers.push((p) =>
-          p.state === 'open'
-          && term.values.some((v) =>
-            contains(p.service_product, v)
-            || contains(p.service_version, v)
-            || contains(`${p.service_product ?? ''} ${p.service_version ?? ''}`, v)),
+          values.some((v) =>
+            stateOk(p, v.states)
+            && (contains(p.service_product, v.value)
+              || contains(p.service_version, v.value)
+              || contains(`${p.service_product ?? ''} ${p.service_version ?? ''}`, v.value))),
         );
       }
     }

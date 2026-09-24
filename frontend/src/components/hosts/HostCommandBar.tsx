@@ -445,7 +445,9 @@ export default function HostCommandBar({
               <p className="text-caption text-muted-foreground">
                 Combine fields with <code>AND</code> / <code>OR</code> / <code>NOT</code> and parentheses.
                 Comma = OR within a field (<code>port:80,443</code>); repeating a field = AND
-                (<code>port:80 port:443</code> ⇒ both). Bare text is a free-text search.
+                (<code>port:80 port:443</code> ⇒ both). <code>port:</code>, <code>service:</code> and{' '}
+                <code>version:</code> match open ports; name another state after <code>@</code>{' '}
+                (<code>service:ssh@closed</code>, <code>port:22@any</code>). Bare text is a free-text search.
                 <strong> Click a field to add it.</strong> Press <kbd className="font-mono">/</kbd> anywhere
                 on the page to focus the query bar.
               </p>

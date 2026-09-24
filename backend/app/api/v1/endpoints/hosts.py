@@ -32,6 +32,7 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.note_attachment_service import require_readable_file
+from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
     Host as HostSchema,
@@ -258,7 +259,7 @@ class HostFilterParams:
         search: Optional[str] = Query(None, description="Search by IP address, hostname, OS name, port number, or service name", examples=["10.0.0"]),
         ports: Optional[str] = Query(None, description="Comma-separated port numbers to match", examples=["22,80,443,8080"]),
         services: Optional[str] = Query(None, description="Comma-separated service names to match (mapped to common ports automatically)", examples=["ssh,http,https,rdp"]),
-        port_states: Optional[str] = Query(None, description="Comma-separated port states to match", examples=["open,filtered"]),
+        port_states: Optional[str] = Query(None, description="Comma-separated port states to match. With ports= or services= it is the state of THAT port, which is open unless named here; `any` matches every state", examples=["open,filtered", "any"]),
         has_open_ports: Optional[bool] = Query(None, description="If true, only hosts with at least one open port"),
         os_filter: Optional[str] = Query(None, description="Filter by OS name or family (partial match)", examples=["Linux"]),
         subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks; hosts must fall within at least one", examples=["192.168.1.0/24,10.0.0.0/8"]),
@@ -1997,11 +1998,12 @@ def _get_filtered_output_ports(
             )
         ]
 
-    port_state_values = {
-        value.strip().lower()
-        for value in (filters.get("port_states") or "").split(",")
-        if value and value.strip()
-    }
+    # v2.403.0 — the query's rule: a port/service condition keeps OPEN ports
+    # unless a state was named (`any` = every state).
+    port_state_values = P.resolve_endpoint_states(
+        (filters.get("port_states") or "").split(","),
+        has_endpoint=bool(port_values or service_values),
+    )
     if port_state_values:
         ports = [port for port in ports if (port.state or "").lower() in port_state_values]
 

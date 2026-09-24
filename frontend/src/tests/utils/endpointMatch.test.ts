@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { endpointMatchCriteria, matchedEndpoints, positiveEndpointTerms } from '../../utils/endpointMatch';
+import {
+  endpointMatchCriteria, matchedEndpoints, positiveEndpointTerms, resolveEndpointStates, splitPortState,
+} from '../../utils/endpointMatch';
 
 const ports = [
   { port_number: 21, protocol: 'tcp', state: 'open', service_name: 'ftp', service_product: 'vsftpd', service_version: '3.0.3' },
@@ -19,8 +21,34 @@ describe('endpointMatch', () => {
     expect(labels({})).toEqual([]);
   });
 
-  it('matches a service as a substring of the service name, any state, open first', () => {
-    expect(labels({ services: ['ftp'] })).toEqual(['ftp 21/tcp', 'ccproxy-ftp 2121/tcp (filtered)']);
+  it('matches a service as a substring of the service name, OPEN ports only by default', () => {
+    // A filtered port's name is nmap's port-table guess — no evidence the service runs.
+    expect(labels({ services: ['ftp'] })).toEqual(['ftp 21/tcp']);
+    expect(labels({ ports: ['2121'] })).toEqual([]);
+  });
+
+  it('honours an explicit structured state, and "any" matches every state, open first', () => {
+    expect(labels({ services: ['ftp'], portStates: ['filtered'] })).toEqual(['ccproxy-ftp 2121/tcp (filtered)']);
+    expect(labels({ services: ['ftp'], portStates: ['any'] })).toEqual(['ftp 21/tcp', 'ccproxy-ftp 2121/tcp (filtered)']);
+    expect(labels({ services: ['ftp'], portStates: ['open', 'filtered'] })).toEqual(['ftp 21/tcp', 'ccproxy-ftp 2121/tcp (filtered)']);
+  });
+
+  it('reads an @state suffix per query value; without one a query term matches open ports', () => {
+    expect(labels({ query: 'service:ftp' })).toEqual(['ftp 21/tcp']);
+    expect(labels({ query: 'port:2121' })).toEqual([]);
+    expect(labels({ query: 'port:2121@filtered' })).toEqual(['ccproxy-ftp 2121/tcp (filtered)']);
+    expect(labels({ query: 'port:2121@closed' })).toEqual([]);
+    expect(labels({ query: 'service:ftp@any' })).toEqual(['ftp 21/tcp', 'ccproxy-ftp 2121/tcp (filtered)']);
+    expect(labels({ query: 'port:2121@any,23' })).toEqual(['telnet 23/tcp', 'ccproxy-ftp 2121/tcp (filtered)']);
+  });
+
+  it('resolveEndpointStates and splitPortState mirror the backend rule', () => {
+    expect(resolveEndpointStates([], true)).toEqual(['open']);
+    expect(resolveEndpointStates([], false)).toBeNull();
+    expect(resolveEndpointStates(['Closed'], true)).toEqual(['closed']);
+    expect(resolveEndpointStates(['closed', 'any'], true)).toBeNull();
+    expect(splitPortState('ssh@closed')).toEqual({ value: 'ssh', state: 'closed' });
+    expect(splitPortState('user@example')).toEqual({ value: 'user@example', state: null });
   });
 
   it('applies every structured dimension to the same port', () => {

@@ -25,7 +25,7 @@ the same so the query plan is unchanged.
 """
 from __future__ import annotations
 
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, List, Optional, Sequence
 
 from sqlalchemy import and_, cast, func, or_, false
 from sqlalchemy.orm import Session, aliased
@@ -129,6 +129,41 @@ def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
 # dimension, while each DSL leaf (``port:``, ``service:``, ``portstate:``)
 # calls it with just its own dimension and composes via the boolean
 # evaluator.
+#
+# v2.403.0 — OPEN BY DEFAULT.  A port / service / product / version match
+# requires the port to be ``open`` unless the same condition names a state.
+# For a closed or filtered port nmap fills ``service_name`` from its
+# port-number table, so "ssh 22/tcp · closed" is no evidence SSH runs: the
+# Hosts page matched 24 hosts for "service ssh", 20 of them closed/filtered
+# only.  The explicit forms are the structured ``port_states`` list (``any``
+# lifts the restriction) and the DSL's ``@state`` suffix (``service:ssh@closed``,
+# ``port:22@any``).  ``resolve_endpoint_states`` is the one rule; the
+# tool-ready export's per-host port narrowing (hosts.py) and the frontend's
+# ``utils/endpointMatch.ts`` mirror it.
+
+#: The explicit "no state restriction" value (structured ``port_states`` and
+#: the DSL ``@any`` suffix).
+PORT_STATE_ANY = "any"
+#: States a condition may name explicitly — nmap's six plus ``any``.
+EXPLICIT_PORT_STATES = (
+    "open", "closed", "filtered", "unfiltered", "open|filtered", "closed|filtered", PORT_STATE_ANY,
+)
+
+
+def resolve_endpoint_states(
+    port_states: Optional[Sequence[str]], *, has_endpoint: bool,
+) -> Optional[List[str]]:
+    """The port states a match accepts, or ``None`` for no state restriction.
+
+    * explicit states win; ``any`` among them lifts the restriction;
+    * none named + a port/service/product/version condition → ``["open"]``;
+    * none named and no such condition (a bare state filter) → ``None``.
+    """
+    states = [s.strip().lower() for s in (port_states or []) if s and s.strip()]
+    if states:
+        return None if PORT_STATE_ANY in states else states
+    return ["open"] if has_endpoint else None
+
 
 def port_match_subquery(
     db: Session,
@@ -139,7 +174,9 @@ def port_match_subquery(
     require_open: bool = False,
 ):
     """Return a ``db.query(Host.id).join(Port)`` narrowed by the supplied
-    port dimensions (all applied to the *same* Port row)."""
+    port dimensions (all applied to the *same* Port row).  A port or
+    service condition matches OPEN ports unless ``port_states`` names a
+    state (``resolve_endpoint_states``)."""
     sub = db.query(models.Host.id).join(models.Port)
     if ports:
         sub = sub.filter(models.Port.port_number.in_(list(ports)))
@@ -148,15 +185,28 @@ def port_match_subquery(
             models.Port.service_name.ilike(f'%{escape_like(s)}%', escape='\\')
             for s in services
         ]))
-    if port_states:
-        sub = sub.filter(models.Port.state.in_([s.lower() for s in port_states]))
-    if require_open:
+    states = resolve_endpoint_states(port_states, has_endpoint=bool(ports or services))
+    if require_open and states in (None, ["open"]):
+        states = ["open"]
+    elif require_open:
+        # An explicit other state beside "must be open": both hold (the
+        # long-standing contradiction stays a contradiction).
         sub = sub.filter(models.Port.state == 'open')
+    if states:
+        sub = sub.filter(port_state_condition(states))
     return sub
 
 
-def port_predicate(db: Session, values: Sequence) -> ColumnElement:
-    """Host has at least one port whose number is in ``values``.
+def port_state_condition(states: Sequence[str]) -> ColumnElement:
+    """``Port.state`` in ``states`` — a plain equality for one state."""
+    if len(states) == 1:
+        return models.Port.state == states[0]
+    return models.Port.state.in_(list(states))
+
+
+def port_predicate(db: Session, values: Sequence, states: Optional[Sequence[str]] = None) -> ColumnElement:
+    """Host has at least one OPEN port whose number is in ``values`` — or
+    one in ``states`` when given (``["any"]`` = any state).
 
     RV-5 — an empty port list must NOT broaden to "any port" (the legacy
     ``port_match_subquery`` skips an empty ``ports`` filter).  The DSL
@@ -166,18 +216,20 @@ def port_predicate(db: Session, values: Sequence) -> ColumnElement:
     port_ints = [int(v) for v in values if str(v).strip().isdigit()]
     if not port_ints:
         return false()
-    return models.Host.id.in_(port_match_subquery(db, ports=port_ints))
+    return models.Host.id.in_(port_match_subquery(db, ports=port_ints, port_states=states))
 
 
-def service_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has at least one port whose service name ILIKE-matches a value."""
-    return models.Host.id.in_(port_match_subquery(db, services=list(values)))
+def service_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
+    """Host has at least one OPEN port (or one in ``states``) whose service
+    name ILIKE-matches a value."""
+    return models.Host.id.in_(port_match_subquery(db, services=list(values), port_states=states))
 
 
-def version_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
-    """Host has an open port whose service product or version (or the two
-    together, "OpenSSH 7.4") ILIKE-matches a value (v2.390.0 — `service:`
-    matched the name only, so "which hosts run OpenSSH 7.x" had no filter)."""
+def version_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
+    """Host has an open port (or one in ``states``) whose service product or
+    version (or the two together, "OpenSSH 7.4") ILIKE-matches a value
+    (v2.390.0 — `service:` matched the name only, so "which hosts run
+    OpenSSH 7.x" had no filter)."""
     joined = func.concat(
         func.coalesce(models.Port.service_product, ""), " ", func.coalesce(models.Port.service_version, ""),
     )
@@ -193,7 +245,10 @@ def version_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     ]
     if not conds:
         return false()
-    sub = db.query(models.Port.host_id).filter(models.Port.state == "open", or_(*conds))
+    resolved = resolve_endpoint_states(states, has_endpoint=True)
+    sub = db.query(models.Port.host_id).filter(
+        *([port_state_condition(resolved)] if resolved else []), or_(*conds),
+    )
     return models.Host.id.in_(sub)
 
 

@@ -139,7 +139,10 @@ const sections: GuideSection[] = [
           <Mono>OR</Mono>, and <Mono>NOT</Mono> (case-insensitive), group with parentheses, and quote
           multi-word values. A bare word with no field searches IP, hostname, and OS. A comma is OR
           within one field (<Mono>port:80,443</Mono>); repeating a field is AND
-          (<Mono>port:80 port:443</Mono> = has <em>both</em>).
+          (<Mono>port:80 port:443</Mono> = has <em>both</em>). <Mono>port:</Mono>, <Mono>service:</Mono>{' '}
+          and <Mono>version:</Mono> match <em>open</em> ports: for a closed or filtered port nmap only
+          guesses the service name from the port number. Name another state after <Mono>@</Mono> —{' '}
+          <Mono>service:ssh@closed</Mono>, <Mono>port:22@filtered</Mono>, <Mono>port:22@any</Mono>.
         </Para>
         <Subhead>Examples</Subhead>
         <UnorderedList>
