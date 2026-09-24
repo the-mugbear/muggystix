@@ -73,6 +73,7 @@ import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { IP_OR_CIDR_HINT, isIpOrCidr } from '../utils/ipAddress';
+import { formatDate, formatTimestamp } from '../utils/relativeTime';
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -558,10 +559,11 @@ const Scopes: React.FC = () => {
               size="sm"
               disabled={scope.subnets.length === 0}
               onClick={() => recon.openFor(scope.id, 'Project scope')}
-              aria-label="Start agentic reconnaissance"
-              title={scope.subnets.length === 0 ? 'Add a subnet first — recon runs against declared subnets.' : undefined}
+              title={scope.subnets.length === 0 ? 'Add a subnet first — recon runs against declared subnets.' : 'Start an agent recon session against this scope'}
             >
-              <Rocket className="size-4" aria-hidden /> Start Agentic Recon
+              {/* UX review 2026-09-24 — "Start Agentic Recon" beside
+                  Operations' "Start Agent Session": one verb, one noun. */}
+              <Rocket className="size-4" aria-hidden /> Start recon session
             </Button>
           )}
         </div>
@@ -797,7 +799,13 @@ const Scopes: React.FC = () => {
             <div className="overflow-x-auto">
               {/* Fixed layout (UI_STYLE_GUIDE): an unbounded description or
                   label set wraps inside its column instead of widening it. */}
-              <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
+              {/* UX review 2026-09-24 — the fixed columns left Description,
+                  the one operators type into, 82px (its header ran into
+                  "Site") and the table 44px wider than the page, Actions cut
+                  off. Now: 296px of fixed columns plus 43% for subnet / site /
+                  labels, so Description keeps ~225px beside the sidebar and
+                  ~170px at the 820px floor, and the table fits. */}
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[820px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead className="w-10">
@@ -807,15 +815,15 @@ const Scopes: React.FC = () => {
                         aria-label="Select all subnets for bulk label apply"
                       />
                     </TableHead>
-                    <TableHead className="w-[18%]">Subnet / IP</TableHead>
-                    <TableHead className="w-20 text-right">Hosts</TableHead>
+                    <TableHead className="w-[15%]">Subnet / IP</TableHead>
+                    <TableHead className="w-16 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
-                    {/* Wide enough for a typical site name ("DMZ / Internet-facing")
-                        on one line; longer names still wrap. */}
-                    <TableHead className="w-48">Site</TableHead>
-                    <TableHead className="w-[16%]">Labels</TableHead>
-                    <TableHead className="w-28">Added</TableHead>
-                    <TableHead className="w-32 text-right">Actions</TableHead>
+                    {/* A typical site name ("DMZ / Internet-facing") wraps
+                        to two lines at most. */}
+                    <TableHead className="w-[15%]">Site</TableHead>
+                    <TableHead className="w-[13%]">Labels</TableHead>
+                    <TableHead className="w-24">Added</TableHead>
+                    <TableHead className="w-24 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -942,7 +950,9 @@ const Scopes: React.FC = () => {
                             </>
                           )}
                           <TableCell className="text-caption text-muted-foreground">
-                            {new Date(subnet.created_at).toLocaleDateString()}
+                            <span className="block truncate" title={formatTimestamp(subnet.created_at)}>
+                              {formatDate(subnet.created_at)}
+                            </span>
                           </TableCell>
                           <TableCell className="text-right">
                             {isEditing ? (

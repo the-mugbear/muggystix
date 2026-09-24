@@ -216,6 +216,32 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     expect(screen.getByRole('button', { name: 'Upload scope file' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Upload File' })).toBeNull();
   });
+
+  // UX review 2026-09-24 — at a 1246px window (a ~916px content column) the
+  // subnets table was 44px too wide and Description, the column operators
+  // type into, got 82px: its header ran into "Site", Actions was cut off.
+  it('fits the subnets table in a ~916px column with real room for Description', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    const table = screen.getAllByRole('table')[0];
+    const minWidth = Number(table.className.match(/min-w-\[(\d+)px\]/)![1]);
+    expect(minWidth).toBeLessThanOrEqual(900);
+    const heads = Array.from(table.querySelectorAll('thead th'));
+    const fixedPx = heads.reduce((sum, th) => sum + Number(th.className.match(/\bw-(\d+)\b/)?.[1] ?? 0) * 4, 0);
+    const pct = heads.reduce((sum, th) => sum + Number(th.className.match(/\bw-\[(\d+)%\]/)?.[1] ?? 0), 0);
+    const description = heads.find((th) => th.textContent === 'Description')!;
+    expect(description.className).not.toMatch(/\bw-/);
+    // Description's share at the table's floor and at a 916px column.
+    expect(minWidth - fixedPx - (minWidth * pct) / 100).toBeGreaterThanOrEqual(160);
+    expect(916 - fixedPx - (916 * pct) / 100).toBeGreaterThanOrEqual(200);
+  });
+
+  it('names the recon action as Operations names its session action', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByRole('button', { name: /Start recon session/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Agentic Recon/)).toBeNull();
+  });
 });
 
 describe('scopeLead', () => {
