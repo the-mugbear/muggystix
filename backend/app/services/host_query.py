@@ -173,7 +173,9 @@ def build_filtered_host_query(
 
     # Port dimensions are fused into one Port subquery (a single port row
     # must satisfy all of ports/services/port_states/require_open) — see
-    # ``port_match_subquery``.  ``has_open_ports=False`` is a standalone
+    # ``port_match_subquery``, where a port/service condition means an OPEN
+    # port unless ``port_states`` names one (``any`` = every state; v2.403.0).
+    # ``has_open_ports=False`` is a standalone
     # exclusion of open-port hosts and intentionally ignores the other
     # port filters, preserving the long-standing behaviour.
     # `is not None`, not truthiness: has_open_ports=False is a filter in its own

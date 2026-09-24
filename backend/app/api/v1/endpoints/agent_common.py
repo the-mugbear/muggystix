@@ -116,7 +116,8 @@ def _apply_agent_host_filters(
     unscoped subqueries until this unification).
 
     The port/service dimensions keep the agent's "must be an *open* port"
-    semantics (the DSL ``port:`` leaf matches any state); services still
+    semantics (since v2.403.0 the DSL ``port:`` leaf and the Hosts-page
+    filters are open-by-default too, ``@state`` / ``port_states`` for others); services still
     expand through ``_SERVICE_PORT_MAP`` to port numbers rather than
     matching ``service_name`` text, which is the agent's intended model
     ("give me web hosts" = standard web ports).

@@ -95,15 +95,20 @@ export function hostConditionChips(
     endpointParts.push(`service ${filters.services.join(' or ')}`);
     endpointKeys.push('services');
   }
+  const hasEndpoint = endpointParts.length > 0;
   if (filters.portStates?.length) {
-    endpointParts.push(`state ${filters.portStates.join(' or ')}`);
+    endpointParts.push(filters.portStates.includes('any') ? 'any state' : `state ${filters.portStates.join(' or ')}`);
     endpointKeys.push('portStates');
   }
   if (filters.hasOpenPorts === true) {
     // Alone it is simply "has an open port"; beside the others it requires the
     // matched port to be open.
-    if (endpointParts.length > 0 && !filters.portStates?.includes('open')) endpointParts.push('open');
+    if (hasEndpoint && !filters.portStates?.includes('open')) endpointParts.push('open');
     endpointKeys.push('hasOpenPorts');
+  } else if (hasEndpoint && !filters.portStates?.length && filters.hasOpenPorts !== false) {
+    // v5.289.0 — open is the default for a port / service condition; say so.
+    // (Beside "no recorded open ports" the backend ignores the port filters.)
+    endpointParts.push('open');
   }
   if (endpointKeys.length > 0) {
     const full = endpointParts.length > 0 ? `Endpoint: ${endpointParts.join(' · ')}` : 'Has open ports';

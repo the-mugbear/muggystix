@@ -476,15 +476,16 @@ describe('Hosts', () => {
     routerState.search = '?ports=8080&sites=East';
     renderHosts();
 
-    await user.click(await screen.findByRole('button', { name: 'Clear filter: Endpoint: port 8080' }));
-    await waitFor(() => expect(screen.queryByText('Endpoint: port 8080')).not.toBeInTheDocument());
+    // A port condition means an open port unless a state is named — the chip says so.
+    await user.click(await screen.findByRole('button', { name: 'Clear filter: Endpoint: port 8080 · open' }));
+    await waitFor(() => expect(screen.queryByText('Endpoint: port 8080 · open')).not.toBeInTheDocument());
     expect(screen.getByText('Site: East')).toBeInTheDocument();
 
     const [message, options] = toastMock.info.mock.calls[toastMock.info.mock.calls.length - 1];
-    expect(message).toBe('Removed: Endpoint: port 8080');
+    expect(message).toBe('Removed: Endpoint: port 8080 · open');
     expect(options.action.label).toBe('Undo');
     act(() => options.action.onClick());
-    expect(await screen.findByText('Endpoint: port 8080')).toBeInTheDocument();
+    expect(await screen.findByText('Endpoint: port 8080 · open')).toBeInTheDocument();
   });
 
   it('keeps the open host when a filter takes it out of the rows shown, says so, and Next starts from the top', async () => {

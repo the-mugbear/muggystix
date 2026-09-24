@@ -11,6 +11,7 @@ import { Checkbox } from '../ui/checkbox';
 import { Input } from '../ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover';
 import { cn } from '../../utils/cn';
+import { PORT_STATE_ANY } from '../../utils/endpointMatch';
 import {
   FILTER_CATEGORIES,
   HOST_FILTER_FIELDS,
@@ -332,6 +333,11 @@ function SeverityEditor({ field, filters, commit, cancel }: EditorProps) {
 }
 
 const ENDPOINT_LIST_KEYS: Array<keyof HostFilterOptions> = ['ports', 'services', 'portStates'];
+const ENDPOINT_STATE_CHOICES = [
+  { value: 'open', label: 'Open' },
+  { value: 'closed', label: 'Closed' },
+  { value: 'filtered', label: 'Filtered' },
+];
 
 function EndpointEditor({ field, filters, data, loading, error, commit, cancel }: EditorProps) {
   // `hasOpenPorts: false` is a different condition ("no recorded open ports")
@@ -352,8 +358,18 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
     (Object.keys(draft) as Array<keyof HostFilterOptions>).forEach((k) => { next = withValue(next, k, draft[k]); });
     commit(next);
   };
-  const otherStates = (draft.portStates ?? []).filter((s) => s !== 'open');
-  const requireOpen = draft.hasOpenPorts === true || (draft.portStates ?? []).includes('open');
+  // v5.289.0 — a port / service condition means an OPEN port unless a state is
+  // chosen (the backend's `resolve_endpoint_states`), so "Open" shows ticked by
+  // default and the editor writes a state only when the operator changes it.
+  const namedStates = draft.portStates ?? [];
+  const anyState = namedStates.includes(PORT_STATE_ANY);
+  const shownStates = anyState ? [] : (namedStates.length ? namedStates : ['open']);
+  const otherStates = namedStates.filter((s) => s !== PORT_STATE_ANY && !ENDPOINT_STATE_CHOICES.some((c) => c.value === s));
+  const toggleState = (state: string, checked: boolean) => setDraft((d) => {
+    const next = checked ? [...shownStates.filter((s) => s !== state), state] : shownStates.filter((s) => s !== state);
+    // `hasOpenPorts` folds into the state list once the operator picks a state.
+    return withValue(withValue(d, 'portStates', next), 'hasOpenPorts', undefined);
+  });
   return (
     <div className="space-y-xs">
       <p className="text-caption text-muted-foreground break-words">
@@ -394,27 +410,50 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
           />
         </div>
       </div>
-      <label htmlFor="hf-endpoint-open" className="flex cursor-pointer items-center gap-xs px-xs">
-        <Checkbox
-          id="hf-endpoint-open"
-          checked={requireOpen}
-          onCheckedChange={(checked) => {
-            // One representation: the port state list. `hasOpenPorts` is kept
-            // only when it arrived that way and nothing else is chosen.
-            setDraft((d) => {
-              const states = (d.portStates ?? []).filter((s) => s !== 'open');
-              const next = withValue(d, 'portStates', checked ? [...states, 'open'] : states);
-              return withValue(next, 'hasOpenPorts', undefined);
-            });
-          }}
-        />
-        <span className="text-metadata">The port is open</span>
-      </label>
+      <fieldset className="min-w-0 space-y-xxs">
+        <legend className="text-caption font-semibold uppercase tracking-wider text-muted-foreground">Port state</legend>
+        <div className="flex flex-wrap items-center gap-x-sm gap-y-xxs px-xs">
+          {ENDPOINT_STATE_CHOICES.map((choice) => {
+            const checked = shownStates.includes(choice.value);
+            const id = `hf-endpoint-state-${choice.value}`;
+            return (
+              <label key={choice.value} htmlFor={id} className="flex cursor-pointer items-center gap-xxs">
+                <Checkbox
+                  id={id}
+                  checked={checked}
+                  // The last ticked state stays: an empty list would mean the default again.
+                  disabled={anyState || (checked && shownStates.length === 1)}
+                  onCheckedChange={(c) => toggleState(choice.value, c === true)}
+                />
+                <span className="text-metadata">{choice.label}</span>
+              </label>
+            );
+          })}
+          <label htmlFor="hf-endpoint-state-any" className="flex cursor-pointer items-center gap-xxs">
+            <Checkbox
+              id="hf-endpoint-state-any"
+              checked={anyState}
+              onCheckedChange={(c) => setDraft((d) => withValue(
+                withValue(d, 'portStates', c === true ? [PORT_STATE_ANY] : []), 'hasOpenPorts', undefined,
+              ))}
+            />
+            <span className="text-metadata">Any state</span>
+          </label>
+        </div>
+        <p className="px-xs text-caption text-muted-foreground break-words">
+          Open unless you choose otherwise. For a closed or filtered port, nmap names the service from
+          the port number alone — “ssh” there is no evidence SSH runs.
+        </p>
+      </fieldset>
       {otherStates.length > 0 && (
-        // Arrives from a link or the query bar; never silently narrowed to "open".
+        // Arrives from a link; never silently narrowed to "open".
         <p className="px-xs text-caption text-muted-foreground break-words">
           Also matching port state: {otherStates.join(' or ')}.{' '}
-          <button type="button" className="underline underline-offset-2" onClick={() => set('portStates', requireOpen ? ['open'] : [])}>
+          <button
+            type="button"
+            className="underline underline-offset-2"
+            onClick={() => set('portStates', namedStates.filter((s) => !otherStates.includes(s)))}
+          >
             Remove
           </button>
         </p>

@@ -493,11 +493,51 @@ def _parse_ports(field: str, values: List[str]) -> List[int]:
     return ports
 
 
+def _split_port_state(field: str, value: str):
+    """``"ssh@closed"`` → ``("ssh", "closed")``; no suffix → ``(value, None)``.
+
+    v2.403.0 — ``port:`` / ``service:`` / ``version:`` match OPEN ports unless
+    the value names a state after ``@`` (``any`` = every state).  Per value:
+    ``port:22@closed,23`` is 22 closed OR 23 open."""
+    base, sep, state = value.rpartition("@")
+    if not sep:
+        return value, None
+    state = state.strip().lower()
+    if state not in P.EXPLICIT_PORT_STATES:
+        raise DSLError(
+            f"{field}: unknown port state '{state}' after '@' "
+            f"(one of: {', '.join(P.EXPLICIT_PORT_STATES)})"
+        )
+    if not base.strip():
+        raise DSLError(f"{field}: expects a value before '@{state}'")
+    return base, state
+
+
+def _by_port_state(field: str, values: List[str]) -> List[tuple]:
+    """Group a field's values by their ``@state`` (None = the open default),
+    keeping first-seen order: ``[(states_or_None, [values…]), …]``."""
+    groups: dict = {}
+    for v in values:
+        base, state = _split_port_state(field, v)
+        groups.setdefault(state, []).append(base)
+    return [([state] if state else None, vals) for state, vals in groups.items()]
+
+
 def _b_port(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     # Validate BEFORE touching ctx — a bad value is a 400 regardless of context
     # (and unit tests exercise the validation with a null ctx).
-    ports = _parse_ports("port", values)
-    return P.port_predicate(ctx.db, ports)
+    groups = [(states, _parse_ports("port", vals)) for states, vals in _by_port_state("port", values)]
+    return or_(*[P.port_predicate(ctx.db, ports, states) for states, ports in groups])
+
+
+def _b_service(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    groups = _by_port_state("service", values)
+    return or_(*[P.service_predicate(ctx.db, vals, states) for states, vals in groups])
+
+
+def _b_version(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    groups = _by_port_state("version", values)
+    return or_(*[P.version_predicate(ctx.db, vals, states) for states, vals in groups])
 
 
 def _b_exploitport(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -573,17 +613,25 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("os", lambda c, v: P.os_predicate(v), value_source="os",
               description="OS name or family — nmap OS detection (-O / -A)."),
     FieldSpec("port", _b_port, value_source="port",
-              description="An open port number — nmap, masscan, naabu, rustscan."),
-    FieldSpec("service", lambda c, v: P.service_predicate(c.db, v), aliases=["svc"],
+              description="An OPEN port number — nmap, masscan, naabu, rustscan. Add a state "
+                          "after @ to match another: `port:22@closed`, `port:22@filtered`, "
+                          "`port:22@any`."),
+    FieldSpec("service", _b_service, aliases=["svc"],
               value_source="service",
-              description="Service name on a port — nmap version detection (-sV)."),
-    FieldSpec("version", lambda c, v: P.version_predicate(c.db, v), aliases=["product"], trgm=True,
-              description="Service product or version on an open port, e.g. \"OpenSSH 7\" — nmap -sV."),
+              description="Service name on an OPEN port — nmap version detection (-sV). For a "
+                          "closed or filtered port nmap only guesses the name from the port "
+                          "number, so those match only when asked: `service:ssh@closed`, "
+                          "`service:ssh@any`."),
+    FieldSpec("version", _b_version, aliases=["product"], trgm=True,
+              description="Service product or version on an OPEN port, e.g. \"OpenSSH 7\" — "
+                          "nmap -sV. `@state` as for port: (`version:\"OpenSSH 7@any\"`)."),
     FieldSpec("path", lambda c, v: P.webpath_predicate(c.db, v), aliases=["webpath"], trgm=True,
               description="A path content discovery found — ffuf, gobuster, feroxbuster, dirsearch."),
     FieldSpec("portstate", lambda c, v: P.portstate_predicate(c.db, v), value_source="enum",
               enum_values=["open", "closed", "filtered"],
-              description="Port state — open / closed / filtered."),
+              description="Has a port in this state — open / closed / filtered. A separate "
+                          "condition: to put a state on port:/service:/version:, use @ on "
+                          "that value (`service:ssh@closed`)."),
     FieldSpec("subnet", _b_subnet, aliases=["cidr"], value_source="cidr",
               description="Host IP within the CIDR — subnet correlation against scopes."),
     # RV-9 — trgm=True gives tech: the same MIN_TRGM_LEN guard as the other
@@ -706,6 +754,11 @@ def _validate(node: Node) -> None:
                 raise DSLError(f"Unknown field '{n.name}'", position=n.pos)
             if spec.trgm:
                 for v in n.values:
+                    # The trigram threshold is about the text matched, not a
+                    # trailing `@state` qualifier (version:"ab@any").
+                    base, sep, suffix = v.rpartition("@")
+                    if sep and suffix.strip().lower() in P.EXPLICIT_PORT_STATES:
+                        v = base
                     if len(v) < MIN_TRGM_LEN:
                         raise DSLError(
                             f"'{n.name}:' needs at least {MIN_TRGM_LEN} characters "
@@ -798,12 +851,13 @@ def schema() -> dict:
 
 
 # Curated starter queries surfaced in the template gallery.  A label says what
-# the query MATCHES, never what it would prove: `port:` is a recorded port in
-# any state, `country:` is where the address block is registered (not where the
-# host is), a CVE row is a scanner's report, `has:exploit` is "an exploit is
-# reported to exist".
+# the query MATCHES, never what it would prove: `port:` is a port recorded
+# OPEN (v2.403.0; `port:22@any` for every state), `country:` is where the
+# address block is registered (not where the host is), a CVE row is a
+# scanner's report, `has:exploit` is "an exploit is reported to exist".
 EXAMPLES: List[dict] = [
-    {"label": "Ports 80 AND 443 both recorded", "q": "port:80 port:443"},
+    {"label": "Ports 80 AND 443 both recorded open", "q": "port:80 port:443"},
+    {"label": "Port 22 recorded in any state", "q": "port:22@any"},
     {"label": "Critical observations, not tested", "q": "has:critical AND NOT has:tested"},
     # The /operations "not yet in any plan" coverage gap, as a query.
     {"label": "Not in any test plan", "q": "NOT has:planned"},

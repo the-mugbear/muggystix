@@ -21,6 +21,18 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.9.0",
+        "app_version": "2.403.0",
+        "summary": (
+            "Host-filter semantics change in the assist hosts row of AGENTS.md: "
+            "`port:` / `service:` / `version:` match OPEN ports only (a closed "
+            "or filtered port's service name is nmap's guess from the port "
+            "number); another state is named after `@` on the value — "
+            "`port:22@closed`, `service:ssh@filtered`, `port:22@any`. "
+            "`portstate:` alone stays a separate condition."
+        ),
+    },
+    {
         "version": "2.8.3",
         "app_version": "2.392.0",
         "summary": (

@@ -134,18 +134,43 @@ describe('HostFilterPopover', () => {
     expect(screen.getByText(/same recorded port/)).toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /443 \(https\)/ }));
     await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /https/ }));
-    await user.click(screen.getByRole('checkbox', { name: 'The port is open' }));
+    // Open is the default and shown as such; nothing is written for it.
+    expect(screen.getByRole('checkbox', { name: 'Open' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Closed' })).not.toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Any state' })).not.toBeChecked();
+    expect(screen.getByText(/Open unless you choose otherwise/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
-    expect(onApply).toHaveBeenCalledWith({
-      sites: ['East'], ports: ['443'], services: ['https'], portStates: ['open'],
-    });
+    expect(onApply).toHaveBeenCalledWith({ sites: ['East'], ports: ['443'], services: ['https'] });
+  });
+
+  it('the endpoint editor can include closed / filtered ports, or any state', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    render(<Harness fieldId="endpoint" onApply={onApply} />);
+    await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /ssh/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Closed' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Filtered' }));
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenLastCalledWith({ services: ['ssh'], portStates: ['open', 'closed', 'filtered'] });
+  });
+
+  it('"Any state" replaces the state list with any', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    render(<Harness fieldId="endpoint" onApply={onApply} />);
+    await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /ssh/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Any state' }));
+    expect(screen.getByRole('checkbox', { name: 'Open' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenLastCalledWith({ services: ['ssh'], portStates: ['any'] });
   });
 
   it('a port group fills the endpoint draft, and a restored non-open state is never silently dropped', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();
     render(<Harness fieldId="endpoint" initial={{ portStates: ['filtered'] }} onApply={onApply} />);
-    expect(screen.getByText(/Also matching port state: filtered/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Filtered' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Open' })).not.toBeChecked();
     await user.click(screen.getByRole('button', { name: 'SSH Servers' }));
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
     expect(onApply).toHaveBeenCalledWith({ ports: ['22'], portStates: ['filtered', 'open'] });

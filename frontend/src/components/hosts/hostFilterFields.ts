@@ -172,7 +172,7 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
     kind: 'endpoint', id: 'endpoint', keys: ['ports', 'services', 'portStates', 'hasOpenPorts'], chipKey: 'endpoint',
     label: 'Port / service', category: 'services', common: true,
     keywords: ['port', 'service', 'endpoint', 'ssh', 'http', 'https', 'smb', 'rdp', 'open', 'database', 'windows'],
-    help: 'A recorded port matching the port, service and state you choose — all on the SAME port.',
+    help: 'A recorded port matching the port, service and state you choose — all on the SAME port. The port must be open unless you pick another state.',
   },
   {
     kind: 'choice', id: 'noOpenPorts', key: 'hasOpenPorts', keys: ['hasOpenPorts'], chipKey: 'hasOpenPorts',
