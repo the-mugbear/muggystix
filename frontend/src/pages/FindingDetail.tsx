@@ -45,7 +45,8 @@ import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
@@ -66,6 +67,14 @@ const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 // in the status history) — surfaced here so a mis-set severity from
 // promotion (e.g. medium that should be low) can be reclassified in place.
 const histLabel = (s: string | null) => (s ? STATUS_LABEL[s as FindingStatus] ?? s : '—');
+
+/** A finding with no recorded transition got its status when it was made —
+ *  say so, rather than "No status changes recorded yet" under "Confirmed". */
+export const initialStatusLine = (f: Pick<Finding, 'status' | 'created_at' | 'created_by_name'>): string => {
+  const by = f.created_by_name ? ` by ${f.created_by_name}` : '';
+  const when = f.created_at ? ` on ${formatTimestamp(f.created_at)}` : '';
+  return `${STATUS_LABEL[f.status]} since the finding was created${by}${when} — no changes since.`;
+};
 
 const FindingDetail: React.FC = () => {
   const { findingId } = useParams<{ findingId: string }>();
@@ -539,80 +548,29 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
-      <FindingReportTextCard
-        finding={finding} canEdit={canModify} onSaved={setFinding}
-        startEditing={searchParams.get('edit') === 'report-text'}
-      />
-
-      {evidenceError && (
-        <Card className="mb-md">
-          <CardHeader><CardTitle>Evidence note</CardTitle></CardHeader>
-          <CardContent>
-            <p className="text-caption text-destructive">{evidenceError}</p>
-            {evidenceHref && (
-              <Link to={evidenceHref} className="text-caption text-info hover:underline">Open on the host</Link>
-            )}
-          </CardContent>
-        </Card>
-      )}
-      {evidenceThread.length > 0 && (
-        // v5.264.0 — the source note's thread as a conversation, not a card.
-        <section className="mb-md min-w-0" aria-label="Evidence note">
-          <div className="border-b border-border pb-xs">
-            <h2 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Evidence note</h2>
-          </div>
-          <div className="space-y-md pt-sm">
-            {evidenceThread.map((note) => {
-              const parent = note.parent_id != null && note.parent_id !== evidenceThread[0]?.id
-                ? evidenceThread.find((n) => n.id === note.parent_id) : undefined;
-              return (
-                <MessageBubble
-                  key={note.id}
-                  mine={user?.id != null && note.author_id === user.id}
-                  author={note.author_name || 'Unknown analyst'}
-                  actorType={note.actor_type}
-                  createdAt={note.created_at}
-                  replyingTo={parent ? { author: parent.author_name || 'Unknown analyst', excerpt: parent.body ?? '' } : null}
-                >
-                  <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
-                  {note.attachments && note.attachments.length > 0 && evidenceHostId && (
-                    <NoteAttachments
-                      hostId={evidenceHostId}
-                      noteId={note.id}
-                      attachments={note.attachments}
-                      canManage={false}
-                      onChanged={() => {}}
-                      reportMarking={reportMarking}
-                    />
-                  )}
-                </MessageBubble>
-              );
-            })}
-          </div>
-        </section>
-      )}
-
-      <FindingCommentThread findingId={finding.id} canManage={canManage} reportMarking={reportMarking} />
-
-      <Card className="mb-md">
-        <CardHeader>
-          <div className="flex flex-wrap items-center justify-between gap-sm">
-            <CardTitle>Affected hosts ({finding.host_count})</CardTitle>
-            {canManage && (
-              <Button variant="outline" size="sm" onClick={() => setAddHostsOpen(true)}>
-                <Plus className="size-4" aria-hidden /> Add hosts
-              </Button>
-            )}
-          </div>
-          {/* v5.225.0 — the finding's status is the issue's; each endpoint
-              keeps its own, so "Confirmed" here never means every host. */}
-          <p className="text-caption text-muted-foreground">
-            The status above is the issue&apos;s ({STATUS_LABEL[finding.status]}). Each endpoint
-            below has its own state
-            {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all still present'}.
-          </p>
-        </CardHeader>
-        <CardContent className="p-0">
+      {/* v5.294.0 (UX review) — sections over thin rules, and the hosts first:
+          triage starts from where the issue is, so the affected hosts sit
+          directly under the status row, before the report text and the
+          discussion (they came after both). */}
+      <PostureSection
+        className="mb-md"
+        title={<>
+          <span>Affected hosts</span>
+          <SectionCount>{finding.host_count.toLocaleString()}</SectionCount>
+        </>}
+        // v5.225.0 — the finding's status is the issue's; each endpoint keeps
+        // its own, so "Confirmed" here never means every host.
+        description={<>
+          The status above is the issue&apos;s ({STATUS_LABEL[finding.status]}). Each endpoint
+          below has its own state
+          {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all still present'}.
+        </>}
+        actions={canManage ? (
+          <Button variant="outline" size="sm" onClick={() => setAddHostsOpen(true)}>
+            <Plus className="size-4" aria-hidden /> Add hosts
+          </Button>
+        ) : undefined}
+      >
           <div className="overflow-x-auto">
             <Table className="table-fixed">
               <TableHeader>
@@ -689,12 +647,61 @@ const FindingDetail: React.FC = () => {
               </TableBody>
             </Table>
           </div>
-        </CardContent>
-      </Card>
+      </PostureSection>
 
-      <Card>
-        <CardHeader><CardTitle>Disposition history</CardTitle></CardHeader>
-        <CardContent>
+      <FindingReportTextCard
+        finding={finding} canEdit={canModify} onSaved={setFinding}
+        startEditing={searchParams.get('edit') === 'report-text'}
+      />
+
+      {evidenceError && (
+        <PostureSection className="mb-md" title={<span>Evidence note</span>}>
+          <p className="text-caption text-destructive">{evidenceError}</p>
+          {evidenceHref && (
+            <Link to={evidenceHref} className="text-caption text-info hover:underline">Open on the host</Link>
+          )}
+        </PostureSection>
+      )}
+      {evidenceThread.length > 0 && (
+        // v5.264.0 — the source note's thread as a conversation, not a card.
+        <section className="mb-md min-w-0" aria-label="Evidence note">
+          <div className="border-b border-border pb-xs">
+            <h2 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Evidence note</h2>
+          </div>
+          <div className="space-y-md pt-sm">
+            {evidenceThread.map((note) => {
+              const parent = note.parent_id != null && note.parent_id !== evidenceThread[0]?.id
+                ? evidenceThread.find((n) => n.id === note.parent_id) : undefined;
+              return (
+                <MessageBubble
+                  key={note.id}
+                  mine={user?.id != null && note.author_id === user.id}
+                  author={note.author_name || 'Unknown analyst'}
+                  actorType={note.actor_type}
+                  createdAt={note.created_at}
+                  replyingTo={parent ? { author: parent.author_name || 'Unknown analyst', excerpt: parent.body ?? '' } : null}
+                >
+                  <p className="whitespace-pre-wrap break-words text-body">{note.body}</p>
+                  {note.attachments && note.attachments.length > 0 && evidenceHostId && (
+                    <NoteAttachments
+                      hostId={evidenceHostId}
+                      noteId={note.id}
+                      attachments={note.attachments}
+                      canManage={false}
+                      onChanged={() => {}}
+                      reportMarking={reportMarking}
+                    />
+                  )}
+                </MessageBubble>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <FindingCommentThread findingId={finding.id} canManage={canManage} reportMarking={reportMarking} />
+
+      <PostureSection title={<span>Disposition history</span>}>
           {historyLoading && history.length === 0 ? (
             <div className="flex items-center gap-xs text-caption text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden /> Loading history…
@@ -707,7 +714,9 @@ const FindingDetail: React.FC = () => {
               </Button>
             </div>
           ) : history.length === 0 ? (
-            <p className="text-caption text-muted-foreground">No status changes recorded yet.</p>
+            // UX review 2026-09-24: a Confirmed finding read "No status
+            // changes recorded yet" — say how it got its status instead.
+            <p className="text-caption text-muted-foreground">{initialStatusLine(finding)}</p>
           ) : (
             <ul className="flex flex-col gap-sm">
               {history.map((r) => (
@@ -717,15 +726,14 @@ const FindingDetail: React.FC = () => {
                     {' → '}<span className="font-medium">{histLabel(r.to_status)}</span>
                   </div>
                   <div className="text-caption text-muted-foreground">
-                    {safeFallback(r.changed_by_name, 'Unknown')} · {new Date(r.created_at).toLocaleString()}
+                    {safeFallback(r.changed_by_name, 'Unknown')} · {formatTimestamp(r.created_at)}
                   </div>
                   {r.summary && <p className="mt-xxs whitespace-pre-wrap text-caption">{r.summary}</p>}
                 </li>
               ))}
             </ul>
           )}
-        </CardContent>
-      </Card>
+      </PostureSection>
 
       {/* Terminal-disposition "why" prompt — same policy as the /findings
           list; the summary lands on the finding's disposition history. */}
