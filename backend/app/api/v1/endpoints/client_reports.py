@@ -340,10 +340,17 @@ def create_report(
             f"Addendum to report #{baseline.number}" if baseline is not None
             else f"{project.name} — security assessment report"
         )
+    # v2.404.0 — an addendum continues its baseline: same client, team and
+    # distribution as issued (its "Summary of changes" is new text, so the
+    # summary starts empty).  A new full report starts from the defaults.
     report = Report(
         project_id=project.id, kind=body.kind, status=ReportStatus.DRAFT, title=title[:255],
         template=template_name, baseline_report_id=baseline.id if baseline else None,
-        settings=svc.settings_from_profile(project.id), created_by_id=current_user.id,
+        settings=(
+            svc.settings_for_addendum(baseline) if baseline is not None
+            else svc.settings_from_profile(project.id)
+        ),
+        created_by_id=current_user.id,
     )
     db.add(report)
     db.commit()
@@ -551,7 +558,8 @@ def revise_report(
         project_id=project.id, kind=original.kind, status=ReportStatus.DRAFT,
         title=original.title, template=original.template,
         baseline_report_id=original.baseline_report_id, revision_of_id=original.id,
-        settings=dict(original.settings or {}), executive_summary=original.executive_summary,
+        settings=ClientReportService.settings_from_issued(original),
+        executive_summary=original.executive_summary,
         created_by_id=current_user.id,
     )
     db.add(draft)

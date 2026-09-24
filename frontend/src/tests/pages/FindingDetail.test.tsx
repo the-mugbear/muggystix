@@ -103,7 +103,26 @@ describe('FindingDetail — item 7: each endpoint has its own state', () => {
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
     expect(screen.getByText(/The status above is the issue/)).toBeInTheDocument();
-    expect(screen.getByText('open on 1 of 2 · 1 remediated')).toBeInTheDocument();
+    expect(screen.getByText('still present on 1 of 2 · 1 remediated')).toBeInTheDocument();
+  });
+
+  it('v5.290.0 — an open endpoint reads "Still present", never "Open", beside a Confirmed finding', async () => {
+    mocked.getFinding.mockResolvedValue(twoHosts());
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    expect(screen.getAllByText('Still present').length).toBeGreaterThan(0);
+    expect(screen.queryByText('Open here')).not.toBeInTheDocument();
+  });
+
+  it('says "all still present" when every endpoint is', async () => {
+    mocked.getFinding.mockResolvedValue(finding({
+      status: 'confirmed', host_count: 1, endpoint_status_counts: { open: 1 },
+      hosts: [{ id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: null, fqdn: null, host_status: 'open' }],
+    }));
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    expect(screen.getByText(/all still present\./)).toBeInTheDocument();
+    expect(screen.queryByText(/all open/)).not.toBeInTheDocument();
   });
 
   it('changing one endpoint\'s state calls the endpoint route, not the finding status', async () => {

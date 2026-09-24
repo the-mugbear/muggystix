@@ -609,7 +609,7 @@ const FindingDetail: React.FC = () => {
           <p className="text-caption text-muted-foreground">
             The status above is the issue&apos;s ({STATUS_LABEL[finding.status]}). Each endpoint
             below has its own state
-            {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all open'}.
+            {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all still present'}.
           </p>
         </CardHeader>
         <CardContent className="p-0">

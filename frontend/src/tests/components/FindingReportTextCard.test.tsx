@@ -67,3 +67,39 @@ describe('FindingReportTextCard — drafting', () => {
     expect(screen.queryByRole('button', { name: /Draft empty sections/ })).not.toBeInTheDocument();
   });
 });
+
+describe('FindingReportTextCard — v5.290.0 the written text is shown rendered, safely', () => {
+  const withText = (description: string) => ({
+    id: 42, title: 'Weak TLS',
+    report_text: {
+      description, impact: null, recommendation: null, references: null,
+      steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+    },
+  }) as never;
+
+  it('renders **bold** as bold instead of printing the asterisks', () => {
+    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01** only.')} canEdit onSaved={vi.fn()} />);
+    const dd = screen.getByTestId('report-text-description');
+    expect(dd.querySelector('strong')?.textContent).toBe('filesrv-01');
+    expect(dd.textContent).not.toContain('**');
+  });
+
+  it('never turns raw HTML or an image into an element', () => {
+    const { container } = render(
+      <FindingReportTextCard
+        finding={withText('<img src=x onerror="alert(1)"> and ![shot](https://evil.example/x.png)')}
+        canEdit onSaved={vi.fn()}
+      />,
+    );
+    expect(container.querySelector('img')).toBeNull();
+    const dd = screen.getByTestId('report-text-description');
+    // The HTML stays text; the image is its alt text.
+    expect(dd.textContent).toContain('<img src=x onerror="alert(1)">');
+    expect(dd.textContent).toContain('shot');
+  });
+
+  it('keeps the editor a plain textarea holding the Markdown as written', () => {
+    render(<FindingReportTextCard finding={withText('Seen on **filesrv-01**.')} canEdit onSaved={vi.fn()} startEditing />);
+    expect(screen.getByLabelText('Description')).toHaveValue('Seen on **filesrv-01**.');
+  });
+});

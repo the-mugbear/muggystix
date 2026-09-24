@@ -32,13 +32,23 @@ interface Props {
   /** Whoever is signed in. A global admin can work on a project without being
    *  a member of it, so the member list alone left them nobody to pick. */
   currentUser?: { id: number; name: string } | null;
+  /** Momentarily unavailable (saving): every control stays, greyed. */
   disabled?: boolean;
+  /** v5.290.0 — the details as they stand, not a form (an issued report,
+   *  or someone who may not edit): the fields show their values and no
+   *  add / remove control is rendered at all.  Before, an issued report
+   *  still showed "Add the project's members", "Someone else" and "Add
+   *  recipient", disabled. */
+  readOnly?: boolean;
   idPrefix: string;
 }
 
 const memberName = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
-const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, currentUser, disabled, idPrefix }) => {
+const EngagementSettingsFields: React.FC<Props> = ({
+  value, onChange, members, currentUser, disabled: busy, readOnly = false, idPrefix,
+}) => {
+  const disabled = busy || readOnly;
   const set = <K extends keyof EngagementSettings>(key: K, v: EngagementSettings[K]) =>
     onChange({ ...value, [key]: v });
   const text = (key: 'client_name' | 'classification' | 'engagement_type' | 'system_description') =>
@@ -106,13 +116,16 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, c
             <Input aria-label={`Team member ${i + 1} contact`} className="min-w-0 flex-1" maxLength={254}
               placeholder="Contact" value={t.email ?? ''} disabled={disabled}
               onChange={(e) => set('testers', value.testers.map((x, j) => (j === i ? { ...x, email: e.target.value || null } : x)))} />
-            <Button type="button" variant="ghost" size="icon" disabled={disabled}
-              aria-label={`Remove ${t.name || 'team member'}`}
-              onClick={() => set('testers', value.testers.filter((_, j) => j !== i))}>
-              <Trash2 className="size-4" aria-hidden />
-            </Button>
+            {!readOnly && (
+              <Button type="button" variant="ghost" size="icon" disabled={disabled}
+                aria-label={`Remove ${t.name || 'team member'}`}
+                onClick={() => set('testers', value.testers.filter((_, j) => j !== i))}>
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
+            )}
           </div>
         ))}
+        {!readOnly && (
         <div className="flex flex-wrap items-center gap-xs">
           {members.length === 0 && !disabled && (
             <span className="text-caption text-muted-foreground">
@@ -153,6 +166,7 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, c
             <Plus className="size-4" aria-hidden /> Someone else
           </Button>
         </div>
+        )}
       </fieldset>
 
       <fieldset className="min-w-0 space-y-xs">
@@ -168,17 +182,21 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, c
             <Input aria-label={`Recipient ${i + 1} contact`} className="min-w-0 flex-1" maxLength={254}
               placeholder="Contact" value={r.email ?? ''} disabled={disabled}
               onChange={(e) => set('distribution', value.distribution.map((x, j) => (j === i ? { ...x, email: e.target.value || null } : x)))} />
-            <Button type="button" variant="ghost" size="icon" disabled={disabled}
-              aria-label={`Remove ${r.name || 'recipient'}`}
-              onClick={() => set('distribution', value.distribution.filter((_, j) => j !== i))}>
-              <Trash2 className="size-4" aria-hidden />
-            </Button>
+            {!readOnly && (
+              <Button type="button" variant="ghost" size="icon" disabled={disabled}
+                aria-label={`Remove ${r.name || 'recipient'}`}
+                onClick={() => set('distribution', value.distribution.filter((_, j) => j !== i))}>
+                <Trash2 className="size-4" aria-hidden />
+              </Button>
+            )}
           </div>
         ))}
-        <Button type="button" variant="ghost" size="sm" disabled={disabled}
-          onClick={() => set('distribution', [...value.distribution, { name: '', email: null }])}>
-          <Plus className="size-4" aria-hidden /> Add recipient
-        </Button>
+        {!readOnly && (
+          <Button type="button" variant="ghost" size="sm" disabled={disabled}
+            onClick={() => set('distribution', [...value.distribution, { name: '', email: null }])}>
+            <Plus className="size-4" aria-hidden /> Add recipient
+          </Button>
+        )}
       </fieldset>
 
       <div className="min-w-0 space-y-xxs">

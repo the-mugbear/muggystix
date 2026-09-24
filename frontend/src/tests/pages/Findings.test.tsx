@@ -340,7 +340,7 @@ describe('Findings — presentation', () => {
     expect(caption.textContent).toContain('10.0.0.5');
     expect(caption.textContent).toContain('db01');
     expect(caption.textContent).toContain('+2');
-    expect(caption.textContent).toContain('open on 2 of 3');
+    expect(caption.textContent).toContain('still present on 2 of 3');
     expect(screen.getByRole('link', { name: '10.0.0.5' }).getAttribute('href')).toBe('/hosts/42');
     // The full host list is on hover.
     expect(caption.getAttribute('title')).toBe('10.0.0.5 (db01), 10.0.0.6');

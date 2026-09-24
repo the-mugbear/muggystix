@@ -5,8 +5,9 @@
  * from the scanner row or source note, then edited here by the finding's
  * author or a project admin (the server's `can_modify`, same as renaming).
  *
- * Shown as written (there is no Markdown renderer in the app); the Reports
- * page's preview is where it is seen rendered.
+ * v5.290.0 — shown rendered, under the report's own rules (SafeMarkdown: no
+ * raw HTML, no images, web/mail links only, headings as bold text); before,
+ * `**bold**` printed literally.  The editor stays a plain textarea.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Sparkles } from 'lucide-react';
@@ -26,6 +27,7 @@ import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Textarea } from './ui/textarea';
+import SafeMarkdown from './SafeMarkdown';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
   { key: 'description', label: 'Description', hint: 'What the issue is, in the client’s terms.', rows: 6 },
@@ -156,7 +158,7 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
           <div className="min-w-0">
             <CardTitle>Report text</CardTitle>
             <p className="text-caption text-muted-foreground">
-              What the client report says about this finding. Markdown.
+              What the client report says about this finding. Written in Markdown; shown as the report prints it.
               {missing.length > 0 && !draft && (
                 <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
               )}
@@ -244,8 +246,10 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
             {REPORT_TEXT_FIELDS.map((f) => (
               <div key={f.key} className="min-w-0">
                 <dt className="text-caption font-medium text-muted-foreground">{f.label}</dt>
-                <dd className="whitespace-pre-wrap break-words text-body">
-                  {text?.[f.key]?.trim() ? text[f.key] : <span className="text-muted-foreground">Not written yet</span>}
+                <dd className="min-w-0 break-words text-body" data-testid={`report-text-${f.key}`}>
+                  {text?.[f.key]?.trim()
+                    ? <SafeMarkdown text={text[f.key] as string} />
+                    : <span className="text-muted-foreground">Not written yet</span>}
                 </dd>
               </div>
             ))}

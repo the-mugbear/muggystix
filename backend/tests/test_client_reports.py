@@ -201,6 +201,91 @@ def test_a_new_draft_starts_from_the_profile(client, test_project):
     assert client.put(f"{_base(test_project)}/profile", json={"template": "../etc"}).status_code == 422
 
 
+_ISSUED_DETAILS = {
+    "client_name": "Example Corp", "classification": "Confidential",
+    "engagement_type": "Internal network penetration test",
+    "testers": [{"user_id": None, "name": "Ana Lead", "role": "Engagement lead", "email": "ana@example.com"}],
+    "distribution": [{"name": "CISO", "email": "ciso@example.com"}],
+    "system_description": "The corporate LAN.", "applications": None, "thick_clients": None,
+    "other_targets": "The **VPN** concentrator.",
+}
+
+
+def _issued_with_details(client, project, **create):
+    report = _create(client, project, **create) if create else _create(client, project)
+    r = client.patch(f"{_base(project)}/{report['id']}", json={
+        "settings": _ISSUED_DETAILS, "executive_summary": "What we found.",
+    })
+    assert r.status_code == 200, r.text
+    return _issue(client, project, report["id"])
+
+
+def test_an_addendum_starts_from_its_baseline_details_not_the_defaults(client, test_project):
+    """v2.404.0 — "New addendum to #1" started with client, classification,
+    engagement type, team, distribution and targets all empty (the profile's,
+    which nobody had filled) although #1 had them.  It carries the baseline's
+    details as issued; its summary of changes is new text and starts empty."""
+    client.put(f"{_base(test_project)}/profile", json={"client_name": "Profile default", "template": "pentest"})
+    _issued_with_details(client, test_project)
+
+    add = _create(client, test_project, kind="addendum")
+    s = add["settings"]
+    assert s["client_name"] == "Example Corp"
+    assert s["classification"] == "Confidential"
+    assert s["engagement_type"] == "Internal network penetration test"
+    assert s["system_description"] == "The corporate LAN."
+    assert s["other_targets"] == "The **VPN** concentrator."
+    assert [t["name"] for t in s["testers"]] == ["Ana Lead"]
+    assert s["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
+    assert add["executive_summary"] is None
+
+    # A new FULL report still starts from the project's defaults.
+    assert _create(client, test_project)["settings"]["client_name"] == "Profile default"
+
+
+def test_an_addendum_takes_the_default_only_where_its_baseline_had_nothing(client, test_project):
+    client.put(f"{_base(test_project)}/profile", json={"classification": "Internal", "template": "pentest"})
+    report = _create(client, test_project)
+    client.patch(f"{_base(test_project)}/{report['id']}", json={"settings": {
+        **_ISSUED_DETAILS, "classification": None,
+    }})
+    _issue(client, test_project, report["id"])
+    s = _create(client, test_project, kind="addendum")["settings"]
+    assert s["client_name"] == "Example Corp"
+    assert s["classification"] == "Internal"
+
+
+def test_a_revision_starts_from_the_original_details_and_summary(client, db_session, test_project):
+    first = _issued_with_details(client, test_project)
+    rev = client.post(f"{_base(test_project)}/{first['id']}/revise").json()
+    assert rev["settings"]["client_name"] == "Example Corp"
+    assert rev["settings"]["distribution"] == [{"name": "CISO", "email": "ciso@example.com"}]
+    assert rev["executive_summary"] == "What we found."
+
+    # A revision of an ADDENDUM carries the addendum's details (which now
+    # carry its baseline's) and its summary of changes.
+    second = _create(client, test_project, kind="addendum")
+    r = client.patch(f"{_base(test_project)}/{second['id']}", json={"executive_summary": "Since #1: one new finding."})
+    assert r.status_code == 200, r.text
+    add = _issue(client, test_project, second["id"])
+    rev_add = client.post(f"{_base(test_project)}/{add['id']}/revise").json()
+    assert rev_add["settings"]["client_name"] == "Example Corp"
+    assert [t["name"] for t in rev_add["settings"]["testers"]] == ["Ana Lead"]
+    assert rev_add["executive_summary"] == "Since #1: one new finding."
+
+
+def test_a_revision_fills_a_detail_missing_from_settings_from_the_snapshot(client, db_session, test_project):
+    """A report issued before a detail existed has it only in the frozen
+    snapshot's engagement; the revision still starts with it."""
+    first = _issued_with_details(client, test_project)
+    stored = db_session.get(Report, first["id"])
+    db_session.refresh(stored)
+    stored.settings = {k: v for k, v in stored.settings.items() if k != "engagement_type"}
+    db_session.commit()
+    rev = client.post(f"{_base(test_project)}/{first['id']}/revise").json()
+    assert rev["settings"]["engagement_type"] == "Internal network penetration test"
+
+
 def test_an_addendum_needs_an_issued_report(client, test_project):
     r = client.post(_base(test_project), json={"kind": "addendum"})
     assert r.status_code == 409, r.text
