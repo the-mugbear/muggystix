@@ -22,8 +22,10 @@ export interface PostureMeasureProps {
 
 export const PostureMeasure: React.FC<PostureMeasureProps> = ({ label, info, value, to, toLabel, children }) => (
   <div className="min-w-0 px-md first:pl-0">
-    <p className="flex items-center gap-xxs text-caption text-muted-foreground">
-      <span className="truncate">{label}</span> <InfoTip text={info} />
+    {/* Wraps to two lines before clamping (v5.294.0, UX review): one-line
+        truncation cut "Targets tested (in review or revi…" mid-word. */}
+    <p className="flex items-start gap-xxs text-caption text-muted-foreground">
+      <span className="min-w-0 line-clamp-2 break-words" title={label}>{label}</span> <InfoTip text={info} />
     </p>
     <p className="mt-xxs text-subheading font-bold leading-none text-foreground">
       {to ? (
