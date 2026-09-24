@@ -49,7 +49,7 @@ const sections: GuideSection[] = [
         <Para>Four buttons start a session; they differ only in which phase is already open:</Para>
         <UnorderedList>
           <li><strong>Operations → <em>Start Agent Session</em></strong> — a plain session; the agent queries the project and opens phases as you ask.</li>
-          <li><strong>Scopes → <em>Start Agentic Recon</em></strong> (also on Recon Runs, and the Operations setup card) — a session with a reconnaissance run on that scope already open.</li>
+          <li><strong>Scope → <em>Start recon session</em></strong> (also on Recon Runs, and the Operations setup card) — a session with a reconnaissance run on that scope already open.</li>
           <li><strong>Test Plans → <em>Generate with AI</em></strong> — a session with a draft plan already created.</li>
           <li><strong><em>Execute with AI</em></strong> on an approved plan — a session with an execution run already open.</li>
         </UnorderedList>
@@ -167,7 +167,7 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <Para>
-          <strong>Scopes → Start Agentic Recon</strong> opens a session with a reconnaissance run on
+          <strong>Scope → Start recon session</strong> opens a session with a reconnaissance run on
           that scope; a session that is already running can open one itself when you ask. The
           agent's job is to <strong>populate BlueStick's host database</strong> for the scope: it
           reads the CIDRs and in-scope domains, runs scanners locally (nmap, masscan, rustscan,

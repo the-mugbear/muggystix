@@ -169,7 +169,7 @@ describe('Oversight — wording a reader can reconcile', () => {
     // The measure's label (the projects preview has a column of the same name).
     const label = screen.getAllByText('Taken into review').find((el) => el.closest('p')?.className.includes('text-caption'));
     expect(label).toBeDefined();
-    expect(label).toHaveClass('truncate'); // PostureMeasure's rule — short enough now to fit
+    expect(label).toHaveClass('line-clamp-2'); // PostureMeasure's rule — wraps, never cut mid-word
     expect(screen.getByText(/12 of 30 hosts taken into review \(40%\)/)).toBeInTheDocument();
     expect(screen.getByText('Recorded hosts')).toBeInTheDocument();
     expect(screen.queryByText(/targets? tested/i)).not.toBeInTheDocument();
