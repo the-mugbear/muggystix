@@ -58,6 +58,9 @@ export interface AssistSessionRow {
   status: string;
   started_by_id: number | null;
   started_by_username: string | null;
+  /** The operator's display name (null when the account has none) — shown in
+   *  preference to the username. Optional so older fixtures still type-check. */
+  started_by_full_name?: string | null;
   started_at: string | null;
   ended_at: string | null;
   last_activity_at: string | null;

@@ -1,5 +1,8 @@
 /**
- * AI Assist Sessions — the review surface for the interactive workflow.
+ * Agent Sessions — the review surface for project-scoped agent sessions.
+ * (Titled "AI Assist Sessions" until the screenshot review of 2026-09-23: since
+ * v2.337.0 one session does every kind of agent work, and the nav already said
+ * "Agent Sessions". The route and API keep the old `assist` name.)
  *
  * v5.173.0. Recon runs and test plans each have a list and a detail page;
  * assist had a start dialog and nothing else. That is backwards for the one
@@ -32,6 +35,7 @@ import {
   listAssistSessions,
 } from '../services/api';
 import AgentActivityLog from '../components/AgentActivityLog';
+import PostureEmpty from '../components/posture/PostureEmpty';
 import { NavigableTableCell, NavigableTableRow } from '../components/NavigableTableRow';
 import { TableSkeleton } from '../components/PageSkeleton';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -87,6 +91,15 @@ const formatDuration = (from: string | null, to: string | null): string => {
   return rem ? `${hours}h ${rem}m` : `${hours}h`;
 };
 
+/** Where a session is started: the Operations page's "Start Agent Session"
+ *  button — the param opens its dialog on arrival. */
+const START_SESSION_PATH = '/operations?start=agent-session';
+
+/** The operator's display name, falling back to the username. */
+const operatorName = (
+  row: Pick<AssistSessionRow, 'started_by_full_name' | 'started_by_username'>,
+): string | null => row.started_by_full_name?.trim() || row.started_by_username || null;
+
 const StatusBadge: React.FC<{ status: string }> = ({ status }) =>
   status === 'active' ? (
     <Badge variant="success">Active</Badge>
@@ -132,7 +145,7 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
       setSession(await getAssistSession(sessionId));
       setError(null);
     } catch (e) {
-      setError(formatApiError(e, 'Could not load this assist session.'));
+      setError(formatApiError(e, 'Could not load this agent session.'));
     } finally {
       setLoading(false);
     }
@@ -172,9 +185,7 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
         <CardContent className="flex flex-col gap-sm p-md">
           <div className="flex flex-wrap items-center gap-xs">
             <StatusBadge status={session.status} />
-            <AuthorityBadge
-              operator={session.started_by_username}
-            />
+            <AuthorityBadge operator={operatorName(session)} />
             {/* v5.203.0 — from observed calls, not the environment probe; the
                 probe is optional and proves nothing about the transport. Same
                 vocabulary as the start dialog's live-sessions panel so the two
@@ -212,8 +223,11 @@ const SessionDetail: React.FC<{ sessionId: number }> = ({ sessionId }) => {
           <dl className="grid grid-cols-2 gap-x-md gap-y-xs text-caption md:grid-cols-4">
             <div className="min-w-0">
               <dt className="text-muted-foreground">Started by</dt>
-              <dd className="truncate text-foreground">
-                {safeFallback(session.started_by_username, 'unknown')}
+              <dd
+                className="truncate text-foreground"
+                title={session.started_by_username ?? undefined}
+              >
+                {safeFallback(operatorName(session), 'unknown')}
               </dd>
             </div>
             <div className="min-w-0">
@@ -367,7 +381,7 @@ const AssistSessions: React.FC = () => {
         setHasMore(page.length === PAGE_SIZE);
         setError(null);
       } catch (e) {
-        setError(formatApiError(e, 'Could not load assist sessions.'));
+        setError(formatApiError(e, 'Could not load agent sessions.'));
       } finally {
         setLoading(false);
       }
@@ -399,9 +413,9 @@ const AssistSessions: React.FC = () => {
           onClick={() => navigate('/assist-sessions')}
         >
           <ArrowLeft className="size-4" aria-hidden />
-          All assist sessions
+          All agent sessions
         </Button>
-        <h1 className="mb-md text-page-title">Assist session #{selectedId}</h1>
+        <h1 className="mb-md text-page-title">Agent session #{selectedId}</h1>
         <SessionDetail sessionId={selectedId} />
       </div>
     );
@@ -411,11 +425,18 @@ const AssistSessions: React.FC = () => {
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-center gap-sm">
         <div className="min-w-0 flex-1">
-          <h1 className="text-page-title">AI Assist Sessions</h1>
+          <h1 className="text-page-title">Agent Sessions</h1>
           <p className="text-metadata text-muted-foreground">
-            Every assist session in this project — what each one was for, what it
-            was allowed to do, and what it produced. Start a session from
-            Operations.
+            Every agent session in this project — what each one was for, whose
+            permissions it acted with, and what it produced. A session can query
+            the inventory and open recon, plan or execution work.{' '}
+            <Link
+              to={START_SESSION_PATH}
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              Start a session on Operations
+            </Link>
+            .
           </p>
         </div>
         <Select value={status || 'all'} onValueChange={(v) => setStatus(v === 'all' ? '' : (v as StatusFilter))}>
@@ -452,7 +473,14 @@ const AssistSessions: React.FC = () => {
             <KeyRound className="mr-xxs inline size-4 align-text-bottom" aria-hidden />
             {activeCount} session{activeCount === 1 ? '' : 's'} still hold a live
             agent key. Sessions lapse on their own when the key expires; end one
-            early from the Start AI Assist dialog to revoke it now.
+            early from the{' '}
+            <Link
+              to={START_SESSION_PATH}
+              className="text-primary underline-offset-4 hover:underline"
+            >
+              Start Agent Session
+            </Link>{' '}
+            dialog to revoke it now.
           </AlertDescription>
         </Alert>
       )}
@@ -460,19 +488,18 @@ const AssistSessions: React.FC = () => {
       {loading && rows.length === 0 ? (
         <TableSkeleton />
       ) : rows.length === 0 ? (
-        <Card>
-          <CardContent className="flex flex-col items-center gap-xs p-lg text-center">
-            <MessageCircleQuestion className="size-6 text-muted-foreground" aria-hidden />
-            <p className="text-metadata text-foreground">No assist sessions yet</p>
-            <p className="max-w-prose text-caption text-muted-foreground">
-              An assist session lets an agent answer questions about this project&rsquo;s
-              data — and, when you allow it, write notes on hosts assigned to you.
-              Start one from Operations; it will show up here with everything it did.
-            </p>
-          </CardContent>
-        </Card>
+        <PostureEmpty
+          Icon={MessageCircleQuestion}
+          title="No agent sessions yet"
+          action={{ to: START_SESSION_PATH, label: 'Start Agent Session' }}
+        >
+          An agent session lets an agent query this project&rsquo;s data and open
+          recon, plan or execution work, with your permissions. It will show up
+          here with everything it did.
+        </PostureEmpty>
       ) : (
-        <div className="overflow-x-auto rounded-panel border border-border">
+        // Sections, not cards (§7): the table sits on the page, no bordered box.
+        <div className="overflow-x-auto">
           <Table style={{ tableLayout: 'fixed' }} className="min-w-[900px]">
             <TableHeader>
               <TableRow>
@@ -496,20 +523,31 @@ const AssistSessions: React.FC = () => {
                       handler on a <tr> that no screen reader announces. */}
                   <NavigableTableCell
                     to={`/assist-sessions/${row.id}`}
-                    ariaLabel={`Open assist session ${row.id}`}
+                    ariaLabel={`Open agent session ${row.id}`}
                   >
-                    <span className="line-clamp-2 break-words text-metadata">
-                      {safeFallback(row.purpose, 'No stated purpose')}
-                    </span>
+                    {/* Most sessions state no purpose; the fallback is quiet so
+                        a column of it does not read as content. */}
+                    {row.purpose?.trim() ? (
+                      <span className="line-clamp-2 break-words text-metadata">
+                        {row.purpose}
+                      </span>
+                    ) : (
+                      <span className="text-caption text-muted-foreground">
+                        No stated purpose
+                      </span>
+                    )}
                   </NavigableTableCell>
                   <TableCell>
                     <StatusBadge status={row.status} />
                   </TableCell>
                   <TableCell>
-                    <AuthorityBadge operator={row.started_by_username} />
+                    <AuthorityBadge operator={operatorName(row)} />
                   </TableCell>
-                  <TableCell className="truncate text-metadata text-foreground">
-                    {safeFallback(row.started_by_username, 'unknown')}
+                  <TableCell
+                    className="truncate text-metadata text-foreground"
+                    title={row.started_by_username ?? undefined}
+                  >
+                    {safeFallback(operatorName(row), 'unknown')}
                   </TableCell>
                   <TableCell className="truncate text-caption text-muted-foreground">
                     {formatWhen(row.started_at)}

@@ -13,10 +13,16 @@
  * (containers), and the per-command record — `test_result` (a command an
  * agent reported, with its tool and target host) and `sanity_check` (a
  * target-verification probe).
+ *
+ * Screenshot review 2026-09-23: the page leads with its cross-project scope;
+ * the snapshot is a fixed-height binned chart (ActivityHistogram) rather than
+ * a dot per activity; sections instead of cards; and the focused query no
+ * longer runs "now ± 5 minutes" on arrival — it waits for the analyst, or for
+ * a click on a chart column.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle } from 'lucide-react';
+import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle, Info } from 'lucide-react';
 import {
   ActivityItem,
   ActivityKind,
@@ -28,7 +34,6 @@ import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
@@ -52,7 +57,8 @@ import {
   TooltipTrigger,
 } from '../components/ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
-import { ActivityTimeline } from '../components/ActivityTimeline';
+import { ActivityHistogram } from '../components/ActivityHistogram';
+import { PostureSection, SectionCount } from '../components/posture/PostureSection';
 import { useProject } from '../contexts/ProjectContext';
 
 // v4.21.0 — finer-grained tolerance steps so the analyst can ramp from
@@ -240,13 +246,16 @@ export const ToolActivity: React.FC = () => {
   // needs to know which.
   const [weekError, setWeekError] = useState<string | null>(null);
 
-  const search = useCallback(async () => {
+  // `range` runs a range query for exactly those instants (a chart bin was
+  // chosen) without waiting for the form state it also sets to settle.
+  const search = useCallback(async (range?: { from: string; to: string }) => {
     setLoading(true);
     setError(null);
     try {
       const attribution = { tool: tool || undefined, target: target || undefined };
-      const data =
-        mode === 'at'
+      const data = range
+        ? await getScansBetween({ from: range.from, to: range.to, ...attribution })
+        : mode === 'at'
           ? await getScansAt({
               ts: localInputToUtcIso(tsLocal),
               toleranceSeconds: tolerance,
@@ -294,14 +303,31 @@ export const ToolActivity: React.FC = () => {
     }
   }, [tool, target]);
 
-  // Run both on mount — the page lands with the week timeline
-  // populated and a fresh "now ± default tolerance" query in the
-  // table below.
+  // Only the snapshot loads on arrival. The focused query waits for the
+  // analyst: it used to run "now ± 5 minutes" on mount, so the page always
+  // opened on "0 activities matched … No activity in this window" — an
+  // answer to a question nobody asked (screenshot review 2026-09-23).
   useEffect(() => {
-    search();
     loadWeek();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // A chart bin was chosen: correlate exactly that range, and show it in
+  // the form so the query on screen is the one that ran.
+  const correlateRange = useCallback(
+    (fromIso: string, toIso: string) => {
+      setMode('between');
+      setFromLocal(toLocalInput(new Date(fromIso)));
+      setToLocal(toLocalInput(new Date(toIso)));
+      void search({ from: fromIso, to: toIso });
+    },
+    [search],
+  );
+
+  // The projects the snapshot covered — the server's answer, not the
+  // switcher's list (which may not have loaded, or may differ for admins).
+  const visibleProjectCount =
+    weekResponse?.accessible_project_ids.length ?? response?.accessible_project_ids.length ?? projects.length;
 
   const projectsInResults = useMemo(() => {
     if (!response) return [] as Array<{ id: number; name: string; count: number }>;
@@ -388,15 +414,36 @@ export const ToolActivity: React.FC = () => {
     <div className="space-y-md p-md">
       <div>
         <h1 className="text-page-title">Tool Activity</h1>
-        <p className="mt-xs text-caption text-muted-foreground">
-          Cross-project SOC correlation: &ldquo;was this signature, at this
-          time, part of our testing?&rdquo; Name the tool and/or the target
-          address a signature fired on, then look at a moment (± tolerance)
-          or a range. The filters also apply to the past-7-day snapshot, so
-          it shows when that tool ran. Rows are scan uploads (scanner
-          timestamps), recon and execution runs, and the per-command record:
-          commands an agent reported running and the target probes before
-          them, each with its host.
+        {/* The page is cross-project but sits in a project hub under the
+            active project's header — say so before anything else. */}
+        <p className="mt-xs break-words text-body font-medium text-foreground" data-testid="tool-activity-lead">
+          Across {visibleProjectCount === 1 ? 'the 1 project' : `all ${visibleProjectCount} projects`} you can see
+          {currentProject && visibleProjectCount !== 1 ? (
+            <> — not only <span className="break-all">{currentProject.name}</span></>
+          ) : null}
+          .
+        </p>
+        <p className="mt-xxs flex flex-wrap items-center gap-xxs text-caption text-muted-foreground">
+          Was this signature, at this time, part of our testing? Name the tool or
+          target it fired on, then look at a moment or a range.
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                className="inline-flex items-center text-muted-foreground hover:text-foreground"
+                aria-label="What is counted"
+              >
+                <Info className="size-4" aria-hidden />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent className="max-w-sm">
+              Scan uploads (at the scanner&rsquo;s own timestamps), recon and
+              execution runs, and the per-command record: commands an agent
+              reported running and the target probes before them, each with its
+              host. The tool / target filters also narrow the past-7-day
+              snapshot, so it shows when that tool ran.
+            </TooltipContent>
+          </Tooltip>
         </p>
       </div>
 
@@ -417,62 +464,61 @@ export const ToolActivity: React.FC = () => {
           form.  Always shows the past 7 days so the analyst can read
           activity density at-a-glance before specifying a focus. */}
       {weekRange && (
-        <ActivityTimeline
-          items={filteredWeekItems}
-          windowStart={weekRange.start}
-          windowEnd={weekRange.end}
-          onItemClick={navigateToItem}
+        <PostureSection
           title={
-            weekLoading
-              ? 'Past 7 days · refreshing…'
-              : (() => {
-                  const returned = weekResponse?.items.length ?? 0;
-                  const shown = filteredWeekItems.length;
-                  const filterActive = projectFilter.size > 0;
-                  // When truncated, prefix with `≥` so the headline
-                  // count itself signals the cap — `total` from the
-                  // backend is post-truncation and reports 500 even
-                  // when thousands matched.
-                  const truncated = !!weekResponse?.truncated;
-                  const returnedLabel = truncated ? `≥${returned}` : `${returned}`;
-                  const scope = attributionActive
-                    ? ` for ${[tool.trim() && `“${tool.trim()}”`, target.trim() && target.trim()].filter(Boolean).join(' on ')}`
-                    : '';
-                  const base = filterActive
-                    ? `Past 7 days${scope} · showing ${shown} of ${returnedLabel} (filtered)`
-                    : `Past 7 days${scope} · ${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
-                  // v4.22.0 — truncation reflects server-side cap.
-                  // Local project filter chips don't reduce it; only
-                  // tightening the window would.
-                  return truncated
-                    ? `${base} · showing first 500 — tighten the time range`
-                    : base;
-                })()
-          }
-          helperText={
-            <p className="text-metadata text-muted-foreground">
-              Every scan upload, recon / execution run, command run and
-              target probe across the projects you can see
-              {attributionActive ? ', narrowed to the tool / target above' : ''}.
-              The blue band shows the current focus window.{' '}
-              {queryWindow && !queryInsideWeek && (
-                <span className="text-warning">
-                  Your focus window is outside the past 7 days — the
-                  band isn&apos;t visible on this snapshot.
+            <>
+              Past 7 days
+              {attributionActive && (
+                <span className="min-w-0 break-all font-normal">
+                  for {[tool.trim() && `“${tool.trim()}”`, target.trim()].filter(Boolean).join(' on ')}
                 </span>
               )}
-            </p>
+              <SectionCount>
+                {weekLoading
+                  ? 'refreshing…'
+                  : (() => {
+                      const returned = weekResponse?.items.length ?? 0;
+                      // `≥` when capped: the backend's `total` is
+                      // post-truncation and reads 500 even when thousands
+                      // matched.
+                      const truncated = !!weekResponse?.truncated;
+                      const returnedLabel = truncated ? `≥${returned}` : `${returned}`;
+                      const base =
+                        projectFilter.size > 0
+                          ? `showing ${filteredWeekItems.length} of ${returnedLabel} (filtered)`
+                          : `${returnedLabel} activit${returned === 1 && !truncated ? 'y' : 'ies'}`;
+                      return truncated ? `${base} · first 500 only — tighten the time range` : base;
+                    })()}
+              </SectionCount>
+            </>
           }
-          highlightStart={queryInsideWeek ? queryWindow?.start ?? null : null}
-          highlightEnd={queryInsideWeek ? queryWindow?.end ?? null : null}
-        />
+          description={
+            <>
+              What started when, across the projects you can see
+              {attributionActive ? ', narrowed to the tool / target below' : ''}.
+              The shaded band is the Correlate window; click a column to
+              correlate that range.{' '}
+              {queryWindow && !queryInsideWeek && (
+                <span className="text-warning">
+                  The Correlate window is outside the past 7 days, so its band
+                  is not on this chart.
+                </span>
+              )}
+            </>
+          }
+        >
+          <ActivityHistogram
+            items={filteredWeekItems}
+            windowStart={weekRange.start}
+            windowEnd={weekRange.end}
+            highlightStart={queryInsideWeek ? queryWindow?.start ?? null : null}
+            highlightEnd={queryInsideWeek ? queryWindow?.end ?? null : null}
+            onSelectBin={correlateRange}
+          />
+        </PostureSection>
       )}
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Correlate</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <PostureSection title="Correlate">
           <form
             className="flex flex-wrap items-end gap-md"
             onSubmit={(e) => {
@@ -590,7 +636,8 @@ export const ToolActivity: React.FC = () => {
               variant="outline"
               onClick={() => {
                 void loadWeek();
-                void search();
+                // Re-run the focused query only if one has been run.
+                if (response) void search();
               }}
               disabled={weekLoading || loading}
               aria-label="Refresh week snapshot"
@@ -602,17 +649,23 @@ export const ToolActivity: React.FC = () => {
               Refresh
             </Button>
           </form>
-        </CardContent>
-      </Card>
 
       {error && (
-        <Alert variant="destructive">
+        <Alert variant="destructive" className="mt-md">
           <AlertDescription>{error}</AlertDescription>
         </Alert>
       )}
 
+      {!response && !error && (
+        <p className="mt-md text-metadata text-muted-foreground" data-testid="correlate-prompt">
+          {loading
+            ? 'Correlating…'
+            : 'Pick a tool, address or time to correlate — or click a column in the chart above.'}
+        </p>
+      )}
+
       {response && (
-        <>
+        <div className="mt-md space-y-sm">
           <div className="flex flex-wrap items-center gap-sm text-caption text-muted-foreground">
             <Clock className="size-4" aria-hidden />
             <span>
@@ -684,10 +737,9 @@ export const ToolActivity: React.FC = () => {
             </div>
           )}
 
-          <Card>
-            <CardContent className="p-0">
+          <div className="overflow-x-auto">
               {filteredItems.length === 0 ? (
-                <p className="p-md text-caption text-muted-foreground">
+                <p className="text-caption text-muted-foreground">
                   {attributionActive
                     ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent reported a command or probe against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
                     : 'No activity in this window. Widen the tolerance, pick a different time, or switch to a range.'}
@@ -819,10 +871,10 @@ export const ToolActivity: React.FC = () => {
                   </TableBody>
                 </Table>
               )}
-            </CardContent>
-          </Card>
-        </>
+          </div>
+        </div>
       )}
+      </PostureSection>
     </div>
   );
 };
