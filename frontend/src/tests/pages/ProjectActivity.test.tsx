@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -10,6 +10,8 @@ vi.mock('../../services/api', () => ({
   // v5.214.0 — Resume on an owned active project row.
   resumeAgentSession: vi.fn(),
   endAgentSession: vi.fn(),
+  // v5.294.0 — the Sessions view (components/agent-sessions).
+  listAssistSessions: vi.fn().mockResolvedValue([]),
   // v4.59.0 (NEW I) — page also calls getAgentActivitySummary for
   // the ApiCallSummaryCard.  Pre-fix the mock omitted it; the
   // page accessed summary.daily.map(...) which threw and broke
@@ -413,8 +415,11 @@ describe('ProjectActivity', () => {
     });
 
     renderPage();
-    expect(await screen.findByText('active · session ended')).toBeInTheDocument();
-    expect(screen.getByText(/stalled — its session ended/)).toBeInTheDocument();
+    // v5.294.0 — one honest state: the badge used to read "active · session
+    // ended", which said two opposite things.
+    expect(await screen.findByText('Stalled')).toBeInTheDocument();
+    expect(screen.queryByText('active · session ended')).not.toBeInTheDocument();
+    expect(screen.getByText(/still active but its session ended — resume or close the run/)).toBeInTheDocument();
     expect(
       screen.getByText(/1 run below is still open after its session ended/),
     ).toBeInTheDocument();
@@ -446,7 +451,7 @@ describe('ProjectActivity', () => {
     expect(screen.queryByText('alice')).not.toBeInTheDocument();
   });
 
-  it('opens a run in place with a chevron and a labelled Refresh', async () => {
+  it('opens a run in place with a chevron and a labelled refresh', async () => {
     mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
     mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
 
@@ -455,11 +460,80 @@ describe('ProjectActivity', () => {
     const open = screen.getByLabelText('Open execution run 42');
     expect(open.querySelector('svg')).toHaveClass('lucide-chevron-right');
     expect(open.querySelector('.lucide-external-link')).toBeNull();
-    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Agent Sessions' })).toHaveAttribute(
-      'href',
-      '/assist-sessions',
+    // v5.294.0 — "updated …" with its refresh, not a bare Refresh button.
+    expect(screen.getByRole('button', { name: 'Refresh agent runs' })).toBeInTheDocument();
+    expect(screen.getByText(/^Updated /)).toBeInTheDocument();
+  });
+
+  it('shows the kind with the shared run badge', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+
+    renderPage();
+    const table = within(await screen.findByTestId('runs-table'));
+    expect(table.getByText('Execution')).toBeInTheDocument();
+    expect(table.getByText('Recon')).toBeInTheDocument();
+    expect(screen.queryByText('plan-gen')).not.toBeInTheDocument();
+  });
+
+  it('fits the runs table to the content width (B2)', async () => {
+    // It set min-w-[1000px] inside a scroller: 74px of sideways scroll at a
+    // 1246px viewport, with the actions column behind it.
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+
+    renderPage();
+    const table = await screen.findByTestId('runs-table');
+    expect(table.className).not.toMatch(/min-w-/);
+    expect(table.closest('.overflow-x-auto')).toBeNull();
+  });
+
+  it('offers the model and tool filters only once an agent has reported one', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({
+      project_id: 1,
+      summary: [{ generated_by_model: null, generated_by_tool: null, recon: 1, plan_generation: 0, execution: 0, total: 1 }],
+    });
+
+    renderPage();
+    await screen.findByText(/Plan #17/);
+    expect(screen.getByLabelText('Filter runs by workflow')).toBeInTheDocument();
+    expect(screen.queryByLabelText('Filter runs by model')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Filter runs by tool')).not.toBeInTheDocument();
+  });
+
+  it('lists sessions in its Sessions view, with Resume on the operator’s own', async () => {
+    const project = {
+      ...sampleSessions[0],
+      kind: 'project' as const,
+      id: 77,
+      status: 'active',
+      user_id: 3,
+      key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      renewable_until: new Date(Date.now() + 7_200_000).toISOString(),
+    };
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [project], total: 1 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    mockedApi.listAssistSessions.mockResolvedValue([
+      {
+        id: 77, project_id: 1, purpose: 'Recon the DMZ', status: 'active', started_by_id: 3,
+        started_by_username: 'alice', started_at: new Date().toISOString(), ended_at: null,
+        last_activity_at: null, environment_probed: false, key_expires_at: project.key_expires_at,
+        call_count: 3, note_count: 0, connection: 'mcp', first_call_at: null,
+      },
+    ]);
+
+    render(
+      <MemoryRouter initialEntries={['/agent-activity?view=sessions']}>
+        <ProjectActivity />
+      </MemoryRouter>,
     );
+    expect(await screen.findByText('Recon the DMZ')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Sessions' })).toHaveAttribute('aria-pressed', 'true');
+    expect(await screen.findByLabelText('Resume agent session 77')).toBeInTheDocument();
+    expect(screen.getByLabelText('End agent session 77')).toBeInTheDocument();
+    // The runs table is the other view.
+    expect(screen.queryByTestId('runs-table')).not.toBeInTheDocument();
   });
 
   it('renders both workflows side by side with model + user attribution', async () => {
@@ -527,7 +601,7 @@ describe('ProjectActivity', () => {
 
     // Open the Model dropdown and pick claude-opus-4-7.  MUI Select
     // renders as a button — click it then click the menu item.
-    const modelSelect = screen.getByLabelText('Model');
+    const modelSelect = screen.getByLabelText('Filter runs by model');
     await user.click(modelSelect);
     const claude = await screen.findByRole('option', { name: 'claude-opus-4-7' });
     await user.click(claude);
@@ -600,7 +674,7 @@ describe('ProjectActivity', () => {
       expect(screen.queryByText('Ended by operator')).not.toBeInTheDocument();
       // The filters are one row inside the Runs section; user and agent share
       // a cell (v5.288.0 — on two wrapping lines).
-      expect(screen.getByTestId('runs-filters')).toHaveClass('border-b');
+      expect(screen.getByTestId('runs-filters').parentElement).toHaveClass('border-b');
       expect(screen.getByText('alice').closest('td')).toHaveTextContent("alicealice's-agent");
     });
 
