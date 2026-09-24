@@ -70,6 +70,49 @@ LEGACY_SOURCE_RANK = HOSTNAME_SOURCE_RANK["scanner"]
 HOSTNAME_SOURCES = tuple(HOSTNAME_SOURCE_RANK)
 
 
+def display_name_candidate(value: Optional[str]) -> Optional[str]:
+    """The NAME a tool-reported value carries, or None when it carries none.
+
+    A scanner's "host"/"input" is a target locator as often as a name:
+    ``https://10.0.0.5:8443`` (httpx run with ``-u URL``), ``10.0.0.5:80``,
+    ``www.example.com:443``.  A URL gives its hostname, ``name:port`` its
+    name; an IP literal (bare, bracketed or with a port) is an address, not
+    a name, and anything still holding a scheme, path or whitespace is not a
+    hostname at all.  v2.402.0 — httpx stored ``https://172.30.80.20:8443``
+    as the display name of 172.30.80.20.  Case is kept (NetBIOS-style names
+    are shown as reported); this is the display-name gate, not
+    ``normalize_fqdn``.
+    """
+    s = (value or "").strip()
+    if not s:
+        return None
+    if "://" in s:
+        try:
+            s = urlsplit(s).hostname or ""
+        except ValueError:
+            return None
+        if not s:
+            return None
+    # name:port / [v6]:port — a single colon, or a bracketed literal.
+    if s.startswith("["):
+        return None  # a bracketed IPv6 literal, with or without a port
+    if s.count(":") == 1:
+        head, _, port = s.rpartition(":")
+        if port.isdigit():
+            s = head
+    s = s.strip()
+    if not s:
+        return None
+    try:
+        ipaddress.ip_address(s)
+        return None
+    except ValueError:
+        pass
+    if any(ch.isspace() for ch in s) or any(ch in s for ch in "/?#:"):
+        return None
+    return s
+
+
 def apply_hostname_candidate(host: models.Host, candidate: Optional[str], source: str) -> bool:
     """Set ``host.hostname`` from ``candidate`` if ``source`` outranks the
     current display name's provenance.  Returns True when the name changed.
@@ -87,13 +130,13 @@ def apply_hostname_candidate(host: models.Host, candidate: Optional[str], source
     # An address is not a name.  A tool run against an IP reports that IP as
     # its "host" (Nikto did), and once stored it blocked every real name of
     # equal rank (review 2026-09-23 C6e) — refused here for every parser, not
-    # only the one that was caught.  An operator may still type anything.
+    # only the one that was caught.  Neither is a URL or ``ip:port`` (v2.402.0,
+    # httpx ``input``): a locator gives its name, or nothing.  An operator
+    # may still type anything.
     if source != "operator":
-        try:
-            ipaddress.ip_address(candidate.strip("[]"))
+        candidate = display_name_candidate(candidate)
+        if not candidate:
             return False
-        except ValueError:
-            pass
     rank = HOSTNAME_SOURCE_RANK[source]
     current_rank = HOSTNAME_SOURCE_RANK.get(host.hostname_source or "", LEGACY_SOURCE_RANK)
 

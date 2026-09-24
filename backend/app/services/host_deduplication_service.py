@@ -5,7 +5,6 @@ Handles finding, creating, and updating host records to eliminate duplicates.
 Implements conflict resolution and audit tracking for data changes.
 """
 
-import ipaddress
 import json
 import logging
 from datetime import datetime
@@ -18,14 +17,6 @@ from app.db import models
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
 
 logger = logging.getLogger(__name__)
-
-
-def _is_ip_literal(value: str) -> bool:
-    try:
-        ipaddress.ip_address(value.strip().strip("[]"))
-        return True
-    except ValueError:
-        return False
 
 
 def should_replace_service(
@@ -530,10 +521,14 @@ class HostDeduplicationService:
     
     def _create_new_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> Host:
         """Create a new host record"""
+        from app.services.dns_name_service import display_name_candidate
+
         hostname = (host_data.get('hostname') or '').strip() or None
-        # An address is not a name (same rule as apply_hostname_candidate).
-        if hostname and _is_ip_literal(hostname):
-            hostname = None
+        # An address is not a name, nor is a URL or ip:port (same rule as
+        # apply_hostname_candidate; v2.402.0).  An operator-sourced name is
+        # kept as typed, as there.
+        if hostname and host_data.get('hostname_source') != 'operator':
+            hostname = display_name_candidate(hostname)
         host = Host(
             ip_address=ip_address,
             hostname=hostname,

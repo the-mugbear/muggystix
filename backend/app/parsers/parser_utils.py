@@ -598,8 +598,10 @@ def resolve_host_cached(
     # Display-name writes go through the one precedence rule; a web tool's
     # name for the address is a 'scanner' source (fills an empty hostname or
     # replaces a weaker forward-resolved vhost, never a PTR or operator name).
-    from app.services.dns_name_service import apply_hostname_candidate
+    from app.services.dns_name_service import apply_hostname_candidate, display_name_candidate
 
+    # A URL / ip:port / address is not a display name (v2.402.0).
+    hostname = display_name_candidate(hostname)
     if ip in host_cache:
         host = host_cache[ip]
         if host is not None and hostname:

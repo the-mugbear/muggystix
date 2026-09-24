@@ -46,7 +46,12 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models import DNS_OBS_CERT, DNS_OBS_DISCOVERED, DNS_OBS_HTTP
 from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol
-from app.services.dns_name_service import ObservationCache, bind_url_name, record_observation
+from app.services.dns_name_service import (
+    ObservationCache,
+    bind_url_name,
+    display_name_candidate,
+    record_observation,
+)
 from app.parsers.parser_utils import (
     correlate_scan,
     ScanClock,
@@ -458,17 +463,14 @@ class HttpxParser:
             val = record.get(field)
             if not val or not isinstance(val, str):
                 continue
-            stripped = val.strip()
-            if cls._is_ip_literal(stripped):
-                continue
-            # Reject ``ip:port`` shapes (common in httpx ``input``) —
-            # the left side is an IP literal, so the whole string is
-            # a target locator, not a hostname.  Without this check
-            # v2.13.2 output had ``hostname = "192.168.0.1:80"``.
-            if ":" in stripped and cls._is_ip_literal(stripped.split(":", 1)[0]):
-                continue
-            hostname = stripped
-            break
+            # ``input`` is whatever httpx was given: ``ip:port`` (v2.13.2
+            # stored ``"192.168.0.1:80"``), or a whole URL with ``-u``
+            # (v2.402.0 stored ``"https://172.30.80.20:8443"``).  A locator
+            # yields its name, or nothing when it names an address.
+            name = display_name_candidate(val)
+            if name:
+                hostname = name
+                break
         if hostname is None:
             try:
                 h = urlparse(url).hostname

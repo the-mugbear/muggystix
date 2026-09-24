@@ -82,6 +82,43 @@ class TestHostnameRule:
         assert not svc.apply_hostname_candidate(h, "db01", "ptr")
         assert h.hostname_source == "ptr"
 
+    # v2.402.0 — a locator is not a display name: httpx stored
+    # "https://<ip>:8443" as one.
+    @pytest.mark.parametrize("raw, expected", [
+        ("https://192.0.2.20:8443", None),
+        ("http://192.0.2.21", None),
+        ("https://[2001:db8::1]:443/", None),
+        ("192.0.2.5:80", None),
+        ("[2001:db8::1]:443", None),
+        ("192.0.2.5", None),
+        ("", None),
+        ("https://www.example.com:443/login", "www.example.com"),
+        ("www.example.com:8080", "www.example.com"),
+        ("FILE01", "FILE01"),
+        ("web01.example.com", "web01.example.com"),
+        ("not a name", None),
+        ("example.com/path", None),
+    ])
+    def test_display_name_candidate(self, raw, expected):
+        assert svc.display_name_candidate(raw) == expected
+
+    def test_scanner_url_candidate_gives_its_name_or_nothing(self):
+        h = self._host()
+        assert not svc.apply_hostname_candidate(h, "https://192.0.2.20:8443", "scanner")
+        assert h.hostname is None
+        assert svc.apply_hostname_candidate(h, "https://www.example.com/", "scanner")
+        assert h.hostname == "www.example.com"
+
+    def test_new_host_never_takes_a_url_as_its_name(self, db_session, test_project):
+        scan = models.Scan(filename="x.xml", scan_type="web", tool_name="t", project_id=test_project.id)
+        db_session.add(scan)
+        db_session.flush()
+        host = HostDeduplicationService(db_session).find_or_create_host(
+            "192.0.2.30", scan.id, {"hostname": "https://192.0.2.30:8443", "state": "up"},
+            project_id=test_project.id,
+        )
+        assert host.hostname is None
+
 
 # ---------------------------------------------------------------------------
 # Import (DB)

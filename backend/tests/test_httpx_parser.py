@@ -899,6 +899,40 @@ class TestHttpxIpResolution:
             f"ip:port input should NOT be stored as hostname; got {h.hostname!r}"
         )
 
+    def test_url_input_is_not_stored_as_hostname(
+        self, db_session, test_project, tmp_path
+    ):
+        """v2.402.0 — httpx run with ``-u URL`` echoes the whole URL as
+        ``input``; ``https://192.0.2.20:8443`` became the host's display
+        name.  A URL naming an address gives no name; a URL naming a host
+        gives that host."""
+        from app.db import models
+        from app.parsers.httpx_parser import HttpxParser
+
+        f = self._write_jsonl(tmp_path, [
+            {"url": "https://192.0.2.20:8443", "input": "https://192.0.2.20:8443",
+             "host": "192.0.2.20", "host_ip": "192.0.2.20", "port": "8443",
+             "status_code": 200},
+            {"url": "http://192.0.2.21", "input": "http://192.0.2.21",
+             "host": "192.0.2.21", "host_ip": "192.0.2.21", "port": "80",
+             "status_code": 200},
+            {"url": "https://192.0.2.22:443", "input": "https://www.example.com:443",
+             "host": "192.0.2.22", "host_ip": "192.0.2.22", "port": "443",
+             "status_code": 200},
+        ])
+        HttpxParser(db_session).parse_file(str(f), f.name, project_id=test_project.id)
+
+        names = dict(
+            db_session.query(models.Host.ip_address, models.Host.hostname)
+            .filter(models.Host.project_id == test_project.id)
+            .all()
+        )
+        assert names == {
+            "192.0.2.20": None,
+            "192.0.2.21": None,
+            "192.0.2.22": "www.example.com",
+        }
+
     def test_ipv6_literal_is_accepted(
         self, db_session, test_project, tmp_path
     ):
