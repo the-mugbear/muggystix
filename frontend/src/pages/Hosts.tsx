@@ -699,6 +699,11 @@ export default function Hosts() {
     && (appliedProjectDefault !== null || activeViewId === projectDefaultView.id);
 
   useEffect(() => {
+    // The mount run is not a filter change. Letting it through used up the skip
+    // flag the restore had just set, so the restore's own setFilters then
+    // cleared the "project default applied" banner and its stored name — a
+    // reload read "Custom filters · Back to default view" (UX review 2026-09-24).
+    if (!isInitialized) return;
     if (skipActiveClearRef.current) {
       skipActiveClearRef.current = false;
       return;
@@ -1306,7 +1311,8 @@ export default function Hosts() {
   const hasGuessedServices = hosts.some((h) => exposureChips(h.ports).some((c) => !c.detected));
 
   return (
-    <div className="space-y-md">
+    // The page gutter every Inventory page uses (the title sat 24px left of theirs).
+    <div className="space-y-md p-md md:p-lg">
       {/* Page header */}
       <div className="flex flex-col gap-md lg:flex-row lg:items-center lg:justify-between">
         <div>
@@ -1489,13 +1495,20 @@ export default function Hosts() {
 
         {/* A default the operator did not choose must never hide hosts
             silently; the way out is one click. */}
+        {/* UX review 2026-09-24 — a muted caption line was easy to miss while
+            the list silently held 157 of 416 hosts: a banner now. */}
         {appliedProjectDefault && (
-          <div className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
-            <Star className="size-3.5 shrink-0 fill-current text-warning" aria-hidden />
-            <span className="truncate">
-              Project default view applied: <strong className="text-foreground">{appliedProjectDefault}</strong>
+          <div
+            role="status"
+            className="flex min-w-0 items-center gap-sm rounded-control border border-warning/40 bg-warning/10 px-sm py-xs text-metadata text-foreground"
+            data-testid="hosts-project-default-banner"
+          >
+            <Star className="size-4 shrink-0 fill-current text-warning" aria-hidden />
+            <span className="min-w-0 truncate">
+              Project default view applied: <strong>{appliedProjectDefault}</strong>
+              <span className="text-muted-foreground"> — hosts outside it are not listed.</span>
             </span>
-            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
+            <Button variant="outline" size="sm" className="ml-auto h-7 shrink-0" onClick={clearAllFilters}>
               Show all hosts
             </Button>
           </div>
@@ -1656,36 +1669,6 @@ export default function Hosts() {
         </div>
       ) : (
         <>
-          {/* Bulk-action bar — shown once one or more rows are selected.
-              Hidden while results are stale (a failed refetch): acting on rows
-              that may not match the active query is the trap this guards. */}
-          {/* v5.290.0 — the bar's slot is always rendered at a fixed height:
-              inserting the bar on the first tick pushed every row ~40px down,
-              so the second checkbox click landed on the wrong host. */}
-          <div className="h-11 min-w-0" role="region" aria-label="Bulk actions" data-testid="hosts-bulk-slot">
-            {selectedIds.length > 0 && !showingStaleResults ? (
-              <HostBulkBar
-                selectedIds={selectedIds}
-                selectedIps={selectedIps}
-                totalMatching={totalHosts}
-                queryContext={exportQueryContext}
-                onClear={() => setRowSelection({})}
-                onApplied={() => {
-                  setRowSelection({});
-                  fetchHosts();
-                  fetchFilterData(buildFacetParams());
-                }}
-              />
-            ) : (
-              <p className="flex h-full min-w-0 items-center rounded-control border border-dashed border-border px-sm text-caption text-muted-foreground">
-                <span className="truncate">
-                  {showingStaleResults
-                    ? 'Bulk actions are paused until a refresh succeeds.'
-                    : 'Select rows to act on them — copy IPs, tag, assign, review or plan.'}
-                </span>
-              </p>
-            )}
-          </div>
           {/* Host table — sole renderer (desktop-only product; horizontal
               scroll handles narrow widths, no separate mobile card view).
               Dimmed (not interaction-blocked) while stale: drill-down into a
@@ -1737,11 +1720,52 @@ export default function Hosts() {
                   : undefined
               )}
               bare
-              // The four sized columns take 790px; the floor keeps the Host
-              // column (the only unsized one) at ~270px in a narrowed window,
-              // where the wrapper scrolls sideways instead of crushing it.
-              tableClassName="table-fixed min-w-[1060px]"
+              // The four sized columns and the checkbox take 720px; the floor
+              // keeps the Host column (the only unsized one) at ~140px in a
+              // narrowed window, where the wrapper scrolls sideways instead of
+              // crushing it. At a 1246px window the table fits (UX review).
+              tableClassName="table-fixed min-w-[860px]"
             />
+          </div>
+
+          {/* Bulk-action bar — shown once one or more rows are selected.
+              Paused while results are stale (a failed refetch): acting on rows
+              that may not match the active query is the trap this guards.
+              v5.290.0 — inserting it ABOVE the table pushed every row ~40px
+              down, so the second checkbox click landed on the wrong host; an
+              always-there placeholder fixed that but spent a row of the page
+              on "Select rows to act on them" (UX review 2026-09-24). The slot
+              now follows the table and sticks to the bottom of the window:
+              selecting never moves a row, and nothing shows until a row is
+              selected. */}
+          <div
+            className="sticky bottom-sm z-20 min-w-0"
+            role="region"
+            aria-label="Bulk actions"
+            data-testid="hosts-bulk-slot"
+          >
+            {selectedIds.length > 0 && (
+              <div className="h-11 min-w-0 rounded-control bg-card shadow-lg">
+                {showingStaleResults ? (
+                  <p className="flex h-full min-w-0 items-center rounded-control border border-dashed border-border px-sm text-caption text-muted-foreground">
+                    <span className="truncate">Bulk actions are paused until a refresh succeeds.</span>
+                  </p>
+                ) : (
+                  <HostBulkBar
+                    selectedIds={selectedIds}
+                    selectedIps={selectedIps}
+                    totalMatching={totalHosts}
+                    queryContext={exportQueryContext}
+                    onClear={() => setRowSelection({})}
+                    onApplied={() => {
+                      setRowSelection({});
+                      fetchHosts();
+                      fetchFilterData(buildFacetParams());
+                    }}
+                  />
+                )}
+              </div>
+            )}
           </div>
 
           <div className="border-t border-border pt-xs">

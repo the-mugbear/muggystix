@@ -13,7 +13,6 @@ import {
   GitCompareArrows,
   Hourglass,
   Loader2,
-  Search,
   Info,
   Trash2,
   Upload,
@@ -56,7 +55,6 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 // From the barrel, like every other call here: a direct submodule import
 // bypasses a page test's mock and loads the real HTTP client.
-import { updateProjectIngestSettings } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { BreakableName } from '../components/ui/breakable-name';
@@ -75,6 +73,7 @@ import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
+import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
 import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
 import { ScanWhenCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
@@ -85,7 +84,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
-import { Input } from '../components/ui/input';
+import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
 import {
   Table,
   TableBody,
@@ -242,33 +241,12 @@ export default function Scans() {
     const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   });
-  // v5.215.0 — "Skip informational Nessus findings", the switch beside the
-  // drop zone. Seeded from the project's effective setting (its own choice,
-  // else the deployment default), written back to the project when flipped
-  // so every later batch honours it, and sent with each upload regardless.
-  const { currentProject, refreshProjects } = useProject();
-  const [skipInformational, setSkipInformational] = useState<boolean>(
-    () => currentProject?.skip_informational_effective ?? false,
-  );
-  const [savingSkipInformational, setSavingSkipInformational] = useState(false);
-  useEffect(() => {
-    if (currentProject) setSkipInformational(currentProject.skip_informational_effective ?? false);
-  }, [currentProject]);
-  const handleSkipInformationalChange = async (next: boolean) => {
-    setSkipInformational(next);
-    if (!currentProject) return;
-    setSavingSkipInformational(true);
-    try {
-      await updateProjectIngestSettings(currentProject.id, { skip_informational_findings: next });
-      await refreshProjects();
-    } catch (err) {
-      // The upload still carries the switch's value; only the persistence
-      // failed, so say so rather than silently reverting the switch.
-      toast.error(formatApiError(err, 'Could not save the project ingest setting.'));
-    } finally {
-      setSavingSkipInformational(false);
-    }
-  };
+  // v5.215.0 — whether informational Nessus observations are skipped: the
+  // project's effective setting (its own choice, else the deployment default),
+  // sent with each upload. UX review 2026-09-24 — changed in Project settings →
+  // Imports; the upload dialog states it and links there.
+  const { currentProject } = useProject();
+  const skipInformational = currentProject?.skip_informational_effective ?? false;
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -1643,21 +1621,27 @@ export default function Scans() {
           {/* v5.270.0 — the filters are ONE row: search, tool, range, the
               Grouped / All files switch, and how much of the list is loaded.
               (Two rows of upper-case count chips and a paragraph before.) */}
-          <div className="mb-xs flex flex-wrap items-center gap-sm border-b border-border pb-sm">
-            <div className="relative w-64 min-w-0">
-              <Search
-                className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                type="search"
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Search filename, tool, scan type…"
-                aria-label="Search scan inventory"
-                className="h-8 pl-xl text-metadata"
-              />
-            </div>
+          {/* v5.294.0 — the shared ListFilterBar every list page uses. */}
+          <ListFilterBar
+            summary={(scans.length > 0 || batches.length > 0) ? (
+              <>
+                {/* v2.86.2 — how much of the list is loaded, so a partial view is
+                    never mistaken for the whole one. */}
+                {showBatchFiles
+                  ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
+                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
+                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
+                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
+                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
+              </>
+            ) : undefined}
+          >
+            <ListFilterSearch
+              value={searchText}
+              onChange={setSearchText}
+              placeholder="Search filename, tool, scan type…"
+              label="Search scan inventory"
+            />
             <Select value={toolFilter || '__all'} onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}>
               <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
                 <SelectValue />
@@ -1748,19 +1732,7 @@ export default function Scans() {
                 </button>
               ))}
             </div>
-            {/* v2.86.2 — how much of the list is loaded, so a partial view is
-                never mistaken for the whole one. */}
-            {(scans.length > 0 || batches.length > 0) && (
-              <span className="ml-auto text-caption text-muted-foreground">
-                {showBatchFiles
-                  ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
-                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
-                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
-                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
-                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
-              </span>
-            )}
-          </div>
+          </ListFilterBar>
           <p className="mb-xxs text-caption text-muted-foreground">
             {showBatchFiles
               ? 'Every imported file, batched or not. Click a column heading to sort.'
@@ -1967,16 +1939,17 @@ export default function Scans() {
                             {/* v5.270.0 — the filename opens the scan; "Hosts" is
                                 a quiet link; delete lives in the row menu, out of
                                 reach of a stray click. */}
-                            <div className="flex items-center justify-end gap-xs">
-                              {scan.total_hosts > 0 && (
+                            <ScanRowActions
+                              link={scan.total_hosts > 0 ? (
                                 <Link
                                   to={`/hosts?scan_ids=${scan.id}`}
-                                  className="rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                  className={ROW_LINK_CLASS}
                                   title="Open the Hosts page filtered to this scan"
                                 >
                                   Hosts
                                 </Link>
-                              )}
+                              ) : null}
+                              menu={
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
@@ -2000,7 +1973,8 @@ export default function Scans() {
                                   </DropdownMenuItem>
                                 </DropdownMenuContent>
                               </DropdownMenu>
-                            </div>
+                              }
+                            />
                           </TableCell>
                         </TableRow>
                         {hasCommand && isExpanded && (
@@ -2056,8 +2030,6 @@ export default function Scans() {
         resume={reviewResume}
         projectName={currentProject?.name}
         skipInformational={skipInformational}
-        savingSkipInformational={savingSkipInformational}
-        onSkipInformationalChange={(v) => void handleSkipInformationalChange(v)}
         onViewScan={handleViewScan}
         onStarted={(started) => {
           setUploadProgress((prev) => ({
@@ -2244,12 +2216,16 @@ const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
   ['dismissed', 'dismissed failure', 'dismissed failures'],
 ];
 
-const notImportedReasons =(byReason?: Record<string, number>): string[] =>
+/** Where each reason is listed on Ingestion Results (v2.408.0 split expired
+ *  and discarded uploads out of its Failed view). */
+const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed' };
+
+const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: string; text: string }> =>
   NOT_IMPORTED_REASON
     .filter(([key]) => (byReason?.[key] ?? 0) > 0)
     .map(([key, one, many]) => {
       const n = byReason![key];
-      return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+      return { key, text: `${n.toLocaleString()} ${n === 1 ? one : many}` };
     });
 
 const ScansLead: React.FC<{
@@ -2290,10 +2266,29 @@ const ScansLead: React.FC<{
           {notImported > 0 && (
             <>
               {sep}
-              <Link to="/parse-errors?status=failed" className="underline-offset-2 hover:underline">
+              {/* One reason: its own Ingestion Results view; several: each
+                  reason links to its view, the total to every upload. */}
+              <Link
+                to={reasons.length === 1 ? `/parse-errors?status=${NOT_IMPORTED_VIEW[reasons[0].key]}` : '/parse-errors'}
+                className="underline-offset-2 hover:underline"
+              >
                 {notImported.toLocaleString()} never imported
               </Link>
-              {reasons.length > 0 && ` (${reasons.join(', ')})`}
+              {reasons.length === 1 && ` (${reasons[0].text})`}
+              {reasons.length > 1 && (
+                <>
+                  {' ('}
+                  {reasons.map((r, i) => (
+                    <React.Fragment key={r.key}>
+                      {i > 0 && ', '}
+                      <Link to={`/parse-errors?status=${NOT_IMPORTED_VIEW[r.key]}`} className="underline-offset-2 hover:underline">
+                        {r.text}
+                      </Link>
+                    </React.Fragment>
+                  ))}
+                  {')'}
+                </>
+              )}
             </>
           )}
           {/* v5.289.0 — failures whose file a later upload imported: not

@@ -203,10 +203,31 @@ describe('Ingestion Results — rows readable without expanding', () => {
     await screen.findByText('f1.xml');
     const reasons = screen.getAllByTestId('failure-reason').map((el) => el.textContent);
     expect(reasons).toEqual([
-      'Expired before import',
+      'Not started within 24 hours of upload; the file was removed',
       'Discarded before import',
       "Failed to parse the file 'nikto-all.txt'.",
     ]);
+    // UX review 2026-09-24 — an expired or discarded staged upload is not a
+    // failed import: its badge says what happened.
+    const badge = (name: string) => within(screen.getByText(name).closest('tr')!).getAllByText(/^(expired|discarded|failed)$/)[0];
+    expect(badge('f1.xml')).toHaveTextContent('expired');
+    expect(badge('f2.xml')).toHaveTextContent('discarded');
+    expect(badge('f3.xml')).toHaveTextContent('failed');
+  });
+
+  it('counts expired and discarded uploads apart from Failed, each with its own filter', async () => {
+    api.getIngestionResults.mockResolvedValue({
+      ...response([]),
+      summary: { ...response([]).summary, total_failed: 0, total_expired: 31, total_discarded: 2 },
+    });
+    renderPage();
+    expect(await screen.findByRole('button', { name: /Failed\s*0/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /All uploads\s*40/ })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Expired\s*31/ }));
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenLastCalledWith(
+      expect.objectContaining({ status: 'expired' }),
+    ));
+    expect(screen.getByRole('button', { name: /Discarded\s*2/ })).toBeInTheDocument();
   });
 
   it('shows the whole filename (wrapping), not an ellipsis', async () => {
@@ -326,21 +347,35 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     );
   });
 
-  it('gives every fixed column room for its header, under a minimum the content area holds', async () => {
+  // UX review 2026-09-24 — the table was 1000px in a ~916px content column at a
+  // 1246px window (84px scrolled away) and the filename had less room than Status.
+  it('fits the content column of a 1246px window, and the filename gets the most room', async () => {
     renderPage();
     await screen.findByText('No upload history yet');
     const table = document.querySelector('table')!;
-    expect(table.className).toMatch(/min-w-\[1000px\]/);
+    const minWidth = Number(table.className.match(/min-w-\[(\d+)px\]/)![1]);
+    expect(minWidth).toBeLessThanOrEqual(900);
     const widths = Array.from(table.querySelectorAll('thead th')).map((th) => th.className.match(/\bw-(\d+)\b/)?.[1]);
     // Filename (the third) takes the rest.
     expect(widths[2]).toBeUndefined();
     const px = widths.filter(Boolean).reduce((sum, w) => sum + Number(w) * 4, 0);
-    expect(px).toBeLessThanOrEqual(1000 - 144);
-    // "SERVICES" and "DURATION" do not fit an 80px column's 64px of text.
+    const filenameFloor = minWidth - px;
+    expect(filenameFloor).toBeGreaterThanOrEqual(200);
+    for (const w of widths.filter(Boolean)) expect(Number(w) * 4).toBeLessThan(filenameFloor);
+    // "UPLOADED" does not fit an 80px column's 64px of text.
     const headers = Array.from(table.querySelectorAll('thead th'));
-    for (const label of ['Services', 'Duration', 'Uploaded']) {
-      const th = headers.find((h) => h.textContent === label)!;
-      expect(Number(th.className.match(/\bw-(\d+)\b/)![1])).toBeGreaterThanOrEqual(24);
-    }
+    const uploaded = headers.find((h) => h.textContent === 'Uploaded')!;
+    expect(Number(uploaded.className.match(/\bw-(\d+)\b/)![1])).toBeGreaterThanOrEqual(24);
+  });
+
+  it('prints every tool name in one case', async () => {
+    api.getIngestionResults.mockResolvedValue(response([
+      row({ id: 7, original_filename: 'a.nessus', tool_name: 'Nessus' }),
+      row({ id: 8, original_filename: 'b.xml', tool_name: 'nmap' }),
+    ]));
+    renderPage();
+    const nessus = (await screen.findByText('a.nessus')).closest('tr')!;
+    expect(within(nessus).getByText('nessus')).toBeInTheDocument();
+    expect(within(nessus).queryByText('Nessus')).toBeNull();
   });
 });

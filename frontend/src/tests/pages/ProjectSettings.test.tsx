@@ -24,6 +24,11 @@ vi.mock('../../services/api', () => ({
 vi.mock('../../components/TagManagement', () => ({ default: () => null }));
 vi.mock('../../components/WebhookSettings', () => ({ default: () => null }));
 vi.mock('../../components/WebhookDeliveries', () => ({ default: () => null }));
+// Tested on its own (ProjectIngestSettings.test.tsx); its switch thumb is a
+// `.bg-card.shadow-raised` the no-card check below would catch.
+vi.mock('../../components/scans/ProjectIngestSettings', () => ({
+  default: ({ canEdit }: { canEdit: boolean }) => <div data-testid="imports-section" data-can-edit={String(canEdit)} />,
+}));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
 vi.mock('../../contexts/ToastContext', () => ({
@@ -73,6 +78,8 @@ describe('Project settings', () => {
     // No project list here any more; a non-global admin gets no delete area.
     expect(screen.queryByText('All projects')).not.toBeInTheDocument();
     expect(screen.queryByText('Delete this project')).not.toBeInTheDocument();
+    // UX review 2026-09-24 — the upload dialog's project setting lives here.
+    expect(screen.getByTestId('imports-section')).toHaveAttribute('data-can-edit', 'true');
   });
 
   it('saves the engagement dates', async () => {

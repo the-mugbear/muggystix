@@ -16,6 +16,10 @@ export type ScanTimeKind = 'tool_run' | 'tool_records' | 'tool_clock' | 'legacy'
 export interface TimeFormatOptions {
   timeZone?: string;
   locale?: string;
+  /** Name the zone after the time ("… 10:20 PM MST"). Default true. A list
+   *  whose page already names the viewer's zone once passes false: the
+   *  abbreviation on every row wrapped the When column to four lines. */
+  withZone?: boolean;
 }
 
 export type ScanTimeFields = Pick<Scan, 'start_time' | 'end_time' | 'time_source' | 'created_at' | 'tool_name'>;
@@ -33,7 +37,7 @@ export function formatInstant(date: Date, opts: TimeFormatOptions = {}): string 
   return new Intl.DateTimeFormat(opts.locale, {
     ...INSTANT_PARTS,
     timeZone: opts.timeZone,
-    timeZoneName: 'short',
+    ...(opts.withZone === false ? {} : { timeZoneName: 'short' as const }),
   }).format(date);
 }
 

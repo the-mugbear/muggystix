@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { Download, Loader2, RefreshCw, Search, Trash2, Upload } from 'lucide-react';
+import { Download, Loader2, Trash2, Upload } from 'lucide-react';
 
 import {
   deleteName,
@@ -37,7 +37,6 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
-import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import {
   SideSheet,
@@ -58,6 +57,11 @@ import {
 } from '../components/ui/table';
 import { Textarea } from '../components/ui/textarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
+import LastUpdated from '../components/LastUpdated';
+import TimeAgo from '../components/TimeAgo';
+import { cn } from '../utils/cn';
+import { formatTimestamp } from '../utils/relativeTime';
 
 /**
  * Names — the FQDN inventory (v5.193.0).
@@ -123,29 +127,14 @@ const evidenceChipTitle = (kind: string, count: number): string => {
   return `${meaning} — ${count.toLocaleString()} observation${count === 1 ? '' : 's'} recorded`;
 };
 
-const fmtTime = (iso?: string | null): string => {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
+const fmtTime = (iso?: string | null): string => formatTimestamp(iso);
 
-/** v5.288.0 — "Last seen" in a table cell: date and hours:minutes on two
- *  non-wrapping lines (the full locale string, seconds included, truncated on
- *  every row at desktop widths); the full timestamp stays in the title. */
-const LastSeen: React.FC<{ iso?: string | null }> = ({ iso }) => {
-  if (!iso) return <span className="text-muted-foreground">—</span>;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return <span>{iso}</span>;
-  return (
-    <span className="flex flex-col leading-tight" title={d.toLocaleString()}>
-      <span className="whitespace-nowrap">{d.toLocaleDateString()}</span>
-      <span className="whitespace-nowrap">{d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
-    </span>
-  );
-};
+/** "Last seen" in a table cell (UX review 2026-09-24): how long ago, the
+ *  exact moment on hover — the list convention (TimeAgo). It was a date and a
+ *  time on two lines, one of five date formats across the pages. */
+const LastSeen: React.FC<{ iso?: string | null }> = ({ iso }) => (
+  <TimeAgo value={iso} absoluteAfterDays={30} />
+);
 
 /** A single-label name (dc01, file01) — reported by a scanner or SMB, not a
  *  fully-qualified domain name. */
@@ -667,6 +656,7 @@ const Names: React.FC = () => {
       .catch(() => setSummary(null));
   }, []);
 
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const reload = useCallback(() => {
     const reqId = ++reqIdRef.current;
     setLoading(true);
@@ -676,6 +666,7 @@ const Names: React.FC = () => {
         if (reqIdRef.current !== reqId) return;
         setRows(resp.items);
         setTotal(resp.total);
+        setLoadedAt(new Date());
       })
       .catch((err) => {
         if (reqIdRef.current !== reqId) return;
@@ -798,48 +789,43 @@ const Names: React.FC = () => {
             </Button>
           </div>
         )}
-        <Button size="sm" variant="outline" onClick={refreshAll}>
-          <RefreshCw className="size-4" aria-hidden /> Refresh
-        </Button>
+        <LastUpdated compact lastFetched={loadedAt} onRefresh={refreshAll} isLoading={loading} label="names" />
       </div>
 
-      <div className="mb-md border-b border-border pb-sm">
-      <div className="mb-sm flex flex-wrap items-center gap-xs" role="group" aria-label="Name state filter">
-        {STATE_OPTIONS.map((opt) => {
-          const active = state === opt.value;
-          const count = countFor(opt.value);
-          return (
-            <Tooltip key={opt.value}>
-              <TooltipTrigger asChild>
-                <button
-                  type="button"
-                  aria-pressed={active}
-                  onClick={() => setState(opt.value)}
-                  className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  <Badge variant={active ? 'default' : 'outline'}>
-                    {opt.label}
-                    {count != null && <span className="ml-2xs tabular-nums">{count.toLocaleString()}</span>}
-                  </Badge>
-                </button>
-              </TooltipTrigger>
-              <TooltipContent>{opt.hint}</TooltipContent>
-            </Tooltip>
-          );
-        })}
-      </div>
-
-      <div className="relative max-w-md">
-        <Search className="pointer-events-none absolute left-2 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search names…"
-          className="pl-8 font-mono"
-          aria-label="Search names"
-        />
-      </div>
-      </div>
+      {/* UX review 2026-09-24 — one filter row (ListFilterBar): the search,
+          then the state counts as the same sentence-case count chips as
+          Ingestion Results (they were upper-case badges on a row of their own
+          above the search). */}
+      <ListFilterBar className="mb-md">
+        <ListFilterSearch value={search} onChange={setSearch} placeholder="Search names…" label="Search names" />
+        <div className="flex min-w-0 flex-wrap items-center gap-xs" role="group" aria-label="Name state filter">
+          {STATE_OPTIONS.map((opt) => {
+            const active = state === opt.value;
+            const count = countFor(opt.value);
+            return (
+              <Tooltip key={opt.value}>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setState(opt.value)}
+                    className={cn(
+                      'inline-flex items-center gap-xs whitespace-nowrap rounded-chip border px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      active
+                        ? 'border-primary bg-primary/10 text-foreground'
+                        : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+                    )}
+                  >
+                    <span>{opt.label}</span>
+                    {count != null && <strong className="tabular-nums text-foreground">{count.toLocaleString()}</strong>}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent>{opt.hint}</TooltipContent>
+              </Tooltip>
+            );
+          })}
+        </div>
+      </ListFilterBar>
 
       {error && (
         <Alert variant="destructive" className="mb-sm">
@@ -893,12 +879,15 @@ const Names: React.FC = () => {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
+              {/* UX review 2026-09-24 — 960px was 44px wider than the content
+                  column at a 1246px window (Last seen cut off), and "Out of
+                  scope" wrapped in a 10% column. */}
+              <Table style={{ tableLayout: 'fixed' }} className="min-w-[820px]">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-[28%]">Name</TableHead>
-                    <TableHead className="w-[10%]">Scope</TableHead>
-                    <TableHead className="w-[28%]">Resolves to</TableHead>
+                    <TableHead className="w-[27%]">Name</TableHead>
+                    <TableHead className="w-[13%]">Scope</TableHead>
+                    <TableHead className="w-[26%]">Resolves to</TableHead>
                     <TableHead className="w-[22%]">Evidence</TableHead>
                     <TableHead className="w-[12%]">Last seen</TableHead>
                   </TableRow>
@@ -940,7 +929,7 @@ const Names: React.FC = () => {
                         {row.in_scope ? (
                           <Badge variant="success-outline">In scope</Badge>
                         ) : (
-                          <span className="text-metadata text-muted-foreground">Out of scope</span>
+                          <span className="block truncate whitespace-nowrap text-metadata text-muted-foreground" title="Out of scope">Out of scope</span>
                         )}
                       </TableCell>
                       <TableCell className="align-top font-mono text-metadata">

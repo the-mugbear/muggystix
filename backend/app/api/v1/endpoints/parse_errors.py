@@ -12,7 +12,12 @@ from app.services.format_registry import format_label
 from app.services.host_query_common import escape_like
 from app.services.import_attention_service import annotate_jobs, superseded_import_condition
 from app.services.operations_read_service import blocked_import_condition
-from app.services.staged_import_service import file_retained, retained_until
+from app.services.staged_import_service import (
+    DISCARDED_MESSAGE,
+    EXPIRED_MESSAGE_PREFIX,
+    file_retained,
+    retained_until,
+)
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
 from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.db.models_auth import User, UserRole
@@ -22,6 +27,21 @@ from app.db.models_project import Project, ProjectRole
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _expired_job():
+    """A staged upload nobody started within the window: its job is written
+    ``failed`` (``staged_import_service.expire_staged_jobs``), but nothing
+    failed — the Scans page says "expired before review", and so does this
+    list (UX review 2026-09-24; it counted them under Failed)."""
+    Job = models.IngestionJob
+    return and_(Job.status == "failed", Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%"))
+
+
+def _discarded_job():
+    """A staged upload the operator discarded — also written ``failed``."""
+    Job = models.IngestionJob
+    return and_(Job.status == "failed", Job.error_message == DISCARDED_MESSAGE)
 
 _ANALYST_RESPONSES = {
     401: {"description": "Not authenticated"},
@@ -156,7 +176,9 @@ def get_ingestion_results(
         description=(
             "Filter by IngestionJob.status (queued, processing, completed, failed) — v2.86.2; "
             "or a view: `needs_attention` (failed or partial, not dismissed, not superseded) or "
-            "`superseded` (failed or partial, not dismissed, file imported by a later job) — v2.403.0."
+            "`superseded` (failed or partial, not dismissed, file imported by a later job) — v2.403.0; "
+            "`expired` (staged, never started, removed) and `discarded` (staged, discarded by an "
+            "operator) — v2.408.0. `failed` excludes those two: nothing failed in them."
         ),
     ),
     tool: Optional[str] = Query(
@@ -207,6 +229,18 @@ def get_ingestion_results(
         # dismissed, and the same file imported cleanly by a later job — what
         # "Dismiss N superseded" clears.
         base = base.filter(models.IngestionJob.dismissed_at.is_(None), superseded_import_condition())
+    elif status == "expired":
+        base = base.filter(_expired_job())
+    elif status == "discarded":
+        base = base.filter(_discarded_job())
+    elif status == "failed":
+        # Failed means an import went wrong — not a staged upload that expired
+        # or was discarded (those have their own views). error_message may be
+        # NULL, which NOT LIKE would drop.
+        base = base.filter(
+            models.IngestionJob.status == "failed",
+            ~and_(models.IngestionJob.error_message.isnot(None), or_(_expired_job(), _discarded_job())),
+        )
     elif status:
         base = base.filter(models.IngestionJob.status == status)
     if tool:
@@ -437,24 +471,32 @@ def get_ingestion_results(
         .all()
     )
     status_map = dict(status_counts)
-    needs_attention, superseded = (
+    needs_attention, superseded, expired, discarded = (
         db.query(
             func.count(case((blocked_import_condition(), models.IngestionJob.id))),
             func.count(case((
                 and_(models.IngestionJob.dismissed_at.is_(None), superseded_import_condition()),
                 models.IngestionJob.id,
             ))),
+            func.count(case((_expired_job(), models.IngestionJob.id))),
+            func.count(case((_discarded_job(), models.IngestionJob.id))),
         )
         .filter(models.IngestionJob.project_id == project.id)
         .one()
     )
+    expired = int(expired or 0)
+    discarded = int(discarded or 0)
 
     summary = {
         "total_needs_attention": int(needs_attention or 0),
         "total_superseded": int(superseded or 0),
         "total_staged": status_map.get("staged", 0),
         "total_completed": status_map.get("completed", 0),
-        "total_failed": status_map.get("failed", 0),
+        # Failed imports only; the expired and discarded staged uploads that
+        # share the job status are counted apart (they sum to the old figure).
+        "total_failed": status_map.get("failed", 0) - expired - discarded,
+        "total_expired": expired,
+        "total_discarded": discarded,
         "total_queued": status_map.get("queued", 0),
         "total_processing": status_map.get("processing", 0),
         "total_hosts": summary_host.total_hosts if summary_host else 0,

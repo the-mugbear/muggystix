@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const api = vi.hoisted(() => ({
@@ -43,12 +44,24 @@ const renderDialog = () =>
       onOpenChange={() => {}}
       projectName="Demo"
       skipInformational={false}
-      savingSkipInformational={false}
-      onSkipInformationalChange={() => {}}
       onStarted={() => {}}
       onViewScan={() => {}}
     />,
+    { wrapper: MemoryRouter },
   );
+
+// UX review 2026-09-24 — the dialog changed a PROJECT setting with a switch;
+// it states the setting now and links to where it is changed.
+describe('UploadReviewDialog — the informational-observations setting', () => {
+  it('is stated in one line with a link to Project settings, not a switch', () => {
+    renderDialog();
+    const line = screen.getByTestId('skip-informational-state');
+    expect(line).toHaveTextContent('Informational (severity 0) Nessus scanner observations are kept for Demo');
+    expect(line).not.toHaveTextContent(/findings/);
+    expect(screen.getByRole('link', { name: 'Change in Project settings' })).toHaveAttribute('href', '/project-settings#imports');
+    expect(screen.queryByRole('switch')).toBeNull();
+  });
+});
 
 describe('UploadReviewDialog preview', () => {
   it('opens directly beneath the row it belongs to, not after the whole table', async () => {
@@ -97,8 +110,6 @@ const Harness: React.FC<{ onOpenChange?: (v: boolean) => void }> = ({ onOpenChan
         onOpenChange={(v) => { onOpenChange?.(v); setOpen(v); }}
         projectName="Demo"
         skipInformational={false}
-        savingSkipInformational={false}
-        onSkipInformationalChange={() => {}}
         onStarted={() => {}}
         onViewScan={() => {}}
       />
@@ -112,7 +123,7 @@ describe('UploadReviewDialog flow', () => {
     // the dialog closed itself the instant it was opened again.
     api.startIngestionJob.mockResolvedValue({ id: 1, status: 'queued' });
     const onOpenChange = vi.fn();
-    const { container } = render(<Harness onOpenChange={onOpenChange} />);
+    const { container } = render(<Harness onOpenChange={onOpenChange} />, { wrapper: MemoryRouter });
     drop(container, ['a.xml']);
     fireEvent.click(await screen.findByRole('button', { name: 'Import 1 ready file' }));
     await waitFor(() => expect(onOpenChange).toHaveBeenLastCalledWith(false));
@@ -200,7 +211,7 @@ describe('UploadReviewDialog flow', () => {
       throw { response: { status: 409, data: { detail: { code: 'duplicate_scan', scan_id: 461, message: 'Already imported as scan #461.' } } } };
     });
     const onOpenChange = vi.fn();
-    const { container } = render(<Harness onOpenChange={onOpenChange} />);
+    const { container } = render(<Harness onOpenChange={onOpenChange} />, { wrapper: MemoryRouter });
     drop(container, ['a.xml', 'rustscan.txt']);
     fireEvent.click(await screen.findByRole('button', { name: 'Import 1 ready file' }));
 

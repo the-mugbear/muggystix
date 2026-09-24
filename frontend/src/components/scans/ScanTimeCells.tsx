@@ -59,21 +59,29 @@ interface CellProps {
  * of unknown zone stays visibly flagged — it may be hours off.
  */
 export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
+  // The hover keeps the zone; the cell drops it — the page names the viewer's
+  // zone once above the table (ViewerZoneNote).
   const run = describeScanRun(scan, format);
   const upload = describeUpload(scan, format);
+  const shown = describeScanRun(scan, { ...format, withZone: false });
+  const shownUpload = describeUpload(scan, { ...format, withZone: false });
   const uploader = scan.uploaded_by_name || scan.uploaded_by;
   const hover = [
-    run.startLabel ? `Ran ${run.startLabel}` : 'Run time: not in the file',
+    run.startLabel ? `Ran ${run.startLabel}` : `Run time: not in the file — ${run.explanation}`,
     [run.durationLabel, run.uploadLagLabel].filter(Boolean).join(' · ') || null,
-    `${run.sourceLabel} — ${run.explanation}`,
+    run.startLabel ? `${run.sourceLabel} — ${run.explanation}` : null,
     run.utcLabel,
     `Uploaded ${upload.label}${uploader ? ` by ${uploader}` : ''}`,
   ].filter(Boolean).join('\n');
-  // v5.287.0 — the lines wrap rather than truncate: the time and "run time
-  // unknown" were cut off ("Sep 7, 2026, 04:16 P…") at a normal width.
+  // UX review 2026-09-24 — one time line, no zone per row (it wrapped the
+  // column to four lines); a second line only when it says something: the
+  // scanner clock caveat, how long it took, or that this is the upload time
+  // ("run time unknown" on every row was noise — the hover explains it).
+  // v5.287.0 still holds: the lines wrap rather than truncate (a cut-off time
+  // is worse than a second line), but without the zone they rarely need to.
   return (
     <div className="min-w-0" title={hover}>
-      <p className="break-words text-metadata tabular-nums">{run.startLabel ?? upload.label}</p>
+      <p className="break-words text-metadata tabular-nums">{shown.startLabel ?? shownUpload.label}</p>
       {run.startLabel ? (
         run.kind === 'tool_clock' ? (
           <p className="break-words text-caption text-warning">{run.sourceLabel}</p>
@@ -83,7 +91,7 @@ export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
           )
         )
       ) : (
-        <p className="break-words text-caption text-muted-foreground">uploaded · run time unknown</p>
+        <p className="break-words text-caption text-muted-foreground">uploaded</p>
       )}
     </div>
   );

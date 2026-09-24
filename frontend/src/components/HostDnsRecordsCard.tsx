@@ -142,16 +142,6 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedde
             <AlertDescription>{error}</AlertDescription>
           </Alert>
         )}
-        {noneMatchThisHost && (
-          <div className="rounded-control border border-border bg-muted/30 p-sm text-caption text-muted-foreground">
-            <strong className="font-semibold text-foreground">
-              {projectTotal} DNS record{projectTotal === 1 ? '' : 's'}
-            </strong>{' '}
-            ingested in this project, but none match this host&apos;s IP or hostname —
-            they may belong to a different host, or the resolved value/name doesn&apos;t
-            line up with this host&apos;s record.
-          </div>
-        )}
         {data &&
           sortedTypes.map((recordType) => {
             const rows = grouped[recordType];
@@ -242,6 +232,23 @@ const HostDnsRecordsCard: React.FC<HostDnsRecordsCardProps> = ({ hostId, embedde
         </button>
         {open && <div className="pt-xs">{body}</div>}
       </div>
+    );
+  }
+
+  // UX review 2026-09-24 — a whole section saying "108 DNS records ingested in
+  // this project, but none match this host" was project-wide noise on a host.
+  // One quiet line keeps the honest signal (DNS was ingested; none of it names
+  // this host) without the section chrome or the project count.
+  if (noneMatchThisHost) {
+    return (
+      <p
+        id="host-detail-dns"
+        className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground"
+        title={`${projectTotal} DNS record${projectTotal === 1 ? '' : 's'} in this project; none resolves to or from this host's IP or hostname.`}
+      >
+        <Globe className="size-3.5 shrink-0" aria-hidden />
+        <span className="truncate">DNS evidence: no ingested record names this host.</span>
+      </p>
     );
   }
 

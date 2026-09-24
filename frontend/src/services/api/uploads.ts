@@ -446,7 +446,13 @@ export interface IngestionResultsResponse {
     total_superseded?: number;
     total_staged?: number;
     total_completed: number;
+    /** Failed imports only (v2.408.0): expired and discarded staged uploads,
+     *  also written `failed`, are counted apart. */
     total_failed: number;
+    /** v2.408.0 — staged uploads nobody started within 24 h. */
+    total_expired?: number;
+    /** v2.408.0 — staged uploads discarded at the format review. */
+    total_discarded?: number;
     total_queued: number;
     total_processing: number;
     total_hosts: number;

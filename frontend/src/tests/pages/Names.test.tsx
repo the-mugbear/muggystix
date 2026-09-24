@@ -1,6 +1,7 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { formatTimestamp } from '../../utils/relativeTime';
 
 vi.mock('../../services/api', () => ({
   listNames: vi.fn(),
@@ -125,14 +126,22 @@ describe('Names page — screenshot review (v5.288.0)', () => {
     expect(within(table).getAllByText('In scope')).toHaveLength(2);
   });
 
-  it('shows last seen as date and time without seconds, full timestamp in the title', async () => {
+  // UX review 2026-09-24 — lists show how long ago, the exact moment on hover.
+  it('shows last seen as a relative age on one line, the exact moment in the title', async () => {
     renderAt('/names');
     await screen.findByText('portal.example-corp.com');
-    const d = new Date('2026-09-08T16:16:28Z');
-    const date = screen.getByText(d.toLocaleDateString());
-    expect(date.className).toMatch(/whitespace-nowrap/);
-    expect(date.parentElement!.getAttribute('title')).toBe(d.toLocaleString());
-    expect(date.parentElement!.textContent).not.toContain(d.toLocaleTimeString());
+    const iso = '2026-09-08T16:16:28Z';
+    const cell = document.querySelector(`time[datetime="${new Date(iso).toISOString()}"]`) as HTMLElement;
+    expect(cell).not.toBeNull();
+    expect(cell.className).toMatch(/whitespace-nowrap/);
+    expect(cell.getAttribute('title')).toBe(formatTimestamp(iso));
+    expect(cell.textContent).not.toContain(new Date(iso).toLocaleTimeString());
+  });
+
+  it('keeps "Out of scope" on one line', async () => {
+    renderAt('/names');
+    await screen.findByText('portal.example-corp.com');
+    expect(within(screen.getByRole('table')).getByText('Out of scope').className).toMatch(/whitespace-nowrap/);
   });
 
   it('explains every evidence chip and offers one legend', async () => {

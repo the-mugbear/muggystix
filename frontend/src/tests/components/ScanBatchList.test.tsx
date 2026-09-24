@@ -29,6 +29,8 @@ const batch: ScanBatchSummary = {
 };
 
 const TZ = { timeZone: 'UTC', locale: 'en-US' };
+// UX review 2026-09-24 — rows print no zone (the page names it once).
+const ROW_TZ = { ...TZ, withZone: false };
 
 // The batch is a group row inside the import history table (v5.239.0).
 const renderRow = (filters: { tool?: string }, onViewScan = vi.fn(), b: ScanBatchSummary = batch) =>
@@ -73,7 +75,7 @@ describe('ScanBatchRow', () => {
     expect(rest).toHaveLength(0);
     expect(scan).toHaveTextContent('nmap-tcp-top1000');
     // No created_at on this fixture: the first file's upload stands in.
-    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-11T10:00:00Z'), TZ)}uploaded`);
+    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-11T10:00:00Z'), ROW_TZ)}uploaded`);
     // Screenshot 2026-09-23: "uploaded; first file …" read as nonsense.
     expect(when).not.toHaveTextContent(/first file/);
     expect(newHosts).toHaveTextContent('+850');
@@ -105,8 +107,9 @@ describe('ScanBatchRow', () => {
     const { container } = renderRow({}, vi.fn(), empty);
     const contributed = cells(container)[3];
     expect(contributed).toHaveTextContent('Nothing imported');
+    // Ingestion Results lists expired uploads in their own view, not under Failed.
     expect(within(contributed).getByRole('link', { name: '31 expired before import' }))
-      .toHaveAttribute('href', '/parse-errors?status=failed');
+      .toHaveAttribute('href', '/parse-errors?status=expired');
     expect(contributed).not.toHaveTextContent(/0 files/);
     expect(screen.queryByText(/reached the import/)).not.toBeInTheDocument();
   });
@@ -187,11 +190,13 @@ describe('ScanBatchRow', () => {
     expect(rest).toHaveLength(0);
     expect(scan).toHaveTextContent('chunk-009.xml');
     expect(scan).toHaveTextContent('nmap');
-    expect(when).toHaveTextContent(formatInstant(new Date('2026-09-11T11:00:00Z'), TZ));
+    expect(when).toHaveTextContent(formatInstant(new Date('2026-09-11T11:00:00Z'), ROW_TZ));
     expect(newHosts).toHaveTextContent('+3');
     expect(newHosts).toHaveTextContent('of 4 hosts seen');
     expect(contributed).toHaveTextContent('2 open ports');
-    expect(actions).toBeEmptyDOMElement();
+    // The same two slots as a top-level file row: "Hosts", then the menu slot.
+    expect(within(actions as HTMLElement).getByRole('link', { name: 'Hosts' }))
+      .toHaveAttribute('href', '/hosts?scan_ids=31');
   });
 
   // Local Network, 2026-09-24: an expanded batch listed only its imported
@@ -235,13 +240,13 @@ describe('ScanBatchRow', () => {
     expect(smb[3]).not.toHaveTextContent(/format may not be supported/);
     // Uploaded with the batch (20 s later): no time repeated on the row.
     expect(smb[1]).toHaveTextContent('—');
-    expect(smb[1]).not.toHaveTextContent(formatInstant(new Date('2026-09-11T10:00:20Z'), TZ));
+    expect(smb[1]).not.toHaveTextContent(formatInstant(new Date('2026-09-11T10:00:20Z'), ROW_TZ));
 
     const nikto = rows[1].querySelectorAll('td');
     expect(nikto[3]).toHaveTextContent('Failed');
     expect(nikto[3]).toHaveTextContent('value too long');
     // Half an hour after the batch: its own time.
-    expect(nikto[1]).toHaveTextContent(formatInstant(new Date('2026-09-11T10:30:00Z'), TZ));
+    expect(nikto[1]).toHaveTextContent(formatInstant(new Date('2026-09-11T10:30:00Z'), ROW_TZ));
 
     expect(rows[2].querySelectorAll('td')[3]).toHaveTextContent('Discarded before import');
   });
@@ -270,8 +275,8 @@ describe('ScanBatchRow', () => {
       last_uploaded: '2026-09-23T22:08:00Z', reprocessed_files: 1,
     });
     const when = cells(container)[1];
-    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-18T22:20:00Z'), TZ)}uploaded`);
-    expect(when).toHaveTextContent(`re-processed ${formatInstant(new Date('2026-09-23T22:08:00Z'), TZ)}`);
+    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-18T22:20:00Z'), ROW_TZ)}uploaded`);
+    expect(when).toHaveTextContent(`re-processed ${formatInstant(new Date('2026-09-23T22:08:00Z'), ROW_TZ)}`);
   });
 
   // Local Network, 2026-09-23: "46 files · …" read "17 files imported · 4

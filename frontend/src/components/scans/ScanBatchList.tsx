@@ -10,6 +10,7 @@ import { TableCell, TableRow } from '../ui/table';
 import { formatInstant, type TimeFormatOptions } from '../../utils/scanTime';
 import { batchDisplayName } from '../../utils/batchLabel';
 import { toolFamily } from './ScanContribution';
+import { ROW_LINK_CLASS, ScanRowActions } from './ScanRowActions';
 
 // A batch's files load when it is expanded. A sweep of a few hundred files
 // fits one request; past that the operator narrows with the page's search.
@@ -181,12 +182,13 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   // A child row's time, only when it differs from the batch's (v5.289.0).
   const childTime = (at?: string | null) =>
     differsFromBatchTime(at, batchAt) ? (
-      when(at)
+      compact(at)
     ) : (
       <span className="text-muted-foreground" title="Uploaded with the batch">—</span>
     );
 
   const when = (iso?: string | null) => (iso ? formatInstant(new Date(iso), timeFormat) : null);
+  const compact = (iso?: string | null) => (iso ? formatInstant(new Date(iso), { ...timeFormat, withZone: false }) : null);
   // The upload time is the batch's creation (the moment the files were
   // dropped); its files' scan rows are written as each import finishes.
   const uploaded = when(b.created_at) ?? when(b.first_uploaded);
@@ -234,12 +236,13 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
         </TableCell>
 
         {/* When — the upload time; a batch has no single run time. */}
-        <TableCell className="min-w-0">
-          <p className="break-words text-metadata tabular-nums">{uploaded ?? '—'}</p>
-          <p className="break-words text-caption text-muted-foreground">uploaded</p>
-          {reprocessedAt && (
-            <p className="break-words text-caption text-muted-foreground">re-processed {reprocessedAt}</p>
-          )}
+        {/* UX review 2026-09-24 — one time line (no zone: the page names it
+            once) and one muted line; it wrapped to four. */}
+        <TableCell className="min-w-0" title={[uploaded && `Uploaded ${uploaded}`, reprocessedAt && `A file re-processed ${reprocessedAt}`].filter(Boolean).join('\n') || undefined}>
+          <p className="break-words text-metadata tabular-nums">{compact(b.created_at) ?? compact(b.first_uploaded) ?? '—'}</p>
+          <p className="break-words text-caption text-muted-foreground">
+            uploaded{reprocessedAt ? ` · re-processed ${compact(b.last_uploaded)}` : ''}
+          </p>
         </TableCell>
 
         {/* New hosts — as on a file row: added, out of the unique hosts seen. */}
@@ -339,7 +342,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           {expired > 0 && (
             <p className="text-caption text-muted-foreground">
               <Link
-                to="/parse-errors?status=failed"
+                to="/parse-errors?status=expired"
                 className={reasonLink}
                 title="Uploaded but never started: nobody reviewed their format within 24 hours, so the files were removed"
               >
@@ -375,25 +378,28 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
 
         {/* Actions */}
         <TableCell>
-          <div className="flex justify-end">
-            <Button
-              variant="ghost"
-              size="sm"
-              className="shrink-0"
-              onClick={() => void toggle()}
-              aria-expanded={!!state}
-              aria-label={`${state ? 'Hide' : 'Show'} the files of ${name.title}`}
-            >
-              {state === 'loading' ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : state ? (
-                <ChevronDown className="size-4" aria-hidden />
-              ) : (
-                <ChevronRight className="size-4" aria-hidden />
-              )}
-              Files
-            </Button>
-          </div>
+          {/* The same two slots as a file row (ScanRowActions): the quiet link
+              where a file row says "Hosts", an empty menu slot. */}
+          <ScanRowActions
+            link={
+              <button
+                type="button"
+                className={ROW_LINK_CLASS}
+                onClick={() => void toggle()}
+                aria-expanded={!!state}
+                aria-label={`${state ? 'Hide' : 'Show'} the files of ${name.title}`}
+              >
+                Files
+                {state === 'loading' ? (
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                ) : state ? (
+                  <ChevronDown className="size-3.5" aria-hidden />
+                ) : (
+                  <ChevronRight className="size-3.5" aria-hidden />
+                )}
+              </button>
+            }
+          />
         </TableCell>
       </TableRow>
       {state === 'error' && (
@@ -462,15 +468,17 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                   )}
                 </TableCell>
                 <TableCell>
-                  <div className="flex justify-end">
-                    <Link
-                      to={`/parse-errors?job_id=${job.id}`}
-                      className={`${reasonLink} text-caption text-primary`}
-                      aria-label={`Open ${job.original_filename} in Ingestion Results`}
-                    >
-                      Details
-                    </Link>
-                  </div>
+                  <ScanRowActions
+                    link={
+                      <Link
+                        to={`/parse-errors?job_id=${job.id}`}
+                        className={ROW_LINK_CLASS}
+                        aria-label={`Open ${job.original_filename} in Ingestion Results`}
+                      >
+                        Details
+                      </Link>
+                    }
+                  />
                 </TableCell>
               </TableRow>
             );
@@ -544,7 +552,19 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
                     </span>
                   )}
                 </TableCell>
-                <TableCell />
+                <TableCell>
+                  <ScanRowActions
+                    link={s.total_hosts > 0 ? (
+                      <Link
+                        to={`/hosts?scan_ids=${s.id}`}
+                        className={ROW_LINK_CLASS}
+                        title="Open the Hosts page filtered to this file"
+                      >
+                        Hosts
+                      </Link>
+                    ) : null}
+                  />
+                </TableCell>
               </TableRow>
             );
           })}
