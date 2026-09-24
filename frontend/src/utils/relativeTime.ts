@@ -109,8 +109,14 @@ export function formatRelativeTime<F = string>(
   return 'just now';
 }
 
-/** Absolute local timestamp, or a fallback — the other half of the pair most
- *  of these components needed, hand-rolled almost as often. */
+/** THE absolute date formats (v5.294.0, UX review). Pages had five: "9/11/2026,
+ *  2:19:37 PM", "Sep 18, 2026, 10:20 PM", "2026-08-26", "9/24/2026" and bare
+ *  relative ages. An absolute moment reads "Sep 18, 2026, 10:20 PM"; a day reads
+ *  "Sep 18, 2026". Lists show a relative age with this on hover (`TimeAgo`). */
+const TIMESTAMP_FORMAT: Intl.DateTimeFormatOptions = { dateStyle: 'medium', timeStyle: 'short' };
+const DATE_FORMAT: Intl.DateTimeFormatOptions = { dateStyle: 'medium' };
+
+/** Absolute local timestamp ("Sep 18, 2026, 10:20 PM"), or a fallback. */
 export function formatTimestamp<F = string>(
   value: string | number | Date | null | undefined,
   fallback: F = '—' as unknown as F,
@@ -118,5 +124,22 @@ export function formatTimestamp<F = string>(
   if (value === null || value === undefined || value === '') return fallback;
   const ms = toMillis(value);
   if (Number.isNaN(ms)) return fallback;
-  return new Date(ms).toLocaleString();
+  return new Date(ms).toLocaleString(undefined, TIMESTAMP_FORMAT);
+}
+
+/** Absolute local day ("Sep 18, 2026"), or a fallback. A bare `YYYY-MM-DD`
+ *  (a date column, no time) is read as that calendar day, not UTC midnight —
+ *  otherwise it prints as the previous day west of Greenwich. */
+export function formatDate<F = string>(
+  value: string | number | Date | null | undefined,
+  fallback: F = '—' as unknown as F,
+): string | F {
+  if (value === null || value === undefined || value === '') return fallback;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    const [y, m, d] = value.split('-').map(Number);
+    return new Date(y, m - 1, d).toLocaleDateString(undefined, DATE_FORMAT);
+  }
+  const ms = toMillis(value);
+  if (Number.isNaN(ms)) return fallback;
+  return new Date(ms).toLocaleDateString(undefined, DATE_FORMAT);
 }

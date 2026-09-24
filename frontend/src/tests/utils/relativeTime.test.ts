@@ -9,7 +9,7 @@
  */
 import { describe, it, expect } from 'vitest';
 
-import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
+import { formatDate, formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 
 const NOW = Date.parse('2026-08-19T12:00:00Z');
 const ago = (ms: number) => new Date(NOW - ms).toISOString();
@@ -102,10 +102,21 @@ describe('formatRelativeTime', () => {
 describe('formatTimestamp', () => {
   it('formats an absolute local time, with a fallback for nothing', () => {
     expect(formatTimestamp('2026-08-19T12:00:00Z')).toBe(
-      new Date('2026-08-19T12:00:00Z').toLocaleString(),
+      new Date('2026-08-19T12:00:00Z').toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }),
     );
     expect(formatTimestamp(null)).toBe('—');
     expect(formatTimestamp('nonsense')).toBe('—');
     expect(formatTimestamp(null, 'never')).toBe('never');
+  });
+});
+
+describe('formatDate', () => {
+  it('formats a day in the one medium style, a bare date as that calendar day', () => {
+    expect(formatDate('2026-08-19')).toBe(new Date(2026, 7, 19).toLocaleDateString(undefined, { dateStyle: 'medium' }));
+    expect(formatDate('2026-08-19T12:00:00Z')).toBe(
+      new Date('2026-08-19T12:00:00Z').toLocaleDateString(undefined, { dateStyle: 'medium' }),
+    );
+    expect(formatDate(null)).toBe('—');
+    expect(formatDate('nope', '')).toBe('');
   });
 });
