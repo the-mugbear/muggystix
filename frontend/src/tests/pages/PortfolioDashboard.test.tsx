@@ -91,6 +91,20 @@ describe('Portfolio', () => {
     expect(within(table).getByTitle(`Open ${LONG}`)).toHaveClass('truncate');
   });
 
+  // At ~1500px the Waiting header and "36 in review · 351 not started" wrapped
+  // while Hosts (a single number) held 12% of the width.
+  it('sizes the short columns to their content and keeps review and the Waiting header on one line', async () => {
+    await renderPage();
+    const table = screen.getByRole('table', { name: /worst first/ });
+    const col = (name: string) => table.querySelector(`col[data-col="${name}"]`) as HTMLElement;
+    expect(col('hosts').style.width).toBe('6rem');
+    expect(col('review').style.width).toBe('16rem');
+    expect(col('waiting').style.width).toBe('15rem');
+    expect(col('found').style.width).toBe(''); // takes the remaining width
+    expect(within(table).getByRole('columnheader', { name: /Waiting · last import/ })).toHaveClass('whitespace-nowrap');
+    expect(within(table).getAllByText('2 in review · 5 not started')[0]).toHaveClass('whitespace-nowrap');
+  });
+
   it('a measure filters the table to the projects it counts; Reset shows them all', async () => {
     await renderPage();
     fireEvent.click(screen.getByRole('button', { name: /1 plan to approve/ }));

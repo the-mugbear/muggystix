@@ -42,6 +42,8 @@ interface UserSession {
   created_at: string;
   last_activity: string;
   expires_at: string;
+  /** v5.288.0 — true for the session this browser's token belongs to. */
+  current?: boolean;
 }
 
 interface MyProjectMembership {
@@ -78,7 +80,7 @@ const roleVariant = (
 const formatDate = (s: string | null | undefined) => (s ? new Date(s).toLocaleString() : '—');
 
 const Profile: React.FC = () => {
-  const { user, updateUser } = useAuth();
+  const { user, updateUser, logout } = useAuth();
   const { selectProject, projects } = useProject();
   const navigate = useNavigate();
   const toast = useToast();
@@ -197,9 +199,22 @@ const Profile: React.FC = () => {
   };
 
   const handleRevokeSession = async (session: UserSession) => {
+    if (session.current) {
+      // Revoking this browser's own session is signing out: say so, then go
+      // through the normal logout (which revokes this session server-side
+      // and clears local auth), instead of leaving a dead token behind.
+      const ok = await confirm({
+        title: 'Revoke this session?',
+        body: 'This is the session you are using now. You will be signed out.',
+        severity: 'danger',
+        confirmLabel: 'Sign out',
+      });
+      if (ok) logout();
+      return;
+    }
     const ok = await confirm({
       title: 'Revoke session?',
-      body: `This will sign out the session on ${session.ip_address}. If it's this browser, you'll be redirected to login on the next request.`,
+      body: `This will sign out the session on ${session.ip_address}.`,
       severity: 'danger',
       confirmLabel: 'Revoke',
     });
@@ -251,22 +266,22 @@ const Profile: React.FC = () => {
 
         <PostureSection title="Profile information">
             <form onSubmit={handleProfileSubmit} className="flex max-w-md flex-col gap-md">
+              {/* v5.288.0 — the username is shown as text, not as an input:
+                  a read-only field styled like the editable Full Name one
+                  looked editable. Plain text stays readable in browse mode
+                  (the reason it was readOnly rather than disabled, a11y·L4). */}
               <div className="flex flex-col gap-xs">
-                <Label htmlFor="profile-username">Username</Label>
-                {/* readOnly (not disabled) so NVDA browse-mode users can
-                    still navigate to the field and read its value
-                    (audit a11y·L4). */}
-                <Input
-                  id="profile-username"
-                  value={user.username}
-                  readOnly
-                  aria-readonly
-                  aria-describedby="profile-username-help"
-                />
+                <span className="text-caption font-medium leading-none text-foreground">
+                  Username
+                </span>
                 <p
-                  id="profile-username-help"
-                  className="text-caption text-muted-foreground"
+                  className="min-w-0 truncate text-metadata text-foreground"
+                  title={user.username}
+                  data-testid="profile-username"
                 >
+                  {user.username}
+                </p>
+                <p className="text-caption text-muted-foreground">
                   Username cannot be changed.
                 </p>
               </div>
@@ -414,7 +429,10 @@ const Profile: React.FC = () => {
                     {index > 0 && <Separator className="my-sm" />}
                     <div className="flex items-start gap-sm">
                       <div className="min-w-0 flex-1">
-                        <p className="text-metadata font-medium text-foreground">{session.ip_address}</p>
+                        <p className="flex min-w-0 flex-wrap items-center gap-xs text-metadata font-medium text-foreground">
+                          <span className="min-w-0 truncate">{session.ip_address}</span>
+                          {session.current && <Badge variant="info">This session</Badge>}
+                        </p>
                         <p className="text-caption text-muted-foreground line-clamp-2 break-all">
                           {session.user_agent}
                         </p>
@@ -428,7 +446,11 @@ const Profile: React.FC = () => {
                         variant="ghost"
                         size="icon"
                         onClick={() => handleRevokeSession(session)}
-                        aria-label={`Revoke session from ${session.ip_address}`}
+                        aria-label={
+                          session.current
+                            ? 'Revoke this session and sign out'
+                            : `Revoke session from ${session.ip_address}`
+                        }
                         className={cn('text-muted-foreground hover:text-destructive')}
                       >
                         <Trash2 className="size-4" aria-hidden />

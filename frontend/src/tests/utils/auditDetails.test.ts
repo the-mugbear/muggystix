@@ -28,6 +28,11 @@ describe('formatAuditDetails', () => {
   });
 
   it('passes strings through and has nothing to show for empty details', () => {
+    // A username equal to the row's actor repeats the User column.
+    expect(formatAuditDetails({ username: 'admin', method: 'totp' }, { actorUsername: 'admin' })).toBe('method: TOTP');
+    expect(formatAuditDetails({ username: 'admin' }, { actorUsername: 'admin' })).toBeNull();
+    expect(formatAuditDetails({ username: 'mallory' }, { actorUsername: 'admin' })).toBe('username: mallory');
+    expect(formatAuditDetails({ username: 'mallory' }, { actorUsername: null })).toBe('username: mallory');
     expect(formatAuditDetails('free text')).toBe('free text');
     expect(formatAuditDetails(null)).toBeNull();
     expect(formatAuditDetails({})).toBeNull();

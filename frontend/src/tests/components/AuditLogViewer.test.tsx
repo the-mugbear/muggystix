@@ -83,7 +83,8 @@ describe('AuditLogViewer', () => {
     expect(within(rows[1]).getByText('admin')).toBeInTheDocument();
     expect(within(rows[1]).getByText('method: password')).toBeInTheDocument();
     // No actor → a dash; the failure keeps its error text.
-    const userCell = (r: HTMLElement) => within(r).getAllByRole('cell')[3];
+    // No row here has a resource, so the columns are When, Action, User, …
+    const userCell = (r: HTMLElement) => within(r).getAllByRole('cell')[2];
     expect(userCell(rows[2]).textContent).toBe('—');
     expect(userCell(rows[0]).textContent).toBe('Ana Ortiz');
     expect(within(rows[2]).getByText('Invalid credentials')).toBeInTheDocument();
@@ -91,6 +92,44 @@ describe('AuditLogViewer', () => {
 
     expect(table.textContent).not.toMatch(/\{"method"/);
     expect(within(rows[0]).queryByText('3')).toBeNull();
+  });
+
+  // A page of login events was a Resource column of dashes.
+  it('hides the Resource column when no row on the page has a resource', async () => {
+    render(<AuditLogViewer />);
+    const table = await screen.findByRole('table');
+    expect(within(table).queryByRole('columnheader', { name: 'Resource' })).toBeNull();
+  });
+
+  it('shows the Resource column when a row on the page has one', async () => {
+    mocked.listAuditLogs.mockResolvedValue({
+      logs: [row(), row({ id: 2, action: 'user_updated', resource_type: 'user', resource_id: '7' })],
+      total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
+    });
+    render(<AuditLogViewer />);
+    const table = await screen.findByRole('table');
+    expect(within(table).getByRole('columnheader', { name: 'Resource' })).toBeInTheDocument();
+    expect(within(table).getByText('#7')).toBeInTheDocument();
+  });
+
+  // "username: admin" beside a User column that already says admin.
+  it('omits a username detail that repeats the actor, keeps one that does not', async () => {
+    mocked.listAuditLogs.mockResolvedValue({
+      logs: [
+        row({ id: 1, user_username: 'admin', user_full_name: null, details: { username: 'admin', method: 'password' } }),
+        row({
+          id: 2, user_id: null, user_username: null, user_full_name: null, action: 'login_failed',
+          success: false, details: { username: 'review-probe-nonexistent' }, error_message: 'Invalid credentials',
+        }),
+      ],
+      total: 2, skip: 0, limit: AUDIT_PAGE_SIZE,
+    });
+    render(<AuditLogViewer />);
+    const table = await screen.findByRole('table');
+    const rows = within(table).getAllByRole('row').slice(1);
+    expect(within(rows[0]).getByText('method: password')).toBeInTheDocument();
+    expect(rows[0].textContent).not.toMatch(/username:/);
+    expect(within(rows[1]).getByText(/username: review-probe-nonexistent/)).toBeInTheDocument();
   });
 
   it('pages by 20 and keeps the total', async () => {

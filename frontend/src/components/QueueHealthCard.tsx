@@ -75,9 +75,13 @@ const formatAge = (seconds: number): string => {
  */
 const assess = (
   q: QueueSnapshot & { failed_by_project?: FailedJobsInProject[] },
+  /** Lower-case queue name ("scan ingestion"); v5.288.0 — it is used
+   *  mid-sentence ("4 failed scan ingestion jobs"), and capitalised only
+   *  where it opens the headline. */
   label: string,
   surface: QueueSurface,
 ): Verdict => {
+  const Label = label.charAt(0).toUpperCase() + label.slice(1);
   if (q.stale_processing > 0) {
     return {
       tone: 'bad',
@@ -95,7 +99,7 @@ const assess = (
   if (q.queued > 0 && q.oldest_queued_age_seconds > 900) {
     return {
       tone: 'warn',
-      headline: `${label} backlog not draining`,
+      headline: `${Label} backlog not draining`,
       action:
         `${q.queued} job${q.queued === 1 ? '' : 's'} waiting, oldest for ` +
         `${formatAge(q.oldest_queued_age_seconds)}. Confirm the worker container is up and not wedged.`,
@@ -118,10 +122,10 @@ const assess = (
     tone: 'ok',
     headline:
       q.processing > 0
-        ? `${label} healthy — ${q.processing} in flight`
+        ? `${Label} healthy — ${q.processing} in flight`
         : q.completed_last_hour > 0
-          ? `${label} healthy — ${q.completed_last_hour} completed in the last hour`
-          : `${label} idle`,
+          ? `${Label} healthy — ${q.completed_last_hour} completed in the last hour`
+          : `${Label} idle`,
   };
 };
 
@@ -249,8 +253,8 @@ export const QueueHealthCard: React.FC = () => {
           </Alert>
         ) : metrics ? (
           <div className="flex flex-col gap-sm">
-            <VerdictRow verdict={assess(metrics.ingestion, 'Scan ingestion', INGESTION_SURFACE)} />
-            <VerdictRow verdict={assess(metrics.report, 'Report', REPORT_SURFACE)} />
+            <VerdictRow verdict={assess(metrics.ingestion, 'scan ingestion', INGESTION_SURFACE)} />
+            <VerdictRow verdict={assess(metrics.report, 'report', REPORT_SURFACE)} />
             <p className="text-caption text-muted-foreground">
               Checked {new Date(metrics.generated_at).toLocaleTimeString()}
             </p>
