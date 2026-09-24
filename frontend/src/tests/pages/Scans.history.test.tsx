@@ -106,6 +106,32 @@ describe('Scans — filter by uploader (v5.281.0)', () => {
       expect(api.getScanBatches).toHaveBeenCalledWith(expect.objectContaining({ uploadedBy: 7 }));
     });
   });
+
+  it('shows the uploader\'s full name, keeping the id as the value', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      uploaders: [
+        { user_id: 1, username: 'ana', full_name: 'Ana Analyst', files: 2 },
+        { user_id: 7, username: 'ben', full_name: null, files: 1 },
+      ],
+    });
+    renderPage('/scans?uploaded_by=1');
+    const chooser = await screen.findByRole('combobox', { name: /filter scans by uploader/i });
+    expect(chooser).toHaveTextContent('Ana Analyst (2)');
+    expect(chooser).not.toHaveTextContent('ana (2)');
+  });
+});
+
+// Screenshot 2026-09-23: "Sep 7, 2026, 04:16 P…" / "uploaded · run time un…".
+describe('Scans — the When column', () => {
+  it('wraps the time and its note instead of cutting them off', async () => {
+    renderPage();
+    await screen.findByText('newest.xml');
+    const note = screen.getAllByText('uploaded · run time unknown')[0];
+    expect(note).not.toHaveClass('truncate');
+    expect(note).toHaveClass('break-words');
+    expect(note.previousElementSibling).not.toHaveClass('truncate');
+  });
 });
 
 describe('Scans — import history', () => {
@@ -206,6 +232,39 @@ describe('Scans — layout', () => {
     await screen.findByText('newest.xml');
     expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Ingestion queue' })).not.toBeInTheDocument();
+  });
+
+  // Screenshot 2026-09-23: "nothing failed" beside a batch whose 31 files had
+  // all expired — the lead read only the 25 most recent jobs.
+  it('counts the whole project\'s failures from the summary, not the recent queue', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 78, imports_not_imported: 31,
+    });
+    renderPage();
+    const link = await screen.findByRole('link', { name: /78 failed or partial imports need attention/ });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=needs_attention');
+    expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
+  });
+
+  it('never says "nothing failed" while dismissed failures exist; says they were never imported', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 0, imports_not_imported: 31,
+    });
+    renderPage();
+    const link = await screen.findByRole('link', { name: '31 files were never imported' });
+    expect(link).toHaveAttribute('href', '/parse-errors?status=failed');
+    expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
+  });
+
+  it('says "nothing failed" only when the project has no failed job at all', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 0, imports_not_imported: 0,
+    });
+    renderPage();
+    expect(await screen.findByText(/imported; nothing failed/)).toBeInTheDocument();
   });
 
   it('says so when the queue could not be read — never "nothing failed"', async () => {

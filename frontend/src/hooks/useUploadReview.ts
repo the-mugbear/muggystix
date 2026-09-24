@@ -28,6 +28,7 @@ import type { DetectionResponse, FormatOption, UploadOptions } from '../services
 import { formatApiError } from '../utils/apiErrors';
 import { duplicateUploadOf, type DuplicateUpload } from '../utils/duplicateUpload';
 import { runLimited, STAGE_CONCURRENCY, START_CONCURRENCY } from '../utils/runLimited';
+import { formatInstant } from '../utils/scanTime';
 
 export type ReviewPhase =
   | 'uploading'
@@ -254,7 +255,12 @@ export function useUploadReview({ skipInformational, onStarted, deps }: UseUploa
       let batchId: number | undefined;
       if (files.length > 1) {
         try {
-          const created = await api.createScanBatch(`${files.length} files · ${new Date(startedAt).toLocaleString()}`);
+          // "uploaded", in the table's time format: the batch row's own count
+          // is what IMPORTED (a re-processed file later joins the batch), so
+          // the generated name must not read as the same figure.
+          const created = await api.createScanBatch(
+            `${files.length} files uploaded · ${formatInstant(new Date(startedAt))}`,
+          );
           batchId = created.id;
           setBatch({ id: created.id, label: created.label, named: false });
         } catch (err) {

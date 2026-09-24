@@ -735,6 +735,8 @@ class ScanSummary(_ScanRunWindow):
     # Username of the analyst who uploaded this scan (None for agent/recon
     # ingests or deleted users) — surfaced for multi-analyst attribution.
     uploaded_by: Optional[str] = None
+    # v2.400.0 — their full name, else the username: what the page displays.
+    uploaded_by_name: Optional[str] = None
     port_breakdown: Optional[ScanPortBreakdown] = None
     vulnerability_summary: Optional[ScanVulnerabilitySummary] = None
     # v2.333.0 — hosts this scan fingerprinted an OS for, and per-kind

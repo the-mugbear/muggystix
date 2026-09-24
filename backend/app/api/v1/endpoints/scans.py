@@ -25,6 +25,8 @@ from app.schemas.schemas import (
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.format_registry import format_label
+from app.services.operations_read_service import blocked_import_condition
+from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.host_query_common import escape_like
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
@@ -83,6 +85,8 @@ class CountResponse(BaseModel):
 class ScanUploader(BaseModel):
     user_id: int
     username: str
+    # v2.400.0 — what the chooser displays; the username stays the value.
+    full_name: Optional[str] = None
     files: int
 
 
@@ -106,6 +110,18 @@ class ScanInventorySummary(BaseModel):
     # v2.396.0 — who uploaded the matching files (search/date/tool filters,
     # NOT the uploader filter), most files first; drives the uploader chooser.
     uploaders: List[ScanUploader] = Field(default_factory=list)
+    # v2.400.0 — the lead's failure figures, over the WHOLE project (the
+    # ingestion queue is not filtered by the page's filters).  The lead read
+    # only the 25 most recent jobs, so it said "nothing failed" while older
+    # failures — or a batch whose every file expired — existed.
+    imports_need_attention: int = Field(
+        0, ge=0,
+        description="Imports that failed or finished partial and nobody dismissed (Ingestion Results' needs-attention view)",
+    )
+    imports_not_imported: int = Field(
+        0, ge=0,
+        description="Failed jobs already dismissed — discarded, expired before review, or failures acknowledged",
+    )
 
 
 class CommandArgument(BaseModel):
@@ -717,12 +733,14 @@ def get_scans(
     # page — mirrors the port/vuln batch maps above; avoids per-row joins
     # and keeps uploaded_by_id out of a User-joined GROUP BY.
     uploader_map: Dict[int, str] = {}
+    uploader_names: Dict[int, str] = {}
     uploader_ids = {r.uploaded_by_id for r in results if r.uploaded_by_id is not None}
     if uploader_ids:
-        uploader_map = {
-            uid: uname
-            for uid, uname in db.query(User.id, User.username).filter(User.id.in_(uploader_ids)).all()
-        }
+        for uid, uname, full in (
+            db.query(User.id, User.username, User.full_name).filter(User.id.in_(uploader_ids)).all()
+        ):
+            uploader_map[uid] = uname
+            uploader_names[uid] = full or uname
 
     batch_ids = {r.batch_id for r in results if r.batch_id is not None}
     batch_labels: Dict[int, str] = (
@@ -783,6 +801,7 @@ def get_scans(
             port_breakdown=port_breakdown,
             vulnerability_summary=vulnerability_summary,
             uploaded_by=uploader_map.get(result.uploaded_by_id),
+            uploaded_by_name=uploader_names.get(result.uploaded_by_id),
             time_source=result.time_source,
             os_fingerprinted=result.os_fingerprinted or 0,
             web=web_stats_map.get(result.id),
@@ -875,17 +894,30 @@ def get_scans_summary(
     # Who uploaded what matches the other filters — never narrowed by the
     # uploader filter itself, so the chooser keeps offering everyone else.
     uploaders_q = _apply_scan_inventory_filters(
-        db.query(User.id, User.username, func.count(models.Scan.id))
+        db.query(User.id, User.username, User.full_name, func.count(models.Scan.id))
         .select_from(models.Scan)
         .join(User, User.id == models.Scan.uploaded_by_id)
         .filter(models.Scan.project_id == project.id),
         search=search, tool=tool, created_after=created_after,
     )
     uploaders = [
-        ScanUploader(user_id=uid, username=name, files=int(n))
-        for uid, name, n in uploaders_q.group_by(User.id, User.username)
+        ScanUploader(user_id=uid, username=name, full_name=(full or None), files=int(n))
+        for uid, name, full, n in uploaders_q.group_by(User.id, User.username, User.full_name)
         .order_by(func.count(models.Scan.id).desc(), User.username).all()
     ]
+
+    # The lead's failure figures, project-wide, in one statement: what needs
+    # someone (the ONE definition Ingestion Results and Operations use), and
+    # what failed but was already dismissed (discards, expiries included).
+    Job = models.IngestionJob
+    attention, not_imported = (
+        db.query(
+            func.count(case((blocked_import_condition(), Job.id))),
+            func.count(case((and_(Job.status == "failed", Job.dismissed_at.isnot(None)), Job.id))),
+        )
+        .filter(Job.project_id == project.id)
+        .one()
+    )
 
     return ScanInventorySummary(
         total_scans=host_row.total_scans or 0,
@@ -895,6 +927,8 @@ def get_scans_summary(
         tool_counts=tool_counts,
         total_files=sum(tool_counts.values()),
         uploaders=uploaders,
+        imports_need_attention=int(attention or 0),
+        imports_not_imported=int(not_imported or 0),
     )
 
 
@@ -941,6 +975,18 @@ class ScanBatchSummary(BaseModel):
     # dropped batch read "0 imported" with nothing saying where its files were.
     staged_files: int = Field(0, description="Files uploaded and waiting for the operator's format review")
     discarded_files: int = Field(0, description="Staged files the operator discarded before import")
+    # v2.400.0 — the rest of the reasons a file of the batch was not
+    # imported, so a batch with nothing imported always says why (a batch
+    # whose 31 staged files expired read "0 files · nothing imported").
+    expired_files: int = Field(0, description="Staged files nobody started before the staged-upload expiry")
+    dismissed_failed_files: int = Field(
+        0, description="Files that failed to import and whose failure was dismissed (not discards or expiries)",
+    )
+    # A re-processed file joins its original's batch as a NEW job, so a batch
+    # labelled "31 files" can hold 32 scans; this says how many are that.
+    reprocessed_files: int = Field(0, description="Imported files that are re-imports of an earlier file of the batch")
+    # The creator's full name, else username — what the row displays.
+    created_by_name: Optional[str] = None
 
 
 class ImportHistoryEntry(BaseModel):
@@ -1290,58 +1336,55 @@ def list_scan_batches(
     )
     # Files still in the pipeline, or failed and not yet acknowledged — the
     # difference between "this sweep is done" and "it is still landing".
-    pending: Dict[int, int] = {}
-    failed: Dict[int, int] = {}
-    staged: Dict[int, int] = {}
-    discarded: Dict[int, int] = {}
-    # A discard is a dismissed failure with this message (staged_import_service
-    # .discard_staged_job); any other dismissed failure stays uncounted, as before.
-    is_discard = and_(
-        models.IngestionJob.status == "failed",
-        models.IngestionJob.error_message == "Discarded before import",
-    )
-    for bid, status, was_discarded, n in (
-        db.query(
-            models.IngestionJob.batch_id, models.IngestionJob.status,
-            case((is_discard, True), else_=False),
-            func.count(models.IngestionJob.id),
-        )
-        .filter(
-            models.IngestionJob.batch_id.in_(ids),
-            or_(
-                models.IngestionJob.status.in_(("queued", "processing", "staged")),
-                and_(models.IngestionJob.status == "failed", models.IngestionJob.dismissed_at.is_(None)),
-                is_discard,
-            ),
-        )
-        .group_by(models.IngestionJob.batch_id, models.IngestionJob.status, case((is_discard, True), else_=False))
+    # v2.400.0 — every job of the batch lands in exactly one bucket, so a
+    # batch with nothing imported always has a reason to show: a discard or
+    # an expiry is a dismissed failure with its own message
+    # (staged_import_service), any other dismissed failure is "dismissed".
+    Job = models.IngestionJob
+    bucket = case(
+        (Job.status.in_(("queued", "processing")), literal("pending")),
+        (Job.status == "staged", literal("staged")),
+        (and_(Job.status == "failed", Job.error_message == DISCARDED_MESSAGE), literal("discarded")),
+        (and_(Job.status == "failed", Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")), literal("expired")),
+        (and_(Job.status == "failed", Job.dismissed_at.is_(None)), literal("failed")),
+        (Job.status == "failed", literal("dismissed")),
+        (and_(Job.status == "completed", Job.options["reprocess_of_job_id"].as_string().isnot(None)),
+         literal("reprocessed")),
+        else_=literal("other"),
+    ).label("bucket")
+    buckets: Dict[str, Dict[int, int]] = {}
+    for bid, name, n in (
+        db.query(Job.batch_id, bucket, func.count(Job.id))
+        .filter(Job.batch_id.in_(ids))
+        .group_by(Job.batch_id, bucket)
         .all()
     ):
-        if was_discarded:
-            target = discarded
-        elif status == "failed":
-            target = failed
-        elif status == "staged":
-            target = staged
-        else:
-            target = pending
-        target[bid] = target.get(bid, 0) + n
+        buckets.setdefault(name, {})[bid] = int(n)
+    pending = buckets.get("pending", {})
+    failed = buckets.get("failed", {})
+    staged = buckets.get("staged", {})
+    discarded = buckets.get("discarded", {})
     creator_ids = {b.created_by_id for b in batches.values() if b.created_by_id is not None}
-    creators = (
-        dict(db.query(User.id, User.username).filter(User.id.in_(creator_ids)).all())
-        if creator_ids else {}
-    )
+    creators = {
+        uid: (uname, full)
+        for uid, uname, full in (
+            db.query(User.id, User.username, User.full_name).filter(User.id.in_(creator_ids)).all()
+            if creator_ids else []
+        )
+    }
 
     out = []
     for b in kept:
         r = match_rows.get(b.id)
         stats = host_stats.get(b.id)
         imported = total_files.get(b.id, 0)
+        uname, full = creators.get(b.created_by_id, (None, None))
         out.append(ScanBatchSummary(
             id=b.id,
             label=b.label,
             created_at=b.created_at,
-            created_by=creators.get(b.created_by_id),
+            created_by=uname,
+            created_by_name=(full or uname),
             recon_session_id=b.recon_session_id,
             files=(r.files if r is not None else 0),
             total_files=imported,
@@ -1357,6 +1400,9 @@ def list_scan_batches(
             failed_files=failed.get(b.id, 0),
             staged_files=staged.get(b.id, 0),
             discarded_files=discarded.get(b.id, 0),
+            expired_files=buckets.get("expired", {}).get(b.id, 0),
+            dismissed_failed_files=buckets.get("dismissed", {}).get(b.id, 0),
+            reprocessed_files=buckets.get("reprocessed", {}).get(b.id, 0),
         ))
     return out
 

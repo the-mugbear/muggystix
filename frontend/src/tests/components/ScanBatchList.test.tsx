@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 
 vi.mock('../../services/api', () => ({ getScans: vi.fn() }));
 
@@ -7,6 +8,7 @@ import { ScanBatchRow } from '../../components/scans/ScanBatchList';
 import { Table, TableBody } from '../../components/ui/table';
 import { getScans } from '../../services/api';
 import type { ScanBatchSummary } from '../../services/api';
+import { formatInstant } from '../../utils/scanTime';
 
 // An agent sweep of a large scope arrives as hundreds of chunk files; the
 // Scans page shows each sweep as one row that expands to its files.
@@ -26,13 +28,23 @@ const batch: ScanBatchSummary = {
   failed_files: 1,
 };
 
+const TZ = { timeZone: 'UTC', locale: 'en-US' };
+
 // The batch is a group row inside the import history table (v5.239.0).
-const renderRow = (filters: { tool?: string }, onViewScan = vi.fn()) =>
+const renderRow = (filters: { tool?: string }, onViewScan = vi.fn(), b: ScanBatchSummary = batch) =>
   render(
-    <Table><TableBody>
-      <ScanBatchRow batch={batch} filters={filters} onViewScan={onViewScan} colSpan={6} />
-    </TableBody></Table>,
+    <MemoryRouter>
+      <Table><TableBody>
+        <ScanBatchRow batch={b} filters={filters} onViewScan={onViewScan} colSpan={5} timeFormat={TZ} />
+      </TableBody></Table>
+    </MemoryRouter>,
   );
+
+/** The batch row's cells, in the table's column order. */
+const cells = (container: HTMLElement) => {
+  const row = container.querySelector('tr[data-batch-id]') as HTMLTableRowElement;
+  return Array.from(row.querySelectorAll('td'));
+};
 
 describe('ScanBatchRow', () => {
   beforeEach(() => {
@@ -44,11 +56,68 @@ describe('ScanBatchRow', () => {
     expect(screen.getByText('nmap-tcp-top1000')).toBeInTheDocument();
     // Says what kind of row it is: it sits among single files now.
     expect(screen.getByText('Upload batch · Recon session #3')).toBeInTheDocument();
-    expect(screen.getByText('312')).toBeInTheDocument();
-    expect(screen.getByText('+850 new')).toBeInTheDocument();
+    expect(screen.getByText(/312 files imported/)).toBeInTheDocument();
+    expect(screen.getByText('+850')).toBeInTheDocument();
     expect(screen.getByText('4 processing')).toBeInTheDocument();
-    expect(screen.getByText('1 failed')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: '1 failed' })).toHaveAttribute('href', '/parse-errors?status=needs_attention');
     expect(getScans).not.toHaveBeenCalled();
+  });
+
+  // Screenshot 2026-09-23: one full-width cell put "32 files" under WHEN and
+  // the times in a fifth block past the last header.
+  it('fills the same five columns as a file row: Scan · When · New hosts · Contributed · Actions', () => {
+    const { container } = renderRow({});
+    const [scan, when, newHosts, contributed, actions, ...rest] = cells(container);
+    expect(rest).toHaveLength(0);
+    expect(scan).toHaveTextContent('nmap-tcp-top1000');
+    expect(when).toHaveTextContent(formatInstant(new Date('2026-09-11T12:00:00Z'), TZ));
+    expect(when).toHaveTextContent(`first file ${formatInstant(new Date('2026-09-11T10:00:00Z'), TZ)}`);
+    expect(newHosts).toHaveTextContent('+850');
+    expect(newHosts).toHaveTextContent('of 900 unique seen');
+    expect(contributed).toHaveTextContent('312 files imported');
+    expect(contributed).toHaveTextContent('120 port observations');
+    expect(within(actions).getByRole('button', { name: /show the files of/i })).toBeInTheDocument();
+    // One table, one date format: never toLocaleString's "9/11/2026, …".
+    expect(when.textContent).not.toMatch(/\d+\/\d+\/\d{4}/);
+  });
+
+  it('says a re-processed file is why the batch holds more files than its name', () => {
+    renderRow({}, vi.fn(), { ...batch, label: '31 files · x', files: 32, total_files: 32, reprocessed_files: 1 });
+    expect(screen.getByText(/32 files imported/)).toBeInTheDocument();
+    expect(screen.getByText(/incl\. 1 re-processed/)).toBeInTheDocument();
+  });
+
+  it('a batch with nothing imported says why', () => {
+    const empty = {
+      ...batch, label: '31 files · y', recon_session_id: null, files: 0, total_files: 0, hosts: 0, new_hosts: 0,
+      open_ports: 0, tools: [], pending_files: 0, processing_files: 0, failed_files: 0, expired_files: 31,
+    };
+    const { container } = renderRow({}, vi.fn(), empty);
+    const contributed = cells(container)[3];
+    expect(contributed).toHaveTextContent('Nothing imported');
+    expect(within(contributed).getByRole('link', { name: '31 expired before import' }))
+      .toHaveAttribute('href', '/parse-errors?status=failed');
+    expect(contributed).not.toHaveTextContent(/0 files/);
+    expect(screen.queryByText(/reached the import/)).not.toBeInTheDocument();
+  });
+
+  it('shows at most four tool chips, then "+N more" with the full list on hover', () => {
+    const tools = Array.from({ length: 22 }, (_, i) => `tool${String(i).padStart(2, '0')}`);
+    const { container } = renderRow({}, vi.fn(), { ...batch, tools });
+    const scan = cells(container)[0];
+    expect(within(scan).getByText('tool03')).toBeInTheDocument();
+    expect(within(scan).queryByText('tool04')).not.toBeInTheDocument();
+    expect(within(scan).getByText('+18 more')).toBeInTheDocument();
+    expect(scan.querySelector(`[title="${tools.join(', ')}"]`)).not.toBeNull();
+  });
+
+  it("names the uploader by full name, falling back to the username", () => {
+    const op = { ...batch, recon_session_id: null, created_by: 'admin' };
+    const { unmount } = renderRow({}, vi.fn(), { ...op, created_by_name: 'Ada Admin' });
+    expect(screen.getByText('Upload batch · Uploaded by Ada Admin')).toBeInTheDocument();
+    unmount();
+    renderRow({}, vi.fn(), op);
+    expect(screen.getByText('Upload batch · Uploaded by admin')).toBeInTheDocument();
   });
 
   it("lists a batch's files on expand, scoped to the page filters", async () => {

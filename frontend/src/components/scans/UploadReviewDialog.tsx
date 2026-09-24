@@ -157,7 +157,7 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
 
           {/* v5.239.0 — several files dropped together are ONE row of the import
               history; this is the name it is recognised by there. Optional:
-              left alone it keeps the generated "N files · time" label. */}
+              left alone it keeps the generated "N files uploaded · time" label. */}
           {review.batch && (
             <div className="flex flex-wrap items-end gap-xs">
               <div className="min-w-0 flex-1">
