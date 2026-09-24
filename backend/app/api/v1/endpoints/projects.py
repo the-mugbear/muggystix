@@ -301,6 +301,9 @@ def create_project(
 
     resp = ProjectResponse.model_validate(project)
     resp.member_count = 1
+    # v2.404.0 — the UI makes the new project the active one straight from
+    # this response, so it carries the caller's role like the list does.
+    resp.my_role = _my_role(current_user, "admin")
     return resp
 
 

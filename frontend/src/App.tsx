@@ -11,6 +11,7 @@ import ErrorBoundary from './components/ErrorBoundary';
 import HubRedirect from './components/HubRedirect';
 import { ListPageSkeleton, DetailSkeleton, CardListSkeleton } from './components/PageSkeleton';
 import Login from './pages/Login';
+import NotFound, { ProjectsRedirect } from './pages/NotFound';
 
 /**
  * Route-aware Suspense fallback (audit H16 + PRF·H2).  Pre-audit every
@@ -743,6 +744,13 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
+                      {/* v5.290.0 — kept LAST, and without a requiredRole of
+                          their own (navigation.test.ts pairs each path with the
+                          next requiredRole it finds).  /projects goes where the
+                          projects are; any other unknown URL gets a
+                          not-found page instead of an empty layout. */}
+                      <Route path="/projects" element={<ProjectsRedirect />} />
+                      <Route path="*" element={<NotFound />} />
                     </Routes>
                     </RoutedErrorBoundary>
                     </Suspense>

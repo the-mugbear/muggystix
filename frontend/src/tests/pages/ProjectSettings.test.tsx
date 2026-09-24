@@ -97,6 +97,21 @@ describe('Project settings', () => {
     expect(apiMock.put).not.toHaveBeenCalled();
   });
 
+  it('counts the name\'s characters near the API limit (v5.290.0)', async () => {
+    const { container } = renderPage();
+    await screen.findByText('Ana');
+    const name = screen.getByLabelText('Name');
+    expect(name).toHaveAttribute('maxLength', '100');
+    expect(screen.queryByText(/\/100/)).toBeNull();
+    fireEvent.change(name, { target: { value: 'x'.repeat(93) } });
+    expect(screen.getByText('93/100')).toBeInTheDocument();
+    expect(name).toHaveAttribute('aria-describedby', 'ps-name-count');
+    fireEvent.change(name, { target: { value: 'x'.repeat(100) } });
+    expect(screen.getByText('100/100 — the limit')).toBeInTheDocument();
+    // Full width like the other hub pages: no centred max-width container.
+    expect(container.firstElementChild?.className).not.toMatch(/mx-auto|max-w-6xl/);
+  });
+
   it('is read-only for an analyst', async () => {
     myRole = 'analyst';
     renderPage();

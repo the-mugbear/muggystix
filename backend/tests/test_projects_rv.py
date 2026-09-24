@@ -112,3 +112,15 @@ def test_rename_onto_a_taken_slug_allocates_a_suffix(client, db_session):
     r = client.put(f"/api/v1/projects/{other_id}", json={"name": "foo-bar"})
     assert r.status_code == 200, r.text
     assert r.json()["slug"] == "foo-bar-1"
+
+
+def test_create_response_carries_the_callers_role(client):
+    """v2.404.0 — the UI makes a project it just created the active one from
+    the create response, so the response says what the caller may do there
+    (it carried no role, and Project settings then read the creator as a
+    non-admin until a reload)."""
+    r = client.post("/api/v1/projects/", json={"name": "Fresh engagement"})
+    assert r.status_code == 201, r.text
+    body = r.json()
+    assert body["my_role"] == "admin"
+    assert body["member_count"] == 1

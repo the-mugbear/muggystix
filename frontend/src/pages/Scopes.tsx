@@ -72,6 +72,7 @@ import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
 import { buildHostsUrl } from '../utils/drilldownLinks';
+import { IP_OR_CIDR_HINT, isIpOrCidr } from '../utils/ipAddress';
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -150,9 +151,13 @@ const Scopes: React.FC = () => {
   const [newCidr, setNewCidr] = useState('');
   const [newDescription, setNewDescription] = useState('');
   const [addingSubnet, setAddingSubnet] = useState(false);
+  // v5.290.0 — a rejected entry is explained under the field, not in a
+  // toast carrying Python's parser text.
+  const [newCidrError, setNewCidrError] = useState<string | null>(null);
 
   const [editingSubnetId, setEditingSubnetId] = useState<number | null>(null);
   const [editCidrDraft, setEditCidrDraft] = useState('');
+  const [editCidrError, setEditCidrError] = useState<string | null>(null);
   const [editDescDraft, setEditDescDraft] = useState('');
   const [editSiteDraft, setEditSiteDraft] = useState('');
   const [savingSubnet, setSavingSubnet] = useState(false);
@@ -301,6 +306,11 @@ const Scopes: React.FC = () => {
 
   const handleAddSubnet = async () => {
     if (!scope || !newCidr.trim()) return;
+    if (!isIpOrCidr(newCidr)) {
+      setNewCidrError(IP_OR_CIDR_HINT);
+      return;
+    }
+    setNewCidrError(null);
     setAddingSubnet(true);
     try {
       await addScopeSubnets(scope.id, [
@@ -311,7 +321,7 @@ const Scopes: React.FC = () => {
       setNewDescription('');
       await refreshScope();
     } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to add entry.'));
+      setNewCidrError(formatApiError(err, 'Failed to add entry.'));
     } finally {
       setAddingSubnet(false);
     }
@@ -322,18 +332,25 @@ const Scopes: React.FC = () => {
   ) => {
     setEditingSubnetId(id);
     setEditCidrDraft(cidr);
+    setEditCidrError(null);
     setEditDescDraft(description || '');
     setEditSiteDraft(site || '');
   };
   const cancelEditSubnet = () => {
     setEditingSubnetId(null);
     setEditCidrDraft('');
+    setEditCidrError(null);
     setEditDescDraft('');
     setEditSiteDraft('');
   };
 
   const handleSaveSubnet = async (subnetId: number) => {
     if (!scope) return;
+    if (!isIpOrCidr(editCidrDraft)) {
+      setEditCidrError(IP_OR_CIDR_HINT);
+      return;
+    }
+    setEditCidrError(null);
     setSavingSubnet(true);
     try {
       await updateSubnet(scope.id, subnetId, {
@@ -640,14 +657,16 @@ const Scopes: React.FC = () => {
             </>}
           >
             <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-end">
-              <div className="flex-1">
+              <div className="min-w-0 flex-1">
                 <Label htmlFor="new-cidr">CIDR or IP</Label>
                 <Input
                   id="new-cidr"
                   value={newCidr}
-                  onChange={(e) => setNewCidr(e.target.value)}
+                  onChange={(e) => { setNewCidr(e.target.value); setNewCidrError(null); }}
                   placeholder="10.0.0.0/24 or 10.0.0.5"
                   disabled={addingSubnet}
+                  aria-invalid={newCidrError ? true : undefined}
+                  aria-describedby={newCidrError ? 'new-cidr-error' : undefined}
                   onKeyDown={(e) => {
                     if (e.key === 'Enter' && newCidr.trim()) handleAddSubnet();
                   }}
@@ -692,6 +711,14 @@ const Scopes: React.FC = () => {
                 Manage sites
               </Button>
             </div>
+            {/* Below the row, not inside the field's column: the row aligns
+                its items to the bottom, so a message inside would lift the
+                input off the buttons' line. */}
+            {newCidrError && (
+              <p id="new-cidr-error" role="alert" className="-mt-xs mb-sm break-words text-caption text-destructive">
+                {newCidrError}
+              </p>
+            )}
 
             {/* Subnet search — filters the server-paginated list so users
                 can jump to an entry instead of paging.  Debounced; resets
@@ -819,11 +846,21 @@ const Scopes: React.FC = () => {
                           </TableCell>
                           <TableCell>
                             {isEditing ? (
-                              <Input
-                                value={editCidrDraft}
-                                onChange={(e) => setEditCidrDraft(e.target.value)}
-                                autoFocus
-                              />
+                              <div className="min-w-0 space-y-xxs">
+                                <Input
+                                  value={editCidrDraft}
+                                  onChange={(e) => { setEditCidrDraft(e.target.value); setEditCidrError(null); }}
+                                  aria-label={`CIDR or IP for ${subnet.cidr}`}
+                                  aria-invalid={editCidrError ? true : undefined}
+                                  aria-describedby={editCidrError ? `subnet-cidr-error-${subnet.id}` : undefined}
+                                  autoFocus
+                                />
+                                {editCidrError && (
+                                  <p id={`subnet-cidr-error-${subnet.id}`} role="alert" className="break-words text-caption text-destructive">
+                                    {editCidrError}
+                                  </p>
+                                )}
+                              </div>
                             ) : (
                               <Link
                                 to={`/hosts?subnets=${encodeURIComponent(subnet.cidr)}`}

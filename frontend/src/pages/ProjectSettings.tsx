@@ -34,6 +34,7 @@ import WebhookDeliveries from '../components/WebhookDeliveries';
 import TagManagement from '../components/TagManagement';
 import { Button } from '../components/ui/button';
 import { Combobox } from '../components/ui/combobox';
+import { CharacterCount } from '../components/ui/character-count';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
@@ -67,6 +68,9 @@ export const PROJECT_ROLES: Array<{ value: string; label: string; can: string }>
   { value: 'viewer', label: 'Viewer', can: 'read the inventory' },
 ];
 const roleLabel = (r: string) => PROJECT_ROLES.find((x) => x.value === r)?.label ?? r;
+
+/** The API's `max_length` for a project name (ProjectCreate / ProjectUpdate). */
+export const PROJECT_NAME_MAX = 100;
 
 export const PROJECT_STATUSES = [
   { value: 'active', label: 'Active' },
@@ -269,7 +273,9 @@ const ProjectSettings: React.FC = () => {
   }
 
   return (
-    <div className="mx-auto max-w-6xl space-y-lg p-md md:p-lg">
+    // Full width like the other hub pages (see Reference.tsx); the forms keep
+    // their own widths (the dates grid is capped at md:max-w-lg).
+    <div className="space-y-lg p-md md:p-lg">
       <header className="flex flex-wrap items-start justify-between gap-md">
         <div className="min-w-0">
           <h1 className="text-page-title">Project settings</h1>
@@ -284,12 +290,15 @@ const ProjectSettings: React.FC = () => {
       </header>
 
       <PostureSection title="Details" description="The dates are the engagement window: they appear on client reports and scope the Oversight filters.">
-        <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void saveDetails(); }}>
+        {/* Capped so the inputs stay a readable length on the full-width page. */}
+        <form className="max-w-4xl space-y-md" onSubmit={(e) => { e.preventDefault(); void saveDetails(); }}>
           <div className="grid gap-md md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
             <div className="min-w-0 space-y-xxs">
               <Label htmlFor="ps-name">Name</Label>
-              <Input id="ps-name" maxLength={100} value={details.name} disabled={!canAdmin || savingDetails}
+              <Input id="ps-name" maxLength={PROJECT_NAME_MAX} value={details.name} disabled={!canAdmin || savingDetails}
+                aria-describedby="ps-name-count"
                 onChange={(e) => setDetails({ ...details, name: e.target.value })} />
+              {canAdmin && <CharacterCount id="ps-name-count" value={details.name} max={PROJECT_NAME_MAX} />}
             </div>
             <div className="min-w-0 space-y-xxs">
               <Label htmlFor="ps-status">Status</Label>

@@ -25,6 +25,7 @@ import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import PostureSection from './posture/PostureSection';
+import { CharacterCount } from './ui/character-count';
 import { Input } from './ui/input';
 
 const TagManagement: React.FC = () => {
@@ -170,18 +171,22 @@ const TagManagement: React.FC = () => {
                   <tr key={tag.id} className="border-b border-border/50">
                     <td className="py-xs pr-xs">
                       {editingId === tag.id ? (
-                        <Input
-                          value={draftName}
-                          autoFocus
-                          maxLength={60}
-                          onChange={(e) => setDraftName(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter') void saveEdit(tag);
-                            if (e.key === 'Escape') cancelEdit();
-                          }}
-                          className="h-8"
-                          aria-label={`Rename tag ${tag.name}`}
-                        />
+                        <>
+                          <Input
+                            value={draftName}
+                            autoFocus
+                            maxLength={60}
+                            onChange={(e) => setDraftName(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter') void saveEdit(tag);
+                              if (e.key === 'Escape') cancelEdit();
+                            }}
+                            className="h-8"
+                            aria-label={`Rename tag ${tag.name}`}
+                            aria-describedby={`tag-name-count-${tag.id}`}
+                          />
+                          <CharacterCount id={`tag-name-count-${tag.id}`} value={draftName} max={60} className="mt-xxs" />
+                        </>
                       ) : (
                         <Badge
                           variant="outline"

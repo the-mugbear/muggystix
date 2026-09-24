@@ -6,6 +6,7 @@ import { Button } from '../components/ui/button';
 import { createProject, getProjects, setCurrentProjectId, getCurrentProjectId, Project } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { useAuth } from './AuthContext';
+import { CharacterCount } from '../components/ui/character-count';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
@@ -105,6 +106,10 @@ interface ProjectContextType {
   selectProject: (project: Project) => void;
   isLoading: boolean;
   refreshProjects: () => Promise<void>;
+  /** v5.290.0 — add a project the caller just created to the list and make
+   *  it the active one, without a refetch (a refresh shows the full-screen
+   *  loader, unmounting the page that created it). */
+  adoptProject: (project: Project) => void;
   /** Present when the last project fetch failed; null on success (even if empty). */
   loadError: string | null;
 }
@@ -115,6 +120,7 @@ const ProjectContext = createContext<ProjectContextType>({
   selectProject: () => {},
   isLoading: true,
   refreshProjects: async () => {},
+  adoptProject: () => {},
   loadError: null,
 });
 
@@ -199,6 +205,19 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
     [currentProject?.id, location.pathname, location.search, navigate],
   );
 
+  const adoptProject = useCallback(
+    (project: Project) => {
+      setProjects((prev) => (
+        prev.some((p) => p.id === project.id)
+          ? prev
+          // The API lists projects by name; keep that order.
+          : [...prev, project].sort((a, b) => a.name.localeCompare(b.name))
+      ));
+      selectProject(project);
+    },
+    [selectProject],
+  );
+
   useEffect(() => {
     refreshProjects();
   }, [refreshProjects]);
@@ -208,8 +227,8 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   // Declared BEFORE early returns so the hook order is stable across
   // renders (rules of hooks).
   const contextValue = useMemo(
-    () => ({ projects, currentProject, selectProject, isLoading, refreshProjects, loadError }),
-    [projects, currentProject, selectProject, isLoading, refreshProjects, loadError],
+    () => ({ projects, currentProject, selectProject, isLoading, refreshProjects, adoptProject, loadError }),
+    [projects, currentProject, selectProject, isLoading, refreshProjects, adoptProject, loadError],
   );
 
   // Show loading state until projects are loaded and one is selected.
@@ -350,11 +369,15 @@ const EmptyProjectStartScreen: React.FC<EmptyProjectStartScreenProps> = ({
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g. Acme Q3 engagement"
-              maxLength={120}
+              // v5.290.0 — was 120, past the API's 100: a 101–120 character
+              // name was accepted here and then refused by the server.
+              maxLength={100}
+              aria-describedby="empty-state-project-name-count"
               autoFocus
               required
               disabled={creating}
             />
+            <CharacterCount id="empty-state-project-name-count" value={name} max={100} />
           </div>
           <div className="flex flex-col gap-xxs">
             <Label htmlFor="empty-state-project-description">
