@@ -169,7 +169,7 @@ def list_findings(
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
     search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring match on finding title."),
     sort: Optional[str] = Query(
-        None, description="severity | status | title | host_count | source | created_at (default newest-first).",
+        None, description="severity | status | title | host_count | source | created_at | owner (default newest-first; unowned sorts last).",
     ),
     dir: Optional[str] = Query(None, pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),

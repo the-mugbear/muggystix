@@ -352,7 +352,23 @@ describe('Findings — presentation', () => {
     renderFindings();
     await screen.findByText('Finding 1');
     const age = screen.getByText('31d');
-    expect(age.getAttribute('title')).toBe(new Date(created).toLocaleString());
+    // The one absolute format (utils/relativeTime.formatTimestamp).
+    expect(age.getAttribute('title')).toBe(
+      new Date(created).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }),
+    );
+  });
+
+  // UX review 2026-09-24: Owner was the only column that could not be sorted.
+  it('sorts by owner on the server', async () => {
+    setResponse([makeFinding(1)]);
+    renderFindings();
+    await screen.findByText('Finding 1');
+    fireEvent.click(screen.getByRole('button', { name: /^Owner$/ }));
+    await waitFor(() => {
+      const calls = mocked.listFindings.mock.calls;
+      const last = calls[calls.length - 1][0];
+      expect(last).toMatchObject({ sort: 'owner', dir: 'asc' });
+    });
   });
 
   it('renders status as a quiet picker with no per-row history button', async () => {

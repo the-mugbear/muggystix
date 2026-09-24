@@ -13,6 +13,7 @@ from sqlalchemy import func, case, select, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope, NoteStatus
+from app.db.models_auth import User
 from app.db.models_findings import (
     ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
@@ -88,6 +89,14 @@ _HOST_COUNT_SORT = (
     .where(FindingHost.finding_id == Finding.id)
     .correlate(Finding).scalar_subquery()
 )
+# The owner's display name, as the list shows it (full name, else username);
+# NULL for an unowned finding (v2.408.0, UX review: Owner was the one column
+# that could not be sorted).
+_OWNER_SORT = (
+    select(func.lower(func.coalesce(func.nullif(User.full_name, ""), User.username)))
+    .where(User.id == Finding.owner_id)
+    .correlate(Finding).scalar_subquery()
+)
 _SORT_COLUMNS = {
     "severity": _SEVERITY_SORT,
     "status": _STATUS_SORT,
@@ -95,6 +104,7 @@ _SORT_COLUMNS = {
     "host_count": _HOST_COUNT_SORT,
     "source": Finding.source,
     "created_at": Finding.created_at,
+    "owner": _OWNER_SORT,
 }
 # Per-field default direction when the caller doesn't specify one (worst/most-
 # relevant first): newest, most-severe, biggest-blast-radius lead.
@@ -110,7 +120,12 @@ def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
     else:
         descending = sort in _SORT_DEFAULT_DESC
     direction = desc if descending else asc
-    return (direction(col), Finding.id.desc())
+    ordered = direction(col)
+    # Unowned findings sort after every owner in both directions: reversing
+    # the names should not bring the unassigned pile to the top.
+    if sort == "owner":
+        ordered = ordered.nulls_last()
+    return (ordered, Finding.id.desc())
 
 
 def _first_body_line(body: Optional[str]) -> str:

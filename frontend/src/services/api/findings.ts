@@ -115,7 +115,7 @@ export interface FindingListResponse {
   severity_counts?: Partial<Record<FindingSeverity, number>>;
 }
 
-export type FindingSortField = 'severity' | 'status' | 'title' | 'host_count' | 'source' | 'created_at';
+export type FindingSortField = 'severity' | 'status' | 'title' | 'host_count' | 'source' | 'created_at' | 'owner';
 
 /** A real status, or a server-side group: 'active' / 'resolved'. */
 export type FindingStatusQuery = FindingStatus | 'active' | 'resolved';
