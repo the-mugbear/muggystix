@@ -16,8 +16,10 @@
  */
 import React, { useEffect, useMemo, useState, useCallback, useRef } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { Search, MessageSquare, Bell, ArrowRight, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
+import { MessageSquare, Bell, ArrowRight, Paperclip, RefreshCw, Loader2 } from 'lucide-react';
 import {
+  getFindingDiscussions,
+  FindingDiscussion,
   getNoteActivity,
   NoteActivityItem,
   NoteActivityAuthor,
@@ -30,8 +32,6 @@ import {
 import { formatStatusLabel, getNoteStatusChipColor } from '../utils/statusMeta';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { formatApiError } from '../utils/apiErrors';
@@ -45,7 +45,10 @@ import {
 } from '../components/ui/select';
 import { cn } from '../utils/cn';
 import { InlineLoader } from '../components/ui/inline-loader';
-import { formatRelativeTime as relativeTime } from '../utils/relativeTime';
+import { formatRelativeTime as relativeTime, formatTimestamp } from '../utils/relativeTime';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
+import { SeverityBadge } from '../components/ui/SeverityBadge';
+import { STATUS_LABEL } from '../utils/findingStatus';
 
 const STATUS_OPTIONS = [
   { value: '', label: 'All statuses' },
@@ -84,6 +87,14 @@ type NoteThreadGroup = {
  *  less than the date does. */
 function formatRelativeTime(dateStr: string | null | undefined): string {
   return relativeTime(dateStr, { absoluteAfterDays: 30 });
+}
+
+/** The time of day only: a thread row sits under its day's heading, so the
+ *  date beside it repeated the heading (UX review 2026-09-24). */
+function timeOfDay(dateStr: string | null | undefined): string {
+  if (!dateStr) return '';
+  const d = new Date(dateStr);
+  return Number.isNaN(d.getTime()) ? '' : d.toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' });
 }
 
 const getNoteTimestamp = (note: NoteActivityItem) => note.updated_at || note.created_at;
@@ -310,7 +321,8 @@ const Activity: React.FC = () => {
         <div className="min-w-0">
           <h1 className="text-page-title">Collaboration</h1>
           <p className="mt-xxs max-w-3xl text-metadata text-muted-foreground">
-            Note threads on this project&apos;s hosts, latest first. Open one to read it and reply on the host.
+            The project&apos;s discussions, latest first — comments on findings, and note threads on hosts. Open one to
+            read it and reply where it lives.
           </p>
         </div>
         {/* "in view": the thread and host figures are computed over what is
@@ -375,67 +387,51 @@ const Activity: React.FC = () => {
         </section>
       )}
 
-      {/* One filter row, closed by a rule; the status breakdown is a line of
+      {/* The shared filter row (v5.294.0); the status breakdown is a line of
           counts under it that act as the status filter (was four stat cards). */}
       <div className="border-b border-border pb-sm">
-        <div className="flex flex-wrap items-end gap-sm">
-          <div className="min-w-72 flex-1">
-            <Label htmlFor="act-search">Search</Label>
-            <div className="relative">
-              <Search
-                className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                id="act-search"
-                type="search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                placeholder="Search by IP, hostname, or note content…"
-                className="pl-xl"
-              />
-            </div>
-          </div>
-          <div className="w-40">
-            <Label htmlFor="act-status">Status</Label>
+        <ListFilterBar className="mb-0 border-b-0 pb-0">
+          <ListFilterSearch
+            value={search}
+            onChange={setSearch}
+            placeholder="Search by IP, hostname, finding or text…"
+            label="Search discussions"
+            className="w-80"
+          />
+          <Select
+            value={statusFilter || 'all'}
+            onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
+          >
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Note status">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {STATUS_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value || 'all'} value={opt.value || 'all'}>
+                  {opt.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {authors.length > 0 && (
             <Select
-              value={statusFilter || 'all'}
-              onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
+              value={authorFilter || 'all'}
+              onValueChange={(v) => setAuthorFilter(v === 'all' ? '' : v)}
             >
-              <SelectTrigger id="act-status">
-                <SelectValue />
+              <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-48')} aria-label="Author">
+                <SelectValue placeholder="All authors" />
               </SelectTrigger>
               <SelectContent>
-                {STATUS_OPTIONS.map((opt) => (
-                  <SelectItem key={opt.value || 'all'} value={opt.value || 'all'}>
-                    {opt.label}
+                <SelectItem value="all">All authors</SelectItem>
+                {authors.map((a) => (
+                  <SelectItem key={a.id} value={String(a.id)}>
+                    {a.name}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
-          </div>
-          {authors.length > 0 && (
-            <div className="w-48">
-              <Label htmlFor="act-author">Author</Label>
-              <Select
-                value={authorFilter || 'all'}
-                onValueChange={(v) => setAuthorFilter(v === 'all' ? '' : v)}
-              >
-                <SelectTrigger id="act-author">
-                  <SelectValue placeholder="All authors" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All authors</SelectItem>
-                  {authors.map((a) => (
-                    <SelectItem key={a.id} value={String(a.id)}>
-                      {a.name}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
           )}
-        </div>
+        </ListFilterBar>
         <p className="mt-xs flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground" aria-label="Notes by status">
           {(['open', 'in_progress', 'resolved'] as const).map((s, i) => (
             <React.Fragment key={s}>
@@ -455,6 +451,13 @@ const Activity: React.FC = () => {
           ))}
         </p>
       </div>
+
+      {/* v5.294.0 (UX review) — finding comments beside the host notes: the
+          page listed host-note threads only, so a comment on a finding, and a
+          mention in one, never appeared on the page the bell opens. The note
+          status filter is about host threads; search and author apply here. */}
+      <FindingDiscussions search={debouncedSearch} authorId={authorFilter ? Number(authorFilter) : undefined}
+        statusFiltered={Boolean(statusFilter)} />
 
       {fetchError && (
         <Alert variant="destructive">
@@ -532,6 +535,111 @@ const Activity: React.FC = () => {
 
 const threadHref = (thread: NoteThreadGroup) => `/hosts/${thread.hostId}#note-${thread.threadRootId}`;
 
+const DISCUSSION_PREVIEW = 5;
+
+/** Comments on findings, one row per finding's discussion, newest first. */
+const FindingDiscussions: React.FC<{ search: string; authorId?: number; statusFiltered: boolean }> = ({
+  search, authorId, statusFiltered,
+}) => {
+  const [data, setData] = useState<{ items: FindingDiscussion[]; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    setExpanded(false);
+    getFindingDiscussions({ search: search || undefined, author_id: authorId, limit: 20 }, controller.signal)
+      .then((d) => { if (!controller.signal.aborted) { setData(d); setError(null); } })
+      .catch((err) => {
+        if (!controller.signal.aborted) setError(formatApiError(err, 'Finding comments could not be loaded.'));
+      });
+    return () => controller.abort();
+  }, [search, authorId]);
+
+  if (error) {
+    return <p role="status" className="text-metadata text-muted-foreground">{error}</p>;
+  }
+  // Nothing to show and nothing filtered: the section is absent rather than
+  // an empty heading above the host threads.
+  if (!data || (data.items.length === 0 && !search && authorId == null)) return null;
+  const rows = expanded ? data.items : data.items.slice(0, DISCUSSION_PREVIEW);
+
+  return (
+    <section aria-label="Finding comments">
+      <h2 className="flex flex-wrap items-baseline gap-x-xs border-b border-border pb-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
+        Comments on findings
+        <span className="font-normal normal-case tracking-normal">{data.total.toLocaleString()}</span>
+        {statusFiltered && (
+          <span className="font-normal normal-case tracking-normal">· the note status filter does not apply here</span>
+        )}
+      </h2>
+      {data.items.length === 0 ? (
+        <p className="py-xs text-metadata text-muted-foreground">No finding comments match.</p>
+      ) : (
+        <ul className="divide-y divide-border/60">
+          {rows.map((d) => (
+            <li key={d.finding_id}>
+              <Link
+                to={`/findings/${d.finding_id}${d.latest ? `#note-${d.latest.note_id}` : ''}`}
+                className="group grid min-w-0 grid-cols-[minmax(0,14rem)_minmax(0,1fr)_auto] items-start gap-x-md py-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                aria-label={`Open the discussion on ${d.title}`}
+              >
+                <span className="min-w-0">
+                  <span className="block truncate text-metadata font-semibold text-foreground group-hover:text-info" title={d.title}>
+                    {d.title}
+                  </span>
+                  <span className="flex min-w-0 items-center gap-xxs">
+                    <SeverityBadge severity={d.severity} />
+                    <span className="truncate text-caption text-muted-foreground">{STATUS_LABEL[d.status] ?? d.status}</span>
+                  </span>
+                </span>
+                <span className="min-w-0">
+                  <span className="flex min-w-0 flex-wrap items-center gap-xs">
+                    <span className="text-caption font-medium text-foreground">{d.latest?.author_name || 'Unknown analyst'}</span>
+                    {d.latest && <AgentAuthorBadge actorType={d.latest.actor_type} />}
+                    {d.participants.filter((n) => n !== d.latest?.author_name).length > 0 && (
+                      <span className="truncate text-caption text-muted-foreground">
+                        with {d.participants.filter((n) => n !== d.latest?.author_name).join(', ')}
+                      </span>
+                    )}
+                  </span>
+                  <span className="mt-xxs line-clamp-2 break-words text-metadata text-muted-foreground group-hover:text-foreground">
+                    {excerpt(d.latest?.body ?? '')}
+                  </span>
+                </span>
+                <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
+                  <time dateTime={d.last_activity_at ?? undefined} title={formatTimestamp(d.last_activity_at)}>
+                    {formatRelativeTime(d.last_activity_at)}
+                  </time>
+                  <span>{d.comment_count} comment{d.comment_count === 1 ? '' : 's'}</span>
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+      {(data.items.length > DISCUSSION_PREVIEW || data.total > rows.length) && (
+        <div className="mt-xxs flex flex-wrap items-center gap-x-md text-caption">
+          {data.items.length > DISCUSSION_PREVIEW && (
+            <button
+              type="button"
+              aria-expanded={expanded}
+              onClick={() => setExpanded((v) => !v)}
+              className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {expanded ? 'Show fewer' : `Show ${data.items.length - DISCUSSION_PREVIEW} more`}
+            </button>
+          )}
+          {data.total > rows.length && (
+            <span className="text-muted-foreground">Showing {rows.length} of {data.total.toLocaleString()}</span>
+          )}
+          <Link to="/findings" className="text-primary hover:underline">All findings</Link>
+        </div>
+      )}
+    </section>
+  );
+};
+
 /** One thread, one row: host, status, the latest message once, the count —
  *  and the whole row opens the thread on the host. */
 const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
@@ -569,7 +677,9 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
         </span>
       </span>
       <span className="flex shrink-0 flex-col items-end text-right text-caption text-muted-foreground">
-        <span>{formatRelativeTime(thread.latestTimestamp)}</span>
+        <time dateTime={thread.latestTimestamp} title={formatTimestamp(thread.latestTimestamp)}>
+          {timeOfDay(thread.latestTimestamp)}
+        </time>
         <span>
           {thread.threadNoteCount} entr{thread.threadNoteCount === 1 ? 'y' : 'ies'}
           {thread.hostNoteCount > thread.threadNoteCount ? ` · ${thread.hostNoteCount} on host` : ''}

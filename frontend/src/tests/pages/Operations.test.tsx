@@ -325,10 +325,12 @@ describe('Operations page', () => {
     expect(screen.queryByText('Failed to load Operations data.')).not.toBeInTheDocument();
   });
 
-  // 5.204.3 — the setup card's Start Agentic Recon used to navigate('/scopes')
+  // 5.204.3 — the setup card's recon button used to navigate('/scopes')
   // (a dead end: the operator had to find the real button there). It now opens
   // the shared recon dialog for the registered scope, in place.
-  it('setup card: Start Agentic Recon opens the recon dialog for the single scope', async () => {
+  // v5.294.0 — one name everywhere: "Start recon session" (was "Start Agentic
+  // Recon" here and on Scope, "Start Agent Session" beside it).
+  it('setup card: Start recon session opens the recon dialog for the single scope', async () => {
     mockedApi.getProjectCoverage.mockResolvedValue({
       ...baseCoverage,
       total_hosts: 0,
@@ -339,15 +341,16 @@ describe('Operations page', () => {
       hosts_outside_scope: 0,
     });
     renderPage();
-    const button = await screen.findByRole('button', { name: /Start Agentic Recon/ });
+    const button = await screen.findByRole('button', { name: /Start recon session/ });
     fireEvent.click(button);
     expect(
-      await screen.findByText('Start Agentic Reconnaissance — Internal /24'),
+      await screen.findByText('Start recon session — Internal /24'),
     ).toBeInTheDocument();
+    expect(screen.queryByText(/Agentic Recon/)).not.toBeInTheDocument();
     expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
   });
 
-  it('setup card: with several scopes, Start Agentic Recon goes to the recon runs picker', async () => {
+  it('setup card: with several scopes, Start recon session goes to the recon runs picker', async () => {
     mockedApi.getProjectCoverage.mockResolvedValue({
       ...baseCoverage,
       total_hosts: 0,
@@ -363,7 +366,7 @@ describe('Operations page', () => {
       ],
     });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /Start Agentic Recon/ }));
+    fireEvent.click(await screen.findByRole('button', { name: /Start recon session/ }));
     expect(navigateSpy).toHaveBeenCalledWith('/recon/runs');
     expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
   });

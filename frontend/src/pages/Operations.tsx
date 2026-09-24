@@ -1102,12 +1102,12 @@ const Operations: React.FC = () => {
 
       {coverage && coverage.total_scopes > 0 && coverage.total_hosts === 0 && (
         <SetupBlock title="Scope is registered — time to discover hosts">
-          No hosts have been discovered yet. The fastest way to get started is to run{' '}
-          <strong className="text-foreground">Agentic Reconnaissance</strong> against your registered scope.
+          No hosts have been discovered yet. The fastest way to get started is a{' '}
+          <strong className="text-foreground">recon session</strong> against your registered scope.
           <div className="mt-sm flex flex-wrap gap-sm">
             {canStartRecon && (
               <Button size="sm" onClick={handleStartRecon}>
-                <Rocket className="size-4" aria-hidden /> Start Agentic Recon
+                <Rocket className="size-4" aria-hidden /> Start recon session
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>

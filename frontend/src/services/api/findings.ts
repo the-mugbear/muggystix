@@ -136,6 +136,45 @@ export interface FindingFilters {
   offset?: number;
 }
 
+/** One finding's comment thread on Collaboration (v5.294.0). */
+export interface FindingDiscussion {
+  finding_id: number;
+  title: string;
+  severity: FindingSeverity;
+  status: FindingStatus;
+  comment_count: number;
+  last_activity_at: string | null;
+  latest: {
+    note_id: number;
+    body: string;
+    author_name: string | null;
+    actor_type: 'user' | 'agent';
+    created_at: string | null;
+  } | null;
+  participants: string[];
+}
+
+export interface FindingDiscussionList {
+  items: FindingDiscussion[];
+  total: number;
+}
+
+/** The project's finding discussions, most recently active first. */
+export const getFindingDiscussions = async (
+  params: { search?: string; author_id?: number; limit?: number } = {},
+  signal?: AbortSignal,
+): Promise<FindingDiscussionList> => {
+  const qs = new URLSearchParams();
+  Object.entries(params).forEach(([k, v]) => {
+    if (v !== undefined && v !== null && v !== '') qs.set(k, String(v));
+  });
+  const q = qs.toString();
+  const response = await api.get<FindingDiscussionList>(
+    `${p()}/findings/comments/activity${q ? `?${q}` : ''}`, { signal },
+  );
+  return response.data;
+};
+
 export const listFindings = async (
   filters: FindingFilters = {},
   // Lets the caller abort a superseded request (Findings page: a newer filter

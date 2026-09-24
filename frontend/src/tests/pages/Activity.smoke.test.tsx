@@ -20,6 +20,7 @@ vi.mock('../../services/api', () => ({
     status_counts: { open: 1, in_progress: 0, resolved: 0 },
     authors: [{ id: 2, name: 'alice' }],
   }),
+  getFindingDiscussions: vi.fn().mockResolvedValue({ items: [], total: 0 }),
   markActivitySeen: vi.fn().mockResolvedValue(undefined),
   getNotifications: vi.fn().mockResolvedValue({ notifications: [], total: 0, unread_count: 0 }),
   markNotificationsRead: vi.fn().mockResolvedValue(1),
