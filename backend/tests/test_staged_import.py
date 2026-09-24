@@ -75,6 +75,22 @@ def test_detection_structural_text_is_ready_under_any_name(client, db_session, t
     assert d["preview"]["sample"][:2] == ["10.0.0.5:443", "10.0.0.5:22"]
 
 
+def test_native_nikto_json_is_recognised_by_structure(client, db_session, test_project):
+    """v2.404.0 — Nikto 2.5/2.6 ``-Format json`` has no "nikto" token in
+    it; a real export read "Recognised from the filename only"."""
+    data = (Path(__file__).parent / "fixtures" / "native" / "nikto-all.json").read_bytes()
+    for name in ("nikto-all.json", "web-scan.json"):
+        job_id = _upload(
+            client, test_project, data, name, "application/json", stage=True, allow_duplicate=True,
+        ).json()["job_id"]
+        d = client.get(f"/api/v1/projects/{test_project.id}/upload/jobs/{job_id}/detection").json()
+        assert d["primary"] == "nikto_json", name
+        assert d["candidates"] == [
+            {"file_type": "nikto_json", "label": d["candidates"][0]["label"], "basis": "structure", "rank": 0}
+        ], name
+        assert d["needs_choice"] is False and d["reason"] is None
+
+
 ODD_TEXT = b"10.0.0.5 443\n10.0.0.5 22\n10.0.0.6 80\n"  # no format's shape
 
 
