@@ -11,16 +11,25 @@
  * Raw counts appear only where they change the operator's next action.
  */
 import React, { useCallback, useEffect, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 
-import { getQueueMetrics, type QueueMetrics, type QueueSnapshot } from '../services/api';
+import {
+  getQueueMetrics,
+  type FailedJobsInProject,
+  type QueueMetrics,
+  type QueueSnapshot,
+} from '../services/api';
+import { useProject } from '../contexts/ProjectContext';
 import { formatApiError } from '../utils/apiErrors';
+import PostureSection from './posture/PostureSection';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { InlineLoader } from './ui/inline-loader';
 import { cn } from '../utils/cn';
+
+/** How many projects the failed-jobs breakdown names before "and N more". */
+const MAX_FAILED_PROJECTS = 5;
 
 /** Where a queue's actionable states can be inspected. Report jobs currently
  *  surface only inside the Reports dialog (no route), so that queue has no
@@ -48,6 +57,10 @@ type Verdict = {
    *  turn monitoring into a recovery step. */
   href?: string;
   hrefLabel?: string;
+  /** Where the failed jobs are. The queue is deployment-wide but Ingestion
+   *  Results lists one project's jobs, so a single link to it showed only the
+   *  current project's share — or none of them. */
+  failedByProject?: FailedJobsInProject[];
 };
 
 const formatAge = (seconds: number): string => {
@@ -60,7 +73,11 @@ const formatAge = (seconds: number): string => {
  * Turn a snapshot into a judgement. Ordered by severity so the most
  * actionable problem is the one surfaced.
  */
-const assess = (q: QueueSnapshot, label: string, surface: QueueSurface): Verdict => {
+const assess = (
+  q: QueueSnapshot & { failed_by_project?: FailedJobsInProject[] },
+  label: string,
+  surface: QueueSurface,
+): Verdict => {
   if (q.stale_processing > 0) {
     return {
       tone: 'bad',
@@ -94,6 +111,7 @@ const assess = (q: QueueSnapshot, label: string, surface: QueueSurface): Verdict
         'These exhausted their retries. Review and dismiss them so the queue view reflects live work.',
       href: surface.failedHref,
       hrefLabel: 'Review failed jobs',
+      failedByProject: surface.failedHref && q.failed_by_project?.length ? q.failed_by_project : undefined,
     };
   }
   return {
@@ -105,6 +123,56 @@ const assess = (q: QueueSnapshot, label: string, surface: QueueSurface): Verdict
           ? `${label} healthy — ${q.completed_last_hour} completed in the last hour`
           : `${label} idle`,
   };
+};
+
+const linkClass =
+  'rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+/** One link per project holding failed jobs: the current project's goes
+ *  straight to its list; another project's switches to it first (the same
+ *  selectProject path the header uses), since Ingestion Results is per project. */
+const FailedByProject: React.FC<{ rows: FailedJobsInProject[]; href: string }> = ({ rows, href }) => {
+  const { projects, currentProject, selectProject } = useProject();
+  const navigate = useNavigate();
+  const shown = rows.slice(0, MAX_FAILED_PROJECTS);
+  const rest = rows.slice(MAX_FAILED_PROJECTS).reduce((n, r) => n + r.count, 0);
+  return (
+    <ul className="mt-xxs flex flex-col gap-xxs" aria-label="Failed jobs by project">
+      {shown.map((row) => {
+        const label = `${row.count} in ${row.project_name}`;
+        const isCurrent = currentProject?.id === row.project_id;
+        const project = projects.find((p) => p.id === row.project_id);
+        return (
+          <li key={row.project_id} className="min-w-0 truncate text-caption">
+            {isCurrent ? (
+              <Link to={href} className={linkClass} title={row.project_name}>
+                Review {label} →
+              </Link>
+            ) : project ? (
+              <button
+                type="button"
+                className={linkClass}
+                title={`Switch to ${row.project_name} and review its failed jobs`}
+                onClick={() => {
+                  selectProject(project);
+                  navigate(href);
+                }}
+              >
+                Review {label} →
+              </button>
+            ) : (
+              <span className="text-muted-foreground" title={row.project_name}>{label}</span>
+            )}
+          </li>
+        );
+      })}
+      {rest > 0 && (
+        <li className="text-caption text-muted-foreground">
+          and {rest} more in {rows.length - shown.length} other project{rows.length - shown.length === 1 ? '' : 's'}
+        </li>
+      )}
+    </ul>
+  );
 };
 
 const VerdictRow: React.FC<{ verdict: Verdict }> = ({ verdict }) => {
@@ -125,14 +193,13 @@ const VerdictRow: React.FC<{ verdict: Verdict }> = ({ verdict }) => {
         {verdict.action && (
           <p className="text-caption text-muted-foreground">{verdict.action}</p>
         )}
-        {verdict.href && (
-          <Link
-            to={verdict.href}
-            className="mt-xxs inline-block rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          >
+        {verdict.href && verdict.failedByProject ? (
+          <FailedByProject rows={verdict.failedByProject} href={verdict.href} />
+        ) : verdict.href ? (
+          <Link to={verdict.href} className={cn('mt-xxs inline-block', linkClass)}>
             {verdict.hrefLabel ?? 'View'} →
           </Link>
-        )}
+        ) : null}
       </div>
     </div>
   );
@@ -159,9 +226,10 @@ export const QueueHealthCard: React.FC = () => {
   }, [load]);
 
   return (
-    <Card className="mb-md">
-      <CardHeader className="flex flex-row items-center justify-between gap-xs">
-        <CardTitle>Worker Queues</CardTitle>
+    <PostureSection
+      title="Worker queues"
+      description="Ingestion and report workers across the whole deployment."
+      actions={
         <Button
           variant="ghost"
           size="icon"
@@ -171,8 +239,8 @@ export const QueueHealthCard: React.FC = () => {
         >
           <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden />
         </Button>
-      </CardHeader>
-      <CardContent>
+      }
+    >
         {loading && !metrics ? (
           <InlineLoader label="Checking worker queues…" />
         ) : error ? (
@@ -188,8 +256,7 @@ export const QueueHealthCard: React.FC = () => {
             </p>
           </div>
         ) : null}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 

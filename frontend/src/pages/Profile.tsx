@@ -1,22 +1,21 @@
 import React, { useCallback, useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
-  FolderOpen,
   Loader2,
   Lock,
   RefreshCw,
+  Repeat,
   Save,
-  Shield,
-  SquareArrowOutUpRight,
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
 import apiClient from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { personInitials } from '../utils/people';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from '../components/ui/card';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import { Input } from '../components/ui/input';
 import { PasswordInput } from '../components/ui/password-input';
 import { Label } from '../components/ui/label';
@@ -156,8 +155,12 @@ const Profile: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
+  // Save only means something when the name differs from what is saved.
+  const profileDirty = profileForm.full_name.trim() !== (user?.full_name ?? '').trim();
+
   const handleProfileSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!profileDirty || saving) return;
     setSaving(true);
     try {
       await apiClient.put('/users/profile', profileForm);
@@ -215,40 +218,39 @@ const Profile: React.FC = () => {
   }
 
   return (
-    <div className="mx-auto max-w-5xl p-md md:p-lg">
-      <h1 className="mb-md text-page-title">User Profile</h1>
-
-      <div className="grid grid-cols-1 gap-md md:grid-cols-3">
-        {/* User Info Card */}
-        <Card className="md:col-span-1">
-          <CardContent className="flex flex-col items-center p-lg text-center">
-            <div className="mb-md flex size-20 items-center justify-center rounded-full bg-primary text-primary-foreground text-section-title font-semibold">
-              {user.username.charAt(0).toUpperCase()}
-            </div>
-            <p className="text-subheading font-semibold text-foreground">
+    <div className="space-y-lg p-md md:p-lg">
+      {/* Identity header — who you are, in one row (was a mostly-empty card
+          beside the form). */}
+      <header className="flex min-w-0 items-center gap-md">
+        <div
+          className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary text-subheading font-semibold text-primary-foreground"
+          aria-hidden
+        >
+          {personInitials(user.full_name, user.username)}
+        </div>
+        <div className="min-w-0">
+          <h1 className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-page-title">
+            <span className="min-w-0 truncate" title={user.full_name || user.username}>
               {user.full_name || user.username}
-            </p>
-            <Badge variant={roleVariant(user.role)} className="mt-xs">
-              {user.role.toUpperCase()}
-            </Badge>
-            <p className="mt-sm text-caption text-muted-foreground">
-              Member since {formatDate(user.created_at)}
-            </p>
+            </span>
+            <Badge variant={roleVariant(user.role)}>{user.role.toUpperCase()}</Badge>
+          </h1>
+          <p className="mt-xxs flex min-w-0 flex-wrap gap-x-sm text-metadata text-muted-foreground">
+            <span className="min-w-0 truncate">@{user.username}</span>
+            <span aria-hidden>·</span>
+            <span>Member since {formatDate(user.created_at)}</span>
             {user.last_login && (
-              <p className="text-caption text-muted-foreground">
-                Last login: {formatDate(user.last_login)}
-              </p>
+              <>
+                <span aria-hidden>·</span>
+                <span>Last login {formatDate(user.last_login)}</span>
+              </>
             )}
-          </CardContent>
-        </Card>
+          </p>
+        </div>
+      </header>
 
-        {/* Profile Form */}
-        <Card className="md:col-span-2">
-          <CardHeader>
-            <CardTitle>Profile Information</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <form onSubmit={handleProfileSubmit} className="flex flex-col gap-md">
+        <PostureSection title="Profile information">
+            <form onSubmit={handleProfileSubmit} className="flex max-w-md flex-col gap-md">
               <div className="flex flex-col gap-xs">
                 <Label htmlFor="profile-username">Username</Label>
                 {/* readOnly (not disabled) so NVDA browse-mode users can
@@ -276,25 +278,24 @@ const Profile: React.FC = () => {
                   onChange={(e) => setProfileForm({ ...profileForm, full_name: e.target.value })}
                 />
               </div>
+              <div className="flex flex-wrap gap-xs">
+                <Button type="submit" disabled={saving || !profileDirty}>
+                  {saving ? (
+                    <>
+                      <Loader2 className="size-4 animate-spin" aria-hidden /> Saving…
+                    </>
+                  ) : (
+                    <>
+                      <Save className="size-4" aria-hidden /> Save Changes
+                    </>
+                  )}
+                </Button>
+                <Button type="button" variant="outline" onClick={() => setPasswordDialogOpen(true)}>
+                  <Lock className="size-4" aria-hidden /> Change Password
+                </Button>
+              </div>
             </form>
-          </CardContent>
-          <CardFooter className="flex flex-wrap gap-xs">
-            <Button type="submit" onClick={handleProfileSubmit} disabled={saving}>
-              {saving ? (
-                <>
-                  <Loader2 className="size-4 animate-spin" aria-hidden /> Saving…
-                </>
-              ) : (
-                <>
-                  <Save className="size-4" aria-hidden /> Save Changes
-                </>
-              )}
-            </Button>
-            <Button variant="outline" onClick={() => setPasswordDialogOpen(true)}>
-              <Lock className="size-4" aria-hidden /> Change Password
-            </Button>
-          </CardFooter>
-        </Card>
+        </PostureSection>
 
         {/* Two-factor authentication — enroll (new or imported secret),
             recovery codes, disable. */}
@@ -305,16 +306,9 @@ const Profile: React.FC = () => {
             here uses the same selectProject path as the topbar
             ProjectSelector so the route-safe redirect (CRIT-1) fires
             if needed. */}
-        <Card className="md:col-span-3">
-          <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-xs">
-            <CardTitle className="flex items-center gap-xs">
-              <FolderOpen className="size-4" aria-hidden /> Project Associations
-              {memberships && (
-                <span className="text-caption font-normal text-muted-foreground">
-                  ({memberships.length})
-                </span>
-              )}
-            </CardTitle>
+        <PostureSection
+          title={<>Project associations{memberships && <SectionCount>{memberships.length}</SectionCount>}</>}
+          actions={
             <Button
               variant="ghost"
               size="sm"
@@ -328,8 +322,8 @@ const Profile: React.FC = () => {
               />
               Refresh
             </Button>
-          </CardHeader>
-          <CardContent>
+          }
+        >
             {membershipsLoading && !memberships ? (
               <div className="flex justify-center py-md">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
@@ -385,7 +379,10 @@ const Profile: React.FC = () => {
                           disabled={!projectRow}
                           aria-label={`Switch to ${m.project_name}`}
                         >
-                          <SquareArrowOutUpRight className="size-3.5" aria-hidden />
+                          {/* The header's project-switch icon: this switches
+                              the active project in place — nothing opens in
+                              a new tab. */}
+                          <Repeat className="size-3.5" aria-hidden />
                           Switch
                         </Button>
                       </div>
@@ -398,17 +395,12 @@ const Profile: React.FC = () => {
                 You aren't a member of any projects yet. Ask an administrator to add you.
               </p>
             )}
-          </CardContent>
-        </Card>
+        </PostureSection>
 
         {/* Active Sessions */}
-        <Card className="md:col-span-3">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-xs">
-              <Shield className="size-4" aria-hidden /> Active Sessions
-            </CardTitle>
-          </CardHeader>
-          <CardContent>
+        <PostureSection
+          title={<>Active sessions{!sessionsLoading && <SectionCount>{sessions.length}</SectionCount>}</>}
+        >
             {sessionsLoading ? (
               <div className="flex justify-center py-md">
                 <Loader2 className="size-5 animate-spin text-muted-foreground" aria-hidden />
@@ -446,9 +438,7 @@ const Profile: React.FC = () => {
                 ))}
               </ul>
             )}
-          </CardContent>
-        </Card>
-      </div>
+        </PostureSection>
 
       {/* Password Change Dialog */}
       <Dialog

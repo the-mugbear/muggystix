@@ -306,6 +306,9 @@ export const retryWebhookDelivery = async (id: number): Promise<WebhookDeliveryR
 export interface AuditLogRow {
   id: number;
   user_id: number | null;
+  /** The actor, resolved server-side (null: no user, or a deleted account). */
+  user_username?: string | null;
+  user_full_name?: string | null;
   action: string;
   resource_type: string | null;
   resource_id: string | null;
@@ -344,9 +347,15 @@ export interface AuditStats {
   total_logs: number;
   successful_logs: number;
   failed_logs: number;
-  recent_logs: number;
+  /** Events in the rolling last 24 hours (the backend's field name). */
+  recent_logs_24h: number;
   top_actions: Array<{ action: string; count: number }>;
-  top_users: Array<{ user_id: number | null; count: number }>;
+  top_users: Array<{
+    user_id: number | null;
+    user_username?: string | null;
+    user_full_name?: string | null;
+    count: number;
+  }>;
 }
 
 export const getAuditStats = async (): Promise<AuditStats> => {

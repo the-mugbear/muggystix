@@ -35,6 +35,11 @@ class AuditLogResponse(BaseModel):
 class AuditLogEntry(BaseModel):
     id: int
     user_id: Optional[int] = None
+    # Who the actor was, resolved in one batched lookup per page so the viewer
+    # can show a name instead of an id.  Both null when the event has no user
+    # (a failed login, an agent) or the account was deleted (FK SET NULL).
+    user_username: Optional[str] = None
+    user_full_name: Optional[str] = None
     action: str
     resource_type: Optional[str] = None
     resource_id: Optional[str] = None
@@ -60,6 +65,8 @@ class ActionCount(BaseModel):
 
 class UserCount(BaseModel):
     user_id: Optional[int] = None
+    user_username: Optional[str] = None
+    user_full_name: Optional[str] = None
     count: int
 
 
@@ -80,6 +87,16 @@ _ADMIN_RESPONSES = {
     401: {"description": "Not authenticated"},
     403: {"description": "Insufficient permissions — admin role required"},
 }
+
+
+def _user_names(db: Session, user_ids) -> Dict[int, tuple]:
+    """``{user_id: (username, full_name)}`` for the given ids — ONE query,
+    however many rows the page holds (never a lookup per audit row)."""
+    ids = {uid for uid in user_ids if uid is not None}
+    if not ids:
+        return {}
+    rows = db.query(User.id, User.username, User.full_name).filter(User.id.in_(ids)).all()
+    return {uid: (username, full_name) for uid, username, full_name in rows}
 
 
 def get_client_info(request: Request) -> Dict[str, Optional[str]]:
@@ -191,12 +208,15 @@ def get_audit_logs(
 
     # Apply pagination
     logs = query.offset(skip).limit(limit).all()
+    names = _user_names(db, (log.user_id for log in logs))
 
     return {
         "logs": [
             {
                 "id": log.id,
                 "user_id": log.user_id,
+                "user_username": names.get(log.user_id, (None, None))[0],
+                "user_full_name": names.get(log.user_id, (None, None))[1],
                 "action": log.action,
                 "resource_type": log.resource_type,
                 "resource_id": log.resource_id,
@@ -261,6 +281,7 @@ def get_audit_stats(
     ).group_by(AuditLog.user_id).order_by(
         func.count(AuditLog.id).desc()
     ).limit(10).all()
+    names = _user_names(db, (user_id for user_id, _count in top_users))
 
     return {
         "total_logs": total_logs,
@@ -272,7 +293,12 @@ def get_audit_stats(
             for action, count in top_actions
         ],
         "top_users": [
-            {"user_id": user_id, "count": count}
+            {
+                "user_id": user_id,
+                "user_username": names.get(user_id, (None, None))[0],
+                "user_full_name": names.get(user_id, (None, None))[1],
+                "count": count,
+            }
             for user_id, count in top_users
         ]
     }

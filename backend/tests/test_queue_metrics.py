@@ -51,6 +51,29 @@ def test_queue_metrics_snapshot(client, db_session, test_project):
     assert resp.json()["report"]["queued"] == 0
 
 
+def test_failed_backlog_excludes_dismissed_and_names_projects(client, db_session, test_project):
+    """The health card says "review and dismiss them" and links to one
+    project's Ingestion Results: a dismissed job must leave the count, and the
+    snapshot must say which projects hold the rest."""
+    from app.db.models_project import Project
+
+    other = Project(name="Other engagement", slug="other-engagement")
+    db_session.add(other)
+    db_session.commit()
+    for _ in range(3):
+        _ingestion(db_session, test_project.id, status="failed")
+    _ingestion(db_session, test_project.id, status="failed",
+               dismissed_at=datetime.now(timezone.utc))
+    _ingestion(db_session, other.id, status="failed")
+
+    ing = client.get("/api/v1/system/queue-metrics").json()["ingestion"]
+    assert ing["failed"] == 4
+    assert ing["failed_by_project"] == [
+        {"project_id": test_project.id, "project_name": test_project.name, "count": 3},
+        {"project_id": other.id, "project_name": "Other engagement", "count": 1},
+    ]
+
+
 def test_queue_metrics_requires_admin(client, db_session, test_user):
     from app.db.models_auth import UserRole
     test_user.role = UserRole.MEMBER

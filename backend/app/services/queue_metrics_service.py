@@ -33,7 +33,13 @@ def _queue_snapshot(db: Session, model, stale_cutoff_seconds: int) -> dict:
     )
     queued = int(by_status.get("queued", 0))
     processing = int(by_status.get("processing", 0))
-    failed = int(by_status.get("failed", 0))
+    # The failed BACKLOG: failed jobs nobody has dismissed yet.  The health
+    # card tells the operator to "review and dismiss them" — counting
+    # dismissed ones too meant that advice could never clear the warning.
+    failed_q = db.query(func.count(model.id)).filter(model.status == "failed")
+    if hasattr(model, "dismissed_at"):
+        failed_q = failed_q.filter(model.dismissed_at.is_(None))
+    failed = int(failed_q.scalar() or 0)
 
     oldest_created: Optional[datetime] = (
         db.query(func.min(model.created_at)).filter(model.status == "queued").scalar()
@@ -83,14 +89,41 @@ def _queue_snapshot(db: Session, model, stale_cutoff_seconds: int) -> dict:
     }
 
 
+def _failed_ingestion_by_project(db: Session) -> list:
+    """The undismissed failed ingestion jobs per project, largest first.
+
+    The queue is deployment-wide but the list that shows those jobs (Ingestion
+    Results, ``/parse-errors?status=failed``) is per project, so the health card
+    needs to know WHICH projects hold them to link somewhere that lists them.
+    One grouped query.
+    """
+    from app.db.models_project import Project
+
+    Job = models.IngestionJob
+    rows = (
+        db.query(Job.project_id, Project.name, func.count(Job.id))
+        .join(Project, Project.id == Job.project_id)
+        .filter(Job.status == "failed", Job.dismissed_at.is_(None))
+        .group_by(Job.project_id, Project.name)
+        .order_by(func.count(Job.id).desc(), Project.name)
+        .all()
+    )
+    return [
+        {"project_id": pid, "project_name": name, "count": int(count)}
+        for pid, name, count in rows
+    ]
+
+
 def queue_metrics(db: Session) -> dict:
     """Snapshot both job queues. Stale cutoffs match each reaper's own."""
     ingestion_cutoff = (
         settings.INGESTION_JOB_TIMEOUT * settings.INGESTION_ORPHAN_CUTOFF_MULTIPLIER
     )
+    ingestion = _queue_snapshot(db, models.IngestionJob, ingestion_cutoff)
+    ingestion["failed_by_project"] = _failed_ingestion_by_project(db)
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(),
-        "ingestion": _queue_snapshot(db, models.IngestionJob, ingestion_cutoff),
+        "ingestion": ingestion,
         "report": _queue_snapshot(
             db, models.ReportJob, settings.REPORT_JOB_TIMEOUT_SECONDS
         ),

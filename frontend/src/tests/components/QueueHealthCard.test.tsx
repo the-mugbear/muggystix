@@ -1,9 +1,14 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
   getQueueMetrics: vi.fn(),
+}));
+const selectProject = vi.fn();
+const projects = [{ id: 2, name: 'Eval — Scenarios' }, { id: 1, name: 'Default' }];
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ projects, currentProject: projects[1], selectProject }),
 }));
 
 import * as api from '../../services/api';
@@ -88,6 +93,28 @@ describe('QueueHealthCard', () => {
 
     const link = await screen.findByRole('link', { name: /Review failed jobs/ });
     expect(link).toHaveAttribute('href', '/parse-errors?status=failed');
+  });
+
+  // The queue is deployment-wide; Ingestion Results lists ONE project's jobs.
+  // "78 failed … Review failed jobs →" landed on the current project's list,
+  // which could hold none of them — so name each project and go to it.
+  it('links each project holding failed jobs, switching project when needed', async () => {
+    mocked.getQueueMetrics.mockResolvedValue(
+      metrics({
+        ...snapshot({ failed: 78 }),
+        failed_by_project: [
+          { project_id: 2, project_name: 'Eval — Scenarios', count: 60 },
+          { project_id: 1, project_name: 'Default', count: 18 },
+        ],
+      } as never),
+    );
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+
+    await screen.findByText(/78 failed Scan ingestion jobs/);
+    const current = screen.getByRole('link', { name: /Review 18 in Default/ });
+    expect(current).toHaveAttribute('href', '/parse-errors?status=failed');
+    fireEvent.click(screen.getByRole('button', { name: /Review 60 in Eval — Scenarios/ }));
+    expect(selectProject).toHaveBeenCalledWith(projects[0]);
   });
 
   // Report jobs surface only inside the Reports dialog (no route), so linking

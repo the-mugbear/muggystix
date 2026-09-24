@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
-import { ShieldCheck, ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
+import { ShieldOff, Loader2, KeyRound, Copy, Download } from 'lucide-react';
 import apiClient from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { useToast } from '../contexts/ToastContext';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import PostureSection from './posture/PostureSection';
 import { Button } from './ui/button';
 import { Input } from './ui/input';
 import { PasswordInput } from './ui/password-input';
@@ -132,14 +132,9 @@ const TwoFactorCard: React.FC = () => {
   };
 
   return (
-    <Card className="md:col-span-3">
-      <CardHeader>
-        <CardTitle className="flex items-center gap-xs">
-          <ShieldCheck className="size-5" aria-hidden />
-          Two-Factor Authentication
-        </CardTitle>
-      </CardHeader>
-      <CardContent className="space-y-md">
+    // A section of the Profile page (§7), not a card — the name is historical.
+    <PostureSection title="Two-factor authentication">
+      <div className="max-w-3xl space-y-md">
         {error && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>
@@ -295,8 +290,8 @@ const TwoFactorCard: React.FC = () => {
             </div>
           </div>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </PostureSection>
   );
 };
 
