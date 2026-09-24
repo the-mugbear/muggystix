@@ -56,6 +56,14 @@ else
     exit 1
 fi
 
+# The commit shown under About BlueStick. The frontend build context has no
+# .git/, so it is passed in as a build arg; a file-copied tree without .git/
+# keeps whatever GIT_COMMIT the caller set, else "unknown".
+if [ -z "${GIT_COMMIT:-}" ]; then
+    GIT_COMMIT=$(git -C "$(dirname "$0")/.." rev-parse --short HEAD 2>/dev/null || echo unknown)
+fi
+export GIT_COMMIT
+
 # ------------------------------------------------------------------
 # Rollback support (B2-1)
 #

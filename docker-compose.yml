@@ -239,6 +239,8 @@ services:
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
         FRONTEND_VERSION: ${FRONTEND_VERSION:-5.288.0}
+        # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
+        GIT_COMMIT: ${GIT_COMMIT:-unknown}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered

@@ -56,11 +56,15 @@ ARG BACKEND_VERSION
 # CR4-8 — platform_version.json isn't in the frontend-only build context, so
 # the frontend version is passed in here; generate-build-info.js reads it.
 ARG FRONTEND_VERSION
+# .git/ is outside the frontend-only build context, so the commit is passed
+# in (deploy.sh exports it); generate-build-info.js reads GIT_COMMIT.
+ARG GIT_COMMIT=unknown
 
 # Set environment variables for build process
 ENV REACT_APP_API_URL=$REACT_APP_API_URL
 ENV BACKEND_VERSION=$BACKEND_VERSION
 ENV FRONTEND_VERSION=$FRONTEND_VERSION
+ENV GIT_COMMIT=$GIT_COMMIT
 
 # Backward compatibility for scripts expecting REACT_APP_BACKEND_VERSION
 ENV REACT_APP_BACKEND_VERSION=$BACKEND_VERSION
