@@ -386,6 +386,22 @@ def test_the_word_placeholders_take_the_installed_logo_and_title_page_image(tmp_
         # One side fills the box.
         assert cx == box_w or abs(cy - box_h) <= 1
 
+    # The floating title page image stays centred in its box: the 16:9
+    # picture is shorter than the 3:2 box, so it moves down by half the gap.
+    import re
+
+    def cover_offsets(path):
+        with zipfile.ZipFile(path) as z:
+            for n in z.namelist():
+                if re.match(r"^word/header\d+\.xml$", n):
+                    xml = z.read(n).decode()
+                    if 'name="bluestick-cover"' in xml:
+                        return [int(v) for v in re.findall(r"<wp:position[HV]\b[^>]*>\s*<wp:posOffset>(-?\d+)", xml)]
+    (_, _, _, box_w, box_h), (_, _, _, cx, cy) = next(p for p in pairs if p[0][1] == "bluestick-cover")
+    (h0, v0), (h1, v1) = cover_offsets(plain), cover_offsets(docx)
+    assert (h1, v1) == (h0 + (box_w - cx) // 2, v0 + (box_h - cy) // 2)
+    assert v1 > v0
+
 
 def test_pdf_is_not_a_report_format():
     """v2.407.0 — the Word report carries the design and exports to PDF; a
