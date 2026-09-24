@@ -25,6 +25,7 @@ from app.schemas.schemas import (
 from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.format_registry import format_label
+from app.services.import_attention_service import superseded_import_condition
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.host_query_common import escape_like
@@ -127,6 +128,13 @@ class ScanInventorySummary(BaseModel):
     # Keys: `discarded`, `expired`, `dismissed` (any other acknowledged
     # failure); they sum to `imports_not_imported`.
     imports_not_imported_by_reason: Dict[str, int] = Field(default_factory=dict)
+    # v2.403.0 — failed or partial imports, not dismissed, whose file a later
+    # job imported cleanly: not in `imports_need_attention`, and what
+    # Ingestion Results' "Dismiss N superseded" clears.
+    imports_superseded: int = Field(
+        0, ge=0,
+        description="Failed or partial imports (not dismissed) whose file a later job imported",
+    )
 
 
 class CommandArgument(BaseModel):
@@ -918,9 +926,10 @@ def get_scans_summary(
     dismissed_failure = and_(Job.status == "failed", Job.dismissed_at.isnot(None))
     discarded_job = Job.error_message == DISCARDED_MESSAGE
     expired_job = Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")
-    attention, not_imported, n_discarded, n_expired = (
+    attention, superseded, not_imported, n_discarded, n_expired = (
         db.query(
             func.count(case((blocked_import_condition(), Job.id))),
+            func.count(case((and_(Job.dismissed_at.is_(None), superseded_import_condition()), Job.id))),
             func.count(case((dismissed_failure, Job.id))),
             func.count(case((and_(dismissed_failure, discarded_job), Job.id))),
             func.count(case((and_(dismissed_failure, expired_job), Job.id))),
@@ -944,6 +953,7 @@ def get_scans_summary(
         total_files=sum(tool_counts.values()),
         uploaders=uploaders,
         imports_need_attention=int(attention or 0),
+        imports_superseded=int(superseded or 0),
         imports_not_imported=not_imported,
         imports_not_imported_by_reason={k: v for k, v in by_reason.items() if v > 0},
     )
@@ -980,7 +990,7 @@ class ScanBatchSummary(BaseModel):
     first_uploaded: Optional[datetime] = None
     last_uploaded: Optional[datetime] = None
     pending_files: int = Field(0, description="Files of this batch still queued or parsing")
-    failed_files: int = Field(0, description="Files of this batch that failed to parse (not dismissed)")
+    failed_files: int = Field(0, description="Files of this batch that failed to parse (not dismissed, not superseded)")
     # v2.350.0 — the honest breakdown: `files` is the MATCHING imported
     # files (the page's filters), `total_files` every imported file of the
     # batch, then what is still landing or failed.  A refused duplicate never
@@ -1011,6 +1021,11 @@ class ScanBatchSummary(BaseModel):
     # `cancelled_files`).
     uploaded_files: int = Field(0, description="Files that reached the server for this batch (ingestion jobs, any state)")
     cancelled_files: int = Field(0, description="Files whose import was cancelled")
+    # v2.403.0 — failed, not dismissed, but the same file was imported by a
+    # later job (often in another batch): not counted in `failed_files`.
+    superseded_files: int = Field(
+        0, description="Files that failed here but were imported by a later job (not dismissed)",
+    )
     # The creator's full name, else username — what the row displays.
     created_by_name: Optional[str] = None
 
@@ -1372,6 +1387,10 @@ def list_scan_batches(
         (Job.status == "staged", literal("staged")),
         (and_(Job.status == "failed", Job.error_message == DISCARDED_MESSAGE), literal("discarded")),
         (and_(Job.status == "failed", Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")), literal("expired")),
+        # v2.403.0 — a live failure whose file a later job imported cleanly
+        # is superseded, not "failed": it needs no one.
+        (and_(Job.status == "failed", Job.dismissed_at.is_(None), superseded_import_condition()),
+         literal("superseded")),
         (and_(Job.status == "failed", Job.dismissed_at.is_(None)), literal("failed")),
         (Job.status == "failed", literal("dismissed")),
         (Job.status == "cancelled", literal("cancelled")),
@@ -1431,6 +1450,7 @@ def list_scan_batches(
             dismissed_failed_files=buckets.get("dismissed", {}).get(b.id, 0),
             reprocessed_files=buckets.get("reprocessed", {}).get(b.id, 0),
             cancelled_files=buckets.get("cancelled", {}).get(b.id, 0),
+            superseded_files=buckets.get("superseded", {}).get(b.id, 0),
             uploaded_files=sum(per_batch.get(b.id, 0) for per_batch in buckets.values()),
         ))
     return out

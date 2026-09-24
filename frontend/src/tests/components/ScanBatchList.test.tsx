@@ -2,11 +2,11 @@ import { describe, it, expect, vi, beforeEach, type Mock } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
-vi.mock('../../services/api', () => ({ getScans: vi.fn() }));
+vi.mock('../../services/api', () => ({ getScans: vi.fn(), getBatchUnimportedJobs: vi.fn() }));
 
 import { ScanBatchRow } from '../../components/scans/ScanBatchList';
 import { Table, TableBody } from '../../components/ui/table';
-import { getScans } from '../../services/api';
+import { getBatchUnimportedJobs, getScans } from '../../services/api';
 import type { ScanBatchSummary } from '../../services/api';
 import { formatInstant } from '../../utils/scanTime';
 
@@ -49,6 +49,8 @@ const cells = (container: HTMLElement) => {
 describe('ScanBatchRow', () => {
   beforeEach(() => {
     (getScans as Mock).mockReset();
+    (getBatchUnimportedJobs as Mock).mockReset();
+    (getBatchUnimportedJobs as Mock).mockResolvedValue([]);
   });
 
   it('shows one row per batch with what its files added and what is still landing', () => {
@@ -83,10 +85,16 @@ describe('ScanBatchRow', () => {
     expect(when.textContent).not.toMatch(/\d+\/\d+\/\d{4}/);
   });
 
-  it('says a re-processed file is why the batch holds more files than its name', () => {
-    renderRow({}, vi.fn(), { ...batch, label: '31 files · x', files: 32, total_files: 32, reprocessed_files: 1 });
-    expect(screen.getByText(/32 files imported/)).toBeInTheDocument();
-    expect(screen.getByText(/incl\. 1 re-processed/)).toBeInTheDocument();
+  // Demo — Insights Eval, 2026-09-24: "Upload batch · 31 files" over "32
+  // files imported · incl. 1 re-processed" read as a contradiction.
+  it('counts a re-processed file beside the batch\'s own files, so the title and the count agree', () => {
+    const { container } = renderRow({}, vi.fn(), {
+      ...batch, recon_session_id: null, label: '31 files · x', files: 32, total_files: 32, reprocessed_files: 1,
+    });
+    expect(screen.getByText('Upload batch · 31 files')).toBeInTheDocument();
+    const contributed = cells(container)[3];
+    expect(contributed).toHaveTextContent('31 files imported + 1 re-processed');
+    expect(contributed).not.toHaveTextContent(/32 files/);
   });
 
   it('a batch with nothing imported says why', () => {
@@ -184,6 +192,58 @@ describe('ScanBatchRow', () => {
     expect(newHosts).toHaveTextContent('of 4 hosts seen');
     expect(contributed).toHaveTextContent('2 open ports');
     expect(actions).toBeEmptyDOMElement();
+  });
+
+  // Local Network, 2026-09-24: an expanded batch listed only its imported
+  // files, so which of its files failed — and why — was nowhere on the page.
+  it('lists the files that did not import, with what happened and why', async () => {
+    (getScans as Mock).mockResolvedValue([]);
+    (getBatchUnimportedJobs as Mock).mockResolvedValue([
+      {
+        id: 478, filename: 's', original_filename: 'smbmap-samba.txt', status: 'failed',
+        created_at: '2026-09-11T10:00:20Z', superseded_by_job_id: 484,
+        error_message: "Failed to parse the file 'smbmap-samba.txt'. The file format may not be supported or the file may be corrupted.",
+        failure_reason: 'SMBMap parser found 0 hosts in smbmap-samba.txt; file is empty or not smbmap output.',
+      },
+      {
+        id: 468, filename: 'n', original_filename: 'nikto-all.txt', status: 'failed',
+        created_at: '2026-09-11T10:30:00Z', superseded_by_job_id: null,
+        failure_reason: 'value too long for type character varying(200)',
+      },
+      {
+        id: 408, filename: 'e', original_filename: 'eyewitness.zip', status: 'failed',
+        created_at: '2026-09-11T10:00:00Z', dismissed_at: '2026-09-11T10:05:00Z',
+        error_message: 'Discarded before import', failure_reason: 'Discarded before import',
+      },
+    ]);
+    const { container } = renderRow({}, vi.fn(), { ...batch, created_at: '2026-09-11T10:00:00Z', superseded_files: 1 });
+    // The batch row says how many failed but were imported later.
+    expect(screen.getByRole('link', { name: '1 failed, imported later (superseded)' }))
+      .toHaveAttribute('href', '/parse-errors?status=superseded');
+    fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
+    await screen.findByText('smbmap-samba.txt');
+    expect(getBatchUnimportedJobs).toHaveBeenCalledWith(7);
+
+    const rows = Array.from(container.querySelectorAll('tr[data-batch-job]'));
+    expect(rows).toHaveLength(3);
+    const smb = rows[0].querySelectorAll('td');
+    expect(smb[3]).toHaveTextContent('Superseded — imported by job #484');
+    expect(within(smb[3] as HTMLElement).getByRole('link', { name: 'imported by job #484' }))
+      .toHaveAttribute('href', '/parse-errors?job_id=484');
+    // The parser's cause, not the generic sentence.
+    expect(smb[3]).toHaveTextContent('SMBMap parser found 0 hosts');
+    expect(smb[3]).not.toHaveTextContent(/format may not be supported/);
+    // Uploaded with the batch (20 s later): no time repeated on the row.
+    expect(smb[1]).toHaveTextContent('—');
+    expect(smb[1]).not.toHaveTextContent(formatInstant(new Date('2026-09-11T10:00:20Z'), TZ));
+
+    const nikto = rows[1].querySelectorAll('td');
+    expect(nikto[3]).toHaveTextContent('Failed');
+    expect(nikto[3]).toHaveTextContent('value too long');
+    // Half an hour after the batch: its own time.
+    expect(nikto[1]).toHaveTextContent(formatInstant(new Date('2026-09-11T10:30:00Z'), TZ));
+
+    expect(rows[2].querySelectorAll('td')[3]).toHaveTextContent('Discarded before import');
   });
 
   it('shows a generated label as "Upload batch · N files", and a name as written', () => {

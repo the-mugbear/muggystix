@@ -197,6 +197,9 @@ export interface ScanBatchSummary {
   uploaded_files?: number;
   /** v2.402.0 — files whose import was cancelled. */
   cancelled_files?: number;
+  /** v2.403.0 — failed here, not dismissed, but the same file was imported
+   *  by a later job; not counted in `failed_files`. */
+  superseded_files?: number;
   /** The creator's full name, else username. */
   created_by_name?: string | null;
 }
@@ -313,6 +316,9 @@ export interface ScanInventorySummary {
   /** v2.402.0 — `imports_not_imported` by reason (`discarded`, `expired`,
    *  `dismissed`), zero reasons left out; they sum to it. */
   imports_not_imported_by_reason?: Record<string, number>;
+  /** v2.403.0 — failed or partial imports (not dismissed) whose file a later
+   *  job imported: not in `imports_need_attention`. */
+  imports_superseded?: number;
 }
 
 export interface ScanUploader {

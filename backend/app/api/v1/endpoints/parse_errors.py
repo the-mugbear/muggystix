@@ -3,13 +3,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import desc, func, case, or_
+from sqlalchemy import and_, desc, func, case, or_
 from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db import models
 from app.services.format_registry import format_label
 from app.services.host_query_common import escape_like
+from app.services.import_attention_service import annotate_jobs, superseded_import_condition
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import file_retained, retained_until
 from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
@@ -106,6 +107,12 @@ class IngestionResultItem(BaseModel):
     skipped_count: int = 0
     parser_warnings: Optional[str] = None
     dismissed_at: Optional[datetime] = None
+    # v2.403.0 — a failed or partial import whose file a LATER job imported
+    # cleanly names that job, and is not "needs attention"; and the specific
+    # reason a failed job did not import (the parser's own message, not the
+    # generic "Failed to parse the file …" sentence).
+    superseded_by_job_id: Optional[int] = None
+    failure_reason: Optional[str] = None
     # Stats (populated for completed jobs)
     stats: Optional[IngestionResultStats] = None
     # Error info (populated for failed jobs)
@@ -146,7 +153,11 @@ def get_ingestion_results(
     limit: int = Query(50, ge=1, le=200),
     status: Optional[str] = Query(
         None,
-        description="Filter by IngestionJob.status (queued, processing, completed, failed) — v2.86.2.",
+        description=(
+            "Filter by IngestionJob.status (queued, processing, completed, failed) — v2.86.2; "
+            "or a view: `needs_attention` (failed or partial, not dismissed, not superseded) or "
+            "`superseded` (failed or partial, not dismissed, file imported by a later job) — v2.403.0."
+        ),
     ),
     tool: Optional[str] = Query(
         None,
@@ -191,6 +202,11 @@ def get_ingestion_results(
         # dismissed.  The same condition the Operations blockers count, so the
         # number on "Inspect import errors" and this list cannot disagree.
         base = base.filter(blocked_import_condition())
+    elif status == "superseded":
+        # v2.403.0 — not a job status either: failed or partial, not
+        # dismissed, and the same file imported cleanly by a later job — what
+        # "Dismiss N superseded" clears.
+        base = base.filter(models.IngestionJob.dismissed_at.is_(None), superseded_import_condition())
     elif status:
         base = base.filter(models.IngestionJob.status == status)
     if tool:
@@ -220,7 +236,7 @@ def get_ingestion_results(
     sort_col = sort_col_map[sort_by]
     order_clause = sort_col.asc() if sort_order == "asc" else sort_col.desc()
 
-    jobs = base.order_by(order_clause).offset(skip).limit(limit).all()
+    jobs = annotate_jobs(db, base.order_by(order_clause).offset(skip).limit(limit).all())
 
     # Collect scan_ids from completed jobs for batch stats query
     scan_ids = [j.scan_id for j in jobs if j.scan_id is not None]
@@ -355,6 +371,8 @@ def get_ingestion_results(
             skipped_count=int(job.skipped_count or 0),
             parser_warnings=job.parser_warnings,
             dismissed_at=job.dismissed_at,
+            superseded_by_job_id=job.superseded_by_job_id,
+            failure_reason=job.failure_reason,
         )
 
         # Attach stats for completed jobs
@@ -419,14 +437,21 @@ def get_ingestion_results(
         .all()
     )
     status_map = dict(status_counts)
-    needs_attention = (
-        db.query(func.count(models.IngestionJob.id))
-        .filter(models.IngestionJob.project_id == project.id, blocked_import_condition())
-        .scalar()
-    ) or 0
+    needs_attention, superseded = (
+        db.query(
+            func.count(case((blocked_import_condition(), models.IngestionJob.id))),
+            func.count(case((
+                and_(models.IngestionJob.dismissed_at.is_(None), superseded_import_condition()),
+                models.IngestionJob.id,
+            ))),
+        )
+        .filter(models.IngestionJob.project_id == project.id)
+        .one()
+    )
 
     summary = {
-        "total_needs_attention": needs_attention,
+        "total_needs_attention": int(needs_attention or 0),
+        "total_superseded": int(superseded or 0),
         "total_staged": status_map.get("staged", 0),
         "total_completed": status_map.get("completed", 0),
         "total_failed": status_map.get("failed", 0),

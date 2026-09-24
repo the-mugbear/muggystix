@@ -33,6 +33,10 @@ from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
+from app.services.import_attention_service import (
+    superseded_import_condition,
+    unsuccessful_import_condition,
+)
 from app.services.vulnerability_service import VulnerabilityService
 
 # Findings still demanding work — the one definition, in models_findings
@@ -1266,11 +1270,17 @@ def blocked_import_condition():
     nobody has dismissed it.  ONE definition — the Operations blockers count
     it, `GET /parse-errors/ingestion-results?status=needs_attention` lists it,
     and `POST /upload/jobs/{id}/dismiss` is what clears it.  The count on the
-    "Inspect import errors" button and the list it opens cannot disagree."""
+    "Inspect import errors" button and the list it opens cannot disagree.
+
+    v2.403.0 — minus the SUPERSEDED ones: a failure whose file a later job
+    of the project imported cleanly has been dealt with, and read as "needs
+    attention" on /scans and Ingestion Results beside the imported file
+    (``import_attention_service``)."""
     Job = models.IngestionJob
     return and_(
         Job.dismissed_at.is_(None),
-        or_(Job.status == "failed", and_(Job.status == "completed", Job.partial.is_(True))),
+        unsuccessful_import_condition(),
+        ~superseded_import_condition(),
     )
 
 

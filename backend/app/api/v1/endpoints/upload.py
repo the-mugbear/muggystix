@@ -17,11 +17,14 @@ from app.schemas.schemas import FileUploadResponse, IngestionJobSchema
 from app.services.staged_import_service import (
     detect_for_job, discard_staged_job, reprocess_job, start_staged_job,
 )
+from app.services.import_attention_service import annotate_jobs, superseding_job_ids
 from app.services.ingestion_service import (
     ALLOWED_UPLOAD_EXTENSIONS,
     DuplicateUploadError,
+    _transitions,
     ingestion_service,
 )
+from app.services.job_transitions import JobNotTransitionable
 
 logger = logging.getLogger(__name__)
 
@@ -368,6 +371,61 @@ def discard_all_staged_jobs(
     return DiscardStagedResponse(discarded=len(ids), job_ids=ids)
 
 
+class DismissSupersededRequest(BaseModel):
+    # The superseded jobs the operator was SHOWN and confirmed.
+    job_ids: List[int] = Field(..., min_length=1, max_length=500)
+
+
+class DismissSupersededResponse(BaseModel):
+    dismissed: int
+    job_ids: List[int] = []
+
+
+@router.post(
+    "/jobs/dismiss-superseded",
+    response_model=DismissSupersededResponse,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="Dismiss the named superseded failures (a later job imported the same file)",
+)
+def dismiss_superseded_jobs(
+    body: DismissSupersededRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """v2.403.0 — a failed or partial import whose file a later job of the
+    project imported cleanly is SUPERSEDED: it no longer needs attention, but
+    it still sat undismissed.  Dismisses exactly the ids given, and of those
+    only the ones still superseded, undismissed and visible to the caller
+    (admins the project's; everyone else their own) — each checked under its
+    row lock through ``job_transitions``.  The response says which."""
+    query = db.query(IngestionJob.id).filter(
+        IngestionJob.project_id == project.id,
+        IngestionJob.id.in_(body.job_ids),
+        IngestionJob.dismissed_at.is_(None),
+    )
+    if current_user.role != UserRole.ADMIN:
+        query = query.filter(IngestionJob.submitted_by_id == current_user.id)
+    candidate_ids = sorted(jid for (jid,) in query.all())
+
+    def _still_superseded(job: IngestionJob) -> Optional[str]:
+        return None if superseding_job_ids(db, [job]) else "not_superseded"
+
+    done: List[int] = []
+    for jid in candidate_ids:
+        try:
+            job = _transitions.acknowledge(db, jid, precondition=_still_superseded)
+        except JobNotTransitionable:
+            db.rollback()
+            continue
+        if job is None:
+            db.rollback()
+            continue
+        db.commit()
+        done.append(jid)
+    return DismissSupersededResponse(dismissed=len(done), job_ids=done)
+
+
 @router.post(
     "/jobs/{job_id}/discard",
     response_model=IngestionJobSchema,
@@ -576,6 +634,15 @@ def list_ingestion_jobs(
             "started with ONE request per tick instead of one per file."
         ),
     ),
+    batch_id: int | None = Query(
+        None,
+        description=(
+            "v2.403.0 — the jobs of this upload batch that did NOT import "
+            "(any status but completed; dismissed ones included; at most 500), "
+            "so an expanded batch on /scans can list which files failed and why. "
+            "Status and pagination are ignored."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -605,17 +672,26 @@ def list_ingestion_jobs(
             return []
         # Same project + visibility rule as above; an id the caller may not
         # see, or that no longer exists, is simply absent from the answer.
-        return (
+        return annotate_jobs(db, (
             query.filter(IngestionJob.id.in_(wanted))
             .order_by(desc(IngestionJob.created_at))
             .all()
-        )
+        ))
+    if batch_id is not None:
+        return annotate_jobs(db, (
+            query.filter(IngestionJob.batch_id == batch_id, IngestionJob.status != "completed")
+            .order_by(IngestionJob.original_filename, IngestionJob.id)
+            .limit(500)
+            .all()
+        ))
     if status:
         query = query.filter(IngestionJob.status == status)
     if not include_dismissed:
         query = query.filter(IngestionJob.dismissed_at.is_(None))
     jobs = query.order_by(desc(IngestionJob.created_at)).offset(skip).limit(limit).all()
-    return jobs
+    # v2.403.0 — each job says whether a later job imported its file
+    # (superseded) and the specific reason it failed.
+    return annotate_jobs(db, jobs)
 
 
 @router.post(
@@ -651,14 +727,25 @@ def dismiss_ingestion_job(
         raise HTTPException(status_code=404, detail="Ingestion job not found")
     if current_user.role != UserRole.ADMIN and job.submitted_by_id != current_user.id:
         raise HTTPException(status_code=403, detail="Cannot dismiss another user's job")
-    if not (job.status == "failed" or (job.status == "completed" and job.partial)):
+    # v2.403.0 — through job_transitions: the status is checked under the
+    # row lock (a retry could be re-queuing it right now).
+    try:
+        dismissed = _transitions.acknowledge(db, job.id, precondition=_not_failed_or_partial)
+    except JobNotTransitionable as exc:
+        db.rollback()
         raise HTTPException(
             status_code=400,
-            detail=f"Only failed or partial jobs can be dismissed (current status: {job.status!r})",
+            detail=f"Only failed or partial jobs can be dismissed (current status: {exc.status!r})",
         )
-    if job.dismissed_at is None:
-        from datetime import datetime, timezone
-        job.dismissed_at = datetime.now(timezone.utc)
-        db.commit()
-        db.refresh(job)
-    return job
+    if dismissed is None:
+        db.rollback()
+        raise HTTPException(status_code=404, detail="Ingestion job not found")
+    db.commit()
+    db.refresh(dismissed)
+    return annotate_jobs(db, [dismissed])[0]
+
+
+def _not_failed_or_partial(job: IngestionJob) -> Optional[str]:
+    if job.status == "failed" or (job.status == "completed" and job.partial):
+        return None
+    return job.status

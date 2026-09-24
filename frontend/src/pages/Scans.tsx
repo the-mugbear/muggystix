@@ -59,6 +59,7 @@ import { formatApiError } from '../utils/apiErrors';
 import { updateProjectIngestSettings } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
+import { BreakableName } from '../components/ui/breakable-name';
 import { Button } from '../components/ui/button';
 import PostureLead from '../components/posture/PostureLead';
 import PostureSection from '../components/posture/PostureSection';
@@ -623,7 +624,7 @@ export default function Scans() {
           nextEntries[key] = {
             ...entry,
             status: 'failed',
-            error: job.error_message || job.last_error || job.message || 'Import failed',
+            error: job.failure_reason || job.error_message || job.last_error || job.message || 'Import failed',
             parseErrorId: job.parse_error_id ?? null,
           };
           changed = true;
@@ -754,8 +755,12 @@ export default function Scans() {
   // `processing`, `failed` so the queue is useful for its actual
   // intent: "what's still in flight or needs my attention?".
   // v5.271.0 — plus every staged job, which the 25 recent may not reach.
+  // v5.289.0 — minus superseded failures (a later job imported the same
+  // file): they need nothing, and are listed on Ingestion Results.
   const pendingJobs = useMemo(() => {
-    const recent = recentJobs.filter((j) => j.status !== 'completed' && j.status !== 'staged');
+    const recent = recentJobs.filter(
+      (j) => j.status !== 'completed' && j.status !== 'staged' && j.superseded_by_job_id == null,
+    );
     return [...recent, ...stagedJobs].sort(
       (a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime() || b.id - a.id,
     );
@@ -781,6 +786,11 @@ export default function Scans() {
     staged: pendingJobs.filter((j) => j.status === 'staged').length,
     failed: pendingJobs.filter((j) => j.status === 'failed').length,
   }), [pendingJobs]);
+  // v5.289.0 — the queue box said "1 failed" (its 25 most recent jobs) while
+  // the lead and Ingestion Results said 4 need attention.  Both now read the
+  // project-wide figure (one definition, server-side); the recent-jobs count
+  // is only the fallback when the summary did not carry it.
+  const needAttention = inventorySummary?.imports_need_attention ?? queueCounts.failed;
   const [queueOpen, setQueueOpen] = useState<boolean>(() => {
     try {
       return localStorage.getItem('nm.scans.queueOpen') === '1';
@@ -976,6 +986,7 @@ export default function Scans() {
         needAttention={inventorySummary?.imports_need_attention}
         notImported={inventorySummary?.imports_not_imported}
         byReason={inventorySummary?.imports_not_imported_by_reason}
+        superseded={inventorySummary?.imports_superseded}
         queueUnknown={recentJobsError && recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
@@ -1108,7 +1119,7 @@ export default function Scans() {
           data-testid="ingestion-queue"
           className={cn(
             'mb-md border-l-4 py-xs pl-md',
-            queueCounts.failed > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
+            needAttention > 0 ? 'border-l-destructive' : queueCounts.staged > 0 ? 'border-l-warning' : 'border-l-info',
           )}
         >
           <div>
@@ -1124,11 +1135,17 @@ export default function Scans() {
                       queueCounts.processing > 0 ? `${queueCounts.processing} processing` : null,
                       queueCounts.staged > 0 ? `${queueCounts.staged} waiting for review` : null,
                     ].filter(Boolean).join(' · ')}
-                    {queueCounts.failed > 0 && (
-                      <span className="text-destructive">
+                    {needAttention > 0 && (
+                      <>
                         {queueCounts.processing > 0 || queueCounts.staged > 0 ? ' · ' : ''}
-                        {queueCounts.failed} failed
-                      </span>
+                        <Link
+                          to="/parse-errors?status=needs_attention"
+                          className="text-destructive underline-offset-2 hover:underline"
+                          title="Every import of this project that failed or finished partial and nobody dismissed — the figure in the lead and on Ingestion Results"
+                        >
+                          {needAttention.toLocaleString()} need{needAttention === 1 ? 's' : ''} attention
+                        </Link>
+                      </>
                     )}
                   </span>
                   <button
@@ -1139,13 +1156,17 @@ export default function Scans() {
                     className="inline-flex items-center gap-xxs rounded text-caption text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   >
                     {queueOpen ? <ChevronUp className="size-3.5" aria-hidden /> : <ChevronDown className="size-3.5" aria-hidden />}
-                    {queueOpen ? 'Hide jobs' : `Show ${pendingJobs.length} job${pendingJobs.length === 1 ? '' : 's'}`}
+                    {queueOpen ? 'Hide recent jobs' : `Show ${pendingJobs.length} recent job${pendingJobs.length === 1 ? '' : 's'}`}
                   </button>
                 </div>
                 {queueOpen && (
                   <p className="text-metadata text-muted-foreground">
-                    In-flight uploads, staged files waiting for a format review, and recent
-                    failures. Successful uploads appear in Import history below.
+                    In-flight uploads, staged files waiting for a format review, and failures among
+                    the recent uploads. Successful uploads appear in Import history below;{' '}
+                    <Link to="/parse-errors" className="text-primary underline-offset-2 hover:underline">
+                      every import is on Ingestion Results
+                    </Link>
+                    .
                   </p>
                 )}
               </div>
@@ -1261,8 +1282,10 @@ export default function Scans() {
                           : `${(job.file_size / 1024).toFixed(0)} KB`
                       : '-';
 
+                    // v5.289.0 — the parser's specific cause first; the generic
+                    // "Failed to parse the file …" only when nothing better exists.
                     const displayMessage = isFailure
-                      ? job.error_message || job.message || 'Unknown error'
+                      ? job.failure_reason || job.error_message || job.message || 'Unknown error'
                       : job.status === 'staged'
                         ? 'Not imported yet'
                         // Prefer the import-count summary ("6 DNS records") over
@@ -1363,7 +1386,7 @@ export default function Scans() {
                             )}
                           </TableCell>
                           <TableCell className="min-w-0">
-                            <p className="truncate" title={job.original_filename}>{job.original_filename}</p>
+                            <BreakableName as="p" name={job.original_filename} title={job.original_filename} />
                             {job.tool_name && (
                               <p className="truncate text-caption text-muted-foreground">{job.tool_name}</p>
                             )}
@@ -1886,9 +1909,9 @@ export default function Scans() {
                                   name overflows into the next column. */}
                               <Link
                                 to={`/scans/${scan.id}`}
-                                className="min-w-0 break-words rounded font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                className="min-w-0 rounded font-semibold text-foreground hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                               >
-                                {scan.filename}
+                                <BreakableName name={scan.filename} />
                               </Link>
                             </div>
                             <div className="flex flex-wrap items-center gap-xxs">
@@ -2213,11 +2236,21 @@ export default function Scans() {
  * summary) instead of listing every possible one; the explanation moved from
  * a two-line paragraph into an info tip.
  */
-const NOT_IMPORTED_REASON: Array<[string, string]> = [
-  ['expired', 'expired before review'],
-  ['discarded', 'discarded'],
-  ['dismissed', 'failed, dismissed'],
+/** v5.289.0 — [key, singular, plural]: "(25 discarded, 1 dismissed failure)"
+ *  read "(25 discarded, 1 failed, dismissed)". */
+const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
+  ['expired', 'expired before review', 'expired before review'],
+  ['discarded', 'discarded', 'discarded'],
+  ['dismissed', 'dismissed failure', 'dismissed failures'],
 ];
+
+const notImportedReasons =(byReason?: Record<string, number>): string[] =>
+  NOT_IMPORTED_REASON
+    .filter(([key]) => (byReason?.[key] ?? 0) > 0)
+    .map(([key, one, many]) => {
+      const n = byReason![key];
+      return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+    });
 
 const ScansLead: React.FC<{
   files: number;
@@ -2226,16 +2259,15 @@ const ScansLead: React.FC<{
   needAttention?: number;
   notImported?: number;
   byReason?: Record<string, number>;
+  superseded?: number;
   queueUnknown: boolean;
   lastImportAt: string | null;
-}> = ({ files, filtered, failed, needAttention, notImported = 0, byReason, queueUnknown, lastImportAt }) => {
+}> = ({ files, filtered, failed, needAttention, notImported = 0, byReason, superseded = 0, queueUnknown, lastImportAt }) => {
   if (files === 0 && !filtered) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
   const projectWide = needAttention != null;
   const attention = projectWide ? needAttention : failed;
-  const reasons = NOT_IMPORTED_REASON
-    .filter(([key]) => (byReason?.[key] ?? 0) > 0)
-    .map(([key, label]) => `${byReason![key].toLocaleString()} ${label}`);
+  const reasons = notImportedReasons(byReason);
   const sep = <span className="text-muted-foreground"> · </span>;
   return (
     <PostureLead className="mb-md" tone={attention > 0 ? 'warning' : 'neutral'}>
@@ -2264,14 +2296,24 @@ const ScansLead: React.FC<{
               {reasons.length > 0 && ` (${reasons.join(', ')})`}
             </>
           )}
-          {attention === 0 && notImported === 0 && <>{sep}nothing failed</>}
+          {/* v5.289.0 — failures whose file a later upload imported: not
+              "need attention", but still listed until dismissed. */}
+          {projectWide && superseded > 0 && (
+            <>
+              {sep}
+              <Link to="/parse-errors?status=superseded" className="underline-offset-2 hover:underline">
+                {superseded.toLocaleString()} failed import{superseded === 1 ? '' : 's'} since re-imported
+              </Link>
+            </>
+          )}
+          {attention === 0 && notImported === 0 && superseded === 0 && <>{sep}nothing failed</>}
         </>
       )}
       {last && <>{sep}last import {last}</>}{' '}
       <InfoTip
         label="About these figures"
         className="align-middle"
-        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list. “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
+        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list — except those whose same file a later upload imported (“since re-imported”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
       />
     </PostureLead>
   );

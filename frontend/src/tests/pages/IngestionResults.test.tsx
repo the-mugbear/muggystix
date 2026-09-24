@@ -253,3 +253,81 @@ describe('Ingestion Results — rows readable without expanding', () => {
     expect(await screen.findByRole('button', { name: /Sort direction: Oldest first/ })).toBeInTheDocument();
   });
 });
+
+// Local Network, 2026-09-24 (v5.289.0).
+describe('Ingestion Results — superseded failures and specific reasons', () => {
+  const generic = "Failed to parse the file 'smbmap-samba.txt'. The file format may not be supported or the file may be corrupted.";
+  const smbmap = row({
+    id: 478, parse_error_id: 18, status: 'failed', original_filename: 'smbmap-samba.txt',
+    superseded_by_job_id: 484,
+    failure_reason: 'SMBMap parser found 0 hosts in smbmap-samba.txt; file is empty or not smbmap output.',
+    error: { error_type: 'parsing_error', error_message: 'SMBMap parser found 0 hosts in smbmap-samba.txt; file is empty or not smbmap output.', user_message: generic },
+  });
+  const withSuperseded = (items: unknown[]) => {
+    const r = response(items);
+    return { ...r, summary: { ...r.summary, total_superseded: 4 } };
+  };
+
+  it('says a later job imported the file, and gives the parser\'s cause rather than the generic sentence', async () => {
+    api.getIngestionResults.mockResolvedValue(withSuperseded([smbmap]));
+    renderPage();
+    await screen.findByText('smbmap-samba.txt');
+    const sup = screen.getByTestId('superseded-by');
+    expect(sup).toHaveTextContent('Superseded — imported by job #484');
+    expect(within(sup).getByRole('link', { name: 'job #484' })).toHaveAttribute('href', '/parse-errors?job_id=484');
+    expect(screen.getByTestId('failure-reason')).toHaveTextContent('SMBMap parser found 0 hosts');
+    expect(screen.getByTestId('failure-reason')).not.toHaveTextContent(/format may not be supported/);
+  });
+
+  it('has a Superseded count that filters, and dismisses exactly the superseded rows shown', async () => {
+    api.getIngestionResults.mockResolvedValue(withSuperseded([
+      smbmap,
+      row({ id: 11, status: 'failed', original_filename: 'still-broken.xml' }),
+      row({ id: 12, status: 'failed', original_filename: 'old.xml', superseded_by_job_id: 20, dismissed_at: '2026-09-01T00:00:00Z' }),
+    ]));
+    api.dismissSupersededJobs.mockResolvedValue({ dismissed: 1, job_ids: [478] });
+    renderPage();
+    const chip = await screen.findByRole('button', { name: /Superseded\s*4/ });
+    fireEvent.click(chip);
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'superseded' }),
+    ));
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Dismiss 1 superseded' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(api.dismissSupersededJobs).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Dismiss 1' }));
+    await waitFor(() => expect(api.dismissSupersededJobs).toHaveBeenCalledWith([478]));
+  });
+
+  it('breaks a filename only after a separator', async () => {
+    api.getIngestionResults.mockResolvedValue(response([
+      row({ id: 5, original_filename: 'netexec-spider-172.30.77.10.json' }),
+    ]));
+    renderPage();
+    const cell = await screen.findByText('netexec-spider-172.30.77.10.json');
+    expect(cell.className).not.toMatch(/break-all/);
+    // A break opportunity after every '-' and '.', none inside "10".
+    expect(cell.innerHTML).toBe(
+      'netexec-<wbr>spider-<wbr>172.<wbr>30.<wbr>77.<wbr>10.<wbr>json',
+    );
+  });
+
+  it('gives every fixed column room for its header, under a minimum the content area holds', async () => {
+    renderPage();
+    await screen.findByText('No upload history yet');
+    const table = document.querySelector('table')!;
+    expect(table.className).toMatch(/min-w-\[1000px\]/);
+    const widths = Array.from(table.querySelectorAll('thead th')).map((th) => th.className.match(/\bw-(\d+)\b/)?.[1]);
+    // Filename (the third) takes the rest.
+    expect(widths[2]).toBeUndefined();
+    const px = widths.filter(Boolean).reduce((sum, w) => sum + Number(w) * 4, 0);
+    expect(px).toBeLessThanOrEqual(1000 - 144);
+    // "SERVICES" and "DURATION" do not fit an 80px column's 64px of text.
+    const headers = Array.from(table.querySelectorAll('thead th'));
+    for (const label of ['Services', 'Duration', 'Uploaded']) {
+      const th = headers.find((h) => h.textContent === label)!;
+      expect(Number(th.className.match(/\bw-(\d+)\b/)![1])).toBeGreaterThanOrEqual(24);
+    }
+  });
+});
