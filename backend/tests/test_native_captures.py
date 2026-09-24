@@ -45,6 +45,13 @@ class TestNikto:
         host = db_session.get(models.Host, robots.host_id)
         assert host.ip_address == "172.30.77.20"
         assert db_session.get(models.Port, robots.port_id).port_number == 8080
+        # A message that only makes sense with its path carries the path, as
+        # the text output prints it; "/" adds nothing (browser walkthrough
+        # 2026-09-24: "This might be interesting." named no URL).
+        titles = {v.plugin_id: v.title for v in vulns}
+        assert titles["999996"] == "/robots.txt: contains 1 entry which should be manually viewed."
+        assert titles["001811"] == "/public/: This might be interesting."
+        assert titles["600720"].startswith("SimpleHTTP/0.6 appears")
 
     def test_native_text_ids_long_messages_and_metadata(self, db_session, test_project):
         """A message over 200 characters raised StringDataRightTruncation and

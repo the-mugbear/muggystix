@@ -156,12 +156,22 @@ class NiktoParser:
         description = entry.get("description") or msg
         if refs and isinstance(refs, str) and description and refs not in description:
             description = f"{description}\nSee: {refs}"
+        # Nikto 2.5 JSON keeps the path in ``url`` and some messages depend on
+        # it ("contains 1 entry which should be manually viewed." is about
+        # /robots.txt; "This might be interesting." about /public/).  The
+        # text output prints "<path>: <msg>"; do the same when the message
+        # does not start with a path itself.  "/" adds nothing and would
+        # split the header checks by path.
+        url = str(entry.get("url") or "").strip()
+        title = str(msg or entry.get("id"))
+        if msg and url and url != "/" and not str(msg).lstrip().startswith("/"):
+            title = f"{url}: {msg}"
         self._record_finding(
             scan=scan,
             ip_address=ip_address,
             hostname=hostname,
             port=port,
-            title=str(msg or entry.get("id")),
+            title=title,
             description=description,
             plugin_id=str(entry.get("id") or entry.get("osvdb") or "") or None,
             cve_id=entry.get("cve"),
