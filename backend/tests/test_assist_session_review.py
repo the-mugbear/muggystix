@@ -395,3 +395,42 @@ def test_one_definition_of_active_across_list_and_detail(
     )
     detail = _detail(client, test_project.id, sid)
     assert listed["status"] == detail["status"] == "ended"
+
+
+def _listed(client, project_id, sid):
+    return next(
+        r
+        for r in client.get(f"/api/v1/projects/{project_id}/assist/sessions").json()
+        if r["id"] == sid
+    )
+
+
+def test_authority_is_the_operators_project_role(client, db_session, test_project, test_user):
+    """v2.402.0 — the Authority column said "as <operator>", repeating Started
+    by. The authority a session acts with is its operator's PROJECT ROLE
+    (``enforce_agent_operator_access``), so that is what list and detail carry."""
+    from app.db.models_auth import UserRole
+    from app.db.models_project import ProjectMembership
+
+    sid = _start(client, test_project.id)["assist_session_id"]
+
+    # The fixture user is a global admin with no membership: the gate lets them
+    # through, and nothing else describes that authority honestly.
+    assert _listed(client, test_project.id, sid)["operator_role"] == "global_admin"
+    assert _detail(client, test_project.id, sid)["operator_role"] == "global_admin"
+
+    # A plain member acts with their membership role, re-read now.
+    membership = ProjectMembership(
+        project_id=test_project.id, user_id=test_user.id, role="analyst"
+    )
+    db_session.add(membership)
+    test_user.role = UserRole.MEMBER
+    db_session.commit()
+    assert _listed(client, test_project.id, sid)["operator_role"] == "analyst"
+    assert _detail(client, test_project.id, sid)["operator_role"] == "analyst"
+
+    # A global admin whose membership already says admin reads as that role.
+    membership.role = "admin"
+    test_user.role = UserRole.ADMIN
+    db_session.commit()
+    assert _listed(client, test_project.id, sid)["operator_role"] == "admin"

@@ -35,7 +35,6 @@ import {
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { Card, CardContent } from '../components/ui/card';
 import { Checkbox } from '../components/ui/checkbox';
 import {
   Dialog,
@@ -101,7 +100,43 @@ function stripAttribution(text: string): string {
 const formatDate = (d?: string) =>
   d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '-';
 
-const WORKFLOW_EXPANDED_KEY = 'testPlansWorkflowExpanded';
+// v5.288.0 — a new key: the old one ('testPlansWorkflowExpanded') was written
+// as 'true' on every mount while expanded was the default, so reading it would
+// keep the explainer open for everyone who had ever visited.
+const WORKFLOW_EXPANDED_KEY = 'testPlans.workflowExplainer.expanded';
+
+/** v5.288.0 — progress as the fraction it is ("1 of 4 entries done") over a
+ *  small bar, instead of a bare "0%" whose empty bar was invisible. Done =
+ *  completed or rejected, the same rule as completion_pct. */
+const PlanProgress: React.FC<{ plan: TestPlanSummary }> = ({ plan }) => {
+  const total = plan.entry_count;
+  if (total === 0) {
+    return <span className="text-caption text-muted-foreground">No entries yet</span>;
+  }
+  const done = plan.entries_done ?? Math.round((plan.completion_pct / 100) * total);
+  const pct = Math.min(100, Math.max(0, (done / total) * 100));
+  return (
+    <div className="flex min-w-0 flex-col gap-xxs">
+      <div
+        className="h-1.5 w-full overflow-hidden rounded-full bg-muted"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={total}
+        aria-valuenow={done}
+        aria-label={`${done} of ${total} entries done`}
+      >
+        <div className="h-full bg-primary" style={{ width: `${pct}%` }} />
+      </div>
+      <p className="text-caption text-muted-foreground">
+        {done.toLocaleString()} of {total.toLocaleString()} {total === 1 ? 'entry' : 'entries'} done
+      </p>
+    </div>
+  );
+};
+
+/** The plan author as a person: full name, else username. */
+const authorName = (plan: TestPlanSummary): string | null =>
+  plan.created_by_full_name?.trim() || plan.created_by_username || null;
 
 // --- generate-plan dialog form state (v2.43.0 — MONO-3 migration) -----
 // Pre-v2.43.0 the 7 form-input fields lived in 7 separate useState
@@ -220,16 +255,25 @@ const TestPlans: React.FC = () => {
     if (genResult?.api_key) setGenKeyAcknowledged(false);
   }, [genResult?.api_key]);
 
+  // v5.288.0 — collapsed by default (it pushed the list below the fold), and
+  // only the viewer's own toggle is remembered: written on change, never on
+  // mount, and storage that throws (private window, blocked site data) just
+  // means the default.
   const [workflowExpanded, setWorkflowExpanded] = useState<boolean>(() => {
-    if (typeof window === 'undefined') return true;
-    const saved = window.localStorage.getItem(WORKFLOW_EXPANDED_KEY);
-    return saved === null ? true : saved === 'true';
-  });
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      window.localStorage.setItem(WORKFLOW_EXPANDED_KEY, String(workflowExpanded));
+    try {
+      return window.localStorage.getItem(WORKFLOW_EXPANDED_KEY) === 'true';
+    } catch {
+      return false;
     }
-  }, [workflowExpanded]);
+  });
+  const toggleWorkflowExpanded = (next: boolean) => {
+    setWorkflowExpanded(next);
+    try {
+      window.localStorage.setItem(WORKFLOW_EXPANDED_KEY, String(next));
+    } catch {
+      /* storage unavailable — the choice lasts for this visit only */
+    }
+  };
 
   const loadPlans = useCallback(() => {
     setLoading(true);
@@ -249,7 +293,8 @@ const TestPlans: React.FC = () => {
       const title = (p.title || '').toLowerCase();
       const agent = (p.agent_name || '').toLowerCase();
       const author = (p.created_by_username || '').toLowerCase();
-      return title.includes(q) || agent.includes(q) || author.includes(q);
+      const fullName = (p.created_by_full_name || '').toLowerCase();
+      return title.includes(q) || agent.includes(q) || author.includes(q) || fullName.includes(q);
     });
   }, [plans, debouncedSearchText]);
 
@@ -412,8 +457,9 @@ const TestPlans: React.FC = () => {
             <ArrowLeftRight className="size-4" aria-hidden />
             {compareEnabled ? 'Compare selected (2)' : `Compare (${selectedIds.length}/2)`}
           </Button>
-          <div className="relative min-w-52">
-            {/* FRX·H4: client-side search over title + author. */}
+          <div className="relative w-64">
+            {/* FRX·H4: client-side search over title + author. v5.288.0 — a
+                placeholder that fits; the "/" shortcut moves to the tooltip. */}
             <Search
               className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
               aria-hidden
@@ -423,7 +469,8 @@ const TestPlans: React.FC = () => {
               type="search"
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search title or author… (press / to focus)"
+              placeholder="Search title or author"
+              title="Search title or author (press / to focus)"
               aria-label="Search test plans"
               className="pl-xl"
             />
@@ -447,109 +494,109 @@ const TestPlans: React.FC = () => {
         </div>
       </div>
 
+      {/* v5.288.0 — collapsed by default, and a section over a thin rule
+          rather than a bordered card (UI_STYLE_GUIDE §7). The text was checked
+          against the code: the agent submits explicitly (POST
+          /agent/test-plans/{id}/submit — description and ≥1 entry required),
+          approval is ANALYST+, execution needs an approved plan, entry
+          statuses are TestEntryStatus, progress counts completed + rejected,
+          and a live run does not close the plan. */}
       <Accordion
         type="single"
         collapsible
         value={workflowExpanded ? 'workflow' : ''}
-        onValueChange={(v) => setWorkflowExpanded(v === 'workflow')}
-        className="mb-sm"
+        onValueChange={(v) => toggleWorkflowExpanded(v === 'workflow')}
+        className="mb-md"
       >
-        <AccordionItem value="workflow" className="rounded-panel border border-border">
-          <AccordionTrigger className="px-md">
+        <AccordionItem value="workflow" data-testid="workflow-explainer">
+          <AccordionTrigger className="py-xs">
             <div className="flex items-center gap-xs">
               <Info className="size-4 text-primary" aria-hidden />
               <span>How the test plan workflow works</span>
             </div>
           </AccordionTrigger>
-          <AccordionContent className="px-md">
-            <div className="flex flex-col gap-sm">
-              <p className="text-metadata text-muted-foreground">
-                A test plan moves through five phases. Each phase has a clear handoff so you always
-                know whose turn it is.
-              </p>
-              <ol className="flex flex-col gap-sm pl-md text-metadata [list-style-type:decimal]">
+          <AccordionContent>
+            <div className="flex max-w-4xl flex-col gap-md text-metadata">
+              <ol className="flex flex-col gap-sm pl-md [list-style-type:decimal]">
                 <li>
-                  <strong>Generation (agent).</strong> Click <em>Generate with AI</em>, optionally
-                  narrow the scope with filters, and an AI agent creates candidate test entries —
-                  one per host, with priority, phase, rationale, and tool-specific commands. The
-                  plan starts as a <strong>draft</strong>.
+                  <strong>Draft (agent).</strong> <em>Generate with AI</em> creates a{' '}
+                  <strong>draft</strong> plan and an agent session for your agent (an agent in an
+                  existing session can open a draft itself, and the Hosts page can start one from a
+                  fixed selection). The agent reads the candidate hosts and adds entries — one per
+                  host, with priority, phase, rationale and tool-specific commands.
                 </li>
                 <li>
-                  <strong>Submission (agent).</strong> When the agent finishes populating the plan
-                  it submits automatically. The plan moves to <strong>proposed</strong> and the
-                  agent's job is over.
+                  <strong>Submit (agent).</strong> The agent submits the plan for review when it
+                  is done — this is a step it takes, not an automatic one, and it needs a plan
+                  description and at least one entry. The plan becomes <strong>proposed</strong>{' '}
+                  and its approvers are notified. A plan whose agent stopped early stays a draft;
+                  generation can be resumed from the plan.
                 </li>
                 <li>
-                  <strong>Plan-level review (you).</strong> Open the plan, read through the entries,
-                  and decide whether the agent's overall direction is sound. Click{' '}
-                  <strong>Approve Plan</strong> to accept the work, or <strong>Reject</strong> with
-                  a reason if the agent went off-topic. You do <em>not</em> need to disposition
-                  every entry first — approval is a single yes/no on the plan as a whole.
+                  <strong>Review (you).</strong> Read the entries and decide whether the direction
+                  is sound: <strong>Approve Plan</strong>, or <strong>Reject</strong> with a
+                  reason. It is one decision on the plan as a whole, by an analyst or project
+                  admin; you do not need to disposition every entry first.
                 </li>
                 <li>
-                  <strong>Execution (testers).</strong> After approval, every entry is considered
-                  queued. As you run each test, change its status from <em>proposed</em> →{' '}
-                  <em>in&nbsp;progress</em> → <em>completed</em> (and fill in{' '}
-                  <strong>findings</strong> if you discover anything). If you decide on closer
-                  inspection that a specific entry isn't worth running, mark it <em>rejected</em>{' '}
-                  with a note explaining why.
+                  <strong>Execute.</strong> Only an approved plan can be executed —{' '}
+                  <em>Execute with AI</em>, an agent session opening an execution run, or an
+                  exported bundle whose results you import. The plan moves to{' '}
+                  <strong>in progress</strong> when the first run opens. The agent checks each host
+                  before testing it, records results, and closes each entry as{' '}
+                  <em>completed</em> or <em>rejected</em> (not tested, with a reason). Testers can
+                  also set an entry&rsquo;s status by hand: <em>proposed</em>, <em>approved</em>,{' '}
+                  <em>in progress</em>, <em>completed</em> or <em>rejected</em>.
                 </li>
                 <li>
-                  <strong>Wrap-up.</strong> The Execution Progress bar fills as entries reach a
-                  terminal state (completed or rejected). Once everything is closed out, the plan
-                  is done.
+                  <strong>Wrap up.</strong> Progress counts the entries that are completed or
+                  rejected. When a live run finishes every entry, the plan&rsquo;s stewards are
+                  notified that it is ready to close — the run does not close the plan itself; an
+                  imported bundle that closes every entry marks the plan{' '}
+                  <strong>completed</strong>. <em>Abandon</em> archives a plan you no longer want.
                 </li>
               </ol>
 
-              <Alert variant="info">
-                <AlertDescription>
-                  <strong>What surfaces on host pages.</strong> Once a plan is approved, its
-                  entries appear on the corresponding host detail pages so testers can see what work
-                  is queued for each host. Entries you reject during execution disappear from the
-                  host page automatically. Plans that are still draft, proposed, or rejected do not
-                  leak entries to host pages.
-                </AlertDescription>
-              </Alert>
+              <div>
+                <h3 className="mb-xxs font-semibold">What shows on host pages</h3>
+                <p className="text-muted-foreground">
+                  Entries from approved, in-progress and completed plans appear on their
+                  hosts&rsquo; pages, except entries marked rejected. Draft, proposed, rejected and
+                  archived plans put nothing there.
+                </p>
+              </div>
 
-              <Alert variant="warning">
-                <AlertDescription>
-                  <p className="mb-xs font-semibold">
-                    Why your plan may have fewer entries than the project has hosts
-                  </p>
-                  <p className="mb-xs">
-                    The agent does <em>not</em> create one entry per host. Two filters run before
-                    any entry is written, and both can drop hosts silently:
-                  </p>
-                  <ol className="flex flex-col gap-xs pl-md [list-style-type:decimal]">
-                    <li>
-                      <strong>Hosts with no open ports are excluded by default.</strong> This
-                      includes hosts that arrived from a discovery sweep (ping, ARP, DNS) but were
-                      never port-scanned. They show as <em>up</em> in the Hosts list but the agent
-                      treats them as having no actionable surface. If you have a lot of these, run
-                      a port scan against them first — they'll be invisible to the agent until you
-                      do.
-                    </li>
-                    <li>
-                      <strong>The remaining hosts pass through a selection policy.</strong> Hosts
-                      with critical or high vulnerabilities always qualify. Medium-vuln hosts only
-                      qualify if they expose <em>multiple identified services</em> or open a
-                      high-value port (SMB 445/139, RDP 3389, databases 1433/3306/5432/1521/27017,
-                      Redis 6379, VNC 5900). Hosts with no vulnerabilities and ordinary ports are
-                      filtered out. A port that's open but has no detected service name does{' '}
-                      <em>not</em> count toward the "multiple services" rule — re-scan with service
-                      detection (e.g. <code className="font-mono">nmap -sV</code>) to promote those
-                      hosts.
-                    </li>
-                  </ol>
-                  <p className="mt-xs">
-                    When the agent finishes it reports a count like{' '}
-                    <em>"36 reviewed candidates, 3 hosts that match policy"</em>. The first number
-                    is the post-port-scan filter; the second is the post-policy filter and matches
-                    the entry count of the resulting plan. If those numbers surprise you, the gap
-                    is usually scan coverage, not the agent.
-                  </p>
-                </AlertDescription>
-              </Alert>
+              <div>
+                <h3 className="mb-xxs font-semibold">
+                  Why a plan can have fewer entries than the project has hosts
+                </h3>
+                <p className="mb-xs text-muted-foreground">
+                  The agent does not write one entry per host. Before it starts, any filters you
+                  set (subnets, ports, services, minimum severity) or a fixed host selection narrow
+                  the candidates, and then:
+                </p>
+                <ol className="flex flex-col gap-xs pl-md text-muted-foreground [list-style-type:decimal]">
+                  <li>
+                    <strong className="text-foreground">Hosts with no open ports are left out</strong>{' '}
+                    of the candidates it is given unless it asks for them — including hosts that
+                    only came from a discovery sweep (ping, ARP, DNS) and were never port-scanned.
+                    Port-scan them first if they matter.
+                  </li>
+                  <li>
+                    <strong className="text-foreground">The agent follows a selection policy.</strong>{' '}
+                    Hosts with critical or high vulnerabilities qualify. Medium-vulnerability hosts
+                    qualify only with two or more identified services or a high-value port (SMB
+                    445/139, RDP 3389, databases 1433/3306/5432/1521/27017, Redis 6379, VNC 5900).
+                    An open port with no detected service does not count as a service — re-scan
+                    with service detection (e.g. <code className="font-mono">nmap -sV</code>).
+                  </li>
+                </ol>
+                <p className="mt-xs text-muted-foreground">
+                  The planning context the agent reads counts the candidates it reviewed and how
+                  many match the policy. If the numbers surprise you, the gap is usually scan
+                  coverage, not the agent.
+                </p>
+              </div>
             </div>
           </AccordionContent>
         </AccordionItem>
@@ -568,8 +615,9 @@ const TestPlans: React.FC = () => {
         // the eventual shape so the layout stays stable.
         <ListPageSkeleton actionCount={4} tableProps={{ rows: 6, columns: 6 }} />
       ) : filteredPlans.length === 0 ? (
-        <Card>
-          <CardContent className="p-xl text-center">
+        // v5.288.0 — on the page, not in a card (§7).
+        <div className="border-t border-border py-xl text-center" data-testid="plans-empty">
+          <div>
             <Bot className="mx-auto mb-xs size-12 text-muted-foreground" aria-hidden />
             {plans.length === 0 && !statusFilter ? (
               // Genuinely empty: no plans for this project AND no
@@ -603,25 +651,25 @@ const TestPlans: React.FC = () => {
                 </Button>
               </>
             )}
-          </CardContent>
-        </Card>
+          </div>
+        </div>
       ) : (
         <>
           {/* Desktop-only product: the table is the sole renderer;
-              narrow widths scroll horizontally. */}
-          <Card>
-            <CardContent className="p-0">
+              narrow widths scroll horizontally. v5.288.0 — on the page, not
+              in a bordered card (§7); fixed layout with the width going to
+              the title and the author, and a narrow checkbox column. */}
               <div className="overflow-x-auto">
-                <Table>
+                <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-12" />
-                      <TableHead className="w-[26%]">Title</TableHead>
-                      <TableHead className="w-[10%]">Status</TableHead>
-                      <TableHead className="w-[14%]">Author</TableHead>
-                      <TableHead className="w-[7%] text-center">Entries</TableHead>
-                      <TableHead className="w-[17%]">Progress</TableHead>
-                      <TableHead className="w-[10%]">Created</TableHead>
+                      <TableHead className="w-10" />
+                      <TableHead className="w-[40%]">Title</TableHead>
+                      <TableHead className="w-[112px]">Status</TableHead>
+                      <TableHead className="w-[18%]">Author</TableHead>
+                      <TableHead className="w-[76px] text-center">Entries</TableHead>
+                      <TableHead className="w-[150px]">Progress</TableHead>
+                      <TableHead className="w-[112px]">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -631,7 +679,7 @@ const TestPlans: React.FC = () => {
                         : '';
                       return (
                           <NavigableTableRow key={plan.id} selected={selectedIds.includes(plan.id)}>
-                            <TableCell className="w-12">
+                            <TableCell className="w-10 pr-0">
                               <Checkbox
                                 checked={selectedIds.includes(plan.id)}
                                 onCheckedChange={() => toggleSelect(plan.id)}
@@ -648,8 +696,11 @@ const TestPlans: React.FC = () => {
                               {/* Audit RSP·H6 — wrap in min-w-0
                                   block so `truncate` actually clips
                                   with long titles inside table-cell. */}
-                              <div className="min-w-0 max-w-full">
-                                <p className="truncate">
+                              {/* v5.288.0 — the title wraps to two lines
+                                  (full text in the tooltip) instead of
+                                  cutting off after a few words. */}
+                              <div className="min-w-0 max-w-full" title={plan.title}>
+                                <p className="line-clamp-2 break-words">
                                   {plan.title}
                                   {/* Version lived only in the removed
                                       mobile card; a plan's version matters
@@ -673,28 +724,27 @@ const TestPlans: React.FC = () => {
                               </Badge>
                             </TableCell>
                             <TableCell>
-                              <p className="truncate">
-                                {plan.agent_name || plan.created_by_username || '-'}
+                              {/* v5.288.0 — the person first, by full name
+                                  (username in the tooltip); the agent that
+                                  drafted it under them. Both wrap. */}
+                              <p
+                                className="line-clamp-2 break-words"
+                                title={plan.created_by_username ?? undefined}
+                              >
+                                {authorName(plan) ?? plan.agent_name ?? '-'}
                               </p>
-                              {plan.agent_name && plan.created_by_username && (
-                                <p className="truncate text-caption text-muted-foreground">
-                                  via {plan.created_by_username}
+                              {plan.agent_name && authorName(plan) && (
+                                <p
+                                  className="line-clamp-2 break-words text-caption text-muted-foreground"
+                                  title={plan.agent_name}
+                                >
+                                  agent: {plan.agent_name}
                                 </p>
                               )}
                             </TableCell>
                             <TableCell className="text-center">{plan.entry_count}</TableCell>
                             <TableCell>
-                              <div className="flex flex-col gap-xxs">
-                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                                  <div
-                                    className="h-full bg-primary transition-all"
-                                    style={{ width: `${plan.completion_pct}%` }}
-                                  />
-                                </div>
-                                <p className="text-caption text-muted-foreground">
-                                  {plan.completion_pct.toFixed(0)}%
-                                </p>
-                              </div>
+                              <PlanProgress plan={plan} />
                             </TableCell>
                             <TableCell>
                               <Tooltip>
@@ -710,8 +760,6 @@ const TestPlans: React.FC = () => {
                   </TableBody>
                 </Table>
               </div>
-            </CardContent>
-          </Card>
         </>
       )}
 

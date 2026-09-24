@@ -59,7 +59,12 @@ export interface TestPlanSummary {
   status: string;
   agent_name?: string;
   created_by_username?: string;
+  /** v5.288.0 — the author's display name; shown before the username. */
+  created_by_full_name?: string | null;
   entry_count: number;
+  /** v5.288.0 — entries in a terminal state (completed or rejected): the
+   *  numerator of completion_pct. Optional so older fixtures type-check. */
+  entries_done?: number;
   completion_pct: number;
   approved_by_id?: number;
   approved_at?: string;

@@ -86,6 +86,15 @@ class AgentSessionRowResponse(BaseModel):
     # the way out — the two things the feedback loop depends on.
     end_reason: Optional[str] = None
     feedback_count: int = 0
+    # v2.402.0 — the operator's display name; the page shows it in preference
+    # to the username.
+    user_full_name: Optional[str] = None
+    # v2.402.0 — run rows only: the agent session the run belongs to and
+    # whether it can still act (active, with a live or renewable key).  False
+    # on an in-progress run means the run outlived its session — nothing will
+    # move it until someone resumes or closes it.  None when not computed.
+    agent_session_id: Optional[int] = None
+    session_live: Optional[bool] = None
 
 
 class ResumeAgentSessionRequest(BaseModel):

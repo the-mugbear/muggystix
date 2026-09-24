@@ -51,7 +51,14 @@ class TestPlanSummary(BaseModel):
     status: str
     agent_name: Optional[str] = None
     created_by_username: Optional[str] = None
+    # v2.402.0 — the author's display name (users.full_name); the list shows
+    # it in preference to the username.
+    created_by_full_name: Optional[str] = None
     entry_count: int = 0
+    # v2.402.0 — entries in a terminal state (completed or rejected), the
+    # numerator of ``completion_pct``, so the list can say "1 of 4 done"
+    # instead of a bare "0%".
+    entries_done: int = 0
     completion_pct: float = 0.0
     approved_by_id: Optional[int] = None
     approved_at: Optional[datetime] = None

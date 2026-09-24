@@ -295,8 +295,9 @@ describe('ProjectActivity', () => {
 
     // The hygiene strip reads off the summary, not the page of rows.
     expect(screen.getByText('Session hygiene')).toBeInTheDocument();
-    expect(screen.getByText('1 · 50%')).toBeInTheDocument(); // ended by the agent, of 2 ended
-    expect(screen.getByText('1 · 33%')).toBeInTheDocument(); // filed feedback, of 3 started
+    // v5.288.0 — below five sessions a count, not a percentage.
+    expect(screen.getByText('1 of 2')).toBeInTheDocument(); // ended by the agent, of 2 ended
+    expect(screen.getByText('1 of 3')).toBeInTheDocument(); // filed feedback, of 3 started
 
     // End on the live row shows the wrap-up prompt first.
     await user.click(screen.getByLabelText('End agent session 78'));
@@ -336,8 +337,129 @@ describe('ProjectActivity', () => {
     await screen.findByText(/No agent API calls recorded/);
     expect(screen.getByText('Session hygiene')).toBeInTheDocument();
     expect(screen.getByText('Lapsed (never ended)')).toBeInTheDocument();
-    // "0 · 0%" twice: agent exits of 2 ended, and feedback of 2 started.
-    expect(screen.getAllByText('0 · 0%')).toHaveLength(2);
+    // "0 of 2" twice: agent exits of 2 ended, and feedback of 2 started —
+    // a percentage over two sessions says more than the sample does.
+    expect(screen.getAllByText('0 of 2')).toHaveLength(2);
+    expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
+  });
+
+  it('keeps percentages once the sample is five sessions or more', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    mockedApi.getAgentActivitySummary.mockResolvedValue({
+      window_days: 14,
+      total_calls: 0,
+      distinct_agents: 0,
+      first_call_at: null,
+      last_call_at: null,
+      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
+      by_workflow: [],
+      daily: [],
+      busiest_sessions: [],
+      session_hygiene: {
+        sessions_started: 8,
+        sessions_active: 0,
+        sessions_ended: 8,
+        ended_by_agent: 6,
+        ended_by_operator: 0,
+        lapsed: 2,
+        sessions_with_feedback: 2,
+      },
+    });
+
+    renderPage();
+    await screen.findByText('Session hygiene');
+    expect(screen.getByText('6 · 75%')).toBeInTheDocument();
+    expect(screen.getByText('2 · 25%')).toBeInTheDocument();
+  });
+
+  // v5.288.0 — a run keeps its own status after its session ends; the row and
+  // the lead say so instead of contradicting each other.
+  it('marks an active run whose session ended, and the lead explains it', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({
+      project_id: 1,
+      sessions: [
+        {
+          ...sampleSessions[0],
+          started_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 15).toISOString(),
+          generated_by_model: null,
+          generated_by_tool: null,
+          agent_session_id: 5,
+          session_live: false,
+        },
+      ],
+      total: 1,
+    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    mockedApi.getAgentActivitySummary.mockResolvedValue({
+      window_days: 14,
+      total_calls: 0,
+      distinct_agents: 0,
+      first_call_at: null,
+      last_call_at: null,
+      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
+      by_workflow: [],
+      daily: [],
+      busiest_sessions: [],
+      session_hygiene: {
+        sessions_started: 1,
+        sessions_active: 0,
+        sessions_ended: 1,
+        ended_by_agent: 0,
+        ended_by_operator: 0,
+        lapsed: 1,
+        sessions_with_feedback: 0,
+      },
+    });
+
+    renderPage();
+    expect(await screen.findByText('active · session ended')).toBeInTheDocument();
+    expect(screen.getByText(/stalled — its session ended/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/1 run below is still open after its session ended/),
+    ).toBeInTheDocument();
+  });
+
+  it('hides the Model · Tool column when no row reports one, and names people in full', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({
+      project_id: 1,
+      sessions: [
+        {
+          ...sampleSessions[0],
+          generated_by_model: null,
+          generated_by_tool: null,
+          user_full_name: 'Alice Liddell',
+        },
+      ],
+      total: 1,
+    });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+
+    renderPage();
+    await screen.findByText(/Plan #17/);
+    expect(screen.queryByText('Model · Tool')).not.toBeInTheDocument();
+    expect(screen.queryByText('(not reported)')).not.toBeInTheDocument();
+    // Full name, not the username, and it wraps rather than truncating.
+    const name = screen.getByText('Alice Liddell');
+    expect(name).toHaveClass('break-words');
+    expect(name).not.toHaveClass('truncate');
+    expect(screen.queryByText('alice')).not.toBeInTheDocument();
+  });
+
+  it('opens a run in place with a chevron and a labelled Refresh', async () => {
+    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
+
+    renderPage();
+    await screen.findByText(/Plan #17/);
+    const open = screen.getByLabelText('Open execution run 42');
+    expect(open.querySelector('svg')).toHaveClass('lucide-chevron-right');
+    expect(open.querySelector('.lucide-external-link')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Refresh' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Agent Sessions' })).toHaveAttribute(
+      'href',
+      '/assist-sessions',
+    );
   });
 
   it('renders both workflows side by side with model + user attribution', async () => {
@@ -476,9 +598,10 @@ describe('ProjectActivity', () => {
         expect(screen.getByText(label)).toBeInTheDocument();
       }
       expect(screen.queryByText('Ended by operator')).not.toBeInTheDocument();
-      // The filters are one row inside the Runs section; user · agent share a line.
+      // The filters are one row inside the Runs section; user and agent share
+      // a cell (v5.288.0 — on two wrapping lines).
       expect(screen.getByTestId('runs-filters')).toHaveClass('border-b');
-      expect(screen.getByText('alice').closest('p')).toHaveTextContent("alice · alice's-agent");
+      expect(screen.getByText('alice').closest('td')).toHaveTextContent("alicealice's-agent");
     });
 
     it('replaces an empty call chart with one caption line', async () => {
@@ -509,7 +632,7 @@ describe('ProjectActivity', () => {
       expect(screen.getByTestId('api-call-line')).toHaveTextContent('30 calls from 2 agents · 27 2xx · 2 4xx · 1 5xx');
       expect(screen.getByLabelText('2026-09-21: 20 calls, 3 errors')).toBeInTheDocument();
       expect(screen.getByText('Busiest sessions')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: /^Open$/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Open recon #3' })).toBeInTheDocument();
     });
 
     it('shows a one-line note instead of the model table when no model or tool was reported', async () => {

@@ -61,6 +61,12 @@ export interface AssistSessionRow {
   /** The operator's display name (null when the account has none) — shown in
    *  preference to the username. Optional so older fixtures still type-check. */
   started_by_full_name?: string | null;
+  /** v5.288.0 — the authority the session acts with: the operator's CURRENT
+   *  project role ('admin' | 'analyst' | 'auditor' | 'viewer'), 'global_admin'
+   *  for a global admin without an admin membership, null when the operator is
+   *  no longer a member. The role at start is not recorded; the agent gate
+   *  re-reads the role on every call. */
+  operator_role?: string | null;
   started_at: string | null;
   ended_at: string | null;
   last_activity_at: string | null;

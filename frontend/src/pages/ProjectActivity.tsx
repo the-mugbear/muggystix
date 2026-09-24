@@ -12,8 +12,8 @@
  * when an agent reported its model or tool.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
-import { RefreshCw, Search, ExternalLink, Loader2, RotateCcw, Square } from 'lucide-react';
+import { Link, useNavigate } from 'react-router-dom';
+import { RefreshCw, Search, ChevronRight, Loader2, RotateCcw, Square } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
@@ -217,7 +217,9 @@ const RunsLead: React.FC<{
   hygiene: Hygiene | null;
   windowDays: number | null;
   total: number | null;
-}> = ({ hygiene, windowDays, total: recorded }) => {
+  /** In-progress runs on the loaded page whose session can no longer act. */
+  stalledRuns: number;
+}> = ({ hygiene, windowDays, total: recorded, stalledRuns }) => {
   if (recorded == null && !hygiene) return null;
   const total = recorded ?? 0;
   let tone: LeadTone = 'neutral';
@@ -234,15 +236,38 @@ const RunsLead: React.FC<{
   } else {
     sentence = 'No agent has run against this project yet.';
   }
+  // v5.288.0 — the lead counts SESSIONS; the table below also lists RUNS,
+  // which keep their own status after the session that drove them ends. Said
+  // here so "0 still active" above an "active" run is not a contradiction.
+  if (stalledRuns > 0) {
+    sentence += ` ${plural(stalledRuns, 'run')} below ${stalledRuns === 1 ? 'is' : 'are'} still open after ${stalledRuns === 1 ? 'its' : 'their'} session ended — nothing is driving ${stalledRuns === 1 ? 'it' : 'them'}.`;
+    tone = 'warning';
+  }
   return (
     <PostureLead
       tone={tone}
-      restsOn="Counts are of sessions started in the window. A session that lapsed never called end, so it filed no wrap-up and its key simply ran out."
+      restsOn="Counts are of sessions started in the window. Runs (recon, plan, execution) are listed in the table and can outlive the session that opened them: a run keeps its own status until an agent or operator closes it. A session that lapsed never called end, so it filed no wrap-up and its key simply ran out."
     >
       {sentence}
     </PostureLead>
   );
 };
+
+/** v5.288.0 — an in-progress run whose session can no longer act: it will not
+ *  move on its own. Workflow state, not evidence age. */
+const isStalledRun = (row: AgentSessionRow): boolean =>
+  row.kind !== 'project'
+  && row.session_live === false
+  && ['active', 'in_progress'].includes(row.status.toLowerCase());
+
+/** Below this many sessions a percentage says more than the sample does. */
+const MIN_SAMPLE_FOR_PERCENT = 5;
+
+/** "n · p%" over a real sample, "n of d" over a small one. */
+const ratio = (n: number, d: number): string =>
+  d >= MIN_SAMPLE_FOR_PERCENT
+    ? `${n.toLocaleString()} · ${Math.round((n / d) * 100)}%`
+    : `${n.toLocaleString()} of ${d.toLocaleString()}`;
 
 /** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
  *  telling us anything on the way out? Counted over sessions STARTED in the
@@ -254,7 +279,6 @@ const RunsLead: React.FC<{
 const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
   if (!hygiene || hygiene.sessions_started === 0) return null;
   const h = hygiene;
-  const pct = (n: number, d: number) => (d > 0 ? `${Math.round((n / d) * 100)}%` : '—');
   const warn = (on: boolean, text: string) => (
     <span className={on ? 'text-warning' : undefined}>{text}</span>
   );
@@ -271,10 +295,10 @@ const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
         </PostureMeasure>
         <PostureMeasure
           label="Ended by the agent"
-          info="Sessions the agent closed itself (end_reason: agent), as a percentage of sessions ENDED. An agent that ends its own session files feedback on the way; one that lapsed or was ended from here usually did not."
+          info="Sessions the agent closed itself (end_reason: agent), out of sessions ENDED — a percentage once there are at least five. An agent that ends its own session files feedback on the way; one that lapsed or was ended from here usually did not."
           value={warn(
             h.sessions_ended > 0 && h.ended_by_agent < h.sessions_ended,
-            `${h.ended_by_agent.toLocaleString()} · ${pct(h.ended_by_agent, h.sessions_ended)}`,
+            h.sessions_ended > 0 ? ratio(h.ended_by_agent, h.sessions_ended) : '0',
           )}
         >
           the clean exit, of {plural(h.sessions_ended, 'ended session')}
@@ -288,10 +312,10 @@ const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
         </PostureMeasure>
         <PostureMeasure
           label="Filed feedback"
-          info="Sessions that filed at least one feedback item, as a percentage of sessions STARTED. The feedback loop depends on agents saying where they retried, guessed or worked around something."
+          info="Sessions that filed at least one feedback item, out of sessions STARTED — a percentage once there are at least five. The feedback loop depends on agents saying where they retried, guessed or worked around something."
           value={warn(
             h.sessions_with_feedback < h.sessions_started,
-            `${h.sessions_with_feedback.toLocaleString()} · ${pct(h.sessions_with_feedback, h.sessions_started)}`,
+            ratio(h.sessions_with_feedback, h.sessions_started),
           )}
         >
           of {plural(h.sessions_started, 'session')} started
@@ -418,9 +442,15 @@ const ApiCallSection: React.FC<{
                     <strong>{s.calls.toLocaleString()}</strong> call{s.calls === 1 ? '' : 's'}
                   </span>
                   {linkable && (
-                    <Button size="sm" variant="ghost" className="h-6 px-xs" onClick={() => openSession(s)}>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="h-6 px-xs"
+                      onClick={() => openSession(s)}
+                      aria-label={`Open ${s.workflow} #${s.session_id}`}
+                    >
                       Open
-                      <ExternalLink className="ml-xxs size-3" aria-hidden />
+                      <ChevronRight className="ml-xxs size-3" aria-hidden />
                     </Button>
                   )}
                 </li>
@@ -608,6 +638,10 @@ const ProjectActivity: React.FC = () => {
   };
 
   const hygiene = apiSummary?.session_hygiene ?? null;
+  const stalledRuns = rows.filter(isStalledRun).length;
+  // v5.288.0 — the Model · Tool column only when some row on screen carries
+  // one; the rollup section already says when no agent has reported.
+  const showModel = rows.some((r) => r.generated_by_model || r.generated_by_tool);
 
   return (
     <div className="flex flex-col gap-lg p-md md:p-lg">
@@ -620,30 +654,40 @@ const ProjectActivity: React.FC = () => {
       <div className="flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Runs</h1>
-          <p className="mt-xxs truncate text-metadata text-muted-foreground">
-            Every agent session against this project, in time order, with model, tool and user.
+          {/* v5.288.0 — this page and Agent Sessions overlap (a session is a
+              row on both), so each says what it is for and points at the
+              other. Wraps rather than truncating: it is the page's job line. */}
+          <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
+            Everything agents have done on this project, in time order: each agent session
+            (with its key state, and Resume / End) and every recon, plan or execution run
+            across workflows, with its own status. For one session&rsquo;s authority, notes
+            and API calls, see{' '}
+            <Link to="/assist-sessions" className="text-primary underline-offset-4 hover:underline">
+              Agent Sessions
+            </Link>
+            .
           </p>
         </div>
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="outline"
-              size="icon"
-              onClick={() => setRefreshNonce((n) => n + 1)}
-              disabled={loading}
-              aria-label="Refresh project activity"
-            >
-              <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Refresh</TooltipContent>
-        </Tooltip>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setRefreshNonce((n) => n + 1)}
+          disabled={loading}
+        >
+          {loading ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden />
+          ) : (
+            <RefreshCw className="size-4" aria-hidden />
+          )}
+          Refresh
+        </Button>
       </div>
 
       <RunsLead
         hygiene={hygiene}
         windowDays={apiSummary?.window_days ?? null}
         total={summary ? summary.reduce((n, r) => n + r.total, 0) : null}
+        stalledRuns={stalledRuns}
       />
 
       <HygieneStrip hygiene={hygiene} />
@@ -735,8 +779,8 @@ const ProjectActivity: React.FC = () => {
                 {/* Status carries the key / ended line under its chip. */}
                 <TableHead className="w-52">Status</TableHead>
                 <TableHead className="w-28">Started</TableHead>
-                <TableHead className="w-52">Model · Tool</TableHead>
-                <TableHead className="w-44">User · Agent</TableHead>
+                {showModel && <TableHead className="w-52">Model · Tool</TableHead>}
+                <TableHead className="w-56">User · Agent</TableHead>
                 <TableHead>Subject</TableHead>
                 {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
                 <TableHead className="w-24" />
@@ -744,7 +788,14 @@ const ProjectActivity: React.FC = () => {
             </TableHeader>
             <TableBody>
               {rows.map((r) => {
-                const ks = keyState(r) ?? endedState(r);
+                const stalled = isStalledRun(r);
+                const ks = stalled
+                  ? {
+                      text: 'stalled — its session ended; resume or close the run',
+                      tone: 'warn' as const,
+                    }
+                  : keyState(r) ?? endedState(r);
+                const userName = r.user_full_name?.trim() || r.user_username || null;
                 return (
                   <TableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
                     <TableCell>
@@ -755,8 +806,11 @@ const ProjectActivity: React.FC = () => {
                     <TableCell className="overflow-hidden">
                       {/* whitespace-nowrap prevents the badge from
                           wrapping mid-status (e.g. "in" + "_progress") */}
-                      <Badge variant={statusBadgeVariant(r.status)} className="whitespace-nowrap">
-                        {r.status}
+                      <Badge
+                        variant={stalled ? 'warning' : statusBadgeVariant(r.status)}
+                        className="whitespace-nowrap"
+                      >
+                        {stalled ? `${r.status} · session ended` : r.status}
                       </Badge>
                       {/* v5.214.0 — "active" alone cannot tell a live agent
                           from one that died a day ago; the key's state can. */}
@@ -782,31 +836,51 @@ const ProjectActivity: React.FC = () => {
                         <TooltipContent>{fmtTime(r.started_at)}</TooltipContent>
                       </Tooltip>
                     </TableCell>
-                    <TableCell>
-                      {r.generated_by_model ? (
-                        <p
-                          className="truncate text-caption"
-                          title={[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
-                        >
-                          <code className="font-mono">{r.generated_by_model}</code>
-                          {r.generated_by_tool && (
-                            <span className="text-muted-foreground"> · {r.generated_by_tool}</span>
-                          )}
-                        </p>
-                      ) : (
-                        <span className="text-caption text-muted-foreground">(not reported)</span>
-                      )}
-                    </TableCell>
-                    <TableCell>
-                      <p
-                        className="truncate text-caption"
-                        title={[r.user_username, r.agent_name].filter(Boolean).join(' · ')}
-                      >
-                        <span className="text-foreground">{safeFallback(r.user_username, '—')}</span>
-                        {r.agent_name && (
-                          <span className="text-muted-foreground"> · {r.agent_name}</span>
+                    {showModel && (
+                      <TableCell>
+                        {r.generated_by_model || r.generated_by_tool ? (
+                          <p
+                            className="truncate text-caption"
+                            title={[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
+                          >
+                            {r.generated_by_model && (
+                              <code className="font-mono">{r.generated_by_model}</code>
+                            )}
+                            {r.generated_by_tool && (
+                              <span className="text-muted-foreground">
+                                {r.generated_by_model ? ' · ' : ''}
+                                {r.generated_by_tool}
+                              </span>
+                            )}
+                          </p>
+                        ) : (
+                          <span className="text-caption text-muted-foreground">(not reported)</span>
                         )}
-                      </p>
+                      </TableCell>
+                    )}
+                    <TableCell>
+                      {/* v5.288.0 — the person's full name (username as the
+                          fallback and in the tooltip) on its own line, the
+                          agent's name under it; both wrap instead of cutting
+                          off mid-word. */}
+                      <div
+                        className="min-w-0 text-caption"
+                        title={[
+                          userName && r.user_username && userName !== r.user_username
+                            ? `${userName} (${r.user_username})`
+                            : userName,
+                          r.agent_name,
+                        ].filter(Boolean).join(' · ') || undefined}
+                      >
+                        <p className="line-clamp-2 break-words text-foreground">
+                          {safeFallback(userName, '—')}
+                        </p>
+                        {r.agent_name && (
+                          <p className="line-clamp-2 break-words text-muted-foreground">
+                            {r.agent_name}
+                          </p>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {/* v5.187.0 — the declared target in words where we have
@@ -882,7 +956,7 @@ const ProjectActivity: React.FC = () => {
                               variant="ghost"
                               size="icon"
                               onClick={() => drillInto(r)}
-                              aria-label={`Open ${r.kind} session ${r.id}`}
+                              aria-label={`Open ${r.kind === 'plan_generation' ? 'plan' : r.kind} run ${r.id}`}
                               disabled={
                                 // Assist has its own detail page and no target
                                 // id — keyed off the session id alone. Without
@@ -895,7 +969,9 @@ const ProjectActivity: React.FC = () => {
                                   : r.test_plan_id == null
                               }
                             >
-                              <ExternalLink className="size-4" aria-hidden />
+                              {/* Navigates in place — a chevron, not the
+                                  new-tab icon it used to carry. */}
+                              <ChevronRight className="size-4" aria-hidden />
                             </Button>
                           </TooltipTrigger>
                           <TooltipContent>Open</TooltipContent>
@@ -907,7 +983,7 @@ const ProjectActivity: React.FC = () => {
               })}
               {!loading && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={7} className="py-xl text-center">
+                  <TableCell colSpan={showModel ? 7 : 6} className="py-xl text-center">
                     <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />
                     <p className="text-metadata text-muted-foreground">
                       No agent sessions match the current filters.
