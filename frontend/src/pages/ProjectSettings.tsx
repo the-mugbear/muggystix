@@ -15,7 +15,7 @@
  * (`my_role` from the API) — the server enforces the same.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { Loader2, Trash2, UserPlus } from 'lucide-react';
 
 import { useProject } from '../contexts/ProjectContext';
@@ -279,9 +279,8 @@ const ProjectSettings: React.FC = () => {
             {!canAdmin && ' Only a project admin can change these settings.'}
           </p>
         </div>
-        {isGlobalAdmin && (
-          <Button asChild variant="outline" size="sm"><Link to="/settings/projects">All projects</Link></Button>
-        )}
+        {/* v5.288.0 — no "All projects" button here: the Settings hub's own
+            "All projects" tab is the one way there. */}
       </header>
 
       <PostureSection title="Details" description="The dates are the engagement window: they appear on client reports and scope the Oversight filters.">
@@ -411,7 +410,11 @@ const ProjectSettings: React.FC = () => {
         <PostureSection title="Delete this project"
           description="Removes the project and everything in it, for everyone. Global administrators only.">
           <div className="flex flex-wrap items-center gap-sm">
-            <Button variant="destructive" size="sm" onClick={() => void deleteProject()} disabled={projects.length <= 1}>
+            {/* v5.288.0 — an outline destructive button, not a filled red one
+                always on screen; the typed-name confirmation is the gate. */}
+            <Button variant="outline" size="sm"
+              className="border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
+              onClick={() => void deleteProject()} disabled={projects.length <= 1}>
               <Trash2 className="size-4" aria-hidden /> Delete {safeFallback(currentProject.name, 'project')}
             </Button>
             {projects.length <= 1 && (

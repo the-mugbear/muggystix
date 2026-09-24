@@ -137,14 +137,15 @@ const TagManagement: React.FC = () => {
         {error && <p className="mb-sm text-metadata text-destructive" role="alert">{error}</p>}
 
         {loading && tags.length === 0 && (
-          <p className="py-md text-center text-metadata text-muted-foreground">
+          <p className="text-metadata text-muted-foreground">
             <Loader2 className="mr-xs inline size-4 animate-spin" aria-hidden />
             Loading tags…
           </p>
         )}
 
+        {/* v5.288.0 — empty states left-aligned, like every other section. */}
         {!loading && !error && tags.length === 0 && (
-          <p className="py-md text-center text-metadata text-muted-foreground">
+          <p className="text-metadata text-muted-foreground">
             No tags yet. Select hosts on the Hosts page and use Tag to create one.
           </p>
         )}

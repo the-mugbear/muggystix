@@ -121,6 +121,39 @@ describe('Scopes page — Posture layout (v5.269.0)', () => {
   });
 });
 
+describe('Scopes page — screenshot review (v5.288.0)', () => {
+  const bare = { id: 12, cidr: '10.77.2.0/24', description: null, site: null, host_count: 0, labels: [], created_at: '2026-09-22T00:00:00Z' };
+
+  it('shows an empty subnet cell as a muted dash with a named, keyboard-reachable edit — not placeholder text', async () => {
+    mocked.getDefaultScope.mockResolvedValue({ ...scope, subnets: [bare] });
+    renderPage();
+    await screen.findByText('10.77.2.0/24');
+    expect(screen.queryByText(/Click to add/)).toBeNull();
+    expect(screen.queryByText('No labels')).toBeNull();
+    expect(screen.getByRole('button', { name: 'Add a description for 10.77.2.0/24' })).toHaveTextContent('—');
+    expect(screen.getByRole('button', { name: 'Add a site for 10.77.2.0/24' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit labels for 10.77.2.0/24' })).toBeInTheDocument();
+  });
+
+  it('separates a technology\'s host count from its version', async () => {
+    mocked.getScopeCoverage.mockResolvedValue({
+      ...coverage,
+      top_technologies: [{ name: 'Nginx 1.24.0', host_count: 1 }, { name: 'React', host_count: 3 }],
+    });
+    renderPage();
+    const link = await screen.findByRole('link', { name: /Nginx 1\.24\.0/ });
+    expect(link).toHaveTextContent('Nginx 1.24.0 · 1 host');
+    expect(screen.getByRole('link', { name: /React/ })).toHaveTextContent('React · 3 hosts');
+  });
+
+  it('says what the upload button uploads', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByRole('button', { name: 'Upload scope file' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Upload File' })).toBeNull();
+  });
+});
+
 describe('scopeLead', () => {
   it('is clear when nothing is out of scope, neutral before anything is declared', () => {
     expect(scopeLead({ ...coverage, out_of_scope_hosts: 0, name_reachable_hosts: 0 })).toEqual({

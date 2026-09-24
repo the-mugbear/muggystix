@@ -43,7 +43,8 @@ vi.mock('../../contexts/ProjectContext', () => ({
     refreshProjects,
   }),
 }));
-vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, role: 'member' } }) }));
+let globalRole = 'member';
+vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1, role: globalRole } }) }));
 
 import ProjectSettings from '../../pages/ProjectSettings';
 
@@ -57,6 +58,7 @@ const renderPage = () => render(<MemoryRouter><ProjectSettings /></MemoryRouter>
 beforeEach(() => {
   vi.clearAllMocks();
   myRole = 'admin';
+  globalRole = 'member';
   apiMock.get.mockResolvedValue({ data: members });
   apiMock.put.mockResolvedValue({ data: {} });
 });
@@ -104,5 +106,31 @@ describe('Project settings', () => {
     expect(screen.queryByRole('button', { name: /Add member/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Role of Ana' })).not.toBeInTheDocument();
     expect(screen.getByText(/Only a project admin can change these settings/)).toBeInTheDocument();
+  });
+
+  describe('for a global administrator (v5.288.0)', () => {
+    beforeEach(() => { globalRole = 'admin'; });
+
+    it('has no "All projects" button — the Settings tab is the way there', async () => {
+      renderPage();
+      await screen.findByText('Ana');
+      expect(screen.queryByRole('link', { name: 'All projects' })).toBeNull();
+      expect(screen.queryByText('All projects')).not.toBeInTheDocument();
+    });
+
+    it('offers delete as an outline destructive button gated on typing the project name', async () => {
+      confirmMock.mockResolvedValue(false);
+      renderPage();
+      await screen.findByText('Ana');
+      const del = screen.getByRole('button', { name: /Delete Demo — Insights Eval/ });
+      expect(del.className.split(/\s+/)).not.toContain('bg-destructive');
+      expect(del.className).toMatch(/text-destructive/);
+      expect(del.className).toMatch(/border-destructive/);
+      fireEvent.click(del);
+      await waitFor(() => expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({
+        confirmTypedName: true, resourceName: 'Demo — Insights Eval',
+      })));
+      expect(apiMock.delete).not.toHaveBeenCalled();
+    });
   });
 });

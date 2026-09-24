@@ -99,6 +99,8 @@ describe('WebhookDeliveries', () => {
   it('says plainly when there is genuinely nothing to show', async () => {
     listWebhookDeliveries.mockResolvedValue([]);
     render(<WebhookDeliveries />);
-    expect(await screen.findByText(/No delivery attempts recorded/i)).toBeInTheDocument();
+    const empty = await screen.findByText(/No delivery attempts recorded/i);
+    // v5.288.0 — left-aligned like every other section's empty state.
+    expect(empty.className).not.toMatch(/text-center/);
   });
 });

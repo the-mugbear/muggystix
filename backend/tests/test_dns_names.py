@@ -206,6 +206,21 @@ class TestRelationships:
             assert list(st.current) == ["203.0.113.20"]
         assert svc.names_per_address(db_session, test_project.id, ["203.0.113.20"]) == {"203.0.113.20": 2}
 
+    def test_summary_counts_the_names_the_shared_filter_lists(self, client, db_session, test_project):
+        """v2.402.0 — the "Shared address" chip carries a count of NAMES,
+        equal to the rows `?state=shared` returns."""
+        scan = _scan(db_session, test_project)
+        for fqdn, ip in (("portal.example.com", "203.0.113.20"), ("api.example.com", "203.0.113.20"),
+                         ("solo.example.com", "203.0.113.99")):
+            svc.record_observation(db_session, project_id=test_project.id, name=fqdn, record_type="A",
+                                   value=ip, scan_id=scan.id)
+        db_session.flush()
+        summary = client.get(f"/api/v1/projects/{test_project.id}/names/summary").json()
+        listing = client.get(f"/api/v1/projects/{test_project.id}/names/?state=shared").json()
+        assert summary["shared_names"] == 2
+        assert summary["shared_names"] == listing["total"]
+        assert summary["shared_addresses"] == 1
+
     def test_changing_address_gives_current_and_previous(self, db_session, test_project):
         t0 = datetime.now(timezone.utc) - timedelta(days=7)
         old = _scan(db_session, test_project, when=t0)
