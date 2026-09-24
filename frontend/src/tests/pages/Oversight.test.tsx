@@ -92,7 +92,7 @@ describe('Oversight', () => {
     expect(q.start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
     expect(q.end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
 
-    expect(screen.getByText('12 / 30')).toBeInTheDocument();           // targets tested
+    expect(screen.getByText('12 / 30')).toBeInTheDocument();           // hosts taken into review
     // No cards: the measures are one strip, the rest are sections.
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
     const severity = screen.getByRole('table', { name: /by severity/ });
@@ -102,9 +102,12 @@ describe('Oversight', () => {
     const highRow = within(severity).getByText('High').closest('tr')!;
     expect(within(highRow).getAllByRole('cell')[2]).toHaveTextContent(/^90$/);
     expect(within(severity).getAllByRole('columnheader')[2]).toHaveTextContent('Scanner observations');
-    // Growth: the readout shows the latest bucket until the pointer moves.
-    expect(screen.getByText(/2026-08-30/, { selector: '#growth-readout span' })).toBeInTheDocument();
-    expect(screen.getAllByRole('img', { name: /^Recorded targets \(cumulative\): 28/ })).toHaveLength(1);
+    // Growth: the readout shows the latest bucket until the pointer moves, in
+    // the one date format (v5.294.0 — it printed "2026-08-30").
+    const lastDay = new Date(2026, 7, 30).toLocaleDateString(undefined, { dateStyle: 'medium' });
+    expect(screen.getByText(lastDay, { selector: '#growth-readout span' })).toBeInTheDocument();
+    expect(screen.queryByText(/2026-08-30/, { selector: '#growth-readout span' })).not.toBeInTheDocument();
+    expect(screen.getAllByRole('img', { name: /^Recorded hosts \(cumulative\): 28/ })).toHaveLength(1);
     expect(screen.getByText(/9 registered, 8 enabled, 1 disabled/)).toBeInTheDocument();
     // The in-progress preview excludes the completed project.
     const preview = screen.getByRole('table', { name: /in progress/ });
@@ -157,13 +160,31 @@ describe('Oversight — wording a reader can reconcile', () => {
     expect(contributors.className).not.toContain('truncate');
   });
 
-  it('labels tested targets and contributors so neither is mistaken for another count', async () => {
+  it('labels hosts taken into review and contributors so neither is mistaken for another count', async () => {
     await renderPage();
-    expect(screen.getByText('Targets tested (in review or reviewed)')).toBeInTheDocument();
+    // v5.294.0 — one vocabulary with Posture and Portfolio: hosts in review or
+    // reviewed are "taken into review", never "tested" (a recorded test result
+    // elsewhere), and the unit is the host, not the "target". The label was
+    // "Targets tested (in review or reviewed)" and was cut off.
+    // The measure's label (the projects preview has a column of the same name).
+    const label = screen.getAllByText('Taken into review').find((el) => el.closest('p')?.className.includes('text-caption'));
+    expect(label).toBeDefined();
+    expect(label).toHaveClass('truncate'); // PostureMeasure's rule — short enough now to fit
+    expect(screen.getByText(/12 of 30 hosts taken into review \(40%\)/)).toBeInTheDocument();
+    expect(screen.getByText('Recorded hosts')).toBeInTheDocument();
+    expect(screen.queryByText(/targets? tested/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\btargets?\b/i)).not.toBeInTheDocument();
     // 3 contributors vs 1 tester: the page says they are different sets.
     expect(screen.getByText('Contributors in the period')).toBeInTheDocument();
-    expect(screen.getByText(/6 scans imported · 1 tester \(targets in review or reviewed\)/)).toBeInTheDocument();
+    expect(screen.getByText(/6 scans imported · 1 tester \(hosts in review or reviewed\)/)).toBeInTheDocument();
     expect(screen.getByText(/not the same set as Contributors in the period/)).toBeInTheDocument();
+  });
+
+  it('sits on the standard page gutter and prints the period in the one date format', async () => {
+    await renderPage();
+    // p-md alone put the title 8px left of every other page's.
+    expect(screen.getByRole('heading', { level: 1, name: 'Oversight' }).closest('.space-y-md')).toHaveClass('md:p-lg');
+    expect(screen.queryByText(/Period: \d{4}-\d{2}-\d{2}/)).not.toBeInTheDocument();
   });
 
   it('the in-progress preview says how many it shows when it leaves projects out', async () => {
@@ -229,15 +250,17 @@ describe('Oversight — projects table columns', () => {
     const table = await openTable();
     const headers = within(table).getAllByRole('columnheader').map((h) => h.textContent);
     expect(headers).toEqual(expect.arrayContaining([
-      'Findings and their state', 'Scanner observations', 'Tested hosts with a finding',
+      'Taken into review', 'Findings and their state', 'Scanner observations', 'Taken into review, with a finding',
     ]));
     expect(within(table).queryByText(/defect/i)).not.toBeInTheDocument();
     // 5.270.1 — seven columns (window and admins under the project), so the
-    // last one is not pushed out of view at a normal width.
+    // last one is not pushed out of view at a normal width. v5.294.0 — and no
+    // minimum width at all: 960px scrolled 28px at a 1246px viewport.
     expect(headers).toHaveLength(7);
     expect(headers).not.toContain('Window');
-    expect(table.className).not.toContain('min-w-[1180px]');
-    for (const label of ['findings and their state', 'scanner observations', 'tested hosts with a finding']) {
+    expect(table.className).not.toMatch(/min-w-/);
+    expect(table.closest('.overflow-x-auto')).toBeNull();
+    for (const label of ['findings and their state', 'scanner observations', 'taken into review, with a finding']) {
       expect(within(table).getByRole('button', { name: `About ${label}` })).toBeInTheDocument();
     }
   });
@@ -271,10 +294,11 @@ describe('Oversight — severity basis and growth keyboard', () => {
 
   it('arrow keys move the growth readout between dates', async () => {
     await renderPage();
-    const charts = screen.getByLabelText(/Target growth charts/);
+    const charts = screen.getByLabelText(/Host growth charts/);
     fireEvent.keyDown(charts, { key: 'ArrowLeft' });
     const readout = document.getElementById('growth-readout')!;
-    expect(readout.textContent).toMatch(/2026-08-29 · 27 recorded targets · \+4 first recorded · 0 reviews concluded/);
+    const day = new Date(2026, 7, 29).toLocaleDateString(undefined, { dateStyle: 'medium' });
+    expect(readout.textContent).toContain(`${day} · 27 recorded hosts · +4 first recorded · 0 reviews concluded`);
   });
 
   // v5.273.0 — the notebook's metrics, copied for an email or a chat.
@@ -286,16 +310,19 @@ describe('Oversight — severity basis and growth keyboard', () => {
     const dialog = await screen.findByRole('dialog');
     const text = (within(dialog).getByLabelText('Summary to copy') as HTMLTextAreaElement).value;
     expect(text).toMatch(/Projects: 3 \(2 in progress, 1 complete\)/);
-    expect(text).toMatch(/Targets: 30 recorded; 12 tested \(40%\) — 2 in review, 10 reviewed/);
-    expect(text).toMatch(/Findings: 8 \(critical 2, high 5, medium 1, low 0\) on 7 targets/);
+    // v5.294.0 — the page's words: hosts, and "taken into review", not "tested".
+    expect(text).toMatch(/Hosts: 30 recorded; 12 taken into review \(40%\) — 2 in review, 10 reviewed/);
+    expect(text).toMatch(/Findings: 8 \(critical 2, high 5, medium 1, low 0\) on 7 hosts/);
     // v5.289.0 — reads naturally, and says nothing when there are none.
     expect(text).toMatch(/closed \(2 false positives excluded\)/);
     expect(text).not.toMatch(/not counted/);
-    expect(text).toMatch(/Defect rate \(tested targets with a finding, of 12 tested\): critical 25%, high 50%, medium 8.3%, low 0%/);
+    expect(text).toMatch(/Defect rate \(hosts taken into review with a finding, of 12\): critical 25%, high 50%, medium 8.3%, low 0%/);
     expect(text).toMatch(/Scanner observations not yet judged: critical 10, high 70 \(of 143 observations\)/);
     // In-progress projects first; the completed one last.
     expect(text.indexOf('Orphaned (in progress)')).toBeLessThan(text.indexOf('Closed (complete)'));
-    expect(text).toMatch(/Ana Tester: 6 targets tested, 5 reviewed \(2 in the period\) across 2 projects/);
+    expect(text).toMatch(/Ana Tester: 6 hosts taken into review, 5 reviewed \(2 in the period\) across 2 projects/);
+    expect(text).not.toMatch(/\btargets?\b/i);
+    expect(text).not.toMatch(/\btested\b/);
 
     fireEvent.click(within(dialog).getByRole('checkbox', { name: /Per tester/ }));
     fireEvent.click(within(dialog).getByRole('button', { name: 'Copy' }));

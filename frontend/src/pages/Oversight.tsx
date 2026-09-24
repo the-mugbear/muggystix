@@ -14,10 +14,17 @@
  * the end date).  Findings are issues; scanner observations are issue × host;
  * the two are shown side by side and never subtracted.  Nothing here judges
  * the age of evidence, and there is no remediation dimension.
+ *
+ * v5.294.0 (UX review) — one vocabulary with Posture and Portfolio: the unit is
+ * the HOST (it said "targets"), and hosts in review or reviewed are "taken into
+ * review" — never "tested", which elsewhere means a test result was recorded.
+ * For one project Posture said "1 tested", Portfolio "29 reviewed" and this
+ * page "65 targets tested"; the counts are unchanged, the words now agree.
+ * The API's field names (`targets_tested`, `hosts_tested`) are unchanged.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Copy, RefreshCw } from 'lucide-react';
+import { ChevronDown, ChevronRight, Copy } from 'lucide-react';
 
 import {
   getOversightDashboard,
@@ -29,6 +36,9 @@ import {
   SeverityBasis,
 } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
+import LastUpdated from '../components/LastUpdated';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
+import TimeAgo from '../components/TimeAgo';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -52,7 +62,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '../components/ui/tabs'
 import { formatStatusLabel } from '../utils/statusMeta';
 import { describeProjects, parseProjectIds, serializeProjectIds } from '../utils/oversightProjects';
 import { formatApiError } from '../utils/apiErrors';
-import { formatRelativeTime } from '../utils/relativeTime';
+import { formatDate } from '../utils/relativeTime';
 import {
   DATE_PRESETS, DEFAULT_PRESET, DatePreset, customRangeError, presetRange,
 } from '../utils/oversightDates';
@@ -76,7 +86,8 @@ const n = (v: number) => v.toLocaleString();
 const pct = (num: number, den: number) => (den > 0 ? `${Math.round((100 * num) / den)}%` : '—');
 const rate = (r: number | null) => (r == null ? '—' : `${r}%`);
 const name = (t: { full_name: string | null; username: string }) => t.full_name || t.username;
-const day = (iso: string | null) => (iso ? iso.slice(0, 10) : null);
+/** A project's engagement-window day in the one date format ("Sep 14, 2026"). */
+const day = (iso: string | null) => (iso ? formatDate(iso.slice(0, 10)) : null);
 
 // ---------------------------------------------------------------------------
 // Small pieces
@@ -121,11 +132,11 @@ const plural = (v: number, one: string, many = `${one}s`) => `${n(v)} ${v === 1 
 // issue; scanner observations are what the tools reported, one per issue per
 // host. The two are never added together.
 const COLUMN_INFO = {
-  tested: 'Hosts in review or reviewed by anyone, of the hosts in the inventory — each counted once. Watching is not testing. Current. Wider than Portfolio\'s "Hosts with review concluded", which counts reviewed hosts only.',
+  tested: 'Hosts taken into review — in review or reviewed by anyone — of the hosts in the inventory, each counted once. Watching is not reviewing. Current. Wider than Portfolio\'s "Hosts with review concluded", which counts reviewed hosts only; and not "tested", which means a test result was recorded on the host.',
   review: 'Hosts in review · hosts reviewed. Current.',
   findings: "Findings are analysts' conclusions, one per issue however many hosts it is on (critical to low). Their state: under investigation = open or retest; confirmed = validated; closed = accepted risk or remediated — the three add up to the total. False positives are not results and are counted apart.",
   observations: 'What the scanners reported, one per issue per host, critical to low (informational left out). Judged = a finding covers the observation on its host (promoted, dismissed there, or accepted); not yet judged = nobody has decided on it. Judged + not yet judged = the total.',
-  withFinding: 'Of the tested hosts (in review or reviewed), the share with at least one critical — or high — finding that is not a false positive on that host. Both sides are tested hosts only, so it never passes 100%. Current.',
+  withFinding: 'Of the hosts taken into review (in review or reviewed), the share with at least one critical — or high — finding that is not a false positive on that host. Both sides are hosts taken into review only, so it never passes 100%. Current.',
 } as const;
 
 /** How many findings, and where each stands; severity underneath. */
@@ -188,11 +199,12 @@ const ProjectsTable: React.FC<{
   caption: string;
 }> = ({ rows, onOpen, caption }) => (
   // v5.270.1 — seven columns, not nine: the window and the project admins
-  // are facts ABOUT the project, so they sit under its name.  At 1,180 px
-  // minimum the table scrolled at a normal window width and hid "Activity ·
-  // attention"; it now fits at 960 px.  No bordered box (sections, not cards).
-  <div className="overflow-x-auto border-t border-border">
-    <Table aria-label={caption} className="min-w-[960px]" style={{ tableLayout: 'fixed' }}>
+  // are facts ABOUT the project, so they sit under its name.  No bordered box
+  // (sections, not cards).  v5.294.0 — no 960px minimum either: at a 1246px
+  // viewport the content is ~916px and the minimum scrolled "Activity ·
+  // attention" out of view. The percentages fit; every cell wraps.
+  <div className="border-t border-border">
+    <Table aria-label={caption}>
       <colgroup>
         <col style={{ width: '19%' }} /><col style={{ width: '10%' }} /><col style={{ width: '8%' }} />
         <col style={{ width: '17%' }} /><col style={{ width: '17%' }} /><col style={{ width: '11%' }} />
@@ -201,11 +213,11 @@ const ProjectsTable: React.FC<{
       <TableHeader>
         <TableRow>
           <TableHead><HeadWithInfo label="Project" info="The project, its status and engagement window, and its project admins (someone with the admin role on it)." /></TableHead>
-          <TableHead><HeadWithInfo label="Targets tested" info={COLUMN_INFO.tested} /></TableHead>
+          <TableHead><HeadWithInfo label="Taken into review" info={COLUMN_INFO.tested} /></TableHead>
           <TableHead><HeadWithInfo label="In review · reviewed" info={COLUMN_INFO.review} /></TableHead>
           <TableHead><HeadWithInfo label="Findings and their state" info={COLUMN_INFO.findings} /></TableHead>
           <TableHead><HeadWithInfo label="Scanner observations" info={COLUMN_INFO.observations} /></TableHead>
-          <TableHead><HeadWithInfo label="Tested hosts with a finding" info={COLUMN_INFO.withFinding} /></TableHead>
+          <TableHead><HeadWithInfo label="Taken into review, with a finding" info={COLUMN_INFO.withFinding} /></TableHead>
           <TableHead>Activity · attention</TableHead>
         </TableRow>
       </TableHeader>
@@ -225,7 +237,7 @@ const ProjectsTable: React.FC<{
                 : <span className="mt-xxs block"><Badge variant="destructive">No project admin</Badge></span>}
             </TableCell>
             <TableCell className="tabular-nums">
-              {r.host_count ? <>{n(r.hosts_tested)} / {n(r.host_count)} <span className="text-muted-foreground">({pct(r.hosts_tested, r.host_count)})</span></> : <span className="text-muted-foreground">No targets</span>}
+              {r.host_count ? <>{n(r.hosts_tested)} / {n(r.host_count)} <span className="text-muted-foreground">({pct(r.hosts_tested, r.host_count)})</span></> : <span className="text-muted-foreground">No hosts</span>}
               {r.targets_added > 0 && <div className="text-caption text-muted-foreground">+{n(r.targets_added)} in period</div>}
             </TableCell>
             <TableCell className="tabular-nums">{n(r.hosts_in_review)} · {n(r.hosts_reviewed)}</TableCell>
@@ -233,7 +245,7 @@ const ProjectsTable: React.FC<{
             <TableCell data-testid="observations-cell"><ObservationsCell r={r} /></TableCell>
             <TableCell className="text-caption tabular-nums">
               {r.defect_rate.critical == null && r.defect_rate.high == null ? (
-                <span className="text-muted-foreground">Nothing tested</span>
+                <span className="text-muted-foreground">None taken into review</span>
               ) : (
                 <>
                   <p>{rate(r.defect_rate.critical)} critical</p>
@@ -243,7 +255,7 @@ const ProjectsTable: React.FC<{
             </TableCell>
             <TableCell>
               <span className="block text-caption text-muted-foreground">
-                {r.last_scan_at ? `Last import ${formatRelativeTime(r.last_scan_at, { absoluteAfterDays: 30 })}` : 'No imports'}
+                {r.last_scan_at ? <>Last import <TimeAgo value={r.last_scan_at} absoluteAfterDays={30} /></> : 'No imports'}
                 {r.imports > 0 && ` · ${n(r.imports)} in period`}
               </span>
               <span className="mt-xxs flex flex-wrap gap-xxs">
@@ -277,9 +289,10 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
     return next;
   });
   return (
-    // No bordered box (sections, not cards) — the same rule as the projects table.
-    <div className="overflow-x-auto border-t border-border" data-testid="testers-table">
-      <Table aria-label={caption} className="min-w-[900px]" style={{ tableLayout: 'fixed' }}>
+    // No bordered box (sections, not cards) — the same rule as the projects
+    // table, and (v5.294.0) no minimum width: the percentages fit the page.
+    <div className="border-t border-border" data-testid="testers-table">
+      <Table aria-label={caption}>
         <colgroup>
           <col style={{ width: '24%' }} /><col style={{ width: '9%' }} /><col style={{ width: '10%' }} />
           <col style={{ width: '9%' }} /><col style={{ width: '20%' }} /><col style={{ width: '9%' }} /><col style={{ width: '19%' }} />
@@ -287,10 +300,10 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
         <TableHeader>
           <TableRow>
             <TableHead>Tester</TableHead>
-            <TableHead title="Projects (of those selected) where they have a target in review or reviewed">Projects</TableHead>
+            <TableHead title="Projects (of those selected) where they have a host in review or reviewed">Projects</TableHead>
             <TableHead title="Hosts reviewed (current); in the period beneath">Reviewed</TableHead>
             <TableHead>In review</TableHead>
-            <TableHead title="Findings (issues) on the hosts they reviewed or have in review — current">Findings on their targets</TableHead>
+            <TableHead title="Findings (issues) on the hosts they reviewed or have in review — current">Findings on their hosts</TableHead>
             <TableHead>Open tasks</TableHead>
             <TableHead>Last contribution</TableHead>
           </TableRow>
@@ -320,8 +333,8 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
                 <TableCell className="tabular-nums">{n(t.in_review)}</TableCell>
                 <TableCell><SevCells s={t.findings} /></TableCell>
                 <TableCell className="tabular-nums">{n(t.open_tasks)}</TableCell>
-                <TableCell className="text-caption text-muted-foreground">
-                  {formatRelativeTime(t.last_contribution_at, { absoluteAfterDays: 30, fallback: '—' })}
+                <TableCell className="truncate text-caption text-muted-foreground">
+                  <TimeAgo value={t.last_contribution_at} absoluteAfterDays={30} />
                 </TableCell>
               </TableRow>
               {expandable && open.has(t.user_id) && t.projects.map((p) => (
@@ -342,7 +355,7 @@ const TestersTable: React.FC<{ rows: OversightTesterRow[]; caption: string; expa
             </React.Fragment>
           ))}
           {rows.length === 0 && (
-            <TableRow><TableCell colSpan={7} className="py-md text-center text-muted-foreground">Nobody has a target in review or reviewed in these projects.</TableCell></TableRow>
+            <TableRow><TableCell colSpan={7} className="py-md text-center text-muted-foreground">Nobody has a host in review or reviewed in these projects.</TableCell></TableRow>
           )}
         </TableBody>
       </Table>
@@ -450,10 +463,11 @@ const Oversight: React.FC = () => {
     [data],
   );
 
+  // v5.294.0 — the one date format ("Aug 26, 2026"), not ISO days.
   const periodLabel = range.start || range.end
-    ? `${range.start ?? 'the beginning'} – ${range.end ?? 'today'} (UTC)`
+    ? `${range.start ? formatDate(range.start) : 'the beginning'} – ${range.end ? formatDate(range.end) : 'today'} (UTC)`
     : 'all time';
-  const throughLabel = range.end ? `Through ${range.end}` : 'Through today';
+  const throughLabel = range.end ? `Through ${formatDate(range.end)}` : 'Through today';
   // The filters in words, for the copied summary (a pasted figure travels
   // without the page's filter row).
   const projectNames = useMemo(
@@ -484,100 +498,88 @@ const Oversight: React.FC = () => {
   const pages = Math.max(1, Math.ceil(filteredProjects.length / PAGE_SIZE));
 
   return (
-    <div className="space-y-md p-md">
+    // v5.294.0 — the standard page gutter (p-md md:p-lg); it was p-md alone,
+    // so the title sat 8px left of every other page's.
+    <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Oversight</h1>
           <p className="mt-xs max-w-3xl text-caption text-muted-foreground">
-            Every registered project for administrators: what is in progress, how much has been tested, what testing found,
+            Every registered project for administrators: what is in progress, how far review has got, what testing found,
             and who did the work. Every number is explained on its (i).
           </p>
         </div>
-        <div className="flex flex-col items-end gap-xs">
-          <div className="flex flex-wrap justify-end gap-xs">
-            {/* v5.273.0 — the notebook's figures for these filters, to paste
-                into an email or a chat. */}
-            <Button size="sm" variant="outline" onClick={() => setShareOpen(true)} disabled={!data}>
-              <Copy className="size-3.5" aria-hidden /> Copy summary
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setNonce((x) => x + 1)} disabled={loading}>
-              <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-            </Button>
-          </div>
-          {data && (
-            <span className="text-caption text-muted-foreground">
-              Updated {formatRelativeTime(data.generated_at, { justNowBelowMs: 60_000 })}{error ? ' · showing the last figures that loaded' : ''}
-            </span>
-          )}
+        <div className="flex flex-wrap items-center justify-end gap-xs">
+          <LastUpdated
+            compact
+            lastFetched={data?.generated_at ?? null}
+            onRefresh={() => setNonce((x) => x + 1)}
+            isLoading={loading}
+            label="oversight"
+          />
+          {/* v5.273.0 — the notebook's figures for these filters, to paste
+              into an email or a chat. */}
+          <Button size="sm" variant="outline" onClick={() => setShareOpen(true)} disabled={!data}>
+            <Copy className="size-3.5" aria-hidden /> Copy summary
+          </Button>
         </div>
       </div>
 
-      {/* Filters — one row above everything they scope, no card around them. */}
+      {/* Filters — one row above everything they scope, no card around them.
+          v5.294.0 — the shared filter row (components/ListFilterBar): unlabelled
+          h-8 controls whose value names the dimension, as on every list page;
+          it was a row of captioned form fields. */}
       <div className="flex flex-col gap-xs border-b border-border pb-sm">
-          <div className="flex flex-wrap items-end gap-sm">
-            <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-              Dates
-              <Select value={preset} onValueChange={(v) => {
-                if (v === 'custom') {
-                  setParam({ range: 'custom', start: range.start ?? '', end: range.end ?? '' });
-                  setDraftStart(range.start ?? ''); setDraftEnd(range.end ?? '');
-                } else {
-                  setParam({ range: v === DEFAULT_PRESET ? null : v, start: null, end: null });
-                }
-              }}>
-                <SelectTrigger className="w-44" aria-label="Date range"><SelectValue /></SelectTrigger>
-                <SelectContent>{DATE_PRESETS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
-              </Select>
-            </label>
+          <ListFilterBar className="mb-0 border-b-0 pb-0">
+            <Select value={preset} onValueChange={(v) => {
+              if (v === 'custom') {
+                setParam({ range: 'custom', start: range.start ?? '', end: range.end ?? '' });
+                setDraftStart(range.start ?? ''); setDraftEnd(range.end ?? '');
+              } else {
+                setParam({ range: v === DEFAULT_PRESET ? null : v, start: null, end: null });
+              }
+            }}>
+              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Date range"><SelectValue /></SelectTrigger>
+              <SelectContent>{DATE_PRESETS.map((p) => <SelectItem key={p.value} value={p.value}>{p.label}</SelectItem>)}</SelectContent>
+            </Select>
             {preset === 'custom' && (
-              <>
-                <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-                  Start (UTC)
-                  <Input type="date" value={draftStart} onChange={(e) => setDraftStart(e.target.value)} className="w-40" />
-                </label>
-                <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-                  End (UTC)
-                  <Input type="date" value={draftEnd} onChange={(e) => setDraftEnd(e.target.value)} className="w-40" />
-                </label>
+              <span className="flex items-center gap-xs text-caption text-muted-foreground">
+                <Input type="date" value={draftStart} onChange={(e) => setDraftStart(e.target.value)}
+                  className="h-8 w-40 text-metadata" aria-label="Start (UTC)" />
+                to
+                <Input type="date" value={draftEnd} onChange={(e) => setDraftEnd(e.target.value)}
+                  className="h-8 w-40 text-metadata" aria-label="End (UTC)" />
+                UTC
                 <Button size="sm" disabled={!!draftError} onClick={() => setParam({ start: draftStart, end: draftEnd })}>Apply</Button>
-              </>
+              </span>
             )}
-            <div className="flex flex-col gap-xxs text-caption text-muted-foreground">
-              Projects
-              <ProjectMultiSelect
-                options={data?.project_options ?? []}
-                value={projectIds}
-                onChange={(ids) => setParam({
-                  projects: serializeProjectIds(ids, data?.project_options.length ?? 0),
-                  project: null,
-                })}
-                disabled={!data && loading}
-              />
-            </div>
-            <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-              Status
-              <Select value={statusFilter} onValueChange={(v) => setParam({ status: v === ALL ? null : v })}>
-                <SelectTrigger className="w-40" aria-label="Status"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>All statuses</SelectItem>
-                  {STATUSES.map((st) => <SelectItem key={st} value={st}>{formatStatusLabel(st)}</SelectItem>)}
-                </SelectContent>
-              </Select>
-            </label>
-            <label className="flex flex-col gap-xxs text-caption text-muted-foreground">
-              Tester
-              <Select value={testerFilter} onValueChange={(v) => setParam({ tester: v === ALL ? null : v })}>
-                <SelectTrigger className="w-44" aria-label="Tester"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={ALL}>Anyone</SelectItem>
-                  {(data?.tester_options ?? []).map((o) => (
-                    <SelectItem key={o.id} value={String(o.id)}><span className="block max-w-[14rem] truncate">{o.name}</span></SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
+            <ProjectMultiSelect
+              options={data?.project_options ?? []}
+              value={projectIds}
+              onChange={(ids) => setParam({
+                projects: serializeProjectIds(ids, data?.project_options.length ?? 0),
+                project: null,
+              })}
+              disabled={!data && loading}
+            />
+            <Select value={statusFilter} onValueChange={(v) => setParam({ status: v === ALL ? null : v })}>
+              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-40`} aria-label="Status"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All statuses</SelectItem>
+                {STATUSES.map((st) => <SelectItem key={st} value={st}>{formatStatusLabel(st)}</SelectItem>)}
+              </SelectContent>
+            </Select>
+            <Select value={testerFilter} onValueChange={(v) => setParam({ tester: v === ALL ? null : v })}>
+              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Tester"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>Any tester</SelectItem>
+                {(data?.tester_options ?? []).map((o) => (
+                  <SelectItem key={o.id} value={String(o.id)}><span className="block max-w-[14rem] truncate">{o.name}</span></SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             {activeFilters && <Button size="sm" variant="ghost" onClick={reset}>Reset</Button>}
-          </div>
+          </ListFilterBar>
           {preset === 'custom' && draftError && <p className="text-caption text-destructive">{draftError}</p>}
           <label className="flex items-center gap-xs text-caption text-muted-foreground">
             <Checkbox checked={overlap} disabled={preset === 'all'}
@@ -620,7 +622,7 @@ const Oversight: React.FC = () => {
             >
               {projectScope && <>These figures cover {projectScope}.{' '}</>}
               {n(s.projects_in_progress)} project{s.projects_in_progress === 1 ? '' : 's'} in progress.{' '}
-              {n(s.targets_tested)} of {n(s.targets_current)} targets tested ({pct(s.targets_tested, s.targets_current)}).
+              {n(s.targets_tested)} of {n(s.targets_current)} hosts taken into review ({pct(s.targets_tested, s.targets_current)}).
             </PostureLead>
 
             {/* Four quiet measures on one baseline (the Posture context strip). */}
@@ -630,31 +632,34 @@ const Oversight: React.FC = () => {
                 {/* Captions wrap: nothing meaningful is cut off with an ellipsis. */}
                 <p className="break-words">{n(s.projects_in_progress)} in progress · {n(s.projects_complete)} complete</p>
               </PostureMeasure>
-              <PostureMeasure label="Recorded targets" value={n(s.targets_through_end)}
-                info={`Hosts in these projects' inventories, first recorded ${throughLabel.toLowerCase()} — one per IP per project; ports, CIDR ranges and DNS names never add targets. A host removed with its scan is not counted, so this is "recorded", not a lifetime total.`}>
+              <PostureMeasure label="Recorded hosts" value={n(s.targets_through_end)}
+                info={`Hosts in these projects' inventories, first recorded ${throughLabel.toLowerCase()} — one per IP per project; ports, CIDR ranges and DNS names never add hosts. A host removed with its scan is not counted, so this is "recorded", not a lifetime total.`}>
                 <p className="break-words">+{n(s.targets_added)} first recorded in the period</p>
               </PostureMeasure>
-              <PostureMeasure label="Targets tested (in review or reviewed)" value={`${n(s.targets_tested)} / ${n(s.targets_current)}`}
-                info="Current hosts in review or reviewed by anyone, each counted once. Watching is not testing. Wider than Portfolio's &quot;Hosts with review concluded&quot;, which counts reviewed hosts only — so this number is the larger of the two.">
+              {/* v5.294.0 — "Taken into review", not "Targets tested (in
+                  review or reviewed)": the label was cut off, and "tested"
+                  means a recorded test result everywhere else. */}
+              <PostureMeasure label="Taken into review" value={`${n(s.targets_tested)} / ${n(s.targets_current)}`}
+                info="Current hosts in review or reviewed by anyone, each counted once. Watching is not reviewing. Wider than Portfolio's &quot;Hosts with review concluded&quot;, which counts reviewed hosts only — so this number is the larger of the two. Not the same as tested: a host is tested when a test result is recorded on it.">
                 <p className="break-words">
                   {pct(s.targets_tested, s.targets_current)} · {n(s.targets_in_review)} in review ·{' '}
-                  {plural(s.reviews_concluded, 'review')} concluded in the period
+                  {n(s.targets_reviewed)} reviewed · {plural(s.reviews_concluded, 'review')} concluded in the period
                 </p>
               </PostureMeasure>
               <PostureMeasure label="Contributors in the period" value={n(s.contributors)}
-                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count. Not the same set as Testers: a tester is anyone who currently has a target in review or reviewed, whatever the dates, so someone who only imported scans is a contributor but not a tester.">
+                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count. Not the same set as Testers: a tester is anyone who currently has a host in review or reviewed, whatever the dates, so someone who only imported scans is a contributor but not a tester.">
                 <p className="break-words">
                   {plural(s.imports, 'scan')} imported
                   {s.unattributed_events > 0 && ` · ${plural(s.unattributed_events, 'action')} with no recorded author`}
-                  {' · '}{plural(data.testers.length, 'tester')} (targets in review or reviewed)
+                  {' · '}{plural(data.testers.length, 'tester')} (hosts in review or reviewed)
                 </p>
               </PostureMeasure>
             </div>
 
             <PostureSection
-              title={<>Findings and scanner output <InfoTip text="Findings are analysts' conclusions, one per issue, false positives excluded. Scanner observations are what the tools reported, one per issue per host: judged when a finding covers the observation on its host (promoted, dismissed there, or accepted), otherwise not yet judged. &quot;Tested targets with a finding&quot; is the share of tested targets with at least one finding at that severity that is not a false positive there." /></>}
+              title={<>Findings and scanner output <InfoTip text="Findings are analysts' conclusions, one per issue, false positives excluded. Scanner observations are what the tools reported, one per issue per host: judged when a finding covers the observation on its host (promoted, dismissed there, or accepted), otherwise not yet judged. &quot;Taken into review, with a finding&quot; is the share of hosts in review or reviewed with at least one finding at that severity that is not a false positive there." /></>}
               description={basis === 'period'
-                ? `Only findings and scanner observations first recorded ${periodLabel}; their judged state and the share of tested targets with a finding are today's.`
+                ? `Only findings and scanner observations first recorded ${periodLabel}; their judged state and the share of hosts taken into review with a finding are today's.`
                 : 'The latest state of every finding and scanner observation in these projects.'}
               actions={
                 <div className="inline-flex rounded-control border border-border p-[2px]" role="group" aria-label="Severity figures">
@@ -672,7 +677,7 @@ const Oversight: React.FC = () => {
             </PostureSection>
 
             <PostureSection
-              title="Target growth"
+              title="Host growth"
               description={`${periodLabel}, by UTC ${data.growth.unit}. Three charts on one date axis — a running total and two per-${data.growth.unit} counts are different scales.`}
             >
               <GrowthCharts unit={data.growth.unit} points={data.growth.points} />
@@ -726,7 +731,7 @@ const Oversight: React.FC = () => {
 
             <PostureSection
               title="Testers"
-              description="Anyone who currently has a target in review or reviewed, whatever the dates — not the same set as Contributors in the period. Most targets in review or reviewed first."
+              description="Anyone who currently has a host in review or reviewed, whatever the dates — not the same set as Contributors in the period. Most hosts in review or reviewed first."
               actions={
                 <span className="flex flex-wrap items-baseline gap-xs">
                   {data.testers.length > testerPreview.length && (
@@ -749,16 +754,18 @@ const Oversight: React.FC = () => {
           </TabsContent>
 
           <TabsContent value="projects" className="space-y-sm">
-            <div className="flex flex-wrap items-center gap-sm">
-              <Input value={search} onChange={(e) => { setSearch(e.target.value); setPage(0); }}
-                placeholder="Search this table" aria-label="Search projects in this table" className="w-64" />
+            <ListFilterBar
+              summary={`${n(filteredProjects.length)} of ${n(data.projects.length)} projects · search is local to this table`}
+            >
+              <ListFilterSearch value={search} onChange={(v) => { setSearch(v); setPage(0); }}
+                placeholder="Search this table" label="Search projects in this table" />
               <Select value={sort} onValueChange={(v) => setSort(v as ProjectSort)}>
-                <SelectTrigger className="w-52" aria-label="Sort projects"><SelectValue /></SelectTrigger>
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-60`} aria-label="Sort projects"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="critical">Most critical, then high</SelectItem>
                   <SelectItem value="name">Name</SelectItem>
-                  <SelectItem value="targets">Most targets</SelectItem>
-                  <SelectItem value="tested">Highest share tested</SelectItem>
+                  <SelectItem value="targets">Most hosts</SelectItem>
+                  <SelectItem value="tested">Highest share taken into review</SelectItem>
                   <SelectItem value="last_import">Most recent import</SelectItem>
                 </SelectContent>
               </Select>
@@ -768,10 +775,7 @@ const Oversight: React.FC = () => {
                   <button type="button" aria-label="Clear attention filter" onClick={() => setParam({ attention: null })} className="ml-xxs">×</button>
                 </Badge>
               )}
-              <span className="text-caption text-muted-foreground">
-                {n(filteredProjects.length)} of {n(data.projects.length)} projects · search is local to this table
-              </span>
-            </div>
+            </ListFilterBar>
             <ProjectsTable rows={pageRows} onOpen={openProject} caption="All projects in the cohort" />
             {pages > 1 && (
               <div className="flex items-center justify-end gap-xs text-caption text-muted-foreground">
@@ -784,9 +788,9 @@ const Oversight: React.FC = () => {
 
           <TabsContent value="testers" className="space-y-sm">
             <p className="text-caption text-muted-foreground">
-              A tester is anyone who currently has a target in review or reviewed, whatever the dates. That is a different set from
+              A tester is anyone who currently has a host in review or reviewed, whatever the dates. That is a different set from
               the Overview's Contributors in the period (anyone who imported, wrote a note, triaged a finding, approved a plan or
-              concluded a review in the dates), so the two counts need not match. Findings are counted through the targets each person worked on,
+              concluded a review in the dates), so the two counts need not match. Findings are counted through the hosts each person worked on,
               so two reviewers of one host both get credit and these rows do not add up to the project totals.
               Removing a user also removes their review records.
             </p>
