@@ -42,6 +42,7 @@ import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { InfoTip } from '../components/ui/info-tip';
+import LastUpdated from '../components/LastUpdated';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
@@ -157,6 +158,7 @@ const Patterns: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
 
   const handleCopyMarkdown = useCallback(async () => {
     if (!data) return;
@@ -184,7 +186,7 @@ const Patterns: React.FC = () => {
   const load = useCallback(() => {
     setLoading(true);
     getSystemicInsights()
-      .then((d) => { setData(d); setError(null); })
+      .then((d) => { setData(d); setError(null); setLoadedAt(new Date()); })
       .catch((e) => setError(formatApiError(e, 'Could not load the patterns.')))
       .finally(() => setLoading(false));
   }, []);
@@ -204,7 +206,7 @@ const Patterns: React.FC = () => {
   const recurring = conditions.filter((c) => c.classification !== 'isolated');
 
   return (
-    <div className="space-y-md p-md">
+    <div className="space-y-md p-md md:p-lg">
       <div className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
           <h1 className="text-page-title">Patterns</h1>
@@ -224,9 +226,7 @@ const Patterns: React.FC = () => {
           <Button size="sm" variant="outline" onClick={handleDownloadJson} disabled={loading || !data?.adopted}>
             <Download className="size-3.5" aria-hidden /> JSON
           </Button>
-          <Button size="sm" variant="outline" onClick={load} disabled={loading}>
-            <RefreshCw className={`size-3.5 ${loading ? 'animate-spin' : ''}`} aria-hidden /> Refresh
-          </Button>
+          <LastUpdated compact lastFetched={loadedAt} onRefresh={load} isLoading={loading} label="patterns" />
         </div>
       </div>
 

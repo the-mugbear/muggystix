@@ -34,7 +34,7 @@ const queue: InvestigationQueueResponse = {
         { kind: 'high_value', text: 'SMB, RDP open' },
       ],
       evidence: { sources: ['nmap', 'nessus'], last_seen: new Date().toISOString(), confirmation: 'scanner' },
-      next_action: { kind: 'review', text: 'Take it into review: exploitable critical on a host nobody has looked at.' },
+      next_action: { kind: 'review', text: 'Take it into review — nobody has looked at this host yet.' },
     },
     {
       host_id: 8,
@@ -85,7 +85,7 @@ describe('MyWorkCard — Worth a look', () => {
     expect(screen.getByText('SMB, RDP open')).toBeInTheDocument();
     expect(screen.getByText('nmap, nessus')).toBeInTheDocument();
     expect(screen.getAllByText(/scanner-reported, unconfirmed/)).toHaveLength(2);
-    expect(screen.getByText(/ordered by tier: Exploitable critical › Critical vulnerability/)).toBeInTheDocument();
+    expect(screen.getByText(/Ordered by tier: Exploitable critical › Critical vulnerability/)).toBeInTheDocument();
     // No composite score anywhere: the row says its tier in words.
     expect(screen.getByText('Exploitable critical')).toBeInTheDocument();
   });
@@ -163,7 +163,10 @@ describe('MyWorkCard — Worth a look', () => {
       const inReview = screen.getByRole('region', { name: 'In review' });
       // The server's total, where the card loaded only a slice of it.
       expect(within(owned).getByText('40')).toBeInTheDocument();
-      expect(within(owned).getByText(/35 more not loaded here — use View all/)).toBeInTheDocument();
+      // One pattern: how much of the whole is on screen, then one View all.
+      expect(within(owned).getByText('Showing 3 of 40')).toBeInTheDocument();
+      expect(within(owned).getByRole('button', { name: 'View all (40)' })).toBeInTheDocument();
+      expect(within(owned).queryByText(/not loaded here/)).not.toBeInTheDocument();
       expect(within(inReview).getByText('5')).toBeInTheDocument();
       expect(within(inReview).getAllByRole('listitem')).toHaveLength(3);
 
@@ -178,9 +181,9 @@ describe('MyWorkCard — Worth a look', () => {
         findings: { items: findings(1), total_open: 1 } as never,
         queue: { items: hosts(1), in_review_count: 1, watching_count: 0 } as never,
       });
-      fireEvent.click(within(screen.getByRole('region', { name: 'Findings I own' })).getByRole('button', { name: 'View all' }));
+      fireEvent.click(within(screen.getByRole('region', { name: 'Findings I own' })).getByRole('button', { name: 'View all (1)' }));
       expect(navigate).toHaveBeenLastCalledWith('/findings?owner=me');
-      fireEvent.click(within(screen.getByRole('region', { name: 'In review' })).getByRole('button', { name: 'View all' }));
+      fireEvent.click(within(screen.getByRole('region', { name: 'In review' })).getByRole('button', { name: 'View all (1)' }));
       expect(navigate.mock.calls[navigate.mock.calls.length - 1][0]).toContain('follow%3Ain_review');
     });
   });
@@ -230,6 +233,22 @@ describe('MyWorkCard — Worth a look', () => {
       expect(navigate).toHaveBeenCalledWith('/hosts/21', {
         state: { fromOperations: true, hostIds: [21, 22], queueLabel: 'Needs another look' },
       });
+    });
+
+    // UX review 2026-09-24: 15 loaded of 29, five on screen, and the footer
+    // said "Showing 15 of 29" — the count must describe what is visible.
+    it('"Showing N of M" counts the rows on screen, not the rows loaded', () => {
+      const row = followups.items[1];
+      const fifteen = {
+        total: 29,
+        mine_total: 0,
+        items: Array.from({ length: 15 }, (_, i) => ({ ...row, host_id: 300 + i, ip_address: `10.8.1.${i}` })),
+      };
+      renderCard(null, false, { followups: fifteen });
+      expect(screen.getByText('Showing 5 of 29')).toBeInTheDocument();
+      expect(screen.queryByText(/Showing 15 of 29/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Show 10 more' }));
+      expect(screen.getByText('Showing 15 of 29')).toBeInTheDocument();
     });
 
     it('is absent when nothing is owed, and says so when it could not be computed', () => {

@@ -140,6 +140,31 @@ describe('FindingDetail — item 7: each endpoint has its own state', () => {
   });
 });
 
+// UX review 2026-09-24: triage starts from the hosts, and a status with no
+// transition must say where it came from.
+describe('FindingDetail — layout and the initial status', () => {
+  it('lists the affected hosts before the report text and the comments', async () => {
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const hosts = screen.getByRole('heading', { name: /Affected hosts/ });
+    const report = screen.getByRole('heading', { name: /Report text/ });
+    const composer = screen.getByLabelText('New comment');
+    // eslint-disable-next-line no-bitwise
+    expect(hosts.compareDocumentPosition(report) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // eslint-disable-next-line no-bitwise
+    expect(hosts.compareDocumentPosition(composer) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    // Sections, not cards.
+    expect(report.closest('.rounded-panel')).toBeNull();
+  });
+
+  it('a status with no recorded change says it was set when the finding was created', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ status: 'confirmed', created_by_name: 'ana' }));
+    renderAt('/findings/7');
+    expect(await screen.findByText(/Confirmed since the finding was created by ana/)).toBeInTheDocument();
+    expect(screen.queryByText(/No status changes recorded yet/)).toBeNull();
+  });
+});
+
 describe('FindingDetail — M2: history is not a prerequisite', () => {
   it('renders the finding when history fails, with an explicit unavailable message and Retry', async () => {
     mocked.getFindingHistory.mockRejectedValueOnce(new Error('boom'));
@@ -309,7 +334,8 @@ describe('FindingDetail — add affected hosts', () => {
 
     await user.click(screen.getByRole('button', { name: 'Add 2 hosts' }));
     await waitFor(() => expect(mocked.addFindingHosts).toHaveBeenCalledWith(7, [12, 13]));
-    expect(await screen.findByText('Affected hosts (3)')).toBeInTheDocument();
+    const heading = await screen.findByRole('heading', { name: /Affected hosts/ });
+    await waitFor(() => expect(heading).toHaveTextContent('Affected hosts3'));
     expect(toastMock.success).toHaveBeenCalledWith('Added 2 hosts.');
     expect(mocked.getFindingHistory).toHaveBeenCalledTimes(2); // refreshed after the add
   });

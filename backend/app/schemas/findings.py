@@ -198,3 +198,31 @@ class FindingHostsRequest(BaseModel):
     host_ids: List[int] = Field(default_factory=list, max_length=500)
     # … and/or explicit endpoints (v2.325.0).  Either may be empty.
     endpoints: List[FindingEndpointRef] = Field(default_factory=list, max_length=500)
+
+
+class FindingCommentPreview(BaseModel):
+    """The newest comment on a finding's discussion."""
+    note_id: int
+    body: str
+    author_name: Optional[str] = None
+    actor_type: str = "user"
+    created_at: Optional[datetime] = None
+
+
+class FindingDiscussion(BaseModel):
+    """One finding's comment thread, as the Collaboration feed lists it."""
+    finding_id: int
+    title: str
+    severity: str
+    status: str
+    comment_count: int
+    last_activity_at: Optional[datetime] = None
+    latest: Optional[FindingCommentPreview] = None
+    participants: List[str] = Field(default_factory=list)
+
+
+class FindingDiscussionList(BaseModel):
+    """GET /findings/comments/activity (v2.408.0) — finding comments beside
+    the host-note threads on Collaboration, which listed only the latter."""
+    items: List[FindingDiscussion]
+    total: int

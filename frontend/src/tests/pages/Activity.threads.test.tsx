@@ -12,7 +12,9 @@ vi.mock('react-router-dom', async () => {
 });
 
 const getNoteActivity = vi.fn();
+const getFindingDiscussions = vi.fn();
 vi.mock('../../services/api', () => ({
+  getFindingDiscussions: (...a: unknown[]) => getFindingDiscussions(...a),
   getNoteActivity: (...a: unknown[]) => getNoteActivity(...a),
   markActivitySeen: vi.fn().mockResolvedValue(undefined),
   getNotifications: vi.fn().mockResolvedValue({ notifications: [], total: 0, unread_count: 0 }),
@@ -34,6 +36,52 @@ const payload = (notes: unknown[], counts = { open: 3, in_progress: 0, resolved:
 
 beforeEach(() => {
   getNoteActivity.mockReset();
+  getFindingDiscussions.mockReset().mockResolvedValue({ items: [], total: 0 });
+});
+
+// UX review 2026-09-24.
+describe('Activity — finding comments and row times', () => {
+  it('lists finding discussions beside the host threads, each opening the finding at its newest comment', async () => {
+    getNoteActivity.mockResolvedValue(payload([note({ body: 'host thread' })]));
+    getFindingDiscussions.mockResolvedValue({
+      total: 1,
+      items: [{
+        finding_id: 37, title: 'Default creds on the admin panel', severity: 'critical', status: 'confirmed',
+        comment_count: 3, last_activity_at: '2026-09-10T11:00:00Z', participants: ['ana', 'ben'],
+        latest: { note_id: 88, body: '@ben admin/admin still works', author_name: 'ana', actor_type: 'user', created_at: '2026-09-10T11:00:00Z' },
+      }],
+    });
+    render(<MemoryRouter><Activity /></MemoryRouter>);
+    const link = await screen.findByRole('link', { name: 'Open the discussion on Default creds on the admin panel' });
+    expect(link).toHaveAttribute('href', '/findings/37#note-88');
+    expect(within(link).getByText('@ben admin/admin still works')).toBeInTheDocument();
+    expect(within(link).getByText('3 comments')).toBeInTheDocument();
+    expect(within(link).getByText('with ben')).toBeInTheDocument();
+    // The host threads are still there.
+    expect(await screen.findByText('host thread')).toBeInTheDocument();
+  });
+
+  it('passes search and author to the finding feed', async () => {
+    getNoteActivity.mockResolvedValue(payload([note({})]));
+    render(<MemoryRouter><Activity /></MemoryRouter>);
+    await screen.findByText('a note');
+    fireEvent.change(screen.getByLabelText('Search discussions'), { target: { value: 'creds' } });
+    await waitFor(() => expect(getFindingDiscussions).toHaveBeenLastCalledWith(
+      expect.objectContaining({ search: 'creds' }), expect.anything(),
+    ));
+  });
+
+  it('a thread row shows the time of day, not the date its day heading already gives', async () => {
+    const at = '2026-08-19T18:08:00Z';
+    getNoteActivity.mockResolvedValue(payload([note({ created_at: at, body: 'old thread' })]));
+    const { container } = render(<MemoryRouter><Activity /></MemoryRouter>);
+    await screen.findByText('old thread');
+    const row = container.querySelector('a[data-thread]') as HTMLElement;
+    const time = row.querySelector('time')!;
+    expect(time.textContent).toBe(new Date(at).toLocaleTimeString(undefined, { hour: 'numeric', minute: '2-digit' }));
+    expect(time.textContent).not.toContain(new Date(at).toLocaleDateString());
+    expect(time).toHaveAttribute('title', new Date(at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' }));
+  });
 });
 
 describe('Activity — threads as rows', () => {

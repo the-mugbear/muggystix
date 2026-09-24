@@ -113,14 +113,12 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName,
                 used") on one line. */}
             <div className="w-56 shrink-0 whitespace-nowrap">{status(a)}</div>
             <div className="min-w-0 flex-1 space-y-xxs">
-              <div className="flex min-w-0 flex-wrap items-baseline gap-x-xs">
-                <span className="break-words font-medium">{a.label}</span>
-                {showServerPaths && (
-                  <span className="min-w-0 max-w-full truncate font-mono text-caption text-muted-foreground" title={folder + a.path}>
-                    {folder}{a.path}
-                  </span>
-                )}
-              </div>
+              {/* v5.294.0 (UX review) — the server path is not part of the
+                  reading text: it is on the label's tooltip, and listed once
+                  under "Where the files go" for the administrator. */}
+              <span className="break-words font-medium" title={showServerPaths ? folder + a.path : undefined}>
+                {a.label}
+              </span>
               {a.replaces && (
                 <p className="break-words text-caption text-muted-foreground">
                   {a.present ? 'Used' : 'When installed, used'} in place of the template&apos;s own{' '}
@@ -139,13 +137,27 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName,
         ))}
       </ul>
       <p className="max-w-3xl text-caption text-muted-foreground">
-        {showServerPaths
-          ? <>Put each file at its path on the server. The template folder is mounted read-only into the backend and the report
-            worker, so no rebuild is needed — reload this page to check again. </>
-          : <>An administrator installs these files on the server. </>}
+        {!showServerPaths && <>An administrator installs these files on the server. </>}
         A missing optional image is left out of the layout; a file that replaces one of the template&apos;s own falls back
         to the shipped one.
       </p>
+      {showServerPaths && (
+        <details className="max-w-3xl text-caption text-muted-foreground">
+          <summary className="cursor-pointer text-foreground">Where the files go on the server</summary>
+          <ul className="mt-xxs space-y-xxs">
+            {assets.map((a) => (
+              <li key={a.id} className="flex min-w-0 flex-wrap gap-x-xs">
+                <span className="shrink-0">{a.label}:</span>
+                <span className="min-w-0 max-w-full truncate font-mono" title={folder + a.path}>{folder}{a.path}</span>
+              </li>
+            ))}
+          </ul>
+          <p className="mt-xxs">
+            Put each file at its path. The template folder is mounted read-only into the backend and the report worker,
+            so no rebuild is needed — reload this page to check again.
+          </p>
+        </details>
+      )}
     </div>
   );
 };

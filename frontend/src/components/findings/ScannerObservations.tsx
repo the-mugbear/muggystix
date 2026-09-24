@@ -12,7 +12,7 @@
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { ChevronDown, ChevronRight, Loader2, Search } from 'lucide-react';
+import { ChevronDown, ChevronRight, Loader2 } from 'lucide-react';
 
 import {
   getObservationIssueHosts,
@@ -33,8 +33,9 @@ import { Checkbox } from '../ui/checkbox';
 import {
   Dialog, DialogBody, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../ui/dialog';
-import { Input } from '../ui/input';
 import { Label } from '../ui/label';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../ListFilterBar';
+import { cn } from '../../utils/cn';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Switch } from '../ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
@@ -251,54 +252,37 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
         every host that carries it, or only the hosts you tick under it.
       </p>
 
-      {/* Filters: one row closed by a rule (UI_STYLE_GUIDE §7). */}
-      <div className="mb-md flex flex-wrap items-end gap-sm border-b border-border pb-sm">
-        <div className="min-w-56 flex-1">
-          <Label htmlFor="observations-search">Search</Label>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-            <Input
-              id="observations-search"
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              spellCheck={false}
-              autoCorrect="off"
-              autoCapitalize="off"
-              placeholder="Search titles or CVE…"
-              className="pl-xl"
-            />
-          </div>
-        </div>
-        <div className="min-w-36">
-          <Label htmlFor="observations-severity">Severity</Label>
-          <Select value={severity} onValueChange={setSeverity}>
-            <SelectTrigger id="observations-severity"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All severities</SelectItem>
-              {SEVERITIES.map((s) => (
-                <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="min-w-40">
-          <Label htmlFor="observations-hosts">Carried by</Label>
-          <Select value={String(minHosts)} onValueChange={(v) => setMinHosts(Number(v))}>
-            <SelectTrigger id="observations-hosts"><SelectValue /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="1">Any number of hosts</SelectItem>
-              <SelectItem value="2">2 or more hosts</SelectItem>
-              <SelectItem value="5">5 or more hosts</SelectItem>
-              <SelectItem value="10">10 or more hosts</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center gap-xs pb-xs">
+      {/* The shared filter row (v5.294.0), as on the Findings view. */}
+      <ListFilterBar className="mb-md">
+        <ListFilterSearch
+          value={searchInput}
+          onChange={setSearchInput}
+          placeholder="Search titles or CVE…"
+          label="Search scanner observations"
+        />
+        <Select value={severity} onValueChange={setSeverity}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-36')} aria-label="Severity"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All severities</SelectItem>
+            {SEVERITIES.map((s) => (
+              <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={String(minHosts)} onValueChange={(v) => setMinHosts(Number(v))}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-44')} aria-label="Carried by"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="1">Any number of hosts</SelectItem>
+            <SelectItem value="2">2 or more hosts</SelectItem>
+            <SelectItem value="5">5 or more hosts</SelectItem>
+            <SelectItem value="10">10 or more hosts</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="flex items-center gap-xs">
           <Switch id="observations-judged" checked={includeJudged} onCheckedChange={(v) => setIncludeJudged(v === true)} />
           <Label htmlFor="observations-judged" className="text-metadata">Include issues already covered</Label>
         </div>
-      </div>
+      </ListFilterBar>
 
       {/* v5.290.0 — the action bar's slot is always there, at a fixed height:
           inserting the bar on the first tick pushed every row down, so the

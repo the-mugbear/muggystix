@@ -277,6 +277,62 @@ export const FROM_OPERATIONS = { state: { fromOperations: true } } as const;
 const FOLLOWUPS_PREVIEW = 5;
 
 /**
+ * The one "see more" pattern for every list on this card (v5.294.0, UX review).
+ *
+ * Expand in place up to what was loaded, say how many of the whole are ON
+ * SCREEN, and offer a single "View all (N)" where a page lists the whole. It
+ * replaces "Show 12 more · 7 more not loaded here — use View all" and a
+ * "Showing 15 of 29" that counted the rows loaded while five were visible.
+ */
+const MoreFooter: React.FC<{
+  /** Rows on screen now. */
+  shown: number;
+  /** Rows the card holds (the expand ceiling). */
+  loaded: number;
+  /** The server's count of the whole list. */
+  total: number;
+  expanded: boolean;
+  onToggle: () => void;
+  viewAll?: { title: string; onClick: () => void };
+  /** Trailing caption (e.g. the ordering rule). */
+  children?: React.ReactNode;
+}> = ({ shown, loaded, total, expanded, onToggle, viewAll, children }) => {
+  const canToggle = expanded || loaded > shown;
+  const partial = total > shown;
+  if (!canToggle && !partial && !viewAll && !children) return null;
+  return (
+    <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
+      {canToggle && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={onToggle}
+          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          {expanded ? 'Show fewer' : `Show ${(loaded - shown).toLocaleString()} more`}
+        </button>
+      )}
+      {partial && (
+        <span className="text-caption text-muted-foreground">
+          Showing {shown.toLocaleString()} of {total.toLocaleString()}
+        </span>
+      )}
+      {viewAll && (
+        <button
+          type="button"
+          onClick={viewAll.onClick}
+          title={viewAll.title}
+          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          View all ({total.toLocaleString()})
+        </button>
+      )}
+      {children}
+    </div>
+  );
+};
+
+/**
  * "Needs another look" (v5.237.0) — reviewed hosts that are not done.  A
  * review concluded "needs more evidence" is an open question stored as a
  * closed state, and a host that changed after its review has a conclusion
@@ -382,20 +438,13 @@ const FollowupsSection: React.FC<{
           </li>
         ))}
       </ul>
-      {data.items.length > FOLLOWUPS_PREVIEW && (
-        <button
-          type="button"
-          onClick={() => setExpanded((v) => !v)}
-          className="mt-xs rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {expanded ? 'Show fewer' : `Show ${data.items.length - FOLLOWUPS_PREVIEW} more`}
-        </button>
-      )}
-      {data.total > data.items.length && (
-        <p className="mt-xxs text-caption text-muted-foreground">
-          Showing {data.items.length} of {data.total.toLocaleString()}.
-        </p>
-      )}
+      <MoreFooter
+        shown={rows.length}
+        loaded={data.items.length}
+        total={data.total}
+        expanded={expanded}
+        onToggle={() => setExpanded((v) => !v)}
+      />
     </PostureSection>
   );
 };
@@ -527,20 +576,17 @@ const InvestigateSection: React.FC<{
               </li>
             ))}
           </ul>
-          <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
-            {data.items.length > INVESTIGATE_PREVIEW && (
-              <button
-                type="button"
-                onClick={() => setExpanded((v) => !v)}
-                className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                {expanded ? 'Show fewer' : `Show ${data.items.length - INVESTIGATE_PREVIEW} more`}
-              </button>
-            )}
+          <MoreFooter
+            shown={rows.length}
+            loaded={data.items.length}
+            total={data.queue_total}
+            expanded={expanded}
+            onToggle={() => setExpanded((v) => !v)}
+          >
             <span className="text-caption text-muted-foreground" title={`Tiers, in order: ${data.tiers.join(' › ')}`}>
-              Showing {rows.length} of {data.queue_total.toLocaleString()} · ordered by tier: {data.tiers.join(' › ')}
+              Ordered by tier: {data.tiers.join(' › ')}
             </span>
-          </div>
+          </MoreFooter>
         </>
       )}
     </PostureSection>
@@ -676,16 +722,6 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                     <span className="text-caption tabular-nums text-muted-foreground">
                       {(total ?? g.rows.length).toLocaleString()}
                     </span>
-                    {all && (
-                      <button
-                        type="button"
-                        onClick={() => navigate(all.to)}
-                        className="ml-auto rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        title={all.label}
-                      >
-                        View all
-                      </button>
-                    )}
                   </div>
                   <ul className="flex flex-col">
                     {rows.map((it) => (
@@ -741,34 +777,23 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                 </li>
                     ))}
                   </ul>
-                  {(g.rows.length > GROUP_PREVIEW || beyond > 0) && (
-                    <div className="mt-xxs flex flex-wrap items-center gap-x-md gap-y-xxs pl-xs">
-                      {g.rows.length > GROUP_PREVIEW && (
-                        <button
-                          type="button"
-                          aria-expanded={open}
-                          onClick={() => setExpandedGroups((prev) => {
-                            const next = new Set(prev);
-                            if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
-                            return next;
-                          })}
-                          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {open ? 'Show fewer' : `Show ${g.rows.length - GROUP_PREVIEW} more`}
-                        </button>
-                      )}
-                      {/* This card loads a capped slice per source. What lies
-                          beyond it is named, with the view that lists it —
-                          not left "in their source views" for the operator
-                          to go and find. */}
-                      {beyond > 0 && (
-                        <span className="text-caption text-muted-foreground">
-                          {beyond.toLocaleString()} more not loaded here
-                          {all ? ' — use View all' : ''}
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  {/* This card loads a capped slice per source; the footer
+                      says how much of the whole is on screen and names the
+                      view that lists all of it. */}
+                  <div className="pl-xs">
+                    <MoreFooter
+                      shown={rows.length}
+                      loaded={g.rows.length}
+                      total={total ?? g.rows.length}
+                      expanded={open}
+                      onToggle={() => setExpandedGroups((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
+                        return next;
+                      })}
+                      viewAll={all ? { title: all.label, onClick: () => navigate(all.to) } : undefined}
+                    />
+                  </div>
                 </section>
               );
             })}

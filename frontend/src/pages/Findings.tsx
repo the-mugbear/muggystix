@@ -9,7 +9,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
-import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
+import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown } from 'lucide-react';
 
 import {
   Finding,
@@ -33,7 +33,8 @@ import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { useListCursor } from '../hooks/useListCursor';
 import { SeverityBadge } from '../components/ui/SeverityBadge';
-import { Input } from '../components/ui/input';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
+import { formatTimestamp } from '../utils/relativeTime';
 import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
 import { Checkbox } from '../components/ui/checkbox';
@@ -48,7 +49,6 @@ import {
 } from '../components/ui/dialog';
 import { Textarea } from '../components/ui/textarea';
 import { InfoTip } from '../components/ui/info-tip';
-import { Label } from '../components/ui/label';
 import {
   Select,
   SelectContent,
@@ -288,7 +288,7 @@ const FindingsList: React.FC = () => {
   // Per-field default direction (worst/most-relevant first); a repeat click
   // toggles. Mirrors the backend's per-field default.
   const SORT_DEFAULT_DIR: Record<FindingSortField, 'asc' | 'desc'> = {
-    severity: 'asc', host_count: 'desc', title: 'asc', status: 'asc', source: 'asc', created_at: 'desc',
+    severity: 'asc', host_count: 'desc', title: 'asc', status: 'asc', source: 'asc', created_at: 'desc', owner: 'asc',
   };
   const handleSort = (field: FindingSortField) => {
     if (sortBy === field) setSort(field, sortDir === 'asc' ? 'desc' : 'asc');
@@ -480,83 +480,69 @@ const FindingsList: React.FC = () => {
 
   return (
     <div>
-      {/* Filters: one row closed by a rule (UI_STYLE_GUIDE §7). */}
-      <div className="mb-md flex flex-wrap items-end gap-sm border-b border-border pb-sm">
-        <div className="min-w-56 flex-1">
-          <Label htmlFor="findings-search">Search</Label>
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground" aria-hidden />
-            <Input
-              id="findings-search"
-              type="search"
-              value={searchInput}
-              onChange={(e) => setSearchInput(e.target.value)}
-              placeholder="Search finding titles…"
-              className="pl-xl"
-            />
-          </div>
-        </div>
-        <div className="min-w-40">
-          <Label htmlFor="findings-status">Status</Label>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>
-            <SelectTrigger id="findings-status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="active">Active (open / confirmed / retest)</SelectItem>
-              <SelectItem value="resolved">Resolved (terminal)</SelectItem>
-              <SelectItem value="all">All statuses</SelectItem>
-              {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
-                <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="min-w-40">
-          <Label htmlFor="findings-severity">Severity</Label>
-          <Select value={severityFilter} onValueChange={(v) => setSeverityFilter(v as FindingSeverity | 'all')}>
-            <SelectTrigger id="findings-severity">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All severities</SelectItem>
-              {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
-                <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="min-w-40">
-          <Label htmlFor="findings-source">Source</Label>
-          <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as FindingSource | 'all')}>
-            <SelectTrigger id="findings-source">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">All sources</SelectItem>
-              {(['note', 'scanner', 'execution', 'manual'] as FindingSource[]).map((s) => (
-                <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="min-w-40">
-          <Label htmlFor="findings-owner">Owner</Label>
-          <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v as OwnerFilterValue)}>
-            <SelectTrigger id="findings-owner">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="any">Any owner</SelectItem>
-              <SelectItem value="me">Assigned to me</SelectItem>
-              <SelectItem value="unowned">Unowned</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <span className="ml-auto text-metadata text-muted-foreground" role="status" aria-live="polite">
-          {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
-        </span>
-      </div>
+      {/* v5.294.0 (UX review) — the shared filter row: search, then one
+          unlabelled select per dimension whose first option names it, the
+          count on the right. It was five labelled fields on two rows. */}
+      <ListFilterBar
+        className="mb-md"
+        summary={
+          <span role="status" aria-live="polite">
+            {loading ? 'Loading findings…' : `${total.toLocaleString()} finding${total === 1 ? '' : 's'}`}
+          </span>
+        }
+      >
+        <ListFilterSearch
+          value={searchInput}
+          onChange={setSearchInput}
+          placeholder="Search finding titles…"
+          label="Search findings"
+        />
+        <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-52')} aria-label="Status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="active">Active (open / confirmed / retest)</SelectItem>
+            <SelectItem value="resolved">Resolved (terminal)</SelectItem>
+            <SelectItem value="all">All statuses</SelectItem>
+            {(Object.keys(STATUS_LABEL) as FindingStatus[]).map((s) => (
+              <SelectItem key={s} value={s}>{STATUS_LABEL[s]}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={severityFilter} onValueChange={(v) => setSeverityFilter(v as FindingSeverity | 'all')}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-36')} aria-label="Severity">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All severities</SelectItem>
+            {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
+              <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={sourceFilter} onValueChange={(v) => setSourceFilter(v as FindingSource | 'all')}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-32')} aria-label="Source">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All sources</SelectItem>
+            {(['note', 'scanner', 'execution', 'manual'] as FindingSource[]).map((s) => (
+              <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+        <Select value={ownerFilter} onValueChange={(v) => setOwnerFilter(v as OwnerFilterValue)}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Owner">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="any">Any owner</SelectItem>
+            <SelectItem value="me">Assigned to me</SelectItem>
+            <SelectItem value="unowned">Unowned</SelectItem>
+          </SelectContent>
+        </Select>
+      </ListFilterBar>
 
       {/* Severity rollup — "how bad is this scope" at a glance (respects the
           status/source filters, ignores severity + pagination). Informational is
@@ -650,7 +636,7 @@ const FindingsList: React.FC = () => {
                 <SortHead field="title" label="Title" />
                 <SortHead field="status" label="Status" className="w-36" />
                 <SortHead field="host_count" label="Hosts" className="w-20" />
-                <TableHead className="w-36">Owner</TableHead>
+                <SortHead field="owner" label="Owner" className="w-36" />
                 <SortHead field="created_at" label="Age" className="w-20" />
               </TableRow>
             </TableHeader>
@@ -773,12 +759,7 @@ const FindingsList: React.FC = () => {
                     </span>
                   </TableCell>
                   <TableCell className="text-caption tabular-nums text-muted-foreground">
-                    <span
-                      className="block truncate"
-                      title={f.created_at && !Number.isNaN(new Date(f.created_at).getTime())
-                        ? new Date(f.created_at).toLocaleString()
-                        : undefined}
-                    >
+                    <span className="block truncate" title={formatTimestamp(f.created_at, undefined)}>
                       {compactAge(f.created_at)}
                     </span>
                   </TableCell>

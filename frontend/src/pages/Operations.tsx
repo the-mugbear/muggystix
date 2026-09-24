@@ -25,6 +25,8 @@ import StartReconDialog from '../components/StartReconDialog';
 import MyWorkCard, { personalWorkCounts } from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
 import UpdatedAt from '../components/UpdatedAt';
+import RunKindBadge from '../components/RunKindBadge';
+import LastUpdated from '../components/LastUpdated';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -47,6 +49,11 @@ const olderOf = (a?: Date, b?: Date): Date | null =>
 
 /** The page's independently fetched sources, each with its own load time. */
 type LoadedSource = 'workbench' | 'coverage' | 'pending' | 'stats';
+/** The oldest load on the page; null until something has loaded. */
+const oldestLoad = (loaded: Partial<Record<LoadedSource, Date>>): Date | null => {
+  const times = Object.values(loaded).filter((d): d is Date => d instanceof Date);
+  return times.length ? times.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b)) : null;
+};
 const SCOPE_STORAGE_KEY = 'nm.operations.scopeView';
 
 const loadStickyScope = (): ScopeView => {
@@ -71,22 +78,6 @@ const persistScope = (view: ScopeView): void => {
 const fmtRelative = (iso?: string | null): string =>
   formatRelativeTime(iso, { withSeconds: true });
 
-type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'secondary' | 'muted' | 'outline';
-
-const kindTone = (kind: string): Tone => {
-  if (kind === 'recon') return 'secondary';
-  if (kind === 'plan_generation') return 'default';
-  if (kind === 'execution') return 'success';
-  // v5.185.0 — assist is a fourth kind on this timeline. It used to be absent
-  // entirely: an operator with a live assist key saw nothing on Agent Runs.
-  if (kind === 'assist') return 'info';
-  return 'muted';
-};
-
-const kindLabel = (kind: string): string => {
-  if (kind === 'plan_generation') return 'Plan gen';
-  return kind.charAt(0).toUpperCase() + kind.slice(1);
-};
 
 // ---------------------------------------------------------------------------
 // Security snapshot — project-wide totals + vulnerability severity mix.
@@ -332,39 +323,39 @@ const NeedsAttentionSection: React.FC<{
   }
 
   const hasAny = (pendingPlans?.length ?? 0) > 0;
+  const heading = <span>{canApprove ? 'Needs your approval' : 'Pending approvals'}</span>;
 
   // v5.244.0 (code review D6) — a failed load is "unknown", never "nothing":
   // this rendered "Nothing needs your approval right now" directly under the
   // error saying approvals could not be loaded. Same rule as every other
   // section on this page: unavailable is said, not shown as empty.
+  // v5.294.0 (UX review) — every state is the same section heading as the
+  // page's other sections; the empty ones used to be an inline bold label.
   if (unavailable && !hasAny) {
     return (
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm text-caption text-muted-foreground">
-        <h2 className="text-metadata font-semibold text-foreground">
-          {canApprove ? 'Needs your approval' : 'Pending approvals'}
-        </h2>
-        <span role="status">Could not be checked — this is not a confirmation that nothing is waiting.</span>
-      </div>
+      <PostureSection title={heading}>
+        <p role="status" className="text-caption text-muted-foreground">
+          Could not be checked — this is not a confirmation that nothing is waiting.
+        </p>
+      </PostureSection>
     );
   }
 
-  // Nothing waiting: one line, not a card explaining a queue that is empty.
-  // The heading stays a heading so the section is still findable.
+  // Nothing waiting: one line under the heading, not a paragraph explaining
+  // a queue that is empty.
   if (!hasAny) {
     return (
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm text-caption text-muted-foreground">
-        <h2 className="text-metadata font-semibold text-foreground">
-          {canApprove ? 'Needs your approval' : 'Pending approvals'}
-        </h2>
-        <span>{canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}</span>
-        {updated}
-      </div>
+      <PostureSection title={heading} actions={updated}>
+        <p className="text-caption text-muted-foreground">
+          {canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}
+        </p>
+      </PostureSection>
     );
   }
 
   return (
     <PostureSection
-      title={<span>{canApprove ? 'Needs your approval' : 'Pending approvals'}</span>}
+      title={heading}
       description={canApprove
         ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide.'
         : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
@@ -420,6 +411,37 @@ const RUNS_STATUS_OPTIONS: Array<{ value: RunsStatusFilter; label: string }> = [
   { value: 'failed', label: 'Failed' },
 ];
 
+/** A small switch of mutually exclusive options (the Scans "Grouped / All
+ *  files" shape) — both Runs controls use it, so they read as one row. */
+function Segmented<T extends string>({ label, value, onChange, options }: {
+  label: string;
+  value: T;
+  onChange: (next: T) => void;
+  options: Array<{ value: T; label: string; disabled?: boolean }>;
+}) {
+  return (
+    <div className="inline-flex overflow-hidden rounded-control border border-border" role="group" aria-label={label}>
+      {options.map((opt, i) => (
+        <button
+          key={opt.value}
+          type="button"
+          aria-pressed={value === opt.value}
+          disabled={opt.disabled}
+          onClick={() => onChange(opt.value)}
+          className={cn(
+            'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+            i > 0 && 'border-l border-border',
+            value === opt.value ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
+            opt.disabled && 'cursor-not-allowed opacity-50',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) => {
   const navigate = useNavigate();
   // v5.187.0 — prefer the declared target in words. "Scope #3" cannot tell a
@@ -456,9 +478,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
 
   return (
     <div className="flex flex-wrap items-center gap-xs">
-      <Badge variant={kindTone(session.kind) === 'default' ? 'outline' : kindTone(session.kind)}>
-        {kindLabel(session.kind)}
-      </Badge>
+      <RunKindBadge kind={session.kind} />
       <Badge variant={session.status === 'active' ? 'success' : 'muted'}>{session.status}</Badge>
       <p className="min-w-0 flex-1 truncate text-metadata">
         <strong>#{session.id}</strong> · {subject}{' '}
@@ -547,62 +567,34 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
       actions={<>
           {/* A failed refetch keeps the previous rows under its error. */}
           <UpdatedAt at={runsLoadedAt} stale={!!error} />
-          <div
-            className="inline-flex overflow-hidden rounded-control border border-border"
-            role="group"
-            aria-label="Scope of runs view"
-          >
-            <button
-              type="button"
-              aria-pressed={scopeView === 'all'}
-              onClick={() => handleScopeChange('all')}
-              className={cn(
-                'px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                scopeView === 'all' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
-              )}
-            >
-              All
-            </button>
-            <button
-              type="button"
-              aria-pressed={scopeView === 'mine'}
-              onClick={() => handleScopeChange('mine')}
-              disabled={!user}
-              className={cn(
-                'border-l border-border px-sm py-xxs text-metadata transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                scopeView === 'mine' ? 'bg-primary text-primary-foreground' : 'hover:bg-accent',
-                !user && 'cursor-not-allowed opacity-50',
-              )}
-            >
-              Mine
-            </button>
-          </div>
           <Button size="sm" variant="ghost" className="h-7 text-info" onClick={() => navigate('/agent-activity')}>
             Open Agent Runs
           </Button>
       </>}
     >
-        <div className="mb-sm flex flex-wrap items-center gap-xs" role="group" aria-label="Runs status filter">
-          {RUNS_STATUS_OPTIONS.map((opt) => {
-            const active = statusFilter === opt.value;
-            return (
-              <button
-                key={opt.value}
-                type="button"
-                aria-pressed={active}
-                onClick={() => setStatusFilter(opt.value)}
-                className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-              >
-                <Badge variant={active ? 'default' : 'outline'}>
-                  {opt.label}
-                </Badge>
-              </button>
-            );
-          })}
-          <span className="text-caption text-muted-foreground">
+        {/* v5.294.0 (UX review) — ONE control row: whose runs and which
+            status, as two switches of the same shape. It was upper-case
+            status chips under the heading and an All/Mine toggle beside it. */}
+        <div className="mb-sm flex flex-wrap items-center gap-sm">
+          <Segmented
+            label="Runs status filter"
+            value={statusFilter}
+            onChange={setStatusFilter}
+            options={RUNS_STATUS_OPTIONS}
+          />
+          <Segmented
+            label="Scope of runs view"
+            value={scopeView}
+            onChange={handleScopeChange}
+            options={[
+              { value: 'all', label: 'Everyone' },
+              { value: 'mine', label: 'Mine', disabled: !user },
+            ]}
+          />
+          <span className="ml-auto text-caption text-muted-foreground">
             {statusFilter === 'all'
-              ? 'Last 10 runs across all kinds.'
-              : `Up to 50 ${statusFilter} runs.`}
+              ? 'Last 10 runs across all kinds'
+              : `Up to 50 ${statusFilter} runs`}
           </span>
         </div>
         {loading && !rows ? (
@@ -1068,21 +1060,15 @@ const Operations: React.FC = () => {
                 </Badge>
               )}
             </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={refreshAll}
-              disabled={coverageLoading || pendingLoading}
-            >
-              <RefreshCw
-                className={cn(
-                  'size-4',
-                  (coverageLoading || pendingLoading) && 'animate-spin',
-                )}
-                aria-hidden
-              />{' '}
-              Refresh
-            </Button>
+            {/* One freshness control for the page (v5.294.0): the OLDEST
+                load on it, and one refresh that reaches every section. */}
+            <LastUpdated
+              compact
+              lastFetched={oldestLoad(loadedAt)}
+              onRefresh={refreshAll}
+              isLoading={coverageLoading || pendingLoading}
+              label="Operations"
+            />
           </>
         )}
       </div>
@@ -1116,12 +1102,12 @@ const Operations: React.FC = () => {
 
       {coverage && coverage.total_scopes > 0 && coverage.total_hosts === 0 && (
         <SetupBlock title="Scope is registered — time to discover hosts">
-          No hosts have been discovered yet. The fastest way to get started is to run{' '}
-          <strong className="text-foreground">Agentic Reconnaissance</strong> against your registered scope.
+          No hosts have been discovered yet. The fastest way to get started is a{' '}
+          <strong className="text-foreground">recon session</strong> against your registered scope.
           <div className="mt-sm flex flex-wrap gap-sm">
             {canStartRecon && (
               <Button size="sm" onClick={handleStartRecon}>
-                <Rocket className="size-4" aria-hidden /> Start Agentic Recon
+                <Rocket className="size-4" aria-hidden /> Start recon session
               </Button>
             )}
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>

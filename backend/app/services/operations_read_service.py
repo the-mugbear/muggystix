@@ -659,7 +659,9 @@ def compute_investigation_queue(
         elif tier <= 3:
             action = InvestigateAction(
                 kind="review",
-                text=f"Take it into review: {tier_label[tier].lower()} on a host nobody has looked at.",
+                # The row already shows the tier beside the host; restating it
+                # here made every row say "exploitable critical" twice.
+                text="Take it into review — nobody has looked at this host yet.",
             )
         elif tier == 5:
             action = InvestigateAction(

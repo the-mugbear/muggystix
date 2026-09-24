@@ -1,5 +1,6 @@
 /**
- * Shared "Start Agentic Reconnaissance" dialog.
+ * Shared "Start recon session" dialog (named "Start Agentic Reconnaissance"
+ * until v5.294.0, when every entry point took the one name).
  *
  * Extracted from Scopes.tsx so ReconRunsList (which now offers a top-
  * level "Start Recon" affordance) can reuse the exact same UI without
@@ -79,7 +80,7 @@ export const StartReconDialog: React.FC<StartReconDialogProps> = ({ recon }) => 
             )}
             {isResume
               ? `Resume Recon Session #${recon.resumeSessionId} — ${recon.scopeName}`
-              : `Start Agentic Reconnaissance — ${recon.scopeName}`}
+              : `Start recon session — ${recon.scopeName}`}
           </DialogTitle>
           <DialogDescription>
             {/* v2.65.0 — read TTL from the response (StartReconResponse

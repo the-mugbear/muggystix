@@ -13,6 +13,7 @@ from sqlalchemy import func, case, select, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host, Scope, NoteStatus
+from app.db.models_auth import User
 from app.db.models_findings import (
     ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
     FindingSource, FindingHostStatus,
@@ -88,6 +89,14 @@ _HOST_COUNT_SORT = (
     .where(FindingHost.finding_id == Finding.id)
     .correlate(Finding).scalar_subquery()
 )
+# The owner's display name, as the list shows it (full name, else username);
+# NULL for an unowned finding (v2.408.0, UX review: Owner was the one column
+# that could not be sorted).
+_OWNER_SORT = (
+    select(func.lower(func.coalesce(func.nullif(User.full_name, ""), User.username)))
+    .where(User.id == Finding.owner_id)
+    .correlate(Finding).scalar_subquery()
+)
 _SORT_COLUMNS = {
     "severity": _SEVERITY_SORT,
     "status": _STATUS_SORT,
@@ -95,6 +104,7 @@ _SORT_COLUMNS = {
     "host_count": _HOST_COUNT_SORT,
     "source": Finding.source,
     "created_at": Finding.created_at,
+    "owner": _OWNER_SORT,
 }
 # Per-field default direction when the caller doesn't specify one (worst/most-
 # relevant first): newest, most-severe, biggest-blast-radius lead.
@@ -110,7 +120,12 @@ def _finding_order(sort: Optional[str], sort_dir: Optional[str]):
     else:
         descending = sort in _SORT_DEFAULT_DESC
     direction = desc if descending else asc
-    return (direction(col), Finding.id.desc())
+    ordered = direction(col)
+    # Unowned findings sort after every owner in both directions: reversing
+    # the names should not bring the unassigned pile to the top.
+    if sort == "owner":
+        ordered = ordered.nulls_last()
+    return (ordered, Finding.id.desc())
 
 
 def _first_body_line(body: Optional[str]) -> str:
@@ -953,6 +968,99 @@ class FindingService:
     # evidence (screenshots ride along via NoteAttachment) before it lands in a
     # report.  Same Annotation machinery as host notes, just a different target
     # column — finding_id instead of host_id.
+    def comment_activity(
+        self, project_id: int, *, search: Optional[str] = None,
+        author_id: Optional[int] = None, limit: int = 20,
+    ) -> tuple[list[dict], int]:
+        """The project's finding discussions, most recently active first
+        (v2.408.0).  Collaboration listed host-note threads only, so a comment
+        on a finding — and a mention in one — never appeared there.
+
+        A discussion matches the filters when any of its comments does (the
+        author filter: a comment by that person; search: the finding title or
+        a comment body).  Its count, newest comment and participants are the
+        WHOLE thread's.  Five statements, whatever the limit.
+        """
+        ts = func.coalesce(Annotation.updated_at, Annotation.created_at)
+        matching = (
+            self.db.query(Annotation.finding_id.label("fid"), func.max(ts).label("last_at"))
+            .join(Finding, Finding.id == Annotation.finding_id)
+            .filter(Finding.project_id == project_id)
+        )
+        if author_id is not None:
+            matching = matching.filter(Annotation.user_id == author_id)
+        if search and search.strip():
+            like = f"%{escape_like(search.strip())}%"
+            matching = matching.filter(
+                Finding.title.ilike(like, escape="\\") | Annotation.body.ilike(like, escape="\\")
+            )
+        grouped = matching.group_by(Annotation.finding_id).subquery()
+        total = self.db.query(func.count()).select_from(grouped).scalar() or 0
+        top = (
+            self.db.query(grouped.c.fid)
+            .order_by(desc(grouped.c.last_at), desc(grouped.c.fid))
+            .limit(limit)
+            .all()
+        )
+        ids = [r.fid for r in top]
+        if not ids:
+            return [], total
+
+        stats = {
+            fid: (int(n), last_at)
+            for fid, n, last_at in (
+                self.db.query(Annotation.finding_id, func.count(Annotation.id), func.max(ts))
+                .filter(Annotation.finding_id.in_(ids))
+                .group_by(Annotation.finding_id)
+                .all()
+            )
+        }
+        latest = {
+            n.finding_id: n
+            for n in (
+                self.db.query(Annotation)
+                .options(selectinload(Annotation.author))
+                .filter(Annotation.finding_id.in_(ids))
+                .distinct(Annotation.finding_id)
+                .order_by(Annotation.finding_id, desc(ts), desc(Annotation.id))
+                .all()
+            )
+        }
+        participants: dict[int, list[str]] = {}
+        for fid, full_name, username in (
+            self.db.query(Annotation.finding_id, User.full_name, User.username)
+            .join(User, User.id == Annotation.user_id)
+            .filter(Annotation.finding_id.in_(ids))
+            .distinct()
+            .order_by(Annotation.finding_id, User.username)
+            .all()
+        ):
+            participants.setdefault(fid, []).append(full_name or username)
+        findings = {f.id: f for f in self.db.query(Finding).filter(Finding.id.in_(ids)).all()}
+
+        rows = []
+        for fid in ids:
+            f = findings[fid]
+            note = latest.get(fid)
+            count, last_at = stats.get(fid, (0, None))
+            rows.append({
+                "finding_id": fid,
+                "title": f.title,
+                "severity": f.severity,
+                "status": f.status.value if hasattr(f.status, "value") else f.status,
+                "comment_count": count,
+                "last_activity_at": last_at,
+                "latest": None if note is None else {
+                    "note_id": note.id,
+                    "body": note.body,
+                    "author_name": (note.author.full_name or note.author.username) if note.author else None,
+                    "actor_type": note.actor_type or "user",
+                    "created_at": note.created_at,
+                },
+                "participants": participants.get(fid, []),
+            })
+        return rows, total
+
     def list_finding_notes(self, finding_id: int, limit: int = 100) -> List[Annotation]:
         from app.services.host_serialization import note_load_options
         return (

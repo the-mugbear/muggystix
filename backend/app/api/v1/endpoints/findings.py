@@ -39,6 +39,7 @@ from app.schemas.findings import (
     PromoteAnnotationRequest, PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
+    FindingDiscussionList,
 )
 
 logger = logging.getLogger(__name__)
@@ -169,7 +170,7 @@ def list_findings(
     host_id: Optional[int] = Query(None, description="Only findings affecting this host."),
     search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring match on finding title."),
     sort: Optional[str] = Query(
-        None, description="severity | status | title | host_count | source | created_at (default newest-first).",
+        None, description="severity | status | title | host_count | source | created_at | owner (default newest-first; unowned sorts last).",
     ),
     dir: Optional[str] = Query(None, pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
@@ -651,6 +652,26 @@ def _notify_finding_comment(
         )
         db.rollback()
         return {"mention_warning": _NOTIFY_WARNING}
+
+
+@router.get(
+    "/findings/comments/activity",
+    response_model=FindingDiscussionList,
+    summary="The project's finding discussions, most recently active first",
+)
+def finding_comment_activity(
+    search: Optional[str] = Query(None, max_length=200, description="Finding title or comment text."),
+    author_id: Optional[int] = Query(None, description="Discussions with a comment by this user."),
+    limit: int = Query(20, ge=1, le=100),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """v2.408.0 — Collaboration's second source: it listed host-note threads
+    only, so finding comments (and mentions in them) were invisible there."""
+    rows, total = FindingService(db).comment_activity(
+        project.id, search=search, author_id=author_id, limit=limit,
+    )
+    return FindingDiscussionList(items=rows, total=total)
 
 
 @router.get(

@@ -226,6 +226,34 @@ def test_findings_sort_by_severity_rank(client, test_project):
     assert len(default.json()["items"]) == 3
 
 
+def test_findings_sort_by_owner_name_unowned_last(client, db_session, test_project, test_user):
+    """sort=owner orders by the name the list shows (full name, else
+    username), case-insensitively; unowned findings come last in BOTH
+    directions (UX review 2026-09-24: Owner was the one unsortable column)."""
+    from app.db.models_auth import User, UserRole
+
+    other = User(
+        id=2,  # test_user pins id=1 without advancing the sequence
+        username="zed", email="zed@example.com", full_name="aaron zed",
+        hashed_password="x", role=UserRole.MEMBER, is_active=True, is_verified=True,
+        created_at=datetime.now(timezone.utc),
+    )
+    db_session.add(other)
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/findings"
+    ids = {}
+    for title in ("admin's", "aaron's", "nobody's"):
+        ids[title] = client.post(base, json={"title": title, "severity": "low"}).json()["id"]
+    db_session.get(Finding, ids["admin's"]).owner_id = test_user.id   # "Test Admin"
+    db_session.get(Finding, ids["aaron's"]).owner_id = other.id       # "aaron zed"
+    db_session.commit()
+
+    asc_titles = [f["title"] for f in client.get(f"{base}?sort=owner&dir=asc").json()["items"]]
+    assert asc_titles == ["aaron's", "admin's", "nobody's"], asc_titles
+    desc_titles = [f["title"] for f in client.get(f"{base}?sort=owner&dir=desc").json()["items"]]
+    assert desc_titles == ["admin's", "aaron's", "nobody's"], desc_titles
+
+
 def test_findings_title_search(client, test_project):
     """?search= does a case-insensitive substring match on the title (§15), and
     the severity rollup respects it too."""

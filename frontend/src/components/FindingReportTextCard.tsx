@@ -27,7 +27,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import PostureSection from './posture/PostureSection';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import MarkdownField from './MarkdownField';
@@ -156,37 +156,34 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
     : null;
 
   return (
-    <Card className="mb-md" ref={cardRef}>
-      <CardHeader>
-        <div className="flex flex-wrap items-start justify-between gap-sm">
-          <div className="min-w-0">
-            <CardTitle>Report text</CardTitle>
-            <p className="text-caption text-muted-foreground">
-              What the client report says about this finding. Written in Markdown; shown as the report prints it.
-              {missing.length > 0 && !draft && (
-                <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
-              )}
-            </p>
-          </div>
-          {canEdit && (
-            <div className="flex flex-wrap gap-xs">
-              {((!draft && missing.length > 0) || emptyInEditor > 0) && (
-                <Button variant="ghost" size="sm" onClick={startDraft} disabled={drafting || saving}
-                  title="Suggest text for the empty sections with your LLM provider; nothing is saved until you save">
-                  {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
-                  Draft empty sections
-                </Button>
-              )}
-              {!draft && (
-                <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
-                  <Pencil className="size-4" aria-hidden /> Edit
-                </Button>
-              )}
-            </div>
+    // v5.294.0 (UX review) — a section over a thin rule, not a bordered card
+    // (UI_STYLE_GUIDE §7). The wrapper keeps the ref the ?edit= link scrolls to.
+    <div className="mb-md" ref={cardRef}>
+      <PostureSection
+        title={<span>Report text</span>}
+        description={<>
+          What the client report says about this finding. Written in Markdown; shown as the report prints it.
+          {missing.length > 0 && !draft && (
+            <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
           )}
-        </div>
-      </CardHeader>
-      <CardContent>
+        </>}
+        actions={canEdit ? (
+          <>
+            {((!draft && missing.length > 0) || emptyInEditor > 0) && (
+              <Button variant="ghost" size="sm" onClick={startDraft} disabled={drafting || saving}
+                title="Suggest text for the empty sections with your LLM provider; nothing is saved until you save">
+                {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
+                Draft empty sections
+              </Button>
+            )}
+            {!draft && (
+              <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
+                <Pencil className="size-4" aria-hidden /> Edit
+              </Button>
+            )}
+          </>
+        ) : undefined}
+      >
         {draft ? (
           <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
             {REPORT_TEXT_FIELDS.map((f) => (
@@ -266,8 +263,8 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
             </div>
           </dl>
         )}
-      </CardContent>
-    </Card>
+      </PostureSection>
+    </div>
   );
 };
 

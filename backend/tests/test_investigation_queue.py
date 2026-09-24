@@ -95,6 +95,9 @@ def test_untouched_hosts_with_reasons_ordered_by_stated_tier(db_session, test_pr
     assert r1.evidence.sources == ["nmap"]
     assert r1.evidence.confirmation == "scanner"
     assert r1.next_action.kind == "review"
+    # The row shows its tier beside the host; the next step must not repeat it
+    # ("Next: Take it into review: exploitable critical…", UX review 2026-09-24).
+    assert r1.tier_label.lower() not in r1.next_action.text.lower()
 
     assert q.items[2].evidence.sources == ["openvas"]
     assert q.items[2].next_action.kind == "review"
