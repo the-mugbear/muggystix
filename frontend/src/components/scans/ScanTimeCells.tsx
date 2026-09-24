@@ -48,7 +48,7 @@ export const ScanTimeSourceNote: React.FC<SourceNoteProps> = ({ label, explanati
 );
 
 interface CellProps {
-  scan: ScanTimeFields & { uploaded_by?: string | null };
+  scan: ScanTimeFields & { uploaded_by?: string | null; uploaded_by_name?: string | null };
   format?: TimeFormatOptions;
 }
 
@@ -61,26 +61,29 @@ interface CellProps {
 export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
   const run = describeScanRun(scan, format);
   const upload = describeUpload(scan, format);
+  const uploader = scan.uploaded_by_name || scan.uploaded_by;
   const hover = [
     run.startLabel ? `Ran ${run.startLabel}` : 'Run time: not in the file',
     [run.durationLabel, run.uploadLagLabel].filter(Boolean).join(' · ') || null,
     `${run.sourceLabel} — ${run.explanation}`,
     run.utcLabel,
-    `Uploaded ${upload.label}${scan.uploaded_by ? ` by ${scan.uploaded_by}` : ''}`,
+    `Uploaded ${upload.label}${uploader ? ` by ${uploader}` : ''}`,
   ].filter(Boolean).join('\n');
+  // v5.285.0 — the lines wrap rather than truncate: the time and "run time
+  // unknown" were cut off ("Sep 7, 2026, 04:16 P…") at a normal width.
   return (
     <div className="min-w-0" title={hover}>
-      <p className="truncate text-metadata tabular-nums">{run.startLabel ?? upload.label}</p>
+      <p className="break-words text-metadata tabular-nums">{run.startLabel ?? upload.label}</p>
       {run.startLabel ? (
         run.kind === 'tool_clock' ? (
-          <p className="truncate text-caption text-warning">{run.sourceLabel}</p>
+          <p className="break-words text-caption text-warning">{run.sourceLabel}</p>
         ) : (
           run.durationLabel && run.durationLabel !== 'Instant' && (
-            <p className="truncate text-caption text-muted-foreground">took {run.durationLabel}</p>
+            <p className="break-words text-caption text-muted-foreground">took {run.durationLabel}</p>
           )
         )
       ) : (
-        <p className="truncate text-caption text-muted-foreground">uploaded · run time unknown</p>
+        <p className="break-words text-caption text-muted-foreground">uploaded · run time unknown</p>
       )}
     </div>
   );

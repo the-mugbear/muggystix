@@ -124,8 +124,15 @@ def seed(db, name: str, host_count: int, owner: User):
 
     # Scans: fresh, stale, very-stale
     scans = []
-    for label, age_days in (("fresh-nmap.xml", 2), ("stale-nessus.nessus", 45), ("old-masscan.json", 120)):
-        s = models.Scan(project_id=project.id, filename=label, scan_type="nmap")
+    # Each file carries the tool its name says, as the parsers record it
+    # (tool_name drives the Scans page chip, scan_type is the fallback) — a
+    # .nessus file used to show an NMAP chip.
+    for label, scan_type, tool_name, age_days in (
+        ("fresh-nmap.xml", "nmap", "nmap", 2),
+        ("stale-nessus.nessus", "nessus", "Nessus", 45),
+        ("old-masscan.json", "port_scan", "masscan", 120),
+    ):
+        s = models.Scan(project_id=project.id, filename=label, scan_type=scan_type, tool_name=tool_name)
         s.created_at = NOW - timedelta(days=age_days)
         db.add(s)
         scans.append(s)

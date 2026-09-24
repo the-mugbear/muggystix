@@ -51,6 +51,10 @@ logger = logging.getLogger(__name__)
 
 STAGED_STATUS = "staged"
 STAGED_MAX_AGE = timedelta(hours=24)
+# The error messages that mark a staged job's two non-import endings. The
+# Scans page's batch rows count them by message, so they are named once.
+DISCARDED_MESSAGE = "Discarded before import"
+EXPIRED_MESSAGE_PREFIX = "Staged upload expired"
 _SAMPLE_BYTES = 64 * 1024
 _RAW_PREVIEW_BYTES = 2048
 _TEXT_EXTENSIONS = {".json", ".jsonl", ".ndjson", ".csv", ".txt"}
@@ -397,8 +401,8 @@ def discard_staged_job(db: Session, job: IngestionJob, *, now: Optional[datetime
     try:
         discarded = _transitions.cancel(
             db, job.id, allowed_from=(STAGED_STATUS,), to_status="failed",
-            error_message="Discarded before import",
-            message="Discarded before import",
+            error_message=DISCARDED_MESSAGE,
+            message=DISCARDED_MESSAGE,
             dismissed_at=now,
         )
     except JobNotTransitionable as exc:
@@ -435,7 +439,7 @@ def expire_staged_jobs(db: Session, *, max_age: timedelta = STAGED_MAX_AGE, now:
     paths = []
     for job in stale:
         job.status = "failed"
-        msg = f"Staged upload expired: not started within {int(max_age.total_seconds() // 3600)} hours."
+        msg = f"{EXPIRED_MESSAGE_PREFIX}: not started within {int(max_age.total_seconds() // 3600)} hours."
         job.error_message = msg
         job.message = msg
         job.completed_at = now

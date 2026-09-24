@@ -1,15 +1,21 @@
 import React, { useState } from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronDown, ChevronRight, Layers, Loader2 } from 'lucide-react';
 import { getScans } from '../../services/api';
 import type { IngestionJob, Scan, ScanBatchSummary } from '../../services/api';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { TableCell, TableRow } from '../ui/table';
+import { formatInstant, type TimeFormatOptions } from '../../utils/scanTime';
 import { toolFamily } from './ScanContribution';
 
 // A batch's files load when it is expanded. A sweep of a few hundred files
 // fits one request; past that the operator narrows with the page's search.
 const FILES_PER_BATCH = 500;
+
+/** Tool chips shown on a batch row before "+N more" (v5.285.0): a batch of
+ *  every sample format listed 22 chips in a tall block. */
+export const BATCH_TOOL_CHIPS = 4;
 
 interface ScanBatchRowProps {
   batch: ScanBatchSummary;
@@ -24,9 +30,9 @@ interface ScanBatchRowProps {
   stagedJobs?: IngestionJob[];
   /** Brings staged files back into the upload review. */
   onReviewStaged?: (jobs: IngestionJob[]) => void;
+  /** Test seam: pin the zone/locale of the times. */
+  timeFormat?: TimeFormatOptions;
 }
-
-const formatWhen = (iso?: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
 
 const count = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -39,19 +45,21 @@ const portsLabel = (s: Scan): string | null => {
   return toolFamily(s.tool_name) === 'port' ? '0 open ports' : null;
 };
 
+const reasonLink = 'rounded underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
 /**
  * One upload batch as a group row of the import history (v5.239.0).
  *
  * An agent splitting a large scope into hundreds of chunks, or an operator
  * dropping many files at once, is ONE row, expandable to its files (v5.207.0).
- * It used to live in a card of its own above the individual uploads, each
- * paginated separately, so the order things were imported in could not be read
- * off the page.  It now sits in the same chronological table as single files:
- * a full-width row whose figures carry their own labels, because a batch has
- * no single "ran" time or contribution line to put under those headers.
+ * It sits in the same chronological table as single files and, since
+ * v5.285.0, in the SAME columns: Scan (name, source, tools) · When (upload
+ * times) · New hosts · What it contributed (files, hosts, port observations,
+ * and why any file was not imported) · the Files toggle.  It used to be one
+ * full-width cell whose blocks landed under the wrong headers.
  */
 export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
-  batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged,
+  batch: b, filters, onViewScan, colSpan, stagedJobs = [], onReviewStaged, timeFormat,
 }) => {
   const [state, setState] = useState<Scan[] | 'loading' | 'error' | null>(null);
 
@@ -76,11 +84,12 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
     }
   };
 
+  const uploader = b.created_by_name || b.created_by;
   const source =
     b.recon_session_id != null
       ? `Recon session #${b.recon_session_id}`
-      : b.created_by
-        ? `Uploaded by ${b.created_by}`
+      : uploader
+        ? `Uploaded by ${uploader}`
         : 'Upload';
   const total = b.total_files ?? b.files;
   const processing = b.processing_files ?? b.pending_files;
@@ -88,96 +97,165 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
   // failed, so a fresh batch used to read "nothing imported" with no reason.
   const staged = b.staged_files ?? 0;
   const discarded = b.discarded_files ?? 0;
+  const expired = b.expired_files ?? 0;
+  const dismissedFailed = b.dismissed_failed_files ?? 0;
+  const reprocessed = b.reprocessed_files ?? 0;
+  const hasReason = processing + staged + b.failed_files + discarded + expired + dismissedFailed > 0;
+
+  const when = (iso?: string | null) => (iso ? formatInstant(new Date(iso), timeFormat) : null);
+  const last = when(b.last_uploaded);
+  const first = when(b.first_uploaded);
+
+  const shownTools = b.tools.slice(0, BATCH_TOOL_CHIPS);
+  const hiddenTools = b.tools.slice(BATCH_TOOL_CHIPS);
 
   return (
     <>
       <TableRow className="bg-muted/20 align-top" data-batch-id={b.id}>
-        <TableCell colSpan={colSpan}>
-          <div className="flex flex-wrap items-start gap-x-lg gap-y-xs">
-            <div className="flex min-w-0 flex-[2_1_16rem] items-start gap-xs">
-              <Layers className="mt-[3px] size-4 shrink-0 text-muted-foreground" aria-hidden />
-              <div className="min-w-0">
-                <p className="truncate font-semibold" title={b.label}>
-                  {b.label}
-                </p>
-                <p className="truncate text-caption text-muted-foreground">Upload batch · {source}</p>
-                {b.tools.length > 0 && (
-                  <div className="mt-xxs flex flex-wrap gap-xxs">
-                    {b.tools.map((t) => (
-                      <Badge key={t} variant="outline" className="max-w-full truncate">
-                        {t}
-                      </Badge>
-                    ))}
-                  </div>
-                )}
-              </div>
-            </div>
-
-            <div
-              className="min-w-0 flex-[1_1_8rem]"
-              title="Imported files matching the page filters, of every file the batch imported; then what is still landing or failed"
-            >
-              <p className="tabular-nums">
-                <span>{b.files.toLocaleString()}</span>
-                <span className="text-caption text-muted-foreground"> file{b.files === 1 ? '' : 's'}</span>
-                {total > b.files && (
-                  <span className="text-caption text-muted-foreground"> matching of {total.toLocaleString()}</span>
-                )}
+        {/* Scan */}
+        <TableCell className="min-w-0">
+          <div className="flex min-w-0 items-start gap-xs">
+            <Layers className="mt-[3px] size-4 shrink-0 text-muted-foreground" aria-hidden />
+            <div className="min-w-0">
+              <p className="truncate font-semibold" title={b.label}>
+                {b.label}
               </p>
-              {processing > 0 && <p className="text-caption text-muted-foreground">{processing} processing</p>}
-              {staged > 0 && (
-                <p className="text-caption text-warning">
-                  {staged} waiting for review
-                  {onReviewStaged && stagedJobs.length > 0 && (
-                    <>
-                      {' · '}
-                      <button
-                        type="button"
-                        onClick={() => onReviewStaged(stagedJobs)}
-                        className="rounded text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        aria-label={`Review the ${stagedJobs.length} waiting file${stagedJobs.length === 1 ? '' : 's'} of ${b.label}`}
-                      >
-                        Review
-                      </button>
-                    </>
+              <p className="truncate text-caption text-muted-foreground" title={source}>
+                Upload batch · {source}
+              </p>
+              {b.tools.length > 0 && (
+                <div className="mt-xxs flex min-w-0 flex-wrap gap-xxs" title={b.tools.join(', ')}>
+                  {shownTools.map((t) => (
+                    <Badge key={t} variant="outline" className="max-w-full truncate">
+                      {t}
+                    </Badge>
+                  ))}
+                  {hiddenTools.length > 0 && (
+                    <Badge
+                      variant="outline"
+                      className="text-muted-foreground"
+                      aria-label={`${hiddenTools.length} more tools: ${hiddenTools.join(', ')}`}
+                    >
+                      +{hiddenTools.length} more
+                    </Badge>
                   )}
-                </p>
-              )}
-              {b.failed_files > 0 && <p className="text-caption text-destructive">{b.failed_files} failed</p>}
-              {discarded > 0 && <p className="text-caption text-muted-foreground">{discarded} discarded</p>}
-              {total === 0 && processing === 0 && b.failed_files === 0 && staged === 0 && discarded === 0 && (
-                <p className="text-caption text-muted-foreground">nothing imported</p>
+                </div>
               )}
             </div>
+          </div>
+        </TableCell>
 
-            <div
-              className="min-w-0 flex-[1_1_8rem]"
-              title="Unique hosts the matching files observed, and how many they first discovered"
-            >
-              <p className="tabular-nums">
-                <span>{b.hosts.toLocaleString()}</span>
-                <span className="text-caption text-muted-foreground"> unique host{b.hosts === 1 ? '' : 's'}</span>
+        {/* When — the upload time(s); a batch has no single run time. */}
+        <TableCell className="min-w-0">
+          <p className="break-words text-metadata tabular-nums">{last ?? '—'}</p>
+          <p className="break-words text-caption text-muted-foreground">
+            {first && first !== last ? `uploaded; first file ${first}` : 'uploaded'}
+          </p>
+        </TableCell>
+
+        {/* New hosts — as on a file row: added, out of the unique hosts seen. */}
+        <TableCell title="Hosts these files added to the inventory, out of the unique hosts they observed">
+          {b.hosts === 0 ? (
+            <span className="text-caption text-muted-foreground">No hosts</span>
+          ) : (
+            <>
+              {b.new_hosts > 0 ? (
+                <span className="tabular-nums font-semibold text-success">+{b.new_hosts.toLocaleString()}</span>
+              ) : (
+                <span className="tabular-nums text-muted-foreground">0</span>
+              )}
+              <p className="mt-xxs text-caption tabular-nums text-muted-foreground">
+                of {b.hosts.toLocaleString()} unique seen
               </p>
-              <p className="text-caption text-muted-foreground">+{b.new_hosts.toLocaleString()} new</p>
-            </div>
+            </>
+          )}
+        </TableCell>
 
-            <div
-              className="min-w-0 flex-[1_1_8rem]"
+        {/* What it contributed — files imported, then why any were not. */}
+        <TableCell className="min-w-0 text-metadata">
+          <p
+            className="break-words tabular-nums"
+            title="Imported files matching the page filters, of every file the batch imported. A re-processed file is imported again as a new file of the same batch."
+          >
+            {total === 0 ? (
+              <span className="text-muted-foreground">Nothing imported</span>
+            ) : (
+              <>
+                {count(b.files, 'file')} imported
+                {total > b.files && (
+                  <span className="text-caption text-muted-foreground"> (matching, of {total.toLocaleString()})</span>
+                )}
+                {reprocessed > 0 && (
+                  <span className="text-caption text-muted-foreground">
+                    {' '}· incl. {reprocessed.toLocaleString()} re-processed
+                  </span>
+                )}
+              </>
+            )}
+          </p>
+          {b.open_ports > 0 && (
+            <p
+              className="text-caption tabular-nums text-muted-foreground"
               title="Open-port observations across the matching files. Observations, not distinct ports: a port seen by two files counts twice."
             >
-              <p className="tabular-nums">
-                <span>{b.open_ports.toLocaleString()}</span>
-                <span className="text-caption text-muted-foreground"> port observations</span>
-              </p>
-            </div>
-
-            <div className="min-w-0 flex-[1_1_10rem] text-caption">
-              <p>{formatWhen(b.last_uploaded)}</p>
-              {b.first_uploaded && b.first_uploaded !== b.last_uploaded && (
-                <p className="text-muted-foreground">from {formatWhen(b.first_uploaded)}</p>
+              {count(b.open_ports, 'port observation')}
+            </p>
+          )}
+          {processing > 0 && <p className="text-caption text-muted-foreground">{processing.toLocaleString()} processing</p>}
+          {staged > 0 && (
+            <p className="text-caption text-warning">
+              {staged.toLocaleString()} waiting for format review
+              {onReviewStaged && stagedJobs.length > 0 && (
+                <>
+                  {' · '}
+                  <button
+                    type="button"
+                    onClick={() => onReviewStaged(stagedJobs)}
+                    className="rounded text-primary hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    aria-label={`Review the ${stagedJobs.length} waiting file${stagedJobs.length === 1 ? '' : 's'} of ${b.label}`}
+                  >
+                    Review
+                  </button>
+                </>
               )}
-            </div>
+            </p>
+          )}
+          {b.failed_files > 0 && (
+            <p className="text-caption">
+              <Link to="/parse-errors?status=needs_attention" className={`${reasonLink} text-destructive`}>
+                {b.failed_files.toLocaleString()} failed
+              </Link>
+            </p>
+          )}
+          {expired > 0 && (
+            <p className="text-caption text-muted-foreground">
+              <Link
+                to="/parse-errors?status=failed"
+                className={reasonLink}
+                title="Uploaded but never started: nobody reviewed their format within 24 hours, so the files were removed"
+              >
+                {expired.toLocaleString()} expired before import
+              </Link>
+            </p>
+          )}
+          {dismissedFailed > 0 && (
+            <p className="text-caption text-muted-foreground">
+              <Link to="/parse-errors?status=failed" className={reasonLink}>
+                {dismissedFailed.toLocaleString()} failed (dismissed)
+              </Link>
+            </p>
+          )}
+          {discarded > 0 && (
+            <p className="text-caption text-muted-foreground">{discarded.toLocaleString()} discarded before import</p>
+          )}
+          {total === 0 && !hasReason && (
+            <p className="text-caption text-muted-foreground">no file of this batch reached the import</p>
+          )}
+        </TableCell>
 
+        {/* Actions */}
+        <TableCell>
+          <div className="flex justify-end">
             <Button
               variant="ghost"
               size="sm"
@@ -207,7 +285,9 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
               </p>
             ) : state.length === 0 && stagedJobs.length === 0 ? (
               <p className="text-metadata text-muted-foreground">
-                No files in this batch match the current filters.
+                {total === 0
+                  ? 'No file of this batch was imported — see the reasons on the row.'
+                  : 'No files in this batch match the current filters.'}
               </p>
             ) : (
               <ul className="divide-y divide-border">

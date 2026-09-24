@@ -361,6 +361,70 @@ def test_batch_says_where_its_staged_and_discarded_files_are(client, db_session,
     assert row["staged_files"] == 2
     assert row["discarded_files"] == 1
     assert (row["processing_files"], row["failed_files"], row["imported_files"]) == (0, 1, 0)
+    assert (row["expired_files"], row["dismissed_failed_files"]) == (0, 1)
+
+
+def test_batch_with_nothing_imported_says_why_and_counts_reprocessed_files(
+    client, db_session, test_project, test_user,
+):
+    """v2.400.0 — a batch whose 31 staged files expired (dismissed) read
+    "0 files · nothing imported"; and a re-processed file joins its
+    original's batch, so "31 files" held 32 scans with nothing saying why."""
+    from datetime import datetime, timezone
+
+    test_user.full_name = "Ana Analyst"
+    expired = models.ScanBatch(project_id=test_project.id, label="31 files · a", created_by_id=test_user.id)
+    reproc = models.ScanBatch(project_id=test_project.id, label="2 files · b", created_by_id=test_user.id)
+    db_session.add_all([expired, reproc])
+    db_session.commit()
+    now = datetime.now(timezone.utc)
+    msg = "Staged upload expired: not started within 24 hours."
+    for dismissed in (now, None):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f.xml", original_filename="f.xml", storage_path="/x",
+            status="failed", batch_id=expired.id, error_message=msg, dismissed_at=dismissed,
+        ))
+    for i, options in enumerate(({}, {}, {"reprocess_of_job_id": 1})):
+        scan = models.Scan(project_id=test_project.id, filename=f"r{i}.xml", tool_name="nmap", batch_id=reproc.id)
+        db_session.add(scan)
+        db_session.flush()
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="r.xml", original_filename="r.xml", storage_path="/x",
+            status="completed", batch_id=reproc.id, scan_id=scan.id, options=options,
+        ))
+    db_session.commit()
+
+    rows = {r["id"]: r for r in client.get(f"/api/v1/projects/{test_project.id}/scans/batches").json()}
+    e = rows[expired.id]
+    # Both expiries — dismissed or not — are expiries, not live failures.
+    assert (e["expired_files"], e["failed_files"], e["imported_files"]) == (2, 0, 0)
+    r = rows[reproc.id]
+    assert (r["imported_files"], r["reprocessed_files"]) == (3, 1)
+    assert (r["created_by"], r["created_by_name"]) == (test_user.username, "Ana Analyst")
+
+
+def test_summary_counts_failed_imports_across_the_whole_project(client, db_session, test_project):
+    """v2.400.0 — the lead read the 25 most recent jobs and said "nothing
+    failed" while older failures existed.  The summary carries the project's
+    needs-attention count (failed or partial, not dismissed) and the failures
+    already dismissed (discards and expiries included)."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    for status, partial, dismissed, error in (
+        ("failed", False, None, "bad xml"),
+        ("completed", True, None, None),                    # partial: needs attention
+        ("failed", False, now, "Discarded before import"),
+        ("failed", False, now, "Staged upload expired: not started within 24 hours."),
+        ("completed", False, None, None),
+    ) + tuple(("completed", False, None, None) for _ in range(30)):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f", original_filename="f", storage_path="/x",
+            status=status, partial=partial, dismissed_at=dismissed, error_message=error,
+        ))
+    db_session.commit()
+    s = client.get(f"/api/v1/projects/{test_project.id}/scans/summary").json()
+    assert (s["imports_need_attention"], s["imports_not_imported"]) == (2, 2)
 
 
 def test_filtered_batch_reports_matching_of_total_files(client, db_session, test_project):
@@ -396,7 +460,10 @@ def test_scans_filter_by_who_uploaded_them(client, db_session, test_project, tes
     not narrowed by that filter itself."""
     from app.db.models_auth import User, UserRole
 
-    other = User(id=501, username="ben", email="ben@example.com", hashed_password="x", role=UserRole.MEMBER)
+    other = User(
+        id=501, username="ben", full_name="Ben Tester", email="ben@example.com",
+        hashed_password="x", role=UserRole.MEMBER,
+    )
     db_session.add(other)
     db_session.commit()
     f = _history_fixture(db_session, test_project)
@@ -417,9 +484,12 @@ def test_scans_filter_by_who_uploaded_them(client, db_session, test_project, tes
     assert summary["total_scans"] == 2
     assert summary["tool_counts"] == {"NMAP": 1, "MASSCAN": 1}
     assert summary["uploaders"] == [
-        {"user_id": test_user.id, "username": test_user.username, "files": 2},
-        {"user_id": other.id, "username": "ben", "files": 1},
+        {"user_id": test_user.id, "username": test_user.username, "full_name": test_user.full_name, "files": 2},
+        # v2.400.0 — the chooser displays the full name; the id stays the value.
+        {"user_id": other.id, "username": "ben", "full_name": "Ben Tester", "files": 1},
     ]
+    listed = {r["id"]: r for r in client.get(f"{base}/").json()}
+    assert (listed[f["s3"].id]["uploaded_by"], listed[f["s3"].id]["uploaded_by_name"]) == ("ben", "Ben Tester")
     # The chooser follows the other filters.
     by_tool = client.get(f"{base}/summary", params={"tool": "masscan"}).json()
     assert [u["username"] for u in by_tool["uploaders"]] == [test_user.username]

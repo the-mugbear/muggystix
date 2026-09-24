@@ -885,7 +885,7 @@ export default function Scans() {
             )}
             {scan.uploaded_by && (
               <span>
-                <strong>Uploaded by:</strong> {scan.uploaded_by}
+                <strong>Uploaded by:</strong> {scan.uploaded_by_name || scan.uploaded_by}
               </span>
             )}
           </div>
@@ -972,6 +972,8 @@ export default function Scans() {
         files={inventorySummary?.total_files ?? inventorySummary?.total_scans ?? scans.length}
         filtered={hasActiveFilters}
         failed={queueCounts.failed}
+        needAttention={inventorySummary?.imports_need_attention}
+        notImported={inventorySummary?.imports_not_imported}
         queueUnknown={recentJobsError && recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
@@ -1679,9 +1681,13 @@ export default function Scans() {
                 <SelectContent>
                   <SelectItem value="anyone">Uploaded by anyone</SelectItem>
                   {(inventorySummary?.uploaders ?? []).map((u) => (
+                    // The full name is shown (v5.285.0); the id stays the value.
                     <SelectItem key={u.user_id} value={String(u.user_id)}>
-                      <span className="block max-w-56 truncate" title={u.username}>
-                        {u.username} ({u.files.toLocaleString()})
+                      <span
+                        className="block max-w-56 truncate"
+                        title={u.full_name ? `${u.full_name} (${u.username})` : u.username}
+                      >
+                        {u.full_name || u.username} ({u.files.toLocaleString()})
                       </span>
                     </SelectItem>
                   ))}
@@ -1776,13 +1782,16 @@ export default function Scans() {
                     {/* Grouped by upload is chronological by definition (the
                         server orders batches and single files together), so
                         the headers sort only in the all-files view. */}
+                    {/* v5.285.0 — When widened (its time and "run time
+                        unknown" were cut off) and Actions narrowed; batch rows
+                        fill these same five columns. */}
                     {historyHeader('filename', 'Scan', 'w-[24%]')}
                     {/* v5.270.0 — ONE time column: when the scan ran, per its
                         own output, else when it was uploaded; the other time
                         and the provenance are on hover.  In the all-files view
                         it sorts by either. */}
                     {showBatchFiles ? (
-                      <TableHead className="w-[15%]">
+                      <TableHead className="w-[18%]">
                         <span className="inline-flex flex-wrap items-center gap-x-xs">
                           When
                           {(['start_time', 'created_at'] as const).map((col) => {
@@ -1811,7 +1820,7 @@ export default function Scans() {
                         </span>
                       </TableHead>
                     ) : (
-                      <TableHead className="w-[15%]">When</TableHead>
+                      <TableHead className="w-[18%]">When</TableHead>
                     )}
                     {historyHeader('new_hosts', 'New hosts', 'w-[10%]')}
                     <TableHead
@@ -1820,7 +1829,7 @@ export default function Scans() {
                     >
                       What it contributed
                     </TableHead>
-                    <TableHead className="w-[12%]"><span className="sr-only">Actions</span></TableHead>
+                    <TableHead className="w-[9%]"><span className="sr-only">Actions</span></TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -2186,30 +2195,52 @@ export default function Scans() {
 /**
  * The page's lead (v5.270.0): how much has been imported, whether anything
  * needs attention, and when the last file arrived.  "Nothing failed" is said
- * only when the queue was actually read.
+ * only when the queue was actually read AND no job of the project failed.
+ *
+ * v5.285.0 — the failure figures come from the summary, over the whole
+ * project (`imports_need_attention`: failed or partial, not dismissed — the
+ * count Ingestion Results' needs-attention view lists; `imports_not_imported`:
+ * failures already dismissed, discards and expiries included).  The lead used
+ * to count only the 25 most recent jobs, so it said "nothing failed" beside a
+ * batch whose 31 files had all expired.  `failed` (the recent queue) is the
+ * fallback when the summary did not carry the figures.
  */
 const ScansLead: React.FC<{
   files: number;
   filtered: boolean;
   failed: number;
+  needAttention?: number;
+  notImported?: number;
   queueUnknown: boolean;
   lastImportAt: string | null;
-}> = ({ files, filtered, failed, queueUnknown, lastImportAt }) => {
+}> = ({ files, filtered, failed, needAttention, notImported = 0, queueUnknown, lastImportAt }) => {
   if (files === 0 && !filtered) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
+  const projectWide = needAttention != null;
+  const attention = projectWide ? needAttention : failed;
+  const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
   return (
     <PostureLead
       className="mb-md"
-      tone={failed > 0 ? 'warning' : 'neutral'}
-      restsOn="Every imported file counts, batched files included. Failures are the ingestion queue's recent jobs; Ingestion Results lists every import that failed or finished partial."
+      tone={attention > 0 ? 'warning' : 'neutral'}
+      restsOn="Every imported file counts, batched files included. Failures are every import of this project that failed or finished partial and nobody dismissed — the list Ingestion Results shows as needing attention; dismissed ones (discarded, expired before review, acknowledged) are counted apart."
     >
       {files.toLocaleString()} file{files === 1 ? '' : 's'} imported{filtered ? ' (matching these filters)' : ''};{' '}
-      {queueUnknown ? (
+      {!projectWide && queueUnknown ? (
         'the ingestion queue could not be checked'
-      ) : failed > 0 ? (
+      ) : attention > 0 ? (
         <Link to="/parse-errors?status=needs_attention" className="text-warning underline-offset-2 hover:underline">
-          {failed} failed import{failed === 1 ? '' : 's'} need{failed === 1 ? 's' : ''} attention
+          {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
+          need{attention === 1 ? 's' : ''} attention
         </Link>
+      ) : notImported > 0 ? (
+        <>
+          none needs attention, but{' '}
+          <Link to="/parse-errors?status=failed" className="underline-offset-2 hover:underline">
+            {notImported.toLocaleString()} {plural(notImported, 'file was', 'files were')} never imported
+          </Link>{' '}
+          (discarded, expired before review, or a dismissed failure)
+        </>
       ) : (
         'nothing failed'
       )}
