@@ -1,6 +1,7 @@
 # Quarto (v2.381.0) — the client-report renderer, used ONLY by the
 # report-worker target below.  Pinned version, checksum-verified tarball; it
-# bundles Pandoc and Typst (PDF), so no TeX is installed.  Its own stage so the
+# bundles Pandoc; reports are HTML and Word (no PDF since v2.407.0 — Word
+# exports it), so no TeX is installed.  Its own stage so the
 # download is cached apart from the application code.
 FROM debian:bookworm-slim AS quarto
 ARG QUARTO_VERSION=1.10.18

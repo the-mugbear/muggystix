@@ -168,7 +168,7 @@ def test_hostile_text_stays_text_in_every_format(tmp_path):
     manifest = json.loads((TEMPLATE / "template.json").read_text())
 
     files = quarto_render.render(
-        TEMPLATE, "report.qmd", data, ["html", "docx", "pdf"], tmp_path,
+        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path,
         postprocess=manifest.get("postprocess"), timeout=240,
     )
     html = files["html"].read_text(encoding="utf-8")
@@ -193,7 +193,6 @@ def test_hostile_text_stays_text_in_every_format(tmp_path):
     # The typed heading became bold text, not a report section.
     assert "A heading an author typed" in html
     assert 'id="a-heading-an-author-typed"' not in html
-    assert files["pdf"].stat().st_size > 1000
 
 
 @needs_template
@@ -218,6 +217,29 @@ def test_evidence_images_are_placed_and_missing_ones_skipped(tmp_path):
     html = files["html"].read_text(encoding="utf-8")
     assert "Listing" in html and "Gone" not in html
     assert "data:image/png;base64" in html
+
+
+@needs_template
+@needs_quarto
+def test_a_table_that_ends_a_field_keeps_its_last_row(tmp_path):
+    """v2.407.0 — reported from a finding: pandoc.read without a trailing
+    newline turned a Markdown table's LAST row into a paragraph, in every
+    format.  A field's text rarely ends with a newline."""
+    table = ("| Month    | Savings |\n| -------- | ------- |\n"
+             "| January  | $250    |\n| February | $80     |\n| March    | $420    |")
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    data["findings"][0]["description"] = table
+    data["executive_summary"] = table.replace("\n", "\r\n")   # as a Windows browser may send it
+    files = quarto_render.render(TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path, timeout=240)
+    html = files["html"].read_text(encoding="utf-8")
+    with zipfile.ZipFile(files["docx"]) as z:
+        docx = z.read("word/document.xml").decode("utf-8")
+    for text in (html, docx):
+        assert "| March" not in text
+    assert html.count("<td>March</td>") == 2
+    assert docx.count(">March</w:t>") == 2
+    tables_with_march = [t for t in docx.split("<w:tbl>") if ">March</w:t>" in t.split("</w:tbl>")[0]]
+    assert len(tables_with_march) == 2
 
 
 # --- v2.382.0: TODO placeholders -------------------------------------------------
@@ -259,7 +281,7 @@ def test_todos_are_highlighted_in_every_format(tmp_path):
 # --- template assets (the template's own images) ---------------------------------
 
 def _png(width: int, height: int) -> bytes:
-    """A valid RGB PNG (Typst checks every CRC)."""
+    """A valid RGB PNG (every CRC right, so any renderer accepts it)."""
     def chunk(kind: bytes, data: bytes) -> bytes:
         return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
     rows = b"".join(b"\x00" + b"\x1e\x50\xa0" * width for _ in range(height))
@@ -280,15 +302,22 @@ def test_the_pentest_template_declares_its_logo_and_is_unchanged_without_it():
 
 @needs_template
 @needs_quarto
-def test_an_installed_logo_heads_the_html_and_the_pdf(tmp_path):
+def test_an_installed_logo_heads_the_html(tmp_path):
     folder = tmp_path / "pentest"
     shutil.copytree(TEMPLATE, folder, ignore=shutil.ignore_patterns("_output", "*_files", ".quarto"))
     (folder / "img").mkdir(exist_ok=True)
     (folder / "img" / "logo.png").write_bytes(_png(40, 12))
     data = json.loads((folder / "sample-data.json").read_text())
-    files = quarto_render.render(folder, "report.qmd", data, ["html", "pdf"], tmp_path / "out", timeout=240)
+    files = quarto_render.render(folder, "report.qmd", data, ["html"], tmp_path / "out", timeout=240)
     html = files["html"].read_text(encoding="utf-8")
     logo_at = html.index('class="bs-logo-wrap"')
     assert logo_at < html.index('id="title-block-header"')
     assert "data:image/png;base64" in html[logo_at:logo_at + 400]
-    assert files["pdf"].stat().st_size > 0
+
+
+def test_pdf_is_not_a_report_format():
+    """v2.407.0 — the Word report carries the design and exports to PDF; a
+    template that still lists pdf loses it rather than failing to load."""
+    assert "pdf" not in quarto_render.FORMATS
+    with pytest.raises(quarto_render.RenderError):
+        quarto_render.render(TEMPLATE, "report.qmd", {}, ["pdf"], Path("/nonexistent"))

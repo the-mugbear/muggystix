@@ -2,7 +2,7 @@
 
 Two job formats, both ``report_type='client'`` with ``filters={"report_id"}``:
 
-* ``report-html`` / ``report-docx`` / ``report-pdf`` — a DRAFT preview: the
+* ``report-html`` / ``report-docx`` / ``report-qmd`` — a DRAFT preview: the
   dataset is built from the live findings and rendered as one format; the
   file is an ordinary report-job artifact (expires with the job).
 * ``report-issue`` — an ISSUED report's files: every format the template
@@ -38,7 +38,9 @@ from app.services.client_report_service import ClientReportService
 
 logger = logging.getLogger(__name__)
 
-PREVIEW_FORMATS = {"report-html": "html", "report-docx": "docx", "report-pdf": "pdf", "report-qmd": "qmd"}
+# No "report-pdf" since v2.407.0 (PDF comes from the Word report).  An issued
+# report's stored PDF, from before, still downloads: files are served by row.
+PREVIEW_FORMATS = {"report-html": "html", "report-docx": "docx", "report-qmd": "qmd"}
 ISSUE_FORMAT = "report-issue"
 CLIENT_JOB_FORMATS = tuple(PREVIEW_FORMATS) + (ISSUE_FORMAT,)
 

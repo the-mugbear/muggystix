@@ -102,7 +102,7 @@ REQUIRED_DETAILS = (
 # Project roles that make someone part of the assessment team by default, and
 # the role line they start with (editable per report).
 TEAM_ROLES = {"admin": "Engagement lead", "analyst": "Tester"}
-# Formats every renderer can place (Word, Typst and HTML alike).
+# Formats every renderer can place (Word and HTML alike).
 REPORT_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif"}
 
 _REF = re.compile(r"^F-(\d+)$")

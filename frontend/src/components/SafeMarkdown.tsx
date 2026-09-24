@@ -15,10 +15,13 @@
  * It builds React elements and never sets innerHTML, so nothing an author
  * writes can become markup.  A deliberately small subset of GitHub Markdown:
  * paragraphs, headings, lists (nested by indentation), block quotes, fenced
- * and indented code, rules, and inline code / bold / italic / strikethrough /
- * links / autolinks / bare web URLs / hard breaks.  Anything else stays text.
+ * and indented code, rules, pipe tables (5.293.0), and inline code / bold /
+ * italic / strikethrough / links / autolinks / bare web URLs / hard breaks.
+ * Anything else stays text.
  */
 import React from 'react';
+
+import { CellAlign, isTableRow, splitTableRow, tableAlignments } from '../utils/markdownEditing';
 
 const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
 
@@ -267,7 +270,8 @@ type Block =
   | { kind: 'code'; text: string }
   | { kind: 'rule' }
   | { kind: 'quote'; lines: string[] }
-  | { kind: 'list'; ordered: boolean; start: number; items: string[][] };
+  | { kind: 'list'; ordered: boolean; start: number; items: string[][] }
+  | { kind: 'table'; align: CellAlign[]; head: string[]; rows: string[][] };
 
 const FENCE = /^ {0,3}(`{3,}|~{3,})/;
 const HEADING = /^ {0,3}#{1,6}(?:\s+(.*?))?\s*$/;
@@ -326,6 +330,25 @@ const parseBlocks =(source: string): Block[] => {
       blocks.push({ kind: 'heading', text: para.join('\n').trim() });
       para = [];
       i += 1;
+      continue;
+    }
+
+    // A pipe table (5.293.0), by the report's rules: a header row, a dashes
+    // row of the same width, then rows until a blank line or a line without
+    // a pipe.  Never straight after text — the report joins that into the
+    // paragraph, so the preview does too.
+    const align = !para.length && i + 1 < lines.length ? tableAlignments(line, lines[i + 1]) : null;
+    if (align) {
+      const width = align.length;
+      const fit = (cells: string[]) =>
+        cells.length >= width ? cells.slice(0, width) : [...cells, ...Array(width - cells.length).fill('')];
+      const rows: string[][] = [];
+      i += 2;
+      while (i < lines.length && isTableRow(lines[i]) && !FENCE.test(lines[i]) && !QUOTE.test(lines[i])) {
+        rows.push(fit(splitTableRow(lines[i])));
+        i += 1;
+      }
+      blocks.push({ kind: 'table', align, head: fit(splitTableRow(line)), rows });
       continue;
     }
 
@@ -442,6 +465,34 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
           <ol key={key} start={b.start} className="ml-lg list-decimal space-y-xxs marker:text-muted-foreground">{children}</ol>
         ) : (
           <ul key={key} className="ml-lg list-disc space-y-xxs marker:text-muted-foreground">{children}</ul>
+        );
+      }
+      case 'table': {
+        const cellClass = 'min-w-0 break-words px-xs py-xxs align-top [overflow-wrap:anywhere]';
+        const textAlign = (a: CellAlign) => (a ? { textAlign: a } : undefined);
+        return (
+          <table key={key} className="w-full border-collapse text-caption" style={{ tableLayout: 'fixed' }}>
+            <thead>
+              <tr className="border-b border-border">
+                {b.head.map((c, j) => (
+                  <th key={j} scope="col" className={`${cellClass} text-left font-medium`} style={textAlign(b.align[j])}>
+                    {renderInline(c, `${key}-h${j}`)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {b.rows.map((r, n) => (
+                <tr key={n} className="border-b border-border/60">
+                  {r.map((c, j) => (
+                    <td key={j} className={cellClass} style={textAlign(b.align[j])}>
+                      {renderInline(c, `${key}-${n}-${j}`)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
         );
       }
       default:

@@ -77,7 +77,7 @@ const pdf = { format: 'pdf', filename: 'x-report-01.pdf', media_type: 'applicati
 beforeEach(() => {
   vi.clearAllMocks();
   auth.user = { id: 99, username: 'admin', full_name: 'Administrator', role: 'admin' };
-  mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx', 'pdf'] }]);
+  mocked.listReportTemplates.mockResolvedValue([{ name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] }]);
   mocked.getReportProfile.mockResolvedValue({ ...settings, template: 'pentest' });
   mocked.listProjectMembers.mockResolvedValue([]);
 });
@@ -157,14 +157,23 @@ describe('Report detail — draft', () => {
 
   it('previews on the worker and offers the file when it is ready', async () => {
     mocked.getClientReport.mockResolvedValue(report());
-    mocked.previewClientReport.mockResolvedValue({ id: 70, format: 'report-pdf', status: 'queued' });
-    mocked.getReportJob.mockResolvedValue({ id: 70, format: 'report-pdf', status: 'completed' });
+    mocked.previewClientReport.mockResolvedValue({ id: 70, format: 'report-docx', status: 'queued' });
+    mocked.getReportJob.mockResolvedValue({ id: 70, format: 'report-docx', status: 'completed' });
     mocked.downloadReportJob.mockResolvedValue({ truncated: false });
     renderDetail();
-    fireEvent.click(await screen.findByRole('button', { name: 'Preview PDF' }));
-    await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(5, 'pdf'));
-    fireEvent.click(await screen.findByRole('button', { name: 'Download the PDF preview' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Preview Word' }));
+    await waitFor(() => expect(mocked.previewClientReport).toHaveBeenCalledWith(5, 'docx'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Download the Word preview' }));
     expect(mocked.downloadReportJob).toHaveBeenCalledWith(70);
+  });
+
+  // 5.293.0 — no PDF preview: the Word report exports to PDF with its design.
+  it('offers no PDF preview and says where a PDF comes from', async () => {
+    mocked.getClientReport.mockResolvedValue(report());
+    renderDetail();
+    expect(await screen.findByRole('button', { name: 'Preview Word' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /PDF/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/For a PDF, open the Word report and export it/)).toBeInTheDocument();
   });
 
   // Review 2026-09-23 B-UI-7: Back discarded an unsaved narrative silently.
@@ -276,7 +285,7 @@ describe('Report detail — unsaved changes (v5.261.1)', () => {
     fireEvent.change(await screen.findByLabelText('Client'), { target: { value: 'Other Corp' } });
     expect(screen.getByText('Save your changes below before issuing.')).toBeInTheDocument();
     expect(screen.getByText(/save them to preview them/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Preview PDF' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Preview Word' })).toBeDisabled();
     expect(screen.getByText(/Nobody is a member of this project yet/)).toBeInTheDocument();
   });
 });
@@ -312,7 +321,7 @@ describe('Report detail — layout review (v5.286.0)', () => {
 
   it('saves a template change at once, keeping other unsaved edits', async () => {
     mocked.listReportTemplates.mockResolvedValue([
-      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx', 'pdf'] },
+      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'] },
       { name: 'brief', title: 'Brief report', description: '', formats: ['html'] },
     ]);
     mocked.getClientReport.mockResolvedValue(report());
@@ -390,10 +399,10 @@ describe('Report detail — TODOs and the team (v5.263.0)', () => {
 describe('Template images', () => {
   const asset = (over: Record<string, unknown>) => ({
     id: 'logo', path: 'img/logo.png', label: 'Company logo', description: 'Above the title',
-    note: '', required: false, formats: ['html', 'pdf'], present: false, ...over,
+    note: '', required: false, formats: ['html'], present: false, ...over,
   });
   const withAssets = (assets: unknown[]) => mocked.listReportTemplates.mockResolvedValue([
-    { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx', 'pdf'], assets },
+    { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'], assets },
   ]);
 
   it('lists each image with where it goes, and a missing required one blocks preview and issue', async () => {
@@ -408,11 +417,11 @@ describe('Template images', () => {
     expect(screen.getByText(/1 required missing — preview and issue are unavailable/)).toBeInTheDocument();
     expect(screen.getByText('report-templates/pentest/img/cover.png')).toBeInTheDocument();
     expect(screen.getByText('A Word header belongs in reference.docx.')).toBeInTheDocument();
-    expect(screen.getAllByText('Used in HTML, PDF')).toHaveLength(2);
+    expect(screen.getAllByText('Used in HTML')).toHaveLength(2);
 
-    const previewPdf = screen.getByRole('button', { name: 'Preview PDF' });
-    expect(previewPdf).toBeDisabled();
-    expect(previewPdf).toHaveAttribute('title', expect.stringContaining('Cover art'));
+    const previewWord = screen.getByRole('button', { name: 'Preview Word' });
+    expect(previewWord).toBeDisabled();
+    expect(previewWord).toHaveAttribute('title', expect.stringContaining('Cover art'));
     expect(screen.getByRole('button', { name: /Issue report/ })).toBeDisabled();
     expect(screen.getByText(/A required template file is not installed/)).toBeInTheDocument();
   });
@@ -434,7 +443,7 @@ describe('Template images', () => {
     renderList();
     expect(await screen.findByText('Not installed · shipped used')).toBeInTheDocument();
     expect(screen.getByText(/When installed, used in place of the template/)).toBeInTheDocument();
-    expect(screen.getByText(/HTML, Word, PDF/).textContent).not.toMatch(/missing|not installed/);
+    expect(screen.getByText(/HTML, Word$/).textContent).not.toMatch(/missing|not installed/);
   });
 
   it('an optional image that is missing never blocks, and is not called missing', async () => {
@@ -442,7 +451,7 @@ describe('Template images', () => {
     mocked.getClientReport.mockResolvedValue(report());
     const { unmount } = renderDetail();
     expect(await screen.findByText(/Company logo: not installed \(optional, left out\)/)).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Preview PDF' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Preview Word' })).toBeEnabled();
     expect(screen.getByRole('button', { name: /Issue report/ })).toBeEnabled();
     unmount();
 
@@ -463,7 +472,7 @@ describe('Template images', () => {
   it('lists every installed template on the Reports page, the default marked', async () => {
     mocked.listReportTemplates.mockResolvedValue([
       { name: 'brief', title: 'Brief report', description: 'Two pages.', formats: ['html'] },
-      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx', 'pdf'], assets: [asset({ required: true })] },
+      { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html', 'docx'], assets: [asset({ required: true })] },
     ]);
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
     renderList();

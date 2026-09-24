@@ -30,7 +30,7 @@ def template_dir(tmp_path, monkeypatch):
     folder = root / "pentest"
     folder.mkdir(parents=True)
     (folder / "template.json").write_text(json.dumps({
-        "title": "Test template", "entry": "report.qmd", "formats": ["html", "docx", "pdf"],
+        "title": "Test template", "entry": "report.qmd", "formats": ["html", "docx"],
     }))
     (folder / "report.qmd").write_text("---\ntitle: x\n---\n")
     monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
@@ -652,9 +652,9 @@ def test_a_replayed_issue_job_never_replaces_published_files(db_session, test_pr
 
     def fake_render(db, report, dataset, formats, out_dir, basename, **kwargs):
         calls.append(1)
-        path = out_dir / (basename + ".pdf")
+        path = out_dir / (basename + ".docx")
         path.write_bytes(f"render-{len(calls)}".encode())
-        return {"pdf": path}
+        return {"docx": path}
 
     monkeypatch.setattr(renderer, "_render", fake_render)
     report = Report(project_id=test_project.id, title="Replay", kind="full", template="test",

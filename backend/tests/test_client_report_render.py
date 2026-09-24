@@ -81,13 +81,25 @@ def test_preview_then_issue_then_download(client, db_session, test_project):
 
     report = client.get(f"{base}/{draft['id']}").json()
     assert report["render_status"] == "done" and report["quarto_version"]
-    assert {f["format"] for f in report["files"]} == {"html", "docx", "pdf"}
-    pdf = next(f for f in report["files"] if f["format"] == "pdf")
-    assert pdf["filename"].endswith("-report-01.pdf")
+    # No PDF since v2.407.0: the Word report is exported to PDF from Word.
+    assert {f["format"] for f in report["files"]} == {"html", "docx", "qmd"}
+    docx = next(f for f in report["files"] if f["format"] == "docx")
+    assert docx["filename"].endswith("-report-01.docx")
 
+    r = client.get(f"{base}/{draft['id']}/files/docx")
+    assert r.status_code == 200 and r.content[:2] == b"PK"
+    assert hashlib.sha256(r.content).hexdigest() == docx["sha256"]
+    assert client.post(f"{base}/{draft['id']}/preview", json={"format": "pdf"}).status_code == 422
+    # A PDF stored with a report issued before then still downloads: an
+    # issued report never changes, and its files are served by row.
+    from app.db.models_reports import ReportFile
+    (Path(settings.REPORT_FILES_DIR) / "legacy.pdf").write_bytes(b"%PDF-1.7 legacy")
+    db_session.add(ReportFile(report_id=draft["id"], format="pdf", filename="legacy.pdf",
+                              media_type="application/pdf", size_bytes=15, sha256="0" * 64,
+                              storage_path="legacy.pdf"))
+    db_session.commit()
     r = client.get(f"{base}/{draft['id']}/files/pdf")
-    assert r.status_code == 200 and r.content[:4] == b"%PDF"
-    assert hashlib.sha256(r.content).hexdigest() == pdf["sha256"]
+    assert r.status_code == 200 and r.content == b"%PDF-1.7 legacy"
     # An issued report has no previews.
     assert client.post(f"{base}/{draft['id']}/preview", json={"format": "html"}).status_code == 409
 

@@ -56,7 +56,9 @@ from markupsafe import Markup
 FORMATS: Dict[str, tuple] = {
     "html": ("html", ".html", "text/html"),
     "docx": ("docx", ".docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"),
-    "pdf": ("typst", ".pdf", "application/pdf"),
+    # No PDF (removed v2.407.0): the Word report carries the design (cover
+    # page, header/footer, page numbers) and exports to PDF from Word; a
+    # Typst PDF had none of it.
     # The Quarto source itself: a zip of exactly what Quarto would render —
     # the filled report.qmd, data.json, the filters, reference.docx, the
     # evidence screenshots and the template's images — so the report can be
@@ -78,7 +80,8 @@ This folder is the report exactly as BlueStick rendered it.
 
     quarto render report.qmd --to html
     quarto render report.qmd --to docx && python3 scripts/fix-docx-report.py report.docx
-    quarto render report.qmd --to typst     # the PDF
+
+For a PDF, export the Word report to PDF from Word.
 
 Needs Quarto {quarto} or later (and Python 3 for the Word post-processor,
 which frames the screenshots).

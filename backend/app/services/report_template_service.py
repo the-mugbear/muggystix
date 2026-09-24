@@ -8,11 +8,11 @@ A folder is a template when it holds ``template.json``:
       "title": "Penetration test report",
       "description": "…",
       "entry": "report.qmd",
-      "formats": ["html", "docx", "pdf"],
+      "formats": ["html", "docx", "qmd"],
       "postprocess": {"docx": "scripts/fix-docx-report.py"},
       "assets": [{"id": "logo", "path": "img/logo.png", "label": "Company logo",
                   "description": "…where it appears…", "required": false,
-                  "formats": ["html", "pdf"], "note": "…"}]
+                  "formats": ["html"], "note": "…"}]
     }
 
 ``assets`` are the template's own images (logos, cover art — never evidence).
@@ -43,7 +43,8 @@ from app.core.config import settings
 from app.services import quarto_render
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
-FORMATS = ("html", "docx", "pdf", "qmd")
+# A template that still lists "pdf" (removed v2.407.0) simply loses it.
+FORMATS = ("html", "docx", "qmd")
 # Rendered output and editor state inside a template folder are not part of
 # the template.
 _SKIP_DIRS = {"_output", ".quarto", "__pycache__", ".git"}
@@ -90,7 +91,7 @@ def _load(folder: Path) -> ReportTemplate:
         raise TemplateError(f"{folder.name}: entry '{entry}' is not a .qmd file in the template folder.")
     formats = tuple(f for f in (data.get("formats") or FORMATS) if f in FORMATS)
     if not formats:
-        raise TemplateError(f"{folder.name}: no supported formats (html, docx, pdf).")
+        raise TemplateError(f"{folder.name}: no supported formats (html, docx, qmd).")
     post = {}
     for fmt, script in (data.get("postprocess") or {}).items():
         target = (folder / str(script)).resolve()

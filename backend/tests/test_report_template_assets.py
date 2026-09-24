@@ -24,7 +24,7 @@ PNG = b"\x89PNG\r\n\x1a\n"  # enough for a presence check
 def _template(folder, assets, qmd="---\ntitle: x\n---\n"):
     folder.mkdir(parents=True, exist_ok=True)
     (folder / "template.json").write_text(json.dumps({
-        "title": "Test template", "entry": "report.qmd", "formats": ["html", "docx", "pdf"],
+        "title": "Test template", "entry": "report.qmd", "formats": ["html", "docx"],
         "assets": assets,
     }))
     (folder / "report.qmd").write_text(qmd)
@@ -93,7 +93,7 @@ def test_present_means_a_regular_file_the_render_would_copy(tmp_path):
     # _copy_template skips symlinks: a linked file would be missing at render time.
     assert by_id["linked"]["present"] is False
     assert by_id["dirlinked"]["present"] is False
-    assert by_id["cover"]["formats"] == ["html", "docx", "pdf"]
+    assert by_id["cover"]["formats"] == ["html", "docx"]
 
 
 # --- the helper ------------------------------------------------------------------
@@ -139,7 +139,8 @@ def test_the_template_list_says_which_images_are_installed(client, root, test_pr
     assets = {a["id"]: a for a in r.json()[0]["assets"]}
     assert assets["logo"] == {
         "id": "logo", "path": "img/logo.png", "label": "Company logo", "description": "Top of page one",
-        "note": "Word header: reference.docx", "required": False, "formats": ["html", "pdf"],
+        # "pdf" (no longer a format, v2.407.0) is dropped, not an error.
+        "note": "Word header: reference.docx", "required": False, "formats": ["html"],
         "replaces": None, "present": True,
     }
     assert assets["cover"]["present"] is False and assets["cover"]["required"] is True

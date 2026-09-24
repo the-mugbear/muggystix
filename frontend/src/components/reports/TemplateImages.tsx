@@ -15,7 +15,7 @@ import { Link } from 'react-router-dom';
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
 import { Badge } from '../ui/badge';
 
-const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source' };
+const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
 
 /** The declared, required images whose file is not installed. */
 export const missingRequiredAssets = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>

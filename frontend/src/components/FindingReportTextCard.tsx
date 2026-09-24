@@ -7,7 +7,11 @@
  *
  * v5.290.0 — shown rendered, under the report's own rules (SafeMarkdown: no
  * raw HTML, no images, web/mail links only, headings as bold text); before,
- * `**bold**` printed literally.  The editor stays a plain textarea.
+ * `**bold**` printed literally.
+ *
+ * 5.293.0 — each field is a MarkdownField: a formatting toolbar, a preview
+ * under the same rules (tables included), a guide to what the report prints,
+ * and a fix for a table written straight after text.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Sparkles } from 'lucide-react';
@@ -26,7 +30,7 @@ import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { Textarea } from './ui/textarea';
+import MarkdownField from './MarkdownField';
 import SafeMarkdown from './SafeMarkdown';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
@@ -194,12 +198,13 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
                     Drafted by AI from this finding&apos;s data — check every statement before you save.
                   </p>
                 )}
-                <Textarea
+                <MarkdownField
                   id={`rt-${f.key}`}
+                  label={f.label}
                   rows={f.rows}
                   maxLength={32768}
                   value={draft[f.key]}
-                  onChange={(e) => setDraft({ ...draft, [f.key]: e.target.value })}
+                  onChange={(v) => setDraft((d) => (d ? { ...d, [f.key]: v } : d))}
                   disabled={saving}
                 />
               </div>

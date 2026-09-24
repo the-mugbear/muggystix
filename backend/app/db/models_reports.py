@@ -132,7 +132,7 @@ class ReportFile(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
-    format = Column(String(10), nullable=False)          # html | docx | pdf
+    format = Column(String(10), nullable=False)          # html | docx | qmd (pdf: issued before v2.407.0)
     filename = Column(String(255), nullable=False)
     media_type = Column(String(100), nullable=False)
     size_bytes = Column(BigInteger, nullable=False)

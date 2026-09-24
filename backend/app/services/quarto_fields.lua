@@ -130,10 +130,6 @@ local function xml_escape(s)
   return (s:gsub("&", "&amp;"):gsub("<", "&lt;"):gsub(">", "&gt;"):gsub('"', "&quot;"))
 end
 
-local function typst_escape(s)
-  return (s:gsub("([\\#%[%]%*_`%$<>@=~/])", "\\%1"))
-end
-
 function Span(el)
   if not el.classes:includes("bs-todo") then return nil end
   local text = pandoc.utils.stringify(el.content)
@@ -141,8 +137,6 @@ function Span(el)
     return pandoc.RawInline("openxml",
       '<w:r><w:rPr><w:b/><w:highlight w:val="yellow"/></w:rPr><w:t xml:space="preserve">'
       .. xml_escape(text) .. "</w:t></w:r>")
-  elseif FORMAT:match("typst") then
-    return pandoc.RawInline("typst", '#highlight(fill: rgb("#ffe066"))[*' .. typst_escape(text) .. "*]")
   elseif FORMAT:match("html") then
     return pandoc.RawInline("html", '<mark class="bs-todo"><strong>' .. xml_escape(text) .. "</strong></mark>")
   end
@@ -155,6 +149,11 @@ function Div(el)
   if key == nil or not key:match("^[%a_][%w_%.]*$") then return {} end
   local text = resolve(key)
   if text == nil or text:match("^%s*$") then return {} end
+  -- End the text with a newline: without one, pandoc.read's CommonMark
+  -- readers turn a table's LAST row into a paragraph ("| March | $420 |"),
+  -- and a form field's text usually has no trailing newline (v2.407.0).
+  -- Windows line endings are normalised too.
+  text = text:gsub("\r\n?", "\n") .. "\n"
   local doc = pandoc.read(text, "gfm-raw_html")
   return clean(doc.blocks)
 end

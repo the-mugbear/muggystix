@@ -3,7 +3,7 @@
  * B-Ops-5): a suggestion fills only the empty required boxes, is marked as
  * an AI draft, and nothing is saved until the author saves.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const draftFindingText = vi.fn();
@@ -101,5 +101,39 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
   it('keeps the editor a plain textarea holding the Markdown as written', () => {
     render(<FindingReportTextCard finding={withText('Seen on **filesrv-01**.')} canEdit onSaved={vi.fn()} startEditing />);
     expect(screen.getByLabelText('Description')).toHaveValue('Seen on **filesrv-01**.');
+  });
+
+  // 5.293.0 — Markdown help while editing.
+  const toolbar = () => within(screen.getByRole('toolbar', { name: 'Description formatting' }));
+
+  it('inserts a table on lines of its own and previews it as the report prints it', () => {
+    render(<FindingReportTextCard finding={withText('Before.')} canEdit onSaved={vi.fn()} startEditing />);
+    const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
+    box.setSelectionRange(7, 7);
+    fireEvent.click(toolbar().getByRole('button', { name: 'Table' }));
+    expect(box.value).toBe('Before.\n\n| Column | Column |\n| ------ | ------ |\n| Value  | Value  |');
+
+    fireEvent.click(toolbar().getByRole('button', { name: 'Preview' }));
+    const preview = screen.getByTestId('rt-description-preview');
+    expect(preview.querySelectorAll('tbody tr')).toHaveLength(1);
+    expect(preview.querySelector('th')?.textContent).toBe('Column');
+    fireEvent.click(toolbar().getByRole('button', { name: 'Write' }));
+    expect(screen.getByLabelText('Description')).toHaveValue(box.value);
+  });
+
+  it('warns about a table straight after text, and adds the blank line', () => {
+    render(<FindingReportTextCard finding={withText('Totals:\n| A | B |\n| - | - |\n| 1 | 2 |')} canEdit onSaved={vi.fn()} startEditing />);
+    expect(screen.getByText(/The table on line 2 follows a line of text/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Add the blank line' }));
+    expect(screen.getByLabelText('Description')).toHaveValue('Totals:\n\n| A | B |\n| - | - |\n| 1 | 2 |');
+    expect(screen.queryByText(/follows a line of text/)).not.toBeInTheDocument();
+  });
+
+  it('makes the selection bold with Ctrl+B', () => {
+    render(<FindingReportTextCard finding={withText('Seen on filesrv-01.')} canEdit onSaved={vi.fn()} startEditing />);
+    const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
+    box.setSelectionRange(8, 18);
+    fireEvent.keyDown(box, { key: 'b', ctrlKey: true });
+    expect(box.value).toBe('Seen on **filesrv-01**.');
   });
 });

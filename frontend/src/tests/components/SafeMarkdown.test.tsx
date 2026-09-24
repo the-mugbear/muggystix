@@ -10,6 +10,40 @@ import SafeMarkdown from '../../components/SafeMarkdown';
 
 const md = (text: string) => render(<SafeMarkdown text={text} />).container;
 
+describe('SafeMarkdown — tables (5.293.0), as the report prints them', () => {
+  const rows = (c: HTMLElement) =>
+    Array.from(c.querySelectorAll('tbody tr')).map((tr) => Array.from(tr.children).map((td) => td.textContent));
+
+  it('draws every row of a table that ends the text', () => {
+    const c = md('| Month    | Savings |\n| -------- | ------- |\n| January  | $250    |\n| February | $80     |\n| March    | $420    |');
+    expect(Array.from(c.querySelectorAll('th')).map((th) => th.textContent)).toEqual(['Month', 'Savings']);
+    expect(rows(c)).toEqual([['January', '$250'], ['February', '$80'], ['March', '$420']]);
+    expect(c.querySelector('table')?.style.tableLayout).toBe('fixed');
+  });
+
+  it('pads short rows, trims long ones, aligns columns and formats cells', () => {
+    const c = md('| A | B | C |\n|---|:-:|--:|\n| **1** |\n| 1 | 2 | 3 | 4 |');
+    expect(rows(c)).toEqual([['1', '', ''], ['1', '2', '3']]);
+    expect(c.querySelector('tbody strong')?.textContent).toBe('1');
+    const heads = c.querySelectorAll('th');
+    expect((heads[1] as HTMLElement).style.textAlign).toBe('center');
+    expect((heads[2] as HTMLElement).style.textAlign).toBe('right');
+  });
+
+  it('keeps as text what the report keeps as text', () => {
+    // Straight after a line of text: joined into the paragraph.
+    expect(md('Intro line.\n| A | B |\n| - | - |\n| 1 | 2 |').querySelector('table')).toBeNull();
+    // A dashes row narrower than the header.
+    expect(md('| A | B |\n|---|\n| 1 | 2 |').querySelector('table')).toBeNull();
+  });
+
+  it('ends a table at a line without a pipe', () => {
+    const c = md('| A | B |\n|---|---|\n| 1 | 2 |\nafter');
+    expect(rows(c)).toEqual([['1', '2']]);
+    expect(c.querySelector('p')?.textContent).toBe('after');
+  });
+});
+
 describe('SafeMarkdown', () => {
   it('renders emphasis, code and strikethrough', () => {
     const c = md('**bold** and *it* and `a<b>` and ~~gone~~ and snake_case_name');

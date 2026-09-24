@@ -247,7 +247,7 @@ const Reports: React.FC = () => {
   );
 };
 
-const FORMAT_LABEL: Record<string, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source' };
+const FORMAT_LABEL: Record<string, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
 
 const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const toast = useToast();

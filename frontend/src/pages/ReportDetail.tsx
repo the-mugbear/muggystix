@@ -15,6 +15,7 @@ import { ArrowLeft, Download, Loader2, RefreshCw, Sparkles, Stamp, Trash2 } from
 import {
   ClientReport,
   ClientReportFormat,
+  ReportFileFormat,
   EngagementSettings,
   ProjectMember,
   ReportJob,
@@ -56,8 +57,9 @@ import {
 import { Textarea } from '../components/ui/textarea';
 import { FileButtons, reportKindLabel } from './Reports';
 
-const FORMAT_LABEL: Record<ClientReportFormat, string> = {
-  html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source (.zip)',
+// `pdf` labels a file of a report issued before PDF was removed (5.293.0).
+const FORMAT_LABEL: Record<ReportFileFormat, string> = {
+  html: 'HTML', docx: 'Word', qmd: 'QMD source (.zip)', pdf: 'PDF',
 };
 const when = (iso: string | null) => (iso ? new Date(iso).toLocaleString() : '—');
 
@@ -294,7 +296,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const counts = s.counts;
   const editable = isDraft && report.can_edit;
   const template = templates.find((t) => t.name === report.template);
-  const formats: ClientReportFormat[] = template?.formats ?? ['html', 'docx', 'pdf'];
+  const formats: ClientReportFormat[] = template?.formats ?? ['html', 'docx'];
   // A required template image that is not installed blocks every render (the
   // server refuses too); say so on the buttons instead of failing a job.
   const assetsBlock = missingAssetsReason(template);
@@ -503,6 +505,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               );
             })}
           </div>
+          {formats.includes('docx') && (
+            <p className="mt-xs text-caption text-muted-foreground">
+              For a PDF, open the Word report and export it (File › Save as PDF): the PDF keeps the Word design.
+            </p>
+          )}
         </PostureSection>
       ) : (
         <PostureSection title="Files" description="Rendered from the frozen report; the checksum identifies each file.">

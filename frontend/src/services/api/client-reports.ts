@@ -9,8 +9,11 @@ import type { ReportJob } from '../api';
 
 export type ClientReportKind = 'full' | 'addendum';
 export type ClientReportStatus = 'draft' | 'issued' | 'superseded';
-/** `qmd` is the Quarto source as a zip (report.qmd, data.json, filters, screenshots). */
-export type ClientReportFormat = 'html' | 'docx' | 'pdf' | 'qmd';
+/** `qmd` is the Quarto source as a zip (report.qmd, data.json, filters, screenshots).
+ *  No PDF (removed 5.293.0): the Word report carries the design and exports to PDF. */
+export type ClientReportFormat = 'html' | 'docx' | 'qmd';
+/** A stored file of an ISSUED report — a PDF issued before 5.293.0 still downloads. */
+export type ReportFileFormat = ClientReportFormat | 'pdf';
 
 export interface ReportTester {
   user_id?: number | null;
@@ -72,7 +75,7 @@ export interface ReportTemplate {
 }
 
 export interface ReportFile {
-  format: ClientReportFormat;
+  format: ReportFileFormat;
   filename: string;
   media_type: string;
   size_bytes: number;
