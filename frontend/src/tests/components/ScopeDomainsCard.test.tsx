@@ -1,6 +1,7 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi } from 'vitest';
 
+import * as api from '../../services/api';
 import ScopeDomainsCard from '../../components/ScopeDomainsCard';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
@@ -61,5 +62,34 @@ describe('ScopeDomainsCard tooltips', () => {
     expect(screen.getByText('exact name')).toBeInTheDocument();
     expect(screen.getByText('12')).toBeInTheDocument();
     expect(screen.getByText('0')).toBeInTheDocument();
+  });
+});
+
+describe('ScopeDomainsCard adding (v5.290.0)', () => {
+  const addMock = () => (api as unknown as { addScopeDomains: ReturnType<typeof vi.fn> }).addScopeDomains;
+
+  it('names the "Include subdomains" checkbox', async () => {
+    renderCard();
+    await waitFor(() => expect(screen.getByText('*.acme.com')).toBeInTheDocument());
+    const box = screen.getByRole('checkbox', { name: 'Include subdomains' });
+    fireEvent.click(box);
+    expect(box).toHaveAttribute('aria-checked', 'true');
+  });
+
+  it('explains rejected entries under the field and keeps them to correct', async () => {
+    addMock().mockResolvedValue({
+      domains: [], total: 2, added: 1, updated: 0, names_in_scope_total: 12,
+      invalid: ["'10.0.0.1': is an IP address, not a name"],
+    });
+    renderCard();
+    await waitFor(() => expect(screen.getByText('*.acme.com')).toBeInTheDocument());
+    const input = screen.getByLabelText(/^Domain/);
+    fireEvent.change(input, { target: { value: 'new.acme.com 10.0.0.1' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent("Not added — '10.0.0.1': is an IP address, not a name");
+    expect(input).toHaveValue('new.acme.com 10.0.0.1');
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(toastMock.success).toHaveBeenCalledWith('1 added');
+    expect(toastMock.warning).not.toHaveBeenCalled();
   });
 });

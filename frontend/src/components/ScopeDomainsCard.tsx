@@ -88,6 +88,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
   const [error, setError] = useState<string | null>(null);
   const [domainInput, setDomainInput] = useState('');
   const [includeSub, setIncludeSub] = useState(false);
+  const [domainError, setDomainError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [deletingId, setDeletingId] = useState<number | null>(null);
@@ -133,6 +134,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       .map((s) => s.trim())
       .filter(Boolean);
     if (entries.length === 0) return;
+    setDomainError(null);
     setAdding(true);
     try {
       const res = await addScopeDomains(
@@ -142,19 +144,25 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       setRows(res.domains);
       setTotal(res.total);
       setNamesInScope(res.names_in_scope_total ?? 0);
-      setDomainInput('');
       const parts: string[] = [];
       if (res.added) parts.push(`${res.added} added`);
       if (res.updated) parts.push(`${res.updated} widened to include subdomains`);
-      if (res.invalid.length) parts.push(`${res.invalid.length} rejected`);
       if (res.invalid.length) {
-        toast.warning(`${parts.join(', ')}. Rejected: ${res.invalid.slice(0, 3).join('; ')}`);
+        // v5.290.0 — rejected entries are explained under the field and the
+        // input is kept so they can be corrected (re-adding the accepted
+        // ones is a no-op).
+        setDomainError(
+          `Not added — ${res.invalid.slice(0, 3).join('; ')}`
+          + (res.invalid.length > 3 ? `; and ${res.invalid.length - 3} more` : ''),
+        );
+        if (parts.length) toast.success(parts.join(', '));
       } else {
+        setDomainInput('');
         toast.success(parts.length ? parts.join(', ') : 'Already in scope');
       }
       onChanged?.();
     } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to add domains.'));
+      setDomainError(formatApiError(err, 'Failed to add domains.'));
     } finally {
       setAdding(false);
     }
@@ -206,7 +214,9 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
           <Input
             id="new-scope-domain"
             value={domainInput}
-            onChange={(e) => setDomainInput(e.target.value)}
+            onChange={(e) => { setDomainInput(e.target.value); setDomainError(null); }}
+            aria-invalid={domainError ? true : undefined}
+            aria-describedby={domainError ? 'new-scope-domain-error' : undefined}
             onKeyDown={(e) => {
               if (e.key === 'Enter' && !adding) handleAdd();
             }}
@@ -215,10 +225,18 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
           />
         </div>
         <span className="flex items-center gap-xs text-metadata">
-          <label className="flex items-center gap-xs">
-            <Checkbox checked={includeSub} onCheckedChange={(v) => setIncludeSub(v === true)} />
-            Include subdomains
-          </label>
+          {/* v5.290.0 — an explicit id/htmlFor pair: wrapped in a <label>,
+              the Radix checkbox (a <button>) was announced with no name. */}
+          <span className="flex items-center gap-xs">
+            <Checkbox
+              id="new-scope-domain-subdomains"
+              checked={includeSub}
+              onCheckedChange={(v) => setIncludeSub(v === true)}
+            />
+            <Label htmlFor="new-scope-domain-subdomains" className="cursor-pointer font-normal">
+              Include subdomains
+            </Label>
+          </span>
           <InfoTip text={TIPS.includeSub} label="About include subdomains" />
         </span>
         <Button size="sm" variant="outline" onClick={handleAdd} disabled={adding || !domainInput.trim()}>
@@ -226,6 +244,11 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
           Add
         </Button>
       </div>
+      {domainError && (
+        <p id="new-scope-domain-error" role="alert" className="-mt-xs mb-sm break-words text-caption text-destructive">
+          {domainError}
+        </p>
+      )}
 
         {error && (
           <Alert variant="destructive" className="mb-sm">

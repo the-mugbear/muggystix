@@ -166,6 +166,50 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     expect(cells).toHaveLength(6);
   });
 
+  // v5.290.0 — a mistyped entry is explained under the field before any
+  // request, not in a toast carrying Python's parser text.
+  it('explains an invalid CIDR under the field without calling the API', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    const input = screen.getByLabelText('CIDR or IP');
+    fireEvent.change(input, { target: { value: '10.0.0.300/24' } });
+    // The first Add is the subnet row's; the domains section has its own.
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add' })[0]);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Not an IP address or CIDR range — e.g. 10.0.0.0/24 or 10.0.0.5',
+    );
+    expect(input).toHaveAttribute('aria-invalid', 'true');
+    expect(input).toHaveAttribute('aria-describedby', 'new-cidr-error');
+    expect(mocked.addScopeSubnets).not.toHaveBeenCalled();
+    expect(toastMock.error).not.toHaveBeenCalled();
+    // Typing again clears it.
+    fireEvent.change(input, { target: { value: '10.0.0.0/24' } });
+    expect(screen.queryByRole('alert')).toBeNull();
+  });
+
+  it('shows a server rejection under the field too', async () => {
+    mocked.addScopeSubnets.mockRejectedValue({
+      isAxiosError: true,
+      response: { status: 400, data: { detail: "'10.0.0.0/24' is not an IP address or CIDR range" } },
+    });
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.change(screen.getByLabelText('CIDR or IP'), { target: { value: '10.0.0.0/24' } });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Add' })[0]);
+    expect(await screen.findByRole('alert')).toHaveTextContent('is not an IP address or CIDR range');
+    expect(mocked.addScopeSubnets).toHaveBeenCalledTimes(1);
+  });
+
+  it('checks an edited CIDR the same way', async () => {
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.click(screen.getByRole('button', { name: 'Edit subnet 10.77.1.0/24' }));
+    fireEvent.change(screen.getByLabelText('CIDR or IP for 10.77.1.0/24'), { target: { value: '10.77.1.0/40' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save changes to 10.77.1.0/24' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('Not an IP address or CIDR range');
+    expect(mocked.updateSubnet).not.toHaveBeenCalled();
+  });
+
   it('says what the upload button uploads', async () => {
     renderPage();
     await screen.findByText('10.77.1.0/24');

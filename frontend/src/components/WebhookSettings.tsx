@@ -24,6 +24,7 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import PostureSection from './posture/PostureSection';
 import { Checkbox } from './ui/checkbox';
+import { CharacterCount } from './ui/character-count';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
 import { Switch } from './ui/switch';
@@ -186,7 +187,9 @@ const WebhookSettings: React.FC = () => {
             <div className="grid gap-sm md:grid-cols-2">
               <div className="space-y-xxs">
                 <Label htmlFor="wh-name">Name</Label>
-                <Input id="wh-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Team Slack" maxLength={100} />
+                <Input id="wh-name" value={name} onChange={(e) => setName(e.target.value)} placeholder="Team Slack" maxLength={100}
+                  aria-describedby="wh-name-count" />
+                <CharacterCount id="wh-name-count" value={name} max={100} />
               </div>
               <div className="space-y-xxs">
                 <Label htmlFor="wh-url">URL</Label>

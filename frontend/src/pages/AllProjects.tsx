@@ -22,13 +22,14 @@ import { Textarea } from '../components/ui/textarea';
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
-import { PROJECT_STATUSES } from './ProjectSettings';
+import { CharacterCount } from '../components/ui/character-count';
+import { PROJECT_NAME_MAX, PROJECT_STATUSES } from './ProjectSettings';
 
 const day = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : null);
 const statusLabel = (s: string) => PROJECT_STATUSES.find((x) => x.value === s)?.label ?? s;
 
 const AllProjects: React.FC = () => {
-  const { projects, currentProject, selectProject, refreshProjects, isLoading } = useProject();
+  const { projects, currentProject, selectProject, adoptProject, isLoading } = useProject();
   const navigate = useNavigate();
   const toast = useToast();
   const [open, setOpen] = useState(false);
@@ -45,12 +46,17 @@ const AllProjects: React.FC = () => {
     if (!name.trim()) return;
     setCreating(true);
     try {
-      await createProject(name.trim(), description.trim() || undefined);
-      await refreshProjects();
+      const created = await createProject(name.trim(), description.trim() || undefined);
       setOpen(false);
       setName('');
       setDescription('');
-      toast.success('Project created. You are its admin.');
+      // v5.290.0 — the new project becomes the active one and opens on its
+      // Scope page: declaring scope is the first thing a project needs, and
+      // leaving the old project active meant the next upload or scope entry
+      // silently went into the wrong engagement.  The toast says so.
+      adoptProject(created);
+      navigate('/scopes');
+      toast.success(`Created ${created.name} and switched to it — you are its admin. Start by declaring its scope.`);
     } catch (err) {
       toast.error(formatApiError(err, 'Could not create the project.'));
     } finally {
@@ -59,7 +65,9 @@ const AllProjects: React.FC = () => {
   };
 
   return (
-    <div className="mx-auto max-w-6xl space-y-lg p-md md:p-lg">
+    // Full width like the other hub pages (see Reference.tsx); the table and
+    // the dialog keep their own widths.
+    <div className="space-y-lg p-md md:p-lg">
       <header className="flex flex-wrap items-start justify-between gap-md">
         <div className="min-w-0">
           <h1 className="text-page-title">All projects</h1>
@@ -131,7 +139,9 @@ const AllProjects: React.FC = () => {
           <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void create(); }}>
             <div className="space-y-xxs">
               <Label htmlFor="np-name">Name</Label>
-              <Input id="np-name" autoFocus maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+              <Input id="np-name" autoFocus maxLength={PROJECT_NAME_MAX} value={name}
+                aria-describedby="np-name-count" onChange={(e) => setName(e.target.value)} />
+              <CharacterCount id="np-name-count" value={name} max={PROJECT_NAME_MAX} />
             </div>
             <div className="space-y-xxs">
               <Label htmlFor="np-desc">Description</Label>

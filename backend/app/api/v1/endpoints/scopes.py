@@ -833,10 +833,13 @@ def _validate_cidr(cidr: str) -> str:
     import ipaddress
     try:
         net = ipaddress.ip_network(cidr.strip(), strict=False)
-    except (ValueError, TypeError) as exc:
+    except (ValueError, TypeError):
+        # v2.404.0 — a plain sentence, not Python's parser text ("'x' does
+        # not appear to be an IPv4 or IPv6 network"): the UI shows it as is.
+        shown = cidr.strip() if isinstance(cidr, str) else cidr
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid CIDR {cidr!r}: {exc}",
+            detail=f"{shown!r} is not an IP address or CIDR range",
         )
     return str(net)
 @router.post(
