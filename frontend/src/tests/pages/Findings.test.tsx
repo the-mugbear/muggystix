@@ -359,9 +359,37 @@ describe('Findings — presentation', () => {
     setResponse([makeFinding(1, { status: 'confirmed' })]);
     renderFindings();
     await screen.findByText('Finding 1');
-    const trigger = screen.getByRole('combobox', { name: 'Status for Finding 1' });
+    const trigger = screen.getByRole('combobox', { name: 'Change status for Finding 1' });
     expect(trigger.textContent).toContain('Confirmed');
     expect(trigger.className).toContain('border-0');
     expect(screen.queryByRole('button', { name: /history/i })).toBeNull();
+  });
+
+  // v5.288.0: the dotted underline sat under an overflow-clipped span and
+  // showed on some rows only; every row now says "Change status" the same way.
+  it('marks every status picker the same way, with no clipped underline', async () => {
+    setResponse([makeFinding(1, { status: 'confirmed' }), makeFinding(2, { status: 'open' })]);
+    renderFindings();
+    await screen.findByText('Finding 2');
+    for (const name of ['Change status for Finding 1', 'Change status for Finding 2']) {
+      const trigger = screen.getByRole('combobox', { name });
+      expect(trigger).toHaveAttribute('title', 'Change status');
+      expect(trigger.className).not.toMatch(/underline/);
+    }
+  });
+
+  // v5.288.0: newest-first alone interleaved severities; with no sort chosen
+  // the list is worst first (ties newest first, server-side), and a chosen
+  // sort is still the operator's.
+  it('defaults to severity order and keeps a chosen sort', async () => {
+    renderFindings();
+    await screen.findByText('Finding 1');
+    expect(mocked.listFindings.mock.calls[0][0]).toEqual(expect.objectContaining({ sort: 'severity', dir: 'asc' }));
+    expect(screen.getByRole('columnheader', { name: /Severity/ })).toHaveAttribute('aria-sort', 'ascending');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Age$/ }));
+    await waitFor(() => expect(mocked.listFindings.mock.lastCall?.[0]).toEqual(
+      expect.objectContaining({ sort: 'created_at', dir: 'desc' }),
+    ));
   });
 });

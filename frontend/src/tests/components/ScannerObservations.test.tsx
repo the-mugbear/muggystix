@@ -52,8 +52,25 @@ describe('ScannerObservations', () => {
     expect(screen.getByText('3 hosts')).toBeInTheDocument();
     expect(screen.getByText('1 covered · 1 not yet judged')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Finding #12/ })).toHaveAttribute('href', '/findings/12');
-    // Defaults to issues carried by 2+ hosts, still waiting.
-    expect(mocked.getObservationIssues).toHaveBeenCalledWith(expect.objectContaining({ minHosts: 2, includeJudged: false }));
+    // Defaults to issues on ANY number of hosts, still waiting (v5.288.0: the
+    // old 2+ default hid every single-host issue, criticals included).
+    expect(mocked.getObservationIssues).toHaveBeenCalledWith(expect.objectContaining({ minHosts: 1, includeJudged: false }));
+    expect(screen.getByTestId('observations-count')).not.toHaveTextContent(/or more hosts/);
+  });
+
+  it('draws severity with the shared badge, Info included', async () => {
+    mocked.getObservationIssues.mockResolvedValue({
+      items: [issue('cve:CVE-1', 'Crit one', 1, { severity: 'critical' }), issue('title:x', 'Info one', 1, { severity: 'info' })],
+      total: 2,
+    });
+    renderIt();
+    await screen.findByText('Crit one');
+    const crit = screen.getByText('Critical');
+    const info = screen.getByText('Info');
+    expect(crit.className).toMatch(/uppercase/);
+    expect(crit.className).not.toMatch(/capitalize/);
+    expect(info.className).toMatch(/uppercase/);
+    expect(info.className).toMatch(/shadow-\[inset/);
   });
 
   it('promotes several issues at once, one on the hosts ticked and one on all of them', async () => {

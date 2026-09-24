@@ -49,7 +49,9 @@ const status = (a: ReportTemplateAsset) => {
   if (a.required) return <Badge variant="destructive">Missing · required</Badge>;
   // A replacing file that is absent is not a gap: the shipped one is used.
   if (a.replaces) return <Badge variant="outline">Not installed · shipped used</Badge>;
-  return <Badge variant="outline">Missing · optional</Badge>;
+  // "Not installed", as the section's count says (v5.288.0): "Missing"
+  // is kept for the required files that block a render.
+  return <Badge variant="outline">Not installed · optional</Badge>;
 };
 
 export interface TemplateImagesProps {

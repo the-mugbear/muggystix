@@ -46,6 +46,18 @@ import { safeFallback } from '../utils/uiStyles';
 
 const day = (iso: string | null) => (iso ? new Date(iso).toLocaleDateString() : '—');
 
+/** "Draft #12 · started 23 Sep 2026, 14:05 · template default" — what sets
+ *  apart drafts that share a title (v5.288.0). The time is there because two
+ *  drafts are often started the same day. */
+export const draftMeta = (r: Pick<ClientReport, 'id' | 'created_at' | 'template'>): string => {
+  const started = r.created_at && !Number.isNaN(new Date(r.created_at).getTime())
+    ? new Date(r.created_at).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+    : null;
+  return [`Draft #${r.id}`, started ? `started ${started}` : null, r.template ? `template ${r.template}` : null]
+    .filter(Boolean)
+    .join(' · ');
+};
+
 export const reportKindLabel = (r: Pick<ClientReport, 'kind' | 'baseline' | 'revision_of'>): string => {
   const parts = [r.kind === 'addendum' ? `Addendum to #${r.baseline?.number ?? '?'}` : 'Full report'];
   if (r.revision_of) parts.push(`revises #${r.revision_of.number ?? '?'}`);
@@ -170,8 +182,14 @@ const Reports: React.FC = () => {
                 <TableBody>
                   {drafts.map((r) => (
                     <TableRow key={r.id}>
-                      <TableCell className="truncate">
-                        <Link to={`/reports/${r.id}`} className="text-info hover:underline" title={r.title}>{r.title}</Link>
+                      <TableCell className="min-w-0">
+                        <Link to={`/reports/${r.id}`} className="block truncate text-info hover:underline" title={r.title}>{r.title}</Link>
+                        {/* Drafts often share the default title; this line
+                            tells them apart from what the list already
+                            carries (v5.288.0) — no per-draft request. */}
+                        <span className="block truncate text-caption text-muted-foreground" data-testid={`draft-meta-${r.id}`}>
+                          {draftMeta(r)}
+                        </span>
                       </TableCell>
                       <TableCell className="truncate text-caption">{reportKindLabel(r)}</TableCell>
                       <TableCell className="truncate text-caption">{safeFallback(r.created_by_name, '—')}</TableCell>

@@ -7,7 +7,6 @@
  * up" lands on.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { findingDetailHref } from '../utils/findingsReturn';
 import { Loader2, AlertTriangle, ArrowUp, ArrowDown, ArrowUpDown, Search } from 'lucide-react';
@@ -33,7 +32,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
 import { useListCursor } from '../hooks/useListCursor';
-import { Badge } from '../components/ui/badge';
+import { SeverityBadge } from '../components/ui/SeverityBadge';
 import { Input } from '../components/ui/input';
 import SeverityBar from '../components/ui/SeverityBar';
 import { Button } from '../components/ui/button';
@@ -69,8 +68,6 @@ import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import ScannerObservations from '../components/findings/ScannerObservations';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
-
-const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
 
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
 // cell's title. Falls back safely on a missing/invalid value rather than
@@ -222,8 +219,10 @@ const FindingsList: React.FC = () => {
     return [25, 50, 100, 200].includes(n) ? n : 50;
   })();
   // Column sort (server-side — sorting only the current page would mislead
-  // under pagination). null = backend default (newest-first).
-  const sortBy = (searchParams.get('sort') as FindingSortField | null) ?? null;
+  // under pagination). With no sort in the URL the list is worst first, then
+  // newest (v5.288.0) — newest-first alone interleaved the severities.  The
+  // server's severity sort breaks ties by id descending, i.e. newest.
+  const sortBy: FindingSortField = (searchParams.get('sort') as FindingSortField | null) ?? 'severity';
   const sortDir: 'asc' | 'desc' = searchParams.get('dir') === 'desc' ? 'desc' : 'asc';
   const setPage = useCallback((p: number) => setUrlParam('page', String(p + 1), '1'), [setUrlParam]);
   const setPageSize = useCallback((n: number) => setUrlParam('page_size', String(n), '50', true), [setUrlParam]);
@@ -694,9 +693,7 @@ const FindingsList: React.FC = () => {
                     )}
                   </TableCell>
                   <TableCell>
-                    <Badge variant={SEVERITY_VARIANT[f.severity] as never}>
-                      {f.severity[0].toUpperCase() + f.severity.slice(1)}
-                    </Badge>
+                    <SeverityBadge severity={f.severity} />
                   </TableCell>
                   <TableCell>
                     {/* The note thread is the finding's evidence — link the
@@ -737,17 +734,23 @@ const FindingsList: React.FC = () => {
                     )}
                   </TableCell>
                   <TableCell>
-                    {/* Status reads as quiet text; clicking it opens the
-                        picker (terminal choices still prompt for the "why").
-                        The history lives on the finding page. */}
+                    {/* Status reads as quiet text with a chevron; clicking it
+                        opens the picker (terminal choices still prompt for
+                        the "why").  The history lives on the finding page.
+                        v5.288.0: the dotted underline sat 4px below a
+                        line-clamped (overflow-hidden) span, so row by row it
+                        was clipped or not with sub-pixel position — some
+                        cells looked editable and some did not.  The chevron
+                        and the "Change status" label say it on every row. */}
                     {canManage ? (
                       <Select
                         value={f.status}
                         onValueChange={(v) => handleStatusChange(f.id, v as FindingStatus, f.title)}
                       >
                         <SelectTrigger
-                          className="h-auto w-auto max-w-full justify-start gap-xxs border-0 bg-transparent p-0 text-caption text-foreground shadow-none underline decoration-dotted underline-offset-4 hover:decoration-solid [&>svg]:size-3"
-                          aria-label={`Status for ${f.title}`}
+                          className="h-auto w-auto max-w-full justify-start gap-xxs border-0 bg-transparent p-0 text-caption text-foreground shadow-none hover:text-primary [&>svg]:size-3"
+                          aria-label={`Change status for ${f.title}`}
+                          title="Change status"
                         >
                           <SelectValue />
                         </SelectTrigger>

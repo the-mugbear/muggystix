@@ -21,6 +21,8 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
 from sqlalchemy import String, case, cast, distinct, func, literal, or_
+from sqlalchemy.dialects.postgresql import aggregate_order_by
+from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
 from sqlalchemy.orm import Session
 
 from app.db.models import Host, Port
@@ -55,6 +57,21 @@ def _key():
     """The issue key, with the per-row fallback ``issue_key`` itself uses for a
     row with no CVE and no title (such a row is an issue of its own)."""
     return func.coalesce(Vulnerability.issue_key, literal("row:") + cast(Vulnerability.id, String))
+
+
+def _of_most_severe_row(db: Session, column):
+    """``column`` from the group's most severe row (tie → lowest id), as an
+    aggregate in the same GROUP BY (v2.402.0).
+
+    ``min(title)`` beside ``max(severity)`` paired the alphabetically first
+    title with the worst severity of ANOTHER row: "Synthetic low issue" was
+    shown as Medium because a medium row shared its CVE.  On Postgres this is
+    ``(array_agg(col ORDER BY rank DESC, id))[1]``; the SQLite test fallback
+    has no ordered aggregate and keeps ``min`` (its tests skip the pairing).
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        return pg_array_agg(aggregate_order_by(column, _rank().desc(), Vulnerability.id.asc()))[1]
+    return func.min(column)
 
 
 def _project_rows(db: Session, project_id: int, *columns):
@@ -135,9 +152,13 @@ def list_issues(
     # the HAVING and the ORDER BY each — 4.3 s over 400k rows at 80k hosts.
     base, judged_row = join_judged(_project_rows(db, project_id), [project_id])
     judged = func.count(distinct(case((judged_row, Vulnerability.host_id))))
+    # Title and CVE come from the row the severity comes from — one aggregate
+    # query still, no second pass over the groups.
+    title = _of_most_severe_row(db, Vulnerability.title)
+    cve = func.coalesce(_of_most_severe_row(db, Vulnerability.cve_id), func.max(Vulnerability.cve_id))
     query = base.with_entities(
         key.label("issue_key"), rank.label("rank"), hosts.label("hosts"), judged.label("judged"),
-        func.min(Vulnerability.title).label("title"), func.max(Vulnerability.cve_id).label("cve_id"),
+        title.label("title"), cve.label("cve_id"),
     )
     if search and search.strip():
         like = f"%{search.strip()}%"
@@ -158,7 +179,7 @@ def list_issues(
     # no rows to carry it, so only then is it counted on its own.
     rows = (
         query.add_columns(func.count().over().label("total_groups"))
-        .order_by(rank.desc(), (hosts - judged).desc(), hosts.desc(), func.min(Vulnerability.title))
+        .order_by(rank.desc(), (hosts - judged).desc(), hosts.desc(), title)
         .offset(skip)
         .limit(limit)
         .all()

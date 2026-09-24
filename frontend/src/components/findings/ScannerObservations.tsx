@@ -24,11 +24,10 @@ import { useToast } from '../../contexts/ToastContext';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatApiError } from '../../utils/apiErrors';
-import { SEVERITY_BADGE_VARIANT } from '../../utils/severity';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
 import { stickyBelowChrome } from '../../utils/uiStyles';
 import type { FindingHostStatus, FindingStatus } from '../../services/api';
-import { Badge } from '../ui/badge';
+import { SeverityBadge } from '../ui/SeverityBadge';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import {
@@ -61,7 +60,9 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const [params, setParams] = useSearchParams();
   const search = params.get('obs_search') ?? '';
   const severity = params.get('obs_severity') ?? 'all';
-  const minHosts = Number(params.get('obs_min') ?? 2) || 2;
+  // Any number of hosts by default (v5.288.0): "2 or more" hid every
+  // single-host issue, criticals included, with nothing saying so.
+  const minHosts = Number(params.get('obs_min') ?? 1) || 1;
   const includeJudged = params.get('obs_judged') === '1';
   const setParam = useCallback((key: string, value: string, fallback: string) => {
     setParams((prev) => {
@@ -72,7 +73,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
     }, { replace: true });
   }, [setParams]);
   const setSeverity = (v: string) => setParam('obs_severity', v, 'all');
-  const setMinHosts = (v: number) => setParam('obs_min', String(v), '2');
+  const setMinHosts = (v: number) => setParam('obs_min', String(v), '1');
   const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
   const [searchInput, setSearchInput] = useState(search);
   const [issues, setIssues] = useState<ObservationIssue[]>([]);
@@ -326,7 +327,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
       ) : (
         <>
           <p className="mb-xs text-caption text-muted-foreground" data-testid="observations-count">
-            {plural(total, 'issue')}{includeJudged ? '' : ' with hosts not yet judged'} · most severe first
+            {plural(total, 'issue')}{minHosts > 1 ? ` carried by ${minHosts} or more hosts` : ''}
+            {includeJudged ? '' : ' with hosts not yet judged'} · most severe first
           </p>
           <div className="overflow-x-auto">
             <Table className="min-w-[48rem] table-fixed">
@@ -378,12 +380,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                           )}
                         </TableCell>
                         <TableCell>
-                          <Badge
-                            variant={((SEVERITY_BADGE_VARIANT as Record<string, string>)[issue.severity] ?? 'muted') as never}
-                            className="capitalize"
-                          >
-                            {issue.severity}
-                          </Badge>
+                          <SeverityBadge severity={issue.severity} />
                         </TableCell>
                         <TableCell className="tabular-nums">
                           <p>{plural(issue.host_count, 'host')}</p>
