@@ -126,14 +126,26 @@ describe('Scans — filter by uploader (v5.281.0)', () => {
 });
 
 // Screenshot 2026-09-23: "Sep 7, 2026, 04:16 P…" / "uploaded · run time un…".
+// UX review 2026-09-24: four lines per row — the zone on every time, and
+// "run time unknown" under every file without one.
 describe('Scans — the When column', () => {
   it('wraps the time and its note instead of cutting them off', async () => {
     renderPage();
     await screen.findByText('newest.xml');
-    const note = screen.getAllByText('uploaded · run time unknown')[0];
+    const note = screen.getAllByText('uploaded')[0];
     expect(note).not.toHaveClass('truncate');
     expect(note).toHaveClass('break-words');
     expect(note.previousElementSibling).not.toHaveClass('truncate');
+  });
+
+  it('prints one time without a zone per row, and no "run time unknown"', async () => {
+    renderPage();
+    await screen.findByText('newest.xml');
+    expect(screen.queryByText(/run time unknown/)).toBeNull();
+    const time = screen.getAllByText('uploaded')[0].previousElementSibling as HTMLElement;
+    const zone = new Intl.DateTimeFormat(undefined, { timeZoneName: 'short' })
+      .formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value;
+    if (zone) expect(time.textContent).not.toContain(zone);
   });
 });
 

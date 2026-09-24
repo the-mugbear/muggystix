@@ -47,6 +47,17 @@ describe('HostNamesCard — the DNS records behind the names', () => {
     expect(screen.queryByText(/DNS record/)).not.toBeInTheDocument();
   });
 
+  // UX review 2026-09-24 — "108 DNS records ingested in this project, but none
+  // match this host" was a whole section of project-wide noise.
+  it('with no names and none of the project\'s records matching, are one quiet line without the project count', async () => {
+    api.getHostNames.mockResolvedValue(names({ other: [] }));
+    api.getHostDnsRecords.mockResolvedValue(dns({ items: [], total: 0, record_types: [], project_total: 108 }));
+    renderCard();
+    expect(await screen.findByText('DNS evidence: no ingested record names this host.')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /DNS evidence/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(/108/)).not.toBeInTheDocument();
+  });
+
   it('stand alone when the host has no names, so records are not lost with the section', async () => {
     api.getHostNames.mockResolvedValue(names({ other: [] }));
     api.getHostDnsRecords.mockResolvedValue(dns());

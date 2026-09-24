@@ -13,7 +13,6 @@ import {
   GitCompareArrows,
   Hourglass,
   Loader2,
-  Search,
   Info,
   Trash2,
   Upload,
@@ -75,6 +74,7 @@ import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
+import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
 import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
 import { ScanWhenCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
@@ -85,7 +85,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from '../components/ui/dialog';
-import { Input } from '../components/ui/input';
+import { ListFilterBar, ListFilterSearch } from '../components/ListFilterBar';
 import {
   Table,
   TableBody,
@@ -1643,21 +1643,27 @@ export default function Scans() {
           {/* v5.270.0 — the filters are ONE row: search, tool, range, the
               Grouped / All files switch, and how much of the list is loaded.
               (Two rows of upper-case count chips and a paragraph before.) */}
-          <div className="mb-xs flex flex-wrap items-center gap-sm border-b border-border pb-sm">
-            <div className="relative w-64 min-w-0">
-              <Search
-                className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-                aria-hidden
-              />
-              <Input
-                type="search"
-                value={searchText}
-                onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Search filename, tool, scan type…"
-                aria-label="Search scan inventory"
-                className="h-8 pl-xl text-metadata"
-              />
-            </div>
+          {/* v5.294.0 — the shared ListFilterBar every list page uses. */}
+          <ListFilterBar
+            summary={(scans.length > 0 || batches.length > 0) ? (
+              <>
+                {/* v2.86.2 — how much of the list is loaded, so a partial view is
+                    never mistaken for the whole one. */}
+                {showBatchFiles
+                  ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
+                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
+                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
+                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
+                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
+              </>
+            ) : undefined}
+          >
+            <ListFilterSearch
+              value={searchText}
+              onChange={setSearchText}
+              placeholder="Search filename, tool, scan type…"
+              label="Search scan inventory"
+            />
             <Select value={toolFilter || '__all'} onValueChange={(v) => setToolFilter(v === '__all' ? '' : v)}>
               <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by tool">
                 <SelectValue />
@@ -1748,19 +1754,7 @@ export default function Scans() {
                 </button>
               ))}
             </div>
-            {/* v2.86.2 — how much of the list is loaded, so a partial view is
-                never mistaken for the whole one. */}
-            {(scans.length > 0 || batches.length > 0) && (
-              <span className="ml-auto text-caption text-muted-foreground">
-                {showBatchFiles
-                  ? `${scans.length.toLocaleString()}${inventorySummary?.total_files != null ? ` of ${inventorySummary.total_files.toLocaleString()}` : ''} file${scans.length === 1 ? '' : 's'}`
-                  : `${historyRows.length.toLocaleString()}${historyTotal != null && historyTotal > historyRows.length ? ` of ${historyTotal.toLocaleString()}` : ''} upload${historyRows.length === 1 ? '' : 's'} · `
-                    + `${batches.length} batch${batches.length === 1 ? '' : 'es'}, `
-                    + `${scans.length} single file${scans.length === 1 ? '' : 's'}`}
-                {hasMoreScans ? ' · more below' : hasActiveFilters ? ' (filtered)' : ''}
-              </span>
-            )}
-          </div>
+          </ListFilterBar>
           <p className="mb-xxs text-caption text-muted-foreground">
             {showBatchFiles
               ? 'Every imported file, batched or not. Click a column heading to sort.'
@@ -1967,16 +1961,17 @@ export default function Scans() {
                             {/* v5.270.0 — the filename opens the scan; "Hosts" is
                                 a quiet link; delete lives in the row menu, out of
                                 reach of a stray click. */}
-                            <div className="flex items-center justify-end gap-xs">
-                              {scan.total_hosts > 0 && (
+                            <ScanRowActions
+                              link={scan.total_hosts > 0 ? (
                                 <Link
                                   to={`/hosts?scan_ids=${scan.id}`}
-                                  className="rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                  className={ROW_LINK_CLASS}
                                   title="Open the Hosts page filtered to this scan"
                                 >
                                   Hosts
                                 </Link>
-                              )}
+                              ) : null}
+                              menu={
                               <DropdownMenu>
                                 <DropdownMenuTrigger asChild>
                                   <Button
@@ -2000,7 +1995,8 @@ export default function Scans() {
                                   </DropdownMenuItem>
                                 </DropdownMenuContent>
                               </DropdownMenu>
-                            </div>
+                              }
+                            />
                           </TableCell>
                         </TableRow>
                         {hasCommand && isExpanded && (
