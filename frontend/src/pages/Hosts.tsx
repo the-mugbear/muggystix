@@ -60,6 +60,7 @@ import { cn } from '../utils/cn';
 import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
+import { endpointMatchCriteria } from '../utils/endpointMatch';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
 import {
@@ -1190,6 +1191,20 @@ export default function Hosts() {
     toast.info(`Filtered to ${pivot.kind === 'os' ? 'OS' : pivot.kind} "${pivot.value}"`, { autoHideMs: 2000 });
   }, [setFilters, setPage, toast]);
 
+  // The active port / service / version conditions, so each row can name the
+  // endpoint that made it match (the Exposure chips are a risk read and may
+  // not include it).
+  const endpointMatch = useMemo(
+    () => endpointMatchCriteria({
+      ports: filters.ports,
+      services: filters.services,
+      portStates: filters.portStates,
+      hasOpenPorts: filters.hasOpenPorts,
+      query: filters.query,
+    }),
+    [filters.ports, filters.services, filters.portStates, filters.hasOpenPorts, filters.query],
+  );
+
   const baseColumns = useHostColumns({
     updatingHostId,
     onFollowChange: handleFollowChange,
@@ -1200,6 +1215,7 @@ export default function Hosts() {
     // focusable — semantically wrong as a link.
     onOpen: openInspector,
     onAddFilter: handleAddFilter,
+    endpointMatch,
   });
 
   // v2.71.0 — prepend a checkbox column to drive the bulk-action bar.
@@ -1264,8 +1280,11 @@ export default function Hosts() {
         <div>
           <h1 className="text-page-title">Hosts</h1>
         </div>
+        {/* Both exports are secondary: the page's work is triage in the
+            table, so no header button is filled as the primary action. */}
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
+            variant="outline"
             onClick={() => setToolReadyDialogOpen(true)}
             disabled={loading || totalHosts === 0 || showingStaleResults}
           >
@@ -1612,12 +1631,28 @@ export default function Hosts() {
               Dimmed (not interaction-blocked) while stale: drill-down into a
               single host is harmless + refetches, only bulk/export are paused. */}
           {/* v5.270.0 — the "?" on a service chip, said once for the page. */}
-          {hasGuessedServices && (
-            <p className="text-caption text-muted-foreground">
-              <span className="rounded-chip border border-dashed border-border px-xs py-px text-foreground">SSH?</span>{' '}
-              a service with “?” was guessed from its port number; no scanner probed it.
-            </p>
-          )}
+          {/* The row keys, said once for the page: the state dot beside each
+              IP, and (when present) the "?" on a service chip. */}
+          <p className="flex flex-wrap items-center gap-x-md gap-y-xxs text-caption text-muted-foreground" data-testid="hosts-legend">
+            <span className="inline-flex items-center gap-xxs">
+              <span className="inline-block size-2 shrink-0 rounded-full bg-success" aria-hidden />
+              up
+            </span>
+            <span className="inline-flex items-center gap-xxs">
+              <span className="inline-block size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
+              down
+            </span>
+            <span className="inline-flex items-center gap-xxs">
+              <span className="inline-block size-2 shrink-0 rounded-full border border-muted-foreground/50" aria-hidden />
+              state unknown (liveness not confirmed, e.g. masscan / naabu / DNS)
+            </span>
+            {hasGuessedServices && (
+              <span>
+                <span className="rounded-chip border border-dashed border-border px-xs py-px text-foreground">SSH?</span>{' '}
+                a service with “?” was guessed from its port number; no scanner probed it.
+              </span>
+            )}
+          </p>
           <div
             className={cn(showingStaleResults && 'opacity-60 transition-opacity')}
             aria-busy={showingStaleResults || undefined}
