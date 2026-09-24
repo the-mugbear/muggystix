@@ -185,3 +185,26 @@ def test_batch_lists_its_files_that_did_not_import_and_counts_superseded(client,
 
     row = next(b for b in client.get(f"{base}/scans/batches").json() if b["id"] == batch.id)
     assert (row["failed_files"], row["superseded_files"], row["discarded_files"]) == (1, 1, 1)
+
+
+def test_expired_and_discarded_uploads_are_not_counted_as_failed(client, db_session, test_project):
+    """UX review 2026-09-24: 31 staged uploads that expired read "Failed 31" on
+    Ingestion Results while /scans said "expired before review"."""
+    from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
+
+    base = f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results"
+    real = _job(db_session, test_project, sha="1" * 64, error="boom")
+    no_message = _job(db_session, test_project, sha="2" * 64)
+    expired = _job(db_session, test_project, sha="3" * 64,
+                   error=f"{EXPIRED_MESSAGE_PREFIX}: not started within 24 hours.")
+    discarded = _job(db_session, test_project, sha="4" * 64, error=DISCARDED_MESSAGE)
+
+    summary = client.get(base).json()["summary"]
+    assert (summary["total_failed"], summary["total_expired"], summary["total_discarded"]) == (2, 1, 1)
+
+    def ids(status):
+        return {i["id"] for i in client.get(base, params={"status": status}).json()["items"]}
+
+    assert ids("failed") == {real.id, no_message.id}
+    assert ids("expired") == {expired.id}
+    assert ids("discarded") == {discarded.id}

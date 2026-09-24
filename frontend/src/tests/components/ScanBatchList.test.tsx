@@ -107,8 +107,9 @@ describe('ScanBatchRow', () => {
     const { container } = renderRow({}, vi.fn(), empty);
     const contributed = cells(container)[3];
     expect(contributed).toHaveTextContent('Nothing imported');
+    // Ingestion Results lists expired uploads in their own view, not under Failed.
     expect(within(contributed).getByRole('link', { name: '31 expired before import' }))
-      .toHaveAttribute('href', '/parse-errors?status=failed');
+      .toHaveAttribute('href', '/parse-errors?status=expired');
     expect(contributed).not.toHaveTextContent(/0 files/);
     expect(screen.queryByText(/reached the import/)).not.toBeInTheDocument();
   });

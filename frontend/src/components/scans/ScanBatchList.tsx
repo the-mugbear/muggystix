@@ -342,7 +342,7 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
           {expired > 0 && (
             <p className="text-caption text-muted-foreground">
               <Link
-                to="/parse-errors?status=failed"
+                to="/parse-errors?status=expired"
                 className={reasonLink}
                 title="Uploaded but never started: nobody reviewed their format within 24 hours, so the files were removed"
               >

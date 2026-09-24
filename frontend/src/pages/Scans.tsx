@@ -2240,12 +2240,16 @@ const NOT_IMPORTED_REASON: Array<[string, string, string]> = [
   ['dismissed', 'dismissed failure', 'dismissed failures'],
 ];
 
-const notImportedReasons =(byReason?: Record<string, number>): string[] =>
+/** Where each reason is listed on Ingestion Results (v2.408.0 split expired
+ *  and discarded uploads out of its Failed view). */
+const NOT_IMPORTED_VIEW: Record<string, string> = { expired: 'expired', discarded: 'discarded', dismissed: 'failed' };
+
+const notImportedReasons = (byReason?: Record<string, number>): Array<{ key: string; text: string }> =>
   NOT_IMPORTED_REASON
     .filter(([key]) => (byReason?.[key] ?? 0) > 0)
     .map(([key, one, many]) => {
       const n = byReason![key];
-      return `${n.toLocaleString()} ${n === 1 ? one : many}`;
+      return { key, text: `${n.toLocaleString()} ${n === 1 ? one : many}` };
     });
 
 const ScansLead: React.FC<{
@@ -2286,10 +2290,29 @@ const ScansLead: React.FC<{
           {notImported > 0 && (
             <>
               {sep}
-              <Link to="/parse-errors?status=failed" className="underline-offset-2 hover:underline">
+              {/* One reason: its own Ingestion Results view; several: each
+                  reason links to its view, the total to every upload. */}
+              <Link
+                to={reasons.length === 1 ? `/parse-errors?status=${NOT_IMPORTED_VIEW[reasons[0].key]}` : '/parse-errors'}
+                className="underline-offset-2 hover:underline"
+              >
                 {notImported.toLocaleString()} never imported
               </Link>
-              {reasons.length > 0 && ` (${reasons.join(', ')})`}
+              {reasons.length === 1 && ` (${reasons[0].text})`}
+              {reasons.length > 1 && (
+                <>
+                  {' ('}
+                  {reasons.map((r, i) => (
+                    <React.Fragment key={r.key}>
+                      {i > 0 && ', '}
+                      <Link to={`/parse-errors?status=${NOT_IMPORTED_VIEW[r.key]}`} className="underline-offset-2 hover:underline">
+                        {r.text}
+                      </Link>
+                    </React.Fragment>
+                  ))}
+                  {')'}
+                </>
+              )}
             </>
           )}
           {/* v5.289.0 — failures whose file a later upload imported: not

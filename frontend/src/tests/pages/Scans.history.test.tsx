@@ -322,8 +322,22 @@ describe('Scans — layout', () => {
     });
     renderPage();
     const link = await screen.findByRole('link', { name: '31 never imported' });
-    expect(link).toHaveAttribute('href', '/parse-errors?status=failed');
+    // No reason breakdown: every upload (Failed no longer holds expired or
+    // discarded ones — UX review 2026-09-24).
+    expect(link).toHaveAttribute('href', '/parse-errors');
     expect(leadText()).not.toMatch(/nothing failed/);
+  });
+
+  it('links never-imported files to the Ingestion Results view of their reason', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 3, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 3 },
+      imports_need_attention: 0, imports_not_imported: 33,
+      imports_not_imported_by_reason: { expired: 31, discarded: 2 },
+    });
+    renderPage();
+    await screen.findByRole('link', { name: '33 never imported' });
+    expect(screen.getByRole('link', { name: '31 expired before review' })).toHaveAttribute('href', '/parse-errors?status=expired');
+    expect(screen.getByRole('link', { name: '2 discarded' })).toHaveAttribute('href', '/parse-errors?status=discarded');
   });
 
   // Screenshot 2026-09-23: a run-on sentence listing every possible reason

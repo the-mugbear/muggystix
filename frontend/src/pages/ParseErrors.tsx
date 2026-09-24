@@ -3,7 +3,6 @@ import { copyToClipboard } from '../utils/clipboard';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ArrowDownUp,
-  RefreshCw,
   X as CloseIcon,
   ChevronDown,
   ChevronUp,
@@ -11,11 +10,9 @@ import {
   CloudUpload,
   Copy,
   Loader2,
-  Search,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useConfirm } from '../hooks/useConfirm';
-import { Input } from '../components/ui/input';
 import {
   discardIngestionJob,
   dismissIngestionJob,
@@ -69,7 +66,10 @@ import {
 } from '../components/ui/tooltip';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
-import { formatRelativeTime } from '../utils/relativeTime';
+import { formatDate, formatTimestamp } from '../utils/relativeTime';
+import TimeAgo from '../components/TimeAgo';
+import LastUpdated from '../components/LastUpdated';
+import { ListFilterBar, ListFilterSearch, FILTER_TRIGGER_CLASS } from '../components/ListFilterBar';
 
 const formatFileSize = (bytes: number | null): string => {
   if (bytes == null || bytes === 0) return '-';
@@ -107,7 +107,8 @@ export const failureReason = (item: IngestionResultItem): string | null => {
   if (item.status !== 'failed') return null;
   const raw = (item.error?.error_message || item.error?.user_message || '').trim();
   if (raw.startsWith('Discarded before import')) return 'Discarded before import';
-  if (raw.startsWith('Staged upload expired')) return 'Expired before import';
+  // The badge already says "expired" (UX review 2026-09-24); the line says why.
+  if (raw.startsWith('Staged upload expired')) return 'Not started within 24 hours of upload; the file was removed';
   // v5.289.0 — the parser's specific cause (server-derived from the parse
   // error: "SMBMap parser found 0 hosts in …"); the generic "Failed to parse
   // the file …" user message only when nothing more specific was recorded.
@@ -125,14 +126,28 @@ const DIRECTION_LABEL: Record<IngestionResultsSortBy, { asc: string; desc: strin
   file_size: { asc: 'Smallest first', desc: 'Largest first' },
 };
 
-const timeAgo = (dateString: string | null): string =>
-  formatRelativeTime(dateString, { fallback: '-', absoluteAfterDays: 30 });
 const STATUS_VARIANT: Record<string, 'success' | 'destructive' | 'info' | 'muted'> = {
   completed: 'success',
   failed: 'destructive',
   processing: 'info',
   staged: 'muted',
   queued: 'muted',
+  expired: 'muted',
+  discarded: 'muted',
+};
+
+/**
+ * The status a row reads as (UX review 2026-09-24). A staged upload that
+ * expired, or that an operator discarded, is written `failed` by the server,
+ * but nothing failed: /scans says "expired before review", and so does this
+ * list — the same split the server's `expired` / `discarded` views make.
+ */
+export const displayStatus = (item: IngestionResultItem): string => {
+  if (item.status !== 'failed') return item.status;
+  const raw = (item.error?.error_message || item.error?.user_message || '').trim();
+  if (raw.startsWith('Staged upload expired')) return 'expired';
+  if (raw.startsWith('Discarded before import')) return 'discarded';
+  return 'failed';
 };
 
 const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
@@ -199,6 +214,7 @@ const ParseErrors: React.FC = () => {
   const queryKey = `${statusFilter}|${debouncedSearchText}|${sortBy}|${sortOrder}|${page}`;
   const [dataKey, setDataKey] = useState<string | null>(null);
 
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const loadData = async () => {
     const key = queryKey;
     try {
@@ -214,6 +230,7 @@ const ParseErrors: React.FC = () => {
       });
       setData(result);
       setDataKey(key);
+      setLoadedAt(new Date());
     } catch (err: unknown) {
       setError(formatApiError(err, 'Failed to load ingestion results.'));
     } finally {
@@ -402,25 +419,20 @@ const ParseErrors: React.FC = () => {
       {confirmEl}
       <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
         <h1 className="text-page-title">Ingestion Results</h1>
-        <div className="flex flex-wrap items-center gap-xs">
-          <div className="relative w-64 shrink-0">
-            {/* v2.86.2 — server-side search across filename + error +
-                last_error.  Replaces the old client-side filename-only
-                filter that silently missed matches outside the loaded slice. */}
-            <Search
-              className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              type="search"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search filename or error…"
-              aria-label="Search ingestion results by filename or error message"
-              className="pl-xl"
-            />
-          </div>
-          {/* The status filter is the chip strip below (v5.242.0). */}
+        <LastUpdated compact lastFetched={loadedAt} onRefresh={() => void loadData()} isLoading={loading} label="ingestion results" />
+      </div>
+      {/* v5.294.0 — the shared filter row (ListFilterBar); the status filter
+          is the count strip below it (v5.242.0). */}
+      <ListFilterBar className="mb-sm">
+          {/* v2.86.2 — server-side search across filename + error +
+              last_error.  Replaces the old client-side filename-only
+              filter that silently missed matches outside the loaded slice. */}
+          <ListFilterSearch
+            value={searchText}
+            onChange={setSearchText}
+            placeholder="Search filename or error…"
+            label="Search ingestion results by filename or error message"
+          />
           {/* v2.86.2 — sort key + direction.  Two separate selects keep
               the dropdown content short; the previous single-control
               "Newest / Oldest / A→Z / …" pattern proliferates options
@@ -428,7 +440,7 @@ const ParseErrors: React.FC = () => {
           <Select value={sortBy} onValueChange={(v) => setSortBy(v as IngestionResultsSortBy)}>
             {/* Fixed width: the trigger is w-full by default, and as the only
                 select left in this row it took the whole line (v5.242.0). */}
-            <SelectTrigger className="w-44 shrink-0" aria-label="Sort by">
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-44 shrink-0')} aria-label="Sort by">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -443,6 +455,8 @@ const ParseErrors: React.FC = () => {
               was an unlabeled chevron beside the sort select. */}
           <Button
             variant="outline"
+            size="sm"
+            className="h-8"
             onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
             aria-label={`Sort direction: ${DIRECTION_LABEL[sortBy][sortOrder]} — click for ${
               DIRECTION_LABEL[sortBy][sortOrder === 'asc' ? 'desc' : 'asc']
@@ -452,11 +466,7 @@ const ParseErrors: React.FC = () => {
             <ArrowDownUp className="size-4" aria-hidden />
             {DIRECTION_LABEL[sortBy][sortOrder]}
           </Button>
-          <Button variant="outline" onClick={loadData} disabled={loading}>
-            <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
-          </Button>
-        </div>
-      </div>
+      </ListFilterBar>
 
       {error && (
         <Alert variant="destructive" className="mb-md">
@@ -540,35 +550,38 @@ const ParseErrors: React.FC = () => {
                 minimum is 1000px (the filename keeps at least 144px), so the
                 table fits beside the 240px sidebar from a ~1310px window up
                 without scrolling; narrower, the wrapper scrolls, never the page. */}
-            <Table className="table-fixed w-full min-w-[1000px]">
+            {/* UX review 2026-09-24 — still 84px wider than the page at a
+                1246px window, with the filename (the column people read)
+                narrower than Status. Hosts / ports / services are one "Found"
+                column and the duration sits under the size: 600px of fixed
+                columns under an 820px minimum, so the filename keeps 220px
+                and, beside the sidebar, over 300px. */}
+            <Table className="table-fixed w-full min-w-[820px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10" />
                   {/* A failed row's reason sits under its badges (v5.288.0). */}
-                  <TableHead className="w-44">Status</TableHead>
+                  <TableHead className="w-32">Status</TableHead>
                   {/* The filename takes the remaining width and wraps after
                       separators (v5.288.0, v5.289.0). */}
                   <TableHead>Filename</TableHead>
                   <TableHead className="w-24">Tool</TableHead>
-                  <TableHead className="w-20">Hosts</TableHead>
-                  <TableHead className="w-20">Ports</TableHead>
-                  <TableHead className="w-24">Services</TableHead>
-                  <TableHead className="w-20">Size</TableHead>
-                  <TableHead className="w-24">Duration</TableHead>
-                  <TableHead className="w-28 pr-md">Uploaded</TableHead>
+                  <TableHead className="w-40" title="Hosts up of hosts parsed, open ports of ports found, services detected">Found</TableHead>
+                  <TableHead className="w-20" title="File size, and how long the import took">Size</TableHead>
+                  <TableHead className="w-24 pr-md">Uploaded</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loading ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-xxl text-center">
+                    <TableCell colSpan={7} className="py-xxl text-center">
                       <Loader2 className="mr-xs inline size-4 animate-spin" aria-hidden />
                       <span>Loading ingestion results…</span>
                     </TableCell>
                   </TableRow>
                 ) : items.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={10} className="py-xxl text-center">
+                    <TableCell colSpan={7} className="py-xxl text-center">
                       <CloudUpload className="mx-auto mb-sm size-12 text-muted-foreground" aria-hidden />
                       <p className="mb-xs text-subheading text-muted-foreground">No upload history yet</p>
                       <p className="mx-auto mb-md max-w-md text-metadata text-muted-foreground">
@@ -611,7 +624,7 @@ const ParseErrors: React.FC = () => {
                           </TableCell>
                           <TableCell>
                             <div className="flex flex-wrap items-center gap-xxs">
-                              <StatusBadge status={item.status} />
+                              <StatusBadge status={displayStatus(item)} />
                               {/* "Completed" alone hid that part of the file
                                   never made it into the inventory. */}
                               {item.partial && (
@@ -622,7 +635,7 @@ const ParseErrors: React.FC = () => {
                               )}
                               {item.dismissed_at && (
                                 <span className="text-caption text-muted-foreground"
-                                  title={`Dismissed ${new Date(item.dismissed_at).toLocaleString()}`}>
+                                  title={`Dismissed ${formatTimestamp(item.dismissed_at)}`}>
                                   dismissed
                                 </span>
                               )}
@@ -664,20 +677,44 @@ const ParseErrors: React.FC = () => {
                               block child for the ellipsis to take.
                               (UI Style Guide RSP·H6.) */}
                           <TableCell>
+                            {/* One case for every tool ("Nessus" sat among
+                                lower-case names) — the Scans tool filter's. */}
                             <p className="truncate" title={item.tool_name || undefined}>
-                              {safeFallback(item.tool_name)}
+                              {safeFallback(item.tool_name?.toLowerCase())}
                             </p>
                           </TableCell>
-                          <TableCell className="tabular-nums">{hostsFigure(stats)}</TableCell>
-                          <TableCell className="tabular-nums">{portsFigure(stats)}</TableCell>
-                          <TableCell className="tabular-nums">{stats && stats.services_detected > 0 ? stats.services_detected : '—'}</TableCell>
-                          <TableCell>{formatFileSize(item.file_size)}</TableCell>
-                          <TableCell>{formatDuration(item.duration_seconds)}</TableCell>
-                          <TableCell>{timeAgo(item.created_at)}</TableCell>
+                          <TableCell className="min-w-0 text-caption tabular-nums">
+                            {stats && (stats.hosts_parsed > 0 || stats.ports_found > 0 || stats.services_detected > 0) ? (
+                              <>
+                                {stats.hosts_parsed > 0 && (
+                                  <p className="truncate"><span className="text-muted-foreground">hosts </span><span>{hostsFigure(stats)}</span></p>
+                                )}
+                                {stats.ports_found > 0 && (
+                                  <p className="truncate"><span className="text-muted-foreground">ports </span><span>{portsFigure(stats)}</span></p>
+                                )}
+                                {stats.services_detected > 0 && (
+                                  <p className="truncate">
+                                    {stats.services_detected} service{stats.services_detected === 1 ? '' : 's'}
+                                  </p>
+                                )}
+                              </>
+                            ) : (
+                              <span className="text-muted-foreground">—</span>
+                            )}
+                          </TableCell>
+                          <TableCell className="tabular-nums">
+                            <p className="truncate">{formatFileSize(item.file_size)}</p>
+                            <p className="truncate text-caption text-muted-foreground" title="How long the import took">
+                              {formatDuration(item.duration_seconds)}
+                            </p>
+                          </TableCell>
+                          <TableCell>
+                            <TimeAgo value={item.created_at} absoluteAfterDays={30} fallback="-" />
+                          </TableCell>
                         </TableRow>
                         {isExpanded && (
                           <TableRow>
-                            <TableCell colSpan={10} className="bg-accent/30 p-md">
+                            <TableCell colSpan={7} className="bg-accent/30 p-md">
                               <RowDetail item={item} onViewParseError={handleViewParseError} navigate={navigate} onChanged={() => void loadData()} />
                             </TableCell>
                           </TableRow>
@@ -838,7 +875,7 @@ const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void
   if (item.dismissed_at) {
     return (
       <span className="text-caption text-muted-foreground">
-        Dismissed {new Date(item.dismissed_at).toLocaleString()} — no longer listed as blocked
+        Dismissed {formatTimestamp(item.dismissed_at)} — no longer listed as blocked
       </span>
     );
   }
@@ -877,7 +914,7 @@ const RowDetail: React.FC<{
   const [retryOpen, setRetryOpen] = useState(false);
   const [reprocessOpen, setReprocessOpen] = useState(false);
   const retainedNote = item.file_retained
-    ? `File retained${item.retained_until ? ` until ${new Date(item.retained_until).toLocaleDateString()}` : ''}`
+    ? `File retained${item.retained_until ? ` until ${formatDate(item.retained_until)}` : ''}`
     : 'File no longer retained — re-upload to import again';
 
   if (item.status === 'failed' || item.error) {
@@ -1089,7 +1126,9 @@ const statusChips = (summary: IngestionResultsResponse['summary'], active: strin
   const queued = summary.total_queued ?? 0;
   const processing = summary.total_processing ?? 0;
   const staged = summary.total_staged ?? 0;
-  const all = summary.total_completed + summary.total_failed + queued + processing + staged;
+  const expired = summary.total_expired ?? 0;
+  const discarded = summary.total_discarded ?? 0;
+  const all = summary.total_completed + summary.total_failed + expired + discarded + queued + processing + staged;
   const chips: StatusChip[] = [
     { value: 'all', label: 'All uploads', count: all, hint: 'Every upload in this project' },
     {
@@ -1097,9 +1136,21 @@ const statusChips = (summary: IngestionResultsResponse['summary'], active: strin
       tone: 'text-warning',
       hint: 'Failed, or finished partial, not dismissed, and not imported since by a later upload of the same file — what Operations lists as blocked',
     },
-    { value: 'failed', label: 'Failed', count: summary.total_failed, tone: 'text-destructive', hint: 'Nothing from these files is in the inventory (dismissed ones included)' },
+    { value: 'failed', label: 'Failed', count: summary.total_failed, tone: 'text-destructive', hint: 'The import went wrong: nothing from these files is in the inventory (dismissed ones included)' },
     { value: 'completed', label: 'Completed', count: summary.total_completed, hint: 'Imported — a partial import is marked on its row' },
   ];
+  // UX review 2026-09-24 — 31 expired staged uploads read "Failed 31" here
+  // while /scans said "expired before review". Their own counts now, shown
+  // while they hold something.
+  if (expired > 0) {
+    chips.push({
+      value: 'expired', label: 'Expired', count: expired,
+      hint: 'Uploaded but never started: nobody reviewed the format within 24 hours, so the files were removed',
+    });
+  }
+  if (discarded > 0) {
+    chips.push({ value: 'discarded', label: 'Discarded', count: discarded, hint: 'Removed at the format review, before import' });
+  }
   // v5.289.0 — failures a later job imported from the same file: shown while
   // any is undismissed (what "Dismiss N superseded" clears).
   const superseded = summary.total_superseded ?? 0;
