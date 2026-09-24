@@ -16,6 +16,7 @@ import xml.etree.ElementTree as ET
 import defusedxml.ElementTree as DET
 from app.parsers.xml_stream_helpers import strip_namespace
 import logging
+import re
 from pathlib import Path
 from typing import Iterable, List, Dict, Any, Optional, Tuple
 from datetime import datetime
@@ -52,6 +53,48 @@ class NessusVulnerability:
     # which exploit frameworks carry a module (not just "exploitable").
     see_also: List[str] = field(default_factory=list)
     exploit_frameworks: List[str] = field(default_factory=list)
+    # v2.406.0 — the product the plugin is about (normalised CPE, e.g.
+    # ``a:apache:tomcat``) and the versions its output names.  Nessus fires
+    # one plugin per advisory range on an outdated product; these let the
+    # inspector fold those rows into one "Apache Tomcat 9.0.13" group.
+    cpe: Optional[str] = None
+    installed_version: Optional[str] = None
+    fixed_version: Optional[str] = None
+
+
+_CPE_PREFIX = re.compile(r"^(?:x-)?cpe:(?:/|2\.3:)", re.IGNORECASE)
+_INSTALLED_VERSION = re.compile(r"^\s*Installed version\s*:\s*(\S.*?)\s*$", re.IGNORECASE | re.MULTILINE)
+_FIXED_VERSION = re.compile(r"^\s*Fixed version\s*:\s*(\S.*?)\s*$", re.IGNORECASE | re.MULTILINE)
+
+
+def normalize_cpe(text: Optional[str]) -> Optional[str]:
+    """``part:vendor:product`` of the first CPE in a ReportItem's ``<cpe>``.
+
+    Nessus writes ``cpe:/a:apache:tomcat`` (sometimes with a version, or
+    several newline-separated entries, some ``x-cpe:``).  The version is
+    dropped on purpose: it is the grouping key for "the same product", and
+    the installed version comes from the plugin output instead.
+    """
+    for token in (text or "").split():
+        if not _CPE_PREFIX.match(token):
+            continue
+        parts = _CPE_PREFIX.sub("", token).lower().split(":")
+        if len(parts) >= 3 and all(parts[:3]) and parts[0] in ("a", "o", "h"):
+            return ":".join(parts[:3])[:255]
+    return None
+
+
+def extract_versions(plugin_output: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+    """``(installed, fixed)`` from Nessus's ``Installed version : …`` /
+    ``Fixed version : …`` lines — the first install when several are listed."""
+    if not plugin_output:
+        return None, None
+    installed = _INSTALLED_VERSION.search(plugin_output)
+    fixed = _FIXED_VERSION.search(plugin_output)
+    return (
+        installed.group(1)[:100] if installed else None,
+        fixed.group(1)[:100] if fixed else None,
+    )
 
 
 @dataclass
@@ -312,6 +355,8 @@ class NessusParser:
         solution = self._get_text_or_none(report_item, 'solution', '')
         synopsis = self._get_text_or_none(report_item, 'synopsis', '')
         plugin_output = self._get_text_or_none(report_item, 'plugin_output')
+        # Before truncation — the version lines can sit past the cap.
+        installed_version, fixed_version = extract_versions(plugin_output)
         if (
             plugin_output
             and settings.NESSUS_PLUGIN_OUTPUT_MAX_CHARS
@@ -334,11 +379,16 @@ class NessusParser:
         cvss3_vector = self._get_text_or_none(report_item, 'cvss3_vector')
 
         # Parse CVE list
-        cve_list = []
-        cve_text = self._get_text_or_none(report_item, 'cve')
-        if cve_text:
-            # CVEs are often comma-separated
-            cve_list = [cve.strip() for cve in cve_text.split(',') if cve.strip()]
+        # v2.406.0 — Nessus writes one <cve> element PER CVE; reading only the
+        # first kept one CVE of a plugin that names twenty.  Commas are still
+        # split for exports that pack them into one element.  The first stays
+        # the row's primary cve_id, so issue identity does not move.
+        cve_list: List[str] = []
+        for element in report_item.findall('cve'):
+            for cve in (element.text or '').split(','):
+                cve = cve.strip()
+                if cve and cve not in cve_list:
+                    cve_list.append(cve)
 
         # Parse dates
         patch_publication_date = self._parse_date(self._get_text_or_none(report_item, 'patch_publication_date'))
@@ -381,6 +431,9 @@ class NessusParser:
                     ("CANVAS", "canvas_package"),
                 ) if (name := self._get_text_or_none(report_item, tag))
             ],
+            cpe=normalize_cpe(" ".join(c.text or "" for c in report_item.findall('cpe'))),
+            installed_version=installed_version,
+            fixed_version=fixed_version,
         )
 
     def _extract_os_info(self, host_properties: Dict[str, str]) -> Optional[str]:

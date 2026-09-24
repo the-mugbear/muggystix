@@ -310,6 +310,11 @@ class HostVulnerability(BaseModel):
     source_plugin_name: Optional[str] = None
     # v2.390.0 — per-host scanner evidence (Nessus plugin_output).
     plugin_output: Optional[str] = None
+    # v2.406.0 — product grouping (see serialize_vulnerability).
+    cpe: Optional[str] = None
+    installed_version: Optional[str] = None
+    fixed_version: Optional[str] = None
+    cve_count: Optional[int] = None
 
     @field_validator("references", mode="before")
     @classmethod

@@ -412,6 +412,58 @@ https://example.test/eternalblue</see_also>
     assert vuln.plugin_output == "SMBv1 accepted; MS17-010 missing"
 
 
+def test_nessus_keeps_product_and_versions(db_session, test_project, tmp_path):
+    """v2.406.0 — the product (CPE) and the versions the output names, so the
+    inspector can fold one outdated product's advisory plugins together."""
+    from app.services.host_serialization import serialize_vulnerability
+    from app.services.nessus_integration_service import NessusIntegrationService
+
+    f = tmp_path / "t.nessus"
+    f.write_text("""<?xml version="1.0" ?>
+<NessusClientData_v2><Report name="r">
+<ReportHost name="10.9.7.1"><HostProperties><tag name="host-ip">10.9.7.1</tag></HostProperties>
+<ReportItem port="8080" svc_name="www" protocol="tcp" severity="4" pluginID="1001" pluginName="Apache Tomcat 9.0.13 &lt; 9.0.120 multiple vulnerabilities" pluginFamily="Web Servers">
+  <risk_factor>Critical</risk_factor><description>d</description><solution>s</solution><synopsis>syn</synopsis>
+  <cpe>cpe:/a:apache:tomcat
+x-cpe:/a:apache:tomcat:9.0.13</cpe>
+  <cve>CVE-2026-1</cve><cve>CVE-2026-2</cve>
+  <plugin_output>
+  URL               : http://10.9.7.1:8080/
+  Installed version : 9.0.13
+  Fixed version     : 9.0.120
+</plugin_output>
+</ReportItem>
+<ReportItem port="22" svc_name="ssh" protocol="tcp" severity="2" pluginID="1002" pluginName="SSH weak MACs" pluginFamily="Misc.">
+  <risk_factor>Medium</risk_factor><description>d</description><solution>s</solution><synopsis>syn</synopsis>
+</ReportItem>
+</ReportHost></Report></NessusClientData_v2>""")
+    NessusIntegrationService(db_session).process_nessus_file(str(f), project_id=test_project.id)
+    host = db_session.query(models.Host).filter_by(ip_address="10.9.7.1").one()
+    rows = {v.plugin_id: v for v in db_session.query(Vulnerability).filter_by(host_id=host.id)}
+    tomcat, ssh = rows["1001"], rows["1002"]
+    assert (tomcat.cpe, tomcat.installed_version, tomcat.fixed_version) == (
+        "a:apache:tomcat", "9.0.13", "9.0.120",
+    )
+    assert (ssh.cpe, ssh.installed_version, ssh.fixed_version) == (None, None, None)
+    served = serialize_vulnerability(tomcat)
+    assert (served["cpe"], served["fixed_version"]) == ("a:apache:tomcat", "9.0.120")
+    # Every <cve> element, not only the first; the first stays primary.
+    assert tomcat.cve_id == "CVE-2026-1"
+    assert served["cve_count"] == 2
+
+
+def test_normalize_cpe_forms():
+    from app.parsers.nessus_parser import extract_versions, normalize_cpe
+
+    assert normalize_cpe("cpe:/a:apache:tomcat:9.0.13") == "a:apache:tomcat"
+    assert normalize_cpe("cpe:2.3:o:canonical:ubuntu_linux:18.04:*:*") == "o:canonical:ubuntu_linux"
+    assert normalize_cpe("x-cpe:/a:Vendor:Product") == "a:vendor:product"
+    assert normalize_cpe("not a cpe") is None
+    assert normalize_cpe(None) is None
+    assert extract_versions("Installed version : 1.2\nFixed version : 1.3 / 2.0") == ("1.2", "1.3 / 2.0")
+    assert extract_versions("nothing") == (None, None)
+
+
 def test_openvas_writeup_evidence_and_refs(db_session, test_project, tmp_path):
     """v2.390.0 — OpenVAS tags (the write-up), refs and QoD were dropped, and
     the per-host detection output stood in for the description."""

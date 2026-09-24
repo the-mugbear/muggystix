@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 
-import { groupVulnerabilities, normalizeVulnTitle } from '../../utils/vulnGrouping';
+import {
+  closingVersionFor, groupByProduct, groupVulnerabilities, normalizeVulnTitle, productLabel,
+} from '../../utils/vulnGrouping';
 import type { HostVulnerability } from '../../services/api/hosts';
 
 let nextId = 1;
@@ -181,5 +183,77 @@ describe('normalizeVulnTitle', () => {
     expect(normalizeVulnTitle('TLS 1.0 Detected')).not.toBe(
       normalizeVulnTitle('TLS 1.1 Detected'),
     );
+  });
+});
+
+describe('groupByProduct', () => {
+  const tomcat = (plugin: string, title: string, over: Partial<HostVulnerability> = {}) =>
+    vuln({
+      plugin_id: plugin, title, severity: 'critical', cpe: 'a:apache:tomcat', port_number: 8080,
+      installed_version: '9.0.13', ...over,
+    });
+
+  it('folds several issues about one product on the same port into one line', () => {
+    const items = groupByProduct(groupVulnerabilities([
+      tomcat('1', 'Apache Tomcat 9.0.13 < 9.0.120 multiple vulnerabilities', { fixed_version: '9.0.120', exploitable: true }),
+      tomcat('2', 'Apache Tomcat 9.0.0.M1 < 9.0.99', { fixed_version: '9.0.99 / 10.1.40' }),
+      tomcat('3', 'Apache Tomcat 9.0.40 < 9.0.117 Improper Encoding', { severity: 'high', fixed_version: '9.0.117' }),
+      vuln({ title: 'Canonical Ubuntu Linux SEoL (18.04.x)', severity: 'critical', cpe: 'o:canonical:ubuntu_linux', port_number: 22 }),
+    ]));
+    expect(items.map((i) => i.kind).sort()).toEqual(['issue', 'product']);
+    const found = items.find((i) => i.kind === 'product');
+    const product = found?.kind === 'product' ? found.product : null;
+    expect(product?.groups).toHaveLength(3);
+    expect(product?.product).toBe('Apache Tomcat');
+    expect(product?.installedVersion).toBe('9.0.13');
+    // The branch fix matching the installed major, and the highest of all.
+    expect(product?.closingVersion).toBe('9.0.120');
+    expect(product?.exploitableCount).toBe(1);
+    expect(product?.severity).toBe('critical');
+  });
+
+  it('never groups on titles alone — rows without a CPE stay separate', () => {
+    const items = groupByProduct(groupVulnerabilities([
+      vuln({ title: 'Apache Tomcat 9.0.13 < 9.0.120', port_number: 8080 }),
+      vuln({ title: 'Apache Tomcat 9.0.0.M1 < 9.0.99', port_number: 8080 }),
+    ]));
+    expect(items.map((i) => i.kind)).toEqual(['issue', 'issue']);
+  });
+
+  it('keeps the same product on different ports apart (possibly different installs)', () => {
+    const items = groupByProduct(groupVulnerabilities([
+      tomcat('1', 'Apache Tomcat A'), tomcat('2', 'Apache Tomcat B'),
+      tomcat('3', 'Apache Tomcat C', { port_number: 8443 }),
+    ]));
+    expect(items.map((i) => i.kind).sort()).toEqual(['issue', 'product']);
+  });
+
+  it('a single issue for a product is not wrapped', () => {
+    const items = groupByProduct(groupVulnerabilities([tomcat('1', 'Apache Tomcat A')]));
+    expect(items).toEqual([{ kind: 'issue', group: expect.anything() }]);
+  });
+
+  it('claims no closing version unless every row names a comparable one', () => {
+    expect(closingVersionFor([
+      tomcat('1', 'a', { fixed_version: '9.0.120' }), tomcat('2', 'b', { fixed_version: null }),
+    ])).toBeNull();
+    expect(closingVersionFor([
+      tomcat('1', 'a', { fixed_version: 'Upgrade to a supported version' }),
+    ])).toBeNull();
+    // Two branches and no installed version to pick one: undecidable.
+    expect(closingVersionFor([
+      tomcat('1', 'a', { fixed_version: '9.0.99 / 10.1.40', installed_version: null }),
+    ])).toBeNull();
+  });
+
+  it('names the product from shared title words, else from the CPE', () => {
+    expect(productLabel('a:apache:tomcat', ['Apache Tomcat 9.0.13 < 9', 'Apache Tomcat 9.0.0.M1 < 9'])).toBe('Apache Tomcat');
+    expect(productLabel('a:openbsd:openssh', ['OpenSSH < 9.8', 'Weak thing'])).toBe('Openbsd Openssh');
+    expect(productLabel('o:canonical:ubuntu_linux', ['x 1', 'y 2'])).toBe('Canonical Ubuntu Linux');
+  });
+
+  it('carries the CVE count of the check naming the most', () => {
+    const [group] = groupVulnerabilities([tomcat('1', 'Apache Tomcat A', { cve_id: 'CVE-1', cve_count: 20 })]);
+    expect(group.cveCount).toBe(20);
   });
 });

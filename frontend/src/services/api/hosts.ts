@@ -83,6 +83,14 @@ export interface HostVulnerability {
   source_plugin_name?: string | null;
   /** v5.276.0 — what the scanner saw on THIS host (Nessus plugin_output). */
   plugin_output?: string | null;
+  /** v5.292.0 — the product the check is about (`part:vendor:product` from the
+   *  scanner's CPE) and the versions its output names. Rows for one product on
+   *  the same ports fold into one group (see utils/vulnGrouping). */
+  cpe?: string | null;
+  installed_version?: string | null;
+  fixed_version?: string | null;
+  /** Every CVE the check names; `cve_id` is only the first. */
+  cve_count?: number | null;
 }
 
 /** Where a host's netblock is registered and hosted (RDAP / prefix lists).

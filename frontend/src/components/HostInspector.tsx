@@ -97,13 +97,14 @@ import { NoteComposer } from './host-inspector/NoteComposer';
 import { InspectorSection, jumpToInspectorSection, openInspectorSection } from './host-inspector/InspectorSection';
 import { previewThreads, rootNoteId } from '../utils/notePreview';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
+import ProductObservationGroup from './host-inspector/ProductObservationGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
 import DiscoveryTimelineCard from './host-inspector/DiscoveryTimelineCard';
 import HostConflictsPanel from './host-inspector/HostConflictsPanel';
-import { groupVulnerabilities } from '../utils/vulnGrouping';
+import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
@@ -1221,9 +1222,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const totalVulnerabilities =
     host.vulnerability_summary?.total_vulnerabilities ?? sortedVulnerabilities.length;
   const vulnSummaryError = host.vulnerability_summary?.error === true;
+  // v5.292.0 — issues about one product on the same ports (one CPE) fold into
+  // a product line, so an outdated Tomcat's dozen advisory checks no longer
+  // bury the host. The preview limit counts LINES.
+  const observationItems = groupByProduct(vulnGroups);
   const displayedVulnerabilities = showAllVulnerabilities
-    ? vulnGroups
-    : vulnGroups.slice(0, VULNERABILITY_PREVIEW_LIMIT);
+    ? observationItems
+    : observationItems.slice(0, VULNERABILITY_PREVIEW_LIMIT);
   // v5.215.0 — a host whose only findings are informational still gets the
   // card, so the "N informational hidden · show" affordance has somewhere to
   // live; otherwise the hidden rows would be invisible exactly when they are
@@ -1337,24 +1342,36 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       )}
     >
       <div className="space-y-xs">
-        {displayedVulnerabilities.map((group) => (
-          <VulnerabilityGroup
-            // Host-qualified: the inspector stays mounted across prev/next, and
-            // an issue shared by two hosts must not carry its open state over.
-            key={`${host.id}:${group.key}`}
-            group={group}
-            severityBadgeVariant={severityBadgeVariant}
-            expandedVulnIds={expandedVulnIds}
-            onToggleDescription={toggleVulnDescription}
-            promotedVulns={promotedVulns}
-            dismissedHereVulns={dismissedHereVulns}
-            vulnActionId={vulnActionId}
-            onTriage={openTriage}
-            onQueryHosts={handleQueryHosts}
-            onQueryExploitPort={handleQueryExploitPort}
-          />
-        ))}
-        {vulnGroups.length > VULNERABILITY_PREVIEW_LIMIT && (
+        {displayedVulnerabilities.map((item) => {
+          const rowProps = {
+            severityBadgeVariant,
+            expandedVulnIds,
+            onToggleDescription: toggleVulnDescription,
+            promotedVulns,
+            dismissedHereVulns,
+            vulnActionId,
+            onTriage: openTriage,
+            onQueryHosts: handleQueryHosts,
+            onQueryExploitPort: handleQueryExploitPort,
+          };
+          return item.kind === 'product' ? (
+            <ProductObservationGroup
+              key={`${host.id}:${item.product.key}`}
+              product={item.product}
+              hostId={host.id}
+              {...rowProps}
+            />
+          ) : (
+            <VulnerabilityGroup
+              // Host-qualified: the inspector stays mounted across prev/next, and
+              // an issue shared by two hosts must not carry its open state over.
+              key={`${host.id}:${item.group.key}`}
+              group={item.group}
+              {...rowProps}
+            />
+          );
+        })}
+        {observationItems.length > VULNERABILITY_PREVIEW_LIMIT && (
           <div className="flex justify-end">
             <Button
               size="sm"

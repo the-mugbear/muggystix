@@ -85,6 +85,9 @@ export interface VulnGroup {
    *  port, not one representative's: a plugin exploitable on 80/443/8080 has to
    *  pivot on all three, or the button silently queries one arbitrary port. */
   exploitPorts: number[];
+  /** Most CVEs any one member names (a Nessus plugin often names twenty,
+   *  while `cveId` shows only the first). 0 when not known. */
+  cveCount: number;
 }
 
 const rank = (severity: string | null | undefined): number =>
@@ -242,6 +245,7 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
       exploitable: ordered.some((m) => m.exploitable === true),
       ports,
       exploitPorts,
+      cveCount: Math.max(0, ...ordered.map((m) => m.cve_count ?? 0)),
     });
   });
 
@@ -256,4 +260,158 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
     if (t !== 0) return t;
     return b.members[0].id - a.members[0].id;
   });
+}
+
+/**
+ * v5.292.0 — several ISSUES about one product on the same ports, folded into
+ * one line.
+ *
+ * Nessus checks an outdated product once per advisory range: a Tomcat 9.0.13
+ * install produced a dozen "Apache Tomcat 9.0.x < 9.0.y" critical rows, each a
+ * separate issue, and they buried everything else on the host. They share one
+ * cause and usually one fix.
+ *
+ * The key is STRUCTURAL — the scanner's CPE (`a:apache:tomcat`) plus the ports
+ * — never the titles: a wrong merge hides a finding (see the note at the top of
+ * this file). Titles are used only to NAME the group. Issue identity is
+ * untouched: every issue inside keeps its own row, finding and actions.
+ */
+export interface ProductGroup {
+  /** Stable key for React and expand state. */
+  key: string;
+  cpe: string;
+  /** "Apache Tomcat" — the members' shared title prefix, else from the CPE. */
+  product: string;
+  /** Installed version when every member that names one agrees. */
+  installedVersion: string | null;
+  /** The one version that satisfies every member's fix — only when EVERY
+   *  member names a comparable fixed version, so the claim is never wrong. */
+  closingVersion: string | null;
+  groups: VulnGroup[];
+  severity: string;
+  ports: number[];
+  exploitPorts: number[];
+  /** Issues inside with an exploit. */
+  exploitableCount: number;
+  /** Distinct scanner sources across the members (lower-cased). */
+  sources: string[];
+}
+
+export type ObservationItem =
+  | { kind: 'issue'; group: VulnGroup }
+  | { kind: 'product'; product: ProductGroup };
+
+/** The one CPE every member naming one agrees on, or null. */
+const groupCpe = (g: VulnGroup): string | null => {
+  const cpes = new Set(g.members.map((m) => m.cpe?.trim().toLowerCase()).filter(Boolean) as string[]);
+  return cpes.size === 1 ? [...cpes][0] : null;
+};
+
+const versionParts = (v: string): number[] | null => {
+  const parts = v.match(/\d+/g);
+  return parts ? parts.map(Number) : null;
+};
+
+const compareParts = (a: number[], b: number[]): number => {
+  for (let i = 0; i < Math.max(a.length, b.length); i += 1) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0);
+    if (d !== 0) return d;
+  }
+  return 0;
+};
+
+/**
+ * The fixed version for one row, on the installed branch. Nessus lists one per
+ * branch ("9.0.120 / 10.1.40"); the one sharing the installed major version is
+ * the upgrade in question. Null when it cannot be decided.
+ */
+const fixForRow = (fixed: string | null | undefined, installed: string | null | undefined): string | null => {
+  const candidates = (fixed ?? '').split(/\s*[/,]\s*|\s+or\s+/i).map((c) => c.trim()).filter((c) => versionParts(c));
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  const major = installed ? versionParts(installed)?.[0] : undefined;
+  const onBranch = candidates.filter((c) => versionParts(c)?.[0] === major);
+  return onBranch.length === 1 ? onBranch[0] : null;
+};
+
+export const closingVersionFor = (members: HostVulnerability[]): string | null => {
+  let best: string | null = null;
+  for (const m of members) {
+    const fix = fixForRow(m.fixed_version, m.installed_version);
+    if (!fix) return null;
+    if (!best || compareParts(versionParts(fix)!, versionParts(best)!) > 0) best = fix;
+  }
+  return best;
+};
+
+const titleCase = (s: string): string =>
+  s.split(/[_\s]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join(' ');
+
+/** Name the product: the words every member title starts with, stopping at
+ *  the first version-like token; else vendor + product from the CPE. */
+export const productLabel = (cpe: string, titles: string[]): string => {
+  const split = titles.map((t) => t.trim().split(/\s+/));
+  const prefix: string[] = [];
+  for (let i = 0; split.length > 0 && i < split[0].length; i += 1) {
+    const word = split[0][i];
+    if (/\d/.test(word) || !split.every((w) => w[i]?.toLowerCase() === word.toLowerCase())) break;
+    prefix.push(word);
+  }
+  if (prefix.length > 0) return prefix.join(' ');
+  const [, vendor = '', product = ''] = cpe.split(':');
+  const name = titleCase(product);
+  return vendor && !product.toLowerCase().startsWith(vendor.toLowerCase())
+    ? `${titleCase(vendor)} ${name}`
+    : name || cpe;
+};
+
+const uniqSorted = (xs: number[]): number[] => [...new Set(xs)].sort((a, b) => a - b);
+
+/**
+ * Fold issue groups (already worst-first) into product groups where two or
+ * more share a CPE and ports. A product group takes the place of its worst
+ * issue, so the list stays worst-first; a lone issue is returned as itself.
+ */
+export function groupByProduct(groups: VulnGroup[]): ObservationItem[] {
+  const byKey = new Map<string, VulnGroup[]>();
+  const keyOf = new Map<VulnGroup, string>();
+  groups.forEach((g) => {
+    const cpe = groupCpe(g);
+    if (!cpe) return;
+    const key = `product:${cpe}@${g.ports.join(',')}`;
+    keyOf.set(g, key);
+    byKey.set(key, [...(byKey.get(key) ?? []), g]);
+  });
+
+  const emitted = new Set<string>();
+  const items: ObservationItem[] = [];
+  groups.forEach((g) => {
+    const key = keyOf.get(g);
+    const members = key ? byKey.get(key)! : null;
+    if (!key || !members || members.length < 2) {
+      items.push({ kind: 'issue', group: g });
+      return;
+    }
+    if (emitted.has(key)) return;
+    emitted.add(key);
+    const rows = members.flatMap((m) => m.members);
+    const installed = new Set(rows.map((r) => r.installed_version?.trim()).filter(Boolean) as string[]);
+    items.push({
+      kind: 'product',
+      product: {
+        key,
+        cpe: groupCpe(members[0])!,
+        product: productLabel(groupCpe(members[0])!, members.map((m) => m.title)),
+        installedVersion: installed.size === 1 ? [...installed][0] : null,
+        closingVersion: closingVersionFor(rows),
+        groups: members,
+        severity: members[0].severity,
+        ports: members[0].ports,
+        exploitPorts: uniqSorted(members.flatMap((m) => m.exploitPorts)),
+        exploitableCount: members.filter((m) => m.exploitable).length,
+        sources: [...new Set(rows.map((r) => (r.source ?? 'unknown').toLowerCase()))],
+      },
+    });
+  });
+  return items;
 }

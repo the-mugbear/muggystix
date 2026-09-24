@@ -532,6 +532,15 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
         # was written but served only to agents: an analyst could not see
         # WHY the scanner flagged this host.
         "plugin_output": vuln.plugin_output,
+        # v2.406.0 — the product the check is about and the versions its
+        # output names: the inspector folds a host's rows for one product on
+        # one port into a group ("Apache Tomcat 9.0.13 — 14 checks").
+        "cpe": getattr(vuln, "cpe", None),
+        "installed_version": getattr(vuln, "installed_version", None),
+        "fixed_version": getattr(vuln, "fixed_version", None),
+        # Every CVE the plugin names (the row's cve_id is only the first) —
+        # counted from the CVE links the importer writes into references.
+        "cve_count": sum(1 for r in references if "cvename.cgi?name=" in r),
     }
 
 
