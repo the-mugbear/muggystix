@@ -37,6 +37,9 @@ const badgeVariants = cva(
         'severity-high': 'border-warning/35 bg-warning text-warning-foreground shadow-[inset_3px_0_0_hsl(var(--warning-foreground)/0.36)]',
         'severity-medium': 'border-info/30 bg-info text-info-foreground shadow-[inset_3px_0_0_hsl(var(--info-foreground)/0.36)]',
         'severity-low': 'border-success/30 bg-success text-success-foreground shadow-[inset_3px_0_0_hsl(var(--success-foreground)/0.36)]',
+        // Info is a badge like the others (v5.288.0) — it was `muted`, which
+        // read as plain text beside the solid severity chips.
+        'severity-info': 'border-border bg-muted text-muted-foreground shadow-[inset_3px_0_0_hsl(var(--muted-foreground)/0.45)]',
         outline: 'border-border text-foreground',
         muted: 'border-transparent bg-muted text-muted-foreground',
         // Outline-only severity tones — for places that want a lighter

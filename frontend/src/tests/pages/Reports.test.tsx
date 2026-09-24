@@ -111,6 +111,25 @@ describe('Reports list', () => {
     expect(navigateSpy).toHaveBeenCalledWith('/reports/11');
   });
 
+  // v5.288.0: three drafts under the default title could not be told apart.
+  it('tells drafts with the same title apart by number, start time and template', async () => {
+    const title = 'Demo — security assessment report';
+    mocked.listClientReports.mockResolvedValue({
+      items: [
+        report({ id: 12, title, created_at: '2026-09-22T09:00:00Z' }),
+        report({ id: 13, title, created_at: '2026-09-22T15:30:00Z', template: 'brief' }),
+      ],
+      latest_issued_id: null, can_create: true, can_issue: false,
+    });
+    renderList();
+    const a = await screen.findByTestId('draft-meta-12');
+    const b = screen.getByTestId('draft-meta-13');
+    expect(a).toHaveTextContent(/^Draft #12 · started .+ · template pentest$/);
+    expect(b).toHaveTextContent(/^Draft #13 · started .+ · template brief$/);
+    expect(a.textContent).not.toBe(b.textContent?.replace('#13', '#12'));
+    expect(mocked.getClientReport).not.toHaveBeenCalled();
+  });
+
   it('offers no addendum before anything is issued, and nothing to an auditor', async () => {
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: false });
     const { unmount } = renderList();
@@ -407,6 +426,9 @@ describe('Template images', () => {
     mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
     renderList();
     expect((await screen.findByText(/1 optional not installed/)).textContent).not.toMatch(/missing/);
+    // The file's own badge uses the section's word (v5.288.0).
+    expect(screen.getByText('Not installed · optional')).toBeInTheDocument();
+    expect(screen.queryByText('Missing · optional')).not.toBeInTheDocument();
   });
 
   it('says so when a template uses no images of its own', async () => {

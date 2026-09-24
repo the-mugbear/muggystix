@@ -13,6 +13,7 @@ from app.db import models
 from app.db.models import Host
 from app.db.models_findings import Finding, FindingHost, FindingStatus
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
+from tests.conftest import USING_POSTGRES
 
 
 def _host(db, project_id, ip):
@@ -62,6 +63,24 @@ def test_one_row_per_issue_most_severe_first(client, test_project, estate):
     # The OpenVAS row for the same issue is the same row here, not a fourth host.
     assert (smb["host_count"], sorted(smb["sources"])) == (3, ["nessus", "openvas"])
     assert rows[2][1:] == ("low", 2, 0)
+
+
+@pytest.mark.skipif(not USING_POSTGRES, reason="the ordered aggregate is Postgres-only; SQLite keeps min(title)")
+def test_title_and_severity_come_from_the_same_row(client, db_session, test_project):
+    """v2.402.0: ``min(title)`` beside ``max(severity)`` showed a low row's
+    title at another row's medium severity.  The title is the most severe
+    row's (tie → lowest id)."""
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus", scan_type="nessus", tool_name="nessus")
+    db_session.add(scan)
+    db_session.commit()
+    a, b = _host(db_session, test_project.id, "10.9.1.1"), _host(db_session, test_project.id, "10.9.1.2")
+    _vuln(db_session, a, scan.id, "A low wording", severity=VulnerabilitySeverity.LOW, cve_id="CVE-2023-9674")
+    _vuln(db_session, b, scan.id, "B medium wording", severity=VulnerabilitySeverity.MEDIUM, cve_id="CVE-2023-9674")
+    # A later medium row that sorts first alphabetically: the tie goes to the lowest id.
+    _vuln(db_session, a, scan.id, "Ab medium later", severity=VulnerabilitySeverity.MEDIUM, cve_id="CVE-2023-9674")
+    row = client.get(_url(test_project)).json()["items"][0]
+    assert (row["issue_key"], row["title"], row["severity"], row["cve_id"]) == (
+        "cve:CVE-2023-9674", "B medium wording", "medium", "CVE-2023-9674")
 
 
 def test_min_hosts_and_search_and_severity(client, test_project, estate):

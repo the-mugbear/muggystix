@@ -29,7 +29,7 @@ export const SEVERITY_BADGE_VARIANT: Record<Severity, string> = {
   high: 'severity-high',
   medium: 'severity-medium',
   low: 'severity-low',
-  info: 'muted',
+  info: 'severity-info',
 };
 
 /** Sort rank, worst-first. `unknown` sinks below `info`. Replaces the per-page
