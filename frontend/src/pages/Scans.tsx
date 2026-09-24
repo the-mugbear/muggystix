@@ -94,6 +94,7 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
+import { InfoTip } from '../components/ui/info-tip';
 import { cn } from '../utils/cn';
 
 /** A queue row's status, in words beside its icon. */
@@ -974,6 +975,7 @@ export default function Scans() {
         failed={queueCounts.failed}
         needAttention={inventorySummary?.imports_need_attention}
         notImported={inventorySummary?.imports_not_imported}
+        byReason={inventorySummary?.imports_not_imported_by_reason}
         queueUnknown={recentJobsError && recentJobs.length === 0}
         lastImportAt={lastImportAt}
       />
@@ -2204,47 +2206,73 @@ export default function Scans() {
  * to count only the 25 most recent jobs, so it said "nothing failed" beside a
  * batch whose 31 files had all expired.  `failed` (the recent queue) is the
  * fallback when the summary did not carry the figures.
+ *
+ * v5.288.0 — short and specific: "40 files imported · 31 never imported (31
+ * expired before review) · last import 55 minutes ago".  The never-imported
+ * figure names the ACTUAL reasons with their counts (`byReason`, from the
+ * summary) instead of listing every possible one; the explanation moved from
+ * a two-line paragraph into an info tip.
  */
+const NOT_IMPORTED_REASON: Array<[string, string]> = [
+  ['expired', 'expired before review'],
+  ['discarded', 'discarded'],
+  ['dismissed', 'failed, dismissed'],
+];
+
 const ScansLead: React.FC<{
   files: number;
   filtered: boolean;
   failed: number;
   needAttention?: number;
   notImported?: number;
+  byReason?: Record<string, number>;
   queueUnknown: boolean;
   lastImportAt: string | null;
-}> = ({ files, filtered, failed, needAttention, notImported = 0, queueUnknown, lastImportAt }) => {
+}> = ({ files, filtered, failed, needAttention, notImported = 0, byReason, queueUnknown, lastImportAt }) => {
   if (files === 0 && !filtered) return null;
   const last = lastImportAt ? formatRelativeTime(lastImportAt, { style: 'long' }) : null;
   const projectWide = needAttention != null;
   const attention = projectWide ? needAttention : failed;
-  const plural = (n: number, one: string, many = `${one}s`) => (n === 1 ? one : many);
+  const reasons = NOT_IMPORTED_REASON
+    .filter(([key]) => (byReason?.[key] ?? 0) > 0)
+    .map(([key, label]) => `${byReason![key].toLocaleString()} ${label}`);
+  const sep = <span className="text-muted-foreground"> · </span>;
   return (
-    <PostureLead
-      className="mb-md"
-      tone={attention > 0 ? 'warning' : 'neutral'}
-      restsOn="Every imported file counts, batched files included. Failures are every import of this project that failed or finished partial and nobody dismissed — the list Ingestion Results shows as needing attention; dismissed ones (discarded, expired before review, acknowledged) are counted apart."
-    >
-      {files.toLocaleString()} file{files === 1 ? '' : 's'} imported{filtered ? ' (matching these filters)' : ''};{' '}
+    <PostureLead className="mb-md" tone={attention > 0 ? 'warning' : 'neutral'}>
+      <span className="tabular-nums">
+        {files.toLocaleString()} file{files === 1 ? '' : 's'} imported{filtered ? ' (matching these filters)' : ''}
+      </span>
       {!projectWide && queueUnknown ? (
-        'the ingestion queue could not be checked'
-      ) : attention > 0 ? (
-        <Link to="/parse-errors?status=needs_attention" className="text-warning underline-offset-2 hover:underline">
-          {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
-          need{attention === 1 ? 's' : ''} attention
-        </Link>
-      ) : notImported > 0 ? (
-        <>
-          none needs attention, but{' '}
-          <Link to="/parse-errors?status=failed" className="underline-offset-2 hover:underline">
-            {notImported.toLocaleString()} {plural(notImported, 'file was', 'files were')} never imported
-          </Link>{' '}
-          (discarded, expired before review, or a dismissed failure)
-        </>
+        <>{sep}the ingestion queue could not be checked</>
       ) : (
-        'nothing failed'
+        <>
+          {attention > 0 && (
+            <>
+              {sep}
+              <Link to="/parse-errors?status=needs_attention" className="text-warning underline-offset-2 hover:underline">
+                {attention.toLocaleString()} {projectWide ? 'failed or partial' : 'failed'} import{attention === 1 ? '' : 's'}{' '}
+                need{attention === 1 ? 's' : ''} attention
+              </Link>
+            </>
+          )}
+          {notImported > 0 && (
+            <>
+              {sep}
+              <Link to="/parse-errors?status=failed" className="underline-offset-2 hover:underline">
+                {notImported.toLocaleString()} never imported
+              </Link>
+              {reasons.length > 0 && ` (${reasons.join(', ')})`}
+            </>
+          )}
+          {attention === 0 && notImported === 0 && <>{sep}nothing failed</>}
+        </>
       )}
-      {last ? `; last import ${last}.` : '.'}
+      {last && <>{sep}last import {last}</>}{' '}
+      <InfoTip
+        label="About these figures"
+        className="align-middle"
+        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list. “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
+      />
     </PostureLead>
   );
 };

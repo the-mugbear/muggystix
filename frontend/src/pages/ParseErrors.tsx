@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, Fragment } from 'react';
 import { copyToClipboard } from '../utils/clipboard';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
+  ArrowDownUp,
   RefreshCw,
   X as CloseIcon,
   ChevronDown,
@@ -34,7 +35,6 @@ import {
 } from '../components/ui/select';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
-import { Card, CardContent } from '../components/ui/card';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -78,12 +78,45 @@ const formatFileSize = (bytes: number | null): string => {
   return `${bytes} B`;
 };
 
-const formatDuration = (seconds: number | null): string => {
-  if (seconds == null) return '-';
+/** v5.288.0 — "0.0s" on most rows was noise: a sub-100 ms import says so. */
+export const formatDuration = (seconds: number | null): string => {
+  if (seconds == null) return '—';
+  if (seconds < 0.1) return '<0.1s';
   if (seconds < 60) return `${seconds.toFixed(1)}s`;
   const mins = Math.floor(seconds / 60);
   const secs = Math.round(seconds % 60);
   return `${mins}m ${secs}s`;
+};
+
+/** v5.288.0 — "0/0 open" on every web / DNS / auth import was noise: a
+ *  figure only when the file had any. */
+export const hostsFigure = (stats: IngestionResultItem['stats']): string =>
+  stats && stats.hosts_parsed > 0 ? `${stats.hosts_up}/${stats.hosts_parsed} up` : '—';
+export const portsFigure = (stats: IngestionResultItem['stats']): string =>
+  stats && stats.ports_found > 0 ? `${stats.open_ports}/${stats.ports_found} open` : '—';
+
+/**
+ * Why a failed row was not imported, readable without expanding it
+ * (v5.288.0): a row read only "FAILED dismissed".  Discards and expiries carry
+ * fixed messages (staged_import_service); anything else shows the first line
+ * of what the importer said.
+ */
+export const failureReason = (item: IngestionResultItem): string | null => {
+  if (item.status !== 'failed') return null;
+  const raw = (item.error?.error_message || item.error?.user_message || '').trim();
+  if (raw.startsWith('Discarded before import')) return 'Discarded before import';
+  if (raw.startsWith('Staged upload expired')) return 'Expired before import';
+  const line = (item.error?.user_message || raw).trim().split('\n')[0]?.trim();
+  return line || 'Import failed — no message recorded';
+};
+
+/** What the direction button says for each sort key. */
+const DIRECTION_LABEL: Record<IngestionResultsSortBy, { asc: string; desc: string }> = {
+  created_at: { asc: 'Oldest first', desc: 'Newest first' },
+  original_filename: { asc: 'A → Z', desc: 'Z → A' },
+  status: { asc: 'A → Z', desc: 'Z → A' },
+  tool_name: { asc: 'A → Z', desc: 'Z → A' },
+  file_size: { asc: 'Smallest first', desc: 'Largest first' },
 };
 
 const timeAgo = (dateString: string | null): string =>
@@ -150,7 +183,8 @@ const ParseErrors: React.FC = () => {
   // 100th upload was unreachable by browsing and the truncation was invisible.
   const [page, setPage] = useState(0);
   // Fixed: no control has ever changed it (it was state with an unused setter).
-  const pageSize = 50;
+  // v5.288.0 — 25, like the other lists (was 50).
+  const pageSize = 25;
 
   const loadData = async () => {
     try {
@@ -356,14 +390,18 @@ const ParseErrors: React.FC = () => {
               <SelectItem value="file_size">Sort: File size</SelectItem>
             </SelectContent>
           </Select>
+          {/* v5.288.0 — the direction says what it does ("Newest first"); it
+              was an unlabeled chevron beside the sort select. */}
           <Button
             variant="outline"
-            size="icon"
             onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
-            aria-label={`Toggle sort direction (currently ${sortOrder === 'asc' ? 'ascending' : 'descending'})`}
-            title={sortOrder === 'asc' ? 'Ascending — click for descending' : 'Descending — click for ascending'}
+            aria-label={`Sort direction: ${DIRECTION_LABEL[sortBy][sortOrder]} — click for ${
+              DIRECTION_LABEL[sortBy][sortOrder === 'asc' ? 'desc' : 'asc']
+            }`}
+            title={`Click for ${DIRECTION_LABEL[sortBy][sortOrder === 'asc' ? 'desc' : 'asc']}`}
           >
-            {sortOrder === 'asc' ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
+            <ArrowDownUp className="size-4" aria-hidden />
+            {DIRECTION_LABEL[sortBy][sortOrder]}
           </Button>
           <Button variant="outline" onClick={loadData} disabled={loading}>
             <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
@@ -419,33 +457,31 @@ const ParseErrors: React.FC = () => {
         </div>
       )}
 
-      <Card>
-        <CardContent className="p-0">
-          {/* Horizontal scroll wrapper — the table-fixed widths sum to
-              ~1080px; on narrower viewports the inner table would push
-              past the card and create a page-level horizontal scroll
-              (which the UI Style Guide bans).  Scroll lives on this
-              wrapper instead so only the table moves. */}
+      {/* v5.288.0 — a section, not a bordered card (UI_STYLE_GUIDE §7). */}
+      <section aria-label="Ingestion results">
+          {/* Horizontal scroll wrapper — on narrower viewports the table's
+              min width would otherwise push past the page and create a
+              page-level horizontal scroll (which the UI Style Guide bans).
+              Scroll lives on this wrapper instead so only the table moves. */}
           <div className="overflow-x-auto">
-            <Table className="table-fixed w-full">
+            <Table className="table-fixed w-full min-w-[1100px]">
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-10" />
-                  {/* w-24 (96px) overflowed for `processing` (10 chars
-                      + chip padding ~115-125px) into the Filename
-                      column.  w-32 (128px) clears every value in
-                      STATUS_VARIANT. */}
                   {/* w-48 since v5.242.0: "completed" + "partial" sit side by
-                      side instead of stacking into a second line. */}
+                      side; since v5.288.0 a failed row's reason sits under them. */}
                   <TableHead className="w-48">Status</TableHead>
-                  <TableHead className="w-56">Filename</TableHead>
+                  {/* v5.288.0 — the filename takes the remaining width (it was
+                      a fixed 224px, cutting "eyewitness_with_screenshot…"),
+                      and wraps. */}
+                  <TableHead>Filename</TableHead>
                   <TableHead className="w-24">Tool</TableHead>
                   <TableHead className="w-24">Hosts</TableHead>
                   <TableHead className="w-24">Ports</TableHead>
-                  <TableHead className="w-24">Services</TableHead>
+                  <TableHead className="w-20">Services</TableHead>
                   <TableHead className="w-20">Size</TableHead>
-                  <TableHead className="w-24">Duration</TableHead>
-                  <TableHead className="w-32">Uploaded</TableHead>
+                  <TableHead className="w-20">Duration</TableHead>
+                  <TableHead className="w-28">Uploaded</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
@@ -473,6 +509,7 @@ const ParseErrors: React.FC = () => {
                   items.map((item) => {
                     const isExpanded = expandedRow === item.id;
                     const stats = item.stats;
+                    const reason = failureReason(item);
                     return (
                       <Fragment key={item.id}>
                         <TableRow
@@ -516,14 +553,20 @@ const ParseErrors: React.FC = () => {
                                 </span>
                               )}
                             </div>
+                            {reason && (
+                              <p
+                                className="mt-xxs line-clamp-2 break-words text-caption text-muted-foreground"
+                                title={item.error?.error_message || reason}
+                                data-testid="failure-reason"
+                              >
+                                {reason}
+                              </p>
+                            )}
                           </TableCell>
-                          <TableCell>
-                            <Tooltip>
-                              <TooltipTrigger asChild>
-                                <p className="truncate font-mono text-caption">{item.original_filename}</p>
-                              </TooltipTrigger>
-                              <TooltipContent>{item.original_filename}</TooltipContent>
-                            </Tooltip>
+                          <TableCell className="min-w-0">
+                            <p className="break-all font-mono text-caption" title={item.original_filename}>
+                              {item.original_filename}
+                            </p>
                           </TableCell>
                           {/* `truncate` doesn't work directly on a
                               display:table-cell — text must live in a
@@ -534,9 +577,9 @@ const ParseErrors: React.FC = () => {
                               {safeFallback(item.tool_name)}
                             </p>
                           </TableCell>
-                          <TableCell>{stats ? `${stats.hosts_up}/${stats.hosts_parsed} up` : '-'}</TableCell>
-                          <TableCell>{stats ? `${stats.open_ports}/${stats.ports_found} open` : '-'}</TableCell>
-                          <TableCell>{stats ? stats.services_detected : '-'}</TableCell>
+                          <TableCell className="tabular-nums">{hostsFigure(stats)}</TableCell>
+                          <TableCell className="tabular-nums">{portsFigure(stats)}</TableCell>
+                          <TableCell className="tabular-nums">{stats && stats.services_detected > 0 ? stats.services_detected : '—'}</TableCell>
                           <TableCell>{formatFileSize(item.file_size)}</TableCell>
                           <TableCell>{formatDuration(item.duration_seconds)}</TableCell>
                           <TableCell>{timeAgo(item.created_at)}</TableCell>
@@ -585,8 +628,7 @@ const ParseErrors: React.FC = () => {
               </div>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </section>
 
       {/* Parse-error detail dialog */}
       <Dialog open={detailDialogOpen} onOpenChange={(next) => !next && setDetailDialogOpen(false)}>
@@ -854,8 +896,11 @@ const RowDetail: React.FC<{
           {item.detected_format_label && (
             <>Detected as <span className="text-foreground">{item.detected_format_label}</span></>
           )}
+          {/* v5.288.0 — a choice equal to the detection is a confirmation. */}
           {item.format_override_label && (
-            <>{item.detected_format_label ? ' · ' : ''}you chose <span className="text-foreground">{item.format_override_label}</span></>
+            item.format_override_label === item.detected_format_label
+              ? <> · confirmed by you</>
+              : <>{item.detected_format_label ? ' · ' : ''}you chose <span className="text-warning">{item.format_override_label}</span></>
           )}
           {item.final_format_label && (
             <>{item.detected_format_label || item.format_override_label ? ' · ' : ''}parsed by <span className="text-foreground">{item.final_format_label}</span></>

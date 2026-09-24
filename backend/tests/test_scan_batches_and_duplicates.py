@@ -425,6 +425,51 @@ def test_summary_counts_failed_imports_across_the_whole_project(client, db_sessi
     db_session.commit()
     s = client.get(f"/api/v1/projects/{test_project.id}/scans/summary").json()
     assert (s["imports_need_attention"], s["imports_not_imported"]) == (2, 2)
+    # v2.402.0 — by reason, so the lead names what actually happened.
+    assert s["imports_not_imported_by_reason"] == {"discarded": 1, "expired": 1}
+
+
+def test_batch_accounts_for_every_file_that_reached_the_server(client, db_session, test_project):
+    """v2.402.0 — a "46 files" batch read "17 files imported · 4 failed":
+    the other 25 were refused at upload (duplicates) and never became jobs,
+    and nothing said how many files the server had.  `uploaded_files` is
+    every job of the batch, and imported + each reason adds up to it."""
+    from datetime import datetime, timezone
+
+    now = datetime.now(timezone.utc)
+    batch = models.ScanBatch(project_id=test_project.id, label="9 files · 9/22/2026, 10:37:38 PM")
+    db_session.add(batch)
+    db_session.commit()
+    for i in range(3):
+        scan = models.Scan(project_id=test_project.id, filename=f"ok{i}.xml", tool_name="nmap", batch_id=batch.id)
+        db_session.add(scan)
+        db_session.flush()
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="ok.xml", original_filename="ok.xml", storage_path="/x",
+            status="completed", batch_id=batch.id, scan_id=scan.id,
+        ))
+    for status, error, dismissed in (
+        ("failed", "bad xml", None),                        # live failure
+        ("failed", "bad xml", now),                         # dismissed failure
+        ("failed", "Discarded before import", now),         # discarded
+        ("failed", "Discarded before import", now),
+        ("cancelled", None, None),
+    ):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename="f.xml", original_filename="f.xml", storage_path="/x",
+            status=status, batch_id=batch.id, error_message=error, dismissed_at=dismissed,
+        ))
+    db_session.commit()
+
+    row = client.get(f"/api/v1/projects/{test_project.id}/scans/batches").json()[0]
+    assert row["uploaded_files"] == 8
+    assert (row["imported_files"], row["failed_files"], row["dismissed_failed_files"]) == (3, 1, 1)
+    assert (row["discarded_files"], row["cancelled_files"]) == (2, 1)
+    accounted = sum(row[k] for k in (
+        "imported_files", "processing_files", "staged_files", "failed_files", "discarded_files",
+        "expired_files", "dismissed_failed_files", "cancelled_files",
+    ))
+    assert accounted == row["uploaded_files"]
 
 
 def test_filtered_batch_reports_matching_of_total_files(client, db_session, test_project):

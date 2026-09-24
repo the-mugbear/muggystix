@@ -183,3 +183,73 @@ describe('Ingestion Results — a partial import', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).not.toBeInTheDocument();
   });
 });
+
+// Screenshot review 2026-09-23 (v5.288.0).
+describe('Ingestion Results — rows readable without expanding', () => {
+  const dismissed = '2026-09-20T10:00:00Z';
+  const failed = (id: number, message: string, name = `f${id}.xml`) =>
+    row({
+      id, status: 'failed', original_filename: name, dismissed_at: dismissed,
+      error: { error_type: null, error_message: message, user_message: message },
+    });
+
+  it('says why a failed row was not imported, inline', async () => {
+    api.getIngestionResults.mockResolvedValue(response([
+      failed(1, 'Staged upload expired: not started within 24 hours.'),
+      failed(2, 'Discarded before import'),
+      failed(3, "Failed to parse the file 'nikto-all.txt'.\nTraceback: …"),
+    ]));
+    renderPage();
+    await screen.findByText('f1.xml');
+    const reasons = screen.getAllByTestId('failure-reason').map((el) => el.textContent);
+    expect(reasons).toEqual([
+      'Expired before import',
+      'Discarded before import',
+      "Failed to parse the file 'nikto-all.txt'.",
+    ]);
+  });
+
+  it('shows the whole filename (wrapping), not an ellipsis', async () => {
+    const name = 'eyewitness_with_screenshots_of_every_host_in_the_dmz_2026-09-22.zip';
+    api.getIngestionResults.mockResolvedValue(response([row({ id: 4, original_filename: name })]));
+    renderPage();
+    const cell = await screen.findByText(name);
+    expect(cell.className).not.toMatch(/truncate/);
+    expect(cell).toHaveAttribute('title', name);
+  });
+
+  it('shows "—" for no ports/hosts and "<0.1s" for a sub-100 ms import', async () => {
+    api.getIngestionResults.mockResolvedValue(response([
+      row({
+        id: 5, original_filename: 'names.txt', duration_seconds: 0.03,
+        stats: { hosts_parsed: 0, hosts_up: 0, ports_found: 0, open_ports: 0, services_detected: 0 },
+      }),
+      row({
+        id: 6, original_filename: 'sweep.xml', duration_seconds: 2,
+        stats: { hosts_parsed: 4, hosts_up: 3, ports_found: 10, open_ports: 6, services_detected: 5 },
+      }),
+    ]));
+    renderPage();
+    const noPorts = (await screen.findByText('names.txt')).closest('tr')!;
+    expect(within(noPorts).queryByText(/0\/0/)).not.toBeInTheDocument();
+    expect(within(noPorts).queryByText('0.0s')).not.toBeInTheDocument();
+    expect(within(noPorts).getByText('<0.1s')).toBeInTheDocument();
+    const ports = screen.getByText('sweep.xml').closest('tr')!;
+    expect(within(ports).getByText('6/10 open')).toBeInTheDocument();
+    expect(within(ports).getByText('3/4 up')).toBeInTheDocument();
+  });
+
+  it('asks for 25 rows a page and sits in a section, not a card', async () => {
+    renderPage();
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(expect.objectContaining({ limit: 25 })));
+    expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+  });
+
+  it('the sort-direction button says what it does', async () => {
+    renderPage();
+    const button = await screen.findByRole('button', { name: /Sort direction: Newest first/ });
+    expect(button).toHaveTextContent('Newest first');
+    fireEvent.click(button);
+    expect(await screen.findByRole('button', { name: /Sort direction: Oldest first/ })).toBeInTheDocument();
+  });
+});

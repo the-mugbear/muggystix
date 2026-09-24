@@ -191,6 +191,12 @@ export interface ScanBatchSummary {
   dismissed_failed_files?: number;
   /** Imported files that are re-imports of an earlier file of the batch. */
   reprocessed_files?: number;
+  /** v2.402.0 — every file that reached the server for this batch (one
+   *  ingestion job each, any state). A file refused at upload (duplicate)
+   *  never becomes a job, so a generated label's count can be higher. */
+  uploaded_files?: number;
+  /** v2.402.0 — files whose import was cancelled. */
+  cancelled_files?: number;
   /** The creator's full name, else username. */
   created_by_name?: string | null;
 }
@@ -304,6 +310,9 @@ export interface ScanInventorySummary {
   imports_need_attention?: number;
   /** v2.401.0 — failed jobs already dismissed: discarded, expired, acknowledged. */
   imports_not_imported?: number;
+  /** v2.402.0 — `imports_not_imported` by reason (`discarded`, `expired`,
+   *  `dismissed`), zero reasons left out; they sum to it. */
+  imports_not_imported_by_reason?: Record<string, number>;
 }
 
 export interface ScanUploader {

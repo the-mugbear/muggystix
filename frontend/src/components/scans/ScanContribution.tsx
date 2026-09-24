@@ -104,8 +104,12 @@ export function contributionRows(scan: ContributionScan): ContributionRow[] {
   // Hosts: only what the New hosts column doesn't already say.
   if (scan.total_hosts > 0) {
     const parts: string[] = [];
-    // "Up" only means something for tools that probe liveness.
-    if (family === 'port' || family === 'other') parts.push(`${num(scan.up_hosts)} up`);
+    // "Up" only means something for tools that probe liveness.  v5.288.0 —
+    // "0 up" beside "+146 new of 146 seen" read as a contradiction: most
+    // imports carry no up/down state at all, so zero is said as that.
+    if (family === 'port' || family === 'other') {
+      parts.push(scan.up_hosts > 0 ? `${num(scan.up_hosts)} up` : 'none reported up');
+    }
     const os = scan.os_fingerprinted ?? 0;
     if (os > 0) parts.push(`${num(os)} OS fingerprinted`);
     if (parts.length) {
@@ -227,6 +231,8 @@ export const ScanContribution: React.FC<{ scan: ContributionScan }> = ({ scan })
   // v5.270.0 — one line per kind, the label on the same line.  The per-row
   // severity bar repeated the counts written beside it, and the label column
   // was narrow enough to wrap "Scanner observations" onto two lines.
+  // v5.288.0 — the figures wrap instead of truncating: "421 new · on 123
+  // hosts · 63 hosts critical/high · …" lost its tail to an ellipsis.
   return (
     <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-sm gap-y-xxs">
       {rows.map((row) => {
@@ -236,7 +242,7 @@ export const ScanContribution: React.FC<{ scan: ContributionScan }> = ({ scan })
             <dt className="whitespace-nowrap text-caption text-muted-foreground" title={row.hint}>
               {row.label}
             </dt>
-            <dd className="min-w-0 truncate text-caption tabular-nums text-foreground" title={`${text}\n\n${row.hint}`}>
+            <dd className="min-w-0 break-words text-caption tabular-nums text-foreground" title={row.hint}>
               {text}
             </dd>
           </React.Fragment>

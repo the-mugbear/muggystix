@@ -108,11 +108,23 @@ const TONE_CLASS: Record<ImportResultPart['tone'], string> = {
 };
 
 /** How the file was read, in order: detected → chosen → parsed by → named
- *  tool.  Empty for a scan imported before the chain was recorded. */
+ *  tool.  Empty for a scan imported before the chain was recorded.
+ *
+ *  v5.288.0 — a choice equal to the detection is a confirmation, not an
+ *  override: "confirmed by you", neutral.  Only a choice that DIFFERS is the
+ *  warning-coloured `override` ("you chose …"); "Detected as NetExec JSON ·
+ *  you chose NetExec JSON" was highlighted as if the operator had overruled
+ *  detection. */
 export function formatChainParts(scan: Scan): Array<{ key: string; lead: string; value: string }> {
   const parts: Array<{ key: string; lead: string; value: string }> = [];
   if (scan.import_detected_format) parts.push({ key: 'detected', lead: 'Detected as', value: scan.import_detected_format });
-  if (scan.import_format_override) parts.push({ key: 'override', lead: 'you chose', value: scan.import_format_override });
+  if (scan.import_format_override) {
+    if (scan.import_format_override === scan.import_detected_format) {
+      parts.push({ key: 'confirmed', lead: 'confirmed by you', value: '' });
+    } else {
+      parts.push({ key: 'override', lead: 'you chose', value: scan.import_format_override });
+    }
+  }
   if (scan.import_final_format) parts.push({ key: 'final', lead: 'parsed by', value: scan.import_final_format });
   if (scan.import_source_tool) parts.push({ key: 'tool', lead: 'source tool', value: scan.import_source_tool });
   return parts;
@@ -161,7 +173,13 @@ const ImportResult: React.FC<{
           {chain.map((c, i) => (
             <React.Fragment key={c.key}>
               {i > 0 && ' · '}
-              {c.lead} <span className={c.key === 'override' ? 'text-warning' : 'text-foreground'}>{c.value}</span>
+              {c.value ? (
+                <>
+                  {c.lead} <span className={c.key === 'override' ? 'text-warning' : 'text-foreground'}>{c.value}</span>
+                </>
+              ) : (
+                c.lead
+              )}
             </React.Fragment>
           ))}
         </p>

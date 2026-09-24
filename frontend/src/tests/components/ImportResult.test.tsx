@@ -80,4 +80,25 @@ describe('ImportResult', () => {
     rerender(<MemoryRouter><ImportResult scan={scan()} showContribution={false} /></MemoryRouter>);
     expect(screen.queryByLabelText('How this file was read')).not.toBeInTheDocument();
   });
+
+  // Screenshot 2026-09-23: "Detected as NetExec JSON · you chose NetExec JSON"
+  // highlighted the choice in warning colour though it equalled detection.
+  it('says a choice equal to the detection was confirmed, neutrally; highlights only a real override', () => {
+    const same = scan({
+      import_detected_format: 'NetExec JSON',
+      import_format_override: 'NetExec JSON',
+      import_final_format: 'NetExec JSON',
+    });
+    const { rerender } = render(<MemoryRouter><ImportResult scan={same} showContribution={false} /></MemoryRouter>);
+    const chain = screen.getByLabelText('How this file was read');
+    expect(chain).toHaveTextContent('Detected as NetExec JSON · confirmed by you · parsed by NetExec JSON');
+    expect(chain.querySelector('.text-warning')).toBeNull();
+
+    rerender(
+      <MemoryRouter>
+        <ImportResult scan={{ ...same, import_format_override: 'Masscan XML' }} showContribution={false} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByLabelText('How this file was read').querySelector('.text-warning')).toHaveTextContent('Masscan XML');
+  });
 });

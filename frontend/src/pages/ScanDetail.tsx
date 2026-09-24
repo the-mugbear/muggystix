@@ -5,7 +5,8 @@ import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapsh
 import type { Host, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
 import CommandExplanation from '../components/CommandExplanation';
-import { Card, CardContent } from '../components/ui/card';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import SeverityBar from '../components/ui/SeverityBar';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -197,70 +198,73 @@ const ScanDetail: React.FC = () => {
         <h1 className="break-words text-page-title">{scan.filename}</h1>
       </div>
 
-      <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-4">
-        <StatCard label="Hosts Up" value={`${upHostCount}/${totalHostCount}`} />
-        {/* Open ports with the TCP/UDP split when the scan carries a breakdown. */}
-        <Card>
-          <CardContent className="p-md">
-            <p className="text-caption text-muted-foreground">Open Ports</p>
-            <p className="truncate text-section-title font-semibold text-foreground md:text-page-title">{openPortCount}</p>
-            {portBreakdown && (portBreakdown.open_tcp_ports > 0 || portBreakdown.open_udp_ports > 0) && (
-              <p className="mt-xxs truncate text-caption tabular-nums text-muted-foreground">
-                {portBreakdown.open_tcp_ports} TCP · {portBreakdown.open_udp_ports} UDP
-              </p>
-            )}
-          </CardContent>
-        </Card>
-        <StatCard label="Total Ports" value={totalPortCount} />
-        <Card>
-          <CardContent className="p-md">
-            <p className="text-caption text-muted-foreground">Scan window</p>
-            <p className="text-metadata text-foreground">Ran: {run.startLabel ?? 'Not recorded in the file'}</p>
-            {run.endLabel && <p className="text-caption text-muted-foreground">Ended: {run.endLabel}</p>}
-            {run.durationLabel && (
-              <p className="text-caption text-muted-foreground">Duration: {run.durationLabel}</p>
-            )}
-            <p className="text-caption text-muted-foreground" title={upload.explanation}>
-              Uploaded: {upload.label}
-            </p>
-            <ScanTimeSourceNote
-              className="mt-xxs"
-              label={run.sourceLabel}
-              explanation={run.explanation}
-              utc={run.utcLabel}
-              caution={run.kind === 'tool_clock'}
-            />
-          </CardContent>
-        </Card>
-        {/* Vulnerability severity rollup — only for scans that recorded any. */}
-        {vulnSummary && vulnSummary.total > 0 && (
-          <Card className="col-span-2">
-            <CardContent className="p-md">
-              <p className="text-caption text-muted-foreground">
-                Vulnerabilities ({vulnSummary.total.toLocaleString()})
-              </p>
-              <div className="mt-xs">
-                <SeverityBar counts={vulnSummary} variant="inline" />
-              </div>
-            </CardContent>
-          </Card>
-        )}
+      {/* v5.288.0 — one strip of measures on a shared baseline (the Posture
+          layout, UI_STYLE_GUIDE §7), not four bordered stat cards. */}
+      <div
+        className="mb-lg grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x"
+        data-testid="scan-measures"
+      >
+        <PostureMeasure
+          label="Hosts up"
+          info="Hosts this scan reported up, of every host it observed. Many tools report no up/down state at all."
+          value={<span className="tabular-nums">{upHostCount.toLocaleString()}/{totalHostCount.toLocaleString()}</span>}
+        >
+          {totalHostCount > 0 && upHostCount === 0 && 'none reported up'}
+        </PostureMeasure>
+        <PostureMeasure
+          label="Open ports"
+          info="Open ports this scan observed, with the TCP/UDP split when the scan carries it."
+          value={<span className="tabular-nums">{openPortCount.toLocaleString()}</span>}
+        >
+          {portBreakdown && (portBreakdown.open_tcp_ports > 0 || portBreakdown.open_udp_ports > 0) && (
+            <span className="tabular-nums">
+              {portBreakdown.open_tcp_ports} TCP · {portBreakdown.open_udp_ports} UDP
+            </span>
+          )}
+        </PostureMeasure>
+        <PostureMeasure
+          label="Total ports"
+          info="Every port this scan recorded, in any state (open, closed, filtered)."
+          value={<span className="tabular-nums">{totalPortCount.toLocaleString()}</span>}
+        />
+        <PostureMeasure
+          label="Scan window"
+          info="When the scan ran, per its own output, and when the file was uploaded."
+          value={<span className="text-metadata font-normal">{run.startLabel ?? 'Not recorded in the file'}</span>}
+        >
+          {run.endLabel && <p className="break-words">Ended: {run.endLabel}</p>}
+          {run.durationLabel && <p>Duration: {run.durationLabel}</p>}
+          <p className="break-words" title={upload.explanation}>Uploaded: {upload.label}</p>
+          <ScanTimeSourceNote
+            className="mt-xxs"
+            label={run.sourceLabel}
+            explanation={run.explanation}
+            utc={run.utcLabel}
+            caution={run.kind === 'tool_clock'}
+          />
+        </PostureMeasure>
       </div>
+
+      {/* Scanner-observation severity rollup — only for scans that recorded any. */}
+      {vulnSummary && vulnSummary.total > 0 && (
+        <PostureSection
+          className="mb-lg"
+          title={<>Scanner observations <SectionCount>{vulnSummary.total.toLocaleString()}</SectionCount></>}
+        >
+          <SeverityBar counts={vulnSummary} variant="inline" />
+        </PostureSection>
+      )}
 
       {/* v5.222.0 — what this upload did to the inventory, durable on the
           scan page: hosts added / already known / conflicts / new ports /
           import quality, each opening the records it counts. */}
       {summaryRow && (
-        <Card className="mb-md">
-          <CardContent className="p-md">
-            <p className="mb-xs text-caption text-muted-foreground">Import result</p>
-            <ImportResult scan={summaryRow} />
-          </CardContent>
-        </Card>
+        <PostureSection className="mb-lg" title="Import result">
+          <ImportResult scan={summaryRow} />
+        </PostureSection>
       )}
 
-      <Card>
-        <CardContent className="p-md">
+      <PostureSection title="What this scan recorded">
           <Tabs value={tab} onValueChange={setTab}>
             <TabsList>
               {/* Audit RSP·L6 — surface counts in the tab labels so
@@ -378,8 +382,12 @@ const ScanDetail: React.FC = () => {
                                 </div>
                               </TableCell>
                               <TableCell>
-                                <div className="max-w-full truncate min-w-0">
-                                  {row.hostname_at_scan || 'N/A'}
+                                {/* v5.288.0 — "No hostname", as everywhere else (was "N/A"). */}
+                                <div
+                                  className={`max-w-full truncate min-w-0${row.hostname_at_scan ? '' : ' text-muted-foreground'}`}
+                                  title={row.hostname_at_scan || undefined}
+                                >
+                                  {row.hostname_at_scan || 'No hostname'}
                                 </div>
                               </TableCell>
                               <TableCell>
@@ -446,7 +454,12 @@ const ScanDetail: React.FC = () => {
                               </div>
                             </TableCell>
                             <TableCell>
-                              <div className="max-w-full truncate min-w-0">{host.hostname || 'N/A'}</div>
+                              <div
+                                className={`max-w-full truncate min-w-0${host.hostname ? '' : ' text-muted-foreground'}`}
+                                title={host.hostname || undefined}
+                              >
+                                {host.hostname || 'No hostname'}
+                              </div>
                             </TableCell>
                             <TableCell>
                               <Badge variant={hostStateVariant(host.state)} className="whitespace-nowrap">{host.state || 'unknown'}</Badge>
@@ -641,22 +654,9 @@ const ScanDetail: React.FC = () => {
               <CommandExplanation scanId={parseInt(scanId!)} />
             </TabsContent>
           </Tabs>
-        </CardContent>
-      </Card>
+      </PostureSection>
     </div>
   );
 };
-
-const StatCard: React.FC<{ label: string; value: React.ReactNode }> = ({ label, value }) => (
-  <Card>
-    <CardContent className="p-md">
-      <p className="text-caption text-muted-foreground">{label}</p>
-      {/* Audit RSP·M13 — at md grid-cols-4 the locale-formatted big
-          numbers can overflow text-page-title; drop a step on md and
-          truncate to keep the card width-stable. */}
-      <p className="truncate text-section-title font-semibold text-foreground md:text-page-title">{value}</p>
-    </CardContent>
-  </Card>
-);
 
 export default ScanDetail;

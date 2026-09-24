@@ -122,6 +122,11 @@ class ScanInventorySummary(BaseModel):
         0, ge=0,
         description="Failed jobs already dismissed — discarded, expired before review, or failures acknowledged",
     )
+    # v2.402.0 — `imports_not_imported` by reason, so the lead names the
+    # actual reasons with counts instead of listing every possible one.
+    # Keys: `discarded`, `expired`, `dismissed` (any other acknowledged
+    # failure); they sum to `imports_not_imported`.
+    imports_not_imported_by_reason: Dict[str, int] = Field(default_factory=dict)
 
 
 class CommandArgument(BaseModel):
@@ -910,14 +915,25 @@ def get_scans_summary(
     # someone (the ONE definition Ingestion Results and Operations use), and
     # what failed but was already dismissed (discards, expiries included).
     Job = models.IngestionJob
-    attention, not_imported = (
+    dismissed_failure = and_(Job.status == "failed", Job.dismissed_at.isnot(None))
+    discarded_job = Job.error_message == DISCARDED_MESSAGE
+    expired_job = Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")
+    attention, not_imported, n_discarded, n_expired = (
         db.query(
             func.count(case((blocked_import_condition(), Job.id))),
-            func.count(case((and_(Job.status == "failed", Job.dismissed_at.isnot(None)), Job.id))),
+            func.count(case((dismissed_failure, Job.id))),
+            func.count(case((and_(dismissed_failure, discarded_job), Job.id))),
+            func.count(case((and_(dismissed_failure, expired_job), Job.id))),
         )
         .filter(Job.project_id == project.id)
         .one()
     )
+    not_imported = int(not_imported or 0)
+    by_reason = {
+        "discarded": int(n_discarded or 0),
+        "expired": int(n_expired or 0),
+    }
+    by_reason["dismissed"] = not_imported - by_reason["discarded"] - by_reason["expired"]
 
     return ScanInventorySummary(
         total_scans=host_row.total_scans or 0,
@@ -928,7 +944,8 @@ def get_scans_summary(
         total_files=sum(tool_counts.values()),
         uploaders=uploaders,
         imports_need_attention=int(attention or 0),
-        imports_not_imported=int(not_imported or 0),
+        imports_not_imported=not_imported,
+        imports_not_imported_by_reason={k: v for k, v in by_reason.items() if v > 0},
     )
 
 
@@ -985,6 +1002,15 @@ class ScanBatchSummary(BaseModel):
     # A re-processed file joins its original's batch as a NEW job, so a batch
     # labelled "31 files" can hold 32 scans; this says how many are that.
     reprocessed_files: int = Field(0, description="Imported files that are re-imports of an earlier file of the batch")
+    # v2.402.0 — every file that reached the server for this batch (one
+    # ingestion job each, any state).  A file refused at upload (the
+    # duplicate guard's 409, a rejected extension) never becomes a job, so
+    # this can be lower than the count in a generated label ("46 files …"):
+    # the difference is what the upload refused.  `imported_files` + each
+    # not-imported reason add up to this (a job the queue cancelled is
+    # `cancelled_files`).
+    uploaded_files: int = Field(0, description="Files that reached the server for this batch (ingestion jobs, any state)")
+    cancelled_files: int = Field(0, description="Files whose import was cancelled")
     # The creator's full name, else username — what the row displays.
     created_by_name: Optional[str] = None
 
@@ -1348,6 +1374,7 @@ def list_scan_batches(
         (and_(Job.status == "failed", Job.error_message.like(f"{EXPIRED_MESSAGE_PREFIX}%")), literal("expired")),
         (and_(Job.status == "failed", Job.dismissed_at.is_(None)), literal("failed")),
         (Job.status == "failed", literal("dismissed")),
+        (Job.status == "cancelled", literal("cancelled")),
         (and_(Job.status == "completed", Job.options["reprocess_of_job_id"].as_string().isnot(None)),
          literal("reprocessed")),
         else_=literal("other"),
@@ -1403,6 +1430,8 @@ def list_scan_batches(
             expired_files=buckets.get("expired", {}).get(b.id, 0),
             dismissed_failed_files=buckets.get("dismissed", {}).get(b.id, 0),
             reprocessed_files=buckets.get("reprocessed", {}).get(b.id, 0),
+            cancelled_files=buckets.get("cancelled", {}).get(b.id, 0),
+            uploaded_files=sum(per_batch.get(b.id, 0) for per_batch in buckets.values()),
         ))
     return out
 
