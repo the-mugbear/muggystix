@@ -5,6 +5,7 @@
  * fields.  The team is picked from project members (name and role editable).
  */
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { Plus, Trash2, Users } from 'lucide-react';
 
 import { getProjectReportTeam, type EngagementSettings, type ProjectMember } from '../../services/api';
@@ -28,13 +29,16 @@ interface Props {
   value: EngagementSettings;
   onChange: (next: EngagementSettings) => void;
   members: ProjectMember[];
+  /** Whoever is signed in. A global admin can work on a project without being
+   *  a member of it, so the member list alone left them nobody to pick. */
+  currentUser?: { id: number; name: string } | null;
   disabled?: boolean;
   idPrefix: string;
 }
 
 const memberName = (m: ProjectMember) => m.full_name || m.username || `User ${m.user_id}`;
 
-const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, disabled, idPrefix }) => {
+const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, currentUser, disabled, idPrefix }) => {
   const set = <K extends keyof EngagementSettings>(key: K, v: EngagementSettings[K]) =>
     onChange({ ...value, [key]: v });
   const text = (key: 'client_name' | 'classification' | 'engagement_type' | 'system_description') =>
@@ -43,6 +47,10 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
     (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => set(key, e.target.value || null);
 
   const available = members.filter((m) => !value.testers.some((t) => t.user_id === m.user_id));
+  // Offered only when the member picker cannot add them (not a member).
+  const canAddSelf = !!currentUser
+    && !value.testers.some((t) => t.user_id === currentUser.id)
+    && !members.some((m) => m.user_id === currentUser.id);
 
   // The project's analysts and admins (name, role line, email) — added once
   // each; whoever is already listed keeps what was written for them.
@@ -108,8 +116,15 @@ const EngagementSettingsFields: React.FC<Props> = ({ value, onChange, members, d
         <div className="flex flex-wrap items-center gap-xs">
           {members.length === 0 && !disabled && (
             <span className="text-caption text-muted-foreground">
-              This project has no members to pick from — add people by name.
+              Nobody is a member of this project yet, so there is no one to pick — add people by name, or add members in{' '}
+              <Link to="/project-settings" className="text-info hover:underline">Project settings</Link>.
             </span>
+          )}
+          {canAddSelf && currentUser && (
+            <Button type="button" variant="outline" size="sm" disabled={disabled}
+              onClick={() => set('testers', [...value.testers, { user_id: currentUser.id, name: currentUser.name, role: null, email: null }])}>
+              <Plus className="size-4" aria-hidden /> Add yourself
+            </Button>
           )}
           {members.length > 0 && (
             <Button type="button" variant="outline" size="sm" disabled={disabled || addingTeam}

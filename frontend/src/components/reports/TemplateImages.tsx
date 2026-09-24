@@ -10,6 +10,7 @@
  * read-only into the backend and report worker — adding one needs no rebuild.
  */
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
 import { Badge } from '../ui/badge';
@@ -20,10 +21,21 @@ const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: '
 export const missingRequiredAssets = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>
   (template?.assets ?? []).filter((a) => a.required && !a.present);
 
-/** How many declared files are gaps: not installed, and not a replacement that
- *  simply falls back to the template's shipped file. */
-export const missingAssetCount = (template: ReportTemplate | undefined): number =>
-  (template?.assets ?? []).filter((a) => !a.present && !a.replaces).length;
+/** The optional files that are not installed and have no shipped fallback —
+ *  left out of the layout, never a block. */
+const optionalNotInstalled = (template: ReportTemplate | undefined): ReportTemplateAsset[] =>
+  (template?.assets ?? []).filter((a) => !a.present && !a.required && !a.replaces);
+
+/** The count beside a "Template files" heading. Only a required file is
+ *  "missing" (it blocks rendering); an optional one is "not installed" — an
+ *  optional logo read as a problem when both were counted as missing. A
+ *  replacement that falls back to the shipped file is not counted at all. */
+export const assetCountLabel = (template: ReportTemplate | undefined): string | null => {
+  const required = missingRequiredAssets(template).length;
+  if (required) return `${required} required missing`;
+  const optional = optionalNotInstalled(template).length;
+  return optional ? `${optional} optional not installed` : null;
+};
 
 /** One sentence naming what blocks a render, for a disabled button's title. */
 export const missingAssetsReason = (template: ReportTemplate | undefined): string | undefined => {
@@ -45,9 +57,32 @@ export interface TemplateImagesProps {
   template: ReportTemplate | undefined;
   /** The template's folder name — shown even when it is not listed. */
   templateName: string | null;
+  /** Server paths and install instructions — only for someone who can put
+   *  files on the server (a global admin); everyone else sees the status. */
+  showServerPaths?: boolean;
 }
 
-const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName }) => {
+/**
+ * One line for a draft when nothing blocks rendering: which template files
+ * are not installed and what happens instead. The full list is on the
+ * Reports page; a draft shows it only when a required file is missing.
+ */
+export const TemplateFilesLine: React.FC<{ template: ReportTemplate | undefined }> = ({ template }) => {
+  const assets = template?.assets ?? [];
+  if (!template || !assets.length) return null;
+  const absent = assets.filter((a) => !a.present);
+  return (
+    <p className="break-words text-caption text-muted-foreground">
+      {absent.length === 0
+        ? `All ${assets.length} template file${assets.length === 1 ? '' : 's'} installed.`
+        : absent.map((a) => `${a.label}: ${a.replaces ? 'not installed, the shipped file is used' : 'not installed (optional, left out)'}`).join(' · ')}
+      {' '}
+      <Link to="/reports" className="text-info hover:underline">Details on the Reports page</Link>
+    </p>
+  );
+};
+
+const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName, showServerPaths = false }) => {
   if (!templateName) {
     return <p className="text-caption text-muted-foreground">No template chosen.</p>;
   }
@@ -76,9 +111,11 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName 
             <div className="min-w-0 flex-1 space-y-xxs">
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-xs">
                 <span className="break-words font-medium">{a.label}</span>
-                <span className="min-w-0 max-w-full truncate font-mono text-caption text-muted-foreground" title={folder + a.path}>
-                  {folder}{a.path}
-                </span>
+                {showServerPaths && (
+                  <span className="min-w-0 max-w-full truncate font-mono text-caption text-muted-foreground" title={folder + a.path}>
+                    {folder}{a.path}
+                  </span>
+                )}
               </div>
               {a.replaces && (
                 <p className="break-words text-caption text-muted-foreground">
@@ -98,9 +135,12 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName 
         ))}
       </ul>
       <p className="max-w-3xl text-caption text-muted-foreground">
-        Put each file at its path on the server. The template folder is mounted read-only into the backend and the report
-        worker, so no rebuild is needed — reload this page to check again. A missing optional image is left out of the layout;
-        a file that replaces one of the template&apos;s own falls back to the shipped one.
+        {showServerPaths
+          ? <>Put each file at its path on the server. The template folder is mounted read-only into the backend and the report
+            worker, so no rebuild is needed — reload this page to check again. </>
+          : <>An administrator installs these files on the server. </>}
+        A missing optional image is left out of the layout; a file that replaces one of the template&apos;s own falls back
+        to the shipped one.
       </p>
     </div>
   );

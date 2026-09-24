@@ -31,17 +31,18 @@ import {
   reviseClientReport,
   updateClientReport,
 } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
-import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
 import TemplateImages, {
-  missingAssetCount, missingAssetsReason, missingRequiredAssets,
+  TemplateFilesLine, assetCountLabel, missingAssetsReason, missingRequiredAssets,
 } from '../components/reports/TemplateImages';
 import AiDraftReportDialog from '../components/AiDraftReportDialog';
 import { DetailSkeleton } from '../components/PageSkeleton';
@@ -74,10 +75,17 @@ const toForm = (r: ClientReport): Form => ({
   settings: r.settings,
 });
 
+/** "Before issuing" lists this many findings missing text, then "Show all". */
+const MISSING_PREVIEW = 10;
+
 const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   const toast = useToast();
   const navigate = useNavigate();
   const [confirmDialog, confirm] = useConfirm();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
+  const [showAllMissing, setShowAllMissing] = useState(false);
 
   const [report, setReport] = useState<ClientReport | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -158,6 +166,24 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       toast.error(formatApiError(err, 'Could not save the report.'));
     } finally {
       setSaving(false);
+    }
+  };
+
+  // The template is a rendering choice beside the Preview buttons, so it is
+  // saved on its own at once — other unsaved edits stay unsaved.
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const changeTemplate = async (name: string) => {
+    if (!report || name === report.template) return;
+    setSavingTemplate(true);
+    try {
+      const updated = await updateClientReport(report.id, { template: name });
+      setReport(updated);
+      setForm((f) => (f ? { ...f, template: updated.template } : f));
+      setPreviews({});
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not change the template.'));
+    } finally {
+      setSavingTemplate(false);
     }
   };
 
@@ -272,8 +298,13 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   // A required template image that is not installed blocks every render (the
   // server refuses too); say so on the buttons instead of failing a job.
   const assetsBlock = missingAssetsReason(template);
-  const assetsTemplate = templates.find((t) => t.name === form.template);
-  const assetsMissing = missingAssetCount(assetsTemplate);
+  const missingText = s.missing_text ?? [];
+  const missingDetails = s.missing_details ?? [];
+  // Issue is the main action only once nothing prints as TODO; until then
+  // the page leads to the gaps and to previewing, not to freezing them.
+  const ready = !missingText.length && !missingDetails.length;
+  const notReadyReason = ready ? undefined
+    : 'Parts of this report still print as TODO — see Before issuing';
 
   let lead: React.ReactNode;
   if (s.error) {
@@ -313,8 +344,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           </div>
           <div className="flex shrink-0 flex-wrap gap-xs">
             {isDraft && report.can_issue && (
-              <Button onClick={() => void issue()} disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
-                title={dirty ? 'Save your changes first' : assetsBlock}>
+              <Button variant={ready ? 'default' : 'outline'} onClick={() => void issue()}
+                disabled={busy !== null || dirty || !!s.error || !!assetsBlock}
+                title={dirty ? 'Save your changes first' : (assetsBlock ?? notReadyReason)}>
                 {busy === 'issue' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Stamp className="size-4" aria-hidden />}
                 Issue report
               </Button>
@@ -336,7 +368,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             )}
             {isDraft && !dirty && assetsBlock && (
               <p className="w-full text-right text-caption text-destructive">
-                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Template files.
+                {missingRequiredAssets(template).length === 1 ? 'A required template file is' : 'Required template files are'} not installed — see Preview.
               </p>
             )}
           </div>
@@ -359,26 +391,34 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {s.missing_text?.length ? 'Listed below' : 'Every finding has its text'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
-            info="Images marked “In report” on the findings' evidence and comments. WebP images cannot be placed in every format and are skipped.">
-            {s.images_skipped ? `${s.images_skipped} skipped (WebP)` : 'Marked on each finding'}
+            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. WebP images cannot be placed in every format and are skipped.">
+            {s.images_skipped ? `${s.images_skipped} skipped (WebP)`
+              : s.images ? 'Ticked “In report” on the findings'
+                : 'Tick “In report” on a finding’s image to include it'}
           </PostureMeasure>
         </div>
       )}
 
-      {isDraft && (!!s.missing_text?.length || !!s.missing_details?.length) && (
+      {isDraft && !ready && (
         <PostureSection title="Before issuing"
           description="Anything empty prints in the report as a highlighted TODO — search the preview for TODO to find each one.">
-          {!!s.missing_details?.length && (
+          {!!missingDetails.length && (
             <p className="mb-sm break-words text-body">
               <span className="mr-xs rounded bg-warning/20 px-xxs text-caption font-semibold text-foreground">TODO</span>
-              Report details still empty: <span className="font-medium">{s.missing_details.join(', ')}</span>
-              {s.missing_details.includes('project dates') && (
+              Report details still empty: <span className="font-medium">{missingDetails.join(', ')}</span>
+              {missingDetails.includes('project dates') && (
                 <> (project dates are set in <Link to="/project-settings" className="text-info hover:underline">Project settings</Link>)</>
               )}.
             </p>
           )}
+          {!!missingText.length && (
+            <p className="mb-xs text-body">
+              <span className="mr-xs rounded bg-warning/20 px-xxs text-caption font-semibold text-foreground">TODO</span>
+              {missingText.length} finding{missingText.length === 1 ? ' has' : 's have'} report text still to write — open one to write or draft it:
+            </p>
+          )}
           <ul className="space-y-xxs">
-            {(s.missing_text ?? []).map((m) => (
+            {(showAllMissing ? missingText : missingText.slice(0, MISSING_PREVIEW)).map((m) => (
               <li key={m.id} className="flex min-w-0 flex-wrap items-baseline gap-x-xs text-body">
                 <span className="tabular-nums text-muted-foreground">{m.ref}</span>
                 <Link to={`/findings/${m.id}?edit=report-text`} className="min-w-0 truncate text-info hover:underline"
@@ -387,19 +427,50 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               </li>
             ))}
           </ul>
-        </PostureSection>
-      )}
-
-      {isDraft && (
-        <PostureSection
-          title={<>Template files{assetsMissing > 0 && <SectionCount>{assetsMissing} missing</SectionCount>}</>}
-          description="The logo, Word styles and other files the template itself uses, besides the findings' evidence.">
-          <TemplateImages template={assetsTemplate} templateName={form.template} />
+          {missingText.length > MISSING_PREVIEW && (
+            <Button variant="ghost" size="sm" className="mt-xxs" onClick={() => setShowAllMissing((v) => !v)}>
+              {showAllMissing ? 'Show fewer' : `Show all ${missingText.length}`}
+            </Button>
+          )}
         </PostureSection>
       )}
 
       {isDraft ? (
-        <PostureSection title="Preview" description="Rendered from the live findings on the report worker. Previews expire after a day.">
+        <PostureSection title="Preview"
+          description="Rendered from the live findings on the report worker, with the template chosen here. Previews expire after a day.">
+          <div className="mb-sm space-y-xs">
+            <div className="flex min-w-0 flex-wrap items-center gap-xs">
+              <Label htmlFor="report-template" className="shrink-0">Template</Label>
+              <Select value={report.template} onValueChange={(v) => void changeTemplate(v)}
+                disabled={!editable || savingTemplate}>
+                <SelectTrigger id="report-template" className="h-8 w-[18rem] max-w-full"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  {templates.map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
+                  {!templates.some((t) => t.name === report.template) && (
+                    <SelectItem value={report.template}>{report.template}</SelectItem>
+                  )}
+                </SelectContent>
+              </Select>
+              {savingTemplate && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-label="Saving the template" />}
+              {templates.length === 1 && (
+                <span className="text-caption text-muted-foreground">The only template installed.</span>
+              )}
+            </div>
+            {assetsBlock ? (
+              <div className="space-y-xxs">
+                <p className="text-caption text-destructive">
+                  {assetCountLabel(template)} — preview and issue are unavailable until {missingRequiredAssets(template).length === 1 ? 'it is' : 'they are'} installed:
+                </p>
+                <TemplateImages template={template} templateName={report.template} showServerPaths={isAdmin} />
+              </div>
+            ) : template ? (
+              <TemplateFilesLine template={template} />
+            ) : templates.length > 0 && (
+              <p className="break-words text-caption text-destructive">
+                The template “{report.template}” is not installed on this server — choose another.
+              </p>
+            )}
+          </div>
           {dirty && (
             <p className="mb-xs text-caption text-muted-foreground">
               The report details below have unsaved changes — save them to preview them.
@@ -465,24 +536,10 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       <PostureSection title="Report details"
         description={editable ? 'Saved with this report only. The defaults for new reports are on the Reports page.' : 'As issued.'}>
         <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-          <div className="grid gap-md md:grid-cols-[minmax(0,1fr)_16rem]">
-            <div className="min-w-0 space-y-xxs">
-              <Label htmlFor="report-title">Title</Label>
-              <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
-                onChange={(e) => setForm({ ...form, title: e.target.value })} />
-            </div>
-            <div className="min-w-0 space-y-xxs">
-              <Label htmlFor="report-template">Template</Label>
-              <Select value={form.template} onValueChange={(v) => setForm({ ...form, template: v })} disabled={!editable || saving}>
-                <SelectTrigger id="report-template"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  {templates.map((t) => <SelectItem key={t.name} value={t.name}>{t.title}</SelectItem>)}
-                  {!templates.some((t) => t.name === form.template) && (
-                    <SelectItem value={form.template}>{form.template}</SelectItem>
-                  )}
-                </SelectContent>
-              </Select>
-            </div>
+          <div className="min-w-0 space-y-xxs">
+            <Label htmlFor="report-title">Title</Label>
+            <Input id="report-title" maxLength={255} value={form.title} disabled={!editable || saving}
+              onChange={(e) => setForm({ ...form, title: e.target.value })} />
           </div>
 
           <div className="min-w-0 space-y-xxs">
@@ -499,7 +556,7 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               disabled={!editable || saving} onChange={(e) => setForm({ ...form, executive_summary: e.target.value })} />
           </div>
 
-          <EngagementSettingsFields idPrefix="report" value={form.settings} members={members}
+          <EngagementSettingsFields idPrefix="report" value={form.settings} members={members} currentUser={currentUser}
             disabled={!editable || saving} onChange={(settings) => setForm({ ...form, settings })} />
 
           {editable && (

@@ -26,12 +26,13 @@ import {
   listReportTemplates,
   saveReportProfile,
 } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import PostureLead from '../components/posture/PostureLead';
 import EngagementSettingsFields, { cleanSettings } from '../components/reports/EngagementSettingsFields';
-import TemplateImages, { missingAssetCount } from '../components/reports/TemplateImages';
+import TemplateImages, { assetCountLabel } from '../components/reports/TemplateImages';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
@@ -228,8 +229,13 @@ const Reports: React.FC = () => {
   );
 };
 
+const FORMAT_LABEL: Record<string, string> = { html: 'HTML', docx: 'Word', pdf: 'PDF', qmd: 'QMD source' };
+
 const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   const toast = useToast();
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'admin';
+  const currentUser = user ? { id: user.id, name: user.full_name || user.username } : null;
   const [profile, setProfile] = useState<ReportProfile | null>(null);
   const [draft, setDraft] = useState<ReportProfile | null>(null);
   const [templates, setTemplates] = useState<ReportTemplate[]>([]);
@@ -262,10 +268,6 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
   };
 
   const templateTitle = (name: string | null) => templates.find((t) => t.name === name)?.title ?? name ?? '—';
-  // The images of the template new reports use — the one being chosen while editing.
-  const imagesFor = (draft ? draft.template : profile?.template) ?? null;
-  const imagesTemplate = templates.find((t) => t.name === imagesFor);
-  const imagesMissing = missingAssetCount(imagesTemplate);
 
   return (
     <>
@@ -298,8 +300,8 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
       )}
       {draft && (
         <form className="space-y-md" onSubmit={(e) => { e.preventDefault(); void save(); }}>
-          <EngagementSettingsFields idPrefix="profile" value={draft} members={members} disabled={saving}
-            onChange={(next) => setDraft({ ...draft, ...next })} />
+          <EngagementSettingsFields idPrefix="profile" value={draft} members={members} currentUser={currentUser}
+            disabled={saving} onChange={(next) => setDraft({ ...draft, ...next })} />
           <div className="w-72 max-w-full space-y-xxs">
             <Label htmlFor="profile-template">Template</Label>
             <Select value={draft.template ?? ''} onValueChange={(v) => setDraft({ ...draft, template: v })} disabled={saving}>
@@ -318,15 +320,58 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </form>
       )}
     </PostureSection>
-    {(profile || draft) && (
-      <PostureSection
-        title={<>Template files{imagesMissing > 0 && <SectionCount>{imagesMissing} missing</SectionCount>}</>}
-        description={`The logo, Word styles and other files ${imagesTemplate ? `“${imagesTemplate.title}”` : 'the template'} uses, besides the findings' evidence — install them before generating a report.`}
-      >
-        <TemplateImages template={imagesTemplate} templateName={imagesFor} />
-      </PostureSection>
-    )}
+    {profile && <TemplatesSection templates={templates} defaultName={profile.template} isAdmin={isAdmin} />}
     </>
+  );
+};
+
+/**
+ * Every template installed on the server, the default first, each with the
+ * files it uses besides the findings' evidence. A template is a folder under
+ * `report-templates/`, read on each request — there is no upload.
+ */
+const TemplatesSection: React.FC<{ templates: ReportTemplate[]; defaultName: string | null; isAdmin: boolean }> = ({
+  templates, defaultName, isAdmin,
+}) => {
+  const ordered = [...templates].sort((a, b) => Number(b.name === defaultName) - Number(a.name === defaultName));
+  return (
+    <PostureSection
+      title={<>Templates<SectionCount>{templates.length} installed</SectionCount></>}
+      description="New reports use the default, set above; each draft can choose another. A template's own files (logo, Word styles…) are listed with it."
+    >
+      {templates.length === 0 ? (
+        <p className="text-caption text-destructive">No report templates are installed, so no report can be rendered.</p>
+      ) : (
+        <div className="divide-y divide-border">
+          {ordered.map((t) => {
+            const count = assetCountLabel(t);
+            return (
+              <details key={t.name} open={t.name === defaultName || templates.length === 1} className="group py-sm first:pt-0">
+                <summary className="flex min-w-0 cursor-pointer flex-wrap items-baseline gap-x-xs gap-y-xxs">
+                  <span className="break-words font-medium">{t.title}</span>
+                  {t.name === defaultName && <Badge variant="info">Default</Badge>}
+                  <span className="text-caption text-muted-foreground">
+                    {t.formats.map((f) => FORMAT_LABEL[f] ?? f).join(', ')}
+                    {count && <> · {count}</>}
+                  </span>
+                </summary>
+                <div className="mt-xs space-y-xs">
+                  {t.description && <p className="max-w-3xl break-words text-caption text-muted-foreground">{t.description}</p>}
+                  <TemplateImages template={t} templateName={t.name} showServerPaths={isAdmin} />
+                </div>
+              </details>
+            );
+          })}
+        </div>
+      )}
+      {isAdmin && (
+        <p className="mt-sm max-w-3xl text-caption text-muted-foreground">
+          To add a template, copy its folder, with its <span className="font-mono">template.json</span>, into{' '}
+          <span className="font-mono">report-templates/</span> on the server. It is listed here on the next reload; no rebuild
+          is needed.
+        </p>
+      )}
+    </PostureSection>
   );
 };
 
