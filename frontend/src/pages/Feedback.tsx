@@ -1,7 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
-  RefreshCw,
   Check,
   X as DismissIcon,
   ChevronDown,
@@ -18,6 +17,8 @@ import {
   FeedbackStats,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import LastUpdated from '../components/LastUpdated';
+import TimeAgo from '../components/TimeAgo';
 import { formatApiError } from '../utils/apiErrors';
 import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
@@ -101,6 +102,7 @@ const Feedback: React.FC = () => {
   const [rows, setRows] = useState<AgentFeedbackEntry[]>([]);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lastFetched, setLastFetched] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
@@ -137,6 +139,7 @@ const Feedback: React.FC = () => {
       const [list, s] = await Promise.all([listAgentFeedback(params), getAgentFeedbackStats()]);
       setRows(list);
       setStats(s);
+      setLastFetched(new Date());
     } catch (err: unknown) {
       const msg = formatApiError(err, 'Failed to load feedback.');
       setError(msg);
@@ -204,9 +207,7 @@ const Feedback: React.FC = () => {
             improvements, new tool additions, and prompt refinements.
           </p>
         </div>
-        <Button variant="outline" onClick={load} disabled={loading}>
-          <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
-        </Button>
+        <LastUpdated compact lastFetched={lastFetched} onRefresh={load} isLoading={loading} label="agent feedback" />
       </div>
 
       {/* KPI cards */}
@@ -449,8 +450,8 @@ const Feedback: React.FC = () => {
                               {r.friction_notes || <em className="text-muted-foreground">(no notes)</em>}
                             </p>
                           </TableCell>
-                          <TableCell className="text-caption text-muted-foreground">
-                            {new Date(r.created_at).toLocaleString()}
+                          <TableCell className="truncate text-caption text-muted-foreground">
+                            <TimeAgo value={r.created_at} />
                           </TableCell>
                           <TableCell>
                             <div className="flex gap-xxs">
