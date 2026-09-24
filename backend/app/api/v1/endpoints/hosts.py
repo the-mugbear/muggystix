@@ -887,11 +887,16 @@ def get_host_filter_data_v2(
         models.Port.port_number, models.Port.service_name, models.Port.state
     ).order_by(func.count(models.Port.id).desc()).limit(500).all()
 
-    # Services — scoped
+    # Services — scoped, and open ports only: a service condition matches open
+    # ports unless it names a state (v2.403.0), so the picker's count must be
+    # the count the filter returns — a closed port's name is nmap's guess.
     svc_query = db.query(
         models.Port.service_name,
         func.count(models.Port.id).label('count')
-    ).filter(models.Port.service_name.isnot(None), models.Port.service_name != '')
+    ).filter(
+        models.Port.service_name.isnot(None), models.Port.service_name != '',
+        models.Port.state == 'open',
+    )
     if host_scope is not None:
         svc_query = svc_query.join(models.Host).filter(host_scope)
     services_result = svc_query.group_by(

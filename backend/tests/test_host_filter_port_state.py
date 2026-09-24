@@ -158,3 +158,13 @@ def test_tool_output_port_narrowing_follows_the_rule():
     assert nums({"services": "ssh", "port_states": "any"}) == [22, 2222]
     # No port condition: nothing narrows by state.
     assert nums({}) == [22, 2222]
+
+
+def test_service_picker_counts_what_the_default_filter_returns(client, db_session, test_project):
+    """The Add-filter service list said "ssh 4" beside a filter that returns 1:
+    it counted closed and filtered ports, the filter now does not."""
+    _seed(db_session, test_project.id)
+    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/filters/data").json()
+    counts = {s["name"]: s["count"] for s in body["services"]}
+    assert counts["ssh"] == 1
+    assert counts["http"] == 1
