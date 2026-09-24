@@ -354,6 +354,31 @@ describe('Hosts', () => {
     expect(sessionStorage.getItem(projectScopedKey('projectDefaultDismissed'))).toBeNull();
   });
 
+  // UX review 2026-09-24 — after a reload the default read "View: Custom filters ·
+  // Back to default view": the filters-change effect's mount run used up the
+  // skip flag the restore had set, and its next run cleared the banner and the
+  // stored name.
+  it('a reload keeps the applied project default named as such', async () => {
+    mockedApi.getProjectDefaultView.mockResolvedValue({
+      id: 9, name: 'Web tier', filter_json: { filters: { ports: ['443'] } },
+      is_project_default: true, created_at: '2026-09-01T00:00:00Z', updated_at: null,
+    });
+    sessionStorage.setItem(
+      projectScopedKey('hostFiltersState'),
+      JSON.stringify({ filters: { ports: ['443'] }, followFilter: 'all', onlyWithNotes: false }),
+    );
+    sessionStorage.setItem(projectScopedKey('projectDefaultName'), 'Web tier');
+    renderHosts();
+
+    expect(await screen.findByText(/Project default view applied/)).toBeInTheDocument();
+    await waitFor(() => expect(mockedApi.getProjectDefaultView).toHaveBeenCalled());
+    await screen.findByRole('table');
+    expect(screen.getByText(/Project default view applied/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Back to default view' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^View: Web tier/ })).toBeInTheDocument();
+    expect(sessionStorage.getItem(projectScopedKey('projectDefaultName'))).toBe('Web tier');
+  });
+
   it('forwards a command-bar query as the q param to getHosts', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
@@ -537,13 +562,17 @@ describe('Hosts', () => {
 
   // v5.290.0 — seen in a live browser test: the bulk bar was inserted above
   // the table on the first tick, pushing every row ~40px down, so the second
-  // click landed on the wrong host.
-  it('selecting a row does not move the table: the bulk-action slot is there before and after', async () => {
+  // click landed on the wrong host. UX review 2026-09-24 — the slot follows the
+  // table (sticky to the window's foot) and is empty until a row is selected.
+  it('selecting a row does not move the table: the bulk-action slot follows it, empty until a selection', async () => {
     renderHosts();
-    await screen.findByRole('table');
+    const table = await screen.findByRole('table');
     const slot = screen.getByTestId('hosts-bulk-slot');
     const slotClass = slot.className;
-    expect(slot).toHaveTextContent(/Select rows to act on them/);
+    expect(slot).toBeEmptyDOMElement();
+    expect(screen.queryByText(/Select rows to act on them/)).toBeNull();
+    // Nothing above the table changes when the bar appears.
+    expect(table.compareDocumentPosition(slot) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     const precedingBefore = slot.parentElement!.children.length;
 
     await waitFor(() => {

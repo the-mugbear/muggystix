@@ -618,7 +618,10 @@ export function useHostColumns({
         // site could not be compared down the page.
         id: 'network',
         header: 'Network',
-        size: 170,
+        // UX review 2026-09-24 — the four sized columns took 790px and the
+        // table 1060px, wider than the page at a 1246px window; now 680px,
+        // and the table fits a ~900px content column (Host gets the rest).
+        size: 140,
         cell: ({ row }) => {
           const host = row.original;
           const lastSeenAge = relativeAge(host.last_seen);
@@ -652,7 +655,7 @@ export function useHostColumns({
       {
         id: 'exposure',
         header: 'Exposure',
-        size: 210,
+        size: 180,
         cell: ({ row }) => {
           // Open-port count + the host's risk-ranked high-value services
           // (ports of interest), replacing the arbitrary first-3-services
@@ -728,7 +731,7 @@ export function useHostColumns({
       {
         id: 'attention',
         header: 'Attention',
-        size: 200,
+        size: 170,
         cell: ({ row }) => {
           // v5.270.0 — one sentence-case line for the most important reason,
           // then the others spelled out in quiet text ("1 high · 1 finding"),
@@ -758,7 +761,7 @@ export function useHostColumns({
       {
         id: 'review',
         header: 'Review',
-        size: 190,
+        size: 150,
         cell: ({ row }) => {
           // v5.270.0 — the column states where the review stands, in quiet
           // text; the action to change it appears on row hover or keyboard
