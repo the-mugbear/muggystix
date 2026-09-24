@@ -392,7 +392,60 @@ def looks_like_amass(sample: bytes, filename: str) -> bool:
 def looks_like_nikto(sample: bytes, filename: str) -> bool:
     lowered = sample.decode("utf-8", errors="ignore").lower()
     name = filename.lower()
-    return "nikto" in name or "nikto v" in lowered or "target ip:" in lowered
+    if "nikto" in name or "nikto v" in lowered or "target ip:" in lowered:
+        return True
+    # v2.404.0 — Nikto's own ``-Format json`` carries no "nikto" token at
+    # all, so a real Nikto 2.5/2.6 export was "recognised from the filename
+    # only" and needed a choice in the staged review.  Recognise its shape.
+    return _looks_like_nikto_json(sample)
+
+
+_NIKTO_TARGET_KEYS = ("ip", "host", "targetip", "hostname")
+_NIKTO_FINDING_KEYS = ("id", "osvdb", "OSVDB", "method", "url", "references")
+# The first finding of a host object whose JSON is too large for the sample
+# (hundreds of findings on one host): the parent's findings array opens with
+# an object that has a ``msg``.
+_NIKTO_TRUNCATED_RE = re.compile(
+    r'"(?:vulnerabilities|findings)"\s*:\s*\[\s*\{[^{}\[\]]*"msg"\s*:'
+)
+
+
+def _is_nikto_finding(rec: object) -> bool:
+    """One Nikto finding: a ``msg`` plus Nikto's own finding vocabulary
+    (test id, OSVDB, the request's method/url, a references link)."""
+    return isinstance(rec, dict) and "msg" in rec and _has_any(rec, _NIKTO_FINDING_KEYS)
+
+
+def _looks_like_nikto_json(sample: bytes) -> bool:
+    """Nikto JSON in the shapes the parser reads.
+
+    * Nikto 2.5/2.6 native: a host object (or an array of them)
+      ``{host, ip, port, …, vulnerabilities: [{id, method, url, msg,
+      references}]}`` — older Nikto wrote the same shape with ``banner``
+      and ``OSVDB``.
+    * A wrapper ``{…target…, findings: [{msg, …}]}``.
+    * Flat finding records ``{ip, port, id: "nikto-…", msg, severity}``.
+
+    ``msg`` is the discriminator: no other supported JSON format (httpx,
+    naabu, masscan, netexec, smbmap, testssl, EyeWitness, dirbuster, dnsx,
+    BloodHound, amass, RDAP) names a finding's text ``msg``.
+    """
+    _, rec = _peek_json_shape(sample)
+    if rec is None:
+        text = sample.decode("utf-8", errors="ignore").lstrip("﻿").lstrip()
+        return text[:1] in ("[", "{") and bool(_NIKTO_TRUNCATED_RE.search(text))
+    if not _has_any(rec, _NIKTO_TARGET_KEYS):
+        return False
+    for key in ("vulnerabilities", "findings"):
+        nested = rec.get(key)
+        if isinstance(nested, list):
+            if nested:
+                return _is_nikto_finding(nested[0])
+            # A target Nikto reported nothing on still carries its banner.
+            return "port" in rec and _has_any(rec, ("server_banner", "banner"))
+    if str(rec.get("id") or "").lower().startswith("nikto-") and "msg" in rec:
+        return True
+    return _is_nikto_finding(rec) and "port" in rec
 
 def looks_like_eyewitness_json(sample: bytes) -> bool:
     """EyeWitness JSON: per-target record carrying ``screenshot_path``

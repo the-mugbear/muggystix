@@ -118,6 +118,93 @@ def test_testssl_json_is_not_also_naabu():
     assert _detected("testssl-full.json")[:1] == ["testssl_json"]
 
 
+def _detected_bytes(sample: bytes, name: str) -> list:
+    from types import SimpleNamespace
+    from app.services.ingestion_service import IngestionService
+
+    job = SimpleNamespace(original_filename=name, options={}, format_override=None)
+    return [ft for ft, _cls, _desc in IngestionService()._build_parsing_attempts(job, sample)]
+
+
+class TestNiktoJsonDetection:
+    """v2.404.0 — Nikto's native JSON is recognised by its shape, not only
+    by a "nikto" filename, and that shape claims no other tool's JSON."""
+
+    def test_native_json_is_nikto_under_a_neutral_name(self):
+        from app.parsers.content_detection import looks_like_nikto
+
+        sample = (NATIVE / "nikto-all.json").read_bytes()
+        assert looks_like_nikto(sample, "upload.json")
+        assert _detected("nikto-all.json") == ["nikto_json"]
+        assert _detected_bytes(sample, "upload.json") == ["nikto_json"]
+
+    @pytest.mark.parametrize("sample", [
+        # One host object (Nikto 2.5, single target).
+        b'{"host": "10.0.0.5", "ip": "10.0.0.5", "port": "80", "banner": "",'
+        b' "vulnerabilities": [{"id": "999100", "method": "GET", "url": "/", "msg": "x"}]}',
+        # Older Nikto: OSVDB instead of references.
+        b'[{"host": "a.example", "ip": "10.0.0.5", "port": "443", "banner": "Apache",'
+        b' "vulnerabilities": [{"id": "000726", "OSVDB": "0", "method": "GET", "url": "/", "msg": "y"}]}]',
+        # A wrapper carrying findings.
+        b'{"ip": "10.0.0.5", "port": 80, "findings": [{"id": "1", "msg": "z"}]}',
+        # Flat records (artifacts/manual/nikto_sample.json).
+        b'[{"ip": "10.0.0.5", "port": 80, "id": "nikto-000726", "msg": "m", "severity": "low"}]',
+        # A target Nikto reported nothing on.
+        b'[{"host": "10.0.0.5", "ip": "10.0.0.5", "port": 80, "server_banner": null, "vulnerabilities": []}]',
+    ])
+    def test_other_nikto_json_shapes_stay_recognised(self, sample):
+        from app.parsers.content_detection import looks_like_nikto
+
+        assert looks_like_nikto(sample, "upload.json")
+
+    def test_a_host_object_larger_than_the_sample_is_still_recognised(self):
+        from app.parsers.content_detection import looks_like_nikto
+
+        finding = b'{"id": "999100", "method": "GET", "url": "/a", "msg": "' + b"x" * 200 + b'"}'
+        big = b'[{"host": "10.0.0.5", "ip": "10.0.0.5", "port": 80, "vulnerabilities": [' + \
+            b",".join([finding] * 400) + b"]}]"
+        assert len(big) > 65536
+        assert looks_like_nikto(big[:65536], "upload.json")
+
+    @pytest.mark.parametrize("name", [
+        "masscan-banners.json", "testssl-full.json", "testssl-pretty.json",
+        "netexec-spider-172.30.77.10.json", "rdap-native.json", "rdap-compact.json",
+    ])
+    def test_other_native_json_is_not_nikto(self, name):
+        from app.parsers.content_detection import looks_like_nikto
+
+        sample = (NATIVE / name).read_bytes()[:65536]
+        assert not looks_like_nikto(sample, "upload.json")
+        assert "nikto_json" not in _detected_bytes(sample, "upload.json")
+
+    @pytest.mark.parametrize("sample", [
+        # httpx
+        b'{"url": "https://10.0.0.5", "host": "10.0.0.5", "port": "443", "title": "t",'
+        b' "webserver": "nginx", "tech": ["Nginx"], "status_code": 200}',
+        # naabu
+        b'{"host": "10.0.0.5", "ip": "10.0.0.5", "port": 22, "protocol": "tcp"}',
+        # smbmap
+        b'[{"ip": "10.0.0.5", "port": 445, "shares": [{"name": "C$", "permissions": "NO ACCESS"}]}]',
+        # EyeWitness
+        b'[{"url": "http://10.0.0.5", "page_title": "t", "screenshot_path": "s.png"}]',
+        # ffuf
+        b'{"results": [{"url": "http://10.0.0.5/admin", "status": 200, "length": 12}]}',
+        # dnsx
+        b'{"host": "a.example", "a": ["10.0.0.5"], "status_code": "NOERROR", "resolver": ["1.1.1.1:53"]}',
+        # BloodHound
+        b'{"data": [{"Properties": {"name": "HOST.CORP.LOCAL"}}], "meta": {"type": "computers", "count": 1}}',
+        # amass
+        b'{"name": "a.example", "domain": "example", "addresses": [{"ip": "10.0.0.5"}]}',
+        # A scanner that also says "vulnerabilities", with no Nikto finding in it.
+        b'{"ip": "10.0.0.5", "port": 80, "vulnerabilities": [{"cve": "CVE-2021-1", "severity": "high"}]}',
+    ])
+    def test_other_tools_json_is_not_nikto(self, sample):
+        from app.parsers.content_detection import looks_like_nikto
+
+        assert not looks_like_nikto(sample, "upload.json")
+        assert "nikto_json" not in _detected_bytes(sample, "upload.json")
+
+
 def test_testssl_pretty_is_recognised_by_its_content():
     from app.parsers.testssl_parser import looks_like_testssl
 

@@ -212,3 +212,29 @@ describe('UploadReviewDialog flow', () => {
     expect(onOpenChange).toHaveBeenLastCalledWith(false);
   });
 });
+
+describe('UploadReviewDialog format chooser', () => {
+  it('lists each format once: the candidates annotated, then the other formats', async () => {
+    api.getJobDetection.mockResolvedValue({
+      ...detectionFor(1, 'x'),
+      candidates: [
+        { file_type: 'nmap_xml', label: 'Nmap XML', basis: 'structure', rank: 0 },
+        { file_type: 'masscan_xml', label: 'Masscan XML', basis: 'fallback', rank: 1 },
+      ],
+      formats: [
+        { file_type: 'nmap_xml', label: 'Nmap XML', family: 'port' },
+        { file_type: 'masscan_xml', label: 'Masscan XML', family: 'port' },
+        { file_type: 'nessus_xml', label: 'Nessus (.nessus)', family: 'vuln' },
+      ],
+    });
+    const { container } = renderDialog();
+    drop(container, ['a.xml']);
+    const select = await screen.findByLabelText('Format for a.xml');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Nmap XML (by structure)' })).toBeInTheDocument());
+    const values = Array.from(select.querySelectorAll('option')).map((o) => o.value).filter(Boolean);
+    expect(values).toEqual(['nmap_xml', 'masscan_xml', 'nessus_xml']);
+    const other = select.querySelector('optgroup[label="Other formats"]') as HTMLElement;
+    expect(Array.from(other.querySelectorAll('option')).map((o) => o.textContent)).toEqual(['Nessus (.nessus)']);
+    expect(screen.queryByRole('option', { name: 'Nmap XML' })).not.toBeInTheDocument();
+  });
+});

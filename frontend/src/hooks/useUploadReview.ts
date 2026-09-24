@@ -112,6 +112,17 @@ export const BASIS_LABEL: Record<string, string> = {
   fallback: 'not recognised',
 };
 
+/** The chooser's second group: every format the detection did NOT already
+ *  list as a candidate (v5.290.0 — the candidates were listed twice, once
+ *  annotated and again under "All formats"). */
+export const otherFormats = (
+  formats: FormatOption[],
+  candidates: ReadonlyArray<{ file_type: string }> | undefined,
+): FormatOption[] => {
+  const listed = new Set((candidates ?? []).map((c) => c.file_type));
+  return formats.filter((f) => !listed.has(f.file_type));
+};
+
 /** The format to SUGGEST on a row that needs the operator.  A fallback is a
  *  parser the dispatcher would merely try on an unrecognised file — offering
  *  it as a suggestion would repeat the overstatement in smaller type. */

@@ -4,7 +4,7 @@ import { Loader2, Trash2, Upload } from 'lucide-react';
 
 import { ACCEPTED_EXTENSIONS, ACCEPTED_EXTENSION_LIST, SUPPORTED_FORMATS } from '../../data/uploadFormats';
 import {
-  BASIS_LABEL, useUploadReview, isImportable, type ReviewRow, type StagedJobRef, type StartedUpload,
+  BASIS_LABEL, otherFormats, useUploadReview, isImportable, type ReviewRow, type StagedJobRef, type StartedUpload,
 } from '../../hooks/useUploadReview';
 import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
@@ -411,8 +411,8 @@ const ReviewRowView: React.FC<{
                     ))}
                   </optgroup>
                 )}
-                <optgroup label="All formats">
-                  {allFormats.map((f) => (
+                <optgroup label={d && d.candidates.length > 0 ? 'Other formats' : 'All formats'}>
+                  {otherFormats(allFormats, d?.candidates).map((f) => (
                     <option key={f.file_type} value={f.file_type}>{f.label}</option>
                   ))}
                 </optgroup>

@@ -10,7 +10,7 @@ import {
   type FormatOption,
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
-import { BASIS_LABEL, suggestionOf } from '../../hooks/useUploadReview';
+import { BASIS_LABEL, otherFormats, suggestionOf } from '../../hooks/useUploadReview';
 import { formatApiError } from '../../utils/apiErrors';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
@@ -218,8 +218,8 @@ const FormatRetryDialog: React.FC<FormatRetryDialogProps> = ({
                       ))}
                     </optgroup>
                   )}
-                  <optgroup label="All formats">
-                    {formats.map((f) => (
+                  <optgroup label={detection && detection.candidates.length > 0 ? 'Other formats' : 'All formats'}>
+                    {otherFormats(formats, detection?.candidates).map((f) => (
                       <option key={f.file_type} value={f.file_type}>{f.label}</option>
                     ))}
                   </optgroup>

@@ -124,3 +124,15 @@ describe('FormatRetryDialog', () => {
     expect(screen.queryByRole('button', { name: 'Retry inspection' })).not.toBeInTheDocument();
   });
 });
+
+describe('FormatRetryDialog format chooser', () => {
+  it('lists each format once: the candidates annotated, then the other formats', async () => {
+    render(<FormatRetryDialog open onOpenChange={() => {}} jobId={9} filename="results.txt" mode="retry" onDone={() => {}} />);
+    const select = await screen.findByLabelText('Parse as');
+    await waitFor(() => expect(screen.getByRole('option', { name: 'Naabu host:port text (by filename only)' })).toBeInTheDocument());
+    const values = Array.from(select.querySelectorAll('option')).map((o) => o.value).filter(Boolean);
+    expect(values).toEqual(['naabu_output', 'amass_output']);
+    const other = select.querySelector('optgroup[label="Other formats"]') as HTMLElement;
+    expect(Array.from(other.querySelectorAll('option')).map((o) => o.value)).toEqual(['amass_output']);
+  });
+});
