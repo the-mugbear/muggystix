@@ -41,6 +41,26 @@ describe('contributionRows', () => {
     expect(rows[1].parts).toEqual(['10 up', '5 OS fingerprinted']);
   });
 
+  // Screenshot 2026-09-23: "Hosts 0 up" beside "+146 new of 146 seen".
+  it('says "none reported up" instead of "0 up" when hosts exist', () => {
+    const rows = contributionRows({ ...blank, total_hosts: 146, up_hosts: 0 });
+    expect(rows.find((r) => r.key === 'hosts')?.parts).toEqual(['none reported up']);
+  });
+
+  it('lets a long contribution line wrap instead of truncating it', () => {
+    render(
+      <ScanContribution
+        scan={{
+          ...blank, tool_name: 'nessus', total_hosts: 123, up_hosts: 0,
+          vulnerability_summary: { total: 421, hosts_affected: 123, hosts_critical_high: 63, exploitable: 12 } as never,
+        }}
+      />,
+    );
+    const line = screen.getByText(/421 new · on 123 hosts · 63 hosts critical\/high/);
+    expect(line.className).not.toMatch(/truncate/);
+    expect(line.className).toMatch(/break-words/);
+  });
+
   it('leads a web scan with interfaces and omits zero buckets', () => {
     const rows = contributionRows({
       ...blank,
@@ -125,7 +145,8 @@ describe('ScanContribution', () => {
       />,
     );
     expect(screen.getByText('Scanner observations')).toHaveClass('whitespace-nowrap');
-    expect(screen.getByText(/^2 new/)).toHaveClass('truncate');
+    // v5.288.0 — the figures wrap (they used to truncate mid-list).
+    expect(screen.getByText(/^2 new/)).toHaveClass('break-words');
     expect(container.querySelector('[role="img"], [aria-label*="everity"]')).toBeNull();
   });
 

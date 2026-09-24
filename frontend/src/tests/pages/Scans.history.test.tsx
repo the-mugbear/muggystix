@@ -54,6 +54,9 @@ const renderPage = (path = '/scans') =>
     </MemoryRouter>,
   );
 
+/** The page lead's sentence (PostureLead's paragraph), as one string. */
+const leadText = () => document.querySelector('.border-l-4 > p')?.textContent ?? '';
+
 beforeEach(() => {
   vi.clearAllMocks();
   api.getRecentIngestionJobs.mockResolvedValue([]);
@@ -182,7 +185,7 @@ describe('Scans — layout', () => {
     expect(screen.queryByText('Hosts up')).not.toBeInTheDocument();
     expect(screen.queryByText('Open services')).not.toBeInTheDocument();
     expect(screen.queryByText('Queue active')).not.toBeInTheDocument();
-    expect(screen.getByText(/files? imported; nothing failed; last import/)).toBeInTheDocument();
+    expect(leadText()).toMatch(/files? imported · nothing failed · last import/);
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
   });
 
@@ -253,9 +256,29 @@ describe('Scans — layout', () => {
       imports_need_attention: 0, imports_not_imported: 31,
     });
     renderPage();
-    const link = await screen.findByRole('link', { name: '31 files were never imported' });
+    const link = await screen.findByRole('link', { name: '31 never imported' });
     expect(link).toHaveAttribute('href', '/parse-errors?status=failed');
-    expect(screen.queryByText(/nothing failed/)).not.toBeInTheDocument();
+    expect(leadText()).not.toMatch(/nothing failed/);
+  });
+
+  // Screenshot 2026-09-23: a run-on sentence listing every possible reason
+  // ("discarded, expired before review, or a dismissed failure") whatever
+  // had actually happened, plus a two-line paragraph under it.
+  it('names the actual reasons files were never imported, with counts, and keeps the lead short', async () => {
+    api.getScansSummary.mockResolvedValue({
+      total_scans: 40, total_hosts: 9, up_hosts: 9, open_services: 12, tool_counts: { NMAP: 40 },
+      imports_need_attention: 0, imports_not_imported: 33,
+      imports_not_imported_by_reason: { expired: 31, discarded: 2 },
+    });
+    renderPage();
+    await screen.findByRole('link', { name: '33 never imported' });
+    const text = leadText();
+    expect(text).toMatch(/imported · 33 never imported \(31 expired before review, 2 discarded\) · last import/);
+    expect(text).not.toMatch(/dismissed failure/);
+    expect(text).not.toMatch(/none needs attention/);
+    // The explanation is an info tip, not a paragraph under the lead.
+    expect(screen.getByRole('button', { name: 'About these figures' })).toBeInTheDocument();
+    expect(screen.queryByText(/Every imported file counts/)).not.toBeInTheDocument();
   });
 
   it('says "nothing failed" only when the project has no failed job at all', async () => {
@@ -264,7 +287,7 @@ describe('Scans — layout', () => {
       imports_need_attention: 0, imports_not_imported: 0,
     });
     renderPage();
-    expect(await screen.findByText(/imported; nothing failed/)).toBeInTheDocument();
+    await waitFor(() => expect(leadText()).toMatch(/imported · nothing failed/));
   });
 
   it('says so when the queue could not be read — never "nothing failed"', async () => {

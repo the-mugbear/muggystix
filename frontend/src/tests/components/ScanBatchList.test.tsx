@@ -70,8 +70,10 @@ describe('ScanBatchRow', () => {
     const [scan, when, newHosts, contributed, actions, ...rest] = cells(container);
     expect(rest).toHaveLength(0);
     expect(scan).toHaveTextContent('nmap-tcp-top1000');
-    expect(when).toHaveTextContent(formatInstant(new Date('2026-09-11T12:00:00Z'), TZ));
-    expect(when).toHaveTextContent(`first file ${formatInstant(new Date('2026-09-11T10:00:00Z'), TZ)}`);
+    // No created_at on this fixture: the first file's upload stands in.
+    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-11T10:00:00Z'), TZ)}uploaded`);
+    // Screenshot 2026-09-23: "uploaded; first file …" read as nonsense.
+    expect(when).not.toHaveTextContent(/first file/);
     expect(newHosts).toHaveTextContent('+850');
     expect(newHosts).toHaveTextContent('of 900 unique seen');
     expect(contributed).toHaveTextContent('312 files imported');
@@ -152,11 +154,77 @@ describe('ScanBatchRow', () => {
     fireEvent.click(screen.getByRole('button', { name: /show the files of nmap-tcp-top1000/i }));
     await screen.findByText('sweep.xml');
 
-    expect(screen.getByText('1 host · 0 new')).toBeInTheDocument();
+    expect(screen.getByText('of 1 host seen')).toBeInTheDocument();
     expect(screen.getByText('0 open ports')).toBeInTheDocument();
-    expect(screen.getByText('2 hosts · 1 new')).toBeInTheDocument();
+    expect(screen.getAllByText('of 2 hosts seen')).toHaveLength(2);
     expect(screen.getByTitle('This tool does not report open ports')).toHaveTextContent('—');
     expect(screen.getByText('1 open port')).toBeInTheDocument();
     expect(screen.queryByText(/\+0/)).not.toBeInTheDocument();
+  });
+
+  // Screenshot 2026-09-23: the expanded files were a header-less list whose
+  // figures did not sit under the table's columns.
+  it("lays each expanded file out in the parent table's five columns", async () => {
+    (getScans as Mock).mockResolvedValue([
+      {
+        id: 31, filename: 'chunk-009.xml', tool_name: 'nmap', scan_type: null, created_at: '2026-09-11T11:00:00Z',
+        total_hosts: 4, up_hosts: 4, new_hosts: 3, updated_hosts: 1, total_ports: 2, open_ports: 2,
+      },
+    ]);
+    const { container } = renderRow({});
+    fireEvent.click(screen.getByRole('button', { name: /show the files of/i }));
+    await screen.findByText('chunk-009.xml');
+    const fileRow = container.querySelector('tr[data-batch-file]') as HTMLTableRowElement;
+    const [scan, when, newHosts, contributed, actions, ...rest] = Array.from(fileRow.querySelectorAll('td'));
+    expect(rest).toHaveLength(0);
+    expect(scan).toHaveTextContent('chunk-009.xml');
+    expect(scan).toHaveTextContent('nmap');
+    expect(when).toHaveTextContent(formatInstant(new Date('2026-09-11T11:00:00Z'), TZ));
+    expect(newHosts).toHaveTextContent('+3');
+    expect(newHosts).toHaveTextContent('of 4 hosts seen');
+    expect(contributed).toHaveTextContent('2 open ports');
+    expect(actions).toBeEmptyDOMElement();
+  });
+
+  it('shows a generated label as "Upload batch · N files", and a name as written', () => {
+    const op = { ...batch, recon_session_id: null, created_by: 'admin', created_by_name: 'Administrator Account' };
+    const { unmount } = renderRow({}, vi.fn(), { ...op, label: '31 files · 9/18/2026, 10:20:37 PM' });
+    expect(screen.getByText('Upload batch · 31 files')).toBeInTheDocument();
+    // The subtitle wraps (never an ellipsis over the uploader's name) and does
+    // not repeat "Upload batch".
+    const by = screen.getByText('Uploaded by Administrator Account');
+    expect(by.className).not.toMatch(/truncate/);
+    expect(screen.queryByText(/9\/18\/2026/)).not.toBeInTheDocument();
+    unmount();
+    renderRow({}, vi.fn(), { ...op, label: '12 files uploaded · Sep 23, 2026, 10:08 PM UTC' });
+    expect(screen.getByText('Upload batch · 12 files')).toBeInTheDocument();
+    unmount();
+    renderRow({}, vi.fn(), { ...op, label: 'DMZ sweep, week 2' });
+    expect(screen.getByText('DMZ sweep, week 2')).toBeInTheDocument();
+    expect(screen.getByText('Upload batch · Uploaded by Administrator Account')).toBeInTheDocument();
+  });
+
+  it('says when a re-processed file joined the batch, on its own line', () => {
+    const { container } = renderRow({}, vi.fn(), {
+      ...batch, created_at: '2026-09-18T22:20:00Z', first_uploaded: '2026-09-18T22:21:00Z',
+      last_uploaded: '2026-09-23T22:08:00Z', reprocessed_files: 1,
+    });
+    const when = cells(container)[1];
+    expect(when).toHaveTextContent(`${formatInstant(new Date('2026-09-18T22:20:00Z'), TZ)}uploaded`);
+    expect(when).toHaveTextContent(`re-processed ${formatInstant(new Date('2026-09-23T22:08:00Z'), TZ)}`);
+  });
+
+  // Local Network, 2026-09-23: "46 files · …" read "17 files imported · 4
+  // failed" — 25 files unexplained.  They were refused at upload
+  // (duplicates), which creates no job; every file must be accounted for.
+  it('accounts for every dropped file, including the ones refused at upload', () => {
+    const { container } = renderRow({}, vi.fn(), {
+      ...batch, recon_session_id: null, label: '46 files · 9/22/2026, 10:37:38 PM',
+      files: 17, total_files: 17, pending_files: 0, processing_files: 0, failed_files: 4, uploaded_files: 21,
+    });
+    const contributed = cells(container)[3];
+    expect(contributed).toHaveTextContent('17 files imported');
+    expect(contributed).toHaveTextContent('4 failed');
+    expect(contributed).toHaveTextContent('25 refused at upload');
   });
 });
