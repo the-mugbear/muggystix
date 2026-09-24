@@ -1681,7 +1681,7 @@ export default function Scans() {
                 <SelectContent>
                   <SelectItem value="anyone">Uploaded by anyone</SelectItem>
                   {(inventorySummary?.uploaders ?? []).map((u) => (
-                    // The full name is shown (v5.285.0); the id stays the value.
+                    // The full name is shown (v5.287.0); the id stays the value.
                     <SelectItem key={u.user_id} value={String(u.user_id)}>
                       <span
                         className="block max-w-56 truncate"
@@ -1782,7 +1782,7 @@ export default function Scans() {
                     {/* Grouped by upload is chronological by definition (the
                         server orders batches and single files together), so
                         the headers sort only in the all-files view. */}
-                    {/* v5.285.0 — When widened (its time and "run time
+                    {/* v5.287.0 — When widened (its time and "run time
                         unknown" were cut off) and Actions narrowed; batch rows
                         fill these same five columns. */}
                     {historyHeader('filename', 'Scan', 'w-[24%]')}
@@ -2197,7 +2197,7 @@ export default function Scans() {
  * needs attention, and when the last file arrived.  "Nothing failed" is said
  * only when the queue was actually read AND no job of the project failed.
  *
- * v5.285.0 — the failure figures come from the summary, over the whole
+ * v5.287.0 — the failure figures come from the summary, over the whole
  * project (`imports_need_attention`: failed or partial, not dismissed — the
  * count Ingestion Results' needs-attention view lists; `imports_not_imported`:
  * failures already dismissed, discards and expiries included).  The lead used

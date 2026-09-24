@@ -13,7 +13,7 @@ import { toolFamily } from './ScanContribution';
 // fits one request; past that the operator narrows with the page's search.
 const FILES_PER_BATCH = 500;
 
-/** Tool chips shown on a batch row before "+N more" (v5.285.0): a batch of
+/** Tool chips shown on a batch row before "+N more" (v5.287.0): a batch of
  *  every sample format listed 22 chips in a tall block. */
 export const BATCH_TOOL_CHIPS = 4;
 
@@ -53,7 +53,7 @@ const reasonLink = 'rounded underline-offset-2 hover:underline focus:outline-non
  * An agent splitting a large scope into hundreds of chunks, or an operator
  * dropping many files at once, is ONE row, expandable to its files (v5.207.0).
  * It sits in the same chronological table as single files and, since
- * v5.285.0, in the SAME columns: Scan (name, source, tools) · When (upload
+ * v5.287.0, in the SAME columns: Scan (name, source, tools) · When (upload
  * times) · New hosts · What it contributed (files, hosts, port observations,
  * and why any file was not imported) · the Files toggle.  It used to be one
  * full-width cell whose blocks landed under the wrong headers.

@@ -94,7 +94,7 @@ export interface Scan {
   // Username of the analyst who uploaded this scan (null for agent/recon
   // ingests or deleted users) — multi-analyst attribution.
   uploaded_by?: string | null;
-  /** v2.400.0 — their full name, else the username: what the page shows. */
+  /** v2.401.0 — their full name, else the username: what the page shows. */
   uploaded_by_name?: string | null;
   port_breakdown?: ScanPortBreakdown | null;
   vulnerability_summary?: ScanVulnerabilitySummary | null;
@@ -183,7 +183,7 @@ export interface ScanBatchSummary {
   staged_files?: number;
   /** Staged files the operator discarded before import. */
   discarded_files?: number;
-  // v2.400.0 — every other reason a file was not imported, so a batch with
+  // v2.401.0 — every other reason a file was not imported, so a batch with
   // nothing imported always says why.
   /** Staged files nobody started before the staged-upload expiry. */
   expired_files?: number;
@@ -299,17 +299,17 @@ export interface ScanInventorySummary {
   /** v2.396.0 — who uploaded the matching files (not narrowed by the
    *  uploader filter itself), most files first. */
   uploaders?: ScanUploader[];
-  /** v2.400.0 — the WHOLE project's imports that failed or finished partial
+  /** v2.401.0 — the WHOLE project's imports that failed or finished partial
    *  and nobody dismissed (Ingestion Results' needs-attention view). */
   imports_need_attention?: number;
-  /** v2.400.0 — failed jobs already dismissed: discarded, expired, acknowledged. */
+  /** v2.401.0 — failed jobs already dismissed: discarded, expired, acknowledged. */
   imports_not_imported?: number;
 }
 
 export interface ScanUploader {
   user_id: number;
   username: string;
-  /** v2.400.0 — displayed; the id stays the filter value. */
+  /** v2.401.0 — displayed; the id stays the filter value. */
   full_name?: string | null;
   files: number;
 }

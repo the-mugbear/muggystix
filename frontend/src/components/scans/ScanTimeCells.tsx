@@ -69,7 +69,7 @@ export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
     run.utcLabel,
     `Uploaded ${upload.label}${uploader ? ` by ${uploader}` : ''}`,
   ].filter(Boolean).join('\n');
-  // v5.285.0 — the lines wrap rather than truncate: the time and "run time
+  // v5.287.0 — the lines wrap rather than truncate: the time and "run time
   // unknown" were cut off ("Sep 7, 2026, 04:16 P…") at a normal width.
   return (
     <div className="min-w-0" title={hover}>

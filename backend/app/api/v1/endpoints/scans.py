@@ -85,7 +85,7 @@ class CountResponse(BaseModel):
 class ScanUploader(BaseModel):
     user_id: int
     username: str
-    # v2.400.0 — what the chooser displays; the username stays the value.
+    # v2.401.0 — what the chooser displays; the username stays the value.
     full_name: Optional[str] = None
     files: int
 
@@ -110,7 +110,7 @@ class ScanInventorySummary(BaseModel):
     # v2.396.0 — who uploaded the matching files (search/date/tool filters,
     # NOT the uploader filter), most files first; drives the uploader chooser.
     uploaders: List[ScanUploader] = Field(default_factory=list)
-    # v2.400.0 — the lead's failure figures, over the WHOLE project (the
+    # v2.401.0 — the lead's failure figures, over the WHOLE project (the
     # ingestion queue is not filtered by the page's filters).  The lead read
     # only the 25 most recent jobs, so it said "nothing failed" while older
     # failures — or a batch whose every file expired — existed.
@@ -975,7 +975,7 @@ class ScanBatchSummary(BaseModel):
     # dropped batch read "0 imported" with nothing saying where its files were.
     staged_files: int = Field(0, description="Files uploaded and waiting for the operator's format review")
     discarded_files: int = Field(0, description="Staged files the operator discarded before import")
-    # v2.400.0 — the rest of the reasons a file of the batch was not
+    # v2.401.0 — the rest of the reasons a file of the batch was not
     # imported, so a batch with nothing imported always says why (a batch
     # whose 31 staged files expired read "0 files · nothing imported").
     expired_files: int = Field(0, description="Staged files nobody started before the staged-upload expiry")
@@ -1336,7 +1336,7 @@ def list_scan_batches(
     )
     # Files still in the pipeline, or failed and not yet acknowledged — the
     # difference between "this sweep is done" and "it is still landing".
-    # v2.400.0 — every job of the batch lands in exactly one bucket, so a
+    # v2.401.0 — every job of the batch lands in exactly one bucket, so a
     # batch with nothing imported always has a reason to show: a discard or
     # an expiry is a dismissed failure with its own message
     # (staged_import_service), any other dismissed failure is "dismissed".

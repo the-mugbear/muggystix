@@ -367,7 +367,7 @@ def test_batch_says_where_its_staged_and_discarded_files_are(client, db_session,
 def test_batch_with_nothing_imported_says_why_and_counts_reprocessed_files(
     client, db_session, test_project, test_user,
 ):
-    """v2.400.0 — a batch whose 31 staged files expired (dismissed) read
+    """v2.401.0 — a batch whose 31 staged files expired (dismissed) read
     "0 files · nothing imported"; and a re-processed file joins its
     original's batch, so "31 files" held 32 scans with nothing saying why."""
     from datetime import datetime, timezone
@@ -404,7 +404,7 @@ def test_batch_with_nothing_imported_says_why_and_counts_reprocessed_files(
 
 
 def test_summary_counts_failed_imports_across_the_whole_project(client, db_session, test_project):
-    """v2.400.0 — the lead read the 25 most recent jobs and said "nothing
+    """v2.401.0 — the lead read the 25 most recent jobs and said "nothing
     failed" while older failures existed.  The summary carries the project's
     needs-attention count (failed or partial, not dismissed) and the failures
     already dismissed (discards and expiries included)."""
@@ -485,7 +485,7 @@ def test_scans_filter_by_who_uploaded_them(client, db_session, test_project, tes
     assert summary["tool_counts"] == {"NMAP": 1, "MASSCAN": 1}
     assert summary["uploaders"] == [
         {"user_id": test_user.id, "username": test_user.username, "full_name": test_user.full_name, "files": 2},
-        # v2.400.0 — the chooser displays the full name; the id stays the value.
+        # v2.401.0 — the chooser displays the full name; the id stays the value.
         {"user_id": other.id, "username": "ben", "full_name": "Ben Tester", "files": 1},
     ]
     listed = {r["id"]: r for r in client.get(f"{base}/").json()}
