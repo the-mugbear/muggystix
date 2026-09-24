@@ -171,6 +171,23 @@ def test_limit_is_honoured(client, db_session, test_project):
     assert len(_suggest(client, test_project.id, "ip", "10.", limit=2)["values"]) == 2
 
 
+def test_validate_reports_a_rejected_value_as_invalid_not_as_an_error(client, db_session, test_project):
+    """`scan:nm` / `service:ssh@` / `port:abc` parse, and the builder rejects
+    the value. validate answered 400 for these, which the command bar shows as
+    "validation unavailable" — so the message written for the operator never
+    appeared. Half-typed values are exactly what autocomplete produces."""
+    for q, fragment in [
+        ("scan:nm", "numeric id"),
+        ("service:ssh@", "unknown port state"),
+        ("port:abc", "expects a number"),
+    ]:
+        resp = client.post(f"/api/v1/projects/{test_project.id}/hosts/query/validate", json={"q": q})
+        assert resp.status_code == 200, (q, resp.text)
+        body = resp.json()
+        assert body["valid"] is False, q
+        assert fragment in body["error"]["message"], q
+
+
 def test_every_value_source_is_enumerable_or_deliberately_not():
     """A new field whose value_source this module can't enumerate would get no
     suggestions without anyone noticing — name it here or add a source."""

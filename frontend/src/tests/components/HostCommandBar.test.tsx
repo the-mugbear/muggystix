@@ -233,6 +233,31 @@ describe('HostCommandBar', () => {
       expect(await screen.findByRole('listbox')).toBeInTheDocument();
     });
 
+    // Found in the browser: the debounced commit pushes the TRIMMED query up,
+    // and the value→draft sync wrote it back over the draft, eating the space
+    // typed after a term (then `port:443AND`).
+    it('keeps a trailing space through the commit, so the operators stay offered', async () => {
+      const user = userEvent.setup();
+      let value = '';
+      const onChange = vi.fn((q: string) => { value = q; });
+      const { rerender } = render(
+        <HostCommandBar value={value} onChange={onChange} onPin={vi.fn()} onCopyLink={vi.fn()} />,
+      );
+      const input = screen.getByLabelText('Host query');
+      await user.type(input, 'port:443 ');
+      await waitFor(() => expect(onChange).toHaveBeenCalledWith('port:443'), { timeout: 2000 });
+      rerender(<HostCommandBar value={value} onChange={onChange} onPin={vi.fn()} onCopyLink={vi.fn()} />);
+      expect(input).toHaveValue('port:443 ');
+      expect(await screen.findByRole('option', { name: /^AND —/ })).toBeInTheDocument();
+    });
+
+    it('still replaces the draft when the query changes from outside', () => {
+      const props = { onChange: vi.fn(), onPin: vi.fn(), onCopyLink: vi.fn() };
+      const { rerender } = render(<HostCommandBar value="port:80" {...props} />);
+      rerender(<HostCommandBar value="has:web" {...props} />);
+      expect(screen.getByLabelText('Host query')).toHaveValue('has:web');
+    });
+
     it('Tab accepts the highlighted suggestion', async () => {
       const user = userEvent.setup();
       setup();

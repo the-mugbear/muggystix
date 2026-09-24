@@ -187,6 +187,15 @@ def validate_query(
             .scalar()
             or 0
         )
+    except DSLError as exc:
+        # A value the builder rejects (`scan:nm`, `service:ssh@`, `port:abc`)
+        # parses fine and only fails here. It used to escape as a 400, which
+        # the command bar reads as "validation unavailable" — hiding exactly
+        # the messages written to help (v2.405.1).
+        return QueryValidateResponse(
+            valid=False,
+            error=QueryErrorSchema(message=exc.message, position=exc.position),
+        )
     except OperationalError as exc:
         # Only swallow a statement_timeout cancellation (SQLSTATE 57014 —
         # query_canceled); the transaction is aborted, so roll back and leave

@@ -108,7 +108,16 @@ export default function HostCommandBar({
 
   // Keep the draft in sync when the value changes externally (saved view,
   // convert button, history apply, URL restore).
-  useEffect(() => { setDraft(value); setCaret(value.length); }, [value]);
+  // Skip it when the value is only the draft trimmed — that is the bar's own
+  // commit coming back, and overwriting would eat the space just typed after a
+  // term (`port:80 ` → `port:80`, then `port:80AND`).
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+  useEffect(() => {
+    if (draftRef.current.trim() === value.trim()) return;
+    setDraft(value);
+    setCaret(value.length);
+  }, [value]);
 
   // Debounced commit: update the page filters as the user types, but only
   // when the draft is empty or parses cleanly — never push a broken query
