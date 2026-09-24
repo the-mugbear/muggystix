@@ -391,9 +391,13 @@ def create_host_note(
     # itself is still persisted; only the side-effect is partial.
     mention_warning: Optional[str] = None
     mention_notifs = []
+    outcome: dict = {}
     try:
         notification_service = NotificationService(db)
         mention_notifs = notification_service.process_note_mentions(note, current_user, project) or []
+        # v2.404.0 — who was told and which @words matched nobody, for the
+        # author's confirmation toast (a mention to a non-member was silent).
+        outcome = notification_service.mention_outcome(note.body, project.id, mention_notifs)
         # A reply reaches everyone already in the thread without an @mention;
         # then anyone reviewing this host hears a note landed on it.  Each
         # step skips those already told, so nobody is pinged twice.
@@ -437,6 +441,7 @@ def create_host_note(
             "Tagged users may not have been alerted; contact an admin if "
             "this persists."
         )
+        outcome = {}
         db.rollback()
 
     # The webhook is staged above, inside the transaction. Nothing to do here:
@@ -450,7 +455,7 @@ def create_host_note(
         # clients that don't know about mention_warning simply ignore
         # the extra field.
         return serialized.model_copy(update={"mention_warning": mention_warning})
-    return serialized
+    return serialized.model_copy(update=outcome)
 
 
 @router.patch(
@@ -587,10 +592,12 @@ def update_host_note(
     # the thread author/participants (review #2), not just the webhook.
     mention_warning: Optional[str] = None
     mention_notifs = []
+    outcome: dict = {}
     try:
         notification_service = NotificationService(db)
         if body_changed and payload.body:
             mention_notifs = notification_service.process_note_mentions(edited_note, current_user, project) or []
+            outcome = notification_service.mention_outcome(edited_note.body, project.id, mention_notifs)
         if status_changed:
             notification_service.notify_status_change(
                 root,
@@ -634,6 +641,7 @@ def update_host_note(
             "Note updated, but notifications could not be delivered. "
             "Tagged users or status watchers may not have been alerted."
         )
+        outcome = {}
         db.rollback()
 
     # Both webhooks are staged above, inside the transaction — the rollback in
@@ -649,7 +657,7 @@ def update_host_note(
     serialized = _serialize_note(response_note)
     if mention_warning:
         return serialized.model_copy(update={"mention_warning": mention_warning})
-    return serialized
+    return serialized.model_copy(update=outcome)
 
 
 @router.get(

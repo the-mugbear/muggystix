@@ -25,6 +25,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
+import { announceMentionOutcome } from '../utils/mentions';
 import { safeFallback } from '../utils/uiStyles';
 import MessageBubble, { wasEdited } from './MessageBubble';
 
@@ -155,6 +156,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     try {
       const note = await createFindingNote(findingId, body, replyTo?.id ?? null);
       if (note.mention_warning) toast.warning(note.mention_warning);
+      else announceMentionOutcome(toast, note);
       const failed: PendingFile[] = [];
       for (const entry of fresh) {
         const f = await attachOne(entry, note.id);
@@ -184,6 +186,7 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
     try {
       const updated = await updateFindingNote(findingId, editing.id, text);
       if (updated.mention_warning) toast.warning(updated.mention_warning);
+      else announceMentionOutcome(toast, updated);
       setNotes((prev) => (prev ? prev.map((n) => (n.id === updated.id ? { ...n, ...updated } : n)) : prev));
       setEditing(null);
     } catch (err) {

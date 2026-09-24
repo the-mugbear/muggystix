@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest';
 
-import { activeMentionQuery, filterMentionCandidates, findMentionSpans } from '../../utils/mentions';
+import {
+  activeMentionQuery,
+  filterMentionCandidates,
+  findMentionSpans,
+  mentionOutcomeMessages,
+  unmatchedMentionHint,
+  unmatchedMentionTokens,
+} from '../../utils/mentions';
 
 // The same cases as backend/tests/test_mentions_and_discussion.py::test_find_mentions —
 // what the composer highlights must be what the server notifies.
@@ -25,6 +32,55 @@ describe('findMentionSpans', () => {
 
   it('returns the exact span of each mention', () => {
     expect(findMentionSpans('hi @eval-ana.', NAMES)).toEqual([{ start: 3, end: 12, username: 'eval-ana' }]);
+  });
+});
+
+// The same cases as backend test_scan_mentions_reports_what_matched_nobody.
+describe('unmatchedMentionTokens', () => {
+  it.each([
+    ['@eval-cy please retest', ['eval-cy']],
+    ['@eval-ben and @eval-anna, see', ['eval-anna']],
+    ['@ana and @nobody.', ['nobody']],
+    ['@anab and @ana-maria', ['anab', 'ana-maria']],
+    ['mail ana@example.com', []],
+    ['@Ghost then @ghost', ['Ghost']],
+    ['trailing @ and @!', []],
+    ['@j.smith.', []],
+  ])('%s', (text, expected) => {
+    expect(unmatchedMentionTokens(text, NAMES)).toEqual(expected);
+  });
+
+  it('skips the mention still being typed', () => {
+    expect(unmatchedMentionTokens('@ghost and @gho', NAMES, 11)).toEqual(['ghost']);
+  });
+});
+
+describe('mention outcome copy', () => {
+  it('names who was notified and who was not', () => {
+    expect(mentionOutcomeMessages({ mentions_notified: [{ username: 'eval-ana', name: 'Ana Ortiz' }] })).toEqual({
+      notified: 'Notified Ana Ortiz',
+      unmatched: null,
+    });
+    expect(mentionOutcomeMessages({ mentions_notified: [], unmatched_mentions: ['eval-ana'] })).toEqual({
+      notified: null,
+      unmatched: "@eval-ana isn't a member of this project — nobody was notified",
+    });
+    expect(
+      mentionOutcomeMessages({
+        mentions_notified: [
+          { username: 'a', name: 'A' },
+          { username: 'b', name: 'B' },
+          { username: 'c', name: 'C' },
+        ],
+        unmatched_mentions: ['x', 'y'],
+      }),
+    ).toEqual({
+      notified: 'Notified A, B and C',
+      unmatched: "@x and @y aren't members of this project — they were not notified",
+    });
+    expect(mentionOutcomeMessages({})).toEqual({ notified: null, unmatched: null });
+    expect(unmatchedMentionHint(['ghost'])).toBe("@ghost isn't a member of this project — they won't be notified");
+    expect(unmatchedMentionHint([])).toBeNull();
   });
 });
 

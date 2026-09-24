@@ -13,7 +13,13 @@ import React, { useId, useRef, useState } from 'react';
 import { Textarea, type TextareaProps } from './ui/textarea';
 import { useProjectMembers } from '../hooks/useProjectMembers';
 import { cn } from '../utils/cn';
-import { activeMentionQuery, filterMentionCandidates, type MentionCandidate } from '../utils/mentions';
+import {
+  activeMentionQuery,
+  filterMentionCandidates,
+  unmatchedMentionHint,
+  unmatchedMentionTokens,
+  type MentionCandidate,
+} from '../utils/mentions';
 
 function setNativeValue(el: HTMLTextAreaElement, value: string): void {
   const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set;
@@ -33,6 +39,18 @@ export const MentionTextarea = React.forwardRef<HTMLTextAreaElement, TextareaPro
     const suggestions: MentionCandidate[] = query ? filterMentionCandidates(members, query.query) : [];
     const open = suggestions.length > 0;
     const activeIndex = Math.min(active, Math.max(suggestions.length - 1, 0));
+    const hintId = `${listId}-hint`;
+
+    // v5.290.0 — an @word that matches no member is said BEFORE posting
+    // (a mention to a non-member used to reach nobody silently). Not while
+    // that word is still being typed, and not until the roster has loaded
+    // (an empty roster would flag every mention).
+    const text = typeof props.value === 'string' ? props.value : '';
+    const hint =
+      members.length > 0
+        ? unmatchedMentionHint(unmatchedMentionTokens(text, members.map((m) => m.username), query?.start ?? null))
+        : null;
+    const describedBy = [props['aria-describedby'], hint ? hintId : null].filter(Boolean).join(' ') || undefined;
 
     const setRefs = (el: HTMLTextAreaElement | null) => {
       inner.current = el;
@@ -64,6 +82,7 @@ export const MentionTextarea = React.forwardRef<HTMLTextAreaElement, TextareaPro
         <Textarea
           ref={setRefs}
           {...props}
+          aria-describedby={describedBy}
           aria-autocomplete="list"
           aria-controls={open ? listId : undefined}
           aria-activedescendant={open ? `${listId}-${activeIndex}` : undefined}
@@ -132,6 +151,11 @@ export const MentionTextarea = React.forwardRef<HTMLTextAreaElement, TextareaPro
               </li>
             ))}
           </ul>
+        )}
+        {hint && (
+          <p id={hintId} aria-live="polite" className="mt-xxs min-w-0 break-words text-caption text-warning">
+            {hint}
+          </p>
         )}
       </div>
     );

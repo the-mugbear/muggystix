@@ -318,6 +318,10 @@ export interface Annotation {
   updated_at?: string | null;
   /** Set when the note saved but its notifications could not be sent. */
   mention_warning?: string | null;
+  /** v5.290.0 — on a create/edit response only: who the @mentions notified,
+   *  and the @words that matched no project member (nobody was told). */
+  mentions_notified?: { username: string; name: string }[] | null;
+  unmatched_mentions?: string[] | null;
 }
 
 export interface NoteAttachment {

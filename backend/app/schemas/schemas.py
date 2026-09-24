@@ -128,6 +128,12 @@ class NoteAttachmentOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class MentionNotified(BaseModel):
+    """A member a note's @mention just notified (v2.404.0)."""
+    username: str
+    name: str
+
+
 class Annotation(AnnotationBase):
     id: int
     author_id: Optional[int] = Field(None, validation_alias="user_id")
@@ -160,6 +166,11 @@ class Annotation(AnnotationBase):
     # should display it as a non-blocking toast.  Null on the
     # happy path.
     mention_warning: Optional[str] = None
+    # v2.404.0 — set only on the response to a create/edit: who this write's
+    # @mentions notified (username + display name) and the @words that
+    # matched no member of the project (nobody was told).  Null elsewhere.
+    mentions_notified: Optional[List[MentionNotified]] = None
+    unmatched_mentions: Optional[List[str]] = None
 
     model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 

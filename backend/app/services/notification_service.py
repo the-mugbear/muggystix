@@ -6,7 +6,7 @@ pentest coordination platform.
 """
 
 import logging
-from typing import Iterable, List, Optional, Set
+from typing import Iterable, List, Optional, Set, Tuple
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -16,12 +16,73 @@ from app.db.models_project import (
 )
 from app.db.models_auth import User, UserRole
 from app.db.models import Annotation
+from app.schemas.schemas import MentionNotified
 
 logger = logging.getLogger(__name__)
 
 
 def _continues_name(ch: str) -> bool:
     return ch.isalnum() or ch == "_"
+
+
+def _mention_token(body: str, start: int) -> str:
+    """The ``@word`` written at ``start`` (just after the ``@``): name
+    characters, with a ``.`` or ``-`` kept only when a name character follows
+    it — the same boundary a match must end at, so ``@eval-ana.`` reads
+    ``eval-ana``."""
+    end = start
+    while end < len(body):
+        ch = body[end]
+        if _continues_name(ch):
+            end += 1
+        elif ch in ".-" and end + 1 < len(body) and _continues_name(body[end + 1]):
+            end += 1
+        else:
+            break
+    return body[start:end]
+
+
+def scan_mentions(body: str, usernames: Iterable[str]) -> Tuple[Set[str], List[str]]:
+    """``(matched usernames, unmatched @words)`` for ``body``.
+
+    Matching is ``find_mentions``'s rule.  An ``@`` in mention position
+    (not inside a word) where NO known username matches reports the word
+    written after it (see ``_mention_token``) as unmatched — conservatively:
+    a bare ``@`` or ``@`` before punctuation reports nothing, and each word is
+    reported once (case-insensitively), in order.  The frontend twin is
+    ``unmatchedMentionTokens`` in ``utils/mentions.ts``.
+    """
+    if not body or "@" not in body:
+        return set(), []
+    names = sorted({u for u in usernames if u}, key=len, reverse=True)
+    lowered = [(n, n.lower()) for n in names]
+    low = body.lower()
+    found: Set[str] = set()
+    unmatched: List[str] = []
+    seen_unmatched: Set[str] = set()
+    at = body.find("@")
+    while at != -1:
+        prev = body[at - 1] if at > 0 else ""
+        if not (prev and (_continues_name(prev) or prev in ".-")):
+            hit = False
+            for name, lname in lowered:
+                if not low.startswith(lname, at + 1):
+                    continue
+                end = at + 1 + len(lname)
+                nxt = body[end] if end < len(body) else ""
+                after = body[end + 1] if end + 1 < len(body) else ""
+                if _continues_name(nxt) or (nxt in (".", "-") and _continues_name(after)):
+                    continue
+                found.add(name)
+                hit = True
+                break
+            if not hit:
+                token = _mention_token(body, at + 1)
+                if token and token.lower() not in seen_unmatched:
+                    seen_unmatched.add(token.lower())
+                    unmatched.append(token)
+        at = body.find("@", at + 1)
+    return found, unmatched
 
 
 def find_mentions(body: str, usernames: Iterable[str]) -> Set[str]:
@@ -36,28 +97,16 @@ def find_mentions(body: str, usernames: Iterable[str]) -> Set[str]:
     (``@ana.``, ``@ana,``).  An ``@`` inside a word (an e-mail address) is
     not a mention.
     """
-    if not body or "@" not in body:
-        return set()
-    names = sorted({u for u in usernames if u}, key=len, reverse=True)
-    lowered = [(n, n.lower()) for n in names]
-    low = body.lower()
-    found: Set[str] = set()
-    at = body.find("@")
-    while at != -1:
-        prev = body[at - 1] if at > 0 else ""
-        if not (prev and (_continues_name(prev) or prev in ".-")):
-            for name, lname in lowered:
-                if not low.startswith(lname, at + 1):
-                    continue
-                end = at + 1 + len(lname)
-                nxt = body[end] if end < len(body) else ""
-                after = body[end + 1] if end + 1 < len(body) else ""
-                if _continues_name(nxt) or (nxt in (".", "-") and _continues_name(after)):
-                    continue
-                found.add(name)
-                break
-        at = body.find("@", at + 1)
-    return found
+    return scan_mentions(body, usernames)[0]
+
+
+def display_name(user: Optional[User]) -> str:
+    """How a person is named in a notification: their full name, else their
+    username (v2.404.0 — titles read "Ana Ortiz mentioned you", not
+    "@eval-ana mentioned you")."""
+    if user is None:
+        return "Someone"
+    return (user.full_name or "").strip() or user.username
 
 
 class NotificationService:
@@ -76,7 +125,12 @@ class NotificationService:
         if not body or "@" not in body:
             return []
 
-        members = (
+        members = self._active_members(project_id)
+        names = find_mentions(body, (u.username for u in members))
+        return [u for u in members if u.username in names]
+
+    def _active_members(self, project_id: int) -> List[User]:
+        return (
             self.db.query(User)
             .join(ProjectMembership, ProjectMembership.user_id == User.id)
             .filter(
@@ -85,8 +139,30 @@ class NotificationService:
             )
             .all()
         )
-        names = find_mentions(body, (u.username for u in members))
-        return [u for u in members if u.username in names]
+
+    def mention_outcome(
+        self, body: Optional[str], project_id: int, notifications: Iterable[Notification],
+    ) -> dict:
+        """What a note's author is told after posting (v2.404.0): who the
+        mention ``notifications`` just reached (``mentions_notified``: username
+        + display name) and the ``@words`` that matched no active member of
+        the project (``unmatched_mentions``, see ``scan_mentions``) — so a
+        mention that reaches nobody is no longer silent.  A member mentioned
+        but not notified (the author, or someone this note already told) is in
+        neither list."""
+        notified_ids = {n.user_id for n in notifications}
+        if not body or "@" not in body:
+            return {"mentions_notified": [], "unmatched_mentions": []}
+        members = self._active_members(project_id)
+        _, unmatched = scan_mentions(body, (u.username for u in members))
+        notified = sorted(
+            (
+                MentionNotified(username=u.username, name=display_name(u))
+                for u in members if u.id in notified_ids
+            ),
+            key=lambda m: m.name.lower(),
+        )
+        return {"mentions_notified": notified, "unmatched_mentions": unmatched}
 
     def _note_context(self, note: Annotation) -> dict:
         """Where a note lives, for a notification: the label a title reads
@@ -138,7 +214,7 @@ class NotificationService:
                 user_id=user.id,
                 project_id=project.id,
                 type="mention",
-                title=f"@{actor.username} mentioned you on {ctx['label']}"[:255],
+                title=f"{display_name(actor)} mentioned you on {ctx['label']}"[:255],
                 body=note.body[:200] if note.body else None,
                 source_type="note",
                 source_id=note.id,
@@ -222,7 +298,7 @@ class NotificationService:
                 user_id=uid,
                 project_id=project.id,
                 type=ntype,
-                title=f"@{actor.username} {verb} on {ctx['label']}"[:255],
+                title=f"{display_name(actor)} {verb} on {ctx['label']}"[:255],
                 body=note.body[:200] if note.body else None,
                 source_type="note",
                 source_id=note.id,
@@ -276,7 +352,7 @@ class NotificationService:
                 project_id=project_id,
                 type="status_change",
                 title=f"Note status changed to {new_status} on {host_label}",
-                body=f"@{actor.username} changed status from {old_status} to {new_status}",
+                body=f"{display_name(actor)} changed status from {old_status} to {new_status}",
                 source_type="note",
                 source_id=note.id,
                 host_id=note.host_id,
@@ -326,7 +402,7 @@ class NotificationService:
                 user_id=uid,
                 project_id=project.id,
                 type="host_note",
-                title=f"@{actor.username} added a note on {host_label}",
+                title=f"{display_name(actor)} added a note on {host_label}"[:255],
                 body=note.body[:200] if note.body else None,
                 source_type="note",
                 source_id=note.id,
@@ -418,7 +494,7 @@ class NotificationService:
             project_id=project.id,
             type="assignment",
             title=f"You were added to project '{project.name}'",
-            body=f"@{actor.username} added you as {role}",
+            body=f"{display_name(actor)} added you as {role}",
             source_type="project",
             source_id=project.id,
             actor_id=actor.id,
@@ -577,7 +653,7 @@ class NotificationService:
             project_id=project.id,
             type="assignment",
             title=f"Host {label} assigned to you",
-            body=f"@{actor.username} assigned {host.ip_address} to you",
+            body=f"{display_name(actor)} assigned {host.ip_address} to you",
             source_type="host",
             source_id=host.id,
             actor_id=actor.id,

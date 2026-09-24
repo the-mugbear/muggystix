@@ -615,15 +615,20 @@ _NOTIFY_WARNING = (
 
 def _notify_finding_comment(
     db: Session, note: Annotation, actor: User, project: Project, *, created: bool,
-) -> Optional[str]:
+) -> dict:
     """Best-effort notifications for a finding comment, after the comment
     itself has committed (the host-note contract, audit H3): @mentioned
     members first, then — for a NEW comment — everyone already in the
     discussion.  A failure never loses the comment; it comes back as a
-    warning the client shows."""
+    warning the client shows.
+
+    Returns the response fields to attach: ``mention_warning`` on failure,
+    otherwise who the @mentions notified and the ones that matched nobody
+    (v2.404.0, ``NotificationService.mention_outcome``)."""
     try:
         svc = NotificationService(db)
         mentions = svc.process_note_mentions(note, actor, project) or []
+        outcome = svc.mention_outcome(note.body, project.id, mentions)
         if created:
             svc.notify_discussion_participants(
                 note, actor, project, exclude_user_ids={n.user_id for n in mentions},
@@ -638,14 +643,14 @@ def _notify_finding_comment(
                 context={"finding_id": note.finding_id, "note_id": note.id},
             )
         db.commit()
-        return None
+        return outcome
     except Exception:
         logger.exception(
             "Finding comment notifications failed",
             extra={"note_id": note.id, "finding_id": note.finding_id, "author_id": actor.id},
         )
         db.rollback()
-        return _NOTIFY_WARNING
+        return {"mention_warning": _NOTIFY_WARNING}
 
 
 @router.get(
@@ -686,9 +691,8 @@ def create_finding_note(
     except ValueError as exc:
         # parent_id validation failure (cross-finding threading attempt).
         raise HTTPException(status_code=400, detail=str(exc))
-    warning = _notify_finding_comment(db, note, current_user, project, created=True)
-    serialized = _serialize_note(note)
-    return serialized.model_copy(update={"mention_warning": warning}) if warning else serialized
+    extra = _notify_finding_comment(db, note, current_user, project, created=True)
+    return _serialize_note(note).model_copy(update=extra)
 
 
 @router.patch(
@@ -720,13 +724,12 @@ def update_finding_note(
     note.body = body
     db.commit()
     # An @mention added by the edit notifies that user; ones already there don't.
-    warning = _notify_finding_comment(db, note, current_user, project, created=False)
+    extra = _notify_finding_comment(db, note, current_user, project, created=False)
     note = (
         db.query(Annotation).options(*note_load_options())
         .filter(Annotation.id == note_id).populate_existing().one()
     )
-    serialized = _serialize_note(note)
-    return serialized.model_copy(update={"mention_warning": warning}) if warning else serialized
+    return _serialize_note(note).model_copy(update=extra)
 
 
 @router.delete(

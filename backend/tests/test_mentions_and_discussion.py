@@ -16,7 +16,7 @@ from app.db import models
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Notification, NoteMention, ProjectMembership, ProjectRole
 from app.main import app
-from app.services.notification_service import find_mentions
+from app.services.notification_service import display_name, find_mentions, scan_mentions
 
 
 # ---------------------------------------------------------------------------
@@ -40,6 +40,28 @@ NAMES = ["eval-ana", "eval-ben", "ana", "j.smith", "anabel", "Bob_2"]
 ])
 def test_find_mentions(body, expected):
     assert find_mentions(body, NAMES) == expected
+
+
+@pytest.mark.parametrize("body, matched, unmatched", [
+    # The live-test case: a hyphenated name that is not a member is reported
+    # whole, not as 'eval'.
+    ("@eval-cy please retest", set(), ["eval-cy"]),
+    ("@eval-ben and @eval-anna, see", {"eval-ben"}, ["eval-anna"]),
+    ("@ana and @nobody.", {"ana"}, ["nobody"]),          # full stop is not part of the word
+    ("@anab and @ana-maria", set(), ["anab", "ana-maria"]),
+    ("mail ana@example.com", set(), []),                  # e-mail: not a mention at all
+    ("@Ghost then @ghost", set(), ["Ghost"]),             # reported once
+    ("trailing @ and @!", set(), []),                     # nothing written after the @
+    ("@j.smith.", {"j.smith"}, []),
+])
+def test_scan_mentions_reports_what_matched_nobody(body, matched, unmatched):
+    assert scan_mentions(body, NAMES) == (matched, unmatched)
+
+
+def test_display_name_prefers_the_full_name():
+    assert display_name(User(username="admin", full_name="Administrator")) == "Administrator"
+    assert display_name(User(username="admin", full_name="  ")) == "admin"
+    assert display_name(User(username="admin", full_name=None)) == "admin"
 
 
 # ---------------------------------------------------------------------------
@@ -120,7 +142,8 @@ def test_a_reply_reaches_the_discussion_without_a_mention(client, db_session, te
     client.post(base, json={"body": "Confirmed on DC02", "parent_id": root["id"]})
     [n] = _inbox(db_session, people["ana"])
     assert n.type == "finding_comment" and n.finding_id == f["id"]
-    assert n.title.startswith("@eval-ben replied")
+    # v2.404.0 — the person's name, not their @handle.
+    assert n.title.startswith("Eval-Ben replied")
     assert _inbox(db_session, people["ben"]) == []  # never yourself
 
     # Cy joins with a top-level comment that mentions Ana: Ana gets ONE
@@ -178,3 +201,75 @@ def test_host_note_mentions_resolve_hyphenated_names_and_replies_reach_the_threa
     [r] = _inbox(db_session, people["ana"])
     assert r.type == "note_reply" and r.source_id != root["id"]
     assert [x.type for x in _inbox(db_session, people["ben"])] == ["mention"]
+
+
+# ---------------------------------------------------------------------------
+# v2.404.0 — the author is told who was notified and who was not
+# ---------------------------------------------------------------------------
+
+def test_a_finding_comment_reports_who_was_notified_and_who_matched_nobody(
+    client, db_session, test_project, people, act_as,
+):
+    """The live-test case: '@eval-ana please retest' where the name is not a
+    member notified nobody and said nothing."""
+    act_as(people["ben"])
+    f = _finding(client, test_project)
+    base = f"/api/v1/projects/{test_project.id}/findings/{f['id']}/notes"
+    r = client.post(base, json={"body": "@outsider please retest, @cy.lee FYI, and @eval-ben (me)"})
+    assert r.status_code == 200, r.text
+    note = r.json()
+    assert note["mentions_notified"] == [{"username": "cy.lee", "name": "Cy.Lee"}]
+    # The author mentioning themselves is neither notified nor "unmatched".
+    assert note["unmatched_mentions"] == ["outsider"]
+
+    # An edit reports only what the edit did: Cy was already told.
+    r = client.patch(f"{base}/{note['id']}", json={"body": "@cy.lee FYI, @eval-ana too, @ghost"})
+    assert r.status_code == 200, r.text
+    edited = r.json()
+    assert edited["mentions_notified"] == [{"username": "eval-ana", "name": "Eval-Ana"}]
+    assert edited["unmatched_mentions"] == ["ghost"]
+
+    # A plain listing carries neither field.
+    [listed] = client.get(base).json()
+    assert listed["mentions_notified"] is None and listed["unmatched_mentions"] is None
+
+
+def test_a_host_note_reports_who_was_notified_and_who_matched_nobody(
+    client, db_session, test_project, people, act_as,
+):
+    host = models.Host(project_id=test_project.id, ip_address="10.0.0.6")
+    db_session.add(host)
+    db_session.commit()
+    base = f"/api/v1/projects/{test_project.id}/hosts/{host.id}/notes"
+    act_as(people["ana"])
+    r = client.post(base, json={"body": "@eval-ben and @nobody-here: SMB open"})
+    assert r.status_code == 200, r.text
+    note = r.json()
+    assert note["mentions_notified"] == [{"username": "eval-ben", "name": "Eval-Ben"}]
+    assert note["unmatched_mentions"] == ["nobody-here"]
+
+    r = client.patch(f"{base}/{note['id']}", json={"body": "@eval-ben and @cy.lee: SMB open"})
+    assert r.status_code == 200, r.text
+    assert r.json()["mentions_notified"] == [{"username": "cy.lee", "name": "Cy.Lee"}]
+    assert r.json()["unmatched_mentions"] == []
+
+
+def test_notification_titles_name_the_actor_by_full_name(client, db_session, test_project, people, act_as):
+    host = models.Host(project_id=test_project.id, ip_address="192.168.0.91")
+    db_session.add(host)
+    db_session.commit()
+    people["ana"].full_name = "Ana Ortiz"
+    db_session.commit()
+    act_as(people["ana"])
+    client.post(f"/api/v1/projects/{test_project.id}/hosts/{host.id}/notes", json={"body": "@eval-ben look"})
+    [n] = _inbox(db_session, people["ben"])
+    assert n.title == "Ana Ortiz mentioned you on 192.168.0.91"
+
+    # No full name: the username, without the '@'.
+    people["cy"].full_name = None
+    db_session.commit()
+    act_as(people["cy"])
+    f = _finding(client, test_project, title="Weak TLS")
+    client.post(f"/api/v1/projects/{test_project.id}/findings/{f['id']}/notes", json={"body": "@eval-ben see"})
+    mention = _inbox(db_session, people["ben"])[-1]
+    assert mention.title.startswith("cy.lee mentioned you on finding")

@@ -71,6 +71,39 @@ describe('FindingCommentThread — H1: unavailable is not empty', () => {
   });
 });
 
+describe('FindingCommentThread — v5.290.0: the author is told who a mention reached', () => {
+  it('toasts who was notified and which @names matched nobody', async () => {
+    mocked.createFindingNote.mockResolvedValue({
+      ...note(3, '@eval-ben @eval-ana please retest'),
+      mentions_notified: [{ username: 'eval-ben', name: 'Ben Okafor' }],
+      unmatched_mentions: ['eval-ana'],
+    });
+    renderThread();
+    await screen.findByText(/No comments yet/);
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: '@eval-ben @eval-ana please retest' } });
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+
+    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('Notified Ben Okafor'));
+    expect(toastMock.warning).toHaveBeenCalledWith(
+      "@eval-ana isn't a member of this project — they were not notified",
+    );
+  });
+
+  it('a mention that reaches nobody says so', async () => {
+    mocked.createFindingNote.mockResolvedValue({
+      ...note(4, '@eval-ana please retest'), mentions_notified: [], unmatched_mentions: ['eval-ana'],
+    });
+    renderThread();
+    await screen.findByText(/No comments yet/);
+    fireEvent.change(screen.getByLabelText('New comment'), { target: { value: '@eval-ana please retest' } });
+    fireEvent.click(screen.getByRole('button', { name: /Comment/ }));
+    await waitFor(() =>
+      expect(toastMock.warning).toHaveBeenCalledWith("@eval-ana isn't a member of this project — nobody was notified"),
+    );
+    expect(toastMock.success).not.toHaveBeenCalled();
+  });
+});
+
 describe('FindingCommentThread — C3: failed attachments are kept and retried against the same comment', () => {
   it('keeps a failed file with Retry; retry uploads to the saved note without creating another comment', async () => {
     mocked.createFindingNote.mockResolvedValue(note(42, 'with screenshot'));
