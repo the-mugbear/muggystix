@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useDropzone } from 'react-dropzone';
 import { Loader2, Trash2, Upload } from 'lucide-react';
 
@@ -8,6 +9,7 @@ import {
 } from '../../hooks/useUploadReview';
 import type { FormatOption } from '../../services/api';
 import { cn } from '../../utils/cn';
+import { IMPORT_SETTINGS_ANCHOR } from './ProjectIngestSettings';
 import { Accordion, AccordionContent, AccordionItem, AccordionTrigger } from '../ui/accordion';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Badge } from '../ui/badge';
@@ -23,7 +25,6 @@ import {
 } from '../ui/dialog';
 import { Input } from '../ui/input';
 import { Label } from '../ui/label';
-import { Switch } from '../ui/switch';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
 
 /**
@@ -48,9 +49,9 @@ export interface UploadReviewDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   projectName: string | null | undefined;
+  /** The project's setting, sent with each upload. Changed in Project
+   *  settings → Imports, not here (UX review 2026-09-24). */
   skipInformational: boolean;
-  savingSkipInformational: boolean;
-  onSkipInformationalChange: (next: boolean) => void;
   /** A file the operator started: the page adds it to the results banner. */
   onStarted: (started: StartedUpload) => void;
   onViewScan: (scanId: number) => void;
@@ -65,8 +66,6 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
   onOpenChange,
   projectName,
   skipInformational,
-  savingSkipInformational,
-  onSkipInformationalChange,
   onStarted,
   onViewScan,
   resume,
@@ -224,25 +223,20 @@ const UploadReviewDialog: React.FC<UploadReviewDialogProps> = ({
             </div>
           )}
 
-          <div className="flex items-start justify-between gap-sm rounded-panel border border-border p-sm">
-            <div className="min-w-0">
-              <Label htmlFor="skip-informational" className="text-metadata font-semibold">
-                Skip informational Nessus findings
-              </Label>
-              <p className="text-caption text-muted-foreground">
-                Severity-0 plugins are not stored as findings; open ports are still recorded from them.
-                Applies to every upload into <strong>{projectName ?? 'this project'}</strong> until changed, and is
-                fixed for a file at the moment it is dropped.
-              </p>
-            </div>
-            <Switch
-              id="skip-informational"
-              checked={skipInformational}
-              onCheckedChange={(v) => onSkipInformationalChange(v === true)}
-              disabled={savingSkipInformational}
-              aria-label="Skip informational Nessus findings"
-            />
-          </div>
+          {/* UX review 2026-09-24 — a project setting, stated here and changed
+              in Project settings: the switch that lived here changed every
+              later upload into the project from a dialog about these files. */}
+          <p className="text-caption text-muted-foreground" data-testid="skip-informational-state">
+            Informational (severity 0) Nessus scanner observations are{' '}
+            <strong className="text-foreground">{skipInformational ? 'skipped' : 'kept'}</strong> for{' '}
+            {projectName ?? 'this project'}; open ports are always recorded.{' '}
+            <Link
+              to={`/project-settings#${IMPORT_SETTINGS_ANCHOR}`}
+              className="text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              Change in Project settings
+            </Link>
+          </p>
 
           <Accordion type="single" collapsible>
             <AccordionItem value="formats">

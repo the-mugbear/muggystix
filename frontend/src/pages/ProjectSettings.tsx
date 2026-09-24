@@ -10,8 +10,8 @@
  * for global administrators.
  *
  * Sections over thin rules, not cards (UI_STYLE_GUIDE §7): Details, Members,
- * Host tags, Outbound webhooks, Webhook deliveries, and a delete area at the
- * end.  What the caller may change follows their role in the project
+ * Imports, Host tags, Outbound webhooks, Webhook deliveries, and a delete area
+ * at the end.  What the caller may change follows their role in the project
  * (`my_role` from the API) — the server enforces the same.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -32,6 +32,7 @@ import PostureSection from '../components/posture/PostureSection';
 import WebhookSettings from '../components/WebhookSettings';
 import WebhookDeliveries from '../components/WebhookDeliveries';
 import TagManagement from '../components/TagManagement';
+import ProjectIngestSettings from '../components/scans/ProjectIngestSettings';
 import { Button } from '../components/ui/button';
 import { Combobox } from '../components/ui/combobox';
 import { CharacterCount } from '../components/ui/character-count';
@@ -410,6 +411,12 @@ const ProjectSettings: React.FC = () => {
           </table>
         )}
       </PostureSection>
+
+      {/* UX review 2026-09-24 — was a switch in the upload dialog. Analysts
+          may change it (the ingest-settings route), as they upload. */}
+      <ProjectIngestSettings
+        canEdit={isGlobalAdmin || currentProject?.my_role === 'admin' || currentProject?.my_role === 'analyst'}
+      />
 
       <TagManagement />
       <WebhookSettings />

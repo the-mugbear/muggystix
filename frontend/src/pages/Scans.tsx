@@ -55,7 +55,6 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 // From the barrel, like every other call here: a direct submodule import
 // bypasses a page test's mock and loads the real HTTP client.
-import { updateProjectIngestSettings } from '../services/api';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { BreakableName } from '../components/ui/breakable-name';
@@ -242,33 +241,12 @@ export default function Scans() {
     const parsed = parseInt(urlParams.get('uploaded_by') || '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
   });
-  // v5.215.0 — "Skip informational Nessus findings", the switch beside the
-  // drop zone. Seeded from the project's effective setting (its own choice,
-  // else the deployment default), written back to the project when flipped
-  // so every later batch honours it, and sent with each upload regardless.
-  const { currentProject, refreshProjects } = useProject();
-  const [skipInformational, setSkipInformational] = useState<boolean>(
-    () => currentProject?.skip_informational_effective ?? false,
-  );
-  const [savingSkipInformational, setSavingSkipInformational] = useState(false);
-  useEffect(() => {
-    if (currentProject) setSkipInformational(currentProject.skip_informational_effective ?? false);
-  }, [currentProject]);
-  const handleSkipInformationalChange = async (next: boolean) => {
-    setSkipInformational(next);
-    if (!currentProject) return;
-    setSavingSkipInformational(true);
-    try {
-      await updateProjectIngestSettings(currentProject.id, { skip_informational_findings: next });
-      await refreshProjects();
-    } catch (err) {
-      // The upload still carries the switch's value; only the persistence
-      // failed, so say so rather than silently reverting the switch.
-      toast.error(formatApiError(err, 'Could not save the project ingest setting.'));
-    } finally {
-      setSavingSkipInformational(false);
-    }
-  };
+  // v5.215.0 — whether informational Nessus observations are skipped: the
+  // project's effective setting (its own choice, else the deployment default),
+  // sent with each upload. UX review 2026-09-24 — changed in Project settings →
+  // Imports; the upload dialog states it and links there.
+  const { currentProject } = useProject();
+  const skipInformational = currentProject?.skip_informational_effective ?? false;
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2052,8 +2030,6 @@ export default function Scans() {
         resume={reviewResume}
         projectName={currentProject?.name}
         skipInformational={skipInformational}
-        savingSkipInformational={savingSkipInformational}
-        onSkipInformationalChange={(v) => void handleSkipInformationalChange(v)}
         onViewScan={handleViewScan}
         onStarted={(started) => {
           setUploadProgress((prev) => ({
