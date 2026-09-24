@@ -5,8 +5,6 @@ import {
   Bot,
   Info,
   Loader2,
-  RefreshCw,
-  Search,
   SquareArrowOutUpRight,
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -26,6 +24,9 @@ import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useNow } from '../hooks/useNow';
 import { ListPageSkeleton } from '../components/PageSkeleton';
+import LastUpdated from '../components/LastUpdated';
+import ListFilterBar, { FILTER_TRIGGER_CLASS, ListFilterSearch } from '../components/ListFilterBar';
+import TimeAgo from '../components/TimeAgo';
 import {
   Accordion,
   AccordionContent,
@@ -67,8 +68,6 @@ import {
   TableRow,
 } from '../components/ui/table';
 import { Textarea } from '../components/ui/textarea';
-import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/tooltip';
-import { cn } from '../utils/cn';
 
 type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted' | 'secondary' | 'outline';
 
@@ -96,9 +95,6 @@ const planStatusTone = (status: string | null | undefined): Tone => {
 function stripAttribution(text: string): string {
   return text.replace(/^🤖\s*\*{0,2}Agent-generated\*{0,2}\s*—\s*\S+\s*/i, '').trimStart();
 }
-
-const formatDate = (d?: string) =>
-  d ? new Date(d).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '-';
 
 // v5.288.0 — a new key: the old one ('testPlansWorkflowExpanded') was written
 // as 'true' on every mount while expanded was the default, so reading it would
@@ -275,11 +271,15 @@ const TestPlans: React.FC = () => {
     }
   };
 
+  const [lastFetched, setLastFetched] = useState<Date | null>(null);
   const loadPlans = useCallback(() => {
     setLoading(true);
     setError(null);
     getTestPlans({ status: statusFilter || undefined })
-      .then(setPlans)
+      .then((list) => {
+        setPlans(list);
+        setLastFetched(new Date());
+      })
       .catch((err) => setError(formatApiError(err, 'Failed to load test plans.')))
       .finally(() => setLoading(false));
   }, [statusFilter]);
@@ -439,17 +439,27 @@ const TestPlans: React.FC = () => {
 
   return (
     <div className="p-md md:p-lg">
-      <div className="mb-md flex flex-wrap items-center justify-between gap-sm">
-        <h1 className="text-page-title font-semibold">Test Plans</h1>
-        <div className="flex flex-wrap items-center gap-xs">
-          <Button onClick={loadPlans} size="sm" variant="outline" disabled={loading} aria-label="Refresh test plans">
-            <RefreshCw className={cn('size-4', loading && 'animate-spin')} aria-hidden /> Refresh
-          </Button>
-          <Button onClick={openGenerateDialog} size="sm">
-            <Bot className="size-4" aria-hidden /> Generate with AI
-          </Button>
+      {/* v5.294.0 — the page's actions top-right like every other page; the
+          search and status filter on the shared filter row below. They were
+          one wrapping toolbar that put the buttons under the title. */}
+      <div className="mb-md flex flex-wrap items-start justify-between gap-sm">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-page-title font-semibold">Test Plans</h1>
+          <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
+            Plans an agent drafts and you approve before anything is tested — one entry per
+            host, with the commands to run.
+          </p>
+        </div>
+        <div className="flex flex-wrap items-center gap-xs" data-testid="page-actions">
+          <LastUpdated
+            compact
+            lastFetched={lastFetched}
+            onRefresh={loadPlans}
+            isLoading={loading}
+            label="test plans"
+          />
           <Button
-            variant={compareEnabled ? 'default' : 'outline'}
+            variant="outline"
             disabled={!compareEnabled}
             onClick={onCompare}
             size="sm"
@@ -457,40 +467,9 @@ const TestPlans: React.FC = () => {
             <ArrowLeftRight className="size-4" aria-hidden />
             {compareEnabled ? 'Compare selected (2)' : `Compare (${selectedIds.length}/2)`}
           </Button>
-          <div className="relative w-64">
-            {/* FRX·H4: client-side search over title + author. v5.288.0 — a
-                placeholder that fits; the "/" shortcut moves to the tooltip. */}
-            <Search
-              className="pointer-events-none absolute left-sm top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
-              aria-hidden
-            />
-            <Input
-              ref={searchInputRef}
-              type="search"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Search title or author"
-              title="Search title or author (press / to focus)"
-              aria-label="Search test plans"
-              className="pl-xl"
-            />
-          </div>
-          <div className="min-w-40">
-            <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
-              <SelectTrigger aria-label="Filter test plans by status">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All</SelectItem>
-                <SelectItem value="draft">Draft</SelectItem>
-                <SelectItem value="proposed">Proposed</SelectItem>
-                <SelectItem value="approved">Approved</SelectItem>
-                <SelectItem value="in_progress">In Progress</SelectItem>
-                <SelectItem value="completed">Completed</SelectItem>
-                <SelectItem value="rejected">Rejected</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
+          <Button onClick={openGenerateDialog} size="sm">
+            <Bot className="size-4" aria-hidden /> Generate with AI
+          </Button>
         </div>
       </div>
 
@@ -602,6 +581,33 @@ const TestPlans: React.FC = () => {
         </AccordionItem>
       </Accordion>
 
+      <ListFilterBar
+        summary={loading ? undefined : `${filteredPlans.length.toLocaleString()} ${filteredPlans.length === 1 ? 'plan' : 'plans'}`}
+      >
+        {/* FRX·H4: client-side search over title + author; "/" focuses it. */}
+        <ListFilterSearch
+          inputRef={searchInputRef}
+          value={searchText}
+          onChange={setSearchText}
+          placeholder="Search title or author"
+          label="Search test plans"
+        />
+        <Select value={statusFilter || 'all'} onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}>
+          <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-40`} aria-label="Filter test plans by status">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All statuses</SelectItem>
+            <SelectItem value="draft">Draft</SelectItem>
+            <SelectItem value="proposed">Proposed</SelectItem>
+            <SelectItem value="approved">Approved</SelectItem>
+            <SelectItem value="in_progress">In Progress</SelectItem>
+            <SelectItem value="completed">Completed</SelectItem>
+            <SelectItem value="rejected">Rejected</SelectItem>
+          </SelectContent>
+        </Select>
+      </ListFilterBar>
+
       {error && (
         <Alert variant="destructive" className="mb-sm">
           <AlertDescription>{error}</AlertDescription>
@@ -655,21 +661,20 @@ const TestPlans: React.FC = () => {
         </div>
       ) : (
         <>
-          {/* Desktop-only product: the table is the sole renderer;
-              narrow widths scroll horizontally. v5.288.0 — on the page, not
-              in a bordered card (§7); fixed layout with the width going to
-              the title and the author, and a narrow checkbox column. */}
-              <div className="overflow-x-auto">
-                <Table style={{ tableLayout: 'fixed' }} className="min-w-[960px]">
+          {/* Desktop-only product: the table is the sole renderer. v5.288.0 —
+              on the page, not in a bordered card (§7). v5.294.0 — the column
+              budget fits the content width (a 960px minimum scrolled 34px
+              sideways at a 1246px viewport); Title takes what is left. */}
+                <Table data-testid="plans-table">
                   <TableHeader>
                     <TableRow>
-                      <TableHead className="w-10" />
-                      <TableHead className="w-[40%]">Title</TableHead>
-                      <TableHead className="w-[112px]">Status</TableHead>
-                      <TableHead className="w-[18%]">Author</TableHead>
-                      <TableHead className="w-[76px] text-center">Entries</TableHead>
-                      <TableHead className="w-[150px]">Progress</TableHead>
-                      <TableHead className="w-[112px]">Created</TableHead>
+                      <TableHead className="w-10"><span className="sr-only">Select</span></TableHead>
+                      <TableHead>Title</TableHead>
+                      <TableHead className="w-28">Status</TableHead>
+                      <TableHead className="w-40">Author</TableHead>
+                      <TableHead className="w-20 text-center">Entries</TableHead>
+                      <TableHead className="w-36">Progress</TableHead>
+                      <TableHead className="w-28">Created</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
@@ -746,20 +751,14 @@ const TestPlans: React.FC = () => {
                             <TableCell>
                               <PlanProgress plan={plan} />
                             </TableCell>
-                            <TableCell>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <span>{formatDate(plan.created_at)}</span>
-                                </TooltipTrigger>
-                                <TooltipContent>{plan.created_at}</TooltipContent>
-                              </Tooltip>
+                            <TableCell className="truncate">
+                              <TimeAgo value={plan.created_at} absoluteAfterDays={7} />
                             </TableCell>
                           </NavigableTableRow>
                       );
                     })}
                   </TableBody>
                 </Table>
-              </div>
         </>
       )}
 
