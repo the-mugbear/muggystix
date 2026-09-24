@@ -24,7 +24,8 @@ import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import QueueHealthCard from '../components/QueueHealthCard';
 import AuditLogViewer from '../components/AuditLogViewer';
-import { Card, CardContent, CardHeader, CardTitle } from '../components/ui/card';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import { personInitials } from '../utils/people';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { Label } from '../components/ui/label';
@@ -101,7 +102,22 @@ const ROLE_META = {
   viewer: { Icon: Eye, tone: 'success' as const, label: 'VIEWER' },
 } as const;
 
-const fmtDate = (s: string | null) => (s ? new Date(s).toLocaleString() : 'Never');
+/** A timestamp as date over time, each on its own unbroken line — a single
+ *  toLocaleString() wrapped mid-time in a narrow column ("8:49:37 / PM"). */
+const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
+  const d = value ? new Date(value) : null;
+  if (!d || Number.isNaN(d.getTime())) {
+    return <span className="text-muted-foreground">Never</span>;
+  }
+  return (
+    <span title={d.toLocaleString()}>
+      <span className="block whitespace-nowrap">{d.toLocaleDateString()}</span>
+      <span className="block whitespace-nowrap text-caption text-muted-foreground">
+        {d.toLocaleTimeString()}
+      </span>
+    </span>
+  );
+};
 
 const SystemSettings: React.FC = () => {
   const { user: currentUser, hasPermission } = useAuth();
@@ -355,40 +371,46 @@ const SystemSettings: React.FC = () => {
   }
 
   return (
-    <div className="p-md md:p-lg">
-      <div className="mb-md flex items-center justify-between">
-        <h1 className="flex items-center gap-xs text-page-title">
-          <Shield className="size-6" aria-hidden /> System Settings
-        </h1>
+    <div className="space-y-lg p-md md:p-lg">
+      <header className="flex flex-wrap items-start justify-between gap-sm">
+        <div className="min-w-0">
+          <h1 className="flex items-center gap-xs text-page-title">
+            <Shield className="size-6" aria-hidden /> System Settings
+          </h1>
+          <p className="mt-xxs text-metadata text-muted-foreground">
+            Deployment-wide administration: worker health, accounts, and the audit trail.
+          </p>
+        </div>
         <Button onClick={() => setNewUserDialogOpen(true)}>
           <Plus className="size-4" aria-hidden /> Add User
         </Button>
-      </div>
+      </header>
 
       {/* Deployment worker health. First on the page because a stalled
           ingestion or report worker silently breaks every user's uploads and
           exports, and until now nothing in the UI surfaced it. */}
       <QueueHealthCard />
 
-      <Card className="mb-md">
-        <CardHeader>
-          <CardTitle>User Management</CardTitle>
-        </CardHeader>
-        <CardContent>
+      <PostureSection
+        title={<>User management{!loading && <SectionCount>{users.length}</SectionCount>}</>}
+        description="Account roles are global; what a user can do with project data is set per project."
+      >
           {loading ? (
             <InlineLoader label="Loading users…" size="lg" centered />
           ) : (
-            <div className="overflow-x-auto rounded-panel border border-border">
-              <Table>
+            <div className="overflow-x-auto">
+              {/* Fixed columns + a floor so the User column never collapses;
+                  a narrow window scrolls this table, not the page. */}
+              <Table className="min-w-[60rem]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>User</TableHead>
-                    <TableHead>Role</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead>2FA</TableHead>
-                    <TableHead>Last Login</TableHead>
-                    <TableHead>Created</TableHead>
-                    <TableHead className="w-24 text-right">Actions</TableHead>
+                    <TableHead className="w-40">Role</TableHead>
+                    <TableHead className="w-40">Status</TableHead>
+                    <TableHead className="w-20">2FA</TableHead>
+                    <TableHead className="w-32">Last login</TableHead>
+                    <TableHead className="w-32">Created</TableHead>
+                    <TableHead className="w-20 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
@@ -398,15 +420,18 @@ const SystemSettings: React.FC = () => {
                     return (
                       <TableRow key={u.id}>
                         <TableCell>
-                          <div className="flex items-center gap-xs">
-                            <div className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-caption font-semibold">
-                              {u.username.charAt(0).toUpperCase()}
+                          <div className="flex min-w-0 items-center gap-xs">
+                            <div
+                              className="flex size-8 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground text-caption font-semibold"
+                              aria-hidden
+                            >
+                              {personInitials(u.full_name, u.username)}
                             </div>
                             <div className="min-w-0">
-                              <p className="text-metadata font-medium text-foreground">
+                              <p className="truncate text-metadata font-medium text-foreground" title={u.full_name || u.username}>
                                 {u.full_name || u.username}
                               </p>
-                              <p className="text-caption text-muted-foreground">@{u.username}</p>
+                              <p className="truncate text-caption text-muted-foreground" title={`@${u.username}`}>@{u.username}</p>
                             </div>
                           </div>
                         </TableCell>
@@ -487,8 +512,8 @@ const SystemSettings: React.FC = () => {
                             <Badge variant="outline" className="text-muted-foreground">Off</Badge>
                           )}
                         </TableCell>
-                        <TableCell className="text-metadata text-foreground">{fmtDate(u.last_login)}</TableCell>
-                        <TableCell className="text-metadata text-foreground">{fmtDate(u.created_at)}</TableCell>
+                        <TableCell className="text-metadata text-foreground"><DateTimeCell value={u.last_login} /></TableCell>
+                        <TableCell className="text-metadata text-foreground"><DateTimeCell value={u.created_at} /></TableCell>
                         <TableCell className="text-right">
                           <DropdownMenu>
                             <DropdownMenuTrigger asChild>
@@ -534,28 +559,25 @@ const SystemSettings: React.FC = () => {
               </Table>
             </div>
           )}
-        </CardContent>
-      </Card>
+      </PostureSection>
 
       {/* Audit log — deployment-wide, admin-only (v2.243.0). */}
       <AuditLogViewer />
 
-      <Card>
-        <CardHeader>
-          <CardTitle>Role Reference</CardTitle>
-        </CardHeader>
-        <CardContent>
-          <p className="mb-sm text-metadata text-muted-foreground">
-            Access is decided on <strong>two levels</strong>. The <strong>account role</strong>
-            below is global and binary — it only decides system-administration access. What a
-            user can do <em>with project data</em> is set separately by their{' '}
-            <strong>project role</strong>, assigned per project under Project Settings → Members.
-            New users default to <strong>Member</strong>.
+      <PostureSection
+        title="Role reference"
+        description="Access is decided on two levels: a global account role and a per-project role."
+      >
+          <p className="mb-sm max-w-3xl text-metadata text-muted-foreground">
+            The <strong>account role</strong> below is global and binary — it only decides
+            system-administration access. What a user can do <em>with project data</em> is set
+            separately by their <strong>project role</strong>, assigned per project under Project
+            Settings → Members. New users default to <strong>Member</strong>.
           </p>
           <p className="mb-xs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
             Account role (global)
           </p>
-          <div className="mb-md overflow-x-auto rounded-panel border border-border">
+          <div className="mb-md overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -581,7 +603,7 @@ const SystemSettings: React.FC = () => {
           <p className="mb-xs text-caption font-semibold uppercase tracking-wide text-muted-foreground">
             Project role (per project — set under Project Settings → Members)
           </p>
-          <div className="overflow-x-auto rounded-panel border border-border">
+          <div className="overflow-x-auto">
             <Table>
               <TableHeader>
                 <TableRow>
@@ -614,8 +636,7 @@ const SystemSettings: React.FC = () => {
               </TableBody>
             </Table>
           </div>
-        </CardContent>
-      </Card>
+      </PostureSection>
 
       {/* Create User Dialog */}
       <Dialog

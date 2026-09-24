@@ -113,7 +113,9 @@ const EntryRow: React.FC<{ entry: Entry }> = ({ entry }) => {
 };
 
 const Reference: React.FC = () => (
-  <div className="mx-auto max-w-5xl space-y-lg p-md md:p-lg">
+  // The same container as the other hub pages (full width, p-md md:p-lg) —
+  // a centred max-width box started the title further right than theirs.
+  <div className="space-y-lg p-md md:p-lg">
     <header>
       <h1 className="text-page-title">Reference</h1>
       <p className="mt-xxs max-w-3xl text-metadata text-muted-foreground">

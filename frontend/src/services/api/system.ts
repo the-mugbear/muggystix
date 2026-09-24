@@ -22,9 +22,18 @@ export interface QueueSnapshot {
   stale_cutoff_seconds: number;
 }
 
+/** Undismissed failed ingestion jobs in one project (largest first). */
+export interface FailedJobsInProject {
+  project_id: number;
+  project_name: string;
+  count: number;
+}
+
 export interface QueueMetrics {
   generated_at: string;
-  ingestion: QueueSnapshot;
+  /** `failed` counts undismissed jobs; `failed_by_project` says where they are
+   *  (the list that shows them — Ingestion Results — is per project). */
+  ingestion: QueueSnapshot & { failed_by_project?: FailedJobsInProject[] };
   report: QueueSnapshot;
 }
 

@@ -447,7 +447,57 @@ class TestAuditAPI:
         assert response.status_code == 200
         payload = response.json()
         assert payload["total_logs"] == 1
-    
+        # The viewer's "N in the last 24 hours" reads this exact field.
+        assert payload["recent_logs_24h"] == 1
+
+    def test_audit_logs_carry_the_actors_name(self, client, db_session, test_user):
+        """The viewer shows who acted by name, not by user id; the names come
+        from one batched lookup, so a user-less row (failed login) and a
+        deleted account (user_id no longer resolves) both read as null."""
+        from sqlalchemy import event
+        from app.db.models_auth import User, UserRole
+
+        # Explicit id: test_user is inserted with id=1, which the sequence
+        # does not know about.
+        other = User(
+            id=4242, username="eval-ana", email="ana@example.com", full_name="Ana Ortiz",
+            hashed_password="x", role=UserRole.MEMBER, is_active=True,
+        )
+        db_session.add(other)
+        db_session.commit()
+        for uid in (test_user.id, other.id, other.id, None):
+            db_session.add(AuditLog(action="login_success", user_id=uid, success=True))
+        db_session.commit()
+
+        statements = []
+
+        def _record(conn, cursor, statement, *args):
+            if "FROM users" in statement:
+                statements.append(statement)
+
+        event.listen(db_session.bind, "before_cursor_execute", _record)
+        try:
+            response = client.get("/api/v1/audit/logs")
+        finally:
+            event.remove(db_session.bind, "before_cursor_execute", _record)
+        assert response.status_code == 200
+        by_user = {}
+        for row in response.json()["logs"]:
+            by_user.setdefault(row["user_id"], set()).add(
+                (row["user_username"], row["user_full_name"]),
+            )
+        assert by_user[other.id] == {("eval-ana", "Ana Ortiz")}
+        assert by_user[test_user.id] == {("test-admin", "Test Admin")}
+        assert by_user[None] == {(None, None)}
+        # Auth resolves the caller once; the names are ONE more query, however
+        # many rows share or differ in user.
+        name_lookups = [s for s in statements if "users.full_name" in s and " IN " in s.upper()]
+        assert len(name_lookups) == 1
+
+        stats = client.get("/api/v1/audit/stats").json()
+        top = {u["user_id"]: u for u in stats["top_users"]}
+        assert top[other.id]["user_full_name"] == "Ana Ortiz"
+
     def test_upload_malformed_file(self, client, temp_file, test_project):
         """A .gnmap file whose content does not look like greppable nmap
         output is rejected up front by the ingestion validator (400)."""

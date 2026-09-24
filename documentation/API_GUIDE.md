@@ -238,7 +238,7 @@ Self-service TOTP enrollment, sharing the `/auth` prefix (no password-change gat
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/system/queue-metrics` | Deployment-wide durable job-queue operational metrics (ingestion + report queues): depth, in-flight, failed, oldest-pending age. Admin only. |
+| GET | `/system/queue-metrics` | Deployment-wide durable job-queue operational metrics (ingestion + report queues): depth, in-flight, failed (undismissed; ingestion also `failed_by_project`), oldest-pending age. Admin only. |
 
 ---
 

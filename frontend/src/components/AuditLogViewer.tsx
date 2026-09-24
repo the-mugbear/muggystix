@@ -19,16 +19,21 @@ import {
   listAuditLogs,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
+import { formatAuditDetails } from '../utils/auditDetails';
+import { personName } from '../utils/people';
 import { safeFallback } from '../utils/uiStyles';
+import PostureSection from './posture/PostureSection';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Input } from './ui/input';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from './ui/select';
 
-const PAGE_SIZE = 50;
+/** Rows per page. 50 made System Settings several screens long; the pager
+ *  and the "1–20 of N" total carry the rest. */
+export const AUDIT_PAGE_SIZE = 20;
+const PAGE_SIZE = AUDIT_PAGE_SIZE;
 
 function when(value?: string | null): string {
   if (!value) return '—';
@@ -81,29 +86,34 @@ const AuditLogViewer: React.FC = () => {
   const actionOptions = stats?.top_actions?.map((a) => a.action) ?? [];
   const pageEnd = Math.min(skip + PAGE_SIZE, total);
 
+  const recent = typeof stats?.recent_logs_24h === 'number' ? stats.recent_logs_24h : null;
+
   return (
-    <Card className="mb-md">
-      <CardHeader className="flex flex-row items-center justify-between gap-sm">
-        <CardTitle className="min-w-0">
-          Audit Log
+    <PostureSection
+      title={
+        <>
+          Audit log
           {stats && stats.failed_logs > 0 && (
-            <Badge variant="outline" className="ml-xs border-destructive/40 text-destructive">
+            <Badge variant="outline" className="border-destructive/40 text-destructive">
               {stats.failed_logs} failed
             </Badge>
           )}
-        </CardTitle>
+        </>
+      }
+      description={
+        <>
+          Authentication and administration events across the whole deployment — not scoped
+          to the selected project.
+          {recent !== null ? ` ${recent} in the last 24 hours.` : ''}
+        </>
+      }
+      actions={
         <Button size="sm" variant="outline" onClick={() => void reload(skip)} disabled={loading}>
           <RefreshCw className={`size-4 ${loading ? 'animate-spin' : ''}`} aria-hidden />
           Refresh
         </Button>
-      </CardHeader>
-      <CardContent>
-        <p className="mb-sm text-caption text-muted-foreground">
-          Authentication and administration events across the whole deployment — not scoped
-          to the selected project.
-          {stats ? ` ${stats.recent_logs} in the last 24 hours.` : ''}
-        </p>
-
+      }
+    >
         <div className="mb-sm flex flex-wrap items-end gap-xs">
           <div className="space-y-xxs">
             <label className="text-caption text-muted-foreground" htmlFor="audit-action">Action</label>
@@ -154,12 +164,12 @@ const AuditLogViewer: React.FC = () => {
             <div className="overflow-x-auto">
               <table className="w-full text-metadata" style={{ tableLayout: 'fixed' }}>
                 <colgroup>
-                  <col style={{ width: '16%' }} />
-                  <col style={{ width: '19%' }} />
                   <col style={{ width: '15%' }} />
-                  <col style={{ width: '8%' }} />
-                  <col style={{ width: '12%' }} />
-                  <col style={{ width: '30%' }} />
+                  <col style={{ width: '18%' }} />
+                  <col style={{ width: '13%' }} />
+                  <col style={{ width: '14%' }} />
+                  <col style={{ width: '11%' }} />
+                  <col style={{ width: '29%' }} />
                 </colgroup>
                 <thead>
                   <tr className="border-b border-border text-left text-caption text-muted-foreground">
@@ -174,15 +184,11 @@ const AuditLogViewer: React.FC = () => {
                 <tbody>
                   {rows.map((r) => {
                     // `details` is a JSON column — object for structured events
-                    // (login: {"method":"totp"}), string/null otherwise. Coerce
-                    // to a display string so it renders instead of crashing the
-                    // safeFallback/.trim path.
-                    const detailText =
-                      r.details == null
-                        ? null
-                        : typeof r.details === 'string'
-                          ? r.details
-                          : JSON.stringify(r.details);
+                    // (login: {"method":"totp"}), string/null otherwise — shown
+                    // as readable text ("method: TOTP"), never raw JSON.
+                    const detailText = formatAuditDetails(r.details);
+                    const actor = personName(r.user_full_name, r.user_username);
+                    const actorTitle = r.user_username ? `@${r.user_username}` : undefined;
                     return (
                     <tr key={r.id} className="border-b border-border/50 align-top">
                       <td className="py-xs pr-xs whitespace-nowrap text-muted-foreground">
@@ -206,8 +212,12 @@ const AuditLogViewer: React.FC = () => {
                           ) : null}
                         </span>
                       </td>
-                      <td className="py-xs pr-xs text-muted-foreground">
-                        {r.user_id ?? '—'}
+                      <td className="py-xs pr-xs">
+                        <span className="block truncate" title={actorTitle}>
+                          {actor === '—' && r.user_id != null
+                            ? <span className="text-muted-foreground">User #{r.user_id}</span>
+                            : actor}
+                        </span>
                       </td>
                       <td className="py-xs pr-xs">
                         <span className="block truncate font-mono text-caption" title={r.ip_address ?? undefined}>
@@ -217,11 +227,14 @@ const AuditLogViewer: React.FC = () => {
                       <td className="py-xs pr-xs">
                         <span
                           className="line-clamp-2 break-words"
-                          title={r.error_message || detailText || undefined}
+                          title={[r.error_message, detailText].filter(Boolean).join(' — ') || undefined}
                         >
-                          {r.error_message
-                            ? <span className="text-destructive">{r.error_message}</span>
-                            : safeFallback(detailText)}
+                          {r.error_message ? (
+                            <>
+                              <span className="text-destructive">{r.error_message}</span>
+                              {detailText && <span className="text-muted-foreground"> · {detailText}</span>}
+                            </>
+                          ) : safeFallback(detailText)}
                         </span>
                       </td>
                     </tr>
@@ -254,8 +267,7 @@ const AuditLogViewer: React.FC = () => {
             </div>
           </>
         )}
-      </CardContent>
-    </Card>
+    </PostureSection>
   );
 };
 
