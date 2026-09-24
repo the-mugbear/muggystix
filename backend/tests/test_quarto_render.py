@@ -403,6 +403,24 @@ def test_the_word_placeholders_take_the_installed_logo_and_title_page_image(tmp_
     assert v1 > v0
 
 
+@needs_template
+def test_every_table_label_keeps_with_its_table_in_word():
+    """v2.407.2 — "Severity count with remediation timeline (days)" ended one
+    page and its table began the next: a bold label was a plain paragraph.
+    Every label is wrapped in the Table Label style, which keeps with next."""
+    import re
+    with zipfile.ZipFile(TEMPLATE / "reference.docx") as z:
+        styles = z.read("word/styles.xml").decode()
+    style = re.search(r'<w:style [^>]*w:styleId="TableLabel".*?</w:style>', styles, re.S)
+    assert style and "<w:keepNext/>" in style.group(0)
+    source = (TEMPLATE / "report.qmd").read_text(encoding="utf-8")
+    lines = source.splitlines()
+    labels = [i for i, line in enumerate(lines) if re.fullmatch(r"\*\*[^*]+\*\*", line.strip())]
+    assert len(labels) >= 10
+    for i in labels:
+        assert lines[i - 1] == '::: {custom-style="Table Label"}' and lines[i + 1] == ":::", lines[i]
+
+
 def test_pdf_is_not_a_report_format():
     """v2.407.0 — the Word report carries the design and exports to PDF; a
     template that still lists pdf loses it rather than failing to load."""

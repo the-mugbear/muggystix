@@ -125,10 +125,12 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
           })}
         </div>
         {tools.map((t) => (
-          <Button key={t.label} type="button" variant="ghost" size="sm" className="size-7 p-0"
+          // size="icon" (no side padding), made 28px: a padded small button
+          // squeezed the icon to 4px wide.
+          <Button key={t.label} type="button" variant="ghost" size="icon" className="size-7"
             aria-label={t.label} title={t.keys ? `${t.label} (${t.keys})` : t.label}
             disabled={disabled || preview} onClick={() => apply(t.run)}>
-            <t.icon className="size-4" aria-hidden />
+            <t.icon className="size-4 shrink-0" aria-hidden />
           </Button>
         ))}
         <Popover>

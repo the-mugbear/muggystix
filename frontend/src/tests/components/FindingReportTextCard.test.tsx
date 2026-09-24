@@ -129,6 +129,17 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
     expect(screen.queryByText(/follows a line of text/)).not.toBeInTheDocument();
   });
 
+  // Found in the Chrome pass: a padded small button squeezed each icon to
+  // 4px wide, so the toolbar showed dots.
+  it('draws the toolbar as icon buttons with no side padding', () => {
+    render(<FindingReportTextCard finding={withText('x')} canEdit onSaved={vi.fn()} startEditing />);
+    const bold = toolbar().getByRole('button', { name: 'Bold' });
+    expect(bold.className).toContain('size-7');
+    expect(bold.className).not.toMatch(/\bpx-/);
+    expect(bold.className).not.toMatch(/\b[hw]-10\b/);
+    expect(bold.querySelector('svg')?.getAttribute('class')).toContain('shrink-0');
+  });
+
   it('makes the selection bold with Ctrl+B', () => {
     render(<FindingReportTextCard finding={withText('Seen on filesrv-01.')} canEdit onSaved={vi.fn()} startEditing />);
     const box = screen.getByLabelText('Description') as HTMLTextAreaElement;
