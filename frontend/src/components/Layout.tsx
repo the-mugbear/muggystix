@@ -53,6 +53,8 @@ interface LayoutProps {
 // mobile SideSheet override, and the main content `sm:ml-*`.  Keep
 // them in lockstep so a future drawer-width change is one edit.
 const DRAWER_WIDTH = 240;
+/** Pages linked above the project selector (All Projects, Oversight). */
+const CROSS_PROJECT_PATHS = ['/portfolio', '/oversight'];
 const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 
 // ---------------------------------------------------------------------------
@@ -380,6 +382,9 @@ export default function Layout({ children }: LayoutProps) {
   // hidden override of the visible link.
 
   const activeHub = React.useMemo(() => resolveActiveHub(location.pathname), [location.pathname]);
+  const onCrossProjectPage = CROSS_PROJECT_PATHS.some(
+    (p) => location.pathname === p || location.pathname.startsWith(p + '/'),
+  );
   const currentTheme = availableThemes.find((option) => option.value === themeName);
 
   // Visible children for the active hub — filtered by role so users
@@ -491,7 +496,10 @@ export default function Layout({ children }: LayoutProps) {
       >
         {HUBS.map((hub, index) => {
           if (!hasPermission(hub.requiredRole)) return null;
-          const selected = hub.id === activeHub.id;
+          // The cross-project pages above the selector light their own link;
+          // Operations is only the catch-all hub for them, so lighting it too
+          // showed two "you are here" markers.
+          const selected = hub.id === activeHub.id && !onCrossProjectPage;
           const { Icon } = hub;
           // Utility hubs (Settings, Reference) sit at the foot, under a rule:
           // they serve the project workflow above, they are not a step in it.

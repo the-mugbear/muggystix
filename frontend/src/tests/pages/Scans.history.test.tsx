@@ -231,7 +231,7 @@ describe('Scans — layout', () => {
       },
     ]);
     renderPage();
-    const link = await screen.findByRole('link', { name: '4 failed imports since re-imported' });
+    const link = await screen.findByRole('link', { name: '4 failed imports were re-imported later' });
     expect(link).toHaveAttribute('href', '/parse-errors?status=superseded');
     expect(screen.queryByTestId('ingestion-queue')).not.toBeInTheDocument();
     expect(leadText()).not.toMatch(/nothing failed|need attention/);

@@ -151,7 +151,9 @@ def test_rows_carry_the_parsers_specific_reason(client, db_session, test_project
     base = f"/api/v1/projects/{test_project.id}"
     items = {i["id"]: i for i in client.get(f"{base}/parse-errors/ingestion-results").json()["items"]}
     assert items[specific.id]["failure_reason"].startswith("SMBMap parser found 0 hosts")
-    assert items[sql.id]["failure_reason"] == "value too long for type character varying(200)"
+    # A driver error is a parser bug: said in plain words, never the SQL text.
+    assert items[sql.id]["failure_reason"].startswith("A value in this file was longer than BlueStick stores")
+    assert "character varying" not in items[sql.id]["failure_reason"]
     assert items[plain.id]["failure_reason"] == "Discarded before import"
 
     jobs = {x["id"]: x for x in client.get(f"{base}/upload/jobs?include_dismissed=true").json()}

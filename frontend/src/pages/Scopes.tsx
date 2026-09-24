@@ -425,12 +425,14 @@ const Scopes: React.FC = () => {
           size="icon"
           aria-label={`Edit labels for ${subnet.cidr}`}
           // v5.288.0 — with no labels the pencil shows on
-          // row hover or keyboard focus, not on every row.
-          className={
+          // row hover or keyboard focus, not on every row.  Kept to the
+          // text line's height: the full-size icon button made the row's
+          // "—" sit lower than the other cells' first line.
+          className={cn(
+            '-my-xxs size-6',
             subnetLabels.length === 0
-              ? 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100'
-              : undefined
-          }
+              && 'opacity-0 group-hover/row:opacity-100 focus-visible:opacity-100 data-[state=open]:opacity-100',
+          )}
         >
           <Pencil className="size-3.5" aria-hidden />
         </Button>
@@ -781,9 +783,11 @@ const Scopes: React.FC = () => {
                     <TableHead className="w-[18%]">Subnet / IP</TableHead>
                     <TableHead className="w-20 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
-                    <TableHead className="w-36">Site</TableHead>
-                    <TableHead className="w-[20%]">Labels</TableHead>
-                    <TableHead className="w-32">Added</TableHead>
+                    {/* Wide enough for a typical site name ("DMZ / Internet-facing")
+                        on one line; longer names still wrap. */}
+                    <TableHead className="w-48">Site</TableHead>
+                    <TableHead className="w-[16%]">Labels</TableHead>
+                    <TableHead className="w-28">Added</TableHead>
                     <TableHead className="w-32 text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>

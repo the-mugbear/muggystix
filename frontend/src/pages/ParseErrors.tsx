@@ -496,7 +496,16 @@ const ParseErrors: React.FC = () => {
               </button>
             );
           })}
-          {supersededShown.length > 0 && (
+          {/* The button dismisses exactly the rows on this page; when more are
+              superseded than shown (the chip counts the whole project), it
+              first opens the Superseded view so the count it acts on is the
+              count beside it — "Dismiss 1" next to "Superseded 4" misread. */}
+          {(summary.total_superseded ?? 0) > supersededShown.length && statusFilter !== 'superseded' ? (
+            <Button size="sm" variant="outline" className="ml-auto" disabled={loading}
+              onClick={() => setStatusFilter('superseded')}>
+              Review {summary.total_superseded} superseded
+            </Button>
+          ) : supersededShown.length > 0 && (
             <Button size="sm" variant="outline" className="ml-auto" disabled={bulkDismissing || loading}
               onClick={() => void dismissSuperseded()}>
               {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}
@@ -504,7 +513,8 @@ const ParseErrors: React.FC = () => {
             </Button>
           )}
           {dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
-            <Button size="sm" variant="outline" className={supersededShown.length > 0 ? undefined : 'ml-auto'}
+            <Button size="sm" variant="outline"
+              className={supersededShown.length > 0 || (summary.total_superseded ?? 0) > 0 ? undefined : 'ml-auto'}
               disabled={bulkDismissing || loading}
               onClick={() => void dismissShown()}>
               {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}

@@ -109,7 +109,9 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName,
       <ul className="divide-y divide-border">
         {assets.map((a) => (
           <li key={a.id} className="flex min-w-0 flex-col gap-xxs py-xs first:pt-0 sm:flex-row sm:items-baseline sm:gap-md">
-            <div className="w-40 shrink-0">{status(a)}</div>
+            {/* Wide enough for the longest status ("Not installed · shipped
+                used") on one line. */}
+            <div className="w-56 shrink-0 whitespace-nowrap">{status(a)}</div>
             <div className="min-w-0 flex-1 space-y-xxs">
               <div className="flex min-w-0 flex-wrap items-baseline gap-x-xs">
                 <span className="break-words font-medium">{a.label}</span>

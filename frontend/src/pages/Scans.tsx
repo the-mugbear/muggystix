@@ -2302,7 +2302,7 @@ const ScansLead: React.FC<{
             <>
               {sep}
               <Link to="/parse-errors?status=superseded" className="underline-offset-2 hover:underline">
-                {superseded.toLocaleString()} failed import{superseded === 1 ? '' : 's'} since re-imported
+                {superseded.toLocaleString()} failed import{superseded === 1 ? ' was' : 's were'} re-imported later
               </Link>
             </>
           )}
@@ -2313,7 +2313,7 @@ const ScansLead: React.FC<{
       <InfoTip
         label="About these figures"
         className="align-middle"
-        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list — except those whose same file a later upload imported (“since re-imported”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
+        text="Every imported file counts, batched files included. “Need attention” is every import of this project that failed or finished partial and nobody dismissed — Ingestion Results’ needs-attention list — except those whose same file a later upload imported (“re-imported later”, superseded). “Never imported” are failures already dismissed: files discarded at the format review, staged files nobody started within 24 hours (expired), and acknowledged failures. A file refused at upload as a duplicate never becomes an import and is not counted."
       />
     </PostureLead>
   );

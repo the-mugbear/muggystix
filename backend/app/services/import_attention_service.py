@@ -108,15 +108,35 @@ def _first_line(text: Optional[str]) -> Optional[str]:
     return None
 
 
+# A database driver's error is a parser bug, not something the operator can
+# act on from its wording ("value too long for type character varying(200)").
+# The reason line says what happened in plain terms; the raw text stays in the
+# parse error's details.
+_DB_ERROR = re.compile(r"^\((?:psycopg2|sqlalchemy|sqlite3)[\w.]*\)")
+_DB_ERROR_REASONS = (
+    ("StringDataRightTruncation", "A value in this file was longer than BlueStick stores — a parser bug; re-import after updating"),
+    ("NumericValueOutOfRange", "A number in this file was out of the range BlueStick stores — a parser bug; re-import after updating"),
+    ("UniqueViolation", "The import collided with a record already stored — a parser bug; re-import after updating"),
+)
+_DB_ERROR_GENERIC = "The import failed while storing its results — a parser bug; see Details"
+
+
+def _plain_reason(text: Optional[str]) -> Optional[str]:
+    if text and _DB_ERROR.match(str(text).strip()):
+        head = str(text).strip().splitlines()[0]
+        return next((msg for cls, msg in _DB_ERROR_REASONS if cls in head), _DB_ERROR_GENERIC)
+    return _first_line(text)
+
+
 def failure_reason(job: models.IngestionJob, parse_error: Optional[models.ParseError]) -> Optional[str]:
     """The most specific one-line reason a FAILED job did not import: the
     parser's own message from its ParseError, else the job's message (a
-    discard, an expiry, an unexpected processing failure).  ``None`` for a
-    job that did not fail."""
+    discard, an expiry, an unexpected processing failure).  A database
+    driver error is put in plain words.  ``None`` for a job that did not fail."""
     if job.status != "failed":
         return None
-    specific = _first_line(parse_error.error_message) if parse_error is not None else None
-    return specific or _first_line(job.error_message) or _first_line(job.message)
+    specific = _plain_reason(parse_error.error_message) if parse_error is not None else None
+    return specific or _plain_reason(job.error_message) or _first_line(job.message)
 
 
 def annotate_jobs(db: Session, jobs: List[models.IngestionJob]) -> List[models.IngestionJob]:

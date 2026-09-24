@@ -300,6 +300,19 @@ describe('Ingestion Results — superseded failures and specific reasons', () =>
     await waitFor(() => expect(api.dismissSupersededJobs).toHaveBeenCalledWith([478]));
   });
 
+  // Browser walkthrough 2026-09-24: "Dismiss 1 superseded" sat beside
+  // "Superseded 4" — the button counted the page, the chip the project.
+  it('never offers to dismiss fewer superseded rows than the count beside it', async () => {
+    api.getIngestionResults.mockResolvedValue(withSuperseded([smbmap]));
+    renderPage();
+    await screen.findByText('smbmap-samba.txt');
+    expect(screen.queryByRole('button', { name: /^Dismiss \d+ superseded$/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Review 4 superseded' }));
+    await waitFor(() => expect(api.getIngestionResults).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'superseded' }),
+    ));
+  });
+
   it('breaks a filename only after a separator', async () => {
     api.getIngestionResults.mockResolvedValue(response([
       row({ id: 5, original_filename: 'netexec-spider-172.30.77.10.json' }),
