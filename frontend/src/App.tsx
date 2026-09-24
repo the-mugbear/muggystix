@@ -60,6 +60,7 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/workflows', kind: 'cards' },
   { pattern: '/collaboration', kind: 'cards' },
   { pattern: '/settings', kind: 'cards' },
+  { pattern: '/administration', kind: 'cards' },
 ];
 
 const resolveSkeletonKind = (pathname: string): RouteSkeletonKind => {
@@ -150,6 +151,12 @@ const ReconCompare = lazy(() => import('./pages/ReconCompare'));
 const ExecutionDetail = lazy(() => import('./pages/ExecutionDetail'));
 const ExecutionsList = lazy(() => import('./pages/ExecutionsList'));
 const PlanCompare = lazy(() => import('./pages/PlanCompare'));
+
+/** A renamed path: go to the new one with the same query string and hash. */
+function RedirectKeepingQuery({ to }: { to: string }) {
+  const { search, hash } = useLocation();
+  return <Navigate to={`${to}${search}${hash}`} replace />;
+}
 
 // Route-level error boundary for the page area inside Layout. Keyed on
 // pathname so navigating to another page clears a page-specific crash, while a
@@ -284,6 +291,16 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <HubRedirect hubId="settings" />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* v5.294.0 — the instance's pages (All projects,
+                          System), apart from the project's settings. */}
+                      <Route
+                        path="/administration"
+                        element={
+                          <ProtectedRoute requiredRole="admin">
+                            <HubRedirect hubId="administration" />
                           </ProtectedRoute>
                         }
                       />
@@ -427,12 +444,14 @@ function App() {
                         }
                       />
                       {/* v5.173.0 — AI Assist review. Two paths, one page:
-                          the list, and the per-session detail its rows open. */}
+                          the list, and the per-session detail its rows open.
+                          v5.294.0 — the list is Agent Runs' "By session"
+                          view; the bare path goes there. */}
                       <Route
                         path="/assist-sessions"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <AssistSessions />
+                            <Navigate to="/agent-activity?view=sessions" replace />
                           </ProtectedRoute>
                         }
                       />
@@ -555,13 +574,16 @@ function App() {
                       {/* Legacy path → new Patterns page (Phase 3 IA). */}
                       <Route path="/insights/systemic" element={<Navigate to="/posture/patterns" replace />} />
                       <Route
-                        path="/parse-errors"
+                        path="/ingestion-results"
                         element={
                           <ProtectedRoute requiredRole="analyst">
                             <ParseErrors />
                           </ProtectedRoute>
                         }
                       />
+                      {/* v5.294.0 — the old path; links and bookmarks keep
+                          their filters (?status=…) across the redirect. */}
+                      <Route path="/parse-errors" element={<RedirectKeepingQuery to="/ingestion-results" />} />
                       <Route
                         path="/default-credentials"
                         element={

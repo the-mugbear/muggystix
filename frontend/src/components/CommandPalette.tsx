@@ -23,6 +23,7 @@ import {
   ShieldCheck,
 } from 'lucide-react';
 import {
+  AlertHexIcon,
   ScanLinesIcon,
   ServerStackIcon,
 } from './AppIcons';
@@ -31,9 +32,12 @@ import { useAuth } from '../contexts/AuthContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
+  getFinding,
   getHosts,
   getScans,
   getTestPlans,
+  listFindings,
+  type Finding,
   type Host,
   type Scan,
   type TestPlanSummary,
@@ -64,10 +68,12 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   // error state surfaces backend failures inline instead of swallowing.
   const debouncedSearch = useDebouncedValue(search, 300);
   const [hostResults, setHostResults] = useState<Host[]>([]);
+  const [findingResults, setFindingResults] = useState<Finding[]>([]);
   const [planResults, setPlanResults] = useState<TestPlanSummary[]>([]);
   const [scanResults, setScanResults] = useState<Scan[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [hostsError, setHostsError] = useState<string | null>(null);
+  const [findingsError, setFindingsError] = useState<string | null>(null);
   const [plansError, setPlansError] = useState<string | null>(null);
   const [scansError, setScansError] = useState<string | null>(null);
 
@@ -76,9 +82,11 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
     if (!open) {
       setSearch('');
       setHostResults([]);
+      setFindingResults([]);
       setPlanResults([]);
       setScanResults([]);
       setHostsError(null);
+      setFindingsError(null);
       setPlansError(null);
       setScansError(null);
     }
@@ -87,11 +95,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   useEffect(() => {
     if (!open) return;
     const q = debouncedSearch.trim();
-    if (q.length < 2) {
+    // "#37" (or "37") is a finding number — searchable from one digit.
+    const findingId = /^#?(\d+)$/.exec(q)?.[1];
+    if (q.length < 2 && !findingId) {
       setHostResults([]);
+      setFindingResults([]);
       setPlanResults([]);
       setScanResults([]);
       setHostsError(null);
+      setFindingsError(null);
       setPlansError(null);
       setScansError(null);
       setResourcesLoading(false);
@@ -101,6 +113,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
     let cancelled = false;
     setResourcesLoading(true);
     setHostsError(null);
+    setFindingsError(null);
     setPlansError(null);
     setScansError(null);
 
@@ -117,7 +130,15 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
       setError(`${label} search unavailable — try refining your query or retry.`);
     };
 
-    const hostsPromise = getHosts(
+    // A one-digit finding number searches findings only.
+    const wide = q.length >= 2;
+    if (!wide) {
+      setHostResults([]);
+      setPlanResults([]);
+      setScanResults([]);
+    }
+
+    const hostsPromise = !wide ? Promise.resolve() : getHosts(
       { search: q, limit: 5, include_total: false },
       controller.signal,
     )
@@ -126,19 +147,36 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
       })
       .catch(groupFail(setHostsError, 'Hosts'));
 
-    const plansPromise = getTestPlans({ search: q, limit: 5, signal: controller.signal })
+    // v5.294.0 (UX review) — findings of the current project, by title, and
+    // by number when the query is one ("#37" / "37"); the numbered one first.
+    // A number nobody has is a 404, which is simply no match.
+    const byId = findingId
+      ? getFinding(Number(findingId)).catch(() => null)
+      : Promise.resolve(null);
+    const byTitle = wide
+      ? listFindings({ search: q, limit: 5 }, controller.signal).then((r) => r.items ?? [])
+      : Promise.resolve([] as Finding[]);
+    const findingsPromise = Promise.all([byId, byTitle])
+      .then(([numbered, titled]) => {
+        if (cancelled) return;
+        const rows = numbered ? [numbered, ...titled.filter((f) => f.id !== numbered.id)] : titled;
+        setFindingResults(rows.slice(0, 6));
+      })
+      .catch(groupFail(setFindingsError, 'Findings'));
+
+    const plansPromise = !wide ? Promise.resolve() : getTestPlans({ search: q, limit: 5, signal: controller.signal })
       .then((plans) => {
         if (!cancelled) setPlanResults(plans);
       })
       .catch(groupFail(setPlansError, 'Test plans'));
 
-    const scansPromise = getScans(0, 5, { search: q, signal: controller.signal })
+    const scansPromise = !wide ? Promise.resolve() : getScans(0, 5, { search: q, signal: controller.signal })
       .then((scans) => {
         if (!cancelled) setScanResults(scans);
       })
       .catch(groupFail(setScansError, 'Scans'));
 
-    Promise.allSettled([hostsPromise, plansPromise, scansPromise]).then(() => {
+    Promise.allSettled([hostsPromise, findingsPromise, plansPromise, scansPromise]).then(() => {
       if (!cancelled) setResourcesLoading(false);
     });
 
@@ -154,6 +192,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   );
 
   const showResourceGroups = debouncedSearch.trim().length >= 2;
+  const showFindingGroup = showResourceGroups || /^#?\d+$/.test(debouncedSearch.trim());
 
   const run = (fn: () => void) => {
     onOpenChange(false);
@@ -185,8 +224,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
         >
           <DialogPrimitive.Title className="sr-only">Command palette</DialogPrimitive.Title>
           <DialogPrimitive.Description className="sr-only">
-            Type to search pages, projects, and quick actions. Use arrow keys to navigate, Enter to
-            run, Escape to dismiss.
+            Type to search pages, hosts, findings (by title or number), test plans, scans, projects
+            and quick actions. Use arrow keys to navigate, Enter to run, Escape to dismiss.
           </DialogPrimitive.Description>
           <CommandPrimitive loop shouldFilter>
             <div className="flex items-center gap-xs border-b border-border px-sm">
@@ -195,7 +234,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
                 autoFocus
                 value={search}
                 onValueChange={setSearch}
-                placeholder="Search pages, projects, themes…"
+                placeholder="Search pages, hosts, findings, plans, scans, projects…"
                 className="flex h-10 w-full bg-transparent text-body text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
               <kbd className="hidden text-caption text-muted-foreground sm:inline">esc</kbd>
@@ -228,6 +267,47 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
                   </CommandPrimitive.Item>
                 ))}
               </CommandPrimitive.Group>
+
+              {showFindingGroup && (
+                <CommandPrimitive.Group
+                  heading="Findings"
+                  className={cn(
+                    '[&_[cmdk-group-heading]]:px-sm [&_[cmdk-group-heading]]:py-xxs',
+                    '[&_[cmdk-group-heading]]:text-micro [&_[cmdk-group-heading]]:font-semibold',
+                    '[&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider',
+                    '[&_[cmdk-group-heading]]:text-muted-foreground',
+                  )}
+                >
+                  {resourcesLoading && findingResults.length === 0 && !findingsError && (
+                    <div className="px-sm py-xxs text-caption text-muted-foreground">
+                      Searching…
+                    </div>
+                  )}
+                  {findingsError && (
+                    <div className="px-sm py-xxs text-caption text-destructive">
+                      {findingsError}
+                    </div>
+                  )}
+                  {findingResults.map((finding) => (
+                    <CommandPrimitive.Item
+                      key={`finding:${finding.id}`}
+                      value={`finding:${finding.id}:${finding.title}`}
+                      // The typed query must match for cmdk to keep the row:
+                      // the title, and the number as "#37" and "37".
+                      keywords={[finding.title, `#${finding.id}`, String(finding.id)]}
+                      onSelect={() => run(() => navigate(`/findings/${finding.id}`))}
+                      className={itemClass}
+                    >
+                      <AlertHexIcon className="size-4 text-muted-foreground" />
+                      <span className="shrink-0 tabular-nums text-caption text-muted-foreground">#{finding.id}</span>
+                      <span className="min-w-0 flex-1 truncate">{finding.title}</span>
+                      <span className="shrink-0 text-caption capitalize text-muted-foreground">
+                        {finding.severity}
+                      </span>
+                    </CommandPrimitive.Item>
+                  ))}
+                </CommandPrimitive.Group>
+              )}
 
               {showResourceGroups && (
                 <>

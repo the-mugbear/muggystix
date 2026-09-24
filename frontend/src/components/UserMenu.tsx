@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Info, User as UserIcon } from 'lucide-react';
+import { Info, Sparkles, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import buildInfo from '../buildInfo.json';
 import {
@@ -133,6 +133,16 @@ const UserMenu: React.FC = () => {
             <div>
               <div className="text-metadata">Profile</div>
               <div className="text-caption text-muted-foreground">View and edit profile</div>
+            </div>
+          </DropdownMenuItem>
+
+          {/* v5.294.0 — your own AI provider keys; they were a tab among the
+              project's settings although every row belongs to one user. */}
+          <DropdownMenuItem onSelect={() => navigate('/llm-settings')}>
+            <Sparkles className="size-4" aria-hidden />
+            <div>
+              <div className="text-metadata">LLM providers</div>
+              <div className="text-caption text-muted-foreground">Your AI provider keys</div>
             </div>
           </DropdownMenuItem>
 

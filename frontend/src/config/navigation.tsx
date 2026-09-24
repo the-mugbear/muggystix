@@ -31,6 +31,7 @@ import {
   ShieldCheck,
   Sparkles,
   TerminalSquare,
+  UserCog,
 } from 'lucide-react';
 import {
   ActivityPulseIcon,
@@ -53,10 +54,12 @@ export type NavRole = 'viewer' | 'analyst' | 'admin';
 export type HubId =
   | 'operations'
   | 'inventory'
+  | 'findings'
   | 'posture'
   | 'workflows'
   | 'collaboration'
   | 'settings'
+  | 'administration'
   | 'reference';
 
 /** Presentation for a page's command-palette entry (Pages group). */
@@ -122,12 +125,28 @@ export interface HubDef {
 export const HUB_DEFS: HubDef[] = [
   { id: 'operations', label: 'Operations', path: '/operations', requiredRole: 'viewer', Icon: Sparkles },
   { id: 'inventory', label: 'Inventory', path: '/inventory', requiredRole: 'viewer', Icon: ServerStackIcon, defaultChildPath: '/hosts' },
+  // v5.294.0 (UX review) — findings and the client report are what the
+  // engagement PRODUCES, not its inventory; they were two of seven Inventory
+  // tabs. Like Posture, the hub path is its first page.
+  { id: 'findings', label: 'Findings', path: '/findings', requiredRole: 'viewer', Icon: AlertHexIcon },
   // Posture is a real landing page (/posture) like Operations — its hub path
   // renders the roll-up directly, with Insights + Systemic as drill-down tabs.
   { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
-  { id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck },
+  // Every agent surface lives here (v5.294.0): the per-artifact run views and
+  // the old Agent Sessions list (now a view of Agent Runs) are owned paths, so
+  // the sidebar still says where you are when you drill into one.
+  {
+    id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
+    defaultChildPath: '/test-plans', ownedPaths: ['/assist-sessions', '/recon', '/executions'],
+  },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon, placement: 'utility' },
+  // v5.294.0 — instance-wide pages for global administrators, apart from the
+  // project's own settings (they shared one tab strip with Profile before).
+  {
+    id: 'administration', label: 'Administration', path: '/administration', requiredRole: 'admin', Icon: UserCog,
+    placement: 'utility',
+  },
   // v5.253.0 — its own destination, not a Settings tab: guides, the tool
   // reference, default credentials and the API docs are reading material used
   // from every page; under Settings they read as configuration and were hard to
@@ -163,11 +182,8 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Sparkles, order: 1 },
   },
 
-  // Inventory hub
-  {
-    id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',
-    palette: { Icon: ScanLinesIcon, order: 2 },
-  },
+  // Inventory hub — v5.294.0 order: what is there (hosts, names), then how it
+  // got there (scans, ingestion results), then what is authorised (scope).
   {
     id: 'hosts', path: '/hosts', label: 'Hosts', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: ServerStackIcon, order: 3 },
@@ -177,17 +193,32 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: Globe, keywords: ['name', 'fqdn', 'dns', 'domain', 'hostname', 'vhost'], order: 3.5 },
   },
   {
-    id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'inventory',
+    id: 'scans', path: '/scans', label: 'Scans', requiredRole: 'viewer', hub: 'inventory',
+    palette: { Icon: ScanLinesIcon, order: 2 },
+  },
+  // v5.222.0 — beside Scans, not under Settings: import problems are found
+  // during collection, when the operator is on the inventory (design review
+  // item 5).  v5.294.0 — canonical path /ingestion-results (the page was
+  // never only errors); /parse-errors redirects, query string kept.
+  {
+    id: 'ingestion-results', path: '/ingestion-results', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'inventory',
+    palette: { Icon: AlertHexIcon, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion'], order: 2.5 },
+  },
+  {
+    // The page's own title is "Scope": a project has exactly one (v2.9.4).
+    id: 'scopes', path: '/scopes', label: 'Scope', requiredRole: 'analyst', hub: 'inventory',
+    palette: { Icon: ScopeIcon, keywords: ['scope', 'subnets', 'domains', 'cidr'], order: 6 },
+  },
+
+  // Findings hub (v5.294.0) — the triaged issues and the report built from them.
+  {
+    id: 'findings', path: '/findings', label: 'Findings', requiredRole: 'viewer', hub: 'findings',
     palette: { Icon: AlertHexIcon, keywords: ['finding', 'vuln', 'triage', 'result'], order: 4 },
   },
   {
     // v5.261.0 — the client report (Quarto): drafts, issued history, addenda.
-    id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'viewer', hub: 'inventory',
-    palette: { Icon: FileText, keywords: ['report', 'deliverable', 'addendum', 'client', 'docx', 'pdf'], order: 4.5 },
-  },
-  {
-    id: 'scopes', path: '/scopes', label: 'Scopes', requiredRole: 'analyst', hub: 'inventory',
-    palette: { Icon: ScopeIcon, order: 6 },
+    id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'viewer', hub: 'findings',
+    palette: { Icon: FileText, keywords: ['report', 'deliverable', 'addendum', 'client', 'docx'], order: 4.5 },
   },
   // Posture hub — the analytical roll-up + its drill-downs. Tab order here is
   // the strip order: Posture (landing) | Insights | Systemic.
@@ -216,17 +247,30 @@ export const NAV_PAGES: NavPage[] = [
   // reachable from the command palette and by drilling into a run on Agent
   // Runs, but off the hub strip so it stops presenting the old four-workflow
   // split. (Remove the `hub` field = palette-only, like the MCP reference.)
-  {
-    id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm', 'recon', 'execution'], order: 5 },
-  },
+  // v5.294.0 — Test Plans first (the surface a human owns, and the hub's
+  // default); every agent surface is in this hub, Tool Activity and Agent
+  // Feedback included (they sat under Collaboration).
   {
     id: 'test-plans', path: '/test-plans', label: 'Test Plans', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: ShieldCheck, order: 8 },
   },
   {
-    id: 'assist-sessions', path: '/assist-sessions', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
+    id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
+    palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm', 'recon', 'execution'], order: 5 },
+  },
+  {
+    // v5.294.0 — no longer a tab: the list is the "By session" view of Agent
+    // Runs (/agent-activity?view=sessions), where this path redirects. Kept in
+    // the palette, and /assist-sessions/:id still opens one session.
+    id: 'assist-sessions', path: '/assist-sessions', label: 'Agent Sessions', requiredRole: 'viewer',
     palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9 },
+  },
+  {
+    id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'workflows',
+  },
+  {
+    id: 'feedback', path: '/feedback', label: 'Agent Feedback', requiredRole: 'admin', hub: 'workflows',
+    palette: { Icon: MessageSquareHeart, order: 11 },
   },
   {
     id: 'recon-runs', path: '/recon/runs', label: 'Recon Runs', requiredRole: 'viewer',
@@ -237,44 +281,45 @@ export const NAV_PAGES: NavPage[] = [
     palette: { Icon: TerminalSquare, keywords: ['runs', 'execution'], order: 9 },
   },
 
-  // Collaboration hub
+  // Collaboration hub — one page (the tab strip hides for a single child).
   {
-    id: 'activity', path: '/activity', label: 'Activity', requiredRole: 'viewer', hub: 'collaboration',
-    palette: { label: 'Collaboration', Icon: ActivityPulseIcon, keywords: ['notes', 'team', 'comments'], order: 4 },
-  },
-  {
-    id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'collaboration',
-  },
-  {
-    id: 'feedback', path: '/feedback', label: 'Agent Feedback', requiredRole: 'admin', hub: 'collaboration',
-    palette: { Icon: MessageSquareHeart, order: 11 },
+    id: 'activity', path: '/activity', label: 'Collaboration', requiredRole: 'viewer', hub: 'collaboration',
+    palette: { Icon: ActivityPulseIcon, keywords: ['notes', 'team', 'comments', 'activity', 'mentions'], order: 4 },
   },
 
-  // Settings hub
+  // Settings hub — what configures THIS project and its scanners.
   {
     id: 'project-settings', path: '/project-settings', label: 'Project', requiredRole: 'analyst', hub: 'settings',
     palette: { label: 'Project Settings', Icon: SettingsIcon, keywords: ['members', 'webhooks', 'tags', 'dates'], order: 14 },
   },
   {
-    // v5.265.0 — every project (create, open settings); global admins only.
-    id: 'all-projects', path: '/settings/projects', label: 'All projects', requiredRole: 'admin', hub: 'settings',
-    palette: { label: 'All projects', Icon: Folder, keywords: ['create project', 'new project', 'projects'], order: 14.5 },
-  },
-  {
-    id: 'llm-settings', path: '/llm-settings', label: 'LLM Providers', requiredRole: 'viewer', hub: 'settings',
-    palette: { Icon: Sparkles, keywords: ['ai', 'openai', 'anthropic', 'gemini'], order: 12 },
-  },
-  {
+    // Scanner credentials: a row is for one project or for every project, so
+    // they sit with the project's settings (writes are admin-only server-side).
     id: 'integrations', path: '/integrations', label: 'Scanner Integrations', requiredRole: 'analyst', hub: 'settings',
     palette: { Icon: KeyRound, keywords: ['nessus', 'shodan', 'api'], order: 13 },
   },
+
+  // Administration hub (v5.294.0) — the instance, global administrators only.
   {
-    id: 'system-settings', path: '/system-settings', label: 'System', requiredRole: 'admin', hub: 'settings',
-    palette: { label: 'System Settings', Icon: SettingsIcon, keywords: ['users', 'admin'], order: 17 },
+    // v5.265.0 — every project (create, open settings); global admins only.
+    id: 'all-projects', path: '/settings/projects', label: 'All projects', requiredRole: 'admin', hub: 'administration',
+    palette: { label: 'All projects', Icon: Folder, keywords: ['create project', 'new project', 'projects', 'administration'], order: 14.5 },
   },
   {
-    id: 'profile', path: '/profile', label: 'Profile', requiredRole: 'viewer', hub: 'settings',
-    palette: { Icon: SettingsIcon, keywords: ['account', 'password'], order: 16 },
+    id: 'system-settings', path: '/system-settings', label: 'System', requiredRole: 'admin', hub: 'administration',
+    palette: { label: 'System Settings', Icon: SettingsIcon, keywords: ['users', 'admin', 'administration'], order: 17 },
+  },
+
+  // Personal pages — no hub: they are about the signed-in user, reached from
+  // the user menu and the palette (they were tabs among the project settings).
+  {
+    // Per-user: every provider row belongs to the caller (llm_providers.py).
+    id: 'llm-settings', path: '/llm-settings', label: 'LLM Providers', requiredRole: 'viewer',
+    palette: { Icon: Sparkles, keywords: ['ai', 'openai', 'anthropic', 'gemini'], order: 12 },
+  },
+  {
+    id: 'profile', path: '/profile', label: 'Profile', requiredRole: 'viewer',
+    palette: { Icon: SettingsIcon, keywords: ['account', 'password', '2fa', 'sessions'], order: 16 },
   },
   {
     // Palette-only: the sidebar entry is the `reference` HUB (see HUB_DEFS).
@@ -292,13 +337,6 @@ export const NAV_PAGES: NavPage[] = [
       keywords: ['mcp', 'model context protocol', 'agent', 'tools', 'connect', 'claude', 'codex', 'cursor', 'assist'],
       order: 15.5,
     },
-  },
-  // v5.222.0 — beside Scans, not under Settings: import problems are found
-  // during collection, when the operator is on the inventory (design review
-  // item 5).  Path unchanged so existing links keep working.
-  {
-    id: 'parse-errors', path: '/parse-errors', label: 'Ingestion Results', requiredRole: 'analyst', hub: 'inventory',
-    palette: { Icon: AlertHexIcon, keywords: ['errors', 'parse', 'import', 'upload', 'ingestion'], order: 2.5 },
   },
 ];
 
@@ -354,13 +392,17 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
 
 /**
  * Resolve the active hub from a route.  Matches the hub's landing path, any
- * of its child paths, or any path it owns (descendants included).  Defaults to
- * Operations when nothing matches — covers /portfolio,
- * /force-change-password, deep test-plan / host detail routes, etc.
+ * of its child paths, or any path it owns (descendants included).
+ *
+ * v5.294.0 — null when nothing matches.  Operations used to be the catch-all,
+ * so a 404, the personal pages (/profile, /llm-settings) and the cross-project
+ * pages all lit "Operations" as where you were.  Every project detail route is
+ * covered by a child prefix (/hosts/12, /findings/37, /test-plans/4/runs) or an
+ * owned path (/recon/…, /executions/…, /assist-sessions/…).
  */
-export function resolveActiveHub(pathname: string): Hub {
+export function resolveActiveHub(pathname: string): Hub | null {
   for (const hub of HUBS) {
-    if (hub.path !== '/operations' && pathname === hub.path) return hub;
+    if (pathname === hub.path) return hub;
     // Children and owned paths match the same way (Reference owns pages that
     // are cards on its landing, not tabs — two of them outside /reference/).
     for (const path of [...hub.children.map((c) => c.path), ...hub.ownedPaths]) {
@@ -369,8 +411,66 @@ export function resolveActiveHub(pathname: string): Hub {
       }
     }
   }
-  // Operations is the catch-all when no other hub matches.
-  return HUBS[0];
+  return null;
+}
+
+/**
+ * Pages that are not about the selected project (v5.294.0): the topbar shows
+ * no project there, and the browser title leaves it out.  Reference is
+ * reading material used from every project.
+ */
+const CROSS_PROJECT_PREFIXES = [
+  '/portfolio', '/oversight', '/administration', '/settings/projects', '/system-settings',
+  '/profile', '/llm-settings', '/reference', '/tool-reference', '/default-credentials',
+];
+
+export function isCrossProjectPath(pathname: string): boolean {
+  return CROSS_PROJECT_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + '/'));
+}
+
+/**
+ * Titles for routes that are not manifest pages — detail views and the like.
+ * First match wins, so specific patterns precede their prefixes.  A page may
+ * refine its own title (a host's IP, a finding's name) after this default.
+ */
+const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
+  { pattern: /^\/hosts\/[^/]+$/, title: 'Host' },
+  { pattern: /^\/findings\/[^/]+$/, title: 'Finding' },
+  { pattern: /^\/scans\/compare$/, title: 'Compare scans' },
+  { pattern: /^\/scans\/[^/]+$/, title: 'Scan' },
+  { pattern: /^\/reports\/[^/]+$/, title: 'Report' },
+  { pattern: /^\/test-plans\/compare$/, title: 'Compare plans' },
+  { pattern: /^\/test-plans\/[^/]+\/compare$/, title: 'Compare runs' },
+  { pattern: /^\/test-plans\/[^/]+(\/.*)?$/, title: 'Test plan' },
+  { pattern: /^\/recon\/runs\/[^/]+$/, title: 'Recon run' },
+  { pattern: /^\/recon\/compare$/, title: 'Compare recon runs' },
+  { pattern: /^\/executions\/[^/]+$/, title: 'Execution' },
+  { pattern: /^\/assist-sessions\/[^/]+$/, title: 'Agent session' },
+  { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },
+  { pattern: /^\/reference\/sbom$/, title: 'Software bill of materials' },
+  { pattern: /^\/tool-reference$/, title: 'Tool reference' },
+  { pattern: /^\/default-credentials$/, title: 'Default credentials' },
+];
+
+/** What a route is called in the browser tab (v5.294.0) — every page was
+ *  "BlueStick", so ten open tabs and the history could not be told apart. */
+export function pageLabelFor(pathname: string): string {
+  const page = NAV_PAGES.find((p) => p.path === pathname);
+  if (page) return page.palette?.label ?? page.label;
+  const hub = HUB_DEFS.find((h) => h.path === pathname);
+  if (hub) return hub.label;
+  const detail = DETAIL_TITLES.find((d) => d.pattern.test(pathname));
+  if (detail) return detail.title;
+  return 'Page not found';
+}
+
+/** "Hosts · Demo — Insights Eval · BlueStick"; the project is left out on a
+ *  cross-project page or when none is selected. */
+export function documentTitleFor(pathname: string, projectName?: string | null): string {
+  const parts = [pageLabelFor(pathname)];
+  if (projectName && !isCrossProjectPath(pathname)) parts.push(projectName);
+  parts.push('BlueStick');
+  return parts.join(' · ');
 }
 
 /** Command-palette "Pages" entries, in their curated display order. */

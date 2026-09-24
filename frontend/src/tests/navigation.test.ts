@@ -17,6 +17,9 @@ import {
   HUBS,
   NAV_COMMANDS,
   HUB_DEFS,
+  documentTitleFor,
+  isCrossProjectPath,
+  pageLabelFor,
   resolveActiveHub,
 } from '../config/navigation';
 
@@ -77,12 +80,90 @@ describe('navigation manifest', () => {
       // Two of its pages live outside /reference/ — a prefix rule would miss them.
       '/tool-reference', '/default-credentials',
     ]) {
-      expect(resolveActiveHub(path).id, path).toBe('reference');
+      expect(resolveActiveHub(path)?.id, path).toBe('reference');
     }
-    // A prefix is a path segment, not a string prefix.
-    expect(resolveActiveHub('/reference-data').id).toBe('operations');
-    expect(resolveActiveHub('/project-settings').id).toBe('settings');
-    expect(resolveActiveHub('/hosts/12').id).toBe('inventory');
+    // A prefix is a path segment, not a string prefix — and an unknown path
+    // belongs to no hub (v5.294.0: it used to fall back to Operations).
+    expect(resolveActiveHub('/reference-data')).toBeNull();
+    expect(resolveActiveHub('/project-settings')?.id).toBe('settings');
+    expect(resolveActiveHub('/hosts/12')?.id).toBe('inventory');
+  });
+
+  // v5.294.0 (UX review) — a 404 lit "Operations" as where you were, and so
+  // did the personal and cross-project pages.
+  it('a page no hub owns marks no hub; every project detail route still has one', () => {
+    for (const path of ['/no-such-page', '/profile', '/llm-settings', '/portfolio', '/oversight']) {
+      expect(resolveActiveHub(path), path).toBeNull();
+    }
+    const owned: Array<[string, string]> = [
+      ['/operations', 'operations'],
+      ['/hosts/12', 'inventory'],
+      ['/scans/compare', 'inventory'],
+      ['/scopes/3', 'inventory'],
+      ['/findings/37', 'findings'],
+      ['/reports/4', 'findings'],
+      ['/test-plans/4/runs', 'workflows'],
+      ['/test-plans/compare', 'workflows'],
+      ['/recon/runs/9', 'workflows'],
+      ['/recon/compare', 'workflows'],
+      ['/executions/2', 'workflows'],
+      ['/assist-sessions/28', 'workflows'],
+      ['/activity', 'collaboration'],
+      ['/settings/projects', 'administration'],
+      ['/system-settings', 'administration'],
+    ];
+    for (const [path, hub] of owned) {
+      expect(resolveActiveHub(path)?.id, path).toBe(hub);
+    }
+  });
+
+  it('the IA the UX review settled on (v5.294.0)', () => {
+    const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
+    expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope']);
+    expect(tabs('findings')).toEqual(['Findings', 'Reports']);
+    expect(tabs('workflows')).toEqual(['Test Plans', 'Agent Runs', 'Tool Activity', 'Agent Feedback']);
+    expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/test-plans');
+    expect(tabs('collaboration')).toEqual(['Collaboration']);
+    expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
+    expect(tabs('administration')).toEqual(['All projects', 'System']);
+    expect(HUBS.find((h) => h.id === 'administration')!.requiredRole).toBe('admin');
+    // Findings sits right after Inventory in the sidebar.
+    const order = HUBS.map((h) => h.id);
+    expect(order.indexOf('findings')).toBe(order.indexOf('inventory') + 1);
+    // Agent Sessions, Profile and LLM Providers are palette-only now.
+    const palettePaths = NAV_COMMANDS.map((c) => c.path);
+    for (const path of ['/assist-sessions', '/profile', '/llm-settings']) {
+      expect(NAV_PAGES.find((p) => p.path === path)?.hub, path).toBeUndefined();
+      expect(palettePaths, path).toContain(path);
+    }
+  });
+
+  it('App.tsx sends the old paths to their new homes', () => {
+    const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
+    expect(src).toMatch(/path="\/parse-errors" element={<RedirectKeepingQuery to="\/ingestion-results" \/>}/);
+    expect(src).toMatch(/path="\/assist-sessions"[\s\S]{0,200}?<Navigate to="\/agent-activity\?view=sessions" replace \/>/);
+    // The per-session detail keeps its page.
+    expect(src).toMatch(/path="\/assist-sessions\/:sessionId"/);
+  });
+
+  // B4 — every page was "BlueStick" in the browser tab.
+  it('each route names itself in the browser title', () => {
+    expect(documentTitleFor('/hosts', 'Demo — Insights Eval')).toBe('Hosts · Demo — Insights Eval · BlueStick');
+    expect(documentTitleFor('/findings/37', 'Demo')).toBe('Finding · Demo · BlueStick');
+    expect(documentTitleFor('/test-plans/4/runs', 'Demo')).toBe('Test plan · Demo · BlueStick');
+    expect(documentTitleFor('/project-settings', 'Demo')).toBe('Project Settings · Demo · BlueStick');
+    expect(documentTitleFor('/activity', 'Demo')).toBe('Collaboration · Demo · BlueStick');
+    // Cross-project pages leave the project out.
+    expect(documentTitleFor('/portfolio', 'Demo')).toBe('Portfolio · BlueStick');
+    expect(documentTitleFor('/reference/user-guide/triage', 'Demo')).toBe('User guide · BlueStick');
+    expect(documentTitleFor('/nope', 'Demo')).toBe('Page not found · Demo · BlueStick');
+    expect(documentTitleFor('/hosts', null)).toBe('Hosts · BlueStick');
+    // No manifest page falls through to "Page not found".
+    for (const page of NAV_PAGES) {
+      expect(pageLabelFor(page.path), page.path).not.toBe('Page not found');
+    }
+    expect(isCrossProjectPath('/portfolio')).toBe(true);
+    expect(isCrossProjectPath('/hosts')).toBe(false);
   });
 
   it('utility hubs come last, so the sidebar draws one rule above them', () => {

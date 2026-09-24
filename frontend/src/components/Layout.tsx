@@ -4,7 +4,6 @@ import {
   FolderOpen,
   Gauge,
   MenuIcon,
-  Repeat,
   Sparkles,
 } from 'lucide-react';
 import { useAppTheme } from '../contexts/ThemeContext';
@@ -41,7 +40,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import logger from '../utils/logger';
-import { HUBS, resolveActiveHub } from '../config/navigation';
+import { HUBS, documentTitleFor, isCrossProjectPath, resolveActiveHub } from '../config/navigation';
 
 interface LayoutProps {
   children: ReactNode;
@@ -53,8 +52,6 @@ interface LayoutProps {
 // mobile SideSheet override, and the main content `sm:ml-*`.  Keep
 // them in lockstep so a future drawer-width change is one edit.
 const DRAWER_WIDTH = 240;
-/** Pages linked above the project selector (All Projects, Oversight). */
-const CROSS_PROJECT_PATHS = ['/portfolio', '/oversight'];
 const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 
 // ---------------------------------------------------------------------------
@@ -68,8 +65,8 @@ const DRAWER_WIDTH_PX = `${DRAWER_WIDTH}px`;
 // project-scoped, and mixing a cross-project surface into that list
 // confuses the mental model.  It IS surfaced as a standalone "All
 // Projects" link rendered ABOVE the ProjectSelector (so it reads as the
-// parent context: All Projects → pick a project → its hubs), and from
-// the "Switch project" affordance in the topbar chip.
+// parent context: Portfolio → pick a project → its hubs).  v5.294.0 — the
+// sidebar selector is the one project switcher (the topbar's ⇄ is gone).
 // ---------------------------------------------------------------------------
 
 // IA hubs + their child tab strips are derived from the navigation
@@ -381,18 +378,26 @@ export default function Layout({ children }: LayoutProps) {
   // again, it should land as an explicitly labeled button, not as a
   // hidden override of the visible link.
 
+  // null on a page no hub owns (a 404, Portfolio, Oversight, Profile) — then
+  // no sidebar entry claims "you are here" (v5.294.0).
   const activeHub = React.useMemo(() => resolveActiveHub(location.pathname), [location.pathname]);
-  const onCrossProjectPage = CROSS_PROJECT_PATHS.some(
-    (p) => location.pathname === p || location.pathname.startsWith(p + '/'),
-  );
+  // Not about the selected project: the topbar names no project (v5.294.0).
+  const onCrossProjectPage = isCrossProjectPath(location.pathname);
   const currentTheme = availableThemes.find((option) => option.value === themeName);
+
+  // v5.294.0 — every page names itself in the browser tab (it was always
+  // "BlueStick"): "Hosts · Demo — Insights Eval · BlueStick".
+  const projectName = currentProject?.name ?? null;
+  React.useEffect(() => {
+    document.title = documentTitleFor(location.pathname, projectName);
+  }, [location.pathname, projectName]);
 
   // Visible children for the active hub — filtered by role so users
   // don't see secondary tabs they can't navigate to. Memoised so
   // background re-renders (notification ticks, theme changes) don't
   // re-filter on every pass.
   const visibleHubChildren = React.useMemo(
-    () => activeHub.children.filter((child) => hasPermission(child.requiredRole)),
+    () => (activeHub?.children ?? []).filter((child) => hasPermission(child.requiredRole)),
     [activeHub, hasPermission],
   );
 
@@ -410,14 +415,6 @@ export default function Layout({ children }: LayoutProps) {
     }
     return best;
   }, [visibleHubChildren, location.pathname]);
-
-  // Page title in the topbar: prefer the most-specific match.  If the
-  // user is on a child path, show that child's label; otherwise show
-  // the hub label.
-  const currentSection = React.useMemo(() => {
-    const child = activeHub.children.find((c) => location.pathname === c.path);
-    return child?.label ?? activeHub.label;
-  }, [activeHub, location.pathname]);
 
   const drawer = (
     <div className="flex h-full flex-col">
@@ -452,7 +449,9 @@ export default function Layout({ children }: LayoutProps) {
       {hasPermission('viewer') && (
         <div className="px-xs pt-xs">
           {[
-            { to: '/portfolio', label: 'All Projects', Icon: FolderOpen, show: true },
+            // "Portfolio" everywhere (v5.294.0) — the page, the palette and
+            // the URL already said so; only this link said "All Projects".
+            { to: '/portfolio', label: 'Portfolio', Icon: FolderOpen, show: true },
             // Oversight — global administrators' programme dashboard
             // (5.258.0); the route and the API are admin-gated as well.
             { to: '/oversight', label: 'Oversight', Icon: Gauge, show: hasPermission('admin') },
@@ -496,10 +495,10 @@ export default function Layout({ children }: LayoutProps) {
       >
         {HUBS.map((hub, index) => {
           if (!hasPermission(hub.requiredRole)) return null;
-          // The cross-project pages above the selector light their own link;
-          // Operations is only the catch-all hub for them, so lighting it too
-          // showed two "you are here" markers.
-          const selected = hub.id === activeHub.id && !onCrossProjectPage;
+          // A hub whose pages this role can open none of would only redirect
+          // to Operations (e.g. Settings for a viewer) — leave it out.
+          if (hub.children.length > 0 && !hub.children.some((c) => hasPermission(c.requiredRole))) return null;
+          const selected = hub.id === activeHub?.id;
           const { Icon } = hub;
           // Utility hubs (Settings, Reference) sit at the foot, under a rule:
           // they serve the project workflow above, they are not a step in it.
@@ -548,7 +547,9 @@ export default function Layout({ children }: LayoutProps) {
    * nothing there.  Tab-style buttons; the active sub-route is
    * highlighted via NavLink's `isActive` callback.
    */
-  const secondaryNav = visibleHubChildren.length > 0 ? (
+  // One tab is no strip (v5.294.0): Collaboration has a single page, and a
+  // strip naming only the page you are on is chrome with nothing to choose.
+  const secondaryNav = visibleHubChildren.length > 1 ? (
     <div
       ref={secondaryNavRef}
       // `fixed` is already a positioning context for absolute
@@ -574,7 +575,7 @@ export default function Layout({ children }: LayoutProps) {
         top: 'var(--topbar-h, 76px)',
       } as React.CSSProperties}
       role="navigation"
-      aria-label={`${activeHub.label} sections`}
+      aria-label={`${activeHub?.label ?? 'Page'} sections`}
     >
       {visibleHubChildren.map((child) => {
         // Active = longest-prefix match only (see activeChildPath); plain Link
@@ -652,36 +653,27 @@ export default function Layout({ children }: LayoutProps) {
             <MenuIcon className="size-4" aria-hidden />
           </Button>
 
-          <div className="min-w-0 flex-1">
-            <div className="flex flex-wrap items-center gap-xs">
-              <span className="truncate text-caption uppercase tracking-wider text-muted-foreground">
-                {currentProject ? 'Active Project' : 'BlueStick'}
-              </span>
-              {currentProject && (
-                <>
-                  <Badge variant="outline">
+          {/* v5.294.0 — the project's name, and its status only when that is
+              news (not "active").  The "ACTIVE PROJECT (ACTIVE)" caption and
+              a second switcher (⇄, beside the sidebar's selector) are gone.
+              A page that is not about one project names none. */}
+          <div className="flex min-w-0 flex-1 items-center gap-xs">
+            {currentProject && !onCrossProjectPage && (
+              <>
+                <span
+                  className="min-w-0 truncate text-section-title font-semibold"
+                  title={currentProject.name}
+                  data-testid="topbar-project-name"
+                >
+                  {currentProject.name}
+                </span>
+                {currentProject.status && currentProject.status !== 'active' && (
+                  <Badge variant="outline" className="shrink-0">
                     {formatStatusLabel(currentProject.status)}
                   </Badge>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => navigate('/portfolio')}
-                        aria-label="Switch project"
-                        className="size-6"
-                      >
-                        <Repeat className="size-3.5" aria-hidden />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Switch project</TooltipContent>
-                  </Tooltip>
-                </>
-              )}
-            </div>
-            <div className="truncate text-section-title font-semibold">
-              {currentProject?.name ?? currentSection}
-            </div>
+                )}
+              </>
+            )}
           </div>
 
           {/* Command palette trigger — exposes the keyboard shortcut
