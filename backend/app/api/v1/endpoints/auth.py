@@ -39,6 +39,9 @@ _2FA_CHALLENGE_TTL_MINUTES = 5
 
 router = APIRouter()
 security = HTTPBearer()
+# Same scheme without the automatic 401 — used where the token is only read
+# for context after get_current_user has authenticated the request.
+_optional_bearer = HTTPBearer(auto_error=False)
 
 # v2.91.3 (code review #6) — debounce window for UserSession.last_activity
 # updates on the get_current_user dep.  Mirrors the agent-side debounce
@@ -648,12 +651,34 @@ def change_password(
     return {"message": "Password successfully changed. All sessions have been revoked — please log in again."}
 
 
+def _request_token_jti(credentials: Optional[HTTPAuthorizationCredentials]) -> Optional[str]:
+    """The ``jti`` of the bearer token on this request, or None.
+
+    ``get_current_user`` has already validated the token; this only reads
+    which session row it belongs to, so a failure here means "unknown", never
+    a 401.
+    """
+    if credentials is None:
+        return None
+    try:
+        return verify_token(credentials.credentials).get("jti")
+    except Exception:
+        return None
+
+
 @router.get("/sessions")
 def get_active_sessions(
     current_user: User = Depends(get_current_user),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(_optional_bearer),
     db: Session = Depends(get_db)
 ):
-    """Get user's active sessions"""
+    """Get user's active sessions.
+
+    v2.402.0 — each row carries ``current``: true for the session the calling
+    token belongs to (matched on the token's ``jti``), so the Profile page can
+    mark "This session" and warn that revoking it signs the caller out.
+    """
+    current_jti = _request_token_jti(credentials)
     sessions = db.query(UserSession).filter(
         UserSession.user_id == current_user.id,
         UserSession.revoked_at.is_(None),
@@ -667,7 +692,8 @@ def get_active_sessions(
             "user_agent": session.user_agent,
             "created_at": session.created_at,
             "last_activity": session.last_activity,
-            "expires_at": session.expires_at
+            "expires_at": session.expires_at,
+            "current": bool(current_jti) and session.token_jti == current_jti,
         }
         for session in sessions
     ]

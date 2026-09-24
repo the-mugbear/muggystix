@@ -84,6 +84,30 @@ class TestAuthEndpoints:
         assert "username" in data
         assert "role" in data
 
+    def test_sessions_mark_the_callers_own_session(self, client, db_session, test_user):
+        """v2.402.0 — the session list flags the row the calling token
+        belongs to (by jti), so the Profile page can say "This session"
+        and warn before revoking it."""
+        from app.core.security import create_access_token, verify_token, create_session
+
+        mine = create_access_token({"sub": str(test_user.id)})
+        other = create_access_token({"sub": str(test_user.id)})
+        mine_row = create_session(db=db_session, user=test_user, token_jti=verify_token(mine)["jti"])
+        other_row = create_session(db=db_session, user=test_user, token_jti=verify_token(other)["jti"])
+
+        response = client.get(
+            "/api/v1/auth/sessions", headers={"Authorization": f"Bearer {mine}"}
+        )
+        assert response.status_code == 200
+        by_id = {row["id"]: row for row in response.json()}
+        assert by_id[mine_row.id]["current"] is True
+        assert by_id[other_row.id]["current"] is False
+
+        # No readable token: nothing is marked, the list still loads.
+        response = client.get("/api/v1/auth/sessions")
+        assert response.status_code == 200
+        assert all(row["current"] is False for row in response.json())
+
     def test_change_password_validates_strength(self, client):
         """Weak new password should be rejected (400)."""
         response = client.post(

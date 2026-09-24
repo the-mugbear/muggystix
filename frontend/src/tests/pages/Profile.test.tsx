@@ -6,6 +6,7 @@ const apiMock = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), d
 vi.mock('../../services/api', () => ({ default: apiMock }));
 
 const updateUser = vi.fn();
+const logout = vi.fn();
 const user = {
   id: 3,
   username: 'eval-ana',
@@ -15,7 +16,7 @@ const user = {
   last_login: '2026-09-22T20:49:37Z',
 };
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user, updateUser }),
+  useAuth: () => ({ user, updateUser, logout }),
 }));
 const selectProject = vi.fn();
 vi.mock('../../contexts/ProjectContext', () => ({
@@ -74,6 +75,38 @@ describe('Profile', () => {
     expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Ana Ortiz');
     expect(screen.getByText('AO')).toBeInTheDocument();
     expect(screen.getByText('MEMBER')).toBeInTheDocument();
+  });
+
+  it('shows the username as text, not as an editable-looking field', () => {
+    renderPage();
+    expect(screen.getByTestId('profile-username')).toHaveTextContent('eval-ana');
+    // The only text input on the form is Full Name.
+    const inputs = screen.getAllByRole('textbox');
+    expect(inputs).toHaveLength(1);
+    expect(inputs[0]).toHaveAccessibleName('Full Name');
+  });
+
+  it('marks the current session and signs out (not a bare revoke) when it is revoked', async () => {
+    const sessions = [
+      { id: 11, ip_address: '10.0.0.5', user_agent: 'Firefox', created_at: '2026-09-22T10:00:00Z',
+        last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: false },
+      { id: 12, ip_address: '10.0.0.9', user_agent: 'Chrome', created_at: '2026-09-22T10:00:00Z',
+        last_activity: '2026-09-22T11:00:00Z', expires_at: '2026-09-23T10:00:00Z', current: true },
+    ];
+    apiMock.get.mockImplementation((url: string) =>
+      Promise.resolve({ data: url === '/auth/sessions' ? sessions : [] }),
+    );
+    renderPage();
+
+    expect(await screen.findByText('This session')).toBeInTheDocument();
+    expect(screen.getAllByText('This session')).toHaveLength(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Revoke this session and sign out' }));
+    expect(await screen.findByText(/You will be signed out/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+
+    await waitFor(() => expect(logout).toHaveBeenCalledTimes(1));
+    expect(apiMock.delete).not.toHaveBeenCalled();
   });
 
   it('switches project in place from a project association', async () => {

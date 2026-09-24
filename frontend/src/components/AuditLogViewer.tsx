@@ -88,6 +88,11 @@ const AuditLogViewer: React.FC = () => {
 
   const recent = typeof stats?.recent_logs_24h === 'number' ? stats.recent_logs_24h : null;
 
+  // v5.288.0 — login and account events carry no resource, so a page of them
+  // was a column of dashes. Show Resource only when a row on THIS page has one;
+  // its width goes to Detail otherwise.
+  const showResource = rows.some((r) => !!r.resource_type || !!r.resource_id);
+
   return (
     <PostureSection
       title={
@@ -166,16 +171,16 @@ const AuditLogViewer: React.FC = () => {
                 <colgroup>
                   <col style={{ width: '15%' }} />
                   <col style={{ width: '18%' }} />
-                  <col style={{ width: '13%' }} />
+                  {showResource && <col style={{ width: '13%' }} />}
                   <col style={{ width: '14%' }} />
                   <col style={{ width: '11%' }} />
-                  <col style={{ width: '29%' }} />
+                  <col style={{ width: showResource ? '29%' : '42%' }} />
                 </colgroup>
                 <thead>
                   <tr className="border-b border-border text-left text-caption text-muted-foreground">
                     <th className="py-xs pr-xs font-medium">When</th>
                     <th className="py-xs pr-xs font-medium">Action</th>
-                    <th className="py-xs pr-xs font-medium">Resource</th>
+                    {showResource && <th className="py-xs pr-xs font-medium">Resource</th>}
                     <th className="py-xs pr-xs font-medium">User</th>
                     <th className="py-xs pr-xs font-medium">Source IP</th>
                     <th className="py-xs pr-xs font-medium">Detail</th>
@@ -186,7 +191,7 @@ const AuditLogViewer: React.FC = () => {
                     // `details` is a JSON column — object for structured events
                     // (login: {"method":"totp"}), string/null otherwise — shown
                     // as readable text ("method: TOTP"), never raw JSON.
-                    const detailText = formatAuditDetails(r.details);
+                    const detailText = formatAuditDetails(r.details, { actorUsername: r.user_username });
                     const actor = personName(r.user_full_name, r.user_username);
                     const actorTitle = r.user_username ? `@${r.user_username}` : undefined;
                     return (
@@ -204,14 +209,16 @@ const AuditLogViewer: React.FC = () => {
                           </span>
                         </span>
                       </td>
-                      <td className="py-xs pr-xs">
-                        <span className="block truncate" title={r.resource_type ?? undefined}>
-                          {safeFallback(r.resource_type)}
-                          {r.resource_id ? (
-                            <span className="text-muted-foreground"> #{r.resource_id}</span>
-                          ) : null}
-                        </span>
-                      </td>
+                      {showResource && (
+                        <td className="py-xs pr-xs">
+                          <span className="block truncate" title={r.resource_type ?? undefined}>
+                            {safeFallback(r.resource_type)}
+                            {r.resource_id ? (
+                              <span className="text-muted-foreground"> #{r.resource_id}</span>
+                            ) : null}
+                          </span>
+                        </td>
+                      )}
                       <td className="py-xs pr-xs">
                         <span className="block truncate" title={actorTitle}>
                           {actor === '—' && r.user_id != null

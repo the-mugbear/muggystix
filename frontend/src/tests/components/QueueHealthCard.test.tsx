@@ -51,7 +51,7 @@ describe('QueueHealthCard', () => {
     );
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
     await waitFor(() =>
-      expect(screen.getByText(/3 Scan ingestion jobs stuck in flight/)).toBeInTheDocument(),
+      expect(screen.getByText(/3 scan ingestion jobs stuck in flight/)).toBeInTheDocument(),
     );
     expect(screen.getByText(/docker compose logs worker/)).toBeInTheDocument();
   });
@@ -110,7 +110,8 @@ describe('QueueHealthCard', () => {
     );
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
 
-    await screen.findByText(/78 failed Scan ingestion jobs/);
+    // v5.288.0 — lower case mid-sentence (was "78 failed Scan ingestion jobs").
+    await screen.findByText('78 failed scan ingestion jobs');
     const current = screen.getByRole('link', { name: /Review 18 in Default/ });
     expect(current).toHaveAttribute('href', '/parse-errors?status=failed');
     fireEvent.click(screen.getByRole('button', { name: /Review 60 in Eval — Scenarios/ }));
@@ -123,7 +124,7 @@ describe('QueueHealthCard', () => {
     mocked.getQueueMetrics.mockResolvedValue(metrics(snapshot(), snapshot({ failed: 2 })));
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
 
-    await screen.findByText(/2 failed Report jobs/);
+    await screen.findByText('2 failed report jobs');
     expect(screen.queryByRole('link')).toBeNull();
   });
 });

@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Shield,
   ShieldCheck,
   ShieldOff,
   Activity,
@@ -374,9 +373,7 @@ const SystemSettings: React.FC = () => {
     <div className="space-y-lg p-md md:p-lg">
       <header className="flex flex-wrap items-start justify-between gap-sm">
         <div className="min-w-0">
-          <h1 className="flex items-center gap-xs text-page-title">
-            <Shield className="size-6" aria-hidden /> System Settings
-          </h1>
+          <h1 className="text-page-title">System Settings</h1>
           <p className="mt-xxs text-metadata text-muted-foreground">
             Deployment-wide administration: worker health, accounts, and the audit trail.
           </p>
@@ -564,10 +561,8 @@ const SystemSettings: React.FC = () => {
       {/* Audit log — deployment-wide, admin-only (v2.243.0). */}
       <AuditLogViewer />
 
-      <PostureSection
-        title="Role reference"
-        description="Access is decided on two levels: a global account role and a per-project role."
-      >
+      {/* v5.288.0 — no section description: it restated the paragraph below. */}
+      <PostureSection title="Role reference">
           <p className="mb-sm max-w-3xl text-metadata text-muted-foreground">
             The <strong>account role</strong> below is global and binary — it only decides
             system-administration access. What a user can do <em>with project data</em> is set

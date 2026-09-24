@@ -129,10 +129,18 @@ const ProjectsTable: React.FC<{
   onMembers: (p: ProjectCard) => void;
 }> = ({ rows, onOpen, onMembers }) => (
   <div className="overflow-x-auto border-t border-border">
-    <Table aria-label="Your projects, worst first" className="min-w-[960px]" style={{ tableLayout: 'fixed' }}>
+    <Table aria-label="Your projects, worst first" className="min-w-[1040px]" style={{ tableLayout: 'fixed' }}>
+      {/* v5.288.0 — the short-content columns are sized to their content
+          (Review's "1,234 in review · 12,345 not started", the Waiting header
+          on one line, a host count) and "What testing found" takes the rest.
+          As percentages Hosts was wider than it needed and Review / Waiting
+          wrapped at ~1500px. */}
       <colgroup>
-        <col style={{ width: '22%' }} /><col style={{ width: '33%' }} /><col style={{ width: '17%' }} />
-        <col style={{ width: '12%' }} /><col style={{ width: '16%' }} />
+        <col style={{ width: '22%' }} data-col="project" />
+        <col data-col="found" />
+        <col style={{ width: '16rem' }} data-col="review" />
+        <col style={{ width: '6rem' }} data-col="hosts" />
+        <col style={{ width: '15rem' }} data-col="waiting" />
       </colgroup>
       <TableHeader>
         <TableRow>
@@ -150,7 +158,7 @@ const ProjectsTable: React.FC<{
             </span>
           </TableHead>
           <TableHead>Hosts</TableHead>
-          <TableHead>Waiting · last import</TableHead>
+          <TableHead className="whitespace-nowrap">Waiting · last import</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -190,7 +198,7 @@ const ProjectsTable: React.FC<{
                 ) : (
                   <>
                     <p className="text-metadata text-foreground">{n(p.hosts_reviewed)} of {n(p.host_count)} reviewed</p>
-                    <p className="text-muted-foreground">{n(p.hosts_in_review)} in review · {n(notStarted(p))} not started</p>
+                    <p className="whitespace-nowrap text-muted-foreground">{n(p.hosts_in_review)} in review · {n(notStarted(p))} not started</p>
                   </>
                 )}
               </TableCell>

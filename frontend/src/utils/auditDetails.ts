@@ -67,12 +67,24 @@ function entry(key: string, value: unknown): string | null {
   return `${label(key)}: ${text}`;
 }
 
+export interface AuditDetailOptions {
+  /** The row's actor (`user_username`). v5.288.0 — a `username` detail equal
+   *  to it repeats the User column ("username: admin" beside "admin") and is
+   *  omitted; one that differs, or has no actor to repeat (a failed login for
+   *  an unknown name), is kept. */
+  actorUsername?: string | null;
+}
+
 /** Readable text for `details`, or null when there is nothing to show. */
-export function formatAuditDetails(details: unknown): string | null {
+export function formatAuditDetails(
+  details: unknown,
+  { actorUsername }: AuditDetailOptions = {},
+): string | null {
   if (details === null || details === undefined) return null;
   if (typeof details === 'string') return details.trim() || null;
   if (!isObject(details)) return scalar(details);
   const parts = Object.entries(details)
+    .filter(([k, v]) => !(k === 'username' && actorUsername && v === actorUsername))
     .map(([k, v]) => entry(k, v))
     .filter((p): p is string => !!p);
   return parts.length ? parts.join(' · ') : null;
