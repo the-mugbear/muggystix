@@ -17,6 +17,10 @@ Post-process the Word report — the two things Word styles cannot do:
    styles file (branding/reference.docx) has no such names, so its pictures
    are left alone.
 
+3. Table alignment (v2.410.1).  The `Table` style in reference.docx centres
+   tables, but viewers ignored a style-level table alignment, so each table
+   without its own gets the alignment its style declares.
+
 Everything else the original prototype's script did is now either a style in
 reference.docx or no longer needed (checked by rendering the template with
 screenshots, 2026-09-23):
@@ -301,6 +305,52 @@ def apply_template_images(tmpdir, assets):
     return new_parts, removed, replaced
 
 
+# CT_TblPr's child order (ECMA-376): jc goes after these, before the rest.
+_BEFORE_JC = ("tblStyle", "tblpPr", "tblOverlap", "bidiVisual", "tblStyleRowBandSize",
+              "tblStyleColBandSize", "tblW")
+
+
+def align_tables_like_their_style(body, styles_path):
+    """Give every table the alignment its table style declares (v2.410.1).
+
+    reference.docx centres tables in the `Table` style, so a narrow table sits
+    under its centred "Table N" caption.  LibreOffice ignores a style-level
+    table alignment, and so did the viewer of the first report rendered with
+    it — the tables stayed at the margin — so it is copied onto each table
+    that has none of its own.
+    The style stays the source of truth: an operator's Word styles file whose
+    table style is not centred leaves its tables where they are."""
+    try:
+        styles = ET.parse(styles_path).getroot()
+    except (OSError, ET.ParseError):
+        return 0
+    style_jc = {}
+    for style in styles.findall(f"{NS}style"):
+        if style.get(f"{NS}type") != "table":
+            continue
+        jc = style.find(f"{NS}tblPr/{NS}jc")
+        if jc is not None and jc.get(f"{NS}val"):
+            style_jc[style.get(f"{NS}styleId")] = jc.get(f"{NS}val")
+    count = 0
+    for tbl in body.iter(f"{NS}tbl"):
+        pr = tbl.find(f"{NS}tblPr")
+        if pr is None or pr.find(f"{NS}jc") is not None:
+            continue
+        style = pr.find(f"{NS}tblStyle")
+        val = style_jc.get(style.get(f"{NS}val")) if style is not None else None
+        if not val:
+            continue
+        at = 0
+        for i, child in enumerate(list(pr)):
+            if child.tag.split("}")[-1] in _BEFORE_JC:
+                at = i + 1
+        jc = ET.Element(f"{NS}jc")
+        jc.set(f"{NS}val", val)
+        pr.insert(at, jc)
+        count += 1
+    return count
+
+
 def fix_document(docx_path, verbose=False, assets_dir="."):
     tmpdir = tempfile.mkdtemp()
     try:
@@ -311,6 +361,8 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
         doc_xml = os.path.join(tmpdir, "word", "document.xml")
         tree = ET.parse(doc_xml)
         body = tree.getroot().find(f"{NS}body")
+        # Before the image frames: those carry their own centred alignment.
+        aligned = align_tables_like_their_style(body, os.path.join(tmpdir, "word", "styles.xml"))
         count = add_image_borders(body)
         tree.write(doc_xml, xml_declaration=True, encoding="UTF-8")
 
@@ -322,7 +374,8 @@ def fix_document(docx_path, verbose=False, assets_dir="."):
                 zf.write(os.path.join(tmpdir, name), name)
 
         if verbose:
-            print(f"  Added a border to {count} image(s), placed {replaced} template image(s) → {docx_path}")
+            print(f"  Aligned {aligned} table(s) as their style says, added a border to {count} image(s), "
+                  f"placed {replaced} template image(s) → {docx_path}")
         return count
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)

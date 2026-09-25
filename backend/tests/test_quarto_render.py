@@ -469,6 +469,59 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     assert project.split("\n:::\n", 1)[1].lstrip().startswith("| | |")
 
 
+def _post_processor():
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("fix_docx_report", TEMPLATE / "scripts" / "fix-docx-report.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@needs_template
+def test_tables_take_the_alignment_their_style_declares(tmp_path):
+    """v2.410.1 — the Table style centred tables in reference.docx, but a
+    report opened with every table still at the margin: a style-level table
+    alignment was ignored.  The post-processor copies it onto each table —
+    only where the table has none, and only when its style declares one."""
+    import xml.etree.ElementTree as ET
+    fix = _post_processor()
+    w = fix.WML
+    (tmp_path / "styles.xml").write_text(
+        f'<w:styles xmlns:w="{w}">'
+        '<w:style w:type="table" w:styleId="Table"><w:tblPr><w:tblStyleRowBandSize w:val="1"/>'
+        '<w:jc w:val="center"/></w:tblPr><w:tblStylePr w:type="firstRow"><w:tblPr><w:jc w:val="left"/></w:tblPr></w:tblStylePr></w:style>'
+        '<w:style w:type="table" w:styleId="Plain"><w:tblPr/></w:style></w:styles>'
+    )
+    body = ET.fromstring(
+        f'<w:body xmlns:w="{w}">'
+        '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:tblW w:type="auto" w:w="0"/><w:tblLook w:val="0000"/></w:tblPr></w:tbl>'
+        '<w:tbl><w:tblPr><w:tblStyle w:val="Table"/><w:jc w:val="right"/></w:tblPr></w:tbl>'
+        '<w:tbl><w:tblPr><w:tblStyle w:val="Plain"/></w:tblPr></w:tbl></w:body>'
+    )
+    assert fix.align_tables_like_their_style(body, tmp_path / "styles.xml") == 1
+    first, own, plain = body.findall(f"{{{w}}}tbl")
+    children = [c.tag.split("}")[1] for c in first.find(f"{{{w}}}tblPr")]
+    assert children == ["tblStyle", "tblW", "jc", "tblLook"]        # schema order
+    assert first.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "center"
+    assert own.find(f"{{{w}}}tblPr/{{{w}}}jc").get(f"{{{w}}}val") == "right"
+    assert plain.find(f"{{{w}}}tblPr/{{{w}}}jc") is None
+
+
+@needs_template
+@needs_quarto
+def test_every_table_in_the_word_report_is_centred(tmp_path):
+    import re
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    files = quarto_render.render(TEMPLATE, "report.qmd", data, ["docx"], tmp_path,
+                                 postprocess=manifest.get("postprocess"), timeout=240)
+    with zipfile.ZipFile(files["docx"]) as z:
+        doc = z.read("word/document.xml").decode("utf-8")
+    props = re.findall(r"<w:tblPr>(.*?)</w:tblPr>", doc, re.S)
+    assert len(props) >= 7
+    assert all('<w:jc w:val="center"' in p for p in props), props[0]
+
+
 def test_image_numbers_its_caption_and_refuses_anything_but_a_count():
     item = {"file": "evidence/1.png", "caption": "a *b*"}
     assert r"![Figure 4\: a \*b\*](evidence/1.png)" in image(item, number=4)
