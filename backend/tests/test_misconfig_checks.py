@@ -220,6 +220,41 @@ def test_nxc_line_layout_is_recognised_without_tokens():
     assert not cd.looks_like_netexec(b"Open 10.0.0.1:5900\n", "capture.txt")
 
 
+def test_web_header_wording_from_the_tools():
+    """Nikto's messages (nikto_headers.plugin, and the 2.6.1 capture) and
+    Nuclei's matcher names map onto one check each (v2.414.0)."""
+    from app.services.misconfig_checks import nikto_header_check, nuclei_header_check
+    assert nikto_header_check("/: Suggested security header missing: strict-transport-security.") == "http_missing_hsts"
+    assert nikto_header_check("/: The X-Content-Type-Options header is not set. This could allow") == "http_missing_xcto"
+    assert nikto_header_check("/: Retrieved x-powered-by header: PHP/7.4.3.") == "http_version_disclosure"
+    assert nikto_header_check("/: Suggested security header missing: referrer-policy.") is None
+    assert nikto_header_check("/: Retrieved access-control-allow-origin header: *.") is None
+    assert nuclei_header_check("http-missing-security-headers", "x-frame-options") == "http_missing_frame_protection"
+    assert nuclei_header_check("http-missing-security-headers", "referrer-policy") is None
+    assert nuclei_header_check("tech-detect", "strict-transport-security") is None
+
+
+def test_testssl_rated_checks_share_the_catalog(db_session, test_project, tmp_path):
+    import json
+    from app.parsers.testssl_parser import TestsslParser
+    where = "web.example.com/10.8.4.1"
+    records = [
+        {"id": "SSLv3", "ip": where, "port": "443", "severity": "HIGH", "finding": "offered (NOT ok)"},
+        {"id": "TLS1", "ip": where, "port": "443", "severity": "LOW", "finding": "offered (deprecated)"},
+        {"id": "HSTS", "ip": where, "port": "443", "severity": "LOW", "finding": "not offered"},
+        {"id": "cert_expirationStatus", "ip": where, "port": "443", "severity": "CRITICAL", "finding": "expired"},
+        {"id": "heartbleed", "ip": where, "port": "443", "severity": "OK", "finding": "not vulnerable"},
+    ]
+    path = tmp_path / "testssl.json"
+    path.write_text(json.dumps(records))
+    scan = TestsslParser(db_session).parse_file(str(path), "testssl.json", project_id=test_project.id)
+    rows = {v.plugin_id: v for v in _observations(db_session, scan.id)}
+    assert set(rows) == {"tls_deprecated_protocol", "http_missing_hsts", "tls_cert_expired"}
+    assert "SSLv3" in rows["tls_deprecated_protocol"].plugin_output
+    assert "TLS 1.0" in rows["tls_deprecated_protocol"].plugin_output
+    assert rows["http_missing_hsts"].name_id is not None
+
+
 def test_vuln_filter_finds_the_catalog_title(db_session, test_project):
     NetexecParser(db_session).parse_file(
         os.path.join(NATIVE, "netexec-wiki-vnc-ftp-ssh.txt"), "wiki.txt", project_id=test_project.id)

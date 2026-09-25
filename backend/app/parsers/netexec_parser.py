@@ -60,6 +60,42 @@ _PASSWORD_ONLY_PROTOCOLS = {'vnc'}
 _ACTION_RESULTS = ('executed command', 'uploaded:', 'downloaded:', 'created file ', 'file "')
 
 
+def netexec_line_checks(
+    protocol: Optional[str], line: str, *, username: Optional[str] = None,
+    auth_success: Optional[bool] = None, smbv1: Optional[bool] = None,
+) -> List[str]:
+    """The catalog checks one NetExec result reports (v2.412.0; a pure
+    function since v2.414.0 so the backfill reads stored rows by the same
+    rule).  The flags are read from the line itself, as nxc prints them
+    (nxc/protocols/{smb,vnc,ftp}.py)."""
+    protocol = (protocol or '').lower()
+    low = (line or '').lower()
+    found: List[str] = []
+    if protocol == 'smb':
+        if 'signing:false' in low:
+            found.append('smb_signing_not_required')
+        if smbv1 is True or 'smbv1:true' in low:
+            found.append('smbv1_enabled')
+        # "(Null Auth:True)" / "(Guest Auth:True)" on the banner; a login
+        # marked "(Guest)" was accepted as the guest.
+        if '(null auth:true)' in low or '(guest auth:true)' in low or (
+            auth_success is True and (
+                (username is not None and username.strip().lower() in ('', 'guest'))
+                or '(guest)' in low
+            )
+        ):
+            found.append('smb_null_session')
+    elif protocol == 'vnc' and '(no auth:true)' in low:
+        found.append('vnc_no_auth')
+    elif protocol == 'ftp' and auth_success is True and (
+        # nxc prints an anonymous login as "[+] : - Anonymous Login!"
+        (username is not None and username.strip().lower() in ('', 'anonymous'))
+        or 'anonymous login' in low
+    ):
+        found.append('ftp_anonymous')
+    return found
+
+
 def writable_share(shares: Any) -> Optional[bool]:
     """Whether a share table grants WRITE on any share (v2.412.0): the
     `has:writable_share` column.  None for anything but a share table — a
@@ -342,34 +378,11 @@ class NetexecParser:
     def _record_misconfigs(self, host: models.Host, host_data: Dict[str, Any], scan_id: int) -> None:
         """v2.412.0 — the line's weaknesses as catalog observations
         (app/services/misconfig_checks.py), on the port the line is about."""
-        protocol = (host_data.get('protocol') or '').lower()
         line = host_data.get('raw_line') or ''
-        low = line.lower()
-        username = host_data.get('username')
-        found = []
-        if protocol == 'smb':
-            if host_data.get('smb_signing') in smb_signing_states.RELAYABLE:
-                found.append('smb_signing_not_required')
-            if host_data.get('smbv1') is True:
-                found.append('smbv1_enabled')
-            # nxc smb.py: "(Null Auth:True)" / "(Guest Auth:True)" on the
-            # banner; a login marked "(Guest)" was accepted as the guest.
-            if '(null auth:true)' in low or '(guest auth:true)' in low or (
-                host_data.get('auth_success') is True and (
-                    (username is not None and username.strip().lower() in ('', 'guest'))
-                    or '(guest)' in low
-                )
-            ):
-                found.append('smb_null_session')
-        elif protocol == 'vnc' and '(no auth:true)' in low:
-            found.append('vnc_no_auth')
-        elif protocol == 'ftp' and host_data.get('auth_success') is True and (
-            # nxc prints an anonymous login as "[+] : - Anonymous Login!"
-            (username is not None and username.strip().lower() in ('', 'anonymous'))
-            or 'anonymous login' in low
+        for check_id in netexec_line_checks(
+            host_data.get('protocol'), line, username=host_data.get('username'),
+            auth_success=host_data.get('auth_success'), smbv1=host_data.get('smbv1'),
         ):
-            found.append('ftp_anonymous')
-        for check_id in found:
             record_misconfig(
                 self.db, check_id=check_id, host_id=host.id, scan_id=scan_id,
                 source=VulnerabilitySource.NETEXEC, port_number=host_data.get('port'), evidence=line,

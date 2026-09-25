@@ -13,6 +13,7 @@ the title is the issue key.
 """
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Dict, Optional
 
@@ -80,6 +81,44 @@ CHECKS: Dict[str, MisconfigCheck] = {c.id: c for c in (
         description="The service's certificate had expired when it was scanned.",
         solution="Replace the certificate.",
     ),
+    # v2.414.0 — HTTP response headers, one title whichever web scanner said
+    # so (Nikto 013587 / 007352 / 000287, Nuclei http-missing-security-headers,
+    # testssl HSTS).  Low: hardening, not a way in.
+    MisconfigCheck(
+        id="http_missing_hsts",
+        title="HTTP Strict-Transport-Security header missing",
+        severity=VulnerabilitySeverity.LOW,
+        description="The HTTPS response does not set Strict-Transport-Security.",
+        solution="Send Strict-Transport-Security with a max-age of at least 180 days.",
+    ),
+    MisconfigCheck(
+        id="http_missing_csp",
+        title="Content-Security-Policy header missing",
+        severity=VulnerabilitySeverity.LOW,
+        description="The response does not set a Content-Security-Policy.",
+        solution="Define a Content-Security-Policy for the application.",
+    ),
+    MisconfigCheck(
+        id="http_missing_xcto",
+        title="X-Content-Type-Options header missing",
+        severity=VulnerabilitySeverity.LOW,
+        description="The response does not set X-Content-Type-Options: nosniff.",
+        solution="Send X-Content-Type-Options: nosniff.",
+    ),
+    MisconfigCheck(
+        id="http_missing_frame_protection",
+        title="Clickjacking protection missing (X-Frame-Options / frame-ancestors)",
+        severity=VulnerabilitySeverity.LOW,
+        description="The response sets neither X-Frame-Options nor a CSP frame-ancestors directive.",
+        solution="Send Content-Security-Policy: frame-ancestors (or X-Frame-Options).",
+    ),
+    MisconfigCheck(
+        id="http_version_disclosure",
+        title="Software version disclosed in HTTP headers",
+        severity=VulnerabilitySeverity.LOW,
+        description="A response header (X-Powered-By, X-AspNet-Version…) names the software and version.",
+        solution="Remove or blank the header.",
+    ),
     MisconfigCheck(
         id="ftp_anonymous",
         title="Anonymous FTP login allowed",
@@ -110,12 +149,16 @@ def record_misconfig(
     source: VulnerabilitySource,
     port_number: Optional[int] = None,
     evidence: Optional[str] = None,
+    name_id: Optional[int] = None,
+    port_id: Optional[int] = None,
 ) -> Vulnerability:
-    """One scanner observation for ``check_id`` on this host (and port)."""
+    """One scanner observation for ``check_id`` on this host (and port, and
+    the named endpoint a web scanner tested).  ``port_id`` when the caller
+    already holds the row."""
     from app.parsers.parser_utils import upsert_vulnerability  # parsers import services
 
     check = CHECKS[check_id]
-    port = port_row(db, host_id, port_number)
+    port = None if port_id else port_row(db, host_id, port_number)
     return upsert_vulnerability(
         db=db,
         host_id=host_id,
@@ -124,8 +167,46 @@ def record_misconfig(
         title=check.title,
         severity=check.severity,
         plugin_id=check.id,
-        port_id=port.id if port else None,
+        port_id=port_id or (port.id if port else None),
         description=check.description,
         solution=check.solution,
         plugin_output=(evidence or "")[:4000] or None,
+        name_id=name_id,
     )
+
+
+# --- Web header results → checks (v2.414.0) --------------------------------
+# From the tools' own wording: Nikto's plugins/nikto_headers.plugin (013587
+# "Suggested security header missing: <header>", 000287 "Retrieved <header>
+# header: <value>") and db_tests (007352 "The X-Content-Type-Options header is
+# not set"); Nuclei's http-missing-security-headers matcher names.
+
+_MISSING_HEADER = {
+    "strict-transport-security": "http_missing_hsts",
+    "content-security-policy": "http_missing_csp",
+    "x-content-type-options": "http_missing_xcto",
+    "x-frame-options": "http_missing_frame_protection",
+}
+_DISCLOSING_HEADERS = ("x-powered-by", "x-aspnet-version", "x-aspnetmvc-version")
+_NIKTO_MISSING = re.compile(r"suggested security header missing:\s*([a-z0-9-]+)", re.IGNORECASE)
+_NIKTO_RETRIEVED = re.compile(r"retrieved ([a-z0-9-]+) header:", re.IGNORECASE)
+
+
+def nikto_header_check(message: str) -> Optional[str]:
+    """The catalog check a Nikto message reports, if it is a header one."""
+    text = message or ""
+    missing = _NIKTO_MISSING.search(text)
+    if missing:
+        return _MISSING_HEADER.get(missing.group(1).lower())
+    if "x-content-type-options header is not set" in text.lower():
+        return "http_missing_xcto"
+    retrieved = _NIKTO_RETRIEVED.search(text)
+    if retrieved and retrieved.group(1).lower() in _DISCLOSING_HEADERS:
+        return "http_version_disclosure"
+    return None
+
+
+def nuclei_header_check(template_id: str, matcher: Optional[str]) -> Optional[str]:
+    if template_id != "http-missing-security-headers" or not matcher:
+        return None
+    return _MISSING_HEADER.get(matcher.lower())

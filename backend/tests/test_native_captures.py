@@ -37,8 +37,11 @@ class TestNikto:
         scan = NiktoParser(db_session).parse_file(
             str(NATIVE / "nikto-all.json"), "nikto-all.json", project_id=test_project.id)
         vulns = _vulns(db_session, scan)
-        assert len(vulns) == 11
+        # 11 results; since v2.414.0 HSTS, CSP and the two X-Content-Type-
+        # Options reports (013587 and 007352) are three catalog rows.
+        assert len(vulns) == 10
         assert "Nikto finding" not in {v.title for v in vulns}
+        assert {"http_missing_hsts", "http_missing_csp", "http_missing_xcto"} <= {v.plugin_id for v in vulns}
         robots = next(v for v in vulns if v.plugin_id == "999997")
         assert robots.title.startswith("/robots.txt: Entry '/public/'")
         assert "portswigger.net" in robots.description
@@ -63,18 +66,20 @@ class TestNikto:
             str(NATIVE / "nikto-all.txt"), "nikto-all.txt", project_id=test_project.id)
         vulns = _vulns(db_session, scan)
         titles = [v.title for v in vulns]
-        assert len(vulns) == 11
+        assert len(vulns) == 10
         assert not any(t.startswith(("Server:", "Platform:", "No CGI")) or "requests:" in t for t in titles)
+        # The five 013587 headers stay five results: the two the catalog does
+        # not name keep Nikto's title, three are catalog checks (v2.414.0).
         headers = [v for v in vulns if v.plugin_id == "013587"]
-        assert len(headers) == 5
         assert {t.rsplit(": ", 1)[1].rstrip(".") for t in (v.title for v in headers)} == {
-            "strict-transport-security", "referrer-policy", "permissions-policy",
-            "content-security-policy", "x-content-type-options",
+            "referrer-policy", "permissions-policy",
         }
-        long_one = next(v for v in vulns if v.plugin_id == "007352")
-        assert len(long_one.source_plugin_name) <= 200
-        assert "See: https://www.netsparker.com" in long_one.description
-        assert "See:" not in long_one.title
+        by_check = {v.plugin_id: v for v in vulns}
+        assert by_check["http_missing_hsts"].title == "HTTP Strict-Transport-Security header missing"
+        # 007352 (the long message) and 013587 x-content-type-options are one row.
+        xcto = by_check["http_missing_xcto"]
+        assert len(xcto.source_plugin_name) <= 200
+        assert "See:" not in (xcto.plugin_output or "")
 
     def test_native_csv_has_no_header_row(self, db_session, test_project):
         """Nikto's ``-Format csv``: a banner, no header, positional columns."""
@@ -84,7 +89,9 @@ class TestNikto:
             str(NATIVE / "nikto.csv"), "nikto.csv", project_id=test_project.id)
         vulns = _vulns(db_session, scan)
         assert len(vulns) == 5  # the empty target row is not a finding
-        assert all(v.title.startswith("/: Suggested security header missing:") for v in vulns)
+        # Three of the five missing headers are catalog checks (v2.414.0).
+        assert sum(v.title.startswith("/: Suggested security header missing:") for v in vulns) == 2
+        assert {"http_missing_hsts", "http_missing_csp", "http_missing_xcto"} <= {v.plugin_id for v in vulns}
         assert db_session.get(models.Host, vulns[0].host_id).ip_address == "192.168.7.222"
 
 

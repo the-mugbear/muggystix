@@ -47,6 +47,7 @@ from app.parsers.parser_utils import (
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, bind_hostname
 from app.services.host_deduplication_service import HostDeduplicationService
+from app.services.misconfig_checks import nuclei_header_check, record_misconfig
 
 logger = logging.getLogger(__name__)
 
@@ -254,6 +255,18 @@ class NucleiParser:
             self.db, project_id=self._project_id, hostname=hostname,
             ip_address=ip, scan_id=scan.id, cache=self._name_cache,
         )
+
+        # v2.414.0 — a missing-security-header matcher is a catalog check,
+        # titled the same as Nikto's and testssl's report of it.
+        check_id = nuclei_header_check(str(record["template-id"]), record.get("matcher-name"))
+        if check_id:
+            record_misconfig(
+                self.db, check_id=check_id, host_id=host.id, scan_id=scan.id,
+                source=VulnerabilitySource.NUCLEI,
+                port_id=persisted_port.id if persisted_port else None,
+                name_id=name_id, evidence=_evidence_of(record),
+            )
+            return
 
         classification = info.get("classification") if isinstance(info.get("classification"), dict) else {}
         cves = [c.upper() for c in _as_list(classification.get("cve-id")) if c.upper().startswith("CVE-")]

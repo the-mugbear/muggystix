@@ -1481,7 +1481,7 @@
             "Vulnerability.plugin_id"
           ],
           "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
-          "note": "Each match is a scanner observation; the matcher name is part of the title, so one template's matchers stay separate."
+          "note": "Each match is a scanner observation; the matcher name is part of the title, so one template's matchers stay separate. http-missing-security-headers matchers for HSTS, CSP, X-Content-Type-Options and X-Frame-Options take the catalog titles shared with Nikto and testssl."
         },
         {
           "what": "Severity",
@@ -1633,6 +1633,17 @@
           ],
           "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
           "note": "One scanner observation per message, source NIKTO. Title is prefixed with the tested path (`/robots.txt: ...`) when the message does not already start with one (JSON `url`, CSV uri); title clipped to 500, source_plugin_name to 200 chars. Text `See: <url>` is split off the title into the description."
+        },
+        {
+          "what": "Missing security headers and version-disclosing headers",
+          "input": "`[013587] Suggested security header missing: <header>`, `[007352] The X-Content-Type-Options header is not set`, `[000287] Retrieved x-powered-by header: …`",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "Vulnerability.plugin_output"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail 'Scanner output on this host' · Filter: vuln: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "HSTS, CSP, X-Content-Type-Options (both Nikto reports, one row) and X-Powered-By / X-AspNet-Version take the catalog titles shared with Nuclei and testssl (low). Other headers (Referrer-Policy, Permissions-Policy…) keep Nikto's title."
         },
         {
           "what": "Check id (Nikto test id / OSVDB id)",
@@ -1877,7 +1888,7 @@
             "Vulnerability.source_plugin_name"
           ],
           "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Hosts list › Attention · Filter: vuln:, has:critical/high/medium/low, vulnsince: · Also: Patterns insight: vuln monoculture; promoted to a finding",
-          "note": "One scanner observation per rated check id, source TESTSSL: plugin_id = testssl id, title from a fixed name table (else `TLS check: <id>`, e.g. `TLS check: cert_revocation`), description = testssl's `finding` text, severity mapped 1:1. A check reported OK (e.g. heartbleed 'not vulnerable') is not an observation."
+          "note": "One scanner observation per rated check id, source TESTSSL: plugin_id = testssl id, title from a fixed name table (else `TLS check: <id>`, e.g. `TLS check: cert_revocation`), description = testssl's `finding` text, severity mapped 1:1. A check reported OK (e.g. heartbleed 'not vulnerable') is not an observation. Offered SSLv2/SSLv3/TLS 1.0/1.1 become one \"Deprecated TLS/SSL protocol offered\", missing HSTS \"HTTP Strict-Transport-Security header missing\" and an expired certificate \"TLS certificate expired\" — the catalog titles nmap, Nikto and Nuclei share."
         },
         {
           "what": "Grade and cipher rows rated LOW+",

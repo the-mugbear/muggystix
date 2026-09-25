@@ -5,7 +5,6 @@ Uses the host deduplication service to eliminate duplicate host entries
 and maintain scan history.
 """
 
-import re
 from typing import Dict, Optional, Any
 from datetime import datetime, timezone
 from lxml import etree
@@ -399,18 +398,12 @@ class NmapXMLParser:
 
     # v2.412.0 — NSE results that are catalog weaknesses
     # (app/services/misconfig_checks.py).  Every other script stays text.
-    _VNC_NO_AUTH = re.compile(r'security types:.*?\bnone\b', re.IGNORECASE | re.DOTALL)
-
     def _record_port_script_misconfigs(self, port_elem: etree.Element, host_id: int,
                                        port_number: int, scan_id: int) -> None:
         for script_elem in port_elem.findall('script'):
             script_id = script_elem.get('id') or ''
             output = script_elem.get('output') or ''
-            check_id = None
-            if script_id == 'vnc-info' and self._VNC_NO_AUTH.search(output):
-                check_id = 'vnc_no_auth'
-            elif script_id == 'ftp-anon' and 'anonymous ftp login allowed' in output.lower():
-                check_id = 'ftp_anonymous'
+            check_id = nse_vulns.script_text_check(script_id, output)
             if check_id:
                 record_misconfig(
                     self.db, check_id=check_id, host_id=host_id, scan_id=scan_id,
@@ -482,7 +475,7 @@ class NmapXMLParser:
                 source=VulnerabilitySource.NMAP, port_number=smb_port, evidence=evidence,
             )
         protocols = scripts.get('smb-protocols', '')
-        if 'NT LM 0.12' in protocols or 'SMBv1' in protocols:
+        if nse_vulns.script_text_check('smb-protocols', protocols):
             record_misconfig(
                 self.db, check_id='smbv1_enabled', host_id=host_id, scan_id=scan_id,
                 source=VulnerabilitySource.NMAP, port_number=smb_port,

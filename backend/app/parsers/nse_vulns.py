@@ -104,6 +104,22 @@ def vulners_results(script: etree._Element) -> List[Dict]:
     return out
 
 
+_VNC_NO_AUTH = re.compile(r'security types:.*?\bnone\b', re.IGNORECASE | re.DOTALL)
+
+
+def script_text_check(script_id: str, output: str) -> Optional[str]:
+    """The catalog check a script's TEXT output reports (v2.412.0; shared
+    with the backfill, which has only the stored text since v2.414.0)."""
+    text = output or ''
+    if script_id == 'vnc-info' and _VNC_NO_AUTH.search(text):
+        return 'vnc_no_auth'
+    if script_id == 'ftp-anon' and 'anonymous ftp login allowed' in text.lower():
+        return 'ftp_anonymous'
+    if script_id == 'smb-protocols' and ('NT LM 0.12' in text or 'SMBv1' in text):
+        return 'smbv1_enabled'
+    return None
+
+
 def cpe_product(cpe: str) -> str:
     """"cpe:/a:openbsd:openssh:7.4" → "openssh 7.4"."""
     parts = cpe.split(":")

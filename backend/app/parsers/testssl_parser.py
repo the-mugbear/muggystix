@@ -38,6 +38,7 @@ from app.parsers.parser_utils import (
 from app.parsers.streaming_json import iter_json_records
 from app.services.cert_fields import parse_cert_not_after, _classify_tls_version
 from app.services.dns_name_service import ObservationCache, bind_hostname
+from app.services.misconfig_checks import record_misconfig
 
 logger = logging.getLogger(__name__)
 
@@ -155,6 +156,11 @@ _CHECK_TITLES = {
 _NOT_WEAKNESSES = ("overall_grade", "grade_cap", "cipher-", "cipher_order", "cipherorder_")
 
 
+# v2.414.0 — rated checks that are catalog weaknesses (misconfig_checks.py).
+_DEPRECATED_PROTOCOL_IDS = ("SSLv2", "SSLv3", "TLS1", "TLS1_1")
+_CATALOG_IDS = {"HSTS": "http_missing_hsts", "cert_expirationStatus": "tls_cert_expired"}
+
+
 def _check_title(check_id: str) -> str:
     return _CHECK_TITLES.get(check_id) or f"TLS check: {check_id}"
 
@@ -194,10 +200,27 @@ class TestsslParser:
         """One scanner observation per rated check (severity LOW or worse).
         OK / INFO / WARN are facts or client-side notes, not weaknesses."""
         count = 0
+        deprecated = []
         for rec in findings:
             severity = _RATED.get(str(rec.get("severity") or "").upper())
             check_id = str(rec.get("id") or "").strip()
             if severity is None or not check_id or check_id.startswith(_NOT_WEAKNESSES):
+                continue
+            # v2.414.0 — weaknesses the catalog names for every tool: nmap's
+            # ssl-enum-ciphers, Nikto and Nuclei report the same ones.
+            if check_id in _DEPRECATED_PROTOCOL_IDS:
+                deprecated.append(check_id)
+                continue
+            catalog = _CATALOG_IDS.get(check_id)
+            if catalog == "tls_cert_expired" and "expired" not in str(rec.get("finding") or "").lower():
+                catalog = None
+            if catalog:
+                record_misconfig(
+                    self.db, check_id=catalog, host_id=host_id, scan_id=scan_id,
+                    source=VulnerabilitySource.TESTSSL, port_id=port_id, name_id=name_id,
+                    evidence=f"testssl {check_id}: {rec.get('finding') or ''}",
+                )
+                count += 1
                 continue
             cves = re.findall(r"CVE-\d{4}-\d{4,}", str(rec.get("cve") or ""), re.IGNORECASE)
             upsert_vulnerability(
@@ -210,6 +233,13 @@ class TestsslParser:
                 description=str(rec.get("finding") or "") or None,
                 cve_id=cves[0].upper() if cves else None,
                 name_id=name_id,
+            )
+            count += 1
+        if deprecated:
+            record_misconfig(
+                self.db, check_id="tls_deprecated_protocol", host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.TESTSSL, port_id=port_id, name_id=name_id,
+                evidence="testssl: offers " + ", ".join(_check_title(i).replace(" offered", "") for i in deprecated),
             )
             count += 1
         return count

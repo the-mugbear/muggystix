@@ -70,18 +70,26 @@ def test_matches_become_observations_with_nuclei_severity(db_session, test_proje
     assert "RFB 003.008" in vnc.plugin_output
 
 
-def test_each_matcher_is_its_own_observation(db_session, test_project):
+def test_each_matcher_is_its_own_observation(db_session, test_project, tmp_path):
     """One template, two matchers (two missing headers) on one host: two rows,
-    not one row that keeps the last matcher's name."""
+    not one row that keeps the last matcher's name.  Headers the catalog names
+    take its title, shared with Nikto and testssl (v2.414.0); any other matcher
+    keeps "<template name>: <matcher>"."""
     _, scan = _parse(db_session, test_project)
     titles = set(_vulns(db_session, scan))
-    assert "HTTP Missing Security Headers: strict-transport-security" in titles
-    assert "HTTP Missing Security Headers: content-security-policy" in titles
+    assert "HTTP Strict-Transport-Security header missing" in titles
+    assert "Content-Security-Policy header missing" in titles
+
+    record = dict(json.load(open(FIXTURE))[0], **{"matcher-name": "referrer-policy"})
+    path = tmp_path / "referrer.json"
+    path.write_text(json.dumps([record]))
+    _, other = _parse(db_session, test_project, path)
+    assert set(_vulns(db_session, other)) == {"HTTP Missing Security Headers: referrer-policy"}
 
 
 def test_named_target_binds_the_name_and_http_port(db_session, test_project):
     _, scan = _parse(db_session, test_project)
-    hsts = _vulns(db_session, scan)["HTTP Missing Security Headers: strict-transport-security"]
+    hsts = _vulns(db_session, scan)["HTTP Strict-Transport-Security header missing"]
     host = db_session.get(models.Host, hsts.host_id)
     assert host.ip_address == "10.20.0.5"
     assert hsts.name_id is not None

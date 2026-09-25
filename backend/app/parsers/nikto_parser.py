@@ -24,6 +24,7 @@ from app.parsers.parser_utils import (
     upsert_vulnerability,
 )
 from app.services.dns_name_service import ObservationCache, bind_hostname
+from app.services.misconfig_checks import nikto_header_check, record_misconfig
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
@@ -350,6 +351,17 @@ class NiktoParser:
             self.db, project_id=self._project_id, hostname=hostname,
             ip_address=ip_address, scan_id=scan.id, cache=self._name_cache,
         )
+        # v2.414.0 — a header result is a catalog check, titled the same as
+        # Nuclei's and testssl's report of it (app/services/misconfig_checks.py).
+        check_id = nikto_header_check(title)
+        if check_id:
+            record_misconfig(
+                self.db, check_id=check_id, host_id=host.id, scan_id=scan.id,
+                source=VulnerabilitySource.NIKTO,
+                port_id=persisted_port.id if persisted_port else None,
+                name_id=name_id, evidence=f"Nikto [{plugin_id or '-'}] {title}",
+            )
+            return
         upsert_vulnerability(
             db=self.db,
             host_id=host.id,
