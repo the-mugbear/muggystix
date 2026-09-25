@@ -186,6 +186,14 @@ def test_netexec_action_lines_are_not_logins(db_session, test_project):
     assert _checks(db_session, scan.id) == set()
 
 
+def test_nxc_only_host_is_up(db_session, test_project):
+    """nxc prints a line only for a host that answered (v2.413.0)."""
+    NetexecParser(db_session).parse_file(
+        os.path.join(NATIVE, "netexec-wiki-vnc-ftp-ssh.txt"), "wiki.txt", project_id=test_project.id)
+    host = db_session.query(models.Host).filter_by(project_id=test_project.id, ip_address="192.168.56.22").one()
+    assert host.state == "up"
+
+
 def test_netexec_action_results_from_the_nxc_source():
     """ssh.py's other success lines after a login (NetExec main, 2026-09-25)."""
     from app.parsers.netexec_parser import _ACTION_RESULTS

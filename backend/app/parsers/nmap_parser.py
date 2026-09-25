@@ -7,14 +7,15 @@ and maintain scan history.
 
 import re
 from typing import Dict, Optional, Any
-from datetime import datetime
+from datetime import datetime, timezone
 from lxml import etree
 from sqlalchemy.orm import Session
 from app.db import models
-from app.parsers.parser_utils import epoch_to_utc
+from app.parsers import nse_vulns
+from app.parsers.parser_utils import epoch_to_utc, map_numeric_severity, upsert_vulnerability
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.db.models_vulnerability import VulnerabilitySource
+from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.services import smb_signing as smb_signing_states
 from app.services.cert_fields import _classify_tls_version, parse_cert_not_after
 from app.services.misconfig_checks import port_row, record_misconfig
@@ -416,6 +417,53 @@ class NmapXMLParser:
                     source=VulnerabilitySource.NMAP, port_number=port_number,
                     evidence=f"{script_id}: {output.strip()}",
                 )
+            self._record_nse_vulns(script_elem, host_id, port_number, scan_id)
+
+    _RISK_SEVERITY = {
+        'critical': VulnerabilitySeverity.CRITICAL, 'high': VulnerabilitySeverity.HIGH,
+        'medium': VulnerabilitySeverity.MEDIUM, 'low': VulnerabilitySeverity.LOW,
+    }
+
+    def _record_nse_vulns(self, script_elem: etree.Element, host_id: int,
+                          port_number: Optional[int], scan_id: int) -> None:
+        """v2.413.0 — vulnerability results in NSE's structured output
+        (app/parsers/nse_vulns.py) as scanner observations."""
+        script_id = script_elem.get('id') or ''
+        port = port_row(self.db, host_id, port_number)
+        port_id = port.id if port else None
+        if script_id == 'vulners':
+            for entry in nse_vulns.vulners_results(script_elem):
+                product = nse_vulns.cpe_product(entry['cpe'])
+                upsert_vulnerability(
+                    db=self.db, host_id=host_id, scan_id=scan_id, source=VulnerabilitySource.NMAP,
+                    title=f"{entry['id']} in {product}",
+                    severity=map_numeric_severity(entry['cvss']),
+                    plugin_id=entry['id'], port_id=port_id, cve_id=entry['id'], cvss_score=entry['cvss'],
+                    description=(f"vulners matched the version nmap identified ({entry['cpe']}) to "
+                                 f"{entry['id']}. A version match, not a test."),
+                    references=[f"https://vulners.com/cve/{entry['id']}"],
+                    plugin_output=f"vulners: {entry['cpe']} → {entry['id']} (CVSS {entry['cvss']})",
+                    exploitable=entry['is_exploit'] or None,
+                )
+            return
+        for vuln in nse_vulns.vulns_lib_results(script_elem):
+            severity = (self._RISK_SEVERITY.get(vuln['risk'] or '')
+                        or map_numeric_severity(vuln['cvss']))
+            upsert_vulnerability(
+                db=self.db, host_id=host_id, scan_id=scan_id, source=VulnerabilitySource.NMAP,
+                title=vuln['title'], severity=severity,
+                # One script can report several vulnerabilities.
+                plugin_id=script_id, key_on_title=True, port_id=port_id,
+                cve_id=vuln['cves'][0] if vuln['cves'] else None, cvss_score=vuln['cvss'],
+                description=vuln['description'],
+                references=(vuln['refs'] + vuln['cves'][1:]) or None,
+                plugin_output="\n".join(filter(None, (
+                    f"{script_id}: State: {vuln['state']}",
+                    f"IDs: {' '.join(vuln['ids'])}" if vuln['ids'] else None,
+                    f"Disclosure date: {vuln['disclosure']}" if vuln['disclosure'] else None,
+                ))),
+                exploitable=vuln['state'].upper() == 'VULNERABLE (EXPLOITABLE)' or None,
+            )
 
     def _record_host_script_misconfigs(self, hostscript_elem: Optional[etree.Element], host_id: int,
                                        scan_id: int, signing: Optional[str]) -> None:
@@ -440,6 +488,11 @@ class NmapXMLParser:
                 source=VulnerabilitySource.NMAP, port_number=smb_port,
                 evidence=f"smb-protocols: {protocols.strip()}",
             )
+        # Host-rule vulnerability scripts (smb-vuln-*…) name no port; the SMB
+        # ones are about the SMB service.
+        for script_elem in hostscript_elem.findall('script'):
+            sid = script_elem.get('id') or ''
+            self._record_nse_vulns(script_elem, host_id, smb_port if sid.startswith('smb') else None, scan_id)
 
     def _extract_port_data(self, port_elem: etree.Element) -> Dict[str, Any]:
         """Extract port information from XML element"""
@@ -500,16 +553,6 @@ class NmapXMLParser:
         ciphers = scripts.get('ssl-enum-ciphers')
         if cert is None and ciphers is None:
             return
-        # Only a web service becomes a web interface.  ssl-cert also runs on
-        # RDP 3389, LDAPS, SMTPS, IMAPS and MSSQL: each became an
-        # ``https://ip:3389`` row — ``has:web``, "web-TLS assessed" and, RDP
-        # certificates being self-signed by default, ``has:cert_issue`` on
-        # nearly every Windows host (review 2026-09-23 C6a).  The script
-        # output itself is still kept with the port's scripts.
-        service_elem = port_elem.find('service')
-        service_name = ((service_elem.get('name') if service_elem is not None else None) or '').lower()
-        if not service_name.startswith('http'):
-            return
 
         def _table(el, key):
             t = el.find(f"table[@key='{key}']") if el is not None else None
@@ -526,9 +569,40 @@ class NmapXMLParser:
             issuer_org = ((issuer or {}).get('organizationName') or '')[:255] or None
 
         weak = None
+        weak_versions = []
         if ciphers is not None:
-            verdicts = [_classify_tls_version(t.get('key')) for t in ciphers.findall('table')]
-            weak = True if True in verdicts else (False if False in verdicts else None)
+            verdicts = [(t.get('key'), _classify_tls_version(t.get('key'))) for t in ciphers.findall('table')]
+            weak_versions = [key for key, verdict in verdicts if verdict is True]
+            weak = True if weak_versions else (False if any(v is False for _, v in verdicts) else None)
+
+        # v2.413.0 — on ANY TLS service (RDP, LDAPS, SMTPS…), the two TLS
+        # facts that are weaknesses whatever the service: catalog
+        # observations, not a web interface (see the gate below).  Expiry is
+        # judged at the scan's own time: a snapshot does not go stale.
+        if weak_versions:
+            record_misconfig(
+                self.db, check_id='tls_deprecated_protocol', host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.NMAP, port_number=port.port_number,
+                evidence=f"ssl-enum-ciphers: offers {', '.join(weak_versions)}",
+            )
+        scanned_at = self._scan_time(scan_id)
+        if not_after is not None and scanned_at is not None and not_after < scanned_at:
+            record_misconfig(
+                self.db, check_id='tls_cert_expired', host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.NMAP, port_number=port.port_number,
+                evidence=f"ssl-cert: notAfter {not_after.isoformat()}",
+            )
+
+        # Only a web service becomes a web interface.  ssl-cert also runs on
+        # RDP 3389, LDAPS, SMTPS, IMAPS and MSSQL: each became an
+        # ``https://ip:3389`` row — ``has:web``, "web-TLS assessed" and, RDP
+        # certificates being self-signed by default, ``has:cert_issue`` on
+        # nearly every Windows host (review 2026-09-23 C6a).  The script
+        # output itself is still kept with the port's scripts.
+        service_elem = port_elem.find('service')
+        service_name = ((service_elem.get('name') if service_elem is not None else None) or '').lower()
+        if not service_name.startswith('http'):
+            return
 
         host = self.db.get(models.Host, host_id)
         if host is None:
@@ -554,6 +628,21 @@ class NmapXMLParser:
         row.cert_issuer_org = issuer_org
         row.tls_weak_protocol = weak
         self.db.flush()
+
+    def _scan_time(self, scan_id: int) -> Optional[datetime]:
+        """When the scan ran (aware UTC); the import time when the file
+        carries none."""
+        cached = getattr(self, '_scan_time_cache', None)
+        if cached is not None and cached[0] == scan_id:
+            return cached[1]
+        scan = self.db.get(models.Scan, scan_id)
+        started = scan.start_time if scan is not None else None
+        if started is None:
+            started = datetime.now(timezone.utc)
+        elif started.tzinfo is None:
+            started = started.replace(tzinfo=timezone.utc)
+        self._scan_time_cache = (scan_id, started)
+        return started
 
     def _process_port_scripts(self, port_elem: etree.Element, port_id: int, scan_id: int):
         """Process scripts for a port"""

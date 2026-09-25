@@ -259,7 +259,7 @@
           "level": "discarded",
           "stored_as": [],
           "shown": null,
-          "note": "Only the flat `output` attribute is kept, except ssl-cert / ssl-enum-ciphers tables on http services (below)."
+          "note": "Only the flat `output` attribute is kept, except the tables read for ssl-cert / ssl-enum-ciphers, the vulns library (vuln category) and vulners (below)."
         },
         {
           "what": "SMB message-signing posture",
@@ -305,8 +305,9 @@
         {
           "what": "TLS certificate (expiry, self-signed, subject/issuer organisation)",
           "input": "port `<script id=\"ssl-cert\">` tables `validity/notAfter`, `subject/*`, `issuer/*`",
-          "level": "field",
+          "level": "observation",
           "stored_as": [
+            "Vulnerability.title",
             "WebInterface.cert_not_after",
             "WebInterface.cert_self_signed",
             "WebInterface.cert_subject_org",
@@ -315,19 +316,19 @@
             "WebInterface.source",
             "Script.output"
           ],
-          "shown": "Host inspector › Ports TLS column; Host inspector › Provenance › certificate status; Host inspector › Provenance › certificate organisation · Filter: has:cert_issue, certorg: · Also: Patterns insight: tls_hygiene; Segments cert issues",
-          "note": "ONLY when the port's service name starts with 'http' (an https://ip:port WebInterface row, source nmap). On RDP/LDAPS/SMTPS/IMAPS/MSSQL etc. the cert is kept only as Script.output text. Self-signed = subject table equals issuer table. Subject CN, SANs, key type/bits, signature algorithm, notBefore and fingerprints are not promoted, and tls_info is not written."
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Ports TLS column · Filter: vuln:, has:cert_issue, certorg: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "On http* services: the web interface's certificate fields (has:cert_issue, certorg:). On ANY TLS service, an expired certificate (judged at the scan's time) is also the scanner observation \"TLS certificate expired\". Self-signed is not flagged outside web ports: RDP's default certificate is self-signed. Subject CN, SANs, key and signature algorithm are not promoted."
         },
         {
           "what": "Offered TLS/SSL protocol versions (weak protocol)",
           "input": "port `<script id=\"ssl-enum-ciphers\">` top-level `<table key=\"TLSv1.0|TLSv1.2|SSLv3\">`",
-          "level": "field",
+          "level": "observation",
           "stored_as": [
-            "WebInterface.tls_weak_protocol",
-            "Script.output"
+            "Vulnerability.title",
+            "WebInterface.tls_weak_protocol"
           ],
-          "shown": "Host inspector › Ports TLS column; Host inspector › NSE script output · Filter: has:weak_tls · Also: Patterns insight: weak_tls; Scans › import history web contribution",
-          "note": "Same http-only gate as ssl-cert. True if any offered SSLv2/SSLv3/TLS1.0/TLS1.1, False if only 1.2/1.3."
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Ports TLS column · Filter: vuln:, has:weak_tls · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "On ANY TLS service, SSLv2 / SSLv3 / TLS 1.0 / 1.1 offered is the scanner observation \"Deprecated TLS/SSL protocol offered\"; on http* services it also sets the web interface's weak-TLS flag (has:weak_tls)."
         },
         {
           "what": "Cipher suites, cipher strength grades and warnings",
@@ -340,6 +341,34 @@
           "note": "Only the protocol-version keys are interpreted; weak ciphers, grades and warnings stay in the script text."
         },
         {
+          "what": "Vulnerability scripts (vuln category: smb-vuln-*, ssl-heartbleed, http-vuln-*…)",
+          "input": "`<script>` tables with `<elem key=\"state\">VULNERABLE</elem>` (nselib/vulns.lua)",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "Vulnerability.cve_id",
+            "Vulnerability.cvss_score",
+            "Vulnerability.description",
+            "Vulnerability.references",
+            "Vulnerability.plugin_output"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln:, cve: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "Each VULNERABLE / LIKELY VULNERABLE / VULNERABLE (DoS) / VULNERABLE (Exploitable) result is a scanner observation titled as nmap titles it; severity from the text report's Risk factor, else the CVSS score; Exploitable sets has:exploit. NOT VULNERABLE and UNKNOWN are skipped. Host-rule smb-* results sit on the SMB port."
+        },
+        {
+          "what": "vulners CVE matches",
+          "input": "`<script id=\"vulners\">` tables per CPE, entries `{id, cvss, type, is_exploit}`",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "Vulnerability.cve_id",
+            "Vulnerability.cvss_score",
+            "Vulnerability.exploitable"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › Scanner observations detail · Filter: vuln:, cve:, has:exploit, exploitport: · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "Each CVE entry is a scanner observation \"<CVE> in <product> <version>\", severity from its CVSS score, marked as a version match, not a test. Exploit-database entries (not CVEs) are skipped."
+        },
+        {
           "what": "Other NSE scripts (security-relevant results kept as text only)",
           "input": "`<script id=\"ftp-anon|smb-protocols|vnc-info|x11-access|snmp-info|snmp-sysdescr|snmp-brute|sslv2|http-methods|http-title|ssh2-enum-algos|ssh-hostkey|rdp-enum-encryption|rdp-ntlm-info|mysql-empty-password|ms-sql-empty-password|vulners|smb-vuln-ms17-010|ssl-heartbleed|nfs-showmount|redis-info|mongodb-info\">`",
           "level": "text",
@@ -348,13 +377,12 @@
             "HostScript.output"
           ],
           "shown": "Host inspector › NSE script output; Host inspector › NSE script output › Host scripts · Also: JSON / Markdown export",
-          "note": "Stored verbatim; not parsed, except vnc-info, ftp-anon and smb-protocols (above). X11 access, SNMP community access, SSLv2, risky HTTP methods, weak SSH algorithms, weak RDP encryption, empty database passwords, vulners CVE lists and 'State: VULNERABLE' results raise no scanner observation and match no filter."
+          "note": "Stored verbatim; not parsed, except the scripts above. X11 access, SNMP community access, risky HTTP methods, weak SSH algorithms, weak RDP encryption and empty database passwords raise no scanner observation and match no filter."
         }
       ],
       "gaps": [
-        "Vuln-category NSE results that say 'State: VULNERABLE' (smb-vuln-ms17-010, ssl-heartbleed, etc.) and vulners CVE lists create no Scanner observation, so they do not appear on Findings, cve:/vuln: queries or reports.",
+        "Self-signed certificates and certificate organisations are not recorded for TLS services other than http*.",
         "Unauthenticated X11, SNMP default community, empty database passwords and other misconfigurations nmap reports (beyond VNC without authentication, anonymous FTP, SMBv1 and SMB signing) are kept only as script text.",
-        "ssl-cert and ssl-enum-ciphers are interpreted only for services named http*, so an expired or self-signed certificate or TLS 1.0 on RDP, LDAPS, SMTPS, IMAPS or MSSQL is invisible to has:cert_issue / has:weak_tls and Posture.",
         "Weak cipher suites and ssl-enum-ciphers warnings (RC4, 3DES/SWEET32, export ciphers, grades below A) are not promoted; only the protocol version drives tls_weak_protocol.",
         "Pre-scan and post-scan scripts (<prescript>/<postscript>, e.g. broadcast discovery) are dropped entirely.",
         "Service and OS CPEs (<cpe>) are discarded, so nmap's product identification cannot be used for CPE-based matching or grouping.",
@@ -3586,7 +3614,6 @@
       ],
       "gaps": [
         "Module results (Zerologon, PetitPotam, noPac, ms17-010 and others) are not parsed; some are stored as fake logins or shares.",
-        "A host seen only in NetExec lines is recorded with state unknown, although NetExec connected to it.",
         "LDAP signing / channel binding and RDP NLA are not interpreted."
       ],
       "unverified": [

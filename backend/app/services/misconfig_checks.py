@@ -62,6 +62,24 @@ CHECKS: Dict[str, MisconfigCheck] = {c.id: c for c in (
         description="The SMB service accepts the SMBv1 protocol.",
         solution="Disable SMBv1 on the server.",
     ),
+    # v2.413.0 — TLS on any service, from nmap's ssl-enum-ciphers / ssl-cert.
+    # Self-signed is deliberately not a check: RDP's default certificate is
+    # self-signed, and flagging it marked nearly every Windows host (review
+    # 2026-09-23 C6a).
+    MisconfigCheck(
+        id="tls_deprecated_protocol",
+        title="Deprecated TLS/SSL protocol offered",
+        severity=VulnerabilitySeverity.MEDIUM,
+        description="The service offers SSLv2, SSLv3, TLS 1.0 or TLS 1.1.",
+        solution="Offer TLS 1.2 and TLS 1.3 only.",
+    ),
+    MisconfigCheck(
+        id="tls_cert_expired",
+        title="TLS certificate expired",
+        severity=VulnerabilitySeverity.MEDIUM,
+        description="The service's certificate had expired when it was scanned.",
+        solution="Replace the certificate.",
+    ),
     MisconfigCheck(
         id="ftp_anonymous",
         title="Anonymous FTP login allowed",

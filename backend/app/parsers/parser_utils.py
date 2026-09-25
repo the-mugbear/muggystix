@@ -468,12 +468,11 @@ def upsert_vulnerability(
     # test a name, not a bare address).  Stamped on create; filled on update
     # when the existing row has none.
     name_id: Optional[int] = None,
-    # Onboarding seam for exploitability: this shared helper does NOT set
-    # `Vulnerability.exploitable` today — only the Nessus path
-    # (VulnerabilityService) does.  To let another scanner (e.g. Qualys) feed the
-    # source-agnostic `has:exploit` / `exploitport:` filters, add an
-    # `exploitable: bool = False` param here, set it on the row below, and have
-    # that parser compute it (à la nessus_parser._is_exploitable).
+    # v2.413.0 — exploitability for the source-agnostic `has:exploit` /
+    # `exploitport:` filters (nmap's vulners marks entries is_exploit; the
+    # Nessus path sets it in VulnerabilityService).  None leaves it alone; a
+    # re-observation only ever raises it.
+    exploitable: Optional[bool] = None,
     # v2.387.0 — the id names a CHECK that reports several distinct results
     # (Nikto 2.6 gives every "Suggested security header missing: X" line the
     # id 013587): the title is part of the identity, or the five headers
@@ -538,6 +537,8 @@ def upsert_vulnerability(
             existing.references = json.dumps(references)
         if plugin_output:
             existing.plugin_output = plugin_output
+        if exploitable:
+            existing.exploitable = True
         return existing
 
     vulnerability = Vulnerability(
@@ -557,6 +558,7 @@ def upsert_vulnerability(
         references=json.dumps(references) if references else None,
         plugin_output=plugin_output,
         last_seen_scan_id=scan_id,
+        exploitable=bool(exploitable),
     )
     db.add(vulnerability)
     db.flush()

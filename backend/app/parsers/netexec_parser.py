@@ -465,7 +465,11 @@ class NetexecParser:
             'port': int(port),
             'hostname': hostname if hostname != ip else None,
             'protocol': protocol.lower(),
-            'state': 'up' if 'up' in status.lower() else 'unknown',
+            # v2.413.0 — nxc prints a line only for a host whose service
+            # answered (the "[*] RFB 3.8" / "[*] Banner:" line is that answer):
+            # the host is up.  Only a status containing "up" counted, so every
+            # nxc-only host was "unknown".
+            'state': 'up',
             'confidence_factors': {
                 'basic_connectivity': True
             },
