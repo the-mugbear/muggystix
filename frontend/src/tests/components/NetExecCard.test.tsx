@@ -69,6 +69,16 @@ describe('NetExecCard lines (v5.296.0)', () => {
       .toHaveAttribute('href', '/reference/tool-coverage?tool=netexec');
   });
 
+  it('treats lines that differ only in column padding as the same result', async () => {
+    const ftp = { ...row(1, null), protocol: 'ftp', port: 21, username: null, auth_success: null };
+    getHostNetexecResults.mockResolvedValue([
+      { ...ftp, id: 1, raw_output: 'FTP  10.0.0.10   21    10.0.0.10   [*] Banner: (vsFTPd 3.0.5)', first_seen: '2026-09-25T22:09:00Z' },
+      { ...ftp, id: 2, raw_output: 'FTP 10.0.0.10 21 10.0.0.10 [*] Banner: (vsFTPd 3.0.5)', first_seen: '2026-09-25T22:10:00Z' },
+    ]);
+    renderCard(2);
+    expect(await screen.findByText(/same result in 2 scans/)).toBeInTheDocument();
+  });
+
   it('keeps two scans of one port apart when their lines differ', async () => {
     const vnc = { ...row(1, null), protocol: 'vnc', port: 5900, username: null, auth_success: null };
     getHostNetexecResults.mockResolvedValue([

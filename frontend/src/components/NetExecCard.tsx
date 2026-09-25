@@ -214,8 +214,10 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
     // v5.296.0 — the line is part of the result: a VNC banner with
     // "(No Auth:True)" and one without are different results, and folding
     // them showed only the latest line.
+    // Whitespace is nxc's column padding, which differs between runs.
     (r) => JSON.stringify([r.protocol, r.port ?? null, r.auth_success ?? null, r.username ?? null,
-      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null, r.raw_output ?? null]),
+      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null,
+      r.raw_output ? r.raw_output.replace(/\s+/g, ' ').trim() : null]),
     (r) => r.first_seen,
   );
 
