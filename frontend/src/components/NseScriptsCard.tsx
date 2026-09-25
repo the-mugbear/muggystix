@@ -114,8 +114,19 @@ export const formatNseOutput = (raw: string | null | undefined): string => {
   return lines.map((l) => l.slice(Math.min(common, l.match(/^[ \t]*/)![0].length))).join('\n').trimEnd();
 };
 
-const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => {
+/** Scripts whose output BlueStick reads into fields or scanner observations
+ *  (v5.297.0; app/parsers/nmap_parser.py, nse_vulns.py).  Every other
+ *  script is raw text: read it, nothing acts on it. */
+const INTERPRETED = new Set([
+  'smb-security-mode', 'smb2-security-mode', 'smb-protocols', 'vnc-info', 'ftp-anon',
+  'ssl-cert', 'ssl-enum-ciphers', 'vulners',
+]);
+export const isInterpretedScript = (scriptId: string): boolean =>
+  INTERPRETED.has(scriptId) || scriptId.includes('-vuln-') || scriptId === 'ssl-heartbleed';
+
+export const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => {
   const flagged = isSecurityRelevant(script.script_id);
+  const interpreted = isInterpretedScript(script.script_id);
   const output = formatNseOutput(script.output);
   return (
     <AccordionItem value={itemValue} className="border-border">
@@ -130,11 +141,12 @@ const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => {
           <code className="truncate font-mono text-caption text-muted-foreground">
             {script.script_id}
           </code>
-          {flagged && (
-            <Badge variant="warning-outline" className="text-caption">
-              security check
-            </Badge>
-          )}
+          <Badge variant="outline" className={interpreted ? 'border-info/40 text-caption text-info' : 'text-caption text-muted-foreground'}
+            title={interpreted
+              ? 'BlueStick reads this output into fields or scanner observations.'
+              : 'Kept as text: no scanner observation, filter or insight uses it.'}>
+            {interpreted ? 'read by BlueStick' : 'raw text'}
+          </Badge>
         </div>
       </AccordionTrigger>
       <AccordionContent>
@@ -154,14 +166,17 @@ const ScriptItem: React.FC<ScriptItemProps> = ({ script, itemValue }) => {
 
 interface NseScriptsCardProps {
   host: Host;
+  /** v5.297.0 — port scripts live in each service's panel; the inspector
+   *  shows only the host scripts here. */
+  hostOnly?: boolean;
 }
 
-const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
+const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host, hostOnly = false }) => {
   const hostScripts = host.host_scripts ?? [];
 
   // Ports that actually carry script output, sorted by port number so
   // the section reads in the same order as the ports table.
-  const portsWithScripts = (host.ports ?? [])
+  const portsWithScripts = hostOnly ? [] : (host.ports ?? [])
     .filter((p) => (p.scripts?.length ?? 0) > 0)
     .slice()
     .sort((a, b) => a.port_number - b.port_number);
@@ -175,7 +190,7 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
   return (
     <InspectorSection
       id="host-detail-nse"
-      title="NSE script output"
+      title={hostOnly ? 'Host scripts' : 'NSE script output'}
       titleHint="Free-form results from the Nmap Scripting Engine (-sC / --script), and banners masscan grabbed (--banners). Expand a row to read the raw output."
       icon={<ScrollText className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       count={totalScripts}
@@ -183,9 +198,8 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
       <div className="space-y-md">
         {/* v5.296.0 — raw text is not a finding: say so where it is read. */}
         <p className="text-caption text-muted-foreground">
-          Raw tool output (Nmap scripts, masscan banners). BlueStick reads SMB signing and, on web ports, the
-          certificate and TLS versions from it; everything else here &mdash; anonymous FTP, VNC security types,
-          VULNERABLE states &mdash; raises no scanner observation and matches no filter.{' '}
+          Nmap&rsquo;s host scripts. Each is marked <em>read by BlueStick</em> (its result is a field or a
+          scanner observation) or <em>raw text</em> (nothing acts on it).{' '}
           <Link to="/reference/tool-coverage?tool=nmap" className="text-info underline-offset-2 hover:underline">
             What BlueStick reads from Nmap
           </Link>

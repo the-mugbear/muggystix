@@ -84,10 +84,7 @@ import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
 import { StructuredTestCard } from './ProposedTestList';
 import EntryResultsPanel from './EntryResultsPanel';
-import WebInterfacesCard from './WebInterfacesCard';
-import WebPathsCard from './WebPathsCard';
 import NseScriptsCard from './NseScriptsCard';
-import NetExecCard from './NetExecCard';
 import HostFindingsCard from './HostFindingsCard';
 import HostNamesCard from './HostNamesCard';
 import HostLineagePanel from './HostLineagePanel';
@@ -1301,8 +1298,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const observationsSection = hasVulnerabilities ? (
     <InspectorSection
       id="host-detail-vulnerabilities"
-      title="Scanner observations"
-      titleHint="What scanners reported on this host, grouped by issue. Not yet judged: promote an issue to make it a finding under investigation."
+      title="Weaknesses"
+      titleHint="Scanner observations on this host, grouped by issue — one row per weakness whichever tool reported it (nmap, NetExec, Nessus…). Not yet judged: promote an issue to make it a finding under investigation."
       icon={<ShieldAlert className="size-4 shrink-0 text-destructive" aria-hidden />}
       // Rows are issues, so the count is issues. When scanners overlapped,
       // say so rather than showing a number that doesn't match the rows.
@@ -1649,6 +1646,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   })() : <span className="text-muted-foreground">—</span>}
                 </dd>
               </div>
+              {/* v5.297.0 — only on a host that speaks SMB: an FTP server read
+                  "SMB —", a question nobody asked. */}
+              {(host.smb_signing || openPorts.some((p) => p.port_number === 445 || p.port_number === 139)) && (
               <div className="flex gap-sm">
                 <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">SMB</dt>
                 <dd className="min-w-0 text-metadata">
@@ -1668,6 +1668,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   ) : <span className="text-muted-foreground">—</span>}
                 </dd>
               </div>
+              )}
               {/* v5.276.0 — identity scanners report that was dropped:
                   NetBIOS name (Nessus) and MAC + vendor (nmap, Nessus). */}
               {(host.netbios_name || host.mac_address) && (
@@ -1930,7 +1931,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           from the observations.
         */}
 
-      {/* Ports — services, per-endpoint TLS evidence, connection helpers. */}
+      {/* v5.297.0 — the host's weaknesses first (scanner observations, one
+          row per issue, whichever tool reported it), then this host's
+          findings, then each service with everything known about it. */}
+      {observationsSection}
+
+      {/* This host's findings, inline — appears once a note here is promoted. */}
+      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
+
+      {/* Services — one row per open port; a row opens to its weaknesses,
+          access, web pages and paths, and the tools' output. */}
       <PortDetailsCard
         hostId={host.id}
         hostIp={host.ip_address}
@@ -1940,16 +1950,37 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         closedPorts={closedPorts}
         filteredPorts={filteredPorts}
         connectionHelpersByPort={connectionHelpersByPort}
+        vulnerabilities={host.vulnerabilities ?? []}
+        netexecCount={host.netexec_result_count ?? 0}
+        webPathCount={host.web_path_count ?? 0}
       />
 
-      {/* This host's findings, inline — appears once a note here is promoted. */}
-      <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
+      {/* Host-level evidence: what is about the host, not one service. */}
+      {/* v5.193.0 — every name bound to this address (the host row shows
+          one display name; a load balancer carries many). v5.241.0 — the DNS
+          records behind those names are a disclosure INSIDE this section
+          (HostDnsRecordsCard, embedded); it stands alone only when the host
+          has no names at all. */}
+      <HostNamesCard hostId={host.id} />
 
-      {observationsSection}
+      {/* Nmap's host scripts (port scripts are in each service's panel). */}
+      <NseScriptsCard host={host} hostOnly />
+
+      {/* Where this host is registered and hosted — the outside world's answer
+          to "is this the client's?", vs the scope's own CIDR list. A single
+          fresh attribution is already shown as the "Registered" line in the
+          identity block above, so the card renders only when it adds more:
+          cert data, a second block, or a stale lookup to re-verify. */}
+      {showProvenanceCard && (
+        <ProvenanceCard
+          attributions={host.attributions}
+          certOrgs={host.cert_orgs}
+          certStatus={host.cert_status}
+        />
+      )}
 
       {/* Notes — one section: the composer (a single line until used) over the
-          thread. It follows the evidence it is written about; a long thread
-          used to sit between the ports and the observations. */}
+          thread, after the evidence it is written about. */}
       <InspectorSection
         id="host-detail-notes"
         title="Notes"
@@ -2424,20 +2455,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </DialogContent>
       </Dialog>
 
-      {/* Where this host is registered and hosted — the outside world's answer
-          to "is this the client's?", vs the scope's own CIDR list. A single
-          fresh attribution is already shown as the "Registered" line in the
-          identity block above, so the card renders only when it adds more:
-          cert data, a second block, or a stale lookup to re-verify. */}
-      {showProvenanceCard && (
-        <ProvenanceCard
-          attributions={host.attributions}
-          certOrgs={host.cert_orgs}
-          certStatus={host.cert_status}
-        />
-      )}
-
-
       {/* Proposed Tests */}
       {testPlanError && testPlanEntries.length === 0 && (
         <Alert variant="warning">
@@ -2661,26 +2678,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </InspectorSection>
       )}
 
-      <WebInterfacesCard hostId={host.id} count={host.web_interface_count ?? 0} />
-      <WebPathsCard hostId={host.id} count={host.web_path_count ?? 0} />
-
-      {/* v5.193.0 — every name bound to this address (the host row shows
-          one display name; a load balancer carries many). v5.241.0 — the DNS
-          records behind those names are a disclosure INSIDE this section
-          (HostDnsRecordsCard, embedded); it stands alone only when the host
-          has no names at all. */}
-      <HostNamesCard hostId={host.id} />
-
-      {/* NSE script output — port + host scripts.  Renders nothing
-          when the host was scanned without -sC/--script. */}
-      <NseScriptsCard host={host} />
-
-      {/* NetExec credentialed enumeration — renders nothing when the
-          host was never probed with NetExec. */}
-      <NetExecCard hostId={host.id} count={host.netexec_result_count ?? 0} />
-
-      {/* Workflow lineage */}
-      <HostLineagePanel hostId={host.id} />
+      {/* History: workflow lineage (only when an agent workflow touched the
+          host — v5.297.0) and the scans that observed it. */}
+      <HostLineagePanel hostId={host.id} hideWhenEmpty />
 
       {/* Scan discovery timeline — audit evidence, relevant occasionally, so it
           lives at the bottom with a show-all expander (was pinned in the header,

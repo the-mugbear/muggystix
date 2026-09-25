@@ -18,10 +18,19 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
-  ArrowDown, ArrowUp, ArrowUpDown, Copy, Lock, Network, ShieldCheck, Terminal,
+  ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, Copy, Lock, Network, ShieldCheck, Terminal,
 } from 'lucide-react';
 
-import { getHostWebInterfaces, type Port } from '../../services/api';
+import {
+  getHostNetexecResults, getHostWebInterfaces, getHostWebPaths,
+  type HostVulnerability, type NetexecResult, type Port, type WebInterface, type WebPath,
+} from '../../services/api';
+import { foldNetexecRows, NetExecResultRow } from '../NetExecCard';
+import { SEVERITY_BADGE_VARIANT, type Severity } from '../../utils/severity';
+import {
+  evidenceForPort, summariseAccess, unplacedNetexec, worstSeverity, type ServiceEvidence,
+} from '../../utils/serviceEvidence';
+import ServiceEvidencePanel from './ServiceEvidencePanel';
 import { getConnectionHelpers, isSafeHostname, type ConnectionHelper } from '../../utils/connectionHelpers';
 import {
   EXPIRY_WARN_DAYS, daysUntil, endpointsByPort, summariseEndpointTls,
@@ -37,7 +46,7 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
-import { InspectorSection, jumpToInspectorSection } from './InspectorSection';
+import { InspectorSection } from './InspectorSection';
 
 const stateBadgeVariant = (
   state: string | null,
@@ -199,6 +208,47 @@ const TlsCell: React.FC<{
   );
 };
 
+/**
+ * A service's row summary (v5.297.0): its worst weakness, whether anything
+ * logged in, and how much web / path / script evidence it has.  Any part
+ * opens the service's panel.
+ */
+const ServiceSummary: React.FC<{ evidence: ServiceEvidence; scripts: number; onOpen: () => void }> = ({
+  evidence, scripts, onOpen,
+}) => {
+  const worst = worstSeverity(evidence.weaknesses);
+  const access = summariseAccess(foldNetexecRows(evidence.access).map((o) => ({ auth_success: o.latest.auth_success })));
+  const parts: React.ReactNode[] = [];
+  if (worst) {
+    const rest = evidence.weaknesses.length - worst.count;
+    parts.push(
+      <Badge key="w" variant={(SEVERITY_BADGE_VARIANT[worst.severity as Severity] ?? 'outline') as never}>
+        {worst.count} {worst.severity}{rest > 0 ? ` +${rest}` : ''}
+      </Badge>,
+    );
+  }
+  if (access.worked.length > 0) {
+    parts.push(<Badge key="a" variant="success">{access.worked.length} login{access.worked.length === 1 ? '' : 's'} worked</Badge>);
+  } else if (access.failed.length > 0) {
+    parts.push(<span key="f" className="text-caption text-muted-foreground">{access.failed.length} failed logins</span>);
+  }
+  // Distinct pages: a URL each tool saw in several scans is one page.
+  const pages = new Set(evidence.web.map((w) => `${w.source}|${w.url}`)).size;
+  const counts = [
+    pages ? `web ${pages}` : null,
+    evidence.paths.length ? `${evidence.paths.length} paths` : null,
+    scripts ? `${scripts} script${scripts === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(' · ');
+  if (counts) parts.push(<span key="c" className="text-caption text-muted-foreground">{counts}</span>);
+  if (parts.length === 0) return <span className="text-caption text-muted-foreground">—</span>;
+  return (
+    <button type="button" onClick={onOpen}
+      className="flex min-w-0 flex-wrap items-center gap-xxs rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {parts}
+    </button>
+  );
+};
+
 interface PortDetailsCardProps {
   hostId: number;
   hostIp: string | null;
@@ -210,10 +260,15 @@ interface PortDetailsCardProps {
   closedPorts: Port[];
   filteredPorts: Port[];
   connectionHelpersByPort: Map<number, ConnectionHelper[]>;
+  /** v5.297.0 — the evidence each service's panel groups under its port. */
+  vulnerabilities?: HostVulnerability[];
+  netexecCount?: number;
+  webPathCount?: number;
 }
 
 const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   hostId, hostIp, hostname = null, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
+  vulnerabilities = [], netexecCount = 0, webPathCount = 0,
 }) => {
   const toast = useToast();
   const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
@@ -222,6 +277,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   // Which endpoint a port's commands address; absent = the default below.
   const [helperTarget, setHelperTarget] = useState<Record<number, string>>({});
   const [showNotOpen, setShowNotOpen] = useState(false);
+  // v5.297.0 — the host's evidence, loaded once and split by port.
+  const [webRows, setWebRows] = useState<WebInterface[]>([]);
+  const [netexecRows, setNetexecRows] = useState<NetexecResult[]>([]);
+  const [pathRows, setPathRows] = useState<WebPath[]>([]);
+  const [evidenceError, setEvidenceError] = useState(false);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
 
   // Join the host's web interfaces onto ports by ``port_id`` as NAMED
   // ENDPOINTS (utils/portEndpoints): newest observation per (port, name),
@@ -233,16 +294,50 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   useEffect(() => {
     let cancelled = false;
     setEndpoints(new Map());
+    setWebRows([]);
     setHelperTarget({});
     setWebError(false);
     setShowNotOpen(false);
     getHostWebInterfaces(hostId)
       .then((interfaces) => {
-        if (!cancelled) setEndpoints(endpointsByPort(interfaces));
+        if (cancelled) return;
+        setEndpoints(endpointsByPort(interfaces));
+        setWebRows(interfaces);
       })
       .catch(() => { if (!cancelled) setWebError(true); });
     return () => { cancelled = true; };
   }, [hostId]);
+
+  // NetExec / SMBMap results and discovered paths: only when the host has any.
+  useEffect(() => {
+    let cancelled = false;
+    setNetexecRows([]);
+    setPathRows([]);
+    setEvidenceError(false);
+    setExpanded(new Set());
+    const loads: Promise<unknown>[] = [];
+    if (netexecCount > 0) {
+      loads.push(getHostNetexecResults(hostId).then((r) => { if (!cancelled) setNetexecRows(r); }));
+    }
+    if (webPathCount > 0) {
+      loads.push(getHostWebPaths(hostId).then((r) => { if (!cancelled) setPathRows(r); }));
+    }
+    Promise.all(loads).catch(() => { if (!cancelled) setEvidenceError(true); });
+    return () => { cancelled = true; };
+  }, [hostId, netexecCount, webPathCount]);
+
+  const all = useMemo(
+    () => ({ vulnerabilities, netexec: netexecRows, web: webRows, paths: pathRows }),
+    [vulnerabilities, netexecRows, webRows, pathRows],
+  );
+  const unplaced = useMemo(() => unplacedNetexec(openPorts, netexecRows), [openPorts, netexecRows]);
+  // A host with one open port has one thing to look at: open it.
+  const isExpanded = (port: Port) => expanded.has(port.id) || openPorts.length === 1;
+  const toggle = (port: Port) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(port.id)) next.delete(port.id); else next.add(port.id);
+    return next;
+  });
 
   const sortPorts = useMemo(
     () => <T extends { port_number: number | null }>(arr: T[]): T[] => {
@@ -259,21 +354,16 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     (p) => (endpoints.get(p.id) ?? []).some((e) => e.tls) || isTlsTunnel(p.service_tunnel),
   );
 
-  // v5.241.0 — a port row links to the evidence recorded ABOUT that port (its
-  // web interfaces, its NSE scripts), which lives in sections further down.
-  // Same rule as TLS: no column unless some port has something to link.
-  const evidenceFor = (port: Port) => ({
-    web: (endpoints.get(port.id) ?? []).length,
-    nse: port.scripts?.length ?? 0,
-  });
+  // v5.297.0 — what each service carries, summarised on its row; the row
+  // opens to the evidence itself (ServiceEvidencePanel).
+  const evidenceFor = (port: Port) => evidenceForPort(port, all);
   const showEvidence = openPorts.some((p) => {
     const e = evidenceFor(p);
-    return e.web + e.nse > 0;
+    return e.weaknesses.length + e.access.length + e.web.length + e.paths.length + (p.scripts?.length ?? 0) > 0;
   });
   // Version takes whatever the optional columns leave (fixed layout).
-  const versionWidth = 100 - 12 - 18 - 14 - 8 - (showTls ? 16 : 0) - (showEvidence ? 12 : 0);
-  const evidenceLinkClass =
-    'rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+  const versionWidth = 100 - 12 - 18 - 12 - 8 - (showTls ? 14 : 0) - (showEvidence ? 18 : 0);
+  const columnCount = 5 + (showTls ? 1 : 0) + (showEvidence ? 1 : 0);
 
   const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
     <TableHead className={className}
@@ -298,7 +388,8 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   return (
     <InspectorSection
       id="host-detail-ports"
-      title="Ports"
+      title="Services"
+      titleHint="One row per open port. Open a row for everything known about that service: its weaknesses, what logged in, its web pages and paths, and the tools' output."
       icon={<Network className="size-4 shrink-0 text-primary" aria-hidden />}
       count={openPorts.length}
     >
@@ -312,9 +403,9 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                 <PortSortHead className="w-[12%]" />
                 <TableHead className="w-[18%]">Service</TableHead>
                 <TableHead style={{ width: `${versionWidth}%` }}>Version</TableHead>
-                <TableHead className="w-[14%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
-                {showTls && <TableHead className="w-[16%]">TLS</TableHead>}
-                {showEvidence && <TableHead className="w-[12%]">Evidence</TableHead>}
+                <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
+                {showTls && <TableHead className="w-[14%]">TLS</TableHead>}
+                {showEvidence && <TableHead className="w-[18%]">What&rsquo;s here</TableHead>}
                 <TableHead className="w-[8%] text-center">
                   <span className="sr-only">Connection helpers</span>
                 </TableHead>
@@ -344,13 +435,25 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                 const version = port.service_product && port.service_version
                   ? `${port.service_product} ${port.service_version}`
                   : port.service_product || '';
+                const open = isExpanded(port);
                 return (
-                  <TableRow key={port.id}>
+                  <React.Fragment key={port.id}>
+                  <TableRow className={open ? 'border-b-0' : undefined}>
                     <TableCell className="truncate font-mono text-metadata">
-                      <span title={port.reason ? `${port.state || 'open'} — ${port.reason}` : undefined}>
+                      <button
+                        type="button"
+                        onClick={() => toggle(port)}
+                        aria-expanded={open}
+                        aria-label={`${open ? 'Hide' : 'Show'} what is known about port ${port.port_number}`}
+                        className="inline-flex items-center gap-xxs rounded text-left hover:text-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        title={port.reason ? `${port.state || 'open'} — ${port.reason}` : undefined}
+                      >
+                        {open
+                          ? <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
+                          : <ChevronRight className="size-3 shrink-0 text-muted-foreground" aria-hidden />}
                         {port.port_number}
                         <span className="text-muted-foreground">/{port.protocol}</span>
-                      </span>
+                      </button>
                     </TableCell>
                     <TableCell
                       className="truncate"
@@ -391,30 +494,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                         />
                       </TableCell>
                     )}
-                    {showEvidence && (() => {
-                      const e = evidenceFor(port);
-                      return (
-                        <TableCell className="min-w-0">
-                          <div className="flex min-w-0 flex-wrap gap-x-xs">
-                            {e.web > 0 && (
-                              <button type="button" className={evidenceLinkClass}
-                                onClick={() => jumpToInspectorSection('host-detail-web')}
-                                aria-label={`${e.web} web interface${e.web === 1 ? '' : 's'} on port ${port.port_number} — jump to Web interfaces`}>
-                                web {e.web}
-                              </button>
-                            )}
-                            {e.nse > 0 && (
-                              <button type="button" className={evidenceLinkClass}
-                                onClick={() => jumpToInspectorSection('host-detail-nse')}
-                                aria-label={`${e.nse} NSE script${e.nse === 1 ? '' : 's'} on port ${port.port_number} — jump to NSE script output`}>
-                                nse {e.nse}
-                              </button>
-                            )}
-                            {e.web + e.nse === 0 && <span className="text-caption text-muted-foreground">—</span>}
-                          </div>
-                        </TableCell>
-                      );
-                    })()}
+                    {showEvidence && (
+                      <TableCell className="min-w-0">
+                        <ServiceSummary evidence={evidenceFor(port)} scripts={port.scripts?.length ?? 0}
+                          onOpen={() => { if (!open) toggle(port); }} />
+                      </TableCell>
+                    )}
                     {/* A full-size icon button (36px) set the height of every
                         row; the row is as tall as its text now. */}
                     {/* A 28px button is the height of the row's text line, so it
@@ -485,6 +570,14 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                       </Popover>
                     </TableCell>
                   </TableRow>
+                  {open && (
+                    <TableRow className="hover:bg-transparent">
+                      <TableCell colSpan={columnCount} className="bg-muted/20 pb-sm pl-lg">
+                        <ServiceEvidencePanel hostId={hostId} port={port} evidence={evidenceFor(port)} />
+                      </TableCell>
+                    </TableRow>
+                  )}
+                  </React.Fragment>
                 );
               })}
             </TableBody>
@@ -497,6 +590,25 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
         <p className="pt-xs text-caption text-muted-foreground">
           TLS evidence couldn’t be loaded for this host — reopen it to retry.
         </p>
+      )}
+      {evidenceError && (
+        <p className="pt-xs text-caption text-muted-foreground">
+          Some of this host&rsquo;s evidence (NetExec results, discovered paths) couldn&rsquo;t be loaded — reopen it to retry.
+        </p>
+      )}
+
+      {/* NetExec / SMBMap results on no port listed above. */}
+      {unplaced.length > 0 && (
+        <div className="pt-sm">
+          <h4 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
+            Results on no listed port ({unplaced.length})
+          </h4>
+          <div className="divide-y divide-border">
+            {foldNetexecRows(unplaced).map(({ latest, count }) => (
+              <NetExecResultRow key={latest.id} result={latest} seenCount={count} />
+            ))}
+          </div>
+        </div>
       )}
 
       {/* Closed / filtered: a count until asked for. They are rarely what the

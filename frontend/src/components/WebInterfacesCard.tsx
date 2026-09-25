@@ -24,6 +24,11 @@ interface WebInterfacesCardProps {
   // Count from HostDetail, used to decide whether to mount + fetch
   // at all.  If 0, the card renders nothing.
   count: number;
+  /** v5.297.0 — rows already loaded (a service's own, from the Services
+   *  section); skips the fetch. */
+  rows?: WebInterface[];
+  /** v5.297.0 — inside a service panel: the list without its own section. */
+  embedded?: boolean;
 }
 
 /**
@@ -37,10 +42,11 @@ interface WebInterfacesCardProps {
  * on-demand when the user clicks the thumbnail trigger — the initial
  * list request stays cheap even for hosts with many interfaces.
  */
-const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) => {
-  const [rows, setRows] = useState<WebInterface[] | null>(null);
+const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count, rows: given, embedded = false }) => {
+  const [fetched, setRows] = useState<WebInterface[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const rows = given ?? fetched;
 
   const [lightboxOpen, setLightboxOpen] = useState(false);
   const [lightboxSrc, setLightboxSrc] = useState<string | null>(null);
@@ -49,7 +55,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
   const [lightboxCaption, setLightboxCaption] = useState<string>('');
 
   useEffect(() => {
-    if (count === 0) return;
+    if (count === 0 || given) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -68,7 +74,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
     return () => {
       cancelled = true;
     };
-  }, [hostId, count]);
+  }, [hostId, count, given]);
 
   // Revoke the blob URL when the lightbox closes or a different
   // screenshot is loaded.  Avoids memory leaks from chained opens.
@@ -123,14 +129,7 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
     webObservedAt,
   );
 
-  return (
-    <InspectorSection
-      id="host-detail-web"
-      title="Web interfaces"
-      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
-      // Distinct interfaces once loaded (the prop counts per-scan rows).
-      count={rows ? observed.length : count}
-    >
+  const body = (
       <div>
         {loading && (
           <div className="flex items-center gap-xs text-muted-foreground">
@@ -171,6 +170,18 @@ const WebInterfacesCard: React.FC<WebInterfacesCardProps> = ({ hostId, count }) 
         caption={lightboxCaption}
       />
       </div>
+  );
+
+  if (embedded) return body;
+  return (
+    <InspectorSection
+      id="host-detail-web"
+      title="Web interfaces"
+      icon={<Globe className="size-4 shrink-0 text-primary" aria-hidden />}
+      // Distinct interfaces once loaded (the prop counts per-scan rows).
+      count={rows ? observed.length : count}
+    >
+      {body}
     </InspectorSection>
   );
 };

@@ -31,10 +31,30 @@ const formatSize = (bytes: number | null | undefined) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-const WebPathsCard: React.FC<{ hostId: number; count: number }> = ({ hostId, count }) => {
-  const [rows, setRows] = useState<WebPath[] | null>(null);
+/** One discovered path (v5.297.0 — shared with the service panel). */
+export const WebPathRow: React.FC<{ row: WebPath }> = ({ row: r }) => (
+  <li className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
+    <Badge variant={statusVariant(r.status_code) as never} className="w-12 shrink-0 justify-center tabular-nums">
+      {r.status_code ?? '—'}
+    </Badge>
+    <a href={safeHttpHref(r.url)} target="_blank" rel="noopener noreferrer" title={r.url}
+      className="min-w-0 flex-1 truncate font-mono text-primary hover:underline">
+      {r.port != null ? `:${r.port} ` : ''}{r.path}
+    </a>
+    <span className="w-20 shrink-0 text-right text-caption tabular-nums text-muted-foreground">
+      {formatSize(r.size) ?? ''}
+    </span>
+    <span className="w-28 shrink-0 truncate text-caption text-muted-foreground" title={r.scans > 1 ? `Reported by ${r.scans} scans` : undefined}>
+      {r.source}{r.scans > 1 ? ` · ${r.scans} scans` : ''}
+    </span>
+  </li>
+);
+
+const WebPathsCard: React.FC<{ hostId: number; count: number; rows?: WebPath[] }> = ({ hostId, count, rows: given }) => {
+  const [fetched, setRows] = useState<WebPath[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const rows = given ?? fetched;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -49,8 +69,8 @@ const WebPathsCard: React.FC<{ hostId: number; count: number }> = ({ hostId, cou
   }, [hostId]);
 
   useEffect(() => {
-    if (count > 0) void load();
-  }, [count, load]);
+    if (count > 0 && !given) void load();
+  }, [count, load, given]);
 
   if (count <= 0) return null;
 
@@ -72,23 +92,7 @@ const WebPathsCard: React.FC<{ hostId: number; count: number }> = ({ hostId, cou
       )}
       {rows && rows.length > 0 && (
         <ul className="divide-y divide-border">
-          {rows.map((r) => (
-            <li key={r.url} className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
-              <Badge variant={statusVariant(r.status_code) as never} className="w-12 shrink-0 justify-center tabular-nums">
-                {r.status_code ?? '—'}
-              </Badge>
-              <a href={safeHttpHref(r.url)} target="_blank" rel="noopener noreferrer" title={r.url}
-                className="min-w-0 flex-1 truncate font-mono text-primary hover:underline">
-                {r.port != null ? `:${r.port} ` : ''}{r.path}
-              </a>
-              <span className="w-20 shrink-0 text-right text-caption tabular-nums text-muted-foreground">
-                {formatSize(r.size) ?? ''}
-              </span>
-              <span className="w-28 shrink-0 truncate text-caption text-muted-foreground" title={r.scans > 1 ? `Reported by ${r.scans} scans` : undefined}>
-                {r.source}{r.scans > 1 ? ` · ${r.scans} scans` : ''}
-              </span>
-            </li>
-          ))}
+          {rows.map((r) => <WebPathRow key={r.url} row={r} />)}
         </ul>
       )}
     </InspectorSection>

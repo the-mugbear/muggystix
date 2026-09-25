@@ -1,7 +1,12 @@
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const api = vi.hoisted(() => ({ getHostWebInterfaces: vi.fn() }));
+const api = vi.hoisted(() => ({
+  getHostWebInterfaces: vi.fn(),
+  getHostNetexecResults: vi.fn(),
+  getHostWebPaths: vi.fn(),
+}));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
@@ -152,30 +157,82 @@ describe('PortDetailsCard — density', () => {
     expect(await screen.findByText(/TLS evidence couldn’t be loaded/)).toBeInTheDocument();
   });
 
-  // v5.241.0 — a port links to the evidence recorded about it.
-  it('links a port to its web interfaces and NSE output, and draws no column when there is none', async () => {
+  // v5.297.0 — a service row summarises what is known about it and opens to
+  // the evidence itself (it used to link to per-tool sections further down).
+  it('summarises each service and opens it to its evidence', async () => {
     api.getHostWebInterfaces.mockResolvedValue([
       { id: 1, source: 'httpx', url: 'http://10.0.0.5/', fqdn: null, port_id: 443, last_seen: iso(-1), has_screenshot: false, scan_id: 1 },
     ]);
-    const web = document.createElement('section');
-    web.id = 'host-detail-web';
-    web.scrollIntoView = vi.fn();
-    document.body.appendChild(web);
-    const sshWithScripts = { ...ssh, scripts: [{ id: 1 }, { id: 2 }] } as unknown as Port;
+    const sshWithScripts = {
+      ...ssh,
+      scripts: [
+        { id: 1, script_id: 'ssh-hostkey', output: 'rsa 3072' },
+        { id: 2, script_id: 'ssh2-enum-algos', output: 'kex: ...' },
+      ],
+    } as unknown as Port;
+    const vulns = [
+      { id: 9, title: 'Exposed Tomcat Manager', severity: 'high', source: 'nessus', port_id: 443 },
+      { id: 10, title: 'Missing header', severity: 'low', source: 'nikto', port_id: 443 },
+    ];
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <PortDetailsCard hostId={1} hostIp="10.0.0.5" openPorts={[https, sshWithScripts]} closedPorts={[]}
+            filteredPorts={[]} connectionHelpersByPort={new Map()} vulnerabilities={vulns as never} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByRole('columnheader', { name: 'What’s here' })).toBeInTheDocument();
+    expect(await screen.findByText('1 high +1')).toBeInTheDocument();
+    expect(screen.getByText('web 1')).toBeInTheDocument();
+    expect(screen.getByText('2 scripts')).toBeInTheDocument();
 
-    renderWith([https, sshWithScripts]);
-    expect(await screen.findByRole('columnheader', { name: 'Evidence' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /2 NSE scripts on port 22/ })).toHaveTextContent('nse 2');
-    fireEvent.click(screen.getByRole('button', { name: /1 web interface on port 443/ }));
-    expect(web.scrollIntoView).toHaveBeenCalled();
-    web.remove();
+    // Collapsed until asked for (two open ports); the port cell opens it.
+    expect(screen.queryByText('Tool output (2)')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Show what is known about port 22' }));
+    expect(screen.getByText('Tool output (2)')).toBeInTheDocument();
+    expect(screen.getAllByText('raw text')).toHaveLength(2);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show what is known about port 443' }));
+    expect(screen.getByText('Weaknesses (2)')).toBeInTheDocument();
+    expect(screen.getByText('Exposed Tomcat Manager')).toBeInTheDocument();
   });
 
-  it('draws no Evidence column on a host with nothing to link', async () => {
+  it('puts what logged in first and counts the failed attempts', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    const ftp = { id: 21, port_number: 21, protocol: 'tcp', state: 'open', service_name: 'ftp' } as Port;
+    const nx = (id: number, auth: boolean | null, user: string | null, line: string) => ({
+      id, scan_id: id, protocol: 'ftp', port: 21, auth_success: auth, username: user, raw_output: line,
+      first_seen: iso(-1), tool: 'netexec',
+    });
+    api.getHostNetexecResults.mockResolvedValue([
+      nx(1, null, null, 'FTP 10.0.0.5 21 10.0.0.5 [*] Banner: (vsFTPd 3.0.5)'),
+      nx(2, true, '', 'FTP 10.0.0.5 21 10.0.0.5 [+] : - Anonymous Login!'),
+      nx(3, false, 'admin', 'FTP 10.0.0.5 21 10.0.0.5 [-] admin (Response:530 Login incorrect.)'),
+      nx(4, false, 'root', 'FTP 10.0.0.5 21 10.0.0.5 [-] root (Response:530 Login incorrect.)'),
+    ]);
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <PortDetailsCard hostId={1} hostIp="10.0.0.5" openPorts={[ftp]} closedPorts={[]}
+            filteredPorts={[]} connectionHelpersByPort={new Map()} netexecCount={4} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('1 login worked')).toBeInTheDocument();
+    // One open port: its panel is open.  FTP's word for it, not SMB's.
+    expect(screen.getByText('Anonymous login')).toBeInTheDocument();
+    const failed = screen.getByRole('button', { name: '2 failed attempts · show' });
+    expect(screen.queryByText(/Login incorrect/)).not.toBeInTheDocument();
+    fireEvent.click(failed);
+    expect(screen.getAllByText(/Login incorrect/)).toHaveLength(2);
+  });
+
+  it('draws no summary column on a host with nothing recorded about its services', async () => {
     api.getHostWebInterfaces.mockResolvedValue([]);
     renderWith([ssh]);
     await waitFor(() => expect(api.getHostWebInterfaces).toHaveBeenCalled());
-    expect(screen.queryByRole('columnheader', { name: 'Evidence' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('columnheader', { name: 'What’s here' })).not.toBeInTheDocument();
   });
 
   it('says so when nothing is open', async () => {

@@ -26,6 +26,10 @@ import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface HostLineagePanelProps {
   hostId: number;
+  /** v5.297.0 — render nothing (not a section saying "nothing") while
+   *  loading and when no agent workflow touched the host.  A failed load
+   *  still says so. */
+  hideWhenEmpty?: boolean;
 }
 
 /** Short relative age ("5m ago"). Shared with every other surface —
@@ -63,7 +67,7 @@ const LineageRow: React.FC<{
   </div>
 );
 
-export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) => {
+export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId, hideWhenEmpty = false }) => {
   const navigate = useNavigate();
   const [lineage, setLineage] = useState<HostLineageResponse | null>(null);
   const [loading, setLoading] = useState(true);
@@ -90,6 +94,8 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId }) =>
 
   const untouched = !!lineage
     && lineage.recon_sessions.length + lineage.plan_entries.length + lineage.execution_sessions.length === 0;
+
+  if (hideWhenEmpty && !error && (loading || untouched)) return null;
 
   return (
     <InspectorSection

@@ -23,6 +23,10 @@ interface NetExecCardProps {
   hostId: number;
   // Count from the host-detail payload; 0 → the card renders nothing.
   count: number;
+  /** v5.297.0 — rows already loaded (the Services section loads them once
+   *  and shows here only the ones on no open port); skips the fetch. */
+  rows?: NetexecResult[];
+  title?: string;
 }
 
 const protocolBadgeVariant = (proto: string): 'info' | 'secondary' | 'outline' => {
@@ -92,6 +96,18 @@ const normalizeShares = (shares: unknown): ShareEntry[] => {
   return [{ name: String(shares), detail: null }];
 };
 
+/** What a successful login was, in the protocol's own words (v5.297.0 —
+ *  an anonymous FTP login read "Null session"). */
+export const loginLabel = (result: NetexecResult): string => {
+  const user = (result.username ?? '').trim().toLowerCase();
+  const proto = result.protocol.toLowerCase();
+  if (result.username === '' || user === 'anonymous') {
+    return proto === 'smb' ? 'Null session' : proto === 'ftp' ? 'Anonymous login' : 'Blank user';
+  }
+  if (user === 'guest') return proto === 'smb' ? 'Guest session' : 'Guest login';
+  return 'Authenticated';
+};
+
 const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> = ({ result, seenCount = 1 }) => {
   const shares = normalizeShares(result.shares);
   const host = result.hostname || result.domain_name;
@@ -118,9 +134,7 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
         )}
         {result.auth_success != null && (
           <Badge variant={result.auth_success ? 'success' : 'outline'}>
-            {result.auth_success
-              ? (result.username === '' ? 'Null session' : result.username?.toLowerCase() === 'guest' ? 'Guest session' : 'Authenticated')
-              : 'Auth failed'}
+            {result.auth_success ? loginLabel(result) : 'Auth failed'}
           </Badge>
         )}
         {result.local_admin && (
@@ -182,10 +196,29 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
   );
 };
 
-const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
-  const [rows, setRows] = useState<NetexecResult[] | null>(null);
+/**
+ * One row per distinct result (v5.241.0): results are kept one row per scan,
+ * and the SAME result repeated is one row here.  The key includes the outcome
+ * (who, whether auth succeeded, which shares) and the line (v5.296.0: a VNC
+ * banner with "(No Auth:True)" and one without are different results), with
+ * whitespace — nxc's column padding, which differs between runs — ignored.
+ */
+export const foldNetexecRows = (rows: NetexecResult[]) =>
+  latestObservations(
+    rows,
+    (r) => JSON.stringify([r.protocol, r.port ?? null, r.auth_success ?? null, r.username ?? null,
+      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null,
+      r.raw_output ? r.raw_output.replace(/\s+/g, ' ').trim() : null]),
+    (r) => r.first_seen,
+  );
+
+export { NetExecResultRow };
+
+const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count, rows: given, title }) => {
+  const [fetched, setRows] = useState<NetexecResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const rows = given ?? fetched;
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -200,32 +233,19 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
   }, [hostId]);
 
   useEffect(() => {
-    if (count > 0) load();
-  }, [count, load]);
+    if (count > 0 && !given) load();
+  }, [count, load, given]);
 
   // Nothing observed — render nothing (host wasn't enumerated with NetExec).
   if (count <= 0) return null;
 
-  // v5.241.0 — results are kept one row per scan. The SAME result repeated is
-  // one row here; the key includes the outcome (who, whether auth succeeded,
-  // which shares), so a probe that came back differently stays its own row.
-  const observed = latestObservations(
-    rows ?? [],
-    // v5.296.0 — the line is part of the result: a VNC banner with
-    // "(No Auth:True)" and one without are different results, and folding
-    // them showed only the latest line.
-    // Whitespace is nxc's column padding, which differs between runs.
-    (r) => JSON.stringify([r.protocol, r.port ?? null, r.auth_success ?? null, r.username ?? null,
-      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null,
-      r.raw_output ? r.raw_output.replace(/\s+/g, ' ').trim() : null]),
-    (r) => r.first_seen,
-  );
+  const observed = foldNetexecRows(rows ?? []);
 
   return (
     <InspectorSection
       id="host-detail-netexec"
-      title="SMB / AD enumeration"
-      titleHint="NetExec and SMBMap: protocol probes (SMB / LDAP / WinRM / RDP) — the session or login outcome, local-admin access, SMBv1, and the shares with their permissions."
+      title={title ?? 'NetExec / SMBMap results'}
+      titleHint="NetExec and SMBMap results that belong to no open port listed above — the session or login outcome, local-admin access, and shares."
       icon={<KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
       count={rows ? observed.length : null}
     >
