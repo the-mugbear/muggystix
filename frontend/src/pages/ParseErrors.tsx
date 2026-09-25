@@ -1034,6 +1034,18 @@ const RowDetail: React.FC<{
             <>{item.detected_format_label || item.format_override_label ? ' · ' : ''}parsed by <span className="text-foreground">{item.final_format_label}</span></>
           )}
           {item.source_tool && <> · source tool <span className="text-foreground">{item.source_tool}</span></>}
+          {/* v5.296.0 — what that parser keeps, for "was something dropped?" */}
+          {item.final_file_type && (
+            <>
+              {' · '}
+              <Link
+                to={`/reference/tool-coverage?format=${encodeURIComponent(item.final_file_type)}`}
+                className="text-info underline-offset-2 hover:underline"
+              >
+                what BlueStick reads from this format
+              </Link>
+            </>
+          )}
         </p>
       )}
       <div className="grid grid-cols-2 gap-sm md:grid-cols-4">

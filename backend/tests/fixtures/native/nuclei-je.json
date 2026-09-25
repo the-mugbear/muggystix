@@ -1,0 +1,92 @@
+[
+  {
+    "template": "http/misconfiguration/http-missing-security-headers.yaml",
+    "template-id": "http-missing-security-headers",
+    "template-path": "/root/nuclei-templates/http/misconfiguration/http-missing-security-headers.yaml",
+    "info": {
+      "name": "HTTP Missing Security Headers",
+      "author": ["socketz", "geeknik"],
+      "tags": ["misconfig", "headers", "generic"],
+      "description": "This template searches for missing HTTP security headers.",
+      "reference": null,
+      "severity": "info",
+      "metadata": {"max-request": 1}
+    },
+    "matcher-name": "strict-transport-security",
+    "type": "http",
+    "host": "https://portal.example.com",
+    "port": "443",
+    "scheme": "https",
+    "url": "https://portal.example.com",
+    "matched-at": "https://portal.example.com",
+    "ip": "10.20.0.5",
+    "timestamp": "2026-09-25T10:00:00.123456789Z",
+    "curl-command": "curl -X 'GET' -H 'User-Agent: Mozilla/5.0' 'https://portal.example.com'",
+    "matcher-status": true
+  },
+  {
+    "template-id": "http-missing-security-headers",
+    "info": {
+      "name": "HTTP Missing Security Headers",
+      "severity": "info",
+      "description": "This template searches for missing HTTP security headers."
+    },
+    "matcher-name": "content-security-policy",
+    "type": "http",
+    "host": "https://portal.example.com",
+    "port": "443",
+    "scheme": "https",
+    "url": "https://portal.example.com",
+    "matched-at": "https://portal.example.com",
+    "ip": "10.20.0.5",
+    "timestamp": "2026-09-25T10:00:01.5Z",
+    "matcher-status": true
+  },
+  {
+    "template-id": "CVE-2021-44228",
+    "info": {
+      "name": "Apache Log4j2 Remote Code Injection",
+      "severity": "critical",
+      "description": "Apache Log4j2 JNDI features do not protect against attacker-controlled LDAP endpoints.",
+      "reference": ["https://logging.apache.org/log4j/2.x/security.html", "https://nvd.nist.gov/vuln/detail/CVE-2021-44228"],
+      "remediation": "Upgrade to Log4j 2.17.1 or later.",
+      "classification": {
+        "cve-id": ["cve-2021-44228"],
+        "cwe-id": ["cwe-502"],
+        "cvss-metrics": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H",
+        "cvss-score": 10
+      }
+    },
+    "type": "http",
+    "host": "http://10.20.0.7:8080",
+    "port": "8080",
+    "scheme": "http",
+    "url": "http://10.20.0.7:8080",
+    "matched-at": "http://10.20.0.7:8080/api/login",
+    "extracted-results": ["10.20.0.7"],
+    "ip": "10.20.0.7",
+    "timestamp": "2026-09-25T10:03:00Z",
+    "matcher-status": true
+  },
+  {
+    "template-id": "vnc-service-detect",
+    "info": {"name": "VNC Service - Detect", "severity": "info", "tags": ["network", "vnc", "detect"]},
+    "type": "tcp",
+    "host": "10.20.0.9:5900",
+    "port": "5900",
+    "ip": "10.20.0.9",
+    "matched-at": "10.20.0.9:5900",
+    "extracted-results": ["RFB 003.008"],
+    "timestamp": "2026-09-25T10:05:00Z",
+    "matcher-status": true
+  },
+  {
+    "template-id": "dns-waf-detect",
+    "info": {"name": "DNS WAF Detection", "severity": "info"},
+    "type": "dns",
+    "host": "example.com",
+    "matched-at": "example.com",
+    "timestamp": "2026-09-25T10:06:00Z",
+    "matcher-status": true
+  }
+]

@@ -1065,6 +1065,8 @@ export interface NetexecResult {
   tool?: string;
   local_admin?: boolean | null;
   smbv1?: boolean | null;
+  /** v5.296.0 — the tool's own line (clipped to 2000 chars). */
+  raw_output?: string | null;
 }
 
 /** v5.276.0 — a path content discovery found (latest observation per URL). */

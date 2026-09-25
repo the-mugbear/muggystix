@@ -448,6 +448,7 @@ const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
   { pattern: /^\/assist-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },
   { pattern: /^\/reference\/sbom$/, title: 'Software bill of materials' },
+  { pattern: /^\/reference\/tool-coverage$/, title: 'What BlueStick reads' },
   { pattern: /^\/tool-reference$/, title: 'Tool reference' },
   { pattern: /^\/default-credentials$/, title: 'Default credentials' },
 ];

@@ -221,6 +221,8 @@ describe('navigation manifest', () => {
     '/reference/user-guide/agents',
     '/reference/user-guide/admin',
     '/reference/sbom',
+    // v5.296.0 — a Reference hub entry, like the SBOM.
+    '/reference/tool-coverage',
   ]);
 
   it('no static top-level route is missing from the manifest', () => {

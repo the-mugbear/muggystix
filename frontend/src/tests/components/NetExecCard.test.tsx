@@ -3,6 +3,7 @@
  * reads as words, a spider_plus listing as a file count — neither as JSON.
  */
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';
 
 const getHostNetexecResults = vi.fn();
@@ -17,6 +18,9 @@ const row = (id: number, shares: unknown) => ({
   hostname: 'LABSMB', domain_name: 'LABSMB', shares, first_seen: `2026-09-23T05:1${id}:00Z`,
 });
 
+const renderCard = (count: number) =>
+  render(<MemoryRouter><NetExecCard hostId={6} count={count} /></MemoryRouter>);
+
 describe('NetExecCard shares', () => {
   it('reads the --shares table and a spider_plus listing as words', async () => {
     getHostNetexecResults.mockResolvedValue([
@@ -26,7 +30,7 @@ describe('NetExecCard shares', () => {
       ]),
       row(2, { public: { 'README.txt': { size: '47 B' }, 'notes.txt': { size: '2 KB' } } }),
     ]);
-    render(<NetExecCard hostId={6} count={2} />);
+    renderCard(2);
     expect(await screen.findByText('READ · Parser lab read-only public share')).toBeInTheDocument();
     expect(screen.getByText('no access · Parser lab authenticated-only share')).toBeInTheDocument();
     expect(screen.getByText('2 files listed')).toBeInTheDocument();
@@ -39,11 +43,40 @@ describe('NetExecCard shares', () => {
       { ...row(2, null), local_admin: true, username: 'admin' },
       { ...row(3, null), auth_success: null, smbv1: true },
     ]);
-    render(<NetExecCard hostId={6} count={3} />);
+    renderCard(3);
     expect(await screen.findByText('SMBMap')).toBeInTheDocument();
     expect(screen.getByText('Null session')).toBeInTheDocument();
     expect(screen.getByText('Local admin')).toBeInTheDocument();
     expect(screen.getByText('SMBv1')).toBeInTheDocument();
     expect(screen.queryByText('Auth failed')).not.toBeInTheDocument();
+  });
+});
+
+describe('NetExecCard lines (v5.296.0)', () => {
+  it('shows the tool line, where uninterpreted flags live, and links to what BlueStick reads', async () => {
+    const vncLine = 'VNC 10.0.0.9 5900 10.0.0.9 [+] No password seems to be accepted by the server';
+    getHostNetexecResults.mockResolvedValue([
+      { ...row(1, null), protocol: 'vnc', port: 5900, raw_output: vncLine, username: null, auth_success: null },
+      { ...row(2, { public: {} }), raw_output: 'JSON: {"public": {}}' },
+    ]);
+    renderCard(2);
+    expect(await screen.findByText(vncLine)).toBeInTheDocument();
+    // A spider_plus listing is summarised as shares, not printed as JSON.
+    expect(screen.queryByText(/^JSON:/)).not.toBeInTheDocument();
+    // Shares are an SMB matter.
+    expect(screen.queryAllByText('· no shares enumerated')).toHaveLength(0);
+    expect(screen.getByRole('link', { name: 'What BlueStick reads from NetExec' }))
+      .toHaveAttribute('href', '/reference/tool-coverage?tool=netexec');
+  });
+
+  it('keeps two scans of one port apart when their lines differ', async () => {
+    const vnc = { ...row(1, null), protocol: 'vnc', port: 5900, username: null, auth_success: null };
+    getHostNetexecResults.mockResolvedValue([
+      { ...vnc, id: 1, raw_output: 'VNC 192.168.56.22 5900 192.168.56.22 [*] RFB 3.8 (No Auth:True)', first_seen: '2026-09-25T22:09:00Z' },
+      { ...vnc, id: 2, raw_output: 'VNC 192.168.56.22 5900 192.168.56.22 [*] RFB 3.8', first_seen: '2026-09-25T22:10:00Z' },
+    ]);
+    renderCard(2);
+    expect(await screen.findByText(/\(No Auth:True\)/)).toBeInTheDocument();
+    expect(screen.getByText('VNC 192.168.56.22 5900 192.168.56.22 [*] RFB 3.8')).toBeInTheDocument();
   });
 });

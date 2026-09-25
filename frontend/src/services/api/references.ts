@@ -97,6 +97,56 @@ export const getToolRegistry = async (
   return response.data;
 };
 
+// --- Parser coverage (v5.296.0) ---
+// What BlueStick reads from each tool's output and where it ends up: the
+// "What BlueStick reads" page.  Audited against the parsers and pinned by
+// backend tests/test_parser_coverage.py.
+
+/** How far BlueStick takes a value, in that order. */
+export type CoverageLevel = 'observation' | 'field' | 'text' | 'stored' | 'discarded';
+
+export interface CoverageLevelDef {
+  id: CoverageLevel;
+  label: string;
+  description: string;
+}
+
+export interface CoverageSignal {
+  /** What the tool reports, in analyst words. */
+  what: string;
+  /** How to recognise it in the file (element, key, line shape). */
+  input: string;
+  level: CoverageLevel;
+  /** Model.attribute it lands in (empty when discarded). */
+  stored_as: string[];
+  /** Where an analyst sees or uses it. */
+  shown: string | null;
+  note: string | null;
+}
+
+export interface ToolCoverage {
+  id: string;
+  name: string;
+  formats: Array<{ file_type: string; label: string }>;
+  /** Tool-registry names whose output this parser reads (gobuster → dirbuster). */
+  registry_tools: string[];
+  accepted_input: string;
+  signals: CoverageSignal[];
+  gaps: string[];
+  /** What was not checked against real output of the tool. */
+  unverified: string[];
+}
+
+export interface ParserCoverageResponse {
+  levels: CoverageLevelDef[];
+  tools: ToolCoverage[];
+}
+
+export const getParserCoverage = async (): Promise<ParserCoverageResponse> => {
+  const response = await api.get<ParserCoverageResponse>('/references/parser-coverage');
+  return response.data;
+};
+
 /** Fields an admin may change when vetting. `ingestible` is absent on purpose:
  *  it records whether a parser exists in the codebase, not an operator call. */
 export interface ToolRegistryUpdate {

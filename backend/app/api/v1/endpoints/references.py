@@ -11,6 +11,8 @@ data — same stance as ``/agents-guide``), with one exception noted below:
   * ``GET  /api/v1/references/tls-certificate``     — deployment TLS cert (PEM)
   * ``GET  /api/v1/references/tools``               — the tool registry
   * ``PATCH /api/v1/references/tools/{name}``       — vet one (**admin only**)
+  * ``GET  /api/v1/references/parser-coverage``     — what each import format
+    keeps, where it is shown, and what is discarded
   * ``GET  /api/v1/references/tool-readiness``      — registry vs. your own probe
     (**authenticated** — it reflects the calling user's host)
   * ``GET  /api/v1/references/``                    — listing of the above
@@ -305,6 +307,21 @@ def tool_registry(
     }
 
 
+@router.get("/references/parser-coverage")
+def parser_coverage():
+    """What BlueStick reads from each tool's output, and where it ends up
+    (v2.411.0) — the "What BlueStick reads" page.
+
+    Documentation, public like the tool registry: for every import format,
+    each thing the tool reports, how far BlueStick takes it (scanner
+    observation / field / raw text / stored, not shown / discarded), where an
+    analyst sees it, and the known gaps.
+    """
+    from app.services.parser_coverage import coverage_payload
+
+    return coverage_payload()
+
+
 class ToolRegistryUpdate(BaseModel):
     """What an admin may change when vetting a tool.
 
@@ -547,6 +564,15 @@ async def references_index():
                 "install/usage knowledge for humans and, for the approved "
                 "subset, the phase/intrusiveness metadata agents key off. "
                 "Filter with ?status=approved|reference|suggested."
+            ),
+        },
+        "parser_coverage": {
+            "url": "/api/v1/references/parser-coverage",
+            "description": (
+                "For every import format: what the tool reports, how far "
+                "BlueStick takes it (scanner observation, field, raw text, "
+                "stored but not shown, discarded), where it is shown, and "
+                "the known gaps."
             ),
         },
         "mcp_tools": {

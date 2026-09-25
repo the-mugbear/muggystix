@@ -36,6 +36,11 @@ TESTSSL_SAMPLE = json.dumps(
 ).encode()
 HTTPX_SAMPLE = b'{"url":"https://x/","tech":["Nginx"],"webserver":"nginx","status_code":200}\n'
 DNSX_SAMPLE = b'{"host":"example.com","a":["1.2.3.4"],"resolver":["8.8.8.8:53"]}\n'
+# v2.411.0 — shares host/url/port with httpx; must route to Nuclei alone.
+NUCLEI_SAMPLE = (
+    b'{"template-id":"vnc-service-detect","info":{"name":"VNC Service - Detect","severity":"info"},'
+    b'"type":"tcp","host":"10.0.0.6:5900","port":"5900","ip":"10.0.0.6","matched-at":"10.0.0.6:5900"}\n'
+)
 
 
 def _detected_classes(filename: str, sample: bytes):
@@ -66,6 +71,7 @@ def test_every_detected_parser_can_be_dispatched():
         ("scan.json", TESTSSL_SAMPLE),
         ("probe.json", HTTPX_SAMPLE),
         ("resolve.json", DNSX_SAMPLE),
+        ("results.jsonl", NUCLEI_SAMPLE),
     ]
 
     for filename, sample in cases:
@@ -76,6 +82,15 @@ def test_every_detected_parser_can_be_dispatched():
                 f"{cls.__name__} is detected for {filename} but not dispatchable — "
                 "add it to build_parser_dispatch_map()"
             )
+
+
+def test_nuclei_results_route_to_nuclei_only():
+    """Nuclei was advertised as ingestible with no parser (a nuclei upload was
+    "not recognised"); its records share host/url/port with httpx."""
+    from app.parsers.nuclei_parser import NucleiParser
+
+    assert _detected_classes("results.jsonl", NUCLEI_SAMPLE) == [NucleiParser]
+    assert build_parser_dispatch_map().get(NucleiParser) is NucleiParser
 
 
 def test_rdap_ndjson_actually_dispatches_to_the_rdap_parser():

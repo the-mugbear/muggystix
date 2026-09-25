@@ -1924,6 +1924,7 @@ def test_v2_27_0_content_detection_module_surface():
         "looks_like_netexec",
         "looks_like_nikto",
         "looks_like_nmap_xml",  # added v2.45.1 — structural root-element check
+        "looks_like_nuclei",  # added v2.411.0 — Nuclei results (template-id + info / matched-at)
         "looks_like_openvas",
         "looks_like_rdap",  # added v2.237.0 — RDAP network registration
         "looks_like_rustscan",

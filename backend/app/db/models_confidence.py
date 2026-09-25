@@ -162,6 +162,10 @@ class NetexecResult(Base):
     local_admin = Column(Boolean, nullable=True)
     # NetExec's "(SMBv1:True|False)" from the SMB banner; None when not stated.
     smbv1 = Column(Boolean, nullable=True)
+    # v2.412.0 (migration c2f7a9d4e6b1) — a listed share grants WRITE: the
+    # `has:writable_share` filter reads this, not the shares JSON.  None when
+    # no share table was read.
+    writable_share = Column(Boolean, nullable=True)
     # (connection_stable / multiple_confirmations were constants nothing read;
     # dropped in the same migration.)
 

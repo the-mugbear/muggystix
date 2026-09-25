@@ -10,6 +10,7 @@
  * runnable, and rows with no install command or URL still render.
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import ToolReference from '../../pages/ToolReference';
@@ -54,9 +55,11 @@ const tool = (over: Partial<ToolRegistryEntry> = {}): ToolRegistryEntry => ({
 
 const renderPage = () =>
   render(
-    <TooltipProvider>
-      <ToolReference />
-    </TooltipProvider>,
+    <MemoryRouter>
+      <TooltipProvider>
+        <ToolReference />
+      </TooltipProvider>
+    </MemoryRouter>,
   );
 
 describe('ToolReference', () => {
@@ -100,6 +103,20 @@ describe('ToolReference', () => {
 
     expect(within(approvedRow).getByText('Agent-approved')).toBeInTheDocument();
     expect(within(referenceRow).getByText('Reference only')).toBeInTheDocument();
+  });
+
+  it('links a tool BlueStick imports to what it reads from it (v5.296.0)', async () => {
+    getToolRegistry.mockResolvedValue({
+      count: 2,
+      tools: [tool(), tool({ name: 'socat', ingestible: false })],
+    });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('nmap')).toBeInTheDocument());
+    expect(within(document.getElementById('tool-row-nmap')!).getByRole('link', { name: 'What BlueStick reads' }))
+      .toHaveAttribute('href', '/reference/tool-coverage?tool=nmap');
+    expect(within(document.getElementById('tool-row-socat')!).queryByRole('link', { name: 'What BlueStick reads' }))
+      .toBeNull();
   });
 
   it('renders a suggestion with its rationale under a category nobody curated', async () => {

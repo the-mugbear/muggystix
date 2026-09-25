@@ -8,6 +8,9 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_confidence import NetexecResult
+from app.db.models_vulnerability import VulnerabilitySource
+from app.parsers.netexec_parser import writable_share
+from app.services.misconfig_checks import record_misconfig
 from app.parsers.parser_utils import correlate_scan, extract_first_ip, ensure_scan, persist_host_observation
 from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -142,6 +145,8 @@ class SMBMapParser:
             if host is None:
                 continue
             name = entry["name"] if entry["name"] and entry["name"] != ip_address else None
+            session = _session(entry["status"])
+            line = f"SMBMap {ip_address}:{entry['port']} Status: {entry['status'] or 'unknown'}"
             self.db.add(NetexecResult(
                 scan_id=scan.id,
                 host_id=host.id,
@@ -150,9 +155,17 @@ class SMBMapParser:
                 port=entry["port"],
                 hostname=name,
                 shares=entry["shares"] or None,
-                raw_output=(f"SMBMap {ip_address}:{entry['port']} Status: {entry['status'] or 'unknown'}")[:10000],
-                **_session(entry["status"]),
+                writable_share=writable_share(entry["shares"]) if entry["shares"] else None,
+                raw_output=line[:10000],
+                **session,
             ))
+            # v2.412.0 — a NULL or guest session is a catalog observation.
+            if session.get("username") in ("", "guest"):
+                self.db.flush()
+                record_misconfig(
+                    self.db, check_id="smb_null_session", host_id=host.id, scan_id=scan.id,
+                    source=VulnerabilitySource.SMBMAP, port_number=entry["port"], evidence=line,
+                )
         self.db.flush()
 
         correlate_scan(self.db, scan.id)

@@ -385,7 +385,13 @@ _HAS_KEYWORDS = {
                      "SMB message signing not required — disabled, or on but not required "
                      "(NTLM-relay / lateral-movement exposure)."),
     "weak_auth": (lambda ctx: P.weak_auth_predicate(ctx.db, ctx.project_id),
-                  "A guest / anonymous / null-session login succeeded (NetExec)."),
+                  "A guest / anonymous / null-session login succeeded (NetExec, SMBMap)."),
+    # v2.412.0 — the access an analyst HAS, not a weakness of the target, so
+    # a filter rather than a scanner observation.
+    "local_admin": (lambda ctx: P.local_admin_predicate(ctx.db, ctx.project_id),
+                    "A credential was a local administrator (NetExec \"Pwn3d!\")."),
+    "writable_share": (lambda ctx: P.writable_share_predicate(ctx.db, ctx.project_id),
+                       "A share granted WRITE (NetExec --shares, SMBMap)."),
     "cert_issue": (lambda ctx: P.cert_issue_predicate(ctx.db, ctx.project_id),
                    "Latest TLS certificate is expired or self-signed."),
     "weak_tls": (lambda ctx: P.weak_tls_predicate(ctx.db, ctx.project_id),
@@ -874,5 +880,9 @@ EXAMPLES: List[dict] = [
     {"label": "nginx servers", "q": "header:nginx OR tech:nginx"},
     {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},
     {"label": "SMB signing not required", "q": "has:smb_unsigned"},
+    # v2.412.0 — catalog observations (app/services/misconfig_checks.py).
+    {"label": "VNC without authentication", "q": 'vuln:"VNC server does not require authentication"'},
+    {"label": "SMB null or guest sessions", "q": 'vuln:"SMB null or guest session allowed"'},
+    {"label": "Local admin access or a writable share", "q": "has:local_admin OR has:writable_share"},
     {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
 ]

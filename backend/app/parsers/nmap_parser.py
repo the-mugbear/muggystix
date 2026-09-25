@@ -5,6 +5,7 @@ Uses the host deduplication service to eliminate duplicate host entries
 and maintain scan history.
 """
 
+import re
 from typing import Dict, Optional, Any
 from datetime import datetime
 from lxml import etree
@@ -13,8 +14,10 @@ from app.db import models
 from app.parsers.parser_utils import epoch_to_utc
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
+from app.db.models_vulnerability import VulnerabilitySource
 from app.services import smb_signing as smb_signing_states
 from app.services.cert_fields import _classify_tls_version, parse_cert_not_after
+from app.services.misconfig_checks import port_row, record_misconfig
 from app.services.subnet_correlation import SubnetCorrelationService
 import logging
 import time
@@ -315,6 +318,7 @@ class NmapXMLParser:
         signing = self._detect_smb_signing(hostscript_elem)
         if signing:
             host.smb_signing = signing
+        self._record_host_script_misconfigs(hostscript_elem, host.id, scan_id, signing)
 
         # v2.390.0 — the MAC address (and vendor) nmap reports for a host on
         # the local segment; it was read past and dropped.
@@ -390,6 +394,52 @@ class NmapXMLParser:
             # Process port scripts
             self._process_port_scripts(port_elem, port.id, scan_id)
             self._record_tls_from_scripts(port_elem, host_id, port, scan_id)
+            self._record_port_script_misconfigs(port_elem, host_id, port.port_number, scan_id)
+
+    # v2.412.0 — NSE results that are catalog weaknesses
+    # (app/services/misconfig_checks.py).  Every other script stays text.
+    _VNC_NO_AUTH = re.compile(r'security types:.*?\bnone\b', re.IGNORECASE | re.DOTALL)
+
+    def _record_port_script_misconfigs(self, port_elem: etree.Element, host_id: int,
+                                       port_number: int, scan_id: int) -> None:
+        for script_elem in port_elem.findall('script'):
+            script_id = script_elem.get('id') or ''
+            output = script_elem.get('output') or ''
+            check_id = None
+            if script_id == 'vnc-info' and self._VNC_NO_AUTH.search(output):
+                check_id = 'vnc_no_auth'
+            elif script_id == 'ftp-anon' and 'anonymous ftp login allowed' in output.lower():
+                check_id = 'ftp_anonymous'
+            if check_id:
+                record_misconfig(
+                    self.db, check_id=check_id, host_id=host_id, scan_id=scan_id,
+                    source=VulnerabilitySource.NMAP, port_number=port_number,
+                    evidence=f"{script_id}: {output.strip()}",
+                )
+
+    def _record_host_script_misconfigs(self, hostscript_elem: Optional[etree.Element], host_id: int,
+                                       scan_id: int, signing: Optional[str]) -> None:
+        if hostscript_elem is None:
+            return
+        scripts = {(s.get('id') or ''): (s.get('output') or '') for s in hostscript_elem.findall('script')}
+        # Host scripts carry no port; SMB answers on 445 (else 139).
+        smb_port = next((p for p in (445, 139) if port_row(self.db, host_id, p)), None)
+        if signing in smb_signing_states.RELAYABLE:
+            evidence = "\n".join(
+                f"{sid}: {out.strip()}" for sid, out in scripts.items()
+                if sid in ('smb-security-mode', 'smb2-security-mode')
+            )
+            record_misconfig(
+                self.db, check_id='smb_signing_not_required', host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.NMAP, port_number=smb_port, evidence=evidence,
+            )
+        protocols = scripts.get('smb-protocols', '')
+        if 'NT LM 0.12' in protocols or 'SMBv1' in protocols:
+            record_misconfig(
+                self.db, check_id='smbv1_enabled', host_id=host_id, scan_id=scan_id,
+                source=VulnerabilitySource.NMAP, port_number=smb_port,
+                evidence=f"smb-protocols: {protocols.strip()}",
+            )
 
     def _extract_port_data(self, port_elem: etree.Element) -> Dict[str, Any]:
         """Extract port information from XML element"""

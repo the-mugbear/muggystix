@@ -199,6 +199,7 @@ def build_parser_dispatch_map() -> Dict[Type, Type]:
         ("app.parsers.whatweb_parser", "WhatwebParser"),
         ("app.parsers.testssl_parser", "TestsslParser"),
         ("app.parsers.rdap_parser", "RdapParser"),
+        ("app.parsers.nuclei_parser", "NucleiParser"),
     ):
         try:
             module = importlib.import_module(module_path)
@@ -1564,6 +1565,10 @@ class IngestionService:
             from app.parsers.testssl_parser import TestsslParser, looks_like_testssl
             if looks_like_testssl(sample, filename):
                 attempts.append(("testssl_json", TestsslParser, "testssl.sh TLS assessment (JSON)"))
+            # v2.411.0 — Nuclei results (template-id + info / matched-at).
+            from app.parsers.nuclei_parser import NucleiParser
+            if _cd.looks_like_nuclei(sample, filename):
+                attempts.append(("nuclei_json", NucleiParser, "Nuclei results (JSON/JSONL)"))
             if _cd.looks_like_bloodhound(sample, filename):
                 attempts.append(("bloodhound_json", BloodHoundParser, "BloodHound/SharpHound JSON export"))
             if _cd.looks_like_amass(sample, filename):

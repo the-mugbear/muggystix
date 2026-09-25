@@ -258,8 +258,12 @@ def test_netexec_local_admin_and_smbv1(db_session, test_project, tmp_path):
     login = next(r for r in rows if r.auth_success)
     assert (banner.smbv1, banner.local_admin) == (True, None)
     assert (login.username, login.local_admin) == ("admin", True)
-    [vuln] = _vulns(db_session, scan)
-    assert (vuln.title, vuln.source, vuln.severity.value) == ("SMBv1 enabled", VulnerabilitySource.NETEXEC, "medium")
+    # v2.412.0 — the banner's "(signing:False)" is an observation too (the
+    # misconfiguration catalog).
+    vulns = {v.title: v for v in _vulns(db_session, scan)}
+    assert set(vulns) == {"SMBv1 enabled", "SMB signing not required"}
+    vuln = vulns["SMBv1 enabled"]
+    assert (vuln.source, vuln.severity.value) == (VulnerabilitySource.NETEXEC, "medium")
     assert vuln.port_id is not None
 
 

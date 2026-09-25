@@ -223,7 +223,18 @@ def looks_like_netexec(sample: bytes, filename: str) -> bool:
     ]
     if any(token in lowered for token in indicators):
         return True
+    # v2.412.0 — nxc's own line layout, for every protocol: "PROTO ip port
+    # name [*|+|-|!]".  A VNC-, SSH- or FTP-only capture has none of the
+    # tokens above and was "not recognised".
+    if _NXC_LINE.search(lowered):
+        return True
     return "netexec" in name or "nxc" in name
+
+
+_NXC_LINE = re.compile(
+    r"^(?:.*?\s)?(?:smb|ldap|winrm|mssql|ssh|ftp|rdp|vnc|wmi|nfs)\s+\d{1,3}(?:\.\d{1,3}){3}\s+\d{1,5}\s+\S+\s+\[[*+!-]\]",
+    re.MULTILINE,
+)
 
 def looks_like_openvas(sample: bytes, filename: str) -> bool:
     """Detect an OpenVAS/Greenbone XML report.
@@ -344,6 +355,10 @@ def looks_like_naabu(sample: bytes, filename: str) -> bool:
     # also has ip + port, so a real testssl file matched naabu as well and
     # the review asked for a choice.  ``finding`` + ``severity`` is testssl's.
     if "finding" in rec and "severity" in rec:
+        return False
+    # v2.411.0 — a Nuclei network result ({template-id, ip, port, host,
+    # matched-at}) has ip + port and no web markers.
+    if "template-id" in rec:
         return False
     # Exclude httpx: its records carry web-fingerprint markers naabu
     # never emits.
@@ -768,6 +783,20 @@ def looks_like_dnsx(sample: bytes, filename: str) -> bool:
     if "host" not in rec:
         return False
     return _has_any(rec, ("a", "aaaa", "ptr", "cname", "mx", "ns", "txt", "soa"))
+
+
+def looks_like_nuclei(sample: bytes, filename: str) -> bool:
+    """Detect Nuclei results (``-je`` JSON array, ``-jsonl`` / ``-j`` lines).
+
+    Every result carries ``template-id`` beside the template's ``info``
+    block or the ``matched-at`` target — hyphenated keys no other scanner's
+    JSON uses, so this cannot cross-match httpx (which shares ``host`` /
+    ``url`` / ``port``).  Structure only (v2.411.0): the filename token is
+    left to the staged review's filename pass."""
+    _, rec = _peek_json_shape(sample)
+    if rec is None or "template-id" not in rec:
+        return False
+    return _has_any(rec, ("info", "matched-at"))
 
 
 def looks_like_rdap(sample: bytes, filename: str) -> bool:

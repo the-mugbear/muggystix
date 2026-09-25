@@ -126,6 +126,7 @@ const TriageGuide = lazy(() => import('./pages/userguide/TriageGuide'));
 const AgentsGuide = lazy(() => import('./pages/userguide/AgentsGuide'));
 const AdminGuide = lazy(() => import('./pages/userguide/AdminGuide'));
 const SbomReference = lazy(() => import('./pages/SbomReference'));
+const ToolCoverage = lazy(() => import('./pages/ToolCoverage'));
 const McpReference = lazy(() => import('./pages/McpReference'));
 const AssistSessions = lazy(() => import('./pages/AssistSessions'));
 const Feedback = lazy(() => import('./pages/Feedback'));
@@ -763,6 +764,14 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <SbomReference />
+                          </ProtectedRoute>
+                        }
+                      />
+                      <Route
+                        path="/reference/tool-coverage"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <ToolCoverage />
                           </ProtectedRoute>
                         }
                       />

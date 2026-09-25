@@ -1,5 +1,6 @@
 import React from 'react';
 import { ScrollText, ShieldAlert } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { Host, NseScript } from '../services/api';
 import { Badge } from './ui/badge';
@@ -180,6 +181,15 @@ const NseScriptsCard: React.FC<NseScriptsCardProps> = ({ host }) => {
       count={totalScripts}
     >
       <div className="space-y-md">
+        {/* v5.296.0 — raw text is not a finding: say so where it is read. */}
+        <p className="text-caption text-muted-foreground">
+          Raw tool output (Nmap scripts, masscan banners). BlueStick reads SMB signing and, on web ports, the
+          certificate and TLS versions from it; everything else here &mdash; anonymous FTP, VNC security types,
+          VULNERABLE states &mdash; raises no scanner observation and matches no filter.{' '}
+          <Link to="/reference/tool-coverage?tool=nmap" className="text-info underline-offset-2 hover:underline">
+            What BlueStick reads from Nmap
+          </Link>
+        </p>
         {hostScripts.length > 0 && (
           <div>
             <h3 className="mb-xs text-metadata font-semibold">

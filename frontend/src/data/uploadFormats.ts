@@ -81,6 +81,12 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     desc: 'XML report with <result> entries; large reports are streamed.',
     hint: 'XML root <report>; or "openvas", "greenbone" or "gvm" in the filename.',
   },
+  {
+    tool: 'Nuclei',
+    formats: '.json / .jsonl',
+    desc: '-je JSON export or -jsonl lines. Every template match becomes a scanner observation with Nuclei’s severity; results with no IP (DNS / file templates) are reported as skipped.',
+    hint: 'Records carrying template-id with info / matched-at; the filename is not used.',
+  },
   // ── Web probing ────────────────────────────────────────────────────────
   {
     tool: 'httpx (ProjectDiscovery)',
@@ -97,7 +103,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'testssl.sh',
     formats: '.json',
-    desc: '--jsonfile TLS assessment, folded into one web-interface row per ip:port (weak-protocol flag, cert expiry, self-signed). Individual checks are not stored as findings.',
+    desc: '--jsonfile TLS assessment, folded into one web-interface row per ip:port (weak-protocol flag, cert expiry, self-signed). Every rated check (LOW to CRITICAL) is also a scanner observation.',
     hint: '"testssl" in the filename, or the id + finding + severity record shape.',
   },
   {

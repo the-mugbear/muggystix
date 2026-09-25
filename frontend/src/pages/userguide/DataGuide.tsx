@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 import { FileUp, Workflow, Network } from 'lucide-react';
 import {
   Table,
@@ -26,6 +27,7 @@ const FORMAT_ROWS: { tool: string; formats: string; notes: string }[] = [
   { tool: 'RustScan', formats: '.txt', notes: 'Console output with Open <ip>:<port> lines. Include "rustscan" in the filename.' },
   { tool: 'Nessus', formats: '.nessus', notes: 'Vulnerability data with severity + plugin detail. Large (~600 MB) exports are streamed.' },
   { tool: 'OpenVAS / Greenbone', formats: '.xml', notes: 'XML reports with <result> host/port/finding entries.' },
+  { tool: 'Nuclei', formats: '.json, .jsonl', notes: '-je or -jsonl results. Every template match becomes a scanner observation with Nuclei’s severity; results with no IP are skipped.' },
   { tool: 'httpx', formats: '.json, .jsonl', notes: 'Web fingerprinting — status, title, server header, tech stack, TLS, favicon. Feeds the unified web-interfaces view.' },
   { tool: 'whatweb', formats: '.json, .jsonl', notes: 'WhatWeb --log-json web tech fingerprint. The apt-installable alternative when httpx (Go binary / Python-CLI collision) won’t install.' },
   { tool: 'Eyewitness', formats: '.json, .csv, .zip', notes: 'Web screenshots for visual triage. ZIP bundles have decompression-bomb caps.' },
@@ -51,7 +53,8 @@ const sections: GuideSection[] = [
         <Para>
           BlueStick auto-detects formats by extension <em>and</em> content inspection, so you can
           drop a mixed batch and let it sort them out. Prefer machine-readable output (XML/JSON) over
-          plain text wherever a tool offers it.
+          plain text wherever a tool offers it. For what each format keeps, where it is shown and what
+          it drops, see <Link to="/reference/tool-coverage" className="underline">What BlueStick reads</Link>.
         </Para>
         <div className="overflow-x-auto rounded-panel border border-border">
           <Table className="min-w-[760px]">

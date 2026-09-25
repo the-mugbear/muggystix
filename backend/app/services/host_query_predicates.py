@@ -39,6 +39,7 @@ from app.db.models_auth import User
 from app.services import smb_signing as smb_signing_states
 from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
 from app.db.models_vulnerability import Vulnerability
+from app.db.models_confidence import NetexecResult
 
 # Leaf module — no import cycle (host_query imports *us*, not the reverse).
 from app.services.host_query_common import (  # noqa: F401  (re-exported on purpose)
@@ -398,6 +399,28 @@ def weak_auth_predicate(db: Session, project_id: int) -> ColumnElement:
     """Host where a guest / anonymous / null-session login succeeded."""
     ids = weak_auth_host_ids(db, project_id)
     return models.Host.id.in_(ids) if ids else false()
+
+
+def _netexec_flag_predicate(db: Session, project_id: int, column) -> ColumnElement:
+    """Host with a NetExec / SMBMap result where ``column`` is true.  An
+    id-subquery, so ``NOT has:…`` keeps hosts with no such result."""
+    _H = aliased(models.Host)
+    sub = (
+        db.query(NetexecResult.host_id)
+        .join(_H, NetexecResult.host_id == _H.id)
+        .filter(_H.project_id == project_id, column.is_(True))
+    )
+    return models.Host.id.in_(sub)
+
+
+def local_admin_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host where a credential was a local administrator ("(Pwn3d!)") — v2.412.0."""
+    return _netexec_flag_predicate(db, project_id, NetexecResult.local_admin)
+
+
+def writable_share_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host with a share that granted WRITE (NetExec --shares, SMBMap) — v2.412.0."""
+    return _netexec_flag_predicate(db, project_id, NetexecResult.writable_share)
 
 
 def weak_tls_predicate(db: Session, project_id: int) -> ColumnElement:

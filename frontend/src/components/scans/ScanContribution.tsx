@@ -21,6 +21,7 @@ const FAMILY_BY_TOOL: Record<string, ToolFamily> = {
   nessus: 'vuln',
   openvas: 'vuln',
   nikto: 'vuln',
+  nuclei: 'vuln',
   httpx: 'web',
   whatweb: 'web',
   eyewitness: 'web',

@@ -17,9 +17,10 @@ from app.services.confidence_service import (
     ConfidenceService, ScanType, DataSource, ConfidenceScore
 )
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
-from app.parsers.parser_utils import correlate_scan, upsert_vulnerability
+from app.db.models_vulnerability import VulnerabilitySource
+from app.parsers.parser_utils import correlate_scan
 from app.services import smb_signing as smb_signing_states
+from app.services.misconfig_checks import record_misconfig
 import logging
 
 logger = logging.getLogger(__name__)
@@ -46,6 +47,29 @@ def _normalise_line(line: str) -> str:
     line = _ANSI_ESCAPE.sub('', line).strip()
     head = _LINE_HEAD.search(line) or _TABLE_HEAD.search(line)
     return line[head.start():] if head else line
+
+
+# Protocols whose login is a password alone ("VNC … [+] badpassword"): the
+# token is the credential, not a username.  The stored line keeps it — an
+# analyst reads the credentials that worked from there (v2.411.0).
+_PASSWORD_ONLY_PROTOCOLS = {'vnc'}
+# "[+]" lines that report what nxc DID after logging in, not a login.  From
+# nxc's protocols/ftp.py ("Uploaded: …", "Downloaded: …") and ssh.py
+# ("Executed command", 'Created file "…" on "…"', 'File "…" was downloaded to
+# "…"'), checked against NetExec main 2026-09-25.
+_ACTION_RESULTS = ('executed command', 'uploaded:', 'downloaded:', 'created file ', 'file "')
+
+
+def writable_share(shares: Any) -> Optional[bool]:
+    """Whether a share table grants WRITE on any share (v2.412.0): the
+    `has:writable_share` column.  None for anything but a share table — a
+    spider_plus listing (an object) says nothing about permissions."""
+    if not isinstance(shares, list):
+        return None
+    return any(
+        'WRITE' in str((s or {}).get('permissions') or '').upper()
+        for s in shares if isinstance(s, dict)
+    )
 
 
 class NetexecParser:
@@ -256,7 +280,10 @@ class NetexecParser:
             # Try authentication success pattern
             if not host_data:
                 match = self.patterns['auth_success'].match(line)
-                if match:
+                # v2.412.0 — "[+] Uploaded: …", "[+] Executed command" report
+                # an action, not a login (they were stored as logins by a user
+                # named "Uploaded"); they fall through to the plain line.
+                if match and not match.group(4).strip().lower().startswith(_ACTION_RESULTS):
                     host_data = self._parse_auth_success_line(match, line)
 
             # Try basic host pattern
@@ -310,6 +337,43 @@ class NetexecParser:
                 additional_factors=host_data.get('confidence_factors', {}),
             )
             self._process_port_with_confidence(host.id, scan_id, host_data, confidence)
+        self._record_misconfigs(host, host_data, scan_id)
+
+    def _record_misconfigs(self, host: models.Host, host_data: Dict[str, Any], scan_id: int) -> None:
+        """v2.412.0 — the line's weaknesses as catalog observations
+        (app/services/misconfig_checks.py), on the port the line is about."""
+        protocol = (host_data.get('protocol') or '').lower()
+        line = host_data.get('raw_line') or ''
+        low = line.lower()
+        username = host_data.get('username')
+        found = []
+        if protocol == 'smb':
+            if host_data.get('smb_signing') in smb_signing_states.RELAYABLE:
+                found.append('smb_signing_not_required')
+            if host_data.get('smbv1') is True:
+                found.append('smbv1_enabled')
+            # nxc smb.py: "(Null Auth:True)" / "(Guest Auth:True)" on the
+            # banner; a login marked "(Guest)" was accepted as the guest.
+            if '(null auth:true)' in low or '(guest auth:true)' in low or (
+                host_data.get('auth_success') is True and (
+                    (username is not None and username.strip().lower() in ('', 'guest'))
+                    or '(guest)' in low
+                )
+            ):
+                found.append('smb_null_session')
+        elif protocol == 'vnc' and '(no auth:true)' in low:
+            found.append('vnc_no_auth')
+        elif protocol == 'ftp' and host_data.get('auth_success') is True and (
+            # nxc prints an anonymous login as "[+] : - Anonymous Login!"
+            (username is not None and username.strip().lower() in ('', 'anonymous'))
+            or 'anonymous login' in low
+        ):
+            found.append('ftp_anonymous')
+        for check_id in found:
+            record_misconfig(
+                self.db, check_id=check_id, host_id=host.id, scan_id=scan_id,
+                source=VulnerabilitySource.NETEXEC, port_number=host_data.get('port'), evidence=line,
+            )
 
     def _parse_smb_enum_line(self, match, full_line: str) -> Dict[str, Any]:
         """Parse SMB enumeration line"""
@@ -370,6 +434,10 @@ class NetexecParser:
         """Parse authentication success line"""
         protocol, ip, port, details = match.groups()
         domain, username = self._parse_credential(details)
+        # v2.411.0 — a VNC login is a password alone ("[+] badpassword"):
+        # the token was stored as the username.  The line keeps it.
+        if protocol.lower() in _PASSWORD_ONLY_PROTOCOLS:
+            domain, username = None, None
 
         return {
             'ip_address': ip,
@@ -409,6 +477,8 @@ class NetexecParser:
             # The credential's domain is what was TRIED, not the host's own:
             # it is not written to the host.
             _domain, username = self._parse_credential(details)
+            if protocol.lower() in _PASSWORD_ONLY_PROTOCOLS:
+                username = None
             data.update(auth_success=False, username=username, details=details.strip())
         return data
 
@@ -476,25 +546,10 @@ class NetexecParser:
                 host.id, scan_id, host_data, confidence
             )
 
-        # v2.390.0 — "(SMBv1:True)" is a weakness in its own right (the
-        # EternalBlue family needs it): a scanner observation on the SMB port,
-        # not just a word in the stored banner line.
-        if host_data.get('smbv1') is True:
-            port_row = (
-                self.db.query(models.Port)
-                .filter(models.Port.host_id == host.id, models.Port.port_number == host_data.get('port'))
-                .first()
-            )
-            upsert_vulnerability(
-                db=self.db, host_id=host.id, scan_id=scan_id,
-                source=VulnerabilitySource.NETEXEC,
-                title="SMBv1 enabled",
-                severity=VulnerabilitySeverity.MEDIUM,
-                plugin_id="smbv1_enabled",
-                port_id=port_row.id if port_row else None,
-                description="NetExec reported the SMB service accepts SMBv1 (SMBv1:True), the protocol "
-                            "the EternalBlue family of exploits targets.",
-            )
+        # v2.412.0 — the line's weaknesses (SMBv1 since v2.390.0; signing,
+        # null / guest sessions, VNC no-auth, anonymous FTP) through the one
+        # catalog, so nmap and NetExec name them the same.
+        self._record_misconfigs(host, host_data, scan_id)
 
         return host
 
@@ -680,6 +735,8 @@ class NetexecParser:
                                 ('hostname', 'hostname'), ('domain_name', 'domain')):
                 if getattr(duplicate, column) is None and host_data.get(key) is not None:
                     setattr(duplicate, column, host_data.get(key))
+            if duplicate.writable_share is None:
+                duplicate.writable_share = writable_share(host_data.get('shares'))
             self.db.flush()
             return
 
@@ -701,6 +758,7 @@ class NetexecParser:
             tool=host_data.get('tool', 'netexec'),
             local_admin=host_data.get('local_admin'),
             smbv1=host_data.get('smbv1'),
+            writable_share=writable_share(host_data.get('shares')),
         )
 
         self.db.add(result)

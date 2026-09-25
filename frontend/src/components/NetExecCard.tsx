@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { KeyRound, Loader2, FolderTree } from 'lucide-react';
+import { Link } from 'react-router-dom';
 
 import { NetexecResult, getHostNetexecResults } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
@@ -94,6 +95,10 @@ const normalizeShares = (shares: unknown): ShareEntry[] => {
 const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> = ({ result, seenCount = 1 }) => {
   const shares = normalizeShares(result.shares);
   const host = result.hostname || result.domain_name;
+  // v5.296.0 — the tool's own line.  Only the SMB banner and login lines are
+  // interpreted, so an LDAP / RDP / VNC flag is readable here or nowhere.  A
+  // spider_plus listing ("JSON: {...}") is already summarised as shares.
+  const line = result.raw_output && !result.raw_output.startsWith('JSON:') ? result.raw_output : null;
   return (
     // v5.241.0 — a divided row, not a bordered box: a result with no shares is
     // one line (it was a ~100px card to say "auth failed, no shares").
@@ -131,7 +136,9 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
             {host}
           </span>
         )}
-        {shares.length === 0 && (
+        {/* Shares are an SMB matter: "no shares" on a VNC or LDAP row said
+            nothing true. */}
+        {shares.length === 0 && result.protocol.toLowerCase() === 'smb' && (
           <span className="text-caption text-muted-foreground">· no shares enumerated</span>
         )}
         {seenCount > 1 && (
@@ -141,6 +148,12 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
           </span>
         )}
       </div>
+      {line && (
+        <p className={`line-clamp-2 break-all font-mono text-caption text-muted-foreground${shares.length > 0 ? ' mb-xs' : ' mt-xxs'}`}
+          title={line}>
+          {line}
+        </p>
+      )}
 
       {shares.length > 0 && (
         <div>
@@ -198,8 +211,11 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
   // which shares), so a probe that came back differently stays its own row.
   const observed = latestObservations(
     rows ?? [],
+    // v5.296.0 — the line is part of the result: a VNC banner with
+    // "(No Auth:True)" and one without are different results, and folding
+    // them showed only the latest line.
     (r) => JSON.stringify([r.protocol, r.port ?? null, r.auth_success ?? null, r.username ?? null,
-      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null]),
+      r.hostname ?? null, r.domain_name ?? null, r.shares ?? null, r.raw_output ?? null]),
     (r) => r.first_seen,
   );
 
@@ -212,6 +228,14 @@ const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count }) => {
       count={rows ? observed.length : null}
     >
       <div className="space-y-sm">
+        {/* v5.296.0 — say how far these rows were understood. */}
+        <p className="text-caption text-muted-foreground">
+          BlueStick interprets the SMB banner and login lines; other flags (LDAP signing, RDP NLA, VNC,
+          module results) are only in each row&rsquo;s line.{' '}
+          <Link to="/reference/tool-coverage?tool=netexec" className="text-info underline-offset-2 hover:underline">
+            What BlueStick reads from NetExec
+          </Link>
+        </p>
         {loading && (
           <div className="flex items-center gap-xs text-caption text-muted-foreground">
             <Loader2 className="size-4 animate-spin" aria-hidden />

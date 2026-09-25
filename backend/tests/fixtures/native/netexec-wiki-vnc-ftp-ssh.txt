@@ -1,0 +1,12 @@
+VNC         192.168.56.22   5900   192.168.56.22    [*] RFB 3.8 (No Auth:True)
+VNC         192.168.56.22   5901   192.168.56.22    [*] RFB 3.8 (No Auth:True)
+VNC         192.168.56.23   5900   192.168.56.23    [*] RFB 3.8
+VNC         192.168.56.23   5900   192.168.56.23    [+] badpassword
+FTP         192.168.0.10   21     192.168.0.10    [*] Banner: (vsFTPd 3.0.5)
+FTP         192.168.0.10   21     192.168.0.10    [+] marshall:badpassword
+FTP         192.168.0.10   21     192.168.0.10    [*] Directory Listing
+FTP         192.168.0.10   21     192.168.0.10    drwxr-xr-x    2 1000     1000     4096 Sep 30 17:29 Desktop
+SSH         127.0.0.1       22     127.0.0.1        [*] SSH-2.0-OpenSSH_8.2p1 Debian-4
+SSH         127.0.0.1       22     127.0.0.1        [+] user:password
+SSH         127.0.0.1       22     127.0.0.1        [+] Executed command
+SSH         127.0.0.1       22     127.0.0.1        user

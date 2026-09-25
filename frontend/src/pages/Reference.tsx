@@ -11,7 +11,7 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
 import {
-  BookOpen, Bot, Download, ExternalLink, FileCode, FileText, KeyRound, Package, Plug, Terminal,
+  BookOpen, Bot, Download, ExternalLink, FileCode, FileSearch, FileText, KeyRound, Package, Plug, Terminal,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -54,6 +54,10 @@ const GROUPS: Array<{ title: string; description: string; entries: Entry[] }> = 
       {
         kind: 'page', path: '/tool-reference', Icon: Terminal, title: 'Tool reference',
         description: 'The tools BlueStick knows, by category — install commands, output BlueStick can ingest, and agent policy.',
+      },
+      {
+        kind: 'page', path: '/reference/tool-coverage', Icon: FileSearch, title: 'What BlueStick reads',
+        description: 'For each import format: what the tool reports, how far BlueStick takes it, where you see it, and what it drops.',
       },
       {
         kind: 'page', path: '/default-credentials', Icon: KeyRound, title: 'Default credentials',

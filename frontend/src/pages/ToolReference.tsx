@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { copyToClipboard } from '../utils/clipboard';
 import { Search, ExternalLink, Copy, Loader2, RefreshCw } from 'lucide-react';
 import {
@@ -559,7 +560,11 @@ const ToolReference: React.FC = () => {
         Tools available as connection helpers on the host detail page. Each tool is suggested when
         a matching port or service is detected. Use the install commands below to set up any tools
         you are missing — and, where shown, the <span className="font-medium text-foreground">Run for
-        BlueStick</span> command to produce output BlueStick can ingest.
+        BlueStick</span> command to produce output BlueStick can ingest.{' '}
+        <Link to="/reference/tool-coverage" className="text-info underline-offset-2 hover:underline">
+          What BlueStick reads
+        </Link>{' '}
+        lists, for each of those, what is kept, where it is shown and what is dropped.
       </p>
       <p className="mb-md text-metadata text-muted-foreground">
         The badge under each tool name is its agent policy:{' '}
@@ -682,6 +687,15 @@ const ToolReference: React.FC = () => {
                                     {statusBadge.title}
                                   </TooltipContent>
                                 </Tooltip>
+                              )}
+                              {/* v5.296.0 — what BlueStick keeps from this tool's output. */}
+                              {tool.ingestible && (
+                                <Link
+                                  to={`/reference/tool-coverage?tool=${encodeURIComponent(tool.name)}`}
+                                  className="text-caption text-info underline-offset-2 hover:underline"
+                                >
+                                  What BlueStick reads
+                                </Link>
                               )}
                               {isAdmin && (
                                 <Button

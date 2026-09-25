@@ -30,8 +30,7 @@ from app.db import models
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
-from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
-from app.services.note_attachment_service import require_readable_file
+from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2from app.services.note_attachment_service import require_readable_file
 from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
@@ -2448,6 +2447,10 @@ class NetexecResultResponse(BaseModel):
     tool: str = "netexec"
     local_admin: Optional[bool] = None
     smbv1: Optional[bool] = None
+    # v2.411.0 — the tool's own line.  Only the SMB banner and login lines are
+    # interpreted; LDAP / RDP / VNC flags and module output live only here, so
+    # it is shown rather than kept invisibly.
+    raw_output: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2506,6 +2509,11 @@ def list_host_netexec_results(
             tool=r.tool or "netexec",
             local_admin=r.local_admin,
             smbv1=r.smbv1,
+            # A console line is short; a spider_plus listing is stored whole
+            # (up to 10 000 chars) and is already summarised as shares.
+            # Credentials that worked are what an analyst looks for here: the
+            # line is shown as the tool wrote it.
+            raw_output=(r.raw_output or "")[:2000] or None,
         )
         for r in rows
     ]
