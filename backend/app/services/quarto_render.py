@@ -375,13 +375,20 @@ def md(obj: Any, field: Optional[str] = None) -> Markup:
     return Markup(f'\n\n::: {{.bs-md key="{key}"}}\n:::\n\n')
 
 
-def image(item: Any, width: str = "6in") -> Markup:
-    """An evidence image the renderer placed in the work directory."""
+def image(item: Any, width: str = "6in", number: Optional[int] = None) -> Markup:
+    """An evidence image the renderer placed in the work directory.  With
+    ``number``, the caption reads "Figure N: …" (v2.410.0 — the prototype's
+    numbered figure captions, without Quarto cross-references and the wrapper
+    tables they bring in Word)."""
     if not isinstance(item, dict) or not _EVIDENCE.match(str(item.get("file", ""))):
         raise RenderError("image() takes an item from a finding's `evidence` list.")
     if not _WIDTH.match(width):
         raise RenderError(f"image(): '{width}' is not a width.")
+    if number is not None and (isinstance(number, bool) or not isinstance(number, int) or number < 1):
+        raise RenderError("image(): number must be a positive whole number.")
     caption = escape_md(item.get("caption") or "")
+    if number is not None:
+        caption = f"Figure {number}" + (f"\\: {caption}" if caption else "")
     return Markup(f'\n\n![{caption}]({item["file"]}){{width="{width}"}}\n\n')
 
 

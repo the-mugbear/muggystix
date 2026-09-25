@@ -99,8 +99,8 @@ def test_the_pentest_template_fills_for_both_kinds():
     full = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
     assert full.startswith("---\n")
     # The original template's sections, in its order.
-    order = ["# Project information", "**Penetration testers**", "**Distribution list**", "# Executive summary",
-             "**Summary of findings**", "**Severity count with remediation timeline (days)**",
+    order = ["# Project information", "Table 2: Penetration testers", "Table 3: Distribution list", "# Executive summary",
+             "Table 4: Summary of findings", r"Table 5: Severity count with remediation timeline \(days\)",
              "# System description", "# Findings", "# Appendix", "## Appendix A: informational findings",
              "## Disclaimer"]
     positions = [full.index(h) for h in order]
@@ -418,18 +418,65 @@ def test_the_word_placeholders_take_the_installed_logo_and_title_page_image(tmp_
 def test_every_table_label_keeps_with_its_table_in_word():
     """v2.407.2 — "Severity count with remediation timeline (days)" ended one
     page and its table began the next: a bold label was a plain paragraph.
-    Every label is wrapped in the Table Label style, which keeps with next."""
+    v2.410.0 — tables carry the original template's numbered, centred
+    captions (Table Caption style); the labels of written text that may be a
+    list keep Table Label.  Both styles keep with next."""
     import re
     with zipfile.ZipFile(TEMPLATE / "reference.docx") as z:
         styles = z.read("word/styles.xml").decode()
-    style = re.search(r'<w:style [^>]*w:styleId="TableLabel".*?</w:style>', styles, re.S)
-    assert style and "<w:keepNext/>" in style.group(0)
+    label = re.search(r'<w:style [^>]*w:styleId="TableLabel".*?</w:style>', styles, re.S)
+    assert label and "<w:keepNext/>" in label.group(0)
+    caption = re.search(r'<w:style [^>]*w:styleId="TableCaption".*?</w:style>', styles, re.S)
+    assert caption and re.search(r'<w:keepNext( w:val="true")?/>', caption.group(0))
+    assert '<w:jc w:val="center"/>' in caption.group(0)
+    # The captions are centred, so the tables under them are too (a narrow
+    # key/value table otherwise sits at the margin under a centred caption).
+    table = re.search(r'<w:style [^>]*w:styleId="Table".*?</w:style>', styles, re.S).group(0)
+    assert '<w:jc w:val="center"/>' in table.split("<w:tblStylePr")[0]
+    partial = (TEMPLATE / "partials" / "_table_caption.qmd").read_text(encoding="utf-8")
+    assert '::: {custom-style="Table Caption"}\nTable << counter.table >>: << caption >>\n:::' in partial
     source = (TEMPLATE / "report.qmd").read_text(encoding="utf-8")
     lines = source.splitlines()
     labels = [i for i, line in enumerate(lines) if re.fullmatch(r"\*\*[^*]+\*\*", line.strip())]
-    assert len(labels) >= 10
+    assert len(labels) == 3
     for i in labels:
         assert lines[i - 1] == '::: {custom-style="Table Label"}' and lines[i + 1] == ":::", lines[i]
+
+
+@needs_template
+def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
+    """v2.410.0 — the original template's formatting, reclaimed without its
+    Quarto cross-references (and the wrapper tables a script had to flatten):
+    "Table N: …" captions counted through the report, "Figure N: …" under
+    every evidence image, numbered finding sub-sections, and key/value
+    project details without an empty header row."""
+    import re
+    sample = json.loads((TEMPLATE / "sample-data.json").read_text())
+    sample["findings"][0]["evidence"] = [
+        {"attachment_id": 1, "file": "evidence/1.png", "caption": "SMB banner"},
+        {"attachment_id": 2, "file": "evidence/2.png", "caption": ""},
+    ]
+    sample["findings"][1]["evidence"] = [{"attachment_id": 3, "file": "evidence/3.png", "caption": "Bind"}]
+    out = quarto_render.render_source(TEMPLATE, "report.qmd", sample)
+    tables = re.findall(r"^Table (\d+): (.+)$", out, re.M)
+    assert [int(n) for n, _ in tables] == list(range(1, len(tables) + 1))
+    assert [t for _, t in tables][:3] == ["Project details", "Penetration testers", "Distribution list"]
+    assert "Summary of findings" in [t for _, t in tables]
+    figures = re.findall(r"!\[(Figure \d+[^\]]*)\]", out)
+    assert figures == [r"Figure 1\: SMB banner", "Figure 2", r"Figure 3\: Bind"]
+    assert "{.unnumbered}" not in (TEMPLATE / "partials" / "_finding.qmd").read_text(encoding="utf-8")
+    project = out.split("Table 1: Project details")[1]
+    assert project.split("\n:::\n", 1)[1].lstrip().startswith("| | |")
+
+
+def test_image_numbers_its_caption_and_refuses_anything_but_a_count():
+    item = {"file": "evidence/1.png", "caption": "a *b*"}
+    assert r"![Figure 4\: a \*b\*](evidence/1.png)" in image(item, number=4)
+    assert "![Figure 2](evidence/2.png)" in image({"file": "evidence/2.png"}, number=2)
+    assert "![a \\*b\\*](evidence/1.png)" in image(item)
+    for bad in (0, -1, "3", 2.5, True):
+        with pytest.raises(RenderError):
+            image(item, number=bad)
 
 
 def test_pdf_is_not_a_report_format():

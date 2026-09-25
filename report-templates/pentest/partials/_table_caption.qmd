@@ -1,0 +1,15 @@
+<# A numbered table caption — "Table 3: Summary of findings" — centred above
+   its table, as the original template's were.  Expects `caption` (plain text)
+   and the page-wide `counter` namespace.
+
+   The original numbered them with Quarto cross-references (#tbl-…), which
+   wrap every table in a layout table in Word that a Python script then had to
+   flatten; the number is counted here instead, so there is nothing to undo.
+   "Table Caption" is a style in reference.docx (centred, keep with next, so a
+   caption never ends a page with its table on the next); HTML styles it by
+   its data-custom-style attribute (see the front matter). #>
+<% set counter.table = counter.table + 1 %>
+::: {custom-style="Table Caption"}
+Table << counter.table >>: << caption >>
+:::
+
