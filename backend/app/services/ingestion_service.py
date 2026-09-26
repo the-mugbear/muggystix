@@ -1659,7 +1659,12 @@ class IngestionService:
             if _cd.looks_like_smbmap(sample, filename):
                 attempts.append(("smbmap_output", SMBMapParser, "SMBMap output file"))
             if _cd.looks_like_nikto(sample, filename):
-                attempts.append(("nikto_output", NiktoParser, "Nikto text report"))
+                # Nikto's JSON saved as .txt is labelled as the JSON it is;
+                # the parser reads it by content (v2.424.1).
+                if sample.lstrip(b"\xef\xbb\xbf").lstrip()[:1] in (b"[", b"{"):
+                    attempts.append(("nikto_json", NiktoParser, "Nikto JSON report"))
+                else:
+                    attempts.append(("nikto_output", NiktoParser, "Nikto text report"))
             if _cd.looks_like_amass(sample, filename):
                 attempts.append(("amass_output", AmassParser, "Amass/Subfinder output file"))
             if _cd.looks_like_netexec(sample, filename):

@@ -1579,7 +1579,7 @@
       "registry_tools": [
         "nikto"
       ],
-      "accepted_input": "Nikto `-Format json` (a list of host objects with `vulnerabilities`, a single host object, or a wrapper with `findings`), `-Format csv` (native banner + positional columns, or a headed CSV with ip/port/msg columns), and the plain-text report (`-o x.txt` / console output); the format is chosen by file extension (.json / .csv / anything else = text).",
+      "accepted_input": "Nikto `-Format json` (a list of host objects with `vulnerabilities`, a single host object, or a wrapper with `findings`), `-Format csv` (native banner + positional columns, or a headed CSV with ip/port/msg columns), and the plain-text report (`-o x.txt` / console output); the format is chosen by file extension (.json / .csv), and any other file is read as JSON when it opens with `[` or `{`, else as the text report.",
       "signals": [
         {
           "what": "Target address",

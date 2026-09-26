@@ -28,6 +28,13 @@ from app.services.misconfig_checks import nikto_header_check, record_misconfig
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
+def _content_is_json(file_path: str) -> bool:
+    """True when the file's first non-blank character opens JSON."""
+    with open(file_path, "rb") as handle:
+        head = handle.read(4096).lstrip(b"\xef\xbb\xbf").lstrip()
+    return head[:1] in (b"[", b"{")
+
+
 TARGET_IP_PATTERN = re.compile(r"Target IP:\s*((?:\d{1,3}\.){3}\d{1,3})", re.IGNORECASE)
 TARGET_HOST_PATTERN = re.compile(r"Target Host(?:name)?:\s*([^\s]+)", re.IGNORECASE)
 TARGET_PORT_PATTERN = re.compile(r"Target Port:\s*(\d+)", re.IGNORECASE)
@@ -83,7 +90,10 @@ class NiktoParser:
         # Only the text report carries run times; JSON/CSV have none.
         self._clock = ScanClock(models.SCAN_TIME_TOOL_RUN)
 
-        if suffix == ".json":
+        # v2.424.1 — a .txt holding Nikto's JSON (tee'd or renamed) used to be
+        # read as the text report and import nothing; the content decides
+        # when the extension does not say JSON or CSV.
+        if suffix == ".json" or (suffix != ".csv" and _content_is_json(file_path)):
             self._parse_json(file_path, scan)
         elif suffix == ".csv":
             self._parse_csv(file_path, scan)

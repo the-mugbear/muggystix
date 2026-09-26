@@ -81,6 +81,22 @@ class TestNikto:
         assert len(xcto.source_plugin_name) <= 200
         assert "See:" not in (xcto.plugin_output or "")
 
+    def test_native_json_saved_as_txt_is_read_as_json(self, db_session, test_project, tmp_path):
+        """Production diagnostics 2026-09-26: the parser chose JSON/text by
+        extension, so Nikto's JSON saved as .txt went to the text reader and
+        imported nothing; detection labelled it a text report."""
+        from app.parsers.nikto_parser import NiktoParser
+        from app.services.ingestion_service import IngestionService
+        from types import SimpleNamespace
+
+        renamed = tmp_path / "nikto-all.txt"
+        renamed.write_bytes((NATIVE / "nikto-all.json").read_bytes())
+        job = SimpleNamespace(original_filename="nikto-all.txt", options={}, format_override=None)
+        types = [ft for ft, _c, _d in IngestionService()._build_parsing_attempts(job, renamed.read_bytes()[:65536])]
+        assert types[0] == "nikto_json"
+        scan = NiktoParser(db_session).parse_file(str(renamed), "nikto-all.txt", project_id=test_project.id)
+        assert len(_vulns(db_session, scan)) == 10
+
     def test_native_csv_has_no_header_row(self, db_session, test_project):
         """Nikto's ``-Format csv``: a banner, no header, positional columns."""
         from app.parsers.nikto_parser import NiktoParser

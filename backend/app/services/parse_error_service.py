@@ -88,16 +88,31 @@ def log_parse_error(
     
     return parse_error
 
+def _is_parser_diagnosis(error: Optional[BaseException]) -> bool:
+    """True when ``error`` is a plain ValueError raised by BlueStick's own parser code."""
+    if type(error) is not ValueError or not str(error).strip():
+        return False
+    tb = error.__traceback__
+    if tb is None:
+        return False
+    while tb.tb_next is not None:
+        tb = tb.tb_next
+    return str(tb.tb_frame.f_globals.get("__name__", "")).startswith("app.parsers")
+
+
 def _generate_user_message(error: Exception, error_type: str, file_type: str, filename: str) -> str:
     """Generate a user-friendly error message"""
 
-    # A parser's own diagnosis ("NetExec parser found no host lines in …") is
-    # a plain ValueError written for the operator. It is more specific than
-    # any template below, so it is the message; appending a generic "may be
-    # corrupted" after it hedged against a diagnosis already made. Library
-    # errors (JSONDecodeError, lxml's XMLSyntaxError) are subclasses or other
-    # types and still get the templates.
-    if error_type == "parsing_error" and type(error) is ValueError and str(error).strip():
+    # A parser's own diagnosis ("NetExec parser found no host lines in …",
+    # "Invalid or truncated whatweb JSON during streaming: premature EOF") is
+    # a plain ValueError written for the operator, and more specific than
+    # any template below — the template used to REPLACE it, so production
+    # showed "may contain invalid JSON syntax" for a truncated file.
+    # Only a ValueError raised inside app.parsers counts: the database driver
+    # raises plain ValueError too ("A string literal cannot contain NUL"),
+    # which is not an operator's sentence. JSONDecodeError and lxml errors are
+    # other types and keep the templates.
+    if error_type == "parsing_error" and _is_parser_diagnosis(error):
         return str(error).strip()
 
     file_type_display = {

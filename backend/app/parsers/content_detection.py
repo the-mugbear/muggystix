@@ -366,10 +366,27 @@ def looks_like_naabu(sample: bytes, filename: str) -> bool:
         return False
     return True
 
+# RustScan's two line shapes, whole lines only: `Open 10.0.0.5:22` and the
+# greppable `10.0.0.5 -> [22,80]`.
+_RUSTSCAN_OPEN_LINE = re.compile(r"^\s*open\s+(?:\d{1,3}\.){3}\d{1,3}:\d+\s*$", re.IGNORECASE | re.MULTILINE)
+_RUSTSCAN_GREPPABLE_LINE = re.compile(r"^\s*(?:\d{1,3}\.){3}\d{1,3}\s+->\s+\[[\d,\s]+\]\s*$", re.MULTILINE)
+
+
 def looks_like_rustscan(sample: bytes, filename: str) -> bool:
-    lowered = sample.decode("utf-8", errors="ignore").lower()
+    """RustScan console or greppable output, by its own line shapes.
+
+    v2.424.1 — the old test was "open " and "->" anywhere in the sample.  A
+    Nikto text report carries both in its findings, so production Nikto
+    reports were detected as RustScan "by structure" (ranked first in the
+    .txt list) and the operator had to override them by hand.
+    """
     name = filename.lower()
-    return ("rustscan" in name) or ("open " in lowered and "->" in lowered) or ("rustscan" in lowered)
+    if "rustscan" in name:
+        return True
+    text = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", sample.decode("utf-8", errors="ignore"))
+    if "rustscan" in text.lower():
+        return True
+    return bool(_RUSTSCAN_OPEN_LINE.search(text) or _RUSTSCAN_GREPPABLE_LINE.search(text))
 
 def looks_like_amass(sample: bytes, filename: str) -> bool:
     """Detect Amass / Subfinder JSON output.

@@ -101,3 +101,48 @@ def test_detection_is_stable_across_repeat_and_one_line_change(client, db_sessio
     a_again = stage(NAABU_TXT, "results.txt", allow_duplicate=True)
     b = stage(NAABU_TXT.replace(b":443", b":8443"), "results.txt")
     assert a == a_again == b == ("naabu_output", "structure", False)
+
+
+# Production diagnostics 2026-09-26: two Nikto text reports were detected as
+# RustScan "by structure" because the old sniffer fired on "open " and "->"
+# anywhere, and RustScan is first in the .txt list.
+NIKTO_TXT_WITH_ARROWS = b"""- Nikto v2.5.0
+---------------------------------------------------------------------------
++ Target IP:          10.9.4.1
++ Target Hostname:    web.lab.local
++ Target Port:        443
++ Start Time:         2026-09-26 10:00:00 (GMT0)
+---------------------------------------------------------------------------
++ /: The anti-clickjacking X-Frame-Options header is not present.
++ /login: Redirect (302) -> /sso. Session cookie set without the secure flag.
++ /admin/: Directory indexing found; an open directory listing exposes files.
++ /: Server may leak inodes via ETags, header found with file /, inode: 1 -> 2.
+"""
+
+RUSTSCAN_CONSOLE = b"""[~] The config file is expected to be at "/root/.rustscan.toml"
+\x1b[32mOpen 10.0.0.5:22\x1b[0m
+\x1b[32mOpen 10.0.0.5:80\x1b[0m
+"""
+RUSTSCAN_GREPPABLE = b"10.0.0.5 -> [22,80]\n10.0.0.6 -> [443]\n"
+
+
+def test_a_nikto_text_report_is_not_rustscan():
+    assert not _cd.looks_like_rustscan(NIKTO_TXT_WITH_ARROWS, "report.txt")
+    types = _types("report.txt", NIKTO_TXT_WITH_ARROWS)
+    assert types[0] == "nikto_output"
+    assert "rustscan_output" not in types
+
+
+def test_rustscan_is_recognised_by_its_lines_under_any_name():
+    for sample in (RUSTSCAN_CONSOLE, RUSTSCAN_GREPPABLE, b"Open 10.0.0.5:22\n"):
+        assert _cd.looks_like_rustscan(sample, "out.txt"), sample
+        assert _types("out.txt", sample)[0] == "rustscan_output"
+    # The name still decides when it says so.
+    assert _cd.looks_like_rustscan(b"", "rustscan-lab.txt")
+
+
+def test_the_native_nikto_text_capture_is_not_rustscan():
+    from pathlib import Path
+    sample = (Path(__file__).parent / "fixtures" / "native" / "nikto-all.txt").read_bytes()
+    assert not _cd.looks_like_rustscan(sample, "scan.txt")
+    assert _types("scan.txt", sample)[0] == "nikto_output"
