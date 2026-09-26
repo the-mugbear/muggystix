@@ -4,7 +4,7 @@
  * v5.298.0 — the rows render in each service's panel; these render them as
  * the panel does (folded, newest first).
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';
 
@@ -45,8 +45,26 @@ describe('NetExecCard shares', () => {
     renderCard(2);
     expect(await screen.findByText('READ · Parser lab read-only public share')).toBeInTheDocument();
     expect(screen.getByText('no access · Parser lab authenticated-only share')).toBeInTheDocument();
-    expect(screen.getByText('2 files listed')).toBeInTheDocument();
+    // v5.300.0 — the files themselves, one click away (was a count only).
+    const files = screen.getByRole('button', { name: 'Show the 2 files listed in public' });
+    expect(files).toHaveTextContent('2 files listed · show');
+    expect(screen.queryByText('README.txt')).not.toBeInTheDocument();
+    fireEvent.click(files);
+    expect(screen.getByText('README.txt')).toBeInTheDocument();
+    expect(screen.getByText('2 KB')).toBeInTheDocument();
     expect(screen.queryByText(/"permissions"/)).not.toBeInTheDocument();
+  });
+
+  it('long output opens on request, and a parser cut says so', async () => {
+    const long = 'LDAP 10.0.0.9 389 DC01 ' + 'x'.repeat(400);
+    given([
+      { ...row(1, null), protocol: 'ldap', port: 389, raw_output: long, raw_output_truncated: true, auth_success: null },
+    ]);
+    renderCard(1);
+    const more = await screen.findByRole('button', { name: /show all output \(423 characters\)/ });
+    expect(screen.getByText(/cut at 423 characters on import/)).toBeInTheDocument();
+    fireEvent.click(more);
+    expect(screen.getByRole('button', { name: 'show less' })).toHaveAttribute('aria-expanded', 'true');
   });
 
   it('names the tool, the session, local-admin access and SMBv1', async () => {

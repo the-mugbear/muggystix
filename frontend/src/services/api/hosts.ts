@@ -1054,6 +1054,23 @@ export const getHostWebInterfaces = async (hostId: number): Promise<WebInterface
   return response.data;
 };
 
+/** v5.300.0 — the tool's own record behind one web interface, as stored
+ *  (pretty JSON), fetched when asked for. */
+export interface WebInterfaceRecord {
+  id: number;
+  source: string;
+  url: string;
+  scan_filename?: string | null;
+  text?: string | null;
+  total_chars: number;
+  truncated: boolean;
+}
+
+export const getWebInterfaceRecord = async (interfaceId: number): Promise<WebInterfaceRecord> => {
+  const response = await api.get(`${p()}/hosts/web-interfaces/${interfaceId}/record`);
+  return response.data;
+};
+
 // NetExec (credentialed-enumeration) result for one protocol probe of
 // a host. `shares` is parser-shaped JSON — rendered defensively.
 export interface NetexecResult {
@@ -1071,8 +1088,10 @@ export interface NetexecResult {
   tool?: string;
   local_admin?: boolean | null;
   smbv1?: boolean | null;
-  /** v5.296.0 — the tool's own line (clipped to 2000 chars). */
+  /** v5.296.0 — the tool's own output, whole as stored (v5.300.0). */
   raw_output?: string | null;
+  /** v5.300.0 — the parser kept only the first 10 000 characters. */
+  raw_output_truncated?: boolean;
 }
 
 /** v5.276.0 — a path content discovery found (latest observation per URL). */

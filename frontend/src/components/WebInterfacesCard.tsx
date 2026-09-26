@@ -4,7 +4,9 @@ import { ExternalLink, Globe, Image as ImageIcon, Loader2, Lock, Unlock } from '
 
 import {
   WebInterface,
+  WebInterfaceRecord,
   getHostWebInterfaces,
+  getWebInterfaceRecord,
   fetchWebInterfaceScreenshot,
 } from '../services/api';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
@@ -300,8 +302,49 @@ const fmtBytes = (n: number): string => {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 };
 
+/**
+ * v5.300.0 (review 2026-09-25 R08) — the tool's own record, as stored.  What
+ * the row summarises is a chosen few fields; testssl's OK/INFO checks and
+ * ciphers, WhatWeb's plugin strings and httpx's DNS / CDN / redirect data
+ * were kept and unreachable.  Fetched when opened, one record at a time.
+ */
+const SourceRecord: React.FC<{ interfaceId: number }> = ({ interfaceId }) => {
+  const [record, setRecord] = useState<WebInterfaceRecord | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getWebInterfaceRecord(interfaceId)
+      .then((r) => { if (!cancelled) setRecord(r); })
+      .catch((err) => { if (!cancelled) setError(formatApiError(asAxiosError(err), 'The source record could not be loaded')); });
+    return () => { cancelled = true; };
+  }, [interfaceId]);
+  if (error) return <p className="mt-xs text-caption text-destructive">{error}</p>;
+  if (!record) {
+    return (
+      <p className="mt-xs inline-flex items-center gap-xxs text-caption text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" aria-hidden /> Loading the source record…
+      </p>
+    );
+  }
+  if (!record.text) {
+    return <p className="mt-xs text-caption text-muted-foreground">The import kept no source record for this page.</p>;
+  }
+  return (
+    <div className="mt-xs min-w-0">
+      <p className="text-caption text-muted-foreground">
+        As {record.source} reported it{record.scan_filename ? ` in ${record.scan_filename}` : ''} — kept as text; only the fields above are read by BlueStick.
+        {record.truncated && ` Showing the first ${record.text.length.toLocaleString()} of ${record.total_chars.toLocaleString()} characters.`}
+      </p>
+      <pre className="mt-xxs max-h-[24rem] overflow-auto whitespace-pre-wrap break-all rounded-control bg-muted/30 p-xs font-mono text-caption">
+        {record.text}
+      </pre>
+    </div>
+  );
+};
+
 const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreenshot }) => {
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [recordOpen, setRecordOpen] = useState(false);
   const isHttps = (row.protocol || '').toLowerCase() === 'https';
   const tls = summarizeTls(row.tls_info);
   return (
@@ -390,7 +433,17 @@ const WebInterfaceRow: React.FC<RowProps> = ({ row, earlier = [], onViewScreensh
               {' · '}{historyOpen ? 'hide' : 'show'}
             </button>
           )}
+          <button
+            type="button"
+            onClick={() => setRecordOpen((v) => !v)}
+            aria-expanded={recordOpen}
+            aria-label={`${recordOpen ? 'Hide' : 'Show'} the ${row.source} source record for ${row.url}`}
+            className="shrink-0 rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            source record · {recordOpen ? 'hide' : 'show'}
+          </button>
         </div>
+        {recordOpen && <SourceRecord interfaceId={row.id} />}
         {/* v5.276.0 — what the page said (EyeWitness's captured text),
             two lines; the full text is on hover. */}
         {row.page_text && row.page_text.trim() && (

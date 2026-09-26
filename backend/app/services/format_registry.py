@@ -70,7 +70,9 @@ FORMATS: Dict[str, FormatSpec] = {
         _spec("netexec_output", "NetExec text", "auth", "app.parsers.netexec_parser", "NetexecParser", "NetExec output file"),
         _spec("smbmap_json", "SMBMap JSON", "auth", "app.parsers.smbmap_parser", "SMBMapParser", "SMBMap JSON output"),
         _spec("smbmap_output", "SMBMap text", "auth", "app.parsers.smbmap_parser", "SMBMapParser", "SMBMap output file"),
-        _spec("bloodhound_json", "BloodHound / SharpHound JSON", "auth", "app.parsers.bloodhound_parser", "BloodHoundParser", "BloodHound/SharpHound JSON export"),
+        # v2.417.0 (review R03) — the label says what is imported: computers'
+        # addresses and names, none of BloodHound's security content.
+        _spec("bloodhound_json", "BloodHound computers JSON (addresses only)", "auth", "app.parsers.bloodhound_parser", "BloodHoundParser", "BloodHound/SharpHound JSON export"),
     )
 }
 

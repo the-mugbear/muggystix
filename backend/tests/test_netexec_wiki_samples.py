@@ -60,3 +60,26 @@ def test_api_serves_the_line(client, db_session, test_project):
     assert resp.status_code == 200
     (row,) = resp.json()
     assert row["raw_output"] == "SSH 10.66.0.1 22 10.66.0.1 [+] user:hunter2"
+
+
+def test_api_serves_long_output_whole_and_marks_a_parser_cut(client, db_session, test_project):
+    """v2.417.0 (review R08) — the API cut every line at 2 000 characters with
+    no marker; module output past that point was unreachable."""
+    from app.db.models_confidence import NETEXEC_RAW_OUTPUT_LIMIT
+    host = models.Host(project_id=test_project.id, ip_address="10.66.0.2", state="up")
+    db_session.add(host)
+    db_session.flush()
+    scan = models.Scan(filename="mod.txt", tool_name="netexec", project_id=test_project.id)
+    db_session.add(scan)
+    db_session.flush()
+    long_line = "SMB 10.66.0.2 445 DC01 " + "A" * 3000
+    db_session.add_all([
+        NetexecResult(scan_id=scan.id, host_id=host.id, protocol="smb", port=445, raw_output=long_line),
+        NetexecResult(scan_id=scan.id, host_id=host.id, protocol="ldap", port=389,
+                      raw_output="L" * NETEXEC_RAW_OUTPUT_LIMIT),
+    ])
+    db_session.commit()
+    rows = {r["protocol"]: r for r in client.get(
+        f"/api/v1/projects/{test_project.id}/hosts/{host.id}/netexec").json()}
+    assert rows["smb"]["raw_output"] == long_line and rows["smb"]["raw_output_truncated"] is False
+    assert rows["ldap"]["raw_output_truncated"] is True

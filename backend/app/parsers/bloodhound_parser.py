@@ -31,6 +31,7 @@ class BloodHoundParser:
     def __init__(self, db: Session):
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
+        self.last_parse_stats: dict | None = None
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         project_id = kwargs.get("project_id")
@@ -52,7 +53,18 @@ class BloodHoundParser:
         else:
             entries = self._load_entries(file_path)
 
+        # v2.417.0 (review R03/R12) — what the file held and what was used.
+        # BloodHound's security content (ACEs, sessions, local admins,
+        # delegation, SPNs) is not imported; a computer without an address
+        # is skipped.  Both used to be silent, and a file with no usable
+        # computer "succeeded" with nothing in it.
+        entries_seen = 0
+        imported = 0
+        no_address: list[str] = []
         for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entries_seen += 1
             properties = entry.get("Properties") or entry.get("properties") or {}
             ip_address = extract_first_ip(
                 str(
@@ -63,14 +75,15 @@ class BloodHoundParser:
                     or ""
                 )
             )
-            if not ip_address:
-                continue
-
             hostname = (
                 properties.get("name")
                 or properties.get("dnshostname")
                 or entry.get("name")
             )
+            if not ip_address:
+                no_address.append(str(hostname or entry.get("ObjectIdentifier") or "unnamed object"))
+                continue
+
             persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,
@@ -79,8 +92,30 @@ class BloodHoundParser:
                 ports=[],
                 project_id=project_id,
             )
+            imported += 1
+
+        if imported == 0:
+            raise ValueError(
+                f"BloodHound file had {entries_seen} object(s) and no computer with an IPv4 "
+                "address. BlueStick imports only computers' addresses and names from "
+                "BloodHound (not users, groups, ACLs, sessions or delegation); a SharpHound "
+                "computers file needs resolved addresses (e.g. an `ipv4` property)."
+            )
 
         correlate_scan(self.db, scan.id)
+        self.last_parse_stats = {
+            "skipped": len(no_address),
+            "warnings": (
+                f"{len(no_address)} object(s) with no IPv4 address were not imported: "
+                + ", ".join(no_address[:10]) + (" …" if len(no_address) > 10 else "")
+                if no_address else None
+            ),
+            "summary": (
+                f"{imported} computer{'s' if imported != 1 else ''} (address and name only; "
+                "BloodHound relationships and properties are not imported)"
+            ),
+            "partial": bool(no_address),
+        }
         return scan
 
     @staticmethod

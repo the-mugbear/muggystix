@@ -121,6 +121,12 @@ class ConflictHistory(Base):
     )
 
 
+# How much of a NetExec result's output is kept (a spider_plus listing is
+# stored whole up to this).  The host API reports a row that reached it as
+# cut (v2.417.0).
+NETEXEC_RAW_OUTPUT_LIMIT = 10000
+
+
 class NetexecResult(Base):
     """Store netexec-specific enumeration results"""
     __tablename__ = "netexec_results"

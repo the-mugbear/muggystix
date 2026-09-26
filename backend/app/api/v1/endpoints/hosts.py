@@ -27,7 +27,9 @@ from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole
 from app.db.models_auth import User, UserRole
 from app.db import models
-from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory, NetexecResult
+from app.db.models_confidence import (
+    NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, ConflictHistory, NetexecResult,
+)
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2from app.services.note_attachment_service import require_readable_file
@@ -2462,6 +2464,59 @@ def list_host_web_interfaces(
     ]
 
 
+class WebInterfaceRecordResponse(BaseModel):
+    """The tool's own record behind one web interface (v2.417.0)."""
+    id: int
+    source: str
+    url: str
+    scan_filename: Optional[str] = None
+    # Pretty-printed JSON of what the parser kept (`web_interfaces.raw`).
+    text: Optional[str] = None
+    total_chars: int = 0
+    truncated: bool = False
+
+
+# Enough for any single tool record seen so far (a full testssl target is
+# ~60 KB pretty-printed); a larger one is cut and says so.
+WEB_RECORD_LIMIT_CHARS = 500_000
+
+
+@router.get(
+    "/web-interfaces/{interface_id:int}/record",
+    response_model=WebInterfaceRecordResponse,
+    summary="The stored source record behind one web interface",
+)
+def get_web_interface_record(
+    interface_id: int,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """httpx, WhatWeb, testssl and EyeWitness keep each record they read
+    (`raw`), but only chosen fields were served: testssl's OK/INFO checks and
+    cipher lists, WhatWeb's plugin strings and httpx's DNS/CDN/redirect data
+    were stored and unreachable (review 2026-09-25 R08).  Fetched on demand,
+    one record at a time — never with the list."""
+    import json
+
+    row = (
+        db.query(models.WebInterface.id, models.WebInterface.source, models.WebInterface.url,
+                 models.WebInterface.raw, models.Scan.filename)
+        .outerjoin(models.Scan, models.Scan.id == models.WebInterface.scan_id)
+        .filter(models.WebInterface.id == interface_id, models.WebInterface.project_id == project.id)
+        .first()
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Web interface not found")
+    text = None if row.raw is None else json.dumps(row.raw, indent=2, ensure_ascii=False, default=str)
+    total = len(text or "")
+    return WebInterfaceRecordResponse(
+        id=row.id, source=row.source, url=row.url, scan_filename=row.filename,
+        text=text[:WEB_RECORD_LIMIT_CHARS] if text else None,
+        total_chars=total, truncated=total > WEB_RECORD_LIMIT_CHARS,
+    )
+
+
 class NetexecResultResponse(BaseModel):
     """One NetExec (credentialed-enumeration) observation of a host.
 
@@ -2489,6 +2544,9 @@ class NetexecResultResponse(BaseModel):
     # interpreted; LDAP / RDP / VNC flags and module output live only here, so
     # it is shown rather than kept invisibly.
     raw_output: Optional[str] = None
+    # v2.417.0 — the parser keeps the first 10 000 characters of a result's
+    # output; True when it had to cut, so the UI says the line is partial.
+    raw_output_truncated: bool = False
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -2547,11 +2605,12 @@ def list_host_netexec_results(
             tool=r.tool or "netexec",
             local_admin=r.local_admin,
             smbv1=r.smbv1,
-            # A console line is short; a spider_plus listing is stored whole
-            # (up to 10 000 chars) and is already summarised as shares.
             # Credentials that worked are what an analyst looks for here: the
-            # line is shown as the tool wrote it.
-            raw_output=(r.raw_output or "")[:2000] or None,
+            # line is shown as the tool wrote it.  v2.417.0 — whole, as
+            # stored: the API cut it at 2 000 characters with no marker, so
+            # module output past that point was unreachable.
+            raw_output=r.raw_output or None,
+            raw_output_truncated=len(r.raw_output or "") >= NETEXEC_RAW_OUTPUT_LIMIT,
         )
         for r in rows
     ]

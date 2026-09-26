@@ -1069,3 +1069,51 @@ def test_httpx_caches_host_lookups_across_records(db_session, test_project, tmp_
         .count()
         == 1
     )
+
+
+def _web_row(db, project, raw):
+    from app.db import models
+    host = models.Host(ip_address="10.99.8.8", state="up", project_id=project.id)
+    db.add(host)
+    db.flush()
+    scan = models.Scan(filename="testssl-run.json", tool_name="testssl", project_id=project.id)
+    db.add(scan)
+    db.flush()
+    row = models.WebInterface(
+        host_id=host.id, scan_id=scan.id, project_id=project.id, source="testssl",
+        url="https://10.99.8.8:443", port=443, protocol="https", ip_address="10.99.8.8", raw=raw,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def test_record_endpoint_serves_the_stored_source_record(client, db_session, test_project):
+    """v2.417.0 (review R08) — what the tool reported beyond the chosen
+    fields (testssl OK/INFO checks, ciphers…) was stored and unreachable."""
+    raw = {"findings": [{"id": "cipher_order", "severity": "INFO", "finding": "server"}]}
+    row = _web_row(db_session, test_project, raw)
+    resp = client.get(f"/api/v1/projects/{test_project.id}/hosts/web-interfaces/{row.id}/record")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["source"] == "testssl" and body["scan_filename"] == "testssl-run.json"
+    assert '"cipher_order"' in body["text"]
+    assert body["truncated"] is False and body["total_chars"] == len(body["text"])
+
+
+def test_record_endpoint_says_when_it_cuts(client, db_session, test_project, monkeypatch):
+    from app.api.v1.endpoints import hosts as hosts_ep
+    monkeypatch.setattr(hosts_ep, "WEB_RECORD_LIMIT_CHARS", 20)
+    row = _web_row(db_session, test_project, {"findings": ["x" * 100]})
+    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/web-interfaces/{row.id}/record").json()
+    assert body["truncated"] is True and len(body["text"]) == 20 and body["total_chars"] > 100
+
+
+def test_record_endpoint_is_project_scoped(client, db_session, test_project):
+    from app.db.models_project import Project
+    other = Project(name="elsewhere", slug="elsewhere-record")
+    db_session.add(other)
+    db_session.flush()
+    row = _web_row(db_session, other, {"a": 1})
+    resp = client.get(f"/api/v1/projects/{test_project.id}/hosts/web-interfaces/{row.id}/record")
+    assert resp.status_code == 404

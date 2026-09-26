@@ -12,7 +12,9 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_confidence import NetexecResult, HostConfidence, PortConfidence, ConflictHistory
+from app.db.models_confidence import (
+    NETEXEC_RAW_OUTPUT_LIMIT, NetexecResult, HostConfidence, PortConfidence, ConflictHistory,
+)
 from app.services.confidence_service import (
     ConfidenceService, ScanType, DataSource, ConfidenceScore
 )
@@ -24,6 +26,8 @@ from app.services.misconfig_checks import record_misconfig
 import logging
 
 logger = logging.getLogger(__name__)
+
+RAW_OUTPUT_LIMIT = NETEXEC_RAW_OUTPUT_LIMIT
 
 # Real nxc output rarely starts at the protocol token: a terminal capture
 # (`tee`, `script`) carries ANSI colour codes around it and the `--log` file
@@ -743,7 +747,7 @@ class NetexecParser:
             if new_success is True and duplicate.auth_success is not True:
                 duplicate.auth_success = True
                 # The evidence line is the one that proved the login.
-                duplicate.raw_output = raw_output[:10000]
+                duplicate.raw_output = raw_output[:RAW_OUTPUT_LIMIT]
             elif duplicate.auth_success is None and new_success is not None:
                 duplicate.auth_success = new_success
             if host_data.get('local_admin'):
@@ -771,7 +775,7 @@ class NetexecParser:
             auth_success=host_data.get('auth_success'),
             username=host_data.get('username'),
             shares=host_data.get('shares'),
-            raw_output=raw_output[:10000],  # Limit size
+            raw_output=raw_output[:RAW_OUTPUT_LIMIT],
             tool=host_data.get('tool', 'netexec'),
             local_admin=host_data.get('local_admin'),
             smbv1=host_data.get('smbv1'),

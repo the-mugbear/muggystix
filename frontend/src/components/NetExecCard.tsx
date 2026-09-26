@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { FolderTree } from 'lucide-react';
 
 import { NetexecResult } from '../services/api';
@@ -29,9 +29,16 @@ const protocolBadgeVariant = (proto: string): 'info' | 'secondary' | 'outline' =
 // `shares` is parser-shaped JSON — could be a dict keyed by share name,
 // an array, or a scalar.  Normalize to a list of { name, detail } so the
 // renderer doesn't have to branch.
+interface ShareFile {
+  path: string;
+  size: string | null;
+}
+
 interface ShareEntry {
   name: string;
   detail: string | null;
+  /** v5.300.0 — a spider_plus listing's files (was only a count). */
+  files?: ShareFile[];
 }
 
 const normalizeShares = (shares: unknown): ShareEntry[] => {
@@ -68,11 +75,21 @@ const normalizeShares = (shares: unknown): ShareEntry[] => {
   }
   if (typeof shares === 'object') {
     return Object.entries(shares as Record<string, unknown>).map(([k, v]) => {
-      // spider_plus: {share: {path: {size, mtime…}}} — say how many files.
+      // spider_plus: {share: {path: {size, mtime…}}} — how many files, and
+      // (v5.300.0) the files themselves: a count cannot say whether a share
+      // holds anything sensitive.
       if (v && typeof v === 'object' && !Array.isArray(v)
         && Object.values(v as Record<string, unknown>).every((f) => f && typeof f === 'object')) {
-        const n = Object.keys(v as Record<string, unknown>).length;
-        return { name: k, detail: `${n} file${n === 1 ? '' : 's'} listed` };
+        const entries = Object.entries(v as Record<string, Record<string, unknown>>);
+        const n = entries.length;
+        return {
+          name: k,
+          detail: `${n} file${n === 1 ? '' : 's'} listed`,
+          files: entries.map(([path, meta]) => ({
+            path,
+            size: meta?.size != null ? String(meta.size) : null,
+          })),
+        };
       }
       return { name: k, detail: describe(v) };
     });
@@ -92,13 +109,57 @@ export const loginLabel = (result: NetexecResult): string => {
   return 'Authenticated';
 };
 
+const FILE_PREVIEW = 20;
+
+/** A spider_plus share's files, the first few until asked for (v5.300.0). */
+const ShareFiles: React.FC<{ share: string; files: ShareFile[] }> = ({ share, files }) => {
+  const [open, setOpen] = useState(false);
+  const [all, setAll] = useState(false);
+  return (
+    <div className="w-full min-w-0">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-expanded={open}
+        aria-label={`${open ? 'Hide' : 'Show'} the ${files.length} files listed in ${share}`}
+        className={linkButton}>
+        {files.length} file{files.length === 1 ? '' : 's'} listed · {open ? 'hide' : 'show'}
+      </button>
+      {open && (
+        <ul className="mt-xxs">
+          {(all ? files : files.slice(0, FILE_PREVIEW)).map((f) => (
+            <li key={f.path} className="flex min-w-0 items-baseline gap-xs text-caption">
+              <span className="min-w-0 flex-1 truncate font-mono" title={f.path}>{f.path}</span>
+              {f.size && <span className="shrink-0 tabular-nums text-muted-foreground">{f.size}</span>}
+            </li>
+          ))}
+          {files.length > FILE_PREVIEW && (
+            <li>
+              <button type="button" className={linkButton} onClick={() => setAll((v) => !v)}>
+                {all ? 'show fewer' : `show all ${files.length}`}
+              </button>
+            </li>
+          )}
+        </ul>
+      )}
+    </div>
+  );
+};
+
+const linkButton =
+  'rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+// Longer than this (or several lines), the output is clamped until asked for.
+const LONG_OUTPUT = 240;
+
 const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> = ({ result, seenCount = 1 }) => {
+  const [outputOpen, setOutputOpen] = useState(false);
   const shares = normalizeShares(result.shares);
   const host = result.hostname || result.domain_name;
   // v5.296.0 — the tool's own line.  Only the SMB banner and login lines are
   // interpreted, so an LDAP / RDP / VNC flag is readable here or nowhere.  A
   // spider_plus listing ("JSON: {...}") is already summarised as shares.
   const line = result.raw_output && !result.raw_output.startsWith('JSON:') ? result.raw_output : null;
+  // v5.300.0 — the whole output is served now (it was cut at 2 000
+  // characters, silently); long output opens on request.
+  const long = line != null && (line.length > LONG_OUTPUT || line.includes('\n'));
   return (
     // v5.241.0 — a divided row, not a bordered box: a result with no shares is
     // one line (it was a ~100px card to say "auth failed, no shares").
@@ -147,10 +208,26 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
         )}
       </div>
       {line && (
-        <p className={`line-clamp-2 break-all font-mono text-caption text-muted-foreground${shares.length > 0 ? ' mb-xs' : ' mt-xxs'}`}
-          title={line}>
-          {line}
-        </p>
+        <div className={shares.length > 0 ? 'mb-xs' : 'mt-xxs'}>
+          <p className={`${long && !outputOpen ? 'line-clamp-2 ' : ''}whitespace-pre-wrap break-all font-mono text-caption text-muted-foreground`}>
+            {line}
+          </p>
+          {(long || result.raw_output_truncated) && (
+            <div className="flex flex-wrap items-center gap-xs">
+              {long && (
+                <button type="button" className={linkButton} aria-expanded={outputOpen}
+                  onClick={() => setOutputOpen((v) => !v)}>
+                  {outputOpen ? 'show less' : `show all output (${line.length.toLocaleString()} characters)`}
+                </button>
+              )}
+              {result.raw_output_truncated && (
+                <span className="text-caption text-warning">
+                  cut at {line.length.toLocaleString()} characters on import — the rest is in the original file
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       )}
 
       {shares.length > 0 && (
@@ -166,7 +243,9 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
                 className="flex min-w-0 flex-wrap items-baseline gap-xs border-b border-border py-xxs last:border-b-0"
               >
                 <span className="font-mono text-caption font-medium">{share.name}</span>
-                {share.detail && (
+                {share.files ? (
+                  <ShareFiles share={share.name} files={share.files} />
+                ) : share.detail && (
                   <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">
                     {share.detail}
                   </span>

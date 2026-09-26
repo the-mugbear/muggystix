@@ -898,10 +898,9 @@
         }
       ],
       "gaps": [
-        "Services and versions that nmap identified in RustScan's pass-through output are ignored, so a `rustscan -- -sV` run imports bare open ports only.",
+        "Services and versions that nmap identified in RustScan's pass-through output are ignored, so a `rustscan -- -sV` run imports bare open ports only (since v2.417.0 the import warns when the file holds nmap's report).",
         "Hostnames from the pass-through `Nmap scan report for name (ip)` lines are not recorded.",
-        "IPv6 results are dropped.",
-        "A file with no recognised lines completes as an empty scan instead of failing (masscan and naabu fail closed on zero records)."
+        "IPv6 results are dropped."
       ],
       "unverified": [
         "No RustScan fixture in backend/tests/fixtures; line shapes are from knowledge of RustScan 2.x output.",
@@ -1893,11 +1892,11 @@
         {
           "what": "Grade and cipher rows rated LOW+",
           "input": "`overall_grade` (e.g. CRITICAL 'T'), `grade_cap_reason_N`, per-suite `cipher-tls1_2_xc028`, `cipher_order`, `cipher_order-tls1_2`, `cipherorder_*`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Skipped as observations on purpose (_NOT_WEAKNESSES): the grade and cap reasons summarise other checks, and per-suite rows are covered by the cipherlist_* families. This also drops 'no server cipher order configured' (LOW) as an observation. The letter grade is not a typed column."
         },
         {
@@ -1913,21 +1912,21 @@
         {
           "what": "CWE",
           "input": "finding `cwe` (e.g. `CWE-310`)",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Not read into any column."
         },
         {
           "what": "Checks reported OK / INFO / WARN",
           "input": "findings with severity `OK`, `INFO`, `WARN` (e.g. `TLS1_2 offered`, `HSTS_time`, `X-Frame-Options DENY`, `clientsimulation-*`, `cert_fingerprintSHA256`, `cert` PEM)",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Facts and client-side notes, not weaknesses: kept verbatim in raw.findings, never observations. WARN (a scanner-side problem) is also excluded."
         },
         {
@@ -1953,21 +1952,21 @@
         {
           "what": "Certificate subject/issuer, CN, SANs, fingerprints, serial, key size, signature algorithm",
           "input": "`cert_commonName`, `cert_subjectAltName`, `cert_caIssuers`, `cert_serialNumber`, `cert_fingerprintSHA1/SHA256`, `cert_keySize`, `cert_signatureAlgorithm`, `cert` (PEM)",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Not promoted: cert_subject_org / cert_issuer_org stay NULL for testssl rows, and the CN/SAN names are NOT recorded as CERT-kind DNS observations (httpx does record them)."
         },
         {
           "what": "HTTP response facts",
           "input": "`HTTP_status_code`, `banner_server`, `banner_application`, `banner_reverseproxy`, `HSTS_time`, `X-Frame-Options`, `Content-Security-Policy`, `cookie_count`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "WebInterface.status_code / server_header / technologies are not filled from these. A missing header is an observation only when testssl rated it (e.g. `HSTS` LOW+)."
         },
         {
@@ -2207,41 +2206,41 @@
         {
           "what": "DNS answers httpx saw",
           "input": "`a[]`, `aaaa[]`, `cname[]`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Not recorded as DNSRecord A/AAAA/CNAME observations; only the resolved `host_ip` is used."
         },
         {
           "what": "CDN / WAF, JARM, ASN",
           "input": "`cdn`, `cdn_name`, `cdn_type`, `jarm_hash` (or `jarm`), `asn{}`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Not read into any column."
         },
         {
           "what": "Redirect chain and final URL",
           "input": "`chain_status_codes`, `final_url`, `location`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Not read; the WebInterface is keyed by the requested `url`."
         },
         {
           "what": "Response details",
           "input": "`content_type`, `method`, `path`, `response_time`, `lines`, `words`, `hash{body_md5, body_mmh3, body_sha256, header_md5...}`, `header` / `body` (with -irh / -irr), `http2`, `vhost`, `websocket`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Whole record stored as JSON; none promoted (no content_type column is filled)."
         },
         {
@@ -2388,21 +2387,21 @@
         {
           "what": "Plugin detail strings, modules, OS, accounts, models, firmware, file paths",
           "input": "`plugins.<Name>.string`, `.module`, `.os`, `.account`, `.model`, `.firmware`, `.filepath` (e.g. `MetaGenerator.string = [\"WordPress 6.2\"]`, `Country.module = [\"ZZ\"]`)",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Only `version` reaches the tech chips; a plugin whose value lives in `string` (MetaGenerator, PoweredBy, Script, etc.) becomes a bare-name chip and its value survives only in the raw record."
         },
         {
           "what": "HTTP metadata / security-header / page-feature plugins",
           "input": "Plugins `Country`, `UncommonHeaders`, `RedirectLocation`, `Cookies`, `HttpOnly`, `X-Frame-Options`, `Strict-Transport-Security`, `X-XSS-Protection`, `Content-Security-Policy`, `X-Content-Type-Options`, `Access-Control-Allow-Origin`, `Via-Proxy`, `Allow`, `Email`, `Meta-Author`, `Meta-Refresh`, `Script`, `Frame`, `HTML5`, `PasswordField`, `X-Powered-By`",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": "Dropped from the technology list on purpose (_NON_TECH_PLUGINS); kept only inside the raw record - not queryable (e.g. no 'has a password field', 'missing HSTS', 'X-Powered-By: PHP/7.4', cookie names, e-mail addresses)."
         },
         {
@@ -2419,11 +2418,11 @@
         {
           "what": "Request configuration and any other top-level keys",
           "input": "Top-level `request_config` (headers / user agent) and any other record keys",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": null
         },
         {
@@ -2577,11 +2576,11 @@
         {
           "what": "Full source record",
           "input": "Every key of the row/record (incl. `Request Status`, ` Source Path`, JSON extras such as `headers`)",
-          "level": "stored",
+          "level": "text",
           "stored_as": [
             "WebInterface.raw"
           ],
-          "shown": null,
+          "shown": "Host inspector › Services › a web page's Source record (the tool's record as stored, v2.417.0)",
           "note": null
         },
         {
@@ -3523,8 +3522,8 @@
           "stored_as": [
             "NetexecResult.shares"
           ],
-          "shown": "Host inspector › SMB / AD enumeration",
-          "note": "The address comes from the file name. Individual files are not listed on the host."
+          "shown": "Host inspector › Services › SMB panel: each share's files with their sizes (v2.417.0; was a count)",
+          "note": "The address comes from the file name. Each share's files are listed on the host with their sizes."
         },
         {
           "what": "Protocol banner flags other than SMB (LDAP signing / channel binding, RDP NLA, SSH / FTP / MSSQL / WinRM / VNC details)",
@@ -3730,7 +3729,7 @@
       ],
       "gaps": [
         "No Active Directory data is kept beyond computer names and addresses; attack paths and risky settings are discarded.",
-        "A file whose computers carry no address imports as a successful scan with no hosts."
+        "Objects without an IPv4 address (most SharpHound computers files unless addresses were resolved) are skipped; the import counts and names them."
       ],
       "unverified": []
     }
