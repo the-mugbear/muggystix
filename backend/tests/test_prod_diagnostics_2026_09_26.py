@@ -68,6 +68,56 @@ def test_queue_metrics_report_disk_space(tmp_path, monkeypatch):
     assert qm.disk_snapshot(str(tmp_path))["low"] is False
 
 
+def _sweep(tmp_path, hosts):
+    path = tmp_path / "sweep.txt"
+    path.write_text("".join(
+        f"SMB         10.64.{i // 250}.{i % 250 + 1:<11} 445    WS{i:04d}   [*] Windows 10 Build 19041 x64 "
+        f"(name:WS{i:04d}) (domain:corp.example) (signing:True) (SMBv1:False)\n"
+        for i in range(hosts)
+    ))
+    return path
+
+
+def test_netexec_reports_progress_as_it_goes(db_session, test_project, tmp_path, monkeypatch):
+    """A 10 000-host sweep ran for minutes showing nothing and was cancelled
+    as hung (production, 2026-09-26)."""
+    from app.parsers import netexec_parser
+    from app.services import ingestion_service
+
+    monkeypatch.setattr(netexec_parser, "_PROGRESS_EVERY_HOSTS", 10)
+    seen = []
+    monkeypatch.setattr(ingestion_service, "report_progress", seen.append)
+    NetexecParser(db_session).parse_file(str(_sweep(tmp_path, 25)), "sweep.txt", project_id=test_project.id)
+    assert seen == ["0/25 hosts", "9/25 hosts", "19/25 hosts"]
+
+
+def test_a_cancel_stops_the_netexec_parse(db_session, test_project, tmp_path, monkeypatch):
+    """The cancel only marked the job failed; the parser never checked, so it
+    ran to the end and wrote every host.  report_progress raises once the job
+    is cancelled — the parse stops there, and names its scan for cleanup."""
+    import pytest
+    from app.parsers import netexec_parser
+    from app.services import ingestion_service
+    from app.services.ingestion_service import ParseFailure
+
+    monkeypatch.setattr(netexec_parser, "_PROGRESS_EVERY_HOSTS", 10)
+    calls = []
+
+    def cancelled_after_first(progress):
+        calls.append(progress)
+        if len(calls) > 1:
+            raise ParseFailure("Cancelled by user")
+
+    monkeypatch.setattr(ingestion_service, "report_progress", cancelled_after_first)
+    parser = NetexecParser(db_session)
+    with pytest.raises(ParseFailure):
+        parser.parse_file(str(_sweep(tmp_path, 40)), "sweep.txt", project_id=test_project.id)
+    assert len(calls) == 2
+    assert parser._created_scan_id is not None
+    written = db_session.query(NetexecResult).filter(NetexecResult.scan_id == parser._created_scan_id).count()
+    assert written < 40
+
+
 def test_the_nul_failure_is_explained_in_plain_words():
     reason = _plain_reason("A string literal cannot contain NUL (0x00) characters.")
     assert "NUL bytes" in reason and "re-import" in reason

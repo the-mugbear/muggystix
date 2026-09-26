@@ -29,6 +29,9 @@ import logging
 logger = logging.getLogger(__name__)
 
 RAW_OUTPUT_LIMIT = NETEXEC_RAW_OUTPUT_LIMIT
+# Hosts between progress reports (each report is also where a cancel stops
+# the parse, and it commits the work so far).
+_PROGRESS_EVERY_HOSTS = 250
 
 # Real nxc output rarely starts at the protocol token: a terminal capture
 # (`tee`, `script`) carries ANSI colour codes around it and the `--log` file
@@ -171,6 +174,8 @@ class NetexecParser:
         self.db = db
         self.confidence_service = ConfidenceService()
         self.dedup_service = HostDeduplicationService(db)
+        # (host_id, port_number) → port id, resolved this parse (v2.422.0).
+        self._port_ids: Dict[Tuple[int, int], int] = {}
 
         # Regex patterns for different netexec output formats.  The hostname
         # column is `\S+`, not `\w+`: Windows' default names are hyphenated
@@ -208,6 +213,7 @@ class NetexecParser:
         self._filename = filename
         self.uninterpreted = None
         self.last_parse_stats = None
+        self._port_ids: Dict[Tuple[int, int], int] = {}
         logger.info(f"Starting netexec parse of {filename}")
 
         # Create scan record
@@ -218,6 +224,10 @@ class NetexecParser:
         )
         self.db.add(scan)
         self.db.flush()
+        # v2.422.0 — progress reports commit as the parse goes, so a cancelled
+        # or failed import has a committed partial scan: named here so the
+        # dispatcher removes it, as for nmap / masscan.
+        self._created_scan_id = scan.id
 
         try:
             # v2.420.0 — UTF-16 (a PowerShell redirect) decoded, stray NUL
@@ -438,7 +448,16 @@ class NetexecParser:
             tally.add('dropped' if kind == 'dropped_table_row' else kind, shape)
         self.uninterpreted = tally.receipt()
 
-        for ip_observations in observations.values():
+        # v2.422.0 — progress, and a point where a cancel takes effect.  A
+        # 10 000-host sweep ran for minutes showing nothing, was cancelled as
+        # "hung" from the UI, and kept writing to the end regardless
+        # (production, 2026-09-26): report_progress raises ParseFailure once
+        # the job is cancelled, which stops the parse here.
+        from app.services.ingestion_service import report_progress
+        total_hosts = len(observations)
+        for index, ip_observations in enumerate(observations.values(), start=1):
+            if index == 1 or index % _PROGRESS_EVERY_HOSTS == 0:
+                report_progress(f"{index - 1}/{total_hosts} hosts")
             # The SMB banner names the host, its OS, domain and signing
             # posture; an auth line carries none of that.  Order in the file
             # must not decide which one describes the host.
@@ -486,6 +505,9 @@ class NetexecParser:
         """v2.412.0 — the line's weaknesses as catalog observations
         (app/services/misconfig_checks.py), on the port the line is about."""
         line = host_data.get('raw_line') or ''
+        # v2.422.0 — the port this parse already resolved, when it has; the
+        # catalog write looked it up again for every host.
+        port_id = self._port_ids.get((host.id, host_data.get('port')))
         for check_id in netexec_line_checks(
             host_data.get('protocol'), line, username=host_data.get('username'),
             auth_success=host_data.get('auth_success'), smbv1=host_data.get('smbv1'),
@@ -493,6 +515,7 @@ class NetexecParser:
             record_misconfig(
                 self.db, check_id=check_id, host_id=host.id, scan_id=scan_id,
                 source=VulnerabilitySource.NETEXEC, port_number=host_data.get('port'), evidence=line,
+                port_id=port_id,
             )
 
     def _parse_smb_enum_line(self, match, full_line: str) -> Dict[str, Any]:
@@ -728,6 +751,7 @@ class NetexecParser:
 
         # Find or create port
         port = self.dedup_service.find_or_create_port(host_id, scan_id, port_data)
+        self._port_ids[(host_id, port_number)] = port.id
 
         # Track port field confidence
         for field_name, value in port_data.items():
