@@ -19,6 +19,40 @@ from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortS
 logger = logging.getLogger(__name__)
 
 
+def port_state_is_active(state: Optional[str]) -> bool:
+    """Port.is_active from its state — the one rule for the create and update
+    paths (v2.419.0, review H8; they disagreed on a new closed port).  An
+    uncertain ``open|filtered`` (UDP) counts as active, like ``filtered``: the
+    port may answer.  No state (a tool that reports none) is active, as a
+    created port always was."""
+    return state is None or state in ('open', 'filtered', 'open|filtered')
+
+
+def should_refresh_service_details(
+    existing_name: Optional[str],
+    existing_conf: Optional[int],
+    new_name: Optional[str],
+    new_conf: Optional[int],
+) -> bool:
+    """Should a new observation of the SAME service refresh its product,
+    version and extra info? (v2.419.0, review 2026-09-25 H7.)
+
+    ``should_replace_service`` decides WHICH identification wins; among equal
+    confidence it wanted a longer name, so a rescan saying "http, nginx
+    1.26.0" at nmap confidence 10 lost to the stored "http, nginx 1.18.0" at
+    10 — the upgrade was invisible while "last seen" moved.  The same name at
+    equal or higher confidence is the newer word on that service.  A name with
+    no confidence behind it (NetExec, SMBMap, dirbuster) refreshes nothing, and
+    the caller only copies values the observation actually carries.
+    """
+    return (
+        bool(existing_name) and bool(new_name)
+        and existing_name.strip().lower() == new_name.strip().lower()
+        and (new_conf or 0) > 0
+        and (new_conf or 0) >= (existing_conf or 0)
+    )
+
+
 def should_replace_service(
     existing_name: Optional[str],
     existing_conf: Optional[int],
@@ -86,6 +120,33 @@ class HostDeduplicationService:
         self._ws_history_checked: set = set()
         # Hosts created in this parse: they have no ports, scripts or history.
         self._fresh_host_ids: set = set()
+
+    def discard_rolled_back_state(self) -> None:
+        """Forget what a caller's SAVEPOINT rollback just discarded (v2.419.0,
+        review 2026-09-25 H1).  Call it after rolling back a savepoint that
+        wrapped calls into this service.
+
+        The history caches hold ORM rows added in THIS parse; a row added
+        inside a rolled-back savepoint is gone from the database but stayed in
+        the cache, so a later observation of the same host or port found it,
+        updated the discarded object, and never inserted history — the host
+        silently lost its membership in the scan.  Rows that were already
+        persistent before the savepoint survive (expired, reloaded on access)
+        and are kept.  The per-host working set and the name memo can hold
+        rows from the savepoint too; they are rebuilt on next use."""
+        from sqlalchemy import inspect as sa_inspect
+        from app.services.dns_name_service import ObservationCache
+
+        for cache in (self._pending_host_history, self._pending_port_history):
+            for key in [k for k, row in cache.items() if not sa_inspect(row).persistent]:
+                del cache[key]
+        self._ws_host_id = None
+        self._ws_scan_id = None
+        self._ws_ports = {}
+        self._ws_scripts = {}
+        self._ws_fresh_port_ids = set()
+        self._ws_history_checked = set()
+        self._name_cache = ObservationCache()
 
     def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         """
@@ -465,10 +526,14 @@ class HostDeduplicationService:
             ).first()
 
         if existing_script:
-            # Update existing script
+            # The output is the latest observation's; ``scan_id`` stays the
+            # scan that FIRST recorded it (v2.419.0, review 2026-09-25 H2 —
+            # the vulnerability rule since v2.332.0).  It used to move to the
+            # newest scan, and ``scan_id`` cascades on delete: an import that
+            # failed part-way had its scan deleted by the cleanup, taking the
+            # rows an EARLIER scan created with it.
             existing_script.output = output
             existing_script.last_seen = func.now()
-            existing_script.scan_id = scan_id  # Update to latest scan
             return existing_script
         else:
             # Create new script
@@ -500,10 +565,9 @@ class HostDeduplicationService:
         ).first()
         
         if existing_script:
-            # Update existing script
+            # scan_id stays the first recorder (see add_or_update_script, H2).
             existing_script.output = output
             existing_script.last_seen = func.now()
-            existing_script.scan_id = scan_id  # Update to latest scan
             return existing_script
         else:
             # Create new host script
@@ -670,7 +734,9 @@ class HostDeduplicationService:
             service_conf=port_data.get('service_conf'),
             service_tunnel=port_data.get('service_tunnel'),
             last_updated_scan_id=scan_id,
-            is_active=True
+            # H8 — the update path's rule: a new closed port was active
+            # until its first repeat observation turned it inactive.
+            is_active=port_state_is_active(port_data.get('state')),
         )
         return port
     
@@ -690,7 +756,7 @@ class HostDeduplicationService:
             if new_reason or new_state != port.state:
                 port.reason = new_reason
             port.state = new_state
-            port.is_active = (new_state in ['open', 'filtered'])
+            port.is_active = port_state_is_active(new_state)
         
         # Update service info if new scan has better information — the single
         # canonical rule (mirrored by masscan's bulk SQL); see should_replace_service.
@@ -710,7 +776,17 @@ class HostDeduplicationService:
             # observation that won, and carrying a stale "ssl" onto a service
             # a better scan says is plaintext would be worse than NULL.
             port.service_tunnel = port_data.get('service_tunnel')
-        
+        elif should_refresh_service_details(
+            port.service_name, port.service_conf, new_service_name, new_service_conf
+        ):
+            # H7 — the same service re-identified: the newer details win,
+            # but a value the observation does not carry is not erased.
+            for column in ('service_product', 'service_version', 'service_extrainfo', 'service_method'):
+                value = port_data.get(column)
+                if value:
+                    setattr(port, column, value)
+            port.service_conf = new_service_conf
+
         # Always update timestamps and scan reference
         port.last_seen = func.now()
         port.last_updated_scan_id = scan_id

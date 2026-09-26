@@ -188,27 +188,14 @@ class NetexecParser:
                 r'(?:Windows\s+)?([^(]+)\s*\(name:([^)]+)\)\s*\(domain:([^)]+)\)'
             ),
 
-            # Share enumeration
-            'smb_shares': re.compile(
-                r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[([^\]]+)\]\s+'
-                r'Enumerated shares.*?'
-            ),
-
             # Authentication success
             'auth_success': re.compile(
                 r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[\+\]\s+(.*)'
             ),
-
-            # LDAP enumeration
-            'ldap_enum': re.compile(
-                r'LDAP\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([^\]]+)\]'
-            ),
-
-            # Service banners
-            'service_banner': re.compile(
-                r'(\w+)\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+\S+\s+\[([^\]]+)\]\s+'
-                r'(?:Name:|Banner:|Version:)\s*(.*)'
-            )
+            # v2.419.0 (review R6) — `smb_shares`, `ldap_enum` and
+            # `service_banner` were defined and never used: the share table
+            # has its own reader, and LDAP / banner lines are `host_basic`.
+            # Lines no pattern reads are listed on the import (line_shapes).
         }
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:

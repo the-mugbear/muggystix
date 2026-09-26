@@ -31,6 +31,7 @@ import json
 import logging
 import os
 import re
+from contextvars import ContextVar, Token
 from typing import Iterable, Iterator, List, Optional, Sequence
 
 import ijson
@@ -40,6 +41,30 @@ logger = logging.getLogger(__name__)
 
 _DEFAULT_STREAM_THRESHOLD_BYTES = 50 * 1024 * 1024  # 50 MB
 _PEEK_BYTES = 64 * 1024
+
+# v2.419.0 (review 2026-09-25 H4) — JSON lines that did not decode.  They were
+# skipped here, below every parser, so no import could count them: a
+# truncated JSONL file imported as complete.  The ingestion service opens a
+# tally around each parse and reports what it holds as skipped and partial.
+_rejected_lines: ContextVar[Optional[List[int]]] = ContextVar("json_rejected_lines", default=None)
+
+
+def begin_rejection_tally() -> Token:
+    """Start counting undecodable JSON lines for the parse about to run."""
+    return _rejected_lines.set([0])
+
+
+def end_rejection_tally(token: Token) -> int:
+    """How many JSON lines the reader could not decode since ``begin``."""
+    tally = _rejected_lines.get()
+    _rejected_lines.reset(token)
+    return tally[0] if tally else 0
+
+
+def _reject_line() -> None:
+    tally = _rejected_lines.get()
+    if tally is not None:
+        tally[0] += 1
 
 
 def iter_json_records(
@@ -126,6 +151,7 @@ def _iter_jsonl_lines(lines: Iterable[str]) -> Iterator[dict]:
         try:
             obj = json.loads(line)
         except json.JSONDecodeError:
+            _reject_line()
             continue
         if isinstance(obj, dict):
             yield obj
@@ -200,6 +226,7 @@ def _stream_jsonl_file(file_path: str) -> Iterator[dict]:
             try:
                 obj = json.loads(stripped)
             except json.JSONDecodeError:
+                _reject_line()
                 continue
             if isinstance(obj, dict):
                 yield obj

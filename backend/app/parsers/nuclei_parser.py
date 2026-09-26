@@ -188,6 +188,7 @@ class NucleiParser:
             except Exception as exc:  # noqa: BLE001 — isolate one bad result
                 sp.rollback()
                 self._name_cache = ObservationCache()
+                self.dedup_service.discard_rolled_back_state()
                 logger.warning("nuclei: skipping %s on %s: %s", record.get("template-id"), ip, exc)
                 failed.append(f"{record.get('template-id')} on {ip} ({exc})")
                 continue

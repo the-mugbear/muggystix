@@ -97,6 +97,10 @@ class AmassParser:
                 addresses = row.get("addresses") or row.get("ips") or []
                 if isinstance(addresses, list):
                     for address in addresses:
+                        # amass writes {"ip": …, "cidr": …, "asn": …}; the
+                        # object's text only ever yielded an IPv4 (H9).
+                        if isinstance(address, dict):
+                            address = address.get("ip") or ""
                         ip_address = extract_first_ip(str(address))
                         found_address |= self._record_hostname(scan.id, records_added, hostname, ip_address)
                 ip_address = extract_first_ip(str(row.get("ip") or ""))
@@ -111,7 +115,10 @@ class AmassParser:
                         continue
                     parts = cleaned.split()
                     hostname = parts[0]
-                    ip_address = extract_first_ip(cleaned)
+                    # "name address": the second column whole (IPv6 too),
+                    # else the first IPv4 anywhere on the line (H9).
+                    ip_address = (extract_first_ip(parts[1]) if len(parts) > 1 else None) \
+                        or extract_first_ip(cleaned)
                     if not self._record_hostname(scan.id, records_added, hostname, ip_address):
                         self._record_bare_name(scan.id, records_added, hostname)
 

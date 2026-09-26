@@ -108,6 +108,9 @@ class NmapXMLParser:
                                 parse_warnings.append(str(e))
                                 try:
                                     host_sp.rollback()
+                                    # H1 — the history the savepoint added is gone;
+                                    # a later element for this host must re-add it.
+                                    self.dedup_service.discard_rolled_back_state()
                                 except Exception:  # noqa: BLE001
                                     # Inner frame already rolled the savepoint back;
                                     # the parent transaction stays committable.

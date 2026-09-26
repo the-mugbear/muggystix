@@ -84,6 +84,32 @@ def test_stale_completion_is_not_published(db_session, test_project, monkeypatch
     assert row.started_at.replace(tzinfo=None) == owner_claim.replace(tzinfo=None)
 
 
+def test_a_cancel_after_the_parser_wrote_links_the_scan(db_session, test_project, monkeypatch):
+    """v2.419.0 (parser-architecture review H6) — the cancel lands while the
+    parser runs; its scan is committed.  The job stays cancelled, but names
+    the scan and says its data is in the inventory, instead of leaving it
+    unlinked."""
+    claim = _recent(30)
+    job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)
+    scan = models.Scan(filename="scan.xml", tool_name="nmap", project_id=test_project.id)
+    db_session.add(scan)
+    db_session.commit()
+    scan_id, job_id = scan.id, job.id
+
+    def parse_then_get_cancelled(db, j):
+        db.query(models.IngestionJob).filter_by(id=job_id).update({"status": "failed"})
+        db.commit()
+        return {"scan_id": scan_id, "tool_name": "nmap", "message": "done"}
+
+    svc = IngestionService()
+    monkeypatch.setattr(svc, "_process_job", parse_then_get_cancelled)
+    svc._run_job(job_id, claimed_at=claim)
+    row = _fresh(db_session, job_id)
+    assert row.status == "failed"
+    assert row.scan_id == scan_id
+    assert f"scan #{scan_id}" in row.message
+
+
 def test_matching_completion_is_published(db_session, test_project, monkeypatch):
     claim = _recent(30)
     job = _job(db_session, test_project.id, started_at=claim, heartbeat=claim)

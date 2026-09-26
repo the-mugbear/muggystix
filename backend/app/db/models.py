@@ -597,7 +597,9 @@ class WebInterface(Base):
     status_code = Column(Integer)
     title = Column(String)
     server_header = Column(String)
-    content_length = Column(Integer)
+    # BigInteger (v2.419.0, review H3): a body past 2 GiB is real output, and
+    # the 32-bit column failed its flush.
+    content_length = Column(BigInteger)
     # Flattened technology list for UI chip rendering (e.g.
     # ["Nginx 1.18.0", "React", "Bootstrap"]).  Wappalyzer categories
     # preserved in raw.  Null when the tool didn't report any.
@@ -676,7 +678,7 @@ class WebPath(Base):
     url = Column(String, nullable=False)                 # the full URL requested
     path = Column(String, nullable=False, index=True)    # its path, for search / filtering
     status_code = Column(Integer, index=True)
-    size = Column(Integer)
+    size = Column(BigInteger)   # v2.419.0 — as web_interfaces.content_length
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (

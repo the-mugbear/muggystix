@@ -756,7 +756,7 @@
             "HostScanHistory.host_created"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr:, state: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "Only an IPv4 address is extracted (IPv4 regex); host state is 'up'. Each host is written in its own savepoint so one bad record is skipped, not fatal."
+          "note": "IPv4 or IPv6 (v2.419.0): a JSON `ip` is taken whole and a text `[2001:db8::1]:443` endpoint is read; host state is 'up'. Each host is written in its own savepoint so one bad record is skipped, not fatal."
         },
         {
           "what": "Hostname scanned",
@@ -822,7 +822,6 @@
         }
       ],
       "gaps": [
-        "IPv6 results are dropped: the address extractor only matches IPv4, so a JSON `ip` of `2001:db8::1` or a text line `[2001:db8::1]:443` (which detection accepts) imports nothing.",
         "`hostname:port` lines and hostname-only JSON records are dropped, and the host→IP pairing naabu reports in JSON (`host` + `ip`) is not recorded as a name observation.",
         "naabu's `tls` flag is ignored, so ports it saw speaking TLS are not marked as such.",
         "CDN/WAF attribution (`cdn`, `cdn-name`) is ignored, so a CDN edge address is indistinguishable from the real host."
@@ -3113,8 +3112,8 @@
       "accepted_input": "Amass JSON/JSONL (`name` + `addresses`), Subfinder -oJ JSON (`host` + `input` + `source`, optional `ip`), or a text list with one hostname per line optionally followed by an IPv4 (`name ip`).",
       "signals": [
         {
-          "what": "Enumerated name with a resolved IPv4 address",
-          "input": "JSON `name`/`host`/`domain` plus `addresses[].ip`, `ips[]` or `ip`; text `www.example.com 10.0.0.5`",
+          "what": "Enumerated name with a resolved address (IPv4 or IPv6)",
+          "input": "JSON `name`/`host`/`domain` plus `addresses[].ip`, `ips[]` or `ip`; text `www.example.com 10.0.0.5` or `www.example.com 2001:db8::1`",
           "level": "field",
           "stored_as": [
             "DNSRecord.record_type",
@@ -3126,7 +3125,7 @@
             "DNSName.kind"
           ],
           "shown": "Host inspector › DNS evidence card; Host inspector › Names; Scan page › DNS Records tab · Also: Names evidence counts by kind; name->host binding",
-          "note": "Written as an A observation. The address is found by regex over str(address) (the whole dict for amass), taking the first IPv4 seen."
+          "note": "Written as an A observation, or AAAA for IPv6 (v2.419.0 — IPv6 was unreachable: the address was found by an IPv4 regex over the whole address object)."
         },
         {
           "what": "Host created from the resolved address",
@@ -3154,14 +3153,6 @@
           ],
           "shown": "Host inspector › DNS evidence card; Host inspector › Names; Scan page › DNS Records tab · Also: Names evidence counts by kind; name->host binding",
           "note": "A DISCOVERED observation whose value is the attributed tool name; no host and no invented IP. Shown in the names inventory as unresolved."
-        },
-        {
-          "what": "IPv6 addresses",
-          "input": "amass `addresses[].ip` = `2001:db8::1`; subfinder `ip` IPv6; text `name 2001:db8::1`",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "The address regex (IP_PATTERN) matches IPv4 only, so the AAAA branch is unreachable and an IPv6-only name becomes an address-less DISCOVERED row."
         },
         {
           "what": "Which tool produced the list",
@@ -3214,7 +3205,6 @@
       ],
       "gaps": [
         "A host that exists only because a discovered name resolved to it is stored with state 'up', asserting liveness nobody observed (dnsx uses 'unknown' for the same fact).",
-        "IPv6 addresses are never extracted, so AAAA results from amass/subfinder are lost and those names look unresolved.",
         "Amass's per-address ASN, netblock and AS description are dropped although NetworkAttribution could hold them.",
         "Discovery sources (crt.sh, passive DNS, brute force…) are dropped, so an analyst cannot tell a certificate-transparency name from a guessed one.",
         "Amass v4's default text output (`name (FQDN) --> a_record --> 1.2.3.4 (IPAddress)` and netblock/ASN lines) is read as 'first token + first IPv4 on the line', which would turn lines like `1.2.3.0/24 (Netblock) --> contains --> 1.2.3.4 (IPAddress)` or `13335 (ASN) --> …` into bogus names or A records."

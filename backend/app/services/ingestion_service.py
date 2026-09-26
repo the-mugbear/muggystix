@@ -982,6 +982,19 @@ class IngestionService:
                         "marking completed",
                         job_id,
                     )
+                    # v2.419.0 (review H6) — the parser finished its writes
+                    # before it saw the cancel: the scan exists and its data is
+                    # in the inventory.  Say so on the cancelled job instead of
+                    # leaving the scan unlinked.  Only when nothing newer owns
+                    # the job (a re-claimed attempt is 'processing' again).
+                    db.refresh(job)
+                    _scan_id = result.get("scan_id")
+                    if job.status == "failed" and job.scan_id is None and _scan_id:
+                        job.scan_id = _scan_id
+                        job.message = (
+                            f"Cancelled after the import had written scan #{_scan_id}: "
+                            "its data is in the inventory. Delete that scan to undo it."
+                        )
                     db.commit()
                     return
                 db.refresh(job)
@@ -1328,6 +1341,9 @@ class IngestionService:
                 raise ValueError(f"Unsupported parser class {parser_class}")
 
             parser = parser_ctor(db)
+            # v2.419.0 (H4) — JSON lines the shared reader could not decode.
+            from app.parsers.streaming_json import begin_rejection_tally, end_rejection_tally
+            _tally = begin_rejection_tally()
             try:
                 # v2.353.0 — the tool the operator named at import (phase A's
                 # column) reaches the parser, so attribution never has to be
@@ -1337,7 +1353,9 @@ class IngestionService:
                     storage_path, filename, project_id=project_id,
                     source_tool=_source_tool if isinstance(_source_tool, str) else None,
                 )
+                rejected_json_lines = end_rejection_tally(_tally)
             except Exception:
+                end_rejection_tally(_tally)
                 # Streaming parsers (nmap/gnmap/masscan) commit the Scan row and
                 # some hosts incrementally, so a mid-parse failure leaves a
                 # committed partial Scan. Without this, the dispatcher's rollback
@@ -1382,7 +1400,16 @@ class IngestionService:
             # expose last_parse_stats; the rest leave it absent and we
             # default to "0 skipped, no warnings".  See completion block
             # in poll_and_run_one for where this lands on the job row.
-            parse_stats = getattr(parser, "last_parse_stats", None) or {}
+            parse_stats = dict(getattr(parser, "last_parse_stats", None) or {})
+            # v2.419.0 (H4) — lines the JSON reader dropped before any parser
+            # saw them: records lost, so skipped AND partial.
+            if rejected_json_lines:
+                parse_stats["skipped"] = int(parse_stats.get("skipped") or 0) + rejected_json_lines
+                parse_stats["partial"] = True
+                warnings_parts.append(
+                    f"{rejected_json_lines} line{'s' if rejected_json_lines != 1 else ''} of the file "
+                    "were not valid JSON and were skipped (a truncated or corrupted record)"
+                )
 
         # tool_name_hint mismatch detection (v2.55.0 review finding M-1,
         # repositioned in v2.55.1 to cover BOTH branches).

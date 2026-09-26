@@ -51,6 +51,8 @@ class MasscanParser:
         self._project_id = kwargs.get("project_id")
         # v2.390.0 — `--banners` output: (ip, port, proto, kind) → the latest banner.
         self._banners: Dict[Tuple[str, int, str, str], str] = {}
+        self._truncated_at: Optional[str] = None
+        self.last_parse_stats = None
         start = time.time()
         scan = self._create_scan_record(filename)
         # JSON records and list lines carry per-record epoch timestamps; the
@@ -129,6 +131,20 @@ class MasscanParser:
                 except Exception:
                     pass
 
+            # v2.419.0 (review H4) — a truncated XML file keeps the hosts read
+            # before the break, and says the rest is unknown rather than
+            # importing as complete.
+            if self._truncated_at:
+                self.last_parse_stats = {
+                    "skipped": 0,
+                    "warnings": (
+                        f"The XML ended early ({self._truncated_at}); the {processed_hosts} host"
+                        f"{'s' if processed_hosts != 1 else ''} before that point were imported, "
+                        "anything after it is not in the inventory."
+                    ),
+                    "summary": None,
+                    "partial": True,
+                }
             return scan
         except Exception:
             self.db.rollback()
@@ -208,6 +224,7 @@ class MasscanParser:
                 "(likely truncated/incomplete scan). Recovered %s hosts before error: %s",
                 file_path, line, column, len(host_ports), exc,
             )
+            self._truncated_at = f"near line {line}"
 
         # v2.333.0 — no utcnow() fallback: a truncated file has no known end,
         # and the upload time is not when the scan finished.
@@ -735,9 +752,10 @@ class MasscanParser:
             for (pid, script_id), text in wanted.items():
                 row = existing.get((pid, script_id))
                 if row is not None:
+                    # scan_id stays the first recorder: it cascades on delete,
+                    # and a failed import's cleanup deletes its scan (H2).
                     row.output = text
                     row.last_seen = func.now()
-                    row.scan_id = scan_id
                 else:
                     self.db.add(models.Script(port_id=pid, script_id=script_id, output=text, scan_id=scan_id))
             self.db.flush()

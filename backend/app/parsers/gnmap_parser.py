@@ -99,6 +99,7 @@ class GnmapParser:
                     logger.error(f"Error processing host {host_data.get('ip_address', 'unknown')}: {e}")
                     try:
                         host_sp.rollback()
+                        self.dedup_service.discard_rolled_back_state()
                     except Exception:  # noqa: BLE001
                         # Savepoint was already rolled back by an inner
                         # frame — fine, parent transaction is clean.

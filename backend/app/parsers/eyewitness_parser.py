@@ -43,6 +43,7 @@ from app.parsers.parser_utils import (
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
+    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
 )
@@ -155,6 +156,12 @@ class EyewitnessParser:
     def __init__(self, db: Session):
         self.db = db
         self._project_id: Optional[int] = None
+        self._name_cache = ObservationCache()
+
+    def _reset_caches(self) -> None:
+        """After a record's savepoint rolled back (see record_savepoint)."""
+        self._host_cache.clear()
+        self._port_cache.clear()
         self._name_cache = ObservationCache()
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
@@ -372,10 +379,12 @@ class EyewitnessParser:
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for row in csv.DictReader(f):
                 try:
-                    host_id = self._write_row(
-                        row, scan, screenshot_dir_rel=screenshot_dir_rel,
-                        csv_mode=screenshot_dir_rel is None,
-                    )
+                    # v2.419.0 (H3) — isolated, as httpx.
+                    with record_savepoint(self.db, self._observed, self._reset_caches):
+                        host_id = self._write_row(
+                            row, scan, screenshot_dir_rel=screenshot_dir_rel,
+                            csv_mode=screenshot_dir_rel is None,
+                        )
                     if host_id is None:
                         skipped += 1
                     else:
@@ -403,7 +412,8 @@ class EyewitnessParser:
         skipped = 0
         for record in records:
             try:
-                host_id = self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel)
+                with record_savepoint(self.db, self._observed, self._reset_caches):
+                    host_id = self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel)
                 if host_id is None:
                     skipped += 1
                 else:

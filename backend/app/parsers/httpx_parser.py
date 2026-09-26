@@ -58,6 +58,7 @@ from app.parsers.parser_utils import (
     ScanHostObservations,
     parse_rfc3339,
     record_hosts_in_scan,
+    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
 )
@@ -127,6 +128,13 @@ class HttpxParser:
         # v2.322.0 — named-asset bookkeeping (see dns_name_service).
         self._name_cache = ObservationCache()
 
+    def _reset_caches(self) -> None:
+        """After a record's savepoint rolled back: the caches may hold rows it
+        created.  Rebuilding them costs re-queries only."""
+        self._host_cache.clear()
+        self._port_cache.clear()
+        self._name_cache = ObservationCache()
+
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
         self._host_cache.clear()
@@ -157,7 +165,10 @@ class HttpxParser:
             if isinstance(record, dict):
                 clock.observe(parse_rfc3339(record.get("timestamp")))
             try:
-                host_id = self._upsert_record(record, scan)
+                # v2.419.0 (H3) — isolated: a failed flush used to poison the
+                # session and fail the whole import after "skipping" one record.
+                with record_savepoint(self.db, self._observed, self._reset_caches):
+                    host_id = self._upsert_record(record, scan)
                 if host_id:
                     written += 1
                 else:

@@ -111,6 +111,7 @@ class OpenVASParser:
                     processed += 1
                 except Exception as exc:  # noqa: BLE001 — isolate one bad row
                     sp.rollback()
+                    self.dedup_service.discard_rolled_back_state()
                     failed += 1
                     logger.warning("Skipping malformed OpenVAS result: %s", exc)
                 finally:

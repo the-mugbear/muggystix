@@ -5,8 +5,9 @@ import json
 import logging
 import math
 import re
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -191,12 +192,26 @@ def normalize_ip(value: Optional[str]) -> Optional[str]:
 
 
 def extract_first_ip(text: Optional[str]) -> Optional[str]:
+    """The address a value names.  A value that IS an address — IPv4 or IPv6,
+    as a structured field (naabu `ip`, BloodHound `ipv4`, OpenVAS `<host>`)
+    carries it — is taken whole; otherwise the first IPv4 in the text.
+
+    v2.419.0 (review 2026-09-25 H9): only the dotted-IPv4 pattern was tried,
+    so `2001:db8::1` in a field that holds nothing else was "no address" and
+    IPv6 results were dropped by every parser using this helper."""
     if not text:
         return None
+    whole = normalize_ip(str(text))
+    if whole:
+        return whole
     match = IP_PATTERN.search(text)
     if not match:
         return None
     return normalize_ip(match.group(0))
+
+
+# "[2001:db8::1]:443" — how tools write an IPv6 endpoint.
+_BRACKETED_ENDPOINT = re.compile(r"^\[([0-9A-Fa-f:.]+)\]:(\d{1,5})$")
 
 
 def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Optional[str]]:
@@ -209,6 +224,12 @@ def parse_host_port_token(token: str) -> Tuple[Optional[str], Optional[int], Opt
         host = parsed.hostname
         port = parsed.port
         return normalize_ip(host), port, parsed.scheme or None
+
+    bracketed = _BRACKETED_ENDPOINT.match(cleaned)
+    if bracketed:
+        ip_address = normalize_ip(bracketed.group(1))
+        if ip_address and int(bracketed.group(2)) <= 65535:
+            return ip_address, int(bracketed.group(2)), None
 
     if cleaned.count(":") == 1:
         host_part, port_part = cleaned.rsplit(":", 1)
@@ -250,6 +271,7 @@ def persist_host_observation(
             return result
         except Exception as exc:  # noqa: BLE001 — isolate one bad observation
             sp.rollback()
+            dedup_service.discard_rolled_back_state()
             logger.warning("Skipping host observation %s: %s", ip_address, exc)
             return None
     return _persist_host_observation_inner(
@@ -257,6 +279,33 @@ def persist_host_observation(
         hostname=hostname, state=state, ports=ports, host_data=host_data,
         project_id=project_id,
     )
+
+
+@contextmanager
+def record_savepoint(db: Session, observed: Optional["ScanHostObservations"] = None,
+                     on_rollback: Optional[Callable[[], None]] = None):
+    """One input record's writes as a unit (v2.419.0, review 2026-09-25 H3).
+
+    A caller that catches a record's exception and carries on MUST have
+    isolated that record: without a savepoint, the failed flush leaves the
+    session unusable and the next query — or the final commit — fails the
+    whole import that the log said skipped one record (httpx: a
+    content_length past 2**31).  On failure the savepoint is rolled back,
+    the scan's host notes are restored, ``on_rollback`` drops per-file caches
+    that may hold rows from the rolled-back savepoint, and the exception is
+    re-raised for the caller to count."""
+    sp = db.begin_nested()
+    checkpoint = observed.checkpoint() if observed is not None else None
+    try:
+        yield
+        sp.commit()
+    except Exception:
+        sp.rollback()
+        if observed is not None:
+            observed.restore(checkpoint)
+        if on_rollback is not None:
+            on_rollback()
+        raise
 
 
 def _persist_host_observation_inner(
@@ -351,6 +400,16 @@ class ScanHostObservations:
             state=state if state is not None else (prev.state if prev else None),
             hostname=hostname or (prev.hostname if prev else None) or host.hostname,
         )
+
+    def checkpoint(self) -> Dict[int, HostObservation]:
+        """The notes so far, to ``restore`` if the record being written is
+        rolled back (v2.419.0): a note on a host created inside the rolled-back
+        savepoint would reach record_hosts_in_scan with an id that no longer
+        exists.  Rows are immutable, so a shallow copy suffices."""
+        return dict(self._rows)
+
+    def restore(self, checkpoint: Dict[int, HostObservation]) -> None:
+        self._rows = dict(checkpoint)
 
     def __len__(self) -> int:
         return len(self._rows)

@@ -51,6 +51,7 @@ from app.parsers.parser_utils import (
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
+    record_savepoint,
     resolve_host_cached,
     resolve_port_cached,
 )
@@ -108,6 +109,12 @@ class WhatwebParser:
         self._port_cache: dict = {}
         self._name_cache = ObservationCache()
 
+    def _reset_caches(self) -> None:
+        """After a record's savepoint rolled back (see record_savepoint)."""
+        self._host_cache.clear()
+        self._port_cache.clear()
+        self._name_cache = ObservationCache()
+
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
         self._host_cache.clear()
@@ -132,7 +139,9 @@ class WhatwebParser:
         skipped = 0
         for record in records:
             try:
-                host_id = self._upsert_record(record, scan)
+                # v2.419.0 (H3) — isolated, as httpx.
+                with record_savepoint(self.db, self._observed, self._reset_caches):
+                    host_id = self._upsert_record(record, scan)
                 if host_id:
                     written += 1
                 else:
