@@ -15,6 +15,7 @@ from sqlalchemy.exc import IntegrityError
 
 from app.db import models
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
+from app.services.os_family import os_family_from_name
 
 logger = logging.getLogger(__name__)
 
@@ -603,7 +604,8 @@ class HostDeduplicationService:
             state=host_data.get('state'),
             state_reason=host_data.get('state_reason'),
             os_name=host_data.get('os_name'),
-            os_family=host_data.get('os_family'),
+            # v2.421.0 — nmap's family when it gave one, else the name's.
+            os_family=host_data.get('os_family') or os_family_from_name(host_data.get('os_name')),
             os_generation=host_data.get('os_generation'),
             os_type=host_data.get('os_type'),
             os_vendor=host_data.get('os_vendor'),
@@ -705,7 +707,7 @@ class HostDeduplicationService:
         if (not host.os_name or new_accuracy > (host.os_accuracy or 0)):
             if host_data.get('os_name'):
                 host.os_name = host_data.get('os_name')
-                host.os_family = host_data.get('os_family')
+                host.os_family = host_data.get('os_family') or os_family_from_name(host_data.get('os_name'))
                 host.os_generation = host_data.get('os_generation')
                 host.os_type = host_data.get('os_type')
                 host.os_vendor = host_data.get('os_vendor')

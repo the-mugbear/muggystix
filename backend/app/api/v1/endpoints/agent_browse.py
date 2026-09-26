@@ -881,6 +881,11 @@ def update_agent_host(
             if getattr(host, field) != new_value:
                 setattr(host, field, new_value)
                 changed.append(field)
+                if field == "os_name":
+                    # v2.421.0 — the family follows the corrected name; left
+                    # alone, a scanner's "Linux" stayed beside "Windows".
+                    from app.services.os_family import os_family_from_name
+                    host.os_family = os_family_from_name(new_value)
             if field == "hostname":
                 # An operator correction is the top-ranked display-name source:
                 # no later scan, PTR or forward answer may replace it (see

@@ -185,7 +185,10 @@ class NetexecParser:
             # SMB enumeration patterns
             'smb_enum': re.compile(
                 r'SMB\s+(\d+\.\d+\.\d+\.\d+)\s+(\d+)\s+(\S+)\s+\[([^\]]+)\]\s+'
-                r'(?:Windows\s+)?([^(]+)\s*\(name:([^)]+)\)\s*\(domain:([^)]+)\)'
+                # v2.421.0 — "Windows" stays in the OS name: the optional
+                # prefix was matched OUTSIDE the group, so hosts read
+                # "Server 2019 Standard 17763" / "10 Build 19041 x64".
+                r'((?:Windows\s+)?[^(]+)\s*\(name:([^)]+)\)\s*\(domain:([^)]+)\)'
             ),
 
             # Authentication success

@@ -968,11 +968,12 @@
           "level": "field",
           "stored_as": [
             "Host.os_name",
+            "Host.os_family",
             "HostAttribute.value",
             "HostScanHistory.os_info_updated"
           ],
           "shown": "Host inspector › OS row; Hosts list › Host column OS chip; Scan page current-hosts table · Filter: os:, has:eol · Also: Patterns insight: eol_os condition; Segments EOL hosts",
-          "note": "Taken as one string (a multi-line operating-system tag listing several candidates is stored whole). It only fills Host.os_name when the host has none (Nessus supplies no accuracy); a differing value is recorded as an os_name conflict. os_family/os_vendor/os_generation are not derived."
+          "note": "Taken as one string (a multi-line operating-system tag listing several candidates is stored whole). It only fills Host.os_name when the host has none (Nessus supplies no accuracy); a differing value is recorded as an os_name conflict. os_family/os_vendor/os_generation are not derived. v2.421.0 — the OS family is derived from the name (app/services/os_family.py, nmap's family names) when no scanner gave one."
         },
         {
           "what": "Per-host scan start/end times",
@@ -3389,11 +3390,12 @@
             "Host.ip_address",
             "Host.hostname",
             "Host.os_name",
+            "Host.os_family",
             "NetexecResult.domain_name",
             "NetexecResult.hostname"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr:, hostname:/host:, os: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "Only the SMB banner is read for OS, name and domain; the first line per address describes the host."
+          "note": "Only the SMB banner is read for OS, name and domain; the first line per address describes the host. v2.421.0 — the OS name keeps its leading \"Windows\" (it was dropped), and the family is derived from it."
         },
         {
           "what": "SMB signing posture",
