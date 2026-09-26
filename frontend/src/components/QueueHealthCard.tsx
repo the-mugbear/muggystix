@@ -16,6 +16,7 @@ import { AlertTriangle, CheckCircle2, RefreshCw } from 'lucide-react';
 
 import {
   getQueueMetrics,
+  type DiskSnapshot,
   type FailedJobsInProject,
   type QueueMetrics,
   type QueueSnapshot,
@@ -128,6 +129,23 @@ const assess = (
           : `${Label} idle`,
   };
 };
+
+const gb = (bytes: number) => `${(bytes / 1024 ** 3).toFixed(bytes < 10 * 1024 ** 3 ? 1 : 0)} GB`;
+
+/**
+ * v5.302.0 — production filled its disk (2026-09-24) and Postgres stopped
+ * ("No space left on device") with nothing in the app having said so.
+ */
+export const assessDisk = (disk: DiskSnapshot): Verdict => (disk.low
+  ? {
+    tone: 'bad',
+    headline: `Disk space low — ${gb(disk.free_bytes)} free of ${gb(disk.total_bytes)}`,
+    action:
+      'A full disk stops the database. On the host: "docker builder prune -f" and "docker image prune -f" '
+      + 'reclaim old build layers and images (running containers, volumes and rollback images are kept); '
+      + 'lowering INGESTION_RETAIN_FILES_DAYS keeps fewer uploaded files.',
+  }
+  : { tone: 'ok', headline: `Disk — ${gb(disk.free_bytes)} free of ${gb(disk.total_bytes)}` });
 
 const linkClass =
   'rounded text-caption text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -255,6 +273,7 @@ export const QueueHealthCard: React.FC = () => {
           <div className="flex flex-col gap-sm">
             <VerdictRow verdict={assess(metrics.ingestion, 'scan ingestion', INGESTION_SURFACE)} />
             <VerdictRow verdict={assess(metrics.report, 'report', REPORT_SURFACE)} />
+            {metrics.disk && <VerdictRow verdict={assessDisk(metrics.disk)} />}
             <p className="text-caption text-muted-foreground">
               Checked {new Date(metrics.generated_at).toLocaleTimeString()}
             </p>

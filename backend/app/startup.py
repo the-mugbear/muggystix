@@ -16,9 +16,11 @@ import asyncio
 import logging
 import os
 import uuid
+from contextlib import contextmanager
 from typing import Optional
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 logger = logging.getLogger(__name__)
 
@@ -59,20 +61,37 @@ _LEADER_LOCK_EXPIRED_SESSIONS = 0x42535F455850  # "BS_EXP"
 _LEADER_LOCK_AGENT_API_RETENTION = 0x42535F524554  # "BS_RET"
 
 
-def _try_housekeeping_leader(db, key: int) -> bool:
-    """True when this worker should run the pass — it acquired the advisory
-    lock, or we're not on Postgres.  The lock is session-scoped; release it
-    with ``_release_housekeeping_leader`` once the work is done."""
-    if db.bind.dialect.name != "postgresql":
-        return True
-    return bool(
-        db.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar()
-    )
+@contextmanager
+def _housekeeping_leader(key: int):
+    """Yield a Session when this worker should run the pass (it holds the
+    advisory lock, or we're not on Postgres), else ``None``.
 
+    v2.420.0 (production diagnostics 2026-09-26) — the lock is held by a
+    CONNECTION, and a plain Session hands its connection back to the pool at
+    every commit: the cleanup commits, so the unlock ran on another
+    connection ("you don't own a lock of type ExclusiveLock", hourly in the
+    production log) and the lock stayed held by a pooled connection.  The
+    Session is now bound to the one connection that takes and releases it."""
+    from app.db.session import engine
 
-def _release_housekeeping_leader(db, key: int) -> None:
-    if db.bind.dialect.name == "postgresql":
-        db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+    with engine.connect() as conn:
+        on_postgres = conn.dialect.name == "postgresql"
+        if on_postgres and not conn.execute(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}).scalar():
+            conn.rollback()
+            yield None
+            return
+        # The lock is session-level: it outlives the transaction the query
+        # above opened, so that transaction is ended before work starts.
+        conn.commit()
+        db = Session(bind=conn, autoflush=False)
+        try:
+            yield db
+        finally:
+            db.close()
+            if on_postgres:
+                conn.rollback()
+                conn.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+                conn.commit()
 
 
 # --- expired-session cleanup loop ------------------------------------------
@@ -87,27 +106,23 @@ async def expired_session_cleanup_loop() -> None:
     but not incorrect — `cleanup_expired_sessions` only marks rows whose
     `revoked_at IS NULL`, so concurrent reapers can't double-revoke).
     """
-    from app.db.session import SessionLocal
     from app.core.security import cleanup_expired_sessions
     from app.services.agent_session_service import lapse_expired_agent_sessions
 
     while True:
         try:
             await asyncio.sleep(EXPIRED_SESSION_CLEANUP_INTERVAL_SECONDS)
-            with SessionLocal() as db:
-                if not _try_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS):
+            with _housekeeping_leader(_LEADER_LOCK_EXPIRED_SESSIONS) as db:
+                if db is None:
                     continue  # another worker is the leader this pass
-                try:
-                    reaped = cleanup_expired_sessions(db)
-                    # v2.283.0 — assist sessions rode the same "expired means
-                    # done" idea and had nothing enforcing it: only the End
-                    # button ever changed their status, so the operator's
-                    # "active sessions" list accumulated dead ones forever.
-                    # Same loop rather than a third task: one hourly sweep, one
-                    # advisory lock, one place to look when reaping misbehaves.
-                    lapsed = lapse_expired_agent_sessions(db)
-                finally:
-                    _release_housekeeping_leader(db, _LEADER_LOCK_EXPIRED_SESSIONS)
+                reaped = cleanup_expired_sessions(db)
+                # v2.283.0 — assist sessions rode the same "expired means
+                # done" idea and had nothing enforcing it: only the End
+                # button ever changed their status, so the operator's
+                # "active sessions" list accumulated dead ones forever.
+                # Same loop rather than a third task: one hourly sweep, one
+                # advisory lock, one place to look when reaping misbehaves.
+                lapsed = lapse_expired_agent_sessions(db)
                 if reaped:
                     logger.info("Reaped %d expired user sessions", reaped)
                 if lapsed:
@@ -148,21 +163,17 @@ def _purge_retained(retention_days: int, audit_days: int) -> tuple:
     block the event loop): agent API calls, then — only when an operator
     opted in with AUDIT_LOG_RETENTION_DAYS — audit log rows."""
     from app.db.models_auth import AuditLog
-    from app.db.session import SessionLocal
     from app.services.agent_api_log_service import purge_older_than, purge_rows_older_than
 
-    with SessionLocal() as db:
-        if not _try_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION):
+    with _housekeeping_leader(_LEADER_LOCK_AGENT_API_RETENTION) as db:
+        if db is None:
             return None  # another worker is the leader this pass
-        try:
-            calls = purge_older_than(db, days=retention_days) if retention_days > 0 else 0
-            audits = (
-                purge_rows_older_than(db, AuditLog, AuditLog.timestamp, audit_days)
-                if audit_days > 0 else 0
-            )
-            return calls, audits
-        finally:
-            _release_housekeeping_leader(db, _LEADER_LOCK_AGENT_API_RETENTION)
+        calls = purge_older_than(db, days=retention_days) if retention_days > 0 else 0
+        audits = (
+            purge_rows_older_than(db, AuditLog, AuditLog.timestamp, audit_days)
+            if audit_days > 0 else 0
+        )
+        return calls, audits
 
 
 async def agent_api_call_retention_loop() -> None:

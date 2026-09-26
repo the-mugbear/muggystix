@@ -466,6 +466,51 @@ backup_config() {
 # Snapshot the currently-running built images to :rollback tags and record the
 # original image ref per service, so option 7 can restore the prior build.
 # Best-effort: a first-ever deploy (no prior images) records nothing.
+# Production filled its disk on 2026-09-24: Postgres PANICked ("No space left
+# on device") and crash-looped until space was freed.  Every option-1 deploy
+# busts the build cache (CACHE_BUST) and leaves the previous images untagged;
+# nothing removed either, so each deploy grew Docker's disk use.
+MIN_FREE_GB=${MIN_FREE_GB:-15}
+
+check_free_disk() {
+    local avail_kb docker_root
+    avail_kb=$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4}')
+    docker_root=$(docker info --format '{{.DockerRootDir}}' 2>/dev/null || true)
+    if [[ -n "$docker_root" && -d "$docker_root" ]]; then
+        local docker_kb
+        docker_kb=$(df -Pk "$docker_root" 2>/dev/null | awk 'NR==2 {print $4}')
+        if [[ -n "$docker_kb" && ( -z "$avail_kb" || "$docker_kb" -lt "$avail_kb" ) ]]; then
+            avail_kb=$docker_kb
+        fi
+    fi
+    if [[ -z "$avail_kb" ]]; then
+        return 0
+    fi
+    if (( avail_kb < MIN_FREE_GB * 1024 * 1024 )); then
+        print_warning "Only $(( avail_kb / 1024 / 1024 )) GB free (below ${MIN_FREE_GB} GB). A full disk stops Postgres."
+        print_warning "Reclaim space first:  docker builder prune -f   and   docker image prune -f"
+        print_warning "(Neither touches running containers, volumes or the rollback images.)"
+        echo "Continue anyway? [y/N]: "
+        read -r answer
+        [[ "$answer" =~ ^[Yy]$ ]] || { print_error "Deploy cancelled — free some disk space and re-run."; exit 1; }
+    fi
+}
+
+# After a healthy deploy: remove what this deploy made obsolete.  Untagged
+# (dangling) images only — the :previous rollback tags are kept, so option 7
+# still works — and build cache older than a week (recent layers keep the
+# next rebuild fast).
+prune_after_deploy() {
+    print_info "Reclaiming disk: dangling images and build cache older than 7 days..."
+    docker image prune -f >/dev/null 2>&1 || true
+    docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    local avail_kb
+    avail_kb=$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4}')
+    if [[ -n "$avail_kb" ]]; then
+        print_info "Free disk now: $(( avail_kb / 1024 / 1024 )) GB"
+    fi
+}
+
 snapshot_images_for_rollback() {
     local tmp="${ROLLBACK_STATE_FILE}.tmp"
     : > "$tmp"
@@ -676,6 +721,7 @@ case $DEPLOY_CHOICE in
         # B2-1 — before rebuilding in place, snapshot the current images and
         # take a DB backup so a deploy whose boot migration fails (crash-loop,
         # no prior image) can be rolled back via option 7.
+        check_free_disk
         snapshot_images_for_rollback
         if ! predeploy_db_backup; then
             # `exit`, not `return`: this is the script's top level, where
@@ -700,6 +746,7 @@ case $DEPLOY_CHOICE in
         # rollback escape hatch instead of a silently-broken deploy.
         if wait_for_backend_healthy; then
             print_success "Deployment complete!"
+            prune_after_deploy
         else
             echo ""
             print_error "Backend did not become healthy — the boot migration may have failed."

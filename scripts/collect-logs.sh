@@ -58,6 +58,12 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRUBBER="$SCRIPT_DIR/scrub_logs.py"
+# Everything below reads .env, uploads/, docker-compose.yml and
+# platform_version.json relative to the deployment root.  Run from scripts/
+# (production, 2026-09-26) every one of them read "(not found)" while docker
+# compose — which searches parent directories — still found the stack.  The
+# bundle is still written where the script was run from.
+ORIG_PWD="$PWD"
 
 SINCE=""
 EXTRA_TERMS=()
@@ -66,11 +72,14 @@ while [[ $# -gt 0 ]]; do
         --since) SINCE="${2:?--since needs a value}"; shift 2 ;;
         --terms)
             [[ -r "${2:-}" ]] || { print_error "--terms: cannot read '${2:-}'"; exit 1; }
-            EXTRA_TERMS+=("$2"); shift 2 ;;
+            # Absolute, so it still resolves after the cd below.
+            EXTRA_TERMS+=("$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
         -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
         *) print_error "Unknown argument: $1 (see --help)"; exit 1 ;;
     esac
 done
+
+cd "$SCRIPT_DIR/.."
 
 # Fail closed BEFORE collecting anything: no scrubber, no bundle.
 if ! command -v python3 >/dev/null 2>&1; then
@@ -244,6 +253,12 @@ print_info "Collecting platform information..."
         echo "  (no uploads/ here)"
     fi
     echo ""
+    # Production filled its disk on 2026-09-24 and Postgres crash-looped
+    # ("No space left on device"); what held the space was not in the bundle.
+    # Sizes by kind only — no image, container or volume names.
+    echo "Docker disk use (by kind; old images and build cache are reclaimable):"
+    docker system df 2>/dev/null | sed 's/^/  /' || echo "  unavailable"
+    echo ""
     echo "Not collected on purpose: host name, user, working directory, interfaces,"
     echo "routes, resolv.conf, directory listings, untracked file names."
 } > "$LOG_DIR/platform.txt" 2>&1
@@ -312,7 +327,10 @@ print_info "Collecting service versions and settings..."
 from app.core.config import settings as s
 for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS_COMMIT_BATCH_SIZE",
           "NESSUS_PLUGIN_OUTPUT_MAX_CHARS", "NESSUS_SKIP_INFORMATIONAL_DEFAULT", "REPORT_ARTIFACT_TTL_HOURS"):
-    print(f"{k}: {getattr(s, k, \"(not defined in this version)\")}")
+    # No backslash inside the f-string: Python < 3.12 rejects it (the
+    # backend image is 3.11 — "SyntaxError ... cannot include a backslash").
+    missing = "(not defined in this version)"
+    print(f"{k}: {getattr(s, k, missing)}")
 ' 2>&1 || echo "Unable to read settings"
         echo ""
         echo "--- alembic current (stamped in the DB) vs heads (expected by the code) ---"
@@ -323,6 +341,7 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
     fi
     if $DB_UP; then
         q "Postgres extensions" "SELECT extname, extversion FROM pg_extension ORDER BY extname;"
+        q "Database size on disk" "SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size;"
         q "Largest tables" "SELECT relname AS table, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(relid)) AS size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 30;"
     fi
 } > "$LOG_DIR/versions_and_schema.txt" 2>&1
@@ -523,10 +542,10 @@ if ! python3 "$SCRUBBER" "$LOG_DIR" --terms "$TERMS" --report "$LOG_DIR/anonymis
 fi
 
 tar -czf "$WORK/$LOG_NAME.tar.gz" -C "$WORK" "$LOG_NAME"
-mv "$WORK/$LOG_NAME.tar.gz" "./$LOG_NAME.tar.gz"
+mv "$WORK/$LOG_NAME.tar.gz" "$ORIG_PWD/$LOG_NAME.tar.gz"
 
 echo ""
-print_success "Anonymised diagnostics bundle: ./$LOG_NAME.tar.gz"
+print_success "Anonymised diagnostics bundle: $ORIG_PWD/$LOG_NAME.tar.gz"
 cat "$LOG_DIR/anonymisation.txt"
 echo ""
 print_warning "Skim it before sending: tar -xzf $LOG_NAME.tar.gz && grep -ri '<client name>' $LOG_NAME/"

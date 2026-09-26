@@ -191,6 +191,46 @@ def normalize_ip(value: Optional[str]) -> Optional[str]:
         return None
 
 
+class ToolText(NamedTuple):
+    """A tool's text output, decoded, with what reading it had to change."""
+    text: str
+    encoding: str
+    nul_removed: int
+
+
+def read_tool_text(file_path: str) -> ToolText:
+    """Read a text report for a parser whose lines reach the database.
+
+    v2.420.0 (production diagnostics 2026-09-26) — two NetExec captures (1.6
+    and 4.5 MB) failed whole with PostgreSQL's "A string literal cannot
+    contain NUL (0x00) characters": text columns cannot hold NUL, and the
+    stored tool line carried it.  Two sources, handled here:
+
+    * UTF-16 — PowerShell's ``>`` redirect writes UTF-16LE (with a BOM), which
+      read as UTF-8 is a NUL after every character.  Decoded as UTF-16, the
+      file is ordinary text.
+    * stray NUL bytes in otherwise UTF-8 text (a terminal capture, a
+      truncated write) — removed, and counted so the import can say so.
+    """
+    with open(file_path, "rb") as fh:
+        raw = fh.read()
+    encoding = "utf-8"
+    if raw.startswith((b"\xff\xfe", b"\xfe\xff")):
+        encoding = "utf-16"
+    else:
+        head = raw[:4096]
+        # UTF-16LE without a BOM: ASCII text with every odd byte NUL.
+        if len(head) >= 16 and head[1::2].count(0) > 0.9 * (len(head) // 2):
+            encoding = "utf-16-le"
+    text = raw.decode(encoding, errors="ignore")
+    if encoding.startswith("utf-16"):
+        text = text.lstrip("﻿")
+    nul_removed = text.count("\x00")
+    if nul_removed:
+        text = text.replace("\x00", "")
+    return ToolText(text=text, encoding=encoding, nul_removed=nul_removed)
+
+
 def extract_first_ip(text: Optional[str]) -> Optional[str]:
     """The address a value names.  A value that IS an address — IPv4 or IPv6,
     as a structured field (naabu `ip`, BloodHound `ipv4`, OpenVAS `<host>`)

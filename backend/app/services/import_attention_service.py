@@ -122,6 +122,10 @@ _DB_ERROR_GENERIC = "The import failed while storing its results — a parser bu
 
 
 def _plain_reason(text: Optional[str]) -> Optional[str]:
+    # psycopg2 raises this one as a bare ValueError, with no driver prefix.
+    if text and "cannot contain NUL (0x00)" in str(text):
+        return ("The file contains NUL bytes (binary content, or a UTF-16 capture), which "
+                "BlueStick could not store — NetExec reads them since 2.420.0; re-import after updating")
     if text and _DB_ERROR.match(str(text).strip()):
         head = str(text).strip().splitlines()[0]
         return next((msg for cls, msg in _DB_ERROR_REASONS if cls in head), _DB_ERROR_GENERIC)

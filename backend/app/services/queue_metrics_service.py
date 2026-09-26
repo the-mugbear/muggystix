@@ -131,6 +131,33 @@ def queue_metrics(db: Session) -> dict:
         "report": _queue_snapshot(
             db, models.ReportJob, settings.REPORT_JOB_TIMEOUT_SECONDS
         ),
+        "disk": disk_snapshot(),
+    }
+
+
+# Free space below either threshold is "low".  Production filled its disk on
+# 2026-09-24 (retained uploads, Docker images and build cache) and Postgres
+# PANICked — "No space left on device" — until space was freed.
+DISK_LOW_FREE_BYTES = 10 * 1024 ** 3
+DISK_LOW_FREE_FRACTION = 0.10
+
+
+def disk_snapshot(path: Optional[str] = None) -> Optional[dict]:
+    """Free space on the filesystem holding the uploads (v2.420.0) — on a
+    single-host deployment, the disk Postgres and Docker share.  None when it
+    cannot be read."""
+    import os
+    import shutil
+
+    path = path or settings.UPLOAD_DIR
+    try:
+        usage = shutil.disk_usage(path if os.path.exists(path) else os.path.dirname(path) or "/")
+    except OSError:
+        return None
+    return {
+        "total_bytes": usage.total,
+        "free_bytes": usage.free,
+        "low": usage.free < DISK_LOW_FREE_BYTES or usage.free < usage.total * DISK_LOW_FREE_FRACTION,
     }
 
 

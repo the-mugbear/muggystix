@@ -35,6 +35,16 @@ export interface QueueMetrics {
    *  (the list that shows them — Ingestion Results — is per project). */
   ingestion: QueueSnapshot & { failed_by_project?: FailedJobsInProject[] };
   report: QueueSnapshot;
+  /** v5.302.0 — free space on the uploads filesystem (on one host, the disk
+   *  Postgres and Docker share); null when it could not be read. */
+  disk?: DiskSnapshot | null;
+}
+
+export interface DiskSnapshot {
+  total_bytes: number;
+  free_bytes: number;
+  /** Below 10 GB or 10% free. */
+  low: boolean;
 }
 
 export const getQueueMetrics = async (): Promise<QueueMetrics> => {

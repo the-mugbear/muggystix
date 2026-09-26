@@ -37,6 +37,25 @@ const metrics = (ingestion = snapshot(), report = snapshot()) => ({
 describe('QueueHealthCard', () => {
   beforeEach(() => vi.clearAllMocks());
 
+  // v5.302.0 — production filled its disk and Postgres stopped; nothing said so.
+  it('warns when disk space is low and says how to reclaim it', async () => {
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(), disk: { total_bytes: 160 * 1024 ** 3, free_bytes: 4 * 1024 ** 3, low: true },
+    });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    expect(await screen.findByText('Disk space low — 4.0 GB free of 160 GB')).toBeInTheDocument();
+    expect(screen.getByText(/docker builder prune -f/)).toBeInTheDocument();
+  });
+
+  it('shows the free space quietly when it is fine', async () => {
+    mocked.getQueueMetrics.mockResolvedValue({
+      ...metrics(), disk: { total_bytes: 160 * 1024 ** 3, free_bytes: 38 * 1024 ** 3, low: false },
+    });
+    render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
+    expect(await screen.findByText('Disk — 38 GB free of 160 GB')).toBeInTheDocument();
+    expect(screen.queryByText(/Disk space low/)).toBeNull();
+  });
+
   it('reports healthy queues without raising an alarm', async () => {
     mocked.getQueueMetrics.mockResolvedValue(metrics());
     render(<MemoryRouter><QueueHealthCard /></MemoryRouter>);
