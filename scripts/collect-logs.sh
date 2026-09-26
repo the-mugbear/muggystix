@@ -376,6 +376,11 @@ if $DB_UP; then
         echo ""; echo "##### Imports"
         q "Jobs by format and outcome" "SELECT coalesce(final_file_type, detected_file_type, tool_name, '?') AS format, status, count(*) AS jobs, sum(coalesce(skipped_count, 0)) AS skipped_rows, count(*) FILTER (WHERE partial) AS partial, count(*) FILTER (WHERE coalesce(parser_warnings, '') <> '') AS with_warnings, count(*) FILTER (WHERE format_override IS NOT NULL) AS overridden, pg_size_pretty(sum(file_size)) AS bytes FROM ingestion_jobs GROUP BY 1, 2 ORDER BY 1, 2;"
         q "Detection disagreed with the final format" "SELECT detected_file_type, format_override, final_file_type, count(*) FROM ingestion_jobs WHERE final_file_type IS DISTINCT FROM detected_file_type GROUP BY 1, 2, 3 ORDER BY 4 DESC;"
+        # v2.420.0 — for testing new tools by upload: how each format was
+        # recognised and what every recent import produced, row type by row
+        # type.  Counts and format names only.
+        q "Detection chain for every import (detected -> chosen -> parsed)" "SELECT coalesce(detected_file_type, '-') AS detected, coalesce(format_override, '-') AS chosen, coalesce(final_file_type, '-') AS parsed_by, coalesce(source_tool, '-') AS source_tool, status, count(*) AS jobs FROM ingestion_jobs GROUP BY 1, 2, 3, 4, 5 ORDER BY 1, 3, 5;"
+        q "What each recent import produced (last 30 with a scan)" "SELECT j.id AS job, coalesce(j.final_file_type, j.tool_name) AS format, j.status, j.partial, j.skipped_count AS skipped, left(coalesce(j.progress, ''), 60) AS summary, (SELECT count(*) FROM host_scan_history h WHERE h.scan_id = j.scan_id) AS hosts, (SELECT count(*) FROM host_scan_history h WHERE h.scan_id = j.scan_id AND h.host_created) AS new_hosts, (SELECT count(*) FROM port_scan_history p WHERE p.scan_id = j.scan_id) AS ports, (SELECT count(*) FROM port_scan_history p WHERE p.scan_id = j.scan_id AND p.port_created) AS new_ports, (SELECT count(*) FROM vulnerabilities v WHERE v.scan_id = j.scan_id) AS obs_new, (SELECT count(*) FROM vulnerabilities v WHERE v.last_seen_scan_id = j.scan_id AND v.scan_id IS DISTINCT FROM j.scan_id) AS obs_reseen, (SELECT count(*) FROM web_interfaces w WHERE w.scan_id = j.scan_id) AS web, (SELECT count(*) FROM web_paths w WHERE w.scan_id = j.scan_id) AS paths, (SELECT count(*) FROM netexec_results n WHERE n.scan_id = j.scan_id) AS access, (SELECT count(*) FROM dns_records d WHERE d.scan_id = j.scan_id) AS dns, coalesce((j.uninterpreted_lines::jsonb->>'total')::int, 0) AS not_read FROM ingestion_jobs j WHERE j.scan_id IS NOT NULL ORDER BY j.id DESC LIMIT 30;"
         q "Parser warnings, grouped (first 300 chars)" "SELECT coalesce(final_file_type, tool_name) AS format, left(parser_warnings, 300) AS warning, count(*) FROM ingestion_jobs WHERE coalesce(parser_warnings, '') <> '' GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 60;"
         # v2.418.0 — the lines parsers did not interpret, as REDACTED shapes
         # (app/services/line_shapes.py: addresses, names, credentials, hashes,
@@ -396,6 +401,8 @@ if $DB_UP; then
         echo ""; echo "##### Scanner observations"
         q "Vulnerabilities by source and severity" "SELECT source, severity, count(*) AS rows, count(cvss_score) AS cvss, count(cvss_vector) AS vector, count(cve_id) AS cve, count(*) FILTER (WHERE exploitable) AS exploitable, count(plugin_output) AS output, count(solution) AS solution, count(description) AS description, count(\"references\") AS refs, count(port_id) AS on_port FROM vulnerabilities GROUP BY 1, 2 ORDER BY 1, 2;"
         q "Rows whose references hold more CVEs than cve_id" "SELECT source, count(*) FROM vulnerabilities WHERE \"references\" ~* 'CVE-[0-9]{4}-[0-9]+.*CVE-[0-9]{4}-[0-9]+' GROUP BY 1 ORDER BY 2 DESC;"
+        q "Observations by source, catalog check and severity (all sources)" "SELECT source, coalesce(check_id, '-') AS check_id, severity, count(*) AS rows, count(DISTINCT host_id) AS hosts, count(port_id) AS on_port, count(name_id) AS on_name FROM vulnerabilities GROUP BY 1, 2, 3 ORDER BY 1, 4 DESC LIMIT 120;"
+        q "Most frequent titles from the other scanners (Nikto, nuclei, testssl, nmap, NetExec, SMBMap)" "SELECT source, severity, coalesce(check_id, '-') AS check_id, left(title, 90) AS title, count(*) AS rows FROM vulnerabilities WHERE upper(source::text) NOT IN ('NESSUS', 'OPENVAS') GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 80;"
         q "Most frequent Nessus/OpenVAS plugins (vendor titles)" "SELECT source, severity, plugin_id, left(title, 90) AS title, count(*) AS hosts FROM vulnerabilities WHERE source::text IN ('nessus', 'openvas', 'NESSUS', 'OPENVAS') GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 60;"
 
         echo ""; echo "##### Web"
@@ -406,6 +413,7 @@ if $DB_UP; then
         q "Discovered paths by source" "SELECT source, count(*) AS rows, count(size) AS size, count(status_code) AS status, count(*) FILTER (WHERE status_code BETWEEN 300 AND 399) AS redirects FROM web_paths GROUP BY 1 ORDER BY 2 DESC;"
 
         echo ""; echo "##### SMB / AD"
+        q "NetExec / SMBMap outcomes by protocol" "SELECT tool, protocol, port, count(*) AS rows, count(*) FILTER (WHERE auth_success) AS login_ok, count(*) FILTER (WHERE auth_success IS FALSE) AS login_failed, count(*) FILTER (WHERE auth_success IS NULL) AS not_a_login, count(*) FILTER (WHERE local_admin) AS local_admin, count(*) FILTER (WHERE writable_share) AS writable_share, count(*) FILTER (WHERE shares IS NOT NULL AND shares::text NOT IN ('null', '[]', '{}')) AS with_shares, count(*) FILTER (WHERE length(raw_output) >= 10000) AS output_cut FROM netexec_results GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 40;"
         q "NetExec / SMBMap rows" "SELECT tool, protocol, count(*) AS rows, count(*) FILTER (WHERE auth_success) AS auth_success, count(*) FILTER (WHERE local_admin) AS local_admin, count(*) FILTER (WHERE smbv1) AS smbv1, count(domain_name) AS domain, count(username) AS username, count(*) FILTER (WHERE username ~* '(brute|dumping|enumerat|forcing)') AS status_line_as_username, count(shares) AS shares, count(users) AS users_col, count(groups) AS groups_col, count(policies) AS policies_col, count(host_id) AS on_host FROM netexec_results GROUP BY 1, 2 ORDER BY 3 DESC;"
 
         echo ""; echo "##### Names and registration"
@@ -512,7 +520,11 @@ Files:
 - parser_audit.txt        per-format field coverage (counts only): what each parser
                           extracts, what lands only in raw blobs, what stays empty;
                           and the lines parsers did not interpret, as redacted
-                          shapes (values replaced by <IP>, <HOST>, <VALUE>…)
+                          shapes (values replaced by <IP>, <HOST>, <VALUE>…);
+                          per import: how it was recognised and what it
+                          produced (hosts, ports, observations, web, paths,
+                          access results, DNS); observations by source and
+                          catalog check; NetExec/SMBMap outcomes by protocol
 - logs_<service>.txt      backend, worker, report-worker, frontend (nginx), db
 - health.txt              reachability through nginx and the internal DB probe
 - error_analysis.txt      error counts, tracebacks, parser skip lines, auth events
