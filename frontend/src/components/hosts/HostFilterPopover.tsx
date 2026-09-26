@@ -353,26 +353,38 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
   const [draft, setDraft] = useState<HostFilterOptions>(() => {
     let initial: HostFilterOptions = {};
     ENDPOINT_LIST_KEYS.forEach((k) => { initial = withValue(initial, k, filters[k]); });
+    // A new condition starts at "Any state" (2.425.0). An applied one keeps
+    // what it means: with no state named, that is open.
+    if (!ENDPOINT_LIST_KEYS.some((k) => (filters[k] as unknown[] | undefined)?.length) && filters.hasOpenPorts !== true) {
+      initial = withValue(initial, 'portStates', [PORT_STATE_ANY]);
+    }
     return withValue(initial, 'hasOpenPorts', filters.hasOpenPorts === true ? true : undefined);
   });
   const set = (key: keyof HostFilterOptions, value: unknown) => setDraft((d) => withValue(d, key, value));
-  const draftIsEmpty = Object.keys(draft).length === 0;
+  // "Any state" with no port or service is no condition at all.
+  const effective = !draft.ports?.length && !draft.services?.length
+    && draft.portStates?.length === 1 && draft.portStates[0] === PORT_STATE_ANY
+    ? withValue(draft, 'portStates', undefined) : draft;
+  const draftIsEmpty = Object.keys(effective).length === 0;
   const excludesOpen = filters.hasOpenPorts === false;
   const apply = () => {
     // The backend ignores every port filter while "no recorded open ports" is
     // set, so the two cannot both hold: the condition being applied wins, and
     // the editor says so below rather than letting one silently disable the other.
     let next = without(filters, draftIsEmpty && excludesOpen ? ENDPOINT_LIST_KEYS : field.keys);
-    (Object.keys(draft) as Array<keyof HostFilterOptions>).forEach((k) => { next = withValue(next, k, draft[k]); });
+    (Object.keys(effective) as Array<keyof HostFilterOptions>).forEach((k) => { next = withValue(next, k, effective[k]); });
     commit(next);
   };
   // v5.289.0 — a port / service condition means an OPEN port unless a state is
-  // chosen (the backend's `resolve_endpoint_states`), so "Open" shows ticked by
-  // default and the editor writes a state only when the operator changes it.
+  // named (the backend's `resolve_endpoint_states`): with no state in the
+  // draft "Open" shows ticked and nothing is written for it. A new condition
+  // names "any" (above).
   const namedStates = draft.portStates ?? [];
   const anyState = namedStates.includes(PORT_STATE_ANY);
   const shownStates = anyState ? [] : (namedStates.length ? namedStates : ['open']);
   const otherStates = namedStates.filter((s) => s !== PORT_STATE_ANY && !ENDPOINT_STATE_CHOICES.some((c) => c.value === s));
+  // The picker counts hosts in the states being chosen, not the applied ones.
+  const stateKey = anyState ? PORT_STATE_ANY : (otherStates.length ? undefined : [...shownStates].sort().join(','));
   const toggleState = (state: string, checked: boolean) => setDraft((d) => {
     const next = checked ? [...shownStates.filter((s) => s !== state), state] : shownStates.filter((s) => s !== state);
     // `hasOpenPorts` folds into the state list once the operator picks a state.
@@ -402,7 +414,7 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
         <div className="min-w-0 space-y-xxs">
           <h4 className="text-caption font-semibold uppercase tracking-wider text-muted-foreground">Port</h4>
           <ValueList
-            label="Ports" options={portOptions(data)} selected={draft.ports ?? []}
+            label="Ports" options={portOptions(data, stateKey, draft.ports)} selected={draft.ports ?? []}
             onToggle={(v) => set('ports', toggleIn(draft.ports ?? [], v))}
             loading={loading} error={error} cap={500} queryHint="port:8443"
             noData="No ports yet — run a port scan (Nmap/Masscan) and upload it."
@@ -411,7 +423,7 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
         <div className="min-w-0 space-y-xxs">
           <h4 className="text-caption font-semibold uppercase tracking-wider text-muted-foreground">Service</h4>
           <ValueList
-            label="Services" options={serviceOptions(data)} selected={draft.services ?? []}
+            label="Services" options={serviceOptions(data, stateKey, draft.services)} selected={draft.services ?? []}
             onToggle={(v) => set('services', toggleIn(draft.services ?? [], v))}
             loading={loading} error={error} cap={200} queryHint="service:ms-wbt-server"
             noData="No services yet — run a version scan (nmap -sV) and upload it."
@@ -449,8 +461,8 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
           </label>
         </div>
         <p className="px-xs text-caption text-muted-foreground break-words">
-          Open unless you choose otherwise. For a closed or filtered port, nmap names the service from
-          the port number alone — “ssh” there is no evidence SSH runs.
+          Any state unless you choose otherwise; counts follow the states ticked. For a closed or filtered
+          port, nmap names the service from the port number alone — tick Open for evidence it runs.
         </p>
       </fieldset>
       {otherStates.length > 0 && (

@@ -109,12 +109,23 @@ export type HostFilterField = MultiField | SingleField | ChoiceField | ToggleFie
 const counted = <T>(rows: T[] | undefined, map: (row: T) => FilterValueOption): FilterValueOption[] =>
   (rows ?? []).map(map);
 
-/** Ports, de-duplicated across protocols/services, most common first. */
-export const portOptions = (data: HostFilterData | null): FilterValueOption[] => {
+/** A facet row's count for the endpoint editor's chosen states (`stateKey`:
+ *  sorted states joined by ",", or "any"); the applied count without one. */
+const countFor = (row: { count: number; state_counts?: Record<string, number> }, stateKey?: string) =>
+  (stateKey && row.state_counts?.[stateKey] !== undefined ? row.state_counts[stateKey] : row.count);
+
+/** Values with no host in the chosen states are left out, unless selected. */
+const inChosenStates = (option: FilterValueOption, stateKey?: string, selected: string[] = []) =>
+  !stateKey || (option.count ?? 0) > 0 || selected.includes(option.value);
+
+/** Ports, one per number (the backend counts distinct hosts per port), most
+ *  common first. */
+export const portOptions = (data: HostFilterData | null, stateKey?: string, selected?: string[]): FilterValueOption[] => {
   const byPort = new Map<number, { service: string; count: number }>();
   (data?.common_ports ?? []).forEach((p) => {
+    const count = countFor(p, stateKey);
     const seen = byPort.get(p.port);
-    if (!seen || seen.count < p.count) byPort.set(p.port, { service: p.service, count: p.count });
+    if (!seen || seen.count < count) byPort.set(p.port, { service: p.service, count });
   });
   return Array.from(byPort.entries())
     .map(([port, d]) => ({
@@ -123,11 +134,14 @@ export const portOptions = (data: HostFilterData | null): FilterValueOption[] =>
       count: d.count,
       keywords: d.service ? [d.service] : undefined,
     }))
+    .filter((o) => inChosenStates(o, stateKey, selected))
     .sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
 };
 
-export const serviceOptions = (data: HostFilterData | null): FilterValueOption[] =>
-  counted(data?.services, (s) => ({ value: s.name, label: s.name, count: s.count }));
+export const serviceOptions = (data: HostFilterData | null, stateKey?: string, selected?: string[]): FilterValueOption[] =>
+  counted(data?.services, (s) => ({ value: s.name, label: s.name, count: countFor(s, stateKey) }))
+    .filter((o) => inChosenStates(o, stateKey, selected))
+    .sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
 
 export const scanOptions = (data: HostFilterData | null): FilterValueOption[] =>
   counted(data?.scans, (scan) => ({

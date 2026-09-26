@@ -127,20 +127,55 @@ describe('HostFilterPopover', () => {
     expect(screen.getByText('os:"Windows Server 2019"')).toBeInTheDocument();
   });
 
-  it('builds ONE endpoint condition — port, service and open on the same recorded port', async () => {
+  it('builds ONE endpoint condition — port, service and state on the same recorded port; a new one starts at any state', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();
     render(<Harness fieldId="endpoint" initial={{ sites: ['East'] }} onApply={onApply} />);
     expect(screen.getByText(/same recorded port/)).toBeInTheDocument();
     await user.click(screen.getByRole('checkbox', { name: /443 \(https\)/ }));
     await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /https/ }));
-    // Open is the default and shown as such; nothing is written for it.
-    expect(screen.getByRole('checkbox', { name: 'Open' })).toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Closed' })).not.toBeChecked();
-    expect(screen.getByRole('checkbox', { name: 'Any state' })).not.toBeChecked();
-    expect(screen.getByText(/Open unless you choose otherwise/)).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: 'Any state' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Open' })).toBeDisabled();
+    expect(screen.getByText(/Any state unless you choose otherwise/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
-    expect(onApply).toHaveBeenCalledWith({ sites: ['East'], ports: ['443'], services: ['https'] });
+    expect(onApply).toHaveBeenCalledWith({ sites: ['East'], ports: ['443'], services: ['https'], portStates: ['any'] });
+  });
+
+  it('an applied condition with no state named keeps meaning open', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    render(<Harness fieldId="endpoint" initial={{ ports: ['443'] }} onApply={onApply} />);
+    expect(screen.getByRole('checkbox', { name: 'Open' })).toBeChecked();
+    expect(screen.getByRole('checkbox', { name: 'Any state' })).not.toBeChecked();
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenCalledWith({ ports: ['443'] });
+  });
+
+  it('the picker counts hosts in the states being ticked, not the applied ones', async () => {
+    const user = userEvent.setup();
+    const data: HostFilterData = {
+      ...DATA,
+      common_ports: [
+        { port: 8080, service: 'http-proxy', state: 'open', count: 126, state_counts: { any: 150, open: 128, closed: 22 } },
+        { port: 23, service: 'telnet', state: 'open', count: 0, state_counts: { any: 4, open: 0, closed: 4 } },
+      ],
+    };
+    render(<Harness fieldId="endpoint" data={data} />);
+    const ports = () => within(screen.getByRole('list', { name: 'Ports' }));
+    expect(ports().getByRole('checkbox', { name: /8080 \(http-proxy\)/ })).toHaveAccessibleName(/150/);
+    expect(ports().getByRole('checkbox', { name: /23 \(telnet\)/ })).toHaveAccessibleName(/4/);
+    await user.click(screen.getByRole('checkbox', { name: 'Any state' }));  // back to open
+    expect(ports().getByRole('checkbox', { name: /8080 \(http-proxy\)/ })).toHaveAccessibleName(/128/);
+    // No host has 23 open: it leaves the list rather than offer a condition matching nothing.
+    expect(ports().queryByRole('checkbox', { name: /23 \(telnet\)/ })).not.toBeInTheDocument();
+  });
+
+  it('"any state" with no port or service applies nothing', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    render(<Harness fieldId="endpoint" initial={{ sites: ['East'] }} onApply={onApply} />);
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).not.toHaveBeenCalledWith(expect.objectContaining({ portStates: expect.anything() }));
   });
 
   it('the endpoint editor can include closed / filtered ports, or any state', async () => {
@@ -148,6 +183,7 @@ describe('HostFilterPopover', () => {
     const onApply = vi.fn();
     render(<Harness fieldId="endpoint" onApply={onApply} />);
     await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /ssh/ }));
+    await user.click(screen.getByRole('checkbox', { name: 'Any state' }));  // off: back to open
     await user.click(screen.getByRole('checkbox', { name: 'Closed' }));
     await user.click(screen.getByRole('checkbox', { name: 'Filtered' }));
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
@@ -157,8 +193,7 @@ describe('HostFilterPopover', () => {
   it('"Any state" replaces the state list with any', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();
-    render(<Harness fieldId="endpoint" onApply={onApply} />);
-    await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /ssh/ }));
+    render(<Harness fieldId="endpoint" initial={{ services: ['ssh'] }} onApply={onApply} />);
     await user.click(screen.getByRole('checkbox', { name: 'Any state' }));
     expect(screen.getByRole('checkbox', { name: 'Open' })).toBeDisabled();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
@@ -183,7 +218,7 @@ describe('HostFilterPopover', () => {
     await user.click(screen.getByRole('checkbox', { name: /22 \(ssh\)/ }));
     expect(screen.getByText(/cannot hold together with a port condition/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
-    expect(onApply).toHaveBeenCalledWith({ ports: ['22'] });
+    expect(onApply).toHaveBeenCalledWith({ ports: ['22'], portStates: ['any'] });
   });
 
   it('"first discovered in" needs a scan, and leaves with the scans', async () => {

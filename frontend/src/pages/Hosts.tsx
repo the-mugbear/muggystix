@@ -899,7 +899,9 @@ export default function Hosts() {
     // closed-only port would insert a condition that matches nothing.
     if (filterData?.common_ports) {
       map.port = [...new Set(
-        filterData.common_ports.filter((p) => p.state === 'open').map((p) => String(p.port)),
+        filterData.common_ports
+          .filter((p) => (p.state_counts ? (p.state_counts.open ?? 0) > 0 : p.state === 'open'))
+          .map((p) => String(p.port)),
       )];
     }
     if (filterData?.services) map.service = filterData.services.map((s) => s.name);

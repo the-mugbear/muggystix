@@ -168,3 +168,46 @@ def test_service_picker_counts_what_the_default_filter_returns(client, db_sessio
     counts = {s["name"]: s["count"] for s in body["services"]}
     assert counts["ssh"] == 1
     assert counts["http"] == 1
+
+
+def test_port_picker_counts_what_the_filter_returns(client, db_session, test_project):
+    """Production 2026-09-26: the Add-filter port list said "2049 (nfs) 450"
+    and applying port 2049 returned more. Rows were split by (port, service,
+    state) and counted port rows; the picker showed the largest slice. The
+    count is now distinct hosts with the port in the state the filter
+    matches, one row per port — and must equal what applying it returns."""
+    pid = test_project.id
+
+    def host(ip, *ports):
+        h = models.Host(project_id=pid, ip_address=ip, state="up")
+        db_session.add(h)
+        db_session.flush()
+        for number, proto, state, service in ports:
+            db_session.add(models.Port(host_id=h.id, port_number=number, protocol=proto,
+                                       state=state, service_name=service))
+
+    host("10.8.0.1", (2049, "tcp", "open", "nfs"), (2049, "udp", "open", "nfs"))
+    host("10.8.0.2", (2049, "tcp", "open", "nfs"))
+    host("10.8.0.3", (2049, "tcp", "open", "nfs_acl"))   # nmap named it differently
+    host("10.8.0.4", (2049, "tcp", "open", None))
+    host("10.8.0.5", (2049, "tcp", "filtered", "nfs"))  # not matched by default
+    db_session.flush()
+
+    def picker(**params):
+        body = client.get(f"/api/v1/projects/{pid}/hosts/filters/data", params=params).json()
+        rows = [p for p in body["common_ports"] if p["port"] == 2049]
+        assert len(rows) == 1, rows
+        return rows[0]
+
+    row = picker()
+    assert row["count"] == len(_hosts(client, pid, ports="2049")) == 4
+    assert row["service"] == "nfs" and row["state"] == "open"
+    assert picker(port_states="any")["count"] == len(_hosts(client, pid, ports="2049", port_states="any")) == 5
+    assert picker(port_states="filtered")["count"] == 1
+    # The editor's counts before applying: each state combination, exact.
+    assert row["state_counts"]["open"] == 4
+    assert row["state_counts"]["filtered"] == 1
+    assert row["state_counts"]["closed"] == 0
+    assert row["state_counts"]["filtered,open"] == len(
+        _hosts(client, pid, ports="2049", port_states="open,filtered")) == 5
+    assert row["state_counts"]["any"] == 5

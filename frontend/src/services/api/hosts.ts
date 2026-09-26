@@ -1249,8 +1249,11 @@ export const getHostsByScan = async (
 // so a backend shape change surfaces at compile time rather than as a
 // silently-empty dropdown or an `undefined.find` at runtime.
 export interface HostFilterData {
-  common_ports: Array<{ port: number; service: string; state: string; count: number }>;
-  services: Array<{ name: string; count: number }>;
+  // `count` is under the applied port states; `state_counts` is distinct hosts
+  // per state combination the endpoint editor can choose ("open",
+  // "closed,open"…, "any"), so its picker counts follow the draft (2.425.0).
+  common_ports: Array<{ port: number; service: string; state: string; count: number; state_counts?: Record<string, number> }>;
+  services: Array<{ name: string; count: number; state_counts?: Record<string, number> }>;
   operating_systems: Array<{ name: string; count: number }>;
   subnets: Array<{ cidr: string; host_count: number }>;
   scans?: Array<{ id: number; filename: string; tool_name?: string | null; created_at?: string | null }>;

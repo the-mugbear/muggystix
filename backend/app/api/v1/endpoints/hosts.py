@@ -13,12 +13,13 @@ from typing import Any, List, Optional, Dict
 from datetime import datetime, timezone
 import ipaddress
 import json
+import itertools
 
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, noload, aliased
-from sqlalchemy import or_, and_, distinct, func, select, true
+from sqlalchemy import or_, and_, case, distinct, func, select, true
 from sqlalchemy.sql import exists
 
 from app.db.session import get_db
@@ -83,10 +84,14 @@ class PortFilterItem(BaseModel):
     service: str = "unknown"
     state: Optional[str] = None
     count: int = 0
+    # Distinct hosts per state combination the endpoint editor can choose
+    # ("open", "closed,open"…, "any") — the picker's count before applying.
+    state_counts: Dict[str, int] = {}
 
 class ServiceFilterItem(BaseModel):
     name: str
     count: int = 0
+    state_counts: Dict[str, int] = {}
 
 class OsFilterItem(BaseModel):
     name: str
@@ -931,6 +936,55 @@ def get_matching_host_ids(
     return HostIdsResponse(ids=ids, total=total, capped=total > len(ids))
 
 
+# The state boxes in the Hosts endpoint editor (open / closed / filtered, or
+# "any"): every non-empty combination, keyed by its sorted states.
+_EDITOR_PORT_STATES = ('closed', 'filtered', 'open')
+_EDITOR_STATE_COMBOS = [
+    combo for r in range(1, len(_EDITOR_PORT_STATES) + 1)
+    for combo in itertools.combinations(_EDITOR_PORT_STATES, r)
+]
+
+
+def _state_counted_facet(db: Session, host_scope, value_col, applied_states, limit: int, *filters):
+    """``[(value, count, state_counts)]`` for a port facet: distinct hosts per
+    value under the applied states, and under each state combination the
+    editor offers (``"open,closed"``…, ``"any"``). One grouped statement: the
+    inner query reduces to one row per (value, host) with a flag per state."""
+    def has(cond):
+        return func.max(case((cond, 1), else_=0))
+
+    applied = P.port_state_condition(applied_states) if applied_states else true()
+    per_host = (
+        db.query(
+            value_col.label('v'),
+            has(applied).label('m'),
+            *[has(models.Port.state == s).label(s) for s in _EDITOR_PORT_STATES],
+        )
+        .join(models.Host, models.Host.id == models.Port.host_id)
+        .filter(host_scope, *filters)
+        .group_by(value_col, models.Port.host_id)
+        .subquery()
+    )
+    any_hosts = func.count()
+    combo_sums = [
+        func.sum(case((or_(*[per_host.c[s] == 1 for s in combo]), 1), else_=0))
+        for combo in _EDITOR_STATE_COMBOS
+    ]
+    rows = (
+        db.query(per_host.c.v, any_hosts, func.sum(per_host.c.m), *combo_sums)
+        .group_by(per_host.c.v)
+        .order_by(any_hosts.desc(), per_host.c.v)
+        .limit(limit)
+        .all()
+    )
+    out = []
+    for v, n_any, n_applied, *by_combo in rows:
+        counts = {','.join(combo): int(n or 0) for combo, n in zip(_EDITOR_STATE_COMBOS, by_combo)}
+        counts['any'] = int(n_any or 0)
+        out.append((v, int(n_applied or 0), counts))
+    return out
+
+
 @router.get(
     "/filters/data",
     response_model=HostFilterDataResponse,
@@ -957,34 +1011,43 @@ def get_host_filter_data_v2(
     else:
         host_scope = models.Host.project_id == project.id
 
-    # Ports — scoped to filtered hosts when active
-    port_query = db.query(
-        models.Port.port_number,
-        models.Port.service_name,
-        models.Port.state,
-        func.count(models.Port.id).label('count')
+    # Ports and services — scoped, one row per port NUMBER / service NAME,
+    # counted in distinct hosts. Rows used to be split by (port, service, state)
+    # and count port rows, so "2049 (nfs)" showed its largest slice and applying
+    # port 2049 found more hosts (production 2026-09-26). Each row carries
+    # `count` (hosts matching under the applied port_states — open unless it
+    # names others) and `state_counts` (every combination the editor's state
+    # boxes can make, plus "any"), so the picker shows the count for the states
+    # being chosen before they are applied.
+    port_filter_states = P.resolve_endpoint_states(
+        (filters.port_states or '').split(','), has_endpoint=True,
     )
-    if host_scope is not None:
-        port_query = port_query.join(models.Host).filter(host_scope)
-    common_ports = port_query.group_by(
-        models.Port.port_number, models.Port.service_name, models.Port.state
-    ).order_by(func.count(models.Port.id).desc()).limit(500).all()
+    port_rows = _state_counted_facet(
+        db, host_scope, models.Port.port_number, port_filter_states, 500,
+    )
+    # Label each port with the service name most of those hosts report.
+    port_service: Dict[int, tuple] = {}
+    if port_rows:
+        port_hosts = func.count(func.distinct(models.Port.host_id))
+        for number, name, n in (
+            db.query(models.Port.port_number, models.Port.service_name, port_hosts)
+            .join(models.Host, models.Host.id == models.Port.host_id)
+            .filter(
+                host_scope,
+                models.Port.port_number.in_([r[0] for r in port_rows]),
+                models.Port.service_name.isnot(None), models.Port.service_name != '',
+            )
+            .group_by(models.Port.port_number, models.Port.service_name)
+            .all()
+        ):
+            if number not in port_service or (n, name) > port_service[number]:
+                port_service[number] = (n, name)
+    port_state_label = ','.join(port_filter_states) if port_filter_states else 'any'
 
-    # Services — scoped, and open ports only: a service condition matches open
-    # ports unless it names a state (v2.403.0), so the picker's count must be
-    # the count the filter returns — a closed port's name is nmap's guess.
-    svc_query = db.query(
-        models.Port.service_name,
-        func.count(models.Port.id).label('count')
-    ).filter(
+    services_result = _state_counted_facet(
+        db, host_scope, models.Port.service_name, port_filter_states, 200,
         models.Port.service_name.isnot(None), models.Port.service_name != '',
-        models.Port.state == 'open',
     )
-    if host_scope is not None:
-        svc_query = svc_query.join(models.Host).filter(host_scope)
-    services_result = svc_query.group_by(
-        models.Port.service_name
-    ).order_by(func.count(models.Port.id).desc()).limit(200).all()
 
     # Operating systems — scoped
     os_query = db.query(
@@ -1280,12 +1343,13 @@ def get_host_filter_data_v2(
         'weaknesses': weaknesses_result,
         'checks': checks_result,
         'common_ports': [
-            {'port': p.port_number, 'service': p.service_name or 'unknown', 'state': p.state, 'count': p.count}
-            for p in common_ports
+            {'port': number, 'service': port_service.get(number, (0, 'unknown'))[1],
+             'state': port_state_label, 'count': n, 'state_counts': by_state}
+            for number, n, by_state in port_rows
         ],
         'services': [
-            {'name': s.service_name, 'count': s.count}
-            for s in services_result
+            {'name': name, 'count': n, 'state_counts': by_state}
+            for name, n, by_state in services_result
         ],
         'operating_systems': [
             {'name': o.os_name, 'count': o.count}
