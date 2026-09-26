@@ -154,6 +154,8 @@ Largely done. This is the stage the surface was originally built for.
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
 | What a host is actually serving on the web | `assist_get_host` → `web_interfaces` | **have** (2.297.0) |
 | Every web interface on a host, past the cap on host detail (`web_interfaces_truncated`) | `assist_list_host_web_interfaces` | **have** (2.343.3) |
+| What NetExec / SMBMap recorded on a host, beside the tool's own line | `assist_list_host_access` | **have** (2.418.0) |
+| Which lines an import did not interpret (redacted shapes) — a parse audit's starting point | `assist_list_uninterpreted_lines` | **have** (2.418.0) |
 
 **`assist_list_ingestion_issues`** matters more than it sounds: without it, "no
 data for that range" is indistinguishable from "the upload didn't parse", and

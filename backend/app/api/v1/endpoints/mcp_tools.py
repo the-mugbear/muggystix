@@ -637,6 +637,53 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_list_host_access": {
+        "description": (
+            "Every NetExec / SMBMap result on one host, as a page (v2.418.0): "
+            "what BlueStick read from each tool line — login outcome, username, "
+            "local admin, SMBv1, writable share, shares — beside the line itself "
+            "(raw_output; raw_output_truncated when the import cut it). Compare "
+            "the two to check a parse; credentials appear as the tool printed "
+            "them. Read has_more and page with offset."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/hosts/{host_id}/access",
+        "path_params": ["host_id"],
+        "query_params": ["limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **HOST_ID_PROP,
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 50},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "required": ["host_id"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_uninterpreted_lines": {
+        "description": (
+            "Imports whose parser did not interpret every line, newest first, "
+            "with those lines as REDACTED shapes and counts (v2.418.0): kind "
+            "`dropped` (not in the inventory), `text_only` (kept as the tool's "
+            "line, nothing read from it), `module_as_login` / `module_as_text` "
+            "(an nxc module's result). Values are placeholders (<IP>, <HOST>, "
+            "<VALUE>, <CREDENTIAL>…). Not an ingestion issue — the data that was "
+            "read is in the project. Pass job_id for one import."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/uninterpreted-lines",
+        "query_params": ["job_id", "limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "integer", "minimum": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
     "assist_get_host_notes": {
         "description": (
             "What the team has already written about this host. Read this "

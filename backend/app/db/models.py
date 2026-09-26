@@ -906,6 +906,14 @@ class IngestionJob(Base):
     # UNKNOWN number of hosts and adds one warning, so a count cannot carry
     # it.  A partial job must stay visibly partial in every list that shows it.
     partial = Column(Boolean, nullable=False, default=False, server_default=text("false"))
+    # v2.418.0 — the lines the parser did not interpret, as redacted shapes
+    # (app/services/line_shapes.py): {"total", "distinct", "shapes": [{kind,
+    # shape, count}]}.  A diagnostic receipt, never filtered on (column-vs-
+    # blob policy: a blob).  NULL = every line read, or a parser that does
+    # not report it.
+    # none_as_null: the worker writes None for "every line read"; stored as
+    # JSON 'null' it would match IS NOT NULL.
+    uninterpreted_lines = Column(JSON(none_as_null=True), nullable=True)
     # v2.351.0 — the format chain (staged-import phase A): what the
     # dispatcher detected first, what the operator told it to use instead,
     # what actually parsed the file, and the tool the operator named when

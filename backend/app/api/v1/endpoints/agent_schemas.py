@@ -105,6 +105,11 @@ class AssistFinding(BaseModel):
     description: Optional[str] = Field(None, description="Finding description (may be truncated).")
     solution: Optional[str] = Field(None, description="Remediation guidance, when the scanner provided it.")
     evidence: Optional[str] = Field(None, description="Scanner plugin output / evidence (may be truncated).")
+    check_id: Optional[str] = Field(None, description=(
+        "The misconfiguration-catalog check this row is (e.g. vnc_no_auth, "
+        "smb_signing_not_required), whichever tool reported it; null for a "
+        "scanner's own finding (v2.418.0)."
+    ))
 
 
 class AssistFindingsResponse(BaseModel):

@@ -996,6 +996,7 @@ class IngestionService:
                 job.skipped_count = result.get("skipped_count", 0)
                 job.parser_warnings = result.get("parser_warnings")
                 job.partial = bool(result.get("partial", False))
+                job.uninterpreted_lines = result.get("uninterpreted_lines")
                 # v2.351.0 — the parser that actually produced the scan.
                 job.final_file_type = result.get("final_file_type")
                 # Final import-count summary (e.g. "6 DNS records").  Only
@@ -1433,6 +1434,8 @@ class IngestionService:
             # so without this their completed jobs showed an empty progress
             # column and no record count anywhere.
             "progress_summary": parse_stats.get("summary") if parse_stats else None,
+            # v2.418.0 — the lines not interpreted, as redacted shapes.
+            "uninterpreted_lines": parse_stats.get("uninterpreted") if parse_stats else None,
         }
 
     # ------------------------------------------------------------------

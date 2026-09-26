@@ -23,6 +23,7 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import correlate_scan
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
+from app.services.line_shapes import ShapeTally, nxc_line_shape
 import logging
 
 logger = logging.getLogger(__name__)
@@ -100,6 +101,57 @@ def netexec_line_checks(
     return found
 
 
+# nxc's protocols (nxc/protocols/*).  Anything else in the first column is a
+# module's name — its result is not interpreted by these patterns.
+_NXC_PROTOCOLS = {'smb', 'ldap', 'winrm', 'rdp', 'ssh', 'ftp', 'vnc', 'mssql', 'wmi', 'nfs'}
+# "NAME  address  port  host  [x] …" with any first column and an IPv4 or
+# IPv6 address — the layout of every nxc result line.
+_RESULT_LAYOUT = re.compile(
+    r'^[A-Za-z][\w-]*\s+(?:\d{1,3}(?:\.\d{1,3}){3}|[0-9a-fA-F:]*:[0-9a-fA-F:]+)\s+\d+\s+\S+\s+\[[^\]]+\]\s'
+)
+# A "(key:value)" flag in a line's message.
+_HAS_FLAG = re.compile(r'\([^():]{1,40}:[^()]*\)')
+# A table cell: an nxc header ("-Last PW Set-", spaces inside) or a token.
+_HEADER_CELL = re.compile(r'-[\w ]+?-')
+_CELL = re.compile(r'-[\w ]+?-(?=\s|$)|\S+')
+
+
+def _table_row_shape(line: str) -> str:
+    """A bracket-less row (a --users / --rid-brute / module table): the
+    columns' count and kind only.  Its cells are account names, dates and
+    descriptions, which no redaction rule can tell from the tool's words; an
+    nxc header cell ("-Username-") is kept."""
+    parts = line.split(None, 4)
+    if len(parts) < 5:
+        return nxc_line_shape(line)
+    cells = [
+        tok if _HEADER_CELL.fullmatch(tok) else ('<N>' if tok.isdigit() else '<T>')
+        for tok in _CELL.findall(parts[4])
+    ]
+    return f"{parts[0]} <IP> {parts[2]} <HOST> " + " ".join(cells)
+
+
+def uninterpreted_kind(host_data: Dict[str, Any], line: str) -> Optional[str]:
+    """Why a recognised line still says more than BlueStick read, or None.
+
+    ``module`` — the first column is a module, not a protocol: its result
+    went through the protocol patterns (as a login, or as text).
+    ``text_only`` — a status line carrying a claim ("[+]", "[!]" or a
+    "(key:value)" flag) that produced no login and no catalog check: kept as
+    the tool's line only.  A plain "[*]" banner is what the pattern reads
+    (host, port, banner) and is not reported."""
+    protocol = (host_data.get('protocol') or '').lower()
+    if protocol and protocol not in _NXC_PROTOCOLS:
+        return 'module_as_login' if host_data.get('auth_success') is True else 'module_as_text'
+    if host_data.get('auth_success') is not None or host_data.get('os_name'):
+        return None
+    if netexec_line_checks(protocol, line, smbv1=host_data.get('smbv1')):
+        return None
+    status = re.search(r'\s\[([^\]]+)\]\s', f' {line} ')
+    claim = (status and status.group(1).strip() in ('+', '!')) or _HAS_FLAG.search(line)
+    return 'text_only' if claim else None
+
+
 def writable_share(shares: Any) -> Optional[bool]:
     """Whether a share table grants WRITE on any share (v2.412.0): the
     `has:writable_share` column.  None for anything but a share table — a
@@ -164,6 +216,8 @@ class NetexecParser:
         self._project_id = kwargs.get("project_id")
         self._hosts_recorded = 0
         self._filename = filename
+        self.uninterpreted = None
+        self.last_parse_stats = None
         logger.info(f"Starting netexec parse of {filename}")
 
         # Create scan record
@@ -195,6 +249,21 @@ class NetexecParser:
                 )
 
             logger.info(f"Successfully parsed netexec output: {filename}")
+            if self.uninterpreted:
+                # v2.418.0 — the import says which lines it did not read, as
+                # redacted shapes (Ingestion Results; collect-logs.sh).
+                total = self.uninterpreted["total"]
+                self.last_parse_stats = {
+                    "skipped": 0,
+                    "warnings": (
+                        f"{total} line{'s' if total != 1 else ''} not interpreted "
+                        f"({self.uninterpreted['distinct']} shape{'s' if self.uninterpreted['distinct'] != 1 else ''}) — "
+                        "kept as the tool's text or dropped; the shapes are listed on the import"
+                    ),
+                    "summary": None,
+                    "partial": False,
+                    "uninterpreted": self.uninterpreted,
+                }
 
             # v2.342.0 — this was the one host-creating parser that never ran
             # scope correlation, so a host first seen by NetExec stayed "out
@@ -275,11 +344,20 @@ class NetexecParser:
         # header's offsets: an empty Permissions cell is just spaces.
         shares: Dict[str, List[Dict[str, Any]]] = {}
         share_columns: Dict[str, Tuple[int, int]] = {}
+        # v2.418.0 — the lines not interpreted, as redacted shapes (see
+        # app/services/line_shapes.py), for the import's receipt.  Names seen
+        # in the host column are replaced wherever they recur.
+        host_names: set = set()
+        # (kind, line) pairs, shaped once every host name is known.
+        gaps: List[Tuple[str, str]] = []
 
         for line in lines:
             line = _normalise_line(line)
             if not line or line.startswith('#'):
                 continue
+            columns = _STATUS_ROW.match(line) or _TABLE_ROW.match(line)
+            if columns:
+                host_names.add(line.split()[3])
 
             row = _TABLE_ROW.match(line)
             if row:
@@ -334,6 +412,27 @@ class NetexecParser:
 
             if host_data:
                 observations.setdefault(host_data['ip_address'], []).append(host_data)
+                kind = uninterpreted_kind(host_data, line)
+                if kind:
+                    gaps.append((kind, line))
+            elif columns:
+                # A line about a host that no pattern read: dropped.  (A line
+                # with no host columns is nxc's own chatter, not a result.)
+                gaps.append(('dropped_table_row' if not _STATUS_ROW.match(line) else 'dropped', line))
+            elif _RESULT_LAYOUT.match(line):
+                # nxc's result layout that the patterns above cannot read (a
+                # hyphenated module name, an IPv6 address): dropped.  Lines
+                # outside the layout — the command the operator typed (its
+                # own credentials), a log prefix, nxc's chatter — are not
+                # results and are never reported.
+                gaps.append(('dropped', line))
+
+        tally = ShapeTally()
+        known = tuple(sorted(host_names, key=len, reverse=True))
+        for kind, gap_line in gaps:
+            shape = _table_row_shape(gap_line) if kind == 'dropped_table_row' else nxc_line_shape(gap_line, known)
+            tally.add('dropped' if kind == 'dropped_table_row' else kind, shape)
+        self.uninterpreted = tally.receipt()
 
         for ip_observations in observations.values():
             # The SMB banner names the host, its OS, domain and signing

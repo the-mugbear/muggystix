@@ -3603,7 +3603,8 @@
       ],
       "gaps": [
         "Module results (Zerologon, PetitPotam, noPac, ms17-010 and others) are not parsed; some are stored as fake logins or shares.",
-        "LDAP signing / channel binding and RDP NLA are not interpreted."
+        "LDAP signing / channel binding and RDP NLA are not interpreted.",
+        "Each import lists the lines it did not interpret — dropped, kept only as text, or a module's result — as redacted shapes on Ingestion Results (v2.418.0), so these gaps can be measured on real output without the file."
       ],
       "unverified": [
         "Module, LDAP and RDP line formats are taken from knowledge of nxc; the repository has no captures of them. SMB, VNC, FTP and SSH lines are checked against captures, the nxc wiki and NetExec's protocol source (main, 2026-09-25)."

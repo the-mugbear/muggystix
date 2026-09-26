@@ -133,6 +133,10 @@ class IngestionResultItem(BaseModel):
     # generic "Failed to parse the file …" sentence).
     superseded_by_job_id: Optional[int] = None
     failure_reason: Optional[str] = None
+    # v2.418.0 — how many lines the parser did not interpret, and in how
+    # many shapes; the shapes are GET …/ingestion-results/{id}/uninterpreted.
+    uninterpreted_total: int = 0
+    uninterpreted_distinct: int = 0
     # Stats (populated for completed jobs)
     stats: Optional[IngestionResultStats] = None
     # Error info (populated for failed jobs)
@@ -407,6 +411,8 @@ def get_ingestion_results(
             dismissed_at=job.dismissed_at,
             superseded_by_job_id=job.superseded_by_job_id,
             failure_reason=job.failure_reason,
+            uninterpreted_total=int((job.uninterpreted_lines or {}).get("total") or 0),
+            uninterpreted_distinct=int((job.uninterpreted_lines or {}).get("distinct") or 0),
         )
 
         # Attach stats for completed jobs
@@ -506,6 +512,51 @@ def get_ingestion_results(
     }
 
     return IngestionResultsResponse(items=items, total=total, summary=summary)
+
+
+class UninterpretedShape(BaseModel):
+    kind: str
+    shape: str
+    count: int
+
+
+class UninterpretedLinesResponse(BaseModel):
+    """What an import's parser did not interpret (v2.418.0), as redacted
+    shapes: the structure of each line with its values replaced
+    (app/services/line_shapes.py)."""
+    job_id: int
+    original_filename: str
+    tool_name: Optional[str] = None
+    total: int = 0
+    distinct: int = 0
+    shapes: List[UninterpretedShape] = []
+
+
+@router.get(
+    "/ingestion-results/{job_id:int}/uninterpreted",
+    response_model=UninterpretedLinesResponse,
+    responses=_ANALYST_RESPONSES,
+    dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
+    summary="The lines an import did not interpret, as redacted shapes",
+)
+def get_uninterpreted_lines(
+    job_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    job = (
+        db.query(models.IngestionJob)
+        .filter(models.IngestionJob.id == job_id, models.IngestionJob.project_id == project.id)
+        .first()
+    )
+    if job is None:
+        raise HTTPException(status_code=404, detail="Import not found")
+    receipt = job.uninterpreted_lines or {}
+    return UninterpretedLinesResponse(
+        job_id=job.id, original_filename=job.original_filename, tool_name=job.tool_name,
+        total=int(receipt.get("total") or 0), distinct=int(receipt.get("distinct") or 0),
+        shapes=[UninterpretedShape(**s) for s in receipt.get("shapes") or []],
+    )
 
 
 @router.get(

@@ -421,6 +421,9 @@ export interface IngestionResultItem {
   superseded_by_job_id?: number | null;
   /** v5.289.0 — the parser's specific cause for a failed job. */
   failure_reason?: string | null;
+  /** v5.301.0 — lines the parser did not interpret, and in how many shapes. */
+  uninterpreted_total?: number;
+  uninterpreted_distinct?: number;
   stats: {
     hosts_parsed: number;
     hosts_up: number;
@@ -490,5 +493,21 @@ export const getIngestionResults = async (
   if (query.sortOrder) params.set('sort_order', query.sortOrder);
   const qs = params.toString();
   const response = await api.get(`${p()}/parse-errors/ingestion-results${qs ? `?${qs}` : ''}`);
+  return response.data;
+};
+
+/** v5.301.0 — the lines an import's parser did not interpret, as redacted
+ *  shapes (values replaced by <IP>, <HOST>, <VALUE>…), with counts. */
+export interface UninterpretedLines {
+  job_id: number;
+  original_filename: string;
+  tool_name?: string | null;
+  total: number;
+  distinct: number;
+  shapes: { kind: string; shape: string; count: number }[];
+}
+
+export const getUninterpretedLines = async (jobId: number): Promise<UninterpretedLines> => {
+  const response = await api.get(`${p()}/parse-errors/ingestion-results/${jobId}/uninterpreted`);
   return response.data;
 };

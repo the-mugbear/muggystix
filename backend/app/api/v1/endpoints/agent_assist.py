@@ -720,6 +720,138 @@ def list_assist_host_web_interfaces(
     )
 
 
+class AssistAccessResult(BaseModel):
+    """One NetExec / SMBMap result on a host, as stored (v2.418.0): what the
+    parser read from the tool's line (login outcome, local admin, SMBv1,
+    shares) beside the line itself, so a reader can check one against the
+    other."""
+    id: int
+    scan_id: int
+    tool: str
+    protocol: str
+    port: Optional[int] = None
+    auth_success: Optional[bool] = None
+    username: Optional[str] = None
+    local_admin: Optional[bool] = None
+    smbv1: Optional[bool] = None
+    writable_share: Optional[bool] = None
+    shares: Optional[Any] = None
+    raw_output: Optional[str] = None
+    raw_output_truncated: bool = False
+
+
+class AssistAccessPage(BaseModel):
+    items: List[AssistAccessResult] = []
+    total: int = 0
+    has_more: bool = False
+    limit: int = 50
+    offset: int = 0
+
+
+@router.get(
+    "/assist/hosts/{host_id}/access",
+    response_model=AssistAccessPage,
+    summary="NetExec / SMBMap results on one host, as a page",
+)
+def list_assist_host_access(
+    request: Request,
+    host_id: int = Path(..., gt=0),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Every NetExec / SMBMap result recorded on the host — one row per
+    (scan, protocol, port, account) — with the tool's own line.  The
+    interpreted fields and the line side by side are what a parse audit
+    compares (v2.418.0)."""
+    from app.db.models_confidence import NETEXEC_RAW_OUTPUT_LIMIT, NetexecResult
+
+    session = _load_assist_session(db, request)
+    host = (
+        db.query(models.Host.id)
+        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
+        .first()
+    )
+    if host is None:
+        raise HTTPException(status_code=404, detail="Host not found in this project")
+    scoped = db.query(NetexecResult).filter(NetexecResult.host_id == host_id)
+    total = scoped.with_entities(func.count(NetexecResult.id)).scalar() or 0
+    rows = scoped.order_by(NetexecResult.protocol, NetexecResult.port, NetexecResult.id).offset(offset).limit(limit).all()
+    return AssistAccessPage(
+        items=[
+            AssistAccessResult(
+                id=r.id, scan_id=r.scan_id, tool=r.tool or "netexec", protocol=r.protocol, port=r.port,
+                auth_success=r.auth_success, username=r.username, local_admin=r.local_admin,
+                smbv1=r.smbv1, writable_share=r.writable_share, shares=r.shares,
+                raw_output=r.raw_output,
+                raw_output_truncated=len(r.raw_output or "") >= NETEXEC_RAW_OUTPUT_LIMIT,
+            )
+            for r in rows
+        ],
+        total=int(total), has_more=offset + len(rows) < total, limit=limit, offset=offset,
+    )
+
+
+class AssistUninterpretedImport(BaseModel):
+    job_id: int
+    filename: str
+    tool_name: Optional[str] = None
+    format: Optional[str] = None
+    created_at: Optional[datetime] = None
+    total: int = 0
+    distinct: int = 0
+    shapes: List[Dict[str, Any]] = []
+
+
+class AssistUninterpretedPage(BaseModel):
+    """v2.418.0 — the imports whose parser did not interpret every line, with
+    those lines as REDACTED shapes (values replaced by <IP>, <HOST>, <VALUE>…).
+    Not an ingestion issue: the data that was read is in the project.  It is
+    what a parse audit starts from."""
+    items: List[AssistUninterpretedImport] = []
+    total: int = 0
+    has_more: bool = False
+
+
+@router.get(
+    "/assist/uninterpreted-lines",
+    response_model=AssistUninterpretedPage,
+    summary="Lines imports did not interpret, as redacted shapes",
+)
+def list_assist_uninterpreted_lines(
+    request: Request,
+    job_id: Optional[int] = Query(None, gt=0),
+    limit: int = Query(10, ge=1, le=50),
+    offset: int = Query(0, ge=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    session = _load_assist_session(db, request)
+    scoped = db.query(models.IngestionJob).filter(
+        models.IngestionJob.project_id == session.project_id,
+        models.IngestionJob.uninterpreted_lines.isnot(None),
+    )
+    if job_id is not None:
+        scoped = scoped.filter(models.IngestionJob.id == job_id)
+    total = scoped.with_entities(func.count(models.IngestionJob.id)).scalar() or 0
+    rows = scoped.order_by(models.IngestionJob.created_at.desc(), models.IngestionJob.id.desc()) \
+        .offset(offset).limit(limit).all()
+    return AssistUninterpretedPage(
+        items=[
+            AssistUninterpretedImport(
+                job_id=j.id, filename=j.original_filename or j.filename, tool_name=j.tool_name,
+                format=j.final_file_type, created_at=j.created_at,
+                total=int((j.uninterpreted_lines or {}).get("total") or 0),
+                distinct=int((j.uninterpreted_lines or {}).get("distinct") or 0),
+                shapes=list((j.uninterpreted_lines or {}).get("shapes") or []),
+            )
+            for j in rows
+        ],
+        total=int(total), has_more=offset + len(rows) < total,
+    )
+
+
 @router.get(
     "/assist/hosts/{host_id}",
     response_model=AssistHostDetail,
@@ -889,6 +1021,7 @@ def get_assist_host_findings(
             description=(v.description or None) and v.description[:_DESC_CAP],
             solution=(v.solution or None) and v.solution[:_DESC_CAP],
             evidence=(v.plugin_output or None) and v.plugin_output[:_EVIDENCE_CAP],
+            check_id=v.check_id,
         ))
     return AssistFindingsResponse(
         host_id=host_id,

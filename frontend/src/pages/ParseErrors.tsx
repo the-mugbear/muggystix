@@ -28,6 +28,7 @@ import {
 } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
 import FormatRetryDialog from '../components/scans/FormatRetryDialog';
+import UninterpretedLines from '../components/scans/UninterpretedLines';
 import {
   Select, SelectTrigger, SelectValue, SelectContent, SelectItem,
 } from '../components/ui/select';
@@ -1016,6 +1017,11 @@ const RowDetail: React.FC<{
           and the scan page show, so a completed job is reconcilable here. */}
       {item.scan_id != null && item.status === 'completed' && (
         <CompletedImportResult scanId={item.scan_id} />
+      )}
+      {/* v5.301.0 — what the parser did not read, as redacted line shapes. */}
+      {(item.uninterpreted_total ?? 0) > 0 && (
+        <UninterpretedLines jobId={item.id} total={item.uninterpreted_total ?? 0}
+          distinct={item.uninterpreted_distinct ?? 0} formatKey={item.final_file_type} />
       )}
       {/* v5.227.0 — the format chain, so "how was this file read" is on
           record: detected → override → parsed by. */}

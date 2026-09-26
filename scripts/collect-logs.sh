@@ -358,6 +358,11 @@ if $DB_UP; then
         q "Jobs by format and outcome" "SELECT coalesce(final_file_type, detected_file_type, tool_name, '?') AS format, status, count(*) AS jobs, sum(coalesce(skipped_count, 0)) AS skipped_rows, count(*) FILTER (WHERE partial) AS partial, count(*) FILTER (WHERE coalesce(parser_warnings, '') <> '') AS with_warnings, count(*) FILTER (WHERE format_override IS NOT NULL) AS overridden, pg_size_pretty(sum(file_size)) AS bytes FROM ingestion_jobs GROUP BY 1, 2 ORDER BY 1, 2;"
         q "Detection disagreed with the final format" "SELECT detected_file_type, format_override, final_file_type, count(*) FROM ingestion_jobs WHERE final_file_type IS DISTINCT FROM detected_file_type GROUP BY 1, 2, 3 ORDER BY 4 DESC;"
         q "Parser warnings, grouped (first 300 chars)" "SELECT coalesce(final_file_type, tool_name) AS format, left(parser_warnings, 300) AS warning, count(*) FROM ingestion_jobs WHERE coalesce(parser_warnings, '') <> '' GROUP BY 1, 2 ORDER BY 3 DESC LIMIT 60;"
+        # v2.418.0 — the lines parsers did not interpret, as REDACTED shapes
+        # (app/services/line_shapes.py: addresses, names, credentials, hashes,
+        # paths and flag values already replaced at import).  Scrubbed again
+        # with the rest of the bundle.  This is what replaces real samples.
+        q "Lines not interpreted, by shape (redacted at import)" "SELECT coalesce(final_file_type, tool_name) AS format, s->>'kind' AS kind, sum((s->>'count')::int) AS lines, count(DISTINCT j.id) AS imports, left(s->>'shape', 240) AS shape FROM ingestion_jobs j, LATERAL jsonb_array_elements(coalesce(j.uninterpreted_lines::jsonb->'shapes', '[]'::jsonb)) AS s GROUP BY 1, 2, 5 ORDER BY 3 DESC LIMIT 200;"
         q "Scans by tool" "SELECT tool_name, scan_type, time_source, count(*) AS scans, count(command_line) AS with_command_line, count(version) AS with_version, count(start_time) AS with_start_time FROM scans GROUP BY 1, 2, 3 ORDER BY 4 DESC;"
 
         echo ""; echo "##### Hosts and ports"
@@ -486,7 +491,9 @@ Files:
 - versions_and_schema.txt deployed versions, ingestion settings, Alembic state, table sizes
 - ingestion.txt           ingestion queue, failed-job tracebacks, parse errors
 - parser_audit.txt        per-format field coverage (counts only): what each parser
-                          extracts, what lands only in raw blobs, what stays empty
+                          extracts, what lands only in raw blobs, what stays empty;
+                          and the lines parsers did not interpret, as redacted
+                          shapes (values replaced by <IP>, <HOST>, <VALUE>…)
 - logs_<service>.txt      backend, worker, report-worker, frontend (nginx), db
 - health.txt              reachability through nginx and the internal DB probe
 - error_analysis.txt      error counts, tracebacks, parser skip lines, auth events

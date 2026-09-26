@@ -66,6 +66,8 @@ What that takes, beyond "which hosts match X":
 | "What has nobody picked up?" | `assist_list_findings?unowned=true`, `assist_count_hosts` with `assigned:none` |
 | "What do we already know about this host?" | `assist_get_host_notes` (paged — read `has_more`) |
 | "Every web interface on this host, not just the ten on host detail?" | `assist_list_host_web_interfaces` — the continuation when `web_interfaces_truncated` is set (v2.343.3) |
+| "What did NetExec find on this host, and was it read right?" | `assist_list_host_access` — each result's interpreted fields beside the tool's line (v2.418.0) |
+| "Which lines did BlueStick not read?" | `assist_list_uninterpreted_lines` — per import, as redacted shapes (v2.418.0); see `documentation/PARSE_AUDIT_BRIEF.md` |
 | "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
 | "How much of this did we actually assess?" | `assist_get_coverage` |
 | "Has anyone tested this host, and what happened?" | `assist_get_host_testing` |
