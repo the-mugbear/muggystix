@@ -1,4 +1,4 @@
-import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertCircle,
   Check,
@@ -46,6 +46,19 @@ export interface HostCommandBarProps {
    *  For fields whose stored value isn't what an operator knows them by —
    *  `scan:` takes a numeric id, but they came here knowing the filename. */
   valueLabels?: Record<string, Record<string, string>>;
+  /** Other conditions (chips, a view) narrow the list too.  The query's own
+   *  match count then differs from the page total, so it is not shown. */
+  otherConditions?: boolean;
+  /** A starter query REPLACES the applied conditions, as a view does.  It used
+   *  to be ANDed with them, so "SMB signing not required" under the project's
+   *  FTP default listed FTP hosts only. */
+  onApplyTemplate?: (q: string, label: string) => void;
+}
+
+export interface HostCommandBarHandle {
+  /** Start a condition in the bar (`cve:`) and focus it — the filter catalog's
+   *  query-only fields. */
+  startCondition: (token: string) => void;
 }
 
 const COMMIT_DEBOUNCE_MS = 450;
@@ -62,17 +75,20 @@ function optionLabel(s: QuerySuggestion): string {
  * and template dropdowns, pin-to-view, copy-link, and a syntax-help popover.
  * Bare text still works (the backend maps it to the legacy free-text search).
  */
-export default function HostCommandBar({
+const HostCommandBar = forwardRef<HostCommandBarHandle, HostCommandBarProps>(function HostCommandBar({
   value,
   onChange,
   onPin,
   onCopyLink,
   valueSuggestions,
   valueLabels,
-}: HostCommandBarProps) {
+  otherConditions = false,
+  onApplyTemplate,
+}, ref) {
   const [draft, setDraft] = useState(value);
   const [focused, setFocused] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
   // Highlighted suggestion for keyboard navigation (-1 = none). Reset whenever
   // the draft changes so a fresh suggestion list starts unhighlighted.
   const [activeIndex, setActiveIndex] = useState(-1);
@@ -212,7 +228,11 @@ export default function HostCommandBar({
     inputRef.current?.focus();
   };
 
+  useImperativeHandle(ref, () => ({ startCondition: appendToken }));
+
   const applyQuery = (q: string) => {
+    // A whole query from history: do not re-offer the value it ends with.
+    appliedText.current = q;
     setDraft(q);
     setCaret(q.length);
     onChange(q);
@@ -222,6 +242,13 @@ export default function HostCommandBar({
 
   const invalid = !!trimmedDraft && validationFresh && !!validation && !validation.valid;
   const showSuggest = focused && !dismissed && suggestions.length > 0;
+  // "needs at least 3 characters" and "Expected a value after 'cve:'" are not
+  // mistakes while the term is still being typed — they showed after the
+  // second keystroke, or the moment the filter catalog started `cve:`.  Said
+  // once the bar loses focus; every other error is said at once.
+  const tooShortWhileTyping = focused
+    && /at least \d+ characters|expected a value/i.test(validation?.error?.message ?? '');
+  const showInvalidMessage = invalid && !!validation?.error && !tooShortWhileTyping;
 
   return (
     <div className="space-y-xs">
@@ -277,7 +304,7 @@ export default function HostCommandBar({
             title="Search hosts or write a query. Press / to focus."
             aria-label="Host query"
             aria-keyshortcuts="/"
-            aria-invalid={invalid ? true : undefined}
+            aria-invalid={invalid && !tooShortWhileTyping ? true : undefined}
             role="combobox"
             aria-expanded={showSuggest}
             aria-controls={listboxId}
@@ -290,24 +317,29 @@ export default function HostCommandBar({
           <div className="absolute right-sm top-1/2 flex -translate-y-1/2 items-center gap-xs">
             {validating && <Loader2 className="size-3.5 animate-spin text-muted-foreground" aria-hidden />}
             {!validating && trimmedDraft && validationFresh && validation?.valid && (
+              // The validator counts the query text alone.  With other
+              // conditions applied that number differed from the page total
+              // beside it ("162" vs "62 matching hosts"), so it is shown only
+              // when the query is the whole filter.  Neutral: a valid query is
+              // not an alert (it was the pink-red `secondary`).
               <Badge
-                variant="secondary"
+                variant="muted"
                 className="gap-xxs"
-                // The validator counts the query text alone; the table total
-                // below also applies the structured filters, so they can differ.
-                title="Hosts matching this query on its own — other active filters narrow the list further"
+                title={otherConditions
+                  ? 'Valid query. The host count below applies it together with the other conditions.'
+                  : 'Valid query — hosts it matches'}
               >
                 <Check className="size-3" aria-hidden />
-                {/* null = the backend skipped the count (statement timeout); show
-                    a dash rather than a misleading "0 matches". */}
-                {validation.match_count != null ? (
+                {otherConditions ? null : validation.match_count != null ? (
                   validation.match_count
                 ) : (
+                  /* null = the backend skipped the count (statement timeout);
+                     a dash rather than a misleading "0 matches". */
                   <span title="Match count unavailable — query too expensive to count live">—</span>
                 )}
               </Badge>
             )}
-            {!validating && invalid && (
+            {!validating && invalid && !tooShortWhileTyping && (
               <AlertCircle className="size-4 text-destructive" aria-hidden />
             )}
             {!validating && validationError && trimmedDraft && (
@@ -416,7 +448,7 @@ export default function HostCommandBar({
           </Popover>
 
           {/* Templates */}
-          <Popover>
+          <Popover open={templatesOpen} onOpenChange={setTemplatesOpen}>
             <PopoverTrigger asChild>
               <Button variant="outline" size="sm" aria-label="Query templates">
                 <Sparkles className="size-4" aria-hidden />
@@ -424,14 +456,25 @@ export default function HostCommandBar({
               </Button>
             </PopoverTrigger>
             <PopoverContent className="w-96 p-0" align="end">
-              <div className="border-b border-border px-sm py-xs text-metadata font-semibold">Starter queries</div>
+              <div className="border-b border-border px-sm py-xs">
+                <div className="text-metadata font-semibold">Starter queries</div>
+                {onApplyTemplate && (
+                  <div className="text-caption text-muted-foreground">Choosing one replaces the conditions applied now.</div>
+                )}
+              </div>
               <ul className="max-h-72 overflow-auto py-xxs">
                 {(schema?.examples ?? []).map((ex) => (
                   <li key={ex.q}>
                     <button
                       type="button"
                       className="w-full px-sm py-xs text-left hover:bg-accent"
-                      onClick={() => applyQuery(ex.q)}
+                      onClick={() => {
+                        if (!onApplyTemplate) { applyQuery(ex.q); return; }
+                        setDraft(ex.q);
+                        setCaret(ex.q.length);
+                        setTemplatesOpen(false);
+                        onApplyTemplate(ex.q, ex.label);
+                      }}
                     >
                       <div className="text-metadata font-medium">{ex.label}</div>
                       <div className="truncate font-mono text-caption text-muted-foreground">{ex.q}</div>
@@ -520,7 +563,7 @@ export default function HostCommandBar({
         </div>
       </div>
 
-      {invalid && validation?.error && (
+      {showInvalidMessage && validation?.error && (
         <p className="flex items-center gap-xs text-caption text-destructive">
           <AlertCircle className="size-3.5 shrink-0" aria-hidden />
           <span className="truncate">{validation.error.message}</span>
@@ -528,4 +571,6 @@ export default function HostCommandBar({
       )}
     </div>
   );
-}
+});
+
+export default HostCommandBar;

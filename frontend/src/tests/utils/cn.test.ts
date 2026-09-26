@@ -27,3 +27,20 @@ describe('cn — custom font-size vs text-color', () => {
     expect(cn('text-caption', 'text-body')).toBe('text-body');
   });
 });
+
+describe('cn — named spacing scale', () => {
+  // Regression: CardContent's `p-md pt-0` survived a caller's `p-sm`, so the
+  // host inspector's facts box had no top padding.
+  it("a caller's padding replaces the primitive's default, pt-0 included", () => {
+    expect(cn('p-md pt-0', 'space-y-sm p-sm')).toBe('space-y-sm p-sm');
+  });
+
+  it('dedupes named gaps and margins', () => {
+    expect(cn('gap-sm', 'gap-md')).toBe('gap-md');
+    expect(cn('mt-xs', 'mt-lg')).toBe('mt-lg');
+  });
+
+  it('keeps independent axes', () => {
+    expect(cn('px-sm', 'py-md')).toBe('px-sm py-md');
+  });
+});

@@ -34,7 +34,7 @@ export const HOST_URL_PARAMS = [
   'has_exploit_available', 'has_test_execution',
   'has_web_interface', 'tech', 'follow_status', 'follow',
   'with_notes_only', 'with_notes', 'assigned_to', 'sort_by', 'sort_order',
-  'orgs', 'asns', 'countries',
+  'orgs', 'asns', 'countries', 'weaknesses', 'checks',
 ];
 
 export const urlCarriesHostFilters = (urlParams: URLSearchParams): boolean =>
@@ -58,6 +58,8 @@ const LIST_PARAMS: Array<[string, keyof HostFilterOptions]> = [
   ['subnet_labels', 'subnetLabels'],
   ['sites', 'sites'],
   ['tech', 'tech'],
+  ['weaknesses', 'weaknesses'],
+  ['checks', 'checks'],
 ];
 
 // Repeated params (?orgs=A&orgs=B) — read every value, never comma-split: the

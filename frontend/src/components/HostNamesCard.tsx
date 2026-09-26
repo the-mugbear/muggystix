@@ -8,6 +8,7 @@ import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
 import { InspectorSection } from './host-inspector/InspectorSection';
 import HostDnsRecordsCard from './HostDnsRecordsCard';
+import { TimeAgo } from './TimeAgo';
 
 /**
  * HostNamesCard — every name bound to this address (v5.193.0).
@@ -25,15 +26,6 @@ import HostDnsRecordsCard from './HostDnsRecordsCard';
 interface HostNamesCardProps {
   hostId: number;
 }
-
-const fmtTime = (iso: string | null): string => {
-  if (!iso) return '—';
-  try {
-    return new Date(iso).toLocaleString();
-  } catch {
-    return iso;
-  }
-};
 
 const BindingRow: React.FC<{ b: HostNameBinding }> = ({ b }) => (
   <li className="flex items-center gap-xs py-2xs">
@@ -53,8 +45,8 @@ const BindingRow: React.FC<{ b: HostNameBinding }> = ({ b }) => (
         </Badge>
       ))}
     </span>
-    <span className="shrink-0 text-caption text-muted-foreground" title="Last observed">
-      {fmtTime(b.last_observed)}
+    <span className="shrink-0 text-caption text-muted-foreground">
+      <TimeAgo value={b.last_observed} absoluteAfterDays={30} />
     </span>
   </li>
 );
@@ -142,8 +134,11 @@ const HostNamesCard: React.FC<HostNamesCardProps> = ({ hostId }) => {
         )}
         {data && data.other.length > 0 && (
           <section>
-            <h4 className="mb-2xs text-caption font-medium uppercase tracking-wide text-muted-foreground">
-              Served here (HTTP / certificate / scanner / PTR)
+            {/* Each row's badges say which evidence named it; the heading
+                listing every possible source repeated them (5.303.0). */}
+            <h4 className="mb-2xs text-caption font-medium uppercase tracking-wide text-muted-foreground"
+              title="Named by HTTP, a certificate, a scanner or a PTR record — the badges on each row say which">
+              Served here
             </h4>
             <ul className="divide-y divide-border">
               {data.other.map((b) => (

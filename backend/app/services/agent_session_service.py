@@ -936,12 +936,30 @@ def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None
     ]
     if not runs:
         return
+    liveness = runs_session_live(db, [(r.agent_session_id, r.agent_id) for r in runs])
+    for r, live in zip(runs, liveness):
+        r.session_live = live
+
+
+def runs_session_live(
+    db: Session, runs: "List[Tuple[Optional[int], Optional[int]]]",
+) -> "List[Optional[bool]]":
+    """For each in-progress run's ``(agent_session_id, agent_id)``: can
+    something still act on it?  True / False, or None when neither is known.
+
+    The ONE rule (v2.424.0 — Operations' Blocked strip had its own, which
+    missed a legacy run with no parent session and a session whose key had
+    run out, so the Runs list said "stalled" while Blocked listed nothing).
+    A run with a parent session is live while that session is active and its
+    key, or its renewal window, has not run out; a legacy run with no parent
+    falls back to its agent's keys — that is what authenticated it.  Two
+    grouped queries whatever the count."""
     now = datetime.now(timezone.utc)
 
     def _aware(t):
         return t if t is None or t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
 
-    session_ids = sorted({r.agent_session_id for r in runs if r.agent_session_id is not None})
+    session_ids = sorted({sid for sid, _ in runs if sid is not None})
     live_sessions: set = set()
     if session_ids:
         expiry = key_expiry_for_agent_sessions(db, session_ids)
@@ -953,7 +971,7 @@ def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None
             if (key_exp is not None and key_exp > now) or (renew is not None and renew > now):
                 live_sessions.add(s.id)
 
-    orphan_agents = sorted({r.agent_id for r in runs if r.agent_session_id is None and r.agent_id is not None})
+    orphan_agents = sorted({aid for sid, aid in runs if sid is None and aid is not None})
     live_agents: set = set()
     if orphan_agents:
         live_agents = {
@@ -970,11 +988,15 @@ def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None
             )
         }
 
-    for r in runs:
-        if r.agent_session_id is not None:
-            r.session_live = r.agent_session_id in live_sessions
-        elif r.agent_id is not None:
-            r.session_live = r.agent_id in live_agents
+    out: "List[Optional[bool]]" = []
+    for sid, aid in runs:
+        if sid is not None:
+            out.append(sid in live_sessions)
+        elif aid is not None:
+            out.append(aid in live_agents)
+        else:
+            out.append(None)
+    return out
 
 
 def _not_a_project_child(detail_agent_session_col):

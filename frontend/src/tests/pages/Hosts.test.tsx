@@ -236,7 +236,9 @@ describe('Hosts', () => {
     renderHosts();
     await screen.findAllByText('10.0.0.5');
     expect(screen.getAllByRole('img', { name: /^State: up/ }).length).toBeGreaterThan(0);
-    expect(screen.getByTestId('hosts-legend')).toHaveTextContent(/state unknown/);
+    // 5.303.0 — the key names only the states on the page.
+    expect(screen.getByTestId('hosts-legend')).toHaveTextContent(/up/);
+    expect(screen.getByTestId('hosts-legend')).not.toHaveTextContent(/state unknown/);
   });
 
   it('keeps both exports secondary and the query placeholder short', async () => {
@@ -599,20 +601,22 @@ describe('Hosts', () => {
 
     const notice = await screen.findByTestId('hosts-restored-notice');
     expect(notice).toHaveTextContent('Restored your last filters');
-    expect(within(notice).getByRole('button', { name: 'Clear' })).toBeInTheDocument();
 
     fireEvent.click(screen.getAllByRole('button', { name: /^Clear filter:/ })[0]);
     await waitFor(() => expect(screen.queryByTestId('hosts-restored-notice')).toBeNull());
   });
 
-  it('its Clear clears the restored filters', async () => {
+  // 5.303.0 — the notice lost its own "Clear": it sat beside the chips'
+  // "Clear filters", which does the same.  One reset control per strip.
+  it('the restored notice has no reset of its own; Clear filters clears them', async () => {
     sessionStorage.setItem(
       projectScopedKey('hostFiltersState'),
       JSON.stringify({ filters: { hasCriticalVulns: true } }),
     );
     renderHosts();
     const notice = await screen.findByTestId('hosts-restored-notice');
-    fireEvent.click(within(notice).getByRole('button', { name: 'Clear' }));
+    expect(within(notice.parentElement as HTMLElement).queryByRole('button', { name: 'Clear' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Clear filters' }));
     await waitFor(() => expect(screen.queryByTestId('hosts-restored-notice')).toBeNull());
     await waitFor(() => {
       const calls = mockedApi.getHosts.mock.calls;
@@ -714,7 +718,7 @@ describe('Hosts — streamlined table', () => {
     const { container } = renderHosts();
     await screen.findByText('10.9.0.41');
     expect(screen.getAllByText((_, el) => el?.tagName === 'DIV' && el.textContent === '2 open ports').length).toBeGreaterThan(0);
-    expect(screen.getByText(/guessed from its port number/)).toBeInTheDocument();
+    expect(screen.getByText(/guessed from the port/)).toBeInTheDocument();
     expect(screen.getByRole('combobox', { name: 'Review status filter' })).toBeInTheDocument();
     expect(container.querySelector('.rounded-panel.border.bg-card')).toBeNull();
   });

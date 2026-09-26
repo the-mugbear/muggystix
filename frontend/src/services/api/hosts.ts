@@ -214,6 +214,13 @@ export interface Host {
   /** v5.298.0 — issues (not scanner rows) per worst severity, and how many
    *  are misconfigurations; list rows only. */
   issue_counts?: { critical: number; high: number; medium: number; low: number; misconfiguration: number } | null;
+  /** v2.423.0 — the weakness / access flags the host carries (has: values:
+   *  smb_unsigned, eol, weak_tls…); list rows and detail. */
+  weakness_flags?: string[];
+  /** Detail only: each flag's readable name. */
+  weakness_labels?: Record<string, string>;
+  /** v2.423.0 — the misconfiguration checks recorded on the host; list rows. */
+  check_ids?: string[];
   primary_subnet?: string | null;
   primary_site?: string | null;
   // v2.344.0 — the three-state coverage on the list row (the detail card's
@@ -723,6 +730,9 @@ export const getHosts = async (params: {
   orgs?: string[];
   asns?: string[];
   countries?: string[];
+  // v2.423.0 — comma-separated weakness flags / check ids; OR within each.
+  weaknesses?: string;
+  checks?: string;
   // v5.0.0 — boolean query DSL; ANDs with the discrete filters above.
   q?: string;
   skip?: number;
@@ -1245,6 +1255,11 @@ export interface HostFilterData {
   orgs?: Array<{ name: string; host_count: number }>;
   asns?: Array<{ asn: number; as_name?: string | null; host_count: number }>;
   countries?: Array<{ country: string; host_count: number }>;
+  // v2.423.0 — every weakness / access flag (the DSL's has: values), counted
+  // under the other applied conditions; and the misconfiguration checks
+  // present in the project.
+  weaknesses?: Array<{ name: string; label: string; description: string; host_count: number }>;
+  checks?: Array<{ id: string; title: string; host_count: number }>;
 }
 
 export const getHostFilterData = async (params?: Record<string, string | boolean | number | string[] | undefined>, signal?: AbortSignal): Promise<HostFilterData> => {

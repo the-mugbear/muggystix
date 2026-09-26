@@ -45,6 +45,9 @@ export interface HostViewPickerProps {
   activeBuiltInId: string | null;
   /** Last view applied — named in the trigger once its filters were edited. */
   baseViewName: string | null;
+  /** The base view's filters are exactly what is applied (a starter query
+   *  not yet edited) — named as itself, not "· Modified". */
+  baseViewUnmodified?: boolean;
   /** Anything applied at all (query, filters, review status). */
   hasConditions: boolean;
   /** The applied view arrived as the project default, not by the operator's choice. */
@@ -73,6 +76,7 @@ export default function HostViewPicker({
   activeViewId,
   activeBuiltInId,
   baseViewName,
+  baseViewUnmodified = false,
   hasConditions,
   projectDefaultApplied,
   canSetProjectDefault,
@@ -94,7 +98,7 @@ export default function HostViewPicker({
   // The project default may be a colleague's view, which is not in MY saved
   // list — it is still the view that is applied, by the name it was given.
   const current = activeSaved?.name
-    ?? (activeViewId !== null || projectDefaultApplied ? baseViewName : null)
+    ?? (activeViewId !== null || projectDefaultApplied || baseViewUnmodified ? baseViewName : null)
     ?? activeBuiltIn?.name
     ?? (!hasConditions ? 'All hosts' : baseViewName ? `${baseViewName} · Modified` : 'Custom filters');
 
@@ -168,7 +172,9 @@ export default function HostViewPicker({
               None yet — apply some filters, then save them as a view.
             </p>
           )}
-          {savedViews.map((view) => (
+          {/* The project default is offered at the top already; listing it
+              again here read as two views of the same name. */}
+          {savedViews.filter((view) => !(view.is_project_default && projectDefaultName && onApplyProjectDefault)).map((view) => (
             <DropdownMenuItem key={view.id} onSelect={() => onApplyView(view)}>
               <Check className={view.id === activeViewId ? 'size-4 shrink-0' : 'size-4 shrink-0 opacity-0'} aria-hidden />
               <span className="min-w-0 flex-1 truncate">{view.name}</span>

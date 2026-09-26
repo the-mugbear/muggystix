@@ -26,6 +26,7 @@ import {
   exposureChips,
 } from '../../utils/portsOfInterest';
 import { matchedEndpoints, type EndpointMatchCriteria } from '../../utils/endpointMatch';
+import { matchedWeaknesses, type WeaknessMatchCriteria } from '../../utils/weaknessMatch';
 
 // Map a tag's palette key to a coloured dot.  Unknown / null colours
 // fall back to a neutral dot — the backend stores whatever string the
@@ -452,6 +453,14 @@ export interface UseHostColumnsOptions {
    * the risk-ranked chips alone never said why a "service ftp" row was listed.
    */
   endpointMatch?: EndpointMatchCriteria | null;
+  /** The weakness flags / checks the conditions name (`weaknessMatchCriteria`):
+   *  the Exposure cell names the ones the row carries. */
+  weaknessMatch?: WeaknessMatchCriteria | null;
+  /** Readable names for flags and checks (from the filter data). */
+  weaknessLabels?: { flag?: (f: string) => string | undefined; check?: (id: string) => string | undefined };
+  /** Mark hosts first seen this week "New".  Off when every row is new —
+   *  a badge on every row sets nothing apart. */
+  markNew?: boolean;
 }
 
 /**
@@ -491,6 +500,9 @@ export function useHostColumns({
   onOpen,
   onAddFilter,
   endpointMatch = null,
+  weaknessMatch = null,
+  weaknessLabels,
+  markNew = true,
 }: UseHostColumnsOptions): ColumnDef<Host>[] {
   return useMemo<ColumnDef<Host>[]>(
     () => [
@@ -518,7 +530,9 @@ export function useHostColumns({
                   because the whole row opens the inspector.  Without it the
                   identity looked like inert text and operators didn't know
                   it was the way in. */}
-              <div className="truncate font-medium text-foreground underline-offset-2 group-hover:underline" title={host.ip_address}>
+              {/* Never truncated (5.303.0): "192.168.0…" on every row hid the
+                  octet that tells the rows apart.  A long IPv6 wraps. */}
+              <div className="break-all font-medium text-foreground underline-offset-2 group-hover:underline" title={host.ip_address}>
                 {host.ip_address}
               </div>
             </div>
@@ -548,7 +562,7 @@ export function useHostColumns({
           );
           const work = testWorkState(host);
           return (
-            <div className="min-w-0">
+            <div className="relative min-w-0">
               <div className="flex min-w-0 items-center gap-xs">
                 <StateDot state={host.state} />
                 {opener}
@@ -566,8 +580,10 @@ export function useHostColumns({
                   </span>
                 )}
                 {/* Copy / open show on row hover or keyboard focus only — two
-                    icons on every row were noise. */}
-                <div className="ml-auto flex shrink-0 items-center gap-xxs opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
+                    icons on every row were noise.  They float over the cell
+                    (5.303.0): in the flow, invisible, they still took ~50px
+                    and the IP beside them truncated. */}
+                <div className="absolute right-0 top-0 flex items-center gap-xxs rounded-control bg-background opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100">
                   <CopyIpButton ip={host.ip_address} />
                   <ChevronRight
                     className="size-4 text-muted-foreground transition-transform group-hover:translate-x-0.5 group-hover:text-foreground"
@@ -575,10 +591,12 @@ export function useHostColumns({
                   />
                 </div>
               </div>
-              {/* Hostname and OS share the second line (was three lines). */}
-              <div className="flex min-w-0 items-baseline gap-xs pl-sm text-caption">
+              {/* Hostname and OS share the second line (was three lines) when
+                  both fit; a long hostname keeps the line and the OS wraps
+                  below it (5.303.0 — both were cut to "host-002…  Window…"). */}
+              <div className="flex min-w-0 flex-wrap items-baseline gap-x-xs pl-sm text-caption">
                 {host.hostname ? (
-                  <span className="min-w-0 truncate text-foreground/80" title={host.hostname}>
+                  <span className="min-w-0 max-w-full truncate text-foreground/80" title={host.hostname}>
                     {host.hostname}
                   </span>
                 ) : (
@@ -592,7 +610,7 @@ export function useHostColumns({
                         ? `Filter to hosts running ${host.os_name} (OS confidence ${host.os_accuracy}%)`
                         : `Filter to hosts running ${host.os_name}`
                     }
-                    className="min-w-0 max-w-[45%] shrink-0 truncate text-muted-foreground"
+                    className="min-w-0 max-w-full truncate text-muted-foreground"
                   >
                     {host.os_name}
                   </PivotValue>
@@ -633,7 +651,11 @@ export function useHostColumns({
         // UX review 2026-09-24 — the four sized columns took 790px and the
         // table 1060px, wider than the page at a 1246px window; now 680px,
         // and the table fits a ~900px content column (Host gets the rest).
-        size: 140,
+        // 5.303.0 — 615px with the checkbox, and no table min-width: at a
+        // ~1130px window the floor made the PAGE scroll sideways (the wrapper
+        // cannot scroll — the header is sticky to the window) while the Host
+        // column truncated every IP.
+        size: 125,
         cell: ({ row }) => {
           const host = row.original;
           const lastSeenAge = relativeAge(host.last_seen);
@@ -652,12 +674,12 @@ export function useHostColumns({
                   <ScopeCoverageLabel host={host} />
                 </span>
               )}
-              {(host.primary_site || isNewHost(host.first_seen)) && (
+              {(host.primary_site || (markNew && isNewHost(host.first_seen))) && (
                 <span className="flex min-w-0 items-center gap-xs">
                   {host.primary_site && (
                     <span className="min-w-0 truncate" title={host.primary_site}>{host.primary_site}</span>
                   )}
-                  {isNewHost(host.first_seen) && <Badge variant="info" className="shrink-0">New</Badge>}
+                  {markNew && isNewHost(host.first_seen) && <Badge variant="info" className="shrink-0">New</Badge>}
                 </span>
               )}
             </div>
@@ -667,7 +689,7 @@ export function useHostColumns({
       {
         id: 'exposure',
         header: 'Exposure',
-        size: 180,
+        size: 165,
         cell: ({ row }) => {
           // Open-port count + the host's risk-ranked high-value services
           // (ports of interest), replacing the arbitrary first-3-services
@@ -678,28 +700,53 @@ export function useHostColumns({
           const openCount = host.ports?.filter((port) => port.state === 'open').length ?? 0;
           const chips = exposureChips(host.ports);
           const matched = matchedEndpoints(host.ports, endpointMatch);
+          const weaknesses = matchedWeaknesses(host, weaknessMatch, weaknessLabels);
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
-              {/* Why this row is in the list when an endpoint condition is
-                  applied: the port(s) that satisfy it, ahead of the
-                  risk-ranked chips (which may not include it at all). */}
-              {matched.length > 0 && (
+              {/* Why this row is in the list: the weakness a has: / check:
+                  condition matched (5.303.0 — under "SMB signing not required"
+                  the row only named a port), and the port(s) an endpoint
+                  condition matched, ahead of the risk-ranked chips (which may
+                  not include it at all).  One "Matched" line for both. */}
+              {(weaknesses.length > 0 || matched.length > 0) && (
                 <div
                   className="flex min-w-0 flex-wrap items-center gap-xxs"
-                  data-testid="endpoint-match"
-                  title={`Matches the endpoint condition: ${matched.map((m) => (m.state ? `${m.label} (${m.state})` : m.label)).join(', ')}`}
+                  title={`Matches: ${[
+                    ...weaknesses.map((w) => w.label),
+                    ...matched.map((m) => (m.state ? `${m.label} (${m.state})` : m.label)),
+                  ].join(', ')}`}
                 >
                   <span className="text-caption text-muted-foreground">Matched</span>
-                  {matched.slice(0, 2).map((m) => (
-                    <span
-                      key={m.key}
-                      className="inline-flex max-w-full items-center rounded-chip border border-info/40 bg-info/10 px-xs py-px font-mono text-caption text-info"
-                    >
-                      <span className="truncate">{m.state ? `${m.label} · ${m.state}` : m.label}</span>
+                  {weaknesses.length > 0 && (
+                    <span className="contents" data-testid="weakness-match">
+                      {weaknesses.slice(0, 2).map((w) => (
+                        // A phrase, so it wraps rather than truncating ("SMB signing not req…").
+                        <span
+                          key={w.key}
+                          className="max-w-full break-words rounded-chip border border-info/40 bg-info/10 px-xs py-px text-caption text-info"
+                        >
+                          {w.label}
+                        </span>
+                      ))}
+                      {weaknesses.length > 2 && (
+                        <span className="text-caption text-muted-foreground">+{weaknesses.length - 2}</span>
+                      )}
                     </span>
-                  ))}
-                  {matched.length > 2 && (
-                    <span className="text-caption text-muted-foreground">+{matched.length - 2}</span>
+                  )}
+                  {matched.length > 0 && (
+                    <span className="contents" data-testid="endpoint-match">
+                      {matched.slice(0, 2).map((m) => (
+                        <span
+                          key={m.key}
+                          className="inline-flex max-w-full items-center rounded-chip border border-info/40 bg-info/10 px-xs py-px font-mono text-caption text-info"
+                        >
+                          <span className="truncate">{m.state ? `${m.label} · ${m.state}` : m.label}</span>
+                        </span>
+                      ))}
+                      {matched.length > 2 && (
+                        <span className="text-caption text-muted-foreground">+{matched.length - 2}</span>
+                      )}
+                    </span>
                   )}
                 </div>
               )}
@@ -743,7 +790,9 @@ export function useHostColumns({
       {
         id: 'attention',
         header: 'Attention',
-        size: 170,
+        // Not 150: that is tanstack's default size, which DataTableShell reads
+        // as "unsized" — the column took half the spare width.
+        size: 155,
         cell: ({ row }) => {
           // v5.270.0 — one sentence-case line for the most important reason,
           // then the others spelled out in quiet text ("1 high · 1 finding"),
@@ -773,7 +822,7 @@ export function useHostColumns({
       {
         id: 'review',
         header: 'Review',
-        size: 150,
+        size: 130,
         cell: ({ row }) => {
           // v5.270.0 — the column states where the review stands, in quiet
           // text; the action to change it appears on row hover or keyboard
@@ -803,11 +852,13 @@ export function useHostColumns({
           ].filter(Boolean).join('\n');
           return (
             <div className="flex w-full min-w-0 flex-col gap-xxs">
-              <div className="flex min-w-0 items-center gap-xs">
+              {/* The change control floats over the cell on hover (5.303.0):
+                  in the flow, invisible, it cut "Reviewed" to "Revie…". */}
+              <div className="relative min-w-0">
                 <span
                   data-review-state={state.kind}
                   className={cn(
-                    'min-w-0 truncate text-metadata',
+                    'block break-words text-metadata',
                     state.kind === 'in_review' && 'font-medium text-warning',
                     state.kind === 'reviewed' && 'font-medium text-success',
                     state.kind === 'none' && 'text-muted-foreground',
@@ -816,14 +867,16 @@ export function useHostColumns({
                   {state.kind === 'reviewed' && <Check className="mr-xxs inline size-3" aria-hidden />}
                   {state.label}
                 </span>
-                <FollowMenu
-                  host={host}
-                  updating={updatingHostId === host.id}
-                  onChange={(status) => onFollowChange(host.id, status)}
-                />
+                <span className="absolute right-0 top-0 rounded-control bg-background opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 has-[[data-state=open]]:opacity-100">
+                  <FollowMenu
+                    host={host}
+                    updating={updatingHostId === host.id}
+                    onChange={(status) => onFollowChange(host.id, status)}
+                  />
+                </span>
               </div>
               {detail && (
-                <span className="line-clamp-2 text-caption text-muted-foreground" title={titles || undefined}>
+                <span className="line-clamp-2 break-words text-caption text-muted-foreground" title={titles || undefined}>
                   {detail}
                 </span>
               )}
@@ -839,6 +892,6 @@ export function useHostColumns({
     // return to the inspector with stale list context that didn't
     // match the current filter set, while mouse row-click (which
     // uses the live callback) worked correctly.
-    [updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch],
+    [updatingHostId, onFollowChange, onOpen, onAddFilter, endpointMatch, weaknessMatch, weaknessLabels, markNew],
   );
 }

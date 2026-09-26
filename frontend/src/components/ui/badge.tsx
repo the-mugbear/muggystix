@@ -33,10 +33,11 @@ const badgeVariants = cva(
         success: 'border-transparent bg-success text-success-foreground',
         warning: 'border-transparent bg-warning text-warning-foreground',
         info: 'border-transparent bg-info text-info-foreground',
-        'severity-critical': 'border-destructive/30 bg-destructive text-destructive-foreground shadow-[inset_3px_0_0_hsl(var(--destructive-foreground)/0.42)]',
-        'severity-high': 'border-warning/35 bg-warning text-warning-foreground shadow-[inset_3px_0_0_hsl(var(--warning-foreground)/0.36)]',
-        'severity-medium': 'border-info/30 bg-info text-info-foreground shadow-[inset_3px_0_0_hsl(var(--info-foreground)/0.36)]',
-        'severity-low': 'border-success/30 bg-success text-success-foreground shadow-[inset_3px_0_0_hsl(var(--success-foreground)/0.36)]',
+        // 5.304.0 — severity's own ramp (`sev-*`), not the semantic colours.
+        'severity-critical': 'border-sev-critical/30 bg-sev-critical text-sev-critical-foreground shadow-[inset_3px_0_0_hsl(var(--sev-critical-foreground)/0.42)]',
+        'severity-high': 'border-sev-high/35 bg-sev-high text-sev-high-foreground shadow-[inset_3px_0_0_hsl(var(--sev-high-foreground)/0.36)]',
+        'severity-medium': 'border-sev-medium/30 bg-sev-medium text-sev-medium-foreground shadow-[inset_3px_0_0_hsl(var(--sev-medium-foreground)/0.36)]',
+        'severity-low': 'border-sev-low/30 bg-sev-low text-sev-low-foreground shadow-[inset_3px_0_0_hsl(var(--sev-low-foreground)/0.36)]',
         // Info is a badge like the others (v5.288.0) — it was `muted`, which
         // read as plain text beside the solid severity chips.
         'severity-info': 'border-border bg-muted text-muted-foreground shadow-[inset_3px_0_0_hsl(var(--muted-foreground)/0.45)]',

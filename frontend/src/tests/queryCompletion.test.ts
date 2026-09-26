@@ -106,6 +106,17 @@ describe('fieldSuggestions', () => {
     expect(rows.find((r) => r.display === 'svc:')?.detail).toMatch(/^alias of service:/);
     expect(run('title').map((r) => r.display)).toEqual(['webtitle:']);
   });
+
+  // UX review 2026-09-25 — "wri" offered nothing and became a text search
+  // that matched no host; a plain word now finds a described value by name
+  // or meaning.
+  it('a plain word finds described enum values by value or description', () => {
+    expect(run('web').map((r) => r.display)).toContain('has:web');
+    expect(run('interface').map((r) => r.insert)).toEqual(['has:web']);
+    // Undescribed values (critical) are not guessed at; one letter is too little.
+    expect(run('crit').map((r) => r.display)).not.toContain('has:critical');
+    expect(run('w').map((r) => r.display)).not.toContain('has:web');
+  });
 });
 
 describe('valueSuggestions', () => {

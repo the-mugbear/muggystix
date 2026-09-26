@@ -38,6 +38,10 @@ export interface ProjectCoverageResponse {
    *  Zero when the project has no scopes declared (there's nothing
    *  to be outside of). */
   hosts_outside_scope: number;
+  /** v2.424.0 — with hosts_outside_scope, the three coverage states
+   *  (`scope:subnet` / `scope:name` / `scope:none`); they add up to total_hosts. */
+  hosts_in_subnet_scope?: number;
+  hosts_name_scope_only?: number;
 }
 
 

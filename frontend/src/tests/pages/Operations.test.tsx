@@ -6,7 +6,7 @@
  * the agent-sessions calls, and Needs Attention surfaces pending
  * plans independently of the toggle.
  */
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 
 // Override the global setupTests.ts react-router-dom mock so useNavigate
@@ -115,6 +115,8 @@ const baseCoverage = {
     },
   ],
   hosts_outside_scope: 12,
+  hosts_in_subnet_scope: 128,
+  hosts_name_scope_only: 2,
 };
 
 const baseSession = {
@@ -194,15 +196,17 @@ describe('Operations page', () => {
     // Coverage tiles still render their values.
     expect(screen.getByText('87')).toBeInTheDocument(); // hosts_with_plan_entry
     expect(screen.getByText('23')).toBeInTheDocument(); // hosts_with_execution_result
-    expect(screen.getByText('12')).toBeInTheDocument(); // hosts_outside_scope
-    // Scope-coverage row.
-    expect(screen.getByText('Internal /24')).toBeInTheDocument();
-    // v4.59.0 (NEW I) — pre-fix asserted on "16.4%"; the page now
-    // renders the scope-row tail as "<discovered_in_scope> hosts
-    // discovered" without surfacing the raw percent.  Pin the
-    // host-count instead — that's the operator-facing signal that
-    // survived the redesign.
-    expect(screen.getByText(/42 hosts discovered/)).toBeInTheDocument();
+    // 5.304.0 — the three coverage states add up to every host (128 + 2 +
+    // 12 = 142), each opening its own list; no scope names.
+    const scopeLine = screen.getByText('Scope').parentElement as HTMLElement;
+    expect(within(scopeLine).getByRole('link', { name: /128 in scope subnets/ }))
+      .toHaveAttribute('href', expect.stringContaining('scope%3Asubnet'));
+    expect(within(scopeLine).getByRole('link', { name: /2 reached only through an in-scope name/ }))
+      .toHaveAttribute('href', expect.stringContaining('scope%3Aname'));
+    expect(within(scopeLine).getByRole('link', { name: /12 outside scope/ }))
+      .toHaveAttribute('href', expect.stringContaining('scope%3Anone'));
+    expect(scopeLine).toHaveTextContent('1 subnet, 256 addresses');
+    expect(screen.queryByText('Internal /24')).not.toBeInTheDocument();
   });
 
   it('surfaces a pending-review plan in the Pending approvals queue', async () => {
@@ -239,12 +243,14 @@ describe('Operations page', () => {
       expect(before(runs, state)).toBe(true);
     });
 
-    it('with nothing waiting, the approvals empty state does not push My work down', async () => {
+    // 5.304.0 — with nothing waiting there is no approvals section at all: a
+    // heading over "Nothing needs your approval right now" said nothing.
+    it('with nothing waiting, there is no approvals section', async () => {
       mockedApi.getTestPlans.mockResolvedValue([]);
       renderPage();
-      const myWork = await screen.findByText('My work');
-      const approvals = await screen.findByRole('heading', { name: 'Needs your approval' });
-      expect(before(myWork, approvals)).toBe(true);
+      await screen.findByText('My work');
+      expect(screen.queryByRole('heading', { name: 'Needs your approval' })).toBeNull();
+      expect(screen.queryByText(/Nothing needs your approval/)).toBeNull();
     });
   });
 
@@ -424,7 +430,8 @@ describe('Operations page', () => {
       const link = await screen.findByRole('link', { name: /3 new hosts/ });
       const q = new URLSearchParams(link.getAttribute('href')!.split('?')[1]).get('q');
       expect(q).toBe(`firstseen:"${since.last_viewed_at}..${since.as_of}"`);
-      expect(screen.getByRole('link', { name: /2 new imports/ })).toHaveAttribute('href', '/scans');
+      expect(screen.getByRole('link', { name: /2 new imports/ }))
+        .toHaveAttribute('href', `/scans?since=${encodeURIComponent(since.last_viewed_at)}`);
     });
 
     // Blockers — stopped work, each with the action that unblocks it.
@@ -482,11 +489,12 @@ describe('Operations page', () => {
       ...extra,
     });
 
-    it('opens with one sentence of what is waiting, from the same workbench payload', async () => {
+    // 5.304.0 — yours, then the team's, each named for what it is.
+    it('opens with what is waiting on you, then across the team, from the same workbench payload', async () => {
       mockedApi.getWorkbench.mockResolvedValue(wb({}));
       renderPage();
       expect(await screen.findByText(
-        '1 plan awaiting your approval, 6 items in your queue (1 overdue) and 4 untouched hosts worth a look.',
+        'You have 6 items in your queue (1 overdue) and 1 plan to approve. Across the team: 4 unreviewed hosts are worth a look.',
       )).toBeInTheDocument();
     });
 

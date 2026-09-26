@@ -18,6 +18,8 @@ export interface VulnerabilityStats {
   low: number;
   info: number;
   hosts_with_vulnerabilities: number;
+  /** v2.424.0 — distinct hosts per severity: what a severity drill-down opens. */
+  hosts_by_severity?: Partial<Record<'critical' | 'high' | 'medium' | 'low' | 'info', number>>;
 }
 
 // The response also carries recent_scans, subnet_stats and note_activity
@@ -235,6 +237,8 @@ export interface InvestigateRow {
      *  collect = evidence is missing first. */
     kind: 'review' | 'collect';
     text: string;
+    /** v2.424.0 — says nothing the queue does not ("take it into review"). */
+    generic?: boolean;
   };
 }
 

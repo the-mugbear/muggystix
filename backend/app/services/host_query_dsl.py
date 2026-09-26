@@ -687,6 +687,16 @@ _FIELD_SPECS: List[FieldSpec] = [
     FieldSpec("site", _b_site, value_source="site",
               description="Site the host’s subnet belongs to. `site:none` is a host in a "
                           "scoped subnet that carries no site (Posture’s “Unassigned”)."),
+    # v2.424.0 — the three coverage states, so Operations' scope line opens
+    # exactly the hosts it counts.
+    FieldSpec("scope", lambda c, v: P.scope_coverage_predicate(v, c.project_id), value_source="enum",
+              enum_values=list(P.SCOPE_COVERAGE_STATES),
+              enum_descriptions={
+                  "subnet": "In a scope subnet.",
+                  "name": "In no scope subnet, but an in-scope name currently resolves to it.",
+                  "none": "Outside scope — no scope subnet, no in-scope name.",
+              },
+              description="Scope coverage: subnet, name (reached only through an in-scope name) or none."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any."),
     FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
@@ -887,9 +897,9 @@ EXAMPLES: List[dict] = [
     {"label": "Critical observations, not tested", "q": "has:critical AND NOT has:tested"},
     # The /operations "not yet in any plan" coverage gap, as a query.
     {"label": "Not in any test plan", "q": "NOT has:planned"},
-    # Provenance: what did we touch that isn't registered to the client?
-    {"label": "Not registered to the client", "q": 'NOT org:"Acme Corp"'},
-    {"label": "Registered outside the US", "q": "NOT country:US"},
+    # Provenance ("not registered to the client") is per project — see
+    # ``provenance_examples``.  A fixed `NOT org:"Acme Corp"` matched every
+    # host of every real project (v2.423.0).
     {"label": "Log4Shell reported (CVE-2021-44228)", "q": 'cve:CVE-2021-44228 OR vuln:"log4j"'},
     {"label": "Critical, with an exploit reported", "q": "has:critical AND has:exploit"},
     {"label": "Windows RDP, not tagged test", "q": "os:windows port:3389 AND NOT tag:test"},
@@ -903,3 +913,36 @@ EXAMPLES: List[dict] = [
     {"label": "Local admin access or a writable share", "q": "has:local_admin OR has:writable_share"},
     {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
 ]
+
+
+def provenance_examples(db: Session, project_id: int) -> List[dict]:
+    """"What did we touch that isn't the client's?" — built from the project's
+    own RDAP data: the registered owner and country holding the most hosts.
+    Empty when the project has no attribution (the query would mean nothing)."""
+    from sqlalchemy import func
+    from app.db import models
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    def top(column):
+        hosts = func.count(func.distinct(HostNetworkAttribution.host_id))
+        row = (
+            db.query(column, hosts)
+            .select_from(NetworkAttribution)
+            .join(HostNetworkAttribution, HostNetworkAttribution.attribution_id == NetworkAttribution.id)
+            .join(models.Host, models.Host.id == HostNetworkAttribution.host_id)
+            .filter(models.Host.project_id == project_id, column.isnot(None), column != "")
+            .group_by(column)
+            .order_by(hosts.desc(), column)
+            .first()
+        )
+        return row[0] if row else None
+
+    out: List[dict] = []
+    org = top(NetworkAttribution.org_name)
+    if org:
+        escaped = org.replace("\\", "\\\\").replace('"', '\\"')
+        out.append({"label": f"Not registered to {org} (the most common owner here)", "q": f'NOT org:"{escaped}"'})
+    country = top(NetworkAttribution.country)
+    if country:
+        out.append({"label": f"Registered outside {country} (the most common country here)", "q": f"NOT country:{country}"})
+    return out

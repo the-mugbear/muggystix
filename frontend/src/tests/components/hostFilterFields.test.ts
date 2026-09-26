@@ -7,6 +7,7 @@ import {
   fieldById,
   portOptions,
   searchFields,
+  searchValues,
 } from '../../components/hosts/hostFilterFields';
 import { hostConditionChips } from '../../utils/hostConditionChips';
 import type { HostFilterOptions } from '../../components/HostFilters';
@@ -21,7 +22,7 @@ const EVERY_FILTER: HostFilterOptions = {
   hasExploitAvailable: true, hasTestExecution: true, outOfScopeOnly: true,
   scanIds: ['9'], firstSeenInSelectedScans: true, hasWebInterface: false, tech: ['nginx'],
   orgs: ['Acme'], asns: ['13335'], countries: ['US'], assignedToMe: true,
-  followFilter: 'none', onlyWithNotes: true,
+  followFilter: 'none', onlyWithNotes: true, weaknesses: ['smb_unsigned'], checks: ['smbv1_enabled'],
 };
 
 describe('host filter field registry', () => {
@@ -57,8 +58,32 @@ describe('host filter field registry', () => {
     expect(new Set(ids).size).toBe(ids.length);
     const categories = FILTER_CATEGORIES.map((c) => c.id);
     HOST_FILTER_FIELDS.forEach((f) => expect(categories).toContain(f.category));
+    // 5.303.0 — weaknesses joined Common; Team review left it (the toolbar's
+    // Review menu is the everyday control for it).
     expect(HOST_FILTER_FIELDS.filter((f) => f.common).map((f) => f.id))
-      .toEqual(['subnets', 'endpoint', 'severity', 'followFilter', 'assignedToMe']);
+      .toEqual(['subnets', 'endpoint', 'weaknesses', 'severity', 'assignedToMe']);
+  });
+
+  // UX review 2026-09-25 — "smb" found only Port / service; the weakness
+  // filters existed only as query syntax.
+  it('finds weakness VALUES by the word an analyst types', () => {
+    const data = {
+      weaknesses: [
+        { name: 'smb_unsigned', label: 'SMB signing not required', description: 'relay', host_count: 3 },
+        { name: 'weak_auth', label: 'Guest / anonymous / null login worked', description: 'NetExec, SMBMap', host_count: 1 },
+      ],
+      checks: [{ id: 'smbv1_enabled', title: 'SMBv1 enabled', host_count: 2 }],
+    } as never;
+    const hits = searchValues('smb', data).map((h) => `${h.field.id}:${h.option.value}`);
+    expect(hits).toEqual(['weaknesses:smb_unsigned', 'checks:smbv1_enabled']);
+    expect(searchFields('smb').map((f) => f.id)).toContain('weaknesses');
+    expect(searchValues('s', data)).toEqual([]);
+  });
+
+  it('offers query-only conditions (CVE) as catalog rows that start the query', () => {
+    const cve = HOST_FILTER_FIELDS.find((f) => f.id === 'cve');
+    expect(cve?.kind).toBe('query');
+    expect(searchFields('cve')[0].id).toBe('cve');
   });
 
   it('finds a field by the word an analyst would type, best match first', () => {

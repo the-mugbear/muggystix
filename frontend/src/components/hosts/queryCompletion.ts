@@ -221,7 +221,32 @@ export function fieldSuggestions(
       else if (name.includes(lower)) inner.push(row);
     }
   }
-  return [...opRows, ...prefix, ...inner].slice(0, 10);
+  return [...opRows, ...prefix, ...inner, ...describedValueRows(lower, fields, at)].slice(0, 10);
+}
+
+/**
+ * A plain word also finds the described values of `has:` / `check:` / `kind:`
+ * by what they mean (5.303.0): "smb" offers `has:smb_unsigned` and
+ * `check:smb_signing_not_required`, "writ" `has:writable_share`.  Before, a
+ * plain word offered nothing and became a text search that matched no host.
+ */
+function describedValueRows(
+  lower: string,
+  fields: HostQueryField[],
+  at: { from: number; to: number },
+): QuerySuggestion[] {
+  if (lower.length < 2) return [];
+  const rows: QuerySuggestion[] = [];
+  for (const f of fields) {
+    const described = f.enum_descriptions ?? {};
+    for (const v of f.enum_values) {
+      const detail = described[v];
+      if (!detail) continue;
+      if (!v.toLowerCase().includes(lower) && !detail.toLowerCase().includes(lower)) continue;
+      rows.push({ display: `${f.name}:${v}`, detail, insert: `${f.name}:${quote(v)}`, ...at });
+    }
+  }
+  return rows;
 }
 
 function isoAgo(now: Date, days: number): string {
@@ -281,7 +306,9 @@ export function valueSuggestions(
   const matches = entries.filter((e) =>
     e.value.toLowerCase().includes(lower) || (!!e.label && e.label.toLowerCase().includes(lower)),
   );
-  return matches.slice(0, 12).map((e) => ({
+  // A fixed list is shown whole (the listbox scrolls): `has:` has 20 values
+  // and the cut hid weak_tls / writable_share until more was typed.
+  return (spec.enum_values.length > 0 ? matches : matches.slice(0, 12)).map((e) => ({
     display: e.value,
     detail: e.label ?? undefined,
     count: e.count,

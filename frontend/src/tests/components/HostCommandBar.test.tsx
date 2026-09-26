@@ -68,6 +68,11 @@ describe('HostCommandBar', () => {
     const user = userEvent.setup();
     const { onChange } = setup();
     await user.type(screen.getByLabelText('Host query'), 'port:');
+    await waitFor(() => expect(mocked.validateHostQuery).toHaveBeenCalled());
+    // 5.303.0 — an unfinished term is not an error while it is being typed;
+    // it is said once the bar loses focus.
+    expect(screen.queryByText(/Expected a value/)).toBeNull();
+    await user.tab();
     await waitFor(() => expect(screen.getByText(/Expected a value/)).toBeInTheDocument());
     expect(onChange).not.toHaveBeenCalledWith('port:');
   });

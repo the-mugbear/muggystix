@@ -80,6 +80,17 @@ const config: Config = {
           DEFAULT: 'hsl(var(--info) / <alpha-value>)',
           foreground: 'hsl(var(--info-foreground) / <alpha-value>)',
         },
+        // 5.304.0 — severity's own ramp (theme/cssVars.ts severityVars).
+        sev: {
+          critical: 'hsl(var(--sev-critical) / <alpha-value>)',
+          'critical-foreground': 'hsl(var(--sev-critical-foreground) / <alpha-value>)',
+          high: 'hsl(var(--sev-high) / <alpha-value>)',
+          'high-foreground': 'hsl(var(--sev-high-foreground) / <alpha-value>)',
+          medium: 'hsl(var(--sev-medium) / <alpha-value>)',
+          'medium-foreground': 'hsl(var(--sev-medium-foreground) / <alpha-value>)',
+          low: 'hsl(var(--sev-low) / <alpha-value>)',
+          'low-foreground': 'hsl(var(--sev-low-foreground) / <alpha-value>)',
+        },
         border: 'hsl(var(--border) / <alpha-value>)',
         input: 'hsl(var(--input) / <alpha-value>)',
         ring: 'hsl(var(--ring) / <alpha-value>)',

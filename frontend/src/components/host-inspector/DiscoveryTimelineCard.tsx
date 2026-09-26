@@ -17,9 +17,11 @@ import { useToast } from '../../contexts/ToastContext';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { InspectorSection } from './InspectorSection';
+import { TimeAgo } from '../TimeAgo';
+import { formatTimestamp } from '../../utils/relativeTime';
 
 const formatDateTime = (value: string | null | undefined): string =>
-  value ? new Date(value).toLocaleString() : 'Unknown date';
+  formatTimestamp(value, 'Unknown date');
 
 // A scan is one line since v5.241.0, so the preview affords five.
 const COLLAPSED_COUNT = 5;
@@ -61,7 +63,11 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
             // the scan recorded one.
             <div key={`disc-${entry.scan_id}-${entry.discovered_at ?? ''}`} className="py-xxs">
               <div className="flex min-w-0 items-center gap-xs">
-                <Badge variant="outline" className="shrink-0">{entry.scan_type || entry.tool_name || 'Scan'}</Badge>
+                {/* The tool, not the scan category: OpenVAS read "VULNERABILITY_SCAN"
+                    and masscan / naabu / rustscan all read "PORT_SCAN". */}
+                <Badge variant="outline" className="shrink-0" title={entry.scan_type || undefined}>
+                  {entry.tool_name || entry.scan_type?.replace(/_/g, ' ') || 'Scan'}
+                </Badge>
                 <span className="min-w-0 flex-1 truncate text-caption"
                   title={entry.scan_filename || `Scan #${entry.scan_id}`}>
                   {entry.scan_filename || `Scan #${entry.scan_id}`}
@@ -76,7 +82,7 @@ const DiscoveryTimelineCard: React.FC<{ discoveries: HostDiscovery[] }> = ({ dis
                 ) : (
                   <span className="shrink-0 text-caption tabular-nums text-muted-foreground"
                     title="Scan tool did not record start/end; this is when the file was ingested.">
-                    ingested {formatDateTime(entry.discovered_at)}
+                    ingested <TimeAgo value={entry.discovered_at} absoluteAfterDays={30} fallback="on an unknown date" />
                   </span>
                 )}
               </div>

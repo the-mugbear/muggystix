@@ -15,11 +15,12 @@ import type { HostFilterOptions } from '../HostFilters';
  * `HostFilterOptions` keys the old panel wrote.
  */
 
-export type FilterCategory = 'network' | 'services' | 'observations' | 'work' | 'discovery';
+export type FilterCategory = 'network' | 'services' | 'weaknesses' | 'observations' | 'work' | 'discovery';
 
 export const FILTER_CATEGORIES: Array<{ id: FilterCategory; label: string }> = [
   { id: 'network', label: 'Network & scope' },
   { id: 'services', label: 'Services & web evidence' },
+  { id: 'weaknesses', label: 'Weaknesses & access' },
   { id: 'observations', label: 'Scanner observations' },
   { id: 'work', label: 'Analyst work' },
   { id: 'discovery', label: 'Discovery & attribution' },
@@ -61,6 +62,9 @@ export interface MultiField extends FieldBase {
   queryHint?: string;
   /** Shown when the project has no data for the field at all. */
   noData: string;
+  /** The catalog search also lists this field's VALUES, so "smb" finds
+   *  "SMB signing not required" itself, not only the field that holds it. */
+  searchValues?: boolean;
 }
 
 /** One value or none; applies immediately. */
@@ -92,7 +96,15 @@ export interface CompositeField extends FieldBase {
   kind: 'severity' | 'endpoint' | 'scans';
 }
 
-export type HostFilterField = MultiField | SingleField | ChoiceField | ToggleField | CompositeField;
+/** A condition only the query bar expresses — free text, a CVE id.  Picking
+ *  it starts `token` in the query bar, where autocomplete takes over; the
+ *  condition then shows as the Query chip.  It owns no structured key. */
+export interface QueryField extends FieldBase {
+  kind: 'query';
+  token: string;
+}
+
+export type HostFilterField = MultiField | SingleField | ChoiceField | ToggleField | CompositeField | QueryField;
 
 const counted = <T>(rows: T[] | undefined, map: (row: T) => FilterValueOption): FilterValueOption[] =>
   (rows ?? []).map(map);
@@ -201,6 +213,52 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
     cap: 200, queryHint: 'tech:nginx',
     noData: 'No technologies yet — run httpx or WhatWeb and upload the output.',
   },
+  {
+    kind: 'query', id: 'webtitle', token: 'webtitle:', keys: [], chipKey: '',
+    label: 'Web page title', category: 'services', keywords: ['title', 'page', 'login'],
+    help: 'Text in a web page\'s <title> — httpx, EyeWitness. Continues in the query bar.',
+  },
+  {
+    kind: 'query', id: 'header', token: 'header:', keys: [], chipKey: '',
+    label: 'HTTP Server header', category: 'services', keywords: ['server', 'banner', 'iis', 'apache'],
+    help: 'Text in the HTTP Server response header — httpx. Continues in the query bar.',
+  },
+  {
+    kind: 'query', id: 'certorg', token: 'certorg:', keys: [], chipKey: '',
+    label: 'Certificate organisation', category: 'services', keywords: ['certificate', 'tls', 'ssl', 'issuer', 'org'],
+    help: 'The organisation named in a TLS certificate. Continues in the query bar.',
+  },
+
+  // ── Weaknesses & access ────────────────────────────────────────────────
+  {
+    kind: 'multi', id: 'weaknesses', key: 'weaknesses', keys: ['weaknesses'], chipKey: 'weaknesses',
+    label: 'Weakness or access', category: 'weaknesses', common: true, searchValues: true,
+    keywords: ['smb', 'signing', 'relay', 'eol', 'end-of-life', 'unsupported', 'tls', 'ssl', 'certificate',
+      'expired', 'self-signed', 'cleartext', 'telnet', 'ftp', 'guest', 'anonymous', 'null', 'admin',
+      'pwn3d', 'writable', 'share', 'netexec'],
+    help: 'What an attacker can use on the host: SMB signing, an end-of-life OS, weak TLS, cleartext services, '
+      + 'logins and access NetExec / SMBMap proved. Match ANY selected.',
+    options: (d) => counted(d?.weaknesses, (w) => ({
+      value: w.name, label: w.label, description: w.description, count: w.host_count, keywords: [w.name],
+    })),
+    noData: 'The weakness list could not be loaded.',
+  },
+  {
+    kind: 'multi', id: 'checks', key: 'checks', keys: ['checks'], chipKey: 'checks',
+    label: 'Misconfiguration check', category: 'weaknesses', searchValues: true,
+    keywords: ['misconfiguration', 'check', 'smbv1', 'vnc', 'hsts', 'csp', 'header', 'anonymous', 'null session'],
+    help: 'One misconfiguration, whichever tool reported it — nmap NSE, NetExec, SMBMap, Nessus, Nuclei, Nikto, testssl.',
+    options: (d) => counted(d?.checks, (c) => ({
+      value: c.id, label: c.title, count: c.host_count, keywords: [c.id],
+    })),
+    queryHint: 'check:smb_signing_not_required',
+    noData: 'No misconfiguration recorded yet — nmap NSE, NetExec, SMBMap, Nessus, Nuclei, Nikto and testssl report them.',
+  },
+  {
+    kind: 'query', id: 'kind', token: 'kind:', keys: [], chipKey: '',
+    label: 'Weakness kind', category: 'weaknesses', keywords: ['misconfiguration', 'vulnerability', 'informational'],
+    help: 'Misconfiguration, vulnerability or informational — the kind of scanner observation. Continues in the query bar.',
+  },
 
   // ── Scanner observations ───────────────────────────────────────────────
   {
@@ -213,13 +271,24 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   {
     kind: 'toggle', id: 'hasExploitAvailable', key: 'hasExploitAvailable', keys: ['hasExploitAvailable'], chipKey: 'hasExploitAvailable',
     label: 'Exploit reported', category: 'observations', keywords: ['exploit', 'metasploit', 'poc', 'exploitable'],
-    help: 'A scanner observation reports that an exploit exists (Nessus only). Not proof this host was exploited. For CVE or plugin text use the query bar (cve:…, vuln:…).',
+    help: 'A scanner observation reports that an exploit exists (Nessus only). Not proof this host was exploited.',
+  },
+  {
+    kind: 'query', id: 'cve', token: 'cve:', keys: [], chipKey: '',
+    label: 'CVE', category: 'observations', keywords: ['cve', 'vulnerability', 'log4j', 'id'],
+    help: 'A scanner observation\'s CVE id — Nessus, OpenVAS, Nikto. Continues in the query bar.',
+  },
+  {
+    kind: 'query', id: 'vuln', token: 'vuln:', keys: [], chipKey: '',
+    label: 'Scanner observation text', category: 'observations', keywords: ['plugin', 'title', 'vulnerability', 'nessus'],
+    help: 'Text in a scanner observation\'s title or plugin name. Continues in the query bar.',
   },
 
   // ── Analyst work ───────────────────────────────────────────────────────
   {
     kind: 'choice', id: 'followFilter', key: 'followFilter', keys: ['followFilter'], chipKey: 'followFilter',
-    label: 'Team review', category: 'work', common: true, keywords: ['review', 'reviewed', 'unreviewed', 'watching', 'status'],
+    // Not "common": the toolbar's Review menu is the everyday control for this.
+    label: 'Team review', category: 'work', keywords: ['review', 'reviewed', 'unreviewed', 'watching', 'status'],
     help: 'The team\'s review state — shared, not yours alone.',
     choices: [
       { value: undefined, label: 'Any' },
@@ -243,6 +312,11 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
     kind: 'toggle', id: 'hasTestExecution', key: 'hasTestExecution', keys: ['hasTestExecution'], chipKey: 'hasTestExecution',
     label: 'Tested by agent', category: 'work', keywords: ['test', 'plan', 'executed', 'agent'],
     help: 'An agentic test plan was actually executed against the host (not merely drafted). "Approved but never run" is the built-in view Planned, not tested.',
+  },
+  {
+    kind: 'query', id: 'note', token: 'note:', keys: [], chipKey: '',
+    label: 'Note text', category: 'work', keywords: ['note', 'comment', 'text'],
+    help: 'Text in an analyst note on the host or one of its ports. Continues in the query bar.',
   },
 
   // ── Discovery & attribution ────────────────────────────────────────────
@@ -315,6 +389,28 @@ export const fieldIsApplied = (field: HostFilterField, filters: HostFilterOption
     if (k === 'hasWebInterface') return v !== undefined;
     return v !== undefined && v !== false;
   });
+};
+
+export interface ValueHit {
+  field: MultiField;
+  option: FilterValueOption;
+}
+
+/** Catalog search over VALUES of the fields that ask for it (`searchValues`):
+ *  label and keywords (not the description — "smb" would find every flag
+ *  whose description credits SMBMap). */
+export const searchValues = (query: string, data: HostFilterData | null, limit = 8): ValueHit[] => {
+  const q = query.trim().toLowerCase();
+  if (q.length < 2 || !data) return [];
+  const hits: ValueHit[] = [];
+  for (const field of HOST_FILTER_FIELDS) {
+    if (field.kind !== 'multi' || !field.searchValues) continue;
+    for (const option of field.options(data)) {
+      const text = [option.label, ...(option.keywords ?? [])].join(' ').toLowerCase();
+      if (text.includes(q)) hits.push({ field, option });
+    }
+  }
+  return hits.slice(0, limit);
 };
 
 /** Catalog search: label, keywords, category and help text. */

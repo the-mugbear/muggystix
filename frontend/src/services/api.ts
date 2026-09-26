@@ -628,6 +628,8 @@ export const getToolReadyOutput = async (
     asns?: string[];
     countries?: string[];
     assigned_to?: string;
+    weaknesses?: string;
+    checks?: string;
     q?: string;
     sort_by?: string;
     sort_order?: string;

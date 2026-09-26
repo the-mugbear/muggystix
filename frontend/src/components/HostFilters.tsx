@@ -56,6 +56,10 @@ export interface HostFilterOptions {
   orgs?: string[];
   asns?: string[];
   countries?: string[];
+  // v2.423.0 — weakness / access flags (the DSL's has: values) and
+  // misconfiguration check ids; OR within each.
+  weaknesses?: string[];
+  checks?: string[];
   assignedToMe?: boolean;
   // v4.51.0 — followFilter + onlyWithNotes folded into HostFilterOptions
   // so the page state is a single object instead of three useStates.  Both

@@ -38,8 +38,9 @@ export function sinceChips(since: SinceLastVisit): SinceChip[] {
     chips.push({
       key: 'scans', tone: 'info',
       label: plural(since.new_scan_count, 'new import', 'new imports'),
-      href: '/scans',
-      hint: 'Open the import history, newest first',
+      // 5.304.0 — the imports since the last visit, not the whole history.
+      href: since.last_viewed_at ? `/scans?since=${encodeURIComponent(since.last_viewed_at)}` : '/scans',
+      hint: 'The files imported since your last visit',
     });
   }
   if (since.new_host_count > 0) {

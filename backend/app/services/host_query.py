@@ -110,6 +110,79 @@ def build_search_predicate(db: Session, search: str):
 
 
 # ---------------------------------------------------------------------------
+# Weakness / access flags and catalog checks as structured filters
+# ---------------------------------------------------------------------------
+
+# v2.423.0 — the DSL's weakness and access flags, offered by the Hosts
+# "+ Add filter" catalog (before, only `has:` in the query bar reached them).
+# A subset of the DSL's ``has:`` keywords, evaluated by the DSL's own builders
+# so the catalog and the query bar can never disagree about a host.
+WEAKNESS_FLAGS = (
+    "smb_unsigned", "eol", "weak_tls", "cert_issue", "cleartext",
+    "weak_auth", "local_admin", "writable_share",
+)
+# The catalog's name for each flag; the description is the DSL's own.
+WEAKNESS_LABELS = {
+    "smb_unsigned": "SMB signing not required",
+    "eol": "End-of-life operating system",
+    "weak_tls": "Weak TLS protocol offered",
+    "cert_issue": "Expired or self-signed certificate",
+    "cleartext": "Cleartext-credential service open",
+    "weak_auth": "Guest / anonymous / null login worked",
+    "local_admin": "Local admin access (Pwn3d!)",
+    "writable_share": "Writable share",
+}
+
+
+def weakness_descriptions() -> dict:
+    from app.services.host_query_dsl import _HAS_KEYWORDS
+    return {f: _HAS_KEYWORDS[f][1] for f in WEAKNESS_FLAGS}
+
+
+def _split_csv(value: Optional[str]) -> List[str]:
+    return [v.strip().lower() for v in (value or "").split(",") if v.strip()]
+
+
+def weakness_predicate(db: Session, current_user: User, project_id: int, flags: List[str]):
+    """Hosts with ANY of the given weakness / access flags."""
+    unknown = [f for f in flags if f not in WEAKNESS_FLAGS]
+    if unknown:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unknown weakness filter {', '.join(unknown)} (one of: {', '.join(WEAKNESS_FLAGS)})",
+        )
+    from app.services.host_query_dsl import _HAS_KEYWORDS, BuildCtx
+    ctx = BuildCtx(db, current_user, project_id)
+    return or_(*[_HAS_KEYWORDS[f][0](ctx) for f in flags])
+
+
+def host_weakness_flags(db: Session, current_user: User, project_id: int, host_ids: List[int]) -> dict:
+    """{host_id: [flag, …]} — the weakness / access flags each host carries,
+    by the same predicates as the filter.  One statement for the page."""
+    if not host_ids:
+        return {}
+    from sqlalchemy import case
+    columns = [
+        case((weakness_predicate(db, current_user, project_id, [flag]), True), else_=False)
+        for flag in WEAKNESS_FLAGS
+    ]
+    rows = db.query(models.Host.id, *columns).filter(models.Host.id.in_(host_ids)).all()
+    return {
+        row[0]: [flag for flag, hit in zip(WEAKNESS_FLAGS, row[1:]) if hit]
+        for row in rows
+    }
+
+
+def checks_predicate(db: Session, project_id: int, checks: List[str]):
+    """Hosts with ANY of the given misconfiguration checks (the DSL's ``check:``)."""
+    from app.services.misconfig_checks import CHECKS
+    unknown = [c for c in checks if c not in CHECKS]
+    if unknown:
+        raise HTTPException(status_code=400, detail=f"Unknown check {', '.join(unknown)}")
+    return P.check_predicate(db, checks, project_id)
+
+
+# ---------------------------------------------------------------------------
 # The big one — filter assembly for /hosts/ + /hosts/filters/data
 # ---------------------------------------------------------------------------
 
@@ -144,6 +217,8 @@ def build_filtered_host_query(
     orgs: Optional[List[str]] = None,
     asns: Optional[List[str]] = None,
     countries: Optional[List[str]] = None,
+    weaknesses: Optional[str] = None,
+    checks: Optional[str] = None,
     project_id: int = None,
     q: Optional[str] = None,
 ):
@@ -305,6 +380,14 @@ def build_filtered_host_query(
         country_values = [s.strip() for s in countries if s and s.strip()]
         if country_values:
             query = query.filter(P.attribution_country_predicate(db, country_values))
+
+    # v2.423.0 — weakness / access flags and catalog checks; OR within each.
+    weakness_flags = _split_csv(weaknesses)
+    if weakness_flags:
+        query = query.filter(weakness_predicate(db, current_user, project_id, weakness_flags))
+    check_ids = _split_csv(checks)
+    if check_ids:
+        query = query.filter(checks_predicate(db, project_id, check_ids))
 
     # v2.93.0 — boolean query DSL.  Appended last; ANDs with every
     # discrete param above.  A malformed ``q`` raises ``DSLError`` →

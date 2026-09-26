@@ -46,12 +46,31 @@ export interface ColorTokens {
   buttonPrimaryText: string;
   tooltipBackground: string;
   tooltipText: string;
+  /**
+   * Severity colours (5.304.0), when the semantic ones cannot carry an order.
+   * Default: critical=error, high=warning, medium=info, low=success — fine
+   * where those are red / amber / blue / green.  Magma's semantics are all
+   * warm (info orange, success amber), so its ramp read red → yellow → orange
+   * → amber: Low sat between High and Medium.  Absolute Zero's medium (cyan)
+   * and low (teal) were near-identical.
+   */
+  severity?: { critical: string; high: string; medium: string; low: string };
 }
 
 // Default font families.  Themes can override; phosphor uses
 // monospace, others use a humanist sans.
 export const SANS_STACK = '"IBM Plex Sans", "Inter", "Segoe UI", system-ui, sans-serif';
 export const MONO_STACK = '"IBM Plex Mono", "JetBrains Mono", "Fira Code", "Consolas", monospace';
+
+/**
+ * A fixed status ramp for the themes whose semantic colours cannot order
+ * severity (5.304.0).  Red → orange → yellow → blue; validated with the
+ * dataviz palette validator on both dark surfaces (#130B09, #06131B):
+ * adjacent ΔE ≥ 15.7 normal-vision and ≥ 13.9 deutan, every step ≥ 3:1
+ * against the surface.  It sits outside the categorical lightness band by
+ * design — a status colour always travels with its label.
+ */
+const SEVERITY_STATUS_RAMP = { critical: '#D03B3B', high: '#EC835A', medium: '#F7D046', low: '#6FA8DC' };
 
 export const palettes: Record<AppThemeName, ColorTokens> = {
   light: {
@@ -149,6 +168,7 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     buttonPrimaryText: '#260B05',
     tooltipBackground: '#2A130F',
     tooltipText: '#FFE8DB',
+    severity: SEVERITY_STATUS_RAMP,
   },
 
   'absolute-zero': {
@@ -172,5 +192,6 @@ export const palettes: Record<AppThemeName, ColorTokens> = {
     buttonPrimaryText: '#041017',
     tooltipBackground: '#0D2430',
     tooltipText: '#EAFBFF',
+    severity: SEVERITY_STATUS_RAMP,
   },
 };

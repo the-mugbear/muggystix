@@ -108,8 +108,9 @@ export const MyActivityCard: React.FC<{
 
   const hasFilters = typeFilter !== 'all';
 
-  // Preview a few rows so this card stays the same height as "My work" (which
-  // also previews 8); "Show more" reveals the rest of the loaded feed.
+  // Preview a few rows so this column stays near the height of "My work"
+  // beside it (three rows per category); "Show more" reveals the rest of the
+  // loaded feed.
   const PREVIEW = 8;
   const all = events ?? [];
   const shown = expanded ? all : all.slice(0, PREVIEW);
@@ -132,7 +133,7 @@ export const MyActivityCard: React.FC<{
       title={<span>My recent activity</span>}
       description="What you’ve worked on — notes, findings, and reviews."
       actions={<>
-        <UpdatedAt at={loadedAt} stale={!!error} />
+        <UpdatedAt at={loadedAt} stale={!!error} hideWhenFresh />
         <Select value={typeFilter} onValueChange={(v) => setTypeFilter(v as TypeFilter)}>
           <SelectTrigger className="h-7 w-28 text-caption" aria-label="Activity type"><SelectValue /></SelectTrigger>
           <SelectContent>

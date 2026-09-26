@@ -20,12 +20,16 @@ export interface UpdatedAtProps {
   at: Date | null;
   /** The latest attempt failed, so what is shown is the PREVIOUS load. */
   stale?: boolean;
+  /** Say nothing while the data is current (5.304.0): Operations printed
+   *  "updated just now" on four sections under a page header saying the
+   *  same.  A section speaks up only when its own refresh failed. */
+  hideWhenFresh?: boolean;
   className?: string;
 }
 
 const TICK_MS = 30_000;
 
-export const UpdatedAt: React.FC<UpdatedAtProps> = ({ at, stale = false, className }) => {
+export const UpdatedAt: React.FC<UpdatedAtProps> = ({ at, stale = false, hideWhenFresh = false, className }) => {
   const [, setTick] = useState(0);
   useEffect(() => {
     const id = window.setInterval(() => setTick((n) => n + 1), TICK_MS);
@@ -33,6 +37,7 @@ export const UpdatedAt: React.FC<UpdatedAtProps> = ({ at, stale = false, classNa
   }, []);
 
   if (!at) return null;
+  if (hideWhenFresh && !stale) return null;
   const age = formatRelativeTime(at, { justNowBelowMs: 60_000 });
   return (
     <span

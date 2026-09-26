@@ -31,3 +31,25 @@ describe('semantic filled contrast meets WCAG AA across all themes', () => {
     }
   }
 });
+
+// 5.304.0 — severity has its own ramp.  Filled severity badges must stay
+// legible, and every step must stand off the page (3:1, a non-text mark).
+describe('severity ramp across all themes', () => {
+  for (const [themeName, tokens] of Object.entries(palettes)) {
+    const ramp = tokens.severity ?? {
+      critical: tokens.error, high: tokens.warning, medium: tokens.info, low: tokens.success,
+    };
+    for (const [step, colour] of Object.entries(ramp)) {
+      it(`${themeName} / ${step}: filled badge >= ${AA}:1, mark vs page >= 3:1`, () => {
+        const fg = foregroundComponentsFor(colour);
+        expect(contrastRatio(relativeLuminance(colour), fgLuminance(fg))).toBeGreaterThanOrEqual(AA);
+        expect(contrastRatio(relativeLuminance(colour), relativeLuminance(tokens.backgroundDefault)))
+          .toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+
+  it('Magma no longer puts Low between High and Medium', () => {
+    expect(palettes.magma.severity).toBeDefined();
+  });
+});

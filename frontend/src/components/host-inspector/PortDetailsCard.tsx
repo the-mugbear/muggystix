@@ -365,7 +365,6 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     return e.weaknesses.length + e.access.length + e.web.length + e.paths.length + (p.scripts?.length ?? 0) > 0;
   });
   // Version takes whatever the optional columns leave (fixed layout).
-  const versionWidth = 100 - 12 - 18 - 12 - 8 - (showTls ? 14 : 0) - (showEvidence ? 18 : 0);
   const columnCount = 5 + (showTls ? 1 : 0) + (showEvidence ? 1 : 0);
 
   const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
@@ -406,9 +405,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
           <Table className="table-fixed">
             <TableHeader>
               <TableRow>
-                <PortSortHead className="w-[12%]" />
+                {/* A fixed width that fits "65535/tcp" and the chevron: 12%
+                    of a ~750px inspector cut "5432/tcp" short (5.303.0). */}
+                <PortSortHead className="w-28" />
                 <TableHead className="w-[18%]">Service</TableHead>
-                <TableHead style={{ width: `${versionWidth}%` }}>Version</TableHead>
+                {/* Unsized: it takes what the port's fixed width leaves. */}
+                <TableHead>Version</TableHead>
                 <TableHead className="w-[12%]" title="When this port itself was last observed. Older than the host's last observation means newer evidence did not revalidate it — not that it was checked and found closed.">Seen</TableHead>
                 {showTls && <TableHead className="w-[14%]">TLS</TableHead>}
                 {showEvidence && <TableHead className="w-[18%]">What&rsquo;s here</TableHead>}
@@ -445,7 +447,7 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
                 return (
                   <React.Fragment key={port.id}>
                   <TableRow className={open ? 'border-b-0' : undefined}>
-                    <TableCell className="truncate font-mono text-metadata">
+                    <TableCell className="whitespace-nowrap font-mono text-metadata">
                       <button
                         type="button"
                         onClick={() => toggle(port)}

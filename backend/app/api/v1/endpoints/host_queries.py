@@ -42,6 +42,7 @@ from app.services.host_query_dsl import (
     DSLError,
     count_leaves,
     parse_query,
+    provenance_examples,
     schema as dsl_schema,
 )
 from app.services.host_query_suggest import MAX_SUGGESTIONS, suggest as suggest_values
@@ -140,10 +141,15 @@ class QueryHistoryCreate(BaseModel):
     response_model=QuerySchemaResponse,
     summary="Query DSL field + example catalogue",
 )
-def get_query_schema():
+def get_query_schema(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
     """Field names, aliases, value sources, and starter examples for the
-    command bar.  Single source of truth = the DSL registry."""
-    return dsl_schema()
+    command bar.  Single source of truth = the DSL registry; the provenance
+    examples are built from this project's RDAP data (v2.423.0)."""
+    out = dsl_schema()
+    return {**out, "examples": [*out["examples"], *provenance_examples(db, project.id)]}
 
 
 @router.post(

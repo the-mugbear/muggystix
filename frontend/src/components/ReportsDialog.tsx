@@ -261,6 +261,8 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
     ].filter(Boolean);
     if (severities.length) out.push(`Scanner severity: ${severities.join(' or ')}`);
     if (f.has_exploit_available) out.push('Exploit reported');
+    if (f.weaknesses) out.push(`Weakness: ${String(f.weaknesses).split(',').map((w) => w.replace(/_/g, ' ')).join(' or ')}`);
+    if (f.checks) out.push(`Check: ${String(f.checks).split(',').map((c) => c.replace(/_/g, ' ')).join(' or ')}`);
     if (f.has_test_execution) out.push('Tested by agent');
     if (f.has_web_interface !== undefined) out.push(`Web interface: ${f.has_web_interface ? 'recorded' : 'not recorded'}`);
     if (f.follow_status) out.push(`Review: ${f.follow_status === 'none' ? 'not started' : f.follow_status}`);

@@ -19,7 +19,7 @@ import React, { useEffect, useId, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
-  type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL,
+  type Severity, SEVERITY_ORDER, SEVERITY_LABEL, SEVERITY_HSL, SEVERITY_FOREGROUND,
 } from '../../utils/severity';
 
 type Variant = 'summary' | 'inline' | 'compact';
@@ -39,6 +39,12 @@ interface SeverityBarProps {
    * summary-row items render as <Link>s; otherwise behaviour is unchanged.
    */
   segmentHref?: (severity: Severity) => string | null;
+  /**
+   * What a segment's link opens, when it is not the count shown ("63 hosts"
+   * under a count of 70 scanner rows).  Named on the link itself, so a number
+   * never opens a list of a different size unannounced (5.304.0).
+   */
+  linkLabel?: (severity: Severity) => string | null;
 }
 
 // Severities rendered in every visual. Informational is deliberately omitted:
@@ -61,7 +67,7 @@ function useReveal(): boolean {
 }
 
 const SeverityBar: React.FC<SeverityBarProps> = ({
-  counts, variant = 'inline', total, showTotal, className, ariaLabel, segmentHref,
+  counts, variant = 'inline', total, showTotal, className, ariaLabel, segmentHref, linkLabel,
 }) => {
   const revealed = useReveal();
   const [active, setActive] = useState<Severity | null>(null);
@@ -95,9 +101,11 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
         const dim = active != null && active !== k;
         const showCount = variant === 'summary' && share >= IN_SEGMENT_MIN;
         const href = segmentHref?.(k) ?? null;
+        // The step's own foreground (5.304.0): white with a shadow was
+        // unreadable on a yellow Medium.
         const inner = showCount ? (
-          <span className="truncate px-1 text-[0.7rem] font-semibold text-white"
-            style={{ textShadow: '0 1px 2px rgba(0,0,0,0.45)' }}>
+          <span className="truncate px-1 text-[0.7rem] font-semibold"
+            style={{ color: SEVERITY_FOREGROUND[k] }}>
             {n.toLocaleString()}
           </span>
         ) : null;
@@ -113,10 +121,11 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
           onMouseLeave: variant === 'summary' || href ? () => setActive(null) : undefined,
         };
         if (href) {
+          const opens = linkLabel?.(k);
           return (
             <Link key={k} to={href} {...hover}
-              aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — view`}
-              title={`${SEVERITY_LABEL[k]}: ${n.toLocaleString()} — view`}
+              aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — ${opens ? `view ${opens}` : 'view'}`}
+              title={`${SEVERITY_LABEL[k]}: ${n.toLocaleString()} — ${opens ? `view ${opens}` : 'view'}`}
               className={segClass} style={segStyle}>
               {inner}
             </Link>
@@ -178,6 +187,7 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
           // Only link a non-zero severity that has a destination (clicking a
           // zero count would land on an empty filtered list).
           const href = !zero ? segmentHref?.(k) ?? null : null;
+          const opens = href ? linkLabel?.(k) ?? null : null;
           const itemClass = 'flex flex-col items-start rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
           const itemStyle: React.CSSProperties = { opacity: dim ? 0.45 : 1, transition: 'opacity 150ms' };
           const itemBody = (
@@ -194,6 +204,9 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
                   {n.toLocaleString()} <span className="font-normal text-muted-foreground">· {pct}%</span>
                 </span>
               )}
+              {href && opens && (
+                <span className="text-caption text-info">{opens} →</span>
+              )}
             </>
           );
           const hoverHandlers = {
@@ -205,7 +218,7 @@ const SeverityBar: React.FC<SeverityBarProps> = ({
           if (href) {
             return (
               <Link key={k} to={href} {...hoverHandlers}
-                aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — view`}
+                aria-label={`${n.toLocaleString()} ${SEVERITY_LABEL[k]} — ${opens ? `view ${opens}` : 'view'}`}
                 className={`${itemClass} hover:underline`} style={itemStyle}>
                 {itemBody}
               </Link>

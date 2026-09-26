@@ -25,9 +25,17 @@ describe('DiscoveryTimelineCard', () => {
   it('says "ingested" — not a scan window — when the tool recorded no start or end', () => {
     render(<DiscoveryTimelineCard discoveries={[scan({ scan_filename: 'subfinder_sample.txt', scan_type: 'subdomain_discovery' })]} />);
     expect(screen.getByText('subfinder_sample.txt')).toBeInTheDocument();
-    const when = screen.getByText(/^ingested /);
-    expect(when).toHaveAttribute('title', expect.stringContaining('did not record start/end'));
+    const when = screen.getByTitle(/did not record start\/end/);
+    expect(when).toHaveTextContent(/^ingested /);
     expect(screen.queryByText(/→/)).not.toBeInTheDocument();
+  });
+
+  // UX review 2026-09-25 — the badge is the TOOL: OpenVAS read
+  // "VULNERABILITY_SCAN" (its scan category).
+  it('names the tool, not the scan category', () => {
+    render(<DiscoveryTimelineCard discoveries={[scan({ scan_type: 'vulnerability_scan', tool_name: 'openvas' })]} />);
+    expect(screen.getByText('openvas')).toBeInTheDocument();
+    expect(screen.queryByText('vulnerability_scan')).not.toBeInTheDocument();
   });
 
   it('shows the scan window when there is one, and the command only when recorded', () => {
@@ -35,7 +43,7 @@ describe('DiscoveryTimelineCard', () => {
       scan({ scan_id: 1, scan_start: '2026-09-01T10:00:00Z', scan_end: '2026-09-01T10:05:00Z', command_line: 'nmap -sV 10.0.0.5' }),
     ]} />);
     expect(screen.getByText(/→/)).toBeInTheDocument();
-    expect(screen.queryByText(/^ingested /)).not.toBeInTheDocument();
+    expect(screen.queryByTitle(/did not record start\/end/)).not.toBeInTheDocument();
     expect(screen.getByText('nmap -sV 10.0.0.5')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Copy scan command to clipboard' })).toBeInTheDocument();
   });

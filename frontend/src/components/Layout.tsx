@@ -642,7 +642,10 @@ export default function Layout({ children }: LayoutProps) {
         )}
         style={{ '--drawer-width': DRAWER_WIDTH_PX } as React.CSSProperties}
       >
-        <div className="flex flex-1 items-center gap-sm px-sm sm:px-md">
+        {/* min-w-0: without it a long project name set this row's minimum
+            width, and Quick nav, the bell and the avatar left the screen
+            (UX review 2026-09-25) — the name is what truncates. */}
+        <div className="flex min-w-0 flex-1 items-center gap-sm px-sm sm:px-md">
           <Button
             variant="ghost"
             size="icon"

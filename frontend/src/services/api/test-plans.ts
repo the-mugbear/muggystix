@@ -43,7 +43,8 @@ export interface TestPlanEntryResponse {
   findings?: string;
   results_data?: Record<string, unknown>;
   notes?: string;
-  assigned_to_id?: number;
+  /** null un-assigns (sent explicitly — e.g. undoing a claim). */
+  assigned_to_id?: number | null;
   started_at?: string;
   completed_at?: string;
   created_at: string;

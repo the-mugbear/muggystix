@@ -1,6 +1,6 @@
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import MyWorkCard from '../../components/MyWorkCard';
@@ -49,6 +49,17 @@ const queue: InvestigationQueueResponse = {
   ],
 };
 
+// 5.304.0 — rows are links (middle-click opens a tab), so where one went is
+// read from the router, not from a mocked navigate().
+let lastLocation: { pathname: string; state: unknown } | null = null;
+const LocationProbe: React.FC = () => {
+  const loc = useLocation();
+  lastLocation = { pathname: loc.pathname, state: loc.state };
+  return null;
+};
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+const lastState = () => lastLocation?.state as any;
+
 const onRetry = vi.fn();
 const renderCard = (
   investigate: InvestigationQueueResponse | null,
@@ -57,6 +68,7 @@ const renderCard = (
 ) =>
   render(
     <MemoryRouter>
+      <LocationProbe />
       <MyWorkCard
         queue={null}
         tasks={null}
@@ -74,6 +86,7 @@ const renderCard = (
 
 beforeEach(() => {
   vi.clearAllMocks();
+  lastLocation = null;
   api.followHost.mockResolvedValue({ status: 'in_review' });
 });
 
@@ -163,15 +176,18 @@ describe('MyWorkCard — Worth a look', () => {
       const inReview = screen.getByRole('region', { name: 'In review' });
       // The server's total, where the card loaded only a slice of it.
       expect(within(owned).getByText('40')).toBeInTheDocument();
-      // One pattern: how much of the whole is on screen, then one View all.
-      expect(within(owned).getByText('Showing 3 of 40')).toBeInTheDocument();
-      expect(within(owned).getByRole('button', { name: 'View all (40)' })).toBeInTheDocument();
-      expect(within(owned).queryByText(/not loaded here/)).not.toBeInTheDocument();
+      // One pattern: how much of the whole is on screen, then the full list.
+      expect(within(owned).getByText('3 of 40')).toBeInTheDocument();
+      expect(within(owned).getByRole('button', { name: 'Open the full list' })).toBeInTheDocument();
+      // 5.304.0 — expanded, it says the rest are only in the full list.
+      fireEvent.click(within(owned).getByRole('button', { name: 'Show 2 more here' }));
+      expect(within(owned).getByText('5 of 40 — the other 35 are in the full list')).toBeInTheDocument();
+      fireEvent.click(within(owned).getByRole('button', { name: 'Show fewer' }));
       expect(within(inReview).getByText('5')).toBeInTheDocument();
       expect(within(inReview).getAllByRole('listitem')).toHaveLength(3);
 
       // Reaching "In review" no longer means paging through what ranks above it.
-      fireEvent.click(within(inReview).getByRole('button', { name: 'Show 2 more' }));
+      fireEvent.click(within(inReview).getByRole('button', { name: 'Show 2 more here' }));
       expect(within(inReview).getAllByRole('listitem')).toHaveLength(5);
       expect(within(owned).getAllByRole('listitem')).toHaveLength(3);
     });
@@ -181,9 +197,9 @@ describe('MyWorkCard — Worth a look', () => {
         findings: { items: findings(1), total_open: 1 } as never,
         queue: { items: hosts(1), in_review_count: 1, watching_count: 0 } as never,
       });
-      fireEvent.click(within(screen.getByRole('region', { name: 'Findings I own' })).getByRole('button', { name: 'View all (1)' }));
+      fireEvent.click(within(screen.getByRole('region', { name: 'Findings I own' })).getByRole('button', { name: 'Open the full list' }));
       expect(navigate).toHaveBeenLastCalledWith('/findings?owner=me');
-      fireEvent.click(within(screen.getByRole('region', { name: 'In review' })).getByRole('button', { name: 'View all (1)' }));
+      fireEvent.click(within(screen.getByRole('region', { name: 'In review' })).getByRole('button', { name: 'Open the full list' }));
       expect(navigate.mock.calls[navigate.mock.calls.length - 1][0]).toContain('follow%3Ain_review');
     });
   });
@@ -218,21 +234,32 @@ describe('MyWorkCard — Worth a look', () => {
       expect(screen.getByText('1 open port first seen after the review (8443)')).toBeInTheDocument();
     });
 
-    it('re-opening the review puts the host back In Review and refreshes', async () => {
-      renderCard(null, false, { followups });
+    // 5.304.0 — re-opening YOUR review clears its conclusion, which no undo
+    // restores exactly: it takes a confirming second click.
+    it('re-opening your own review asks once more, then puts it back In Review and refreshes', async () => {
+      const onChanged = vi.fn();
+      renderCard(null, false, { followups, onChanged });
       fireEvent.click(screen.getByRole('button', { name: 'Re-open review' }));
+      expect(api.followHost).not.toHaveBeenCalled();
+      fireEvent.click(screen.getByRole('button', { name: /Click to confirm/ }));
       await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(21, 'in_review'));
-      await waitFor(() => expect(onRetry).toHaveBeenCalled());
+      // The quiet refresh, not the page reload.
+      await waitFor(() => expect(onChanged).toHaveBeenCalled());
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+
+    it('describes what an open question is', () => {
+      renderCard(null, false, { followups });
+      expect(screen.getByText('“Needs more evidence”')).toHaveAttribute('title', expect.stringMatching(/conclusion:needs_evidence/));
     });
 
     // v5.243.0 — and with the section itself, so Next on the host page walks
-    // these hosts instead of going nowhere.
+    // these hosts instead of going nowhere.  5.304.0 — a link, carrying it.
     it('opens the host with the way back to the work list, and the section as its queue', () => {
       renderCard(null, false, { followups });
-      fireEvent.click(screen.getByRole('button', { name: '10.8.0.2' }));
-      expect(navigate).toHaveBeenCalledWith('/hosts/21', {
-        state: { fromOperations: true, hostIds: [21, 22], queueLabel: 'Needs another look' },
-      });
+      fireEvent.click(screen.getByRole('link', { name: '10.8.0.2' }));
+      expect(lastLocation?.pathname).toBe('/hosts/21');
+      expect(lastState()).toEqual({ fromOperations: true, hostIds: [21, 22], queueLabel: 'Needs another look' });
     });
 
     // UX review 2026-09-24: 15 loaded of 29, five on screen, and the footer
@@ -245,10 +272,10 @@ describe('MyWorkCard — Worth a look', () => {
         items: Array.from({ length: 15 }, (_, i) => ({ ...row, host_id: 300 + i, ip_address: `10.8.1.${i}` })),
       };
       renderCard(null, false, { followups: fifteen });
-      expect(screen.getByText('Showing 5 of 29')).toBeInTheDocument();
-      expect(screen.queryByText(/Showing 15 of 29/)).not.toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'Show 10 more' }));
-      expect(screen.getByText('Showing 15 of 29')).toBeInTheDocument();
+      expect(screen.getByText('5 of 29')).toBeInTheDocument();
+      expect(screen.queryByText(/15 of 29/)).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Show 10 more here' }));
+      expect(screen.getByText('15 of 29 — the other 14 are in the full list')).toBeInTheDocument();
     });
 
     it('is absent when nothing is owed, and says so when it could not be computed', () => {
@@ -283,28 +310,27 @@ describe('MyWorkCard — the queue a host is opened with', () => {
     renderCard(null, false, { queue: four });
     // The preview really is three of four.
     expect(screen.getByRole('button', { name: /Show 1 more/ })).toBeInTheDocument();
-    const shown = screen.getAllByRole('button').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
+    const shown = screen.getAllByRole('link').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
     expect(shown).toHaveLength(3);
 
     fireEvent.click(shown[0]);
-    const [, options] = navigate.mock.calls[0];
-    expect([...options.state.hostIds].sort()).toEqual([1, 2, 3, 4]);
-    expect(options.state.queueLabel).toBe('In review');
-    expect(options.state.queuePartial).toBeUndefined();
+    expect([...lastState().hostIds].sort()).toEqual([1, 2, 3, 4]);
+    expect(lastState().queueLabel).toBe('In review');
+    expect(lastState().queuePartial).toBeUndefined();
   });
 
   it('says the queue is partial when the server holds more than Operations loaded', () => {
     renderCard(null, false, { queue: { ...four, in_review_count: 14 } });
-    const shown = screen.getAllByRole('button').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
+    const shown = screen.getAllByRole('link').filter((b) => /^10\.9\.0\.\d/.test(b.textContent ?? ''));
     fireEvent.click(shown[0]);
-    expect(navigate.mock.calls[0][1].state).toMatchObject({ hostIds: expect.any(Array), queuePartial: true });
-    expect(navigate.mock.calls[0][1].state.hostIds).toHaveLength(4);
+    expect(lastState()).toMatchObject({ hostIds: expect.any(Array), queuePartial: true });
+    expect(lastState().hostIds).toHaveLength(4);
   });
 
   it('Worth a look carries its whole list too', () => {
     const many = { ...queue, queue_total: 7, items: [1, 2, 3, 4, 5, 6, 7].map((n) => ({ ...queue.items[0], host_id: 100 + n, ip_address: `10.7.7.${n}` })) };
     renderCard(many);
-    fireEvent.click(screen.getByRole('button', { name: '10.7.7.1' }));
-    expect(navigate.mock.calls[0][1].state.hostIds).toEqual([101, 102, 103, 104, 105, 106, 107]);
+    fireEvent.click(screen.getByRole('link', { name: '10.7.7.1' }));
+    expect(lastState().hostIds).toEqual([101, 102, 103, 104, 105, 106, 107]);
   });
 });

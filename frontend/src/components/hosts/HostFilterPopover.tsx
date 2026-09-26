@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { ArrowLeft, Check, ChevronDown, ChevronRight, Plus, Search } from 'lucide-react';
 import type { HostFilterData } from '../../services/api';
 import {
@@ -20,12 +20,15 @@ import {
   portOptions,
   scanOptions,
   searchFields,
+  searchValues,
   serviceOptions,
   type ChoiceField,
   type FilterValueOption,
   type HostFilterField,
   type MultiField,
+  type QueryField,
   type SingleField,
+  type ValueHit,
 } from './hostFilterFields';
 
 /**
@@ -52,6 +55,8 @@ export interface HostFilterPopoverProps {
   optionsLoading: boolean;
   /** The facet request failed — the option lists may be missing or stale. */
   optionsError: boolean;
+  /** A query-only field was picked: start `token` in the query bar. */
+  onStartQueryCondition?: (token: string) => void;
 }
 
 const without = (filters: HostFilterOptions, keys: Array<keyof HostFilterOptions>): HostFilterOptions => {
@@ -545,16 +550,48 @@ function FieldEditor(props: EditorProps) {
 // ── Catalog ──────────────────────────────────────────────────────────────────
 
 function Catalog({
-  filters, onPick,
-}: { filters: HostFilterOptions; onPick: (field: HostFilterField) => void }) {
+  filters, data, onPick, onPickValue,
+}: {
+  filters: HostFilterOptions;
+  data: HostFilterData | null;
+  onPick: (field: HostFilterField) => void;
+  onPickValue: (hit: ValueHit) => void;
+}) {
   const [needle, setNeedle] = useState('');
   const [openCategory, setOpenCategory] = useState<string | null>(null);
   const searching = needle.trim().length > 0;
   const results = searching ? searchFields(needle) : [];
+  const valueHits = searching ? searchValues(needle, data) : [];
+
+  const valueRow = (hit: ValueHit) => {
+    const applied = ((filters[hit.field.key] as string[] | undefined) ?? []).includes(hit.option.value);
+    return (
+      <li key={`${hit.field.id}:${hit.option.value}`}>
+        <button
+          type="button"
+          onClick={() => onPickValue(hit)}
+          title={hit.option.description}
+          aria-pressed={applied}
+          className="flex w-full min-w-0 items-start gap-xs rounded-control px-xs py-xxs text-left hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <Check className={cn('mt-0.5 size-4 shrink-0 text-primary', !applied && 'opacity-0')} aria-hidden />
+          <span className="min-w-0 flex-1">
+            <span className="block truncate text-metadata">{hit.option.label}</span>
+            <span className="block truncate text-caption text-muted-foreground">{hit.field.label}</span>
+          </span>
+          {hit.option.count !== undefined && (
+            <span className="shrink-0 tabular-nums text-caption text-muted-foreground">{hit.option.count.toLocaleString()}</span>
+          )}
+          <span className="shrink-0 text-caption text-muted-foreground">{applied ? 'applied' : 'add'}</span>
+        </button>
+      </li>
+    );
+  };
 
   const row = (field: HostFilterField, withHelp: boolean) => {
     const applied = fieldIsApplied(field, filters);
     const isToggle = field.kind === 'toggle';
+    const isQuery = field.kind === 'query';
     return (
       <li key={field.id}>
         <button
@@ -571,7 +608,9 @@ function Catalog({
           </span>
           {isToggle
             ? <span className="shrink-0 text-caption text-muted-foreground">{applied ? 'on — click to remove' : 'add'}</span>
-            : <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />}
+            : isQuery
+              ? <code className="shrink-0 font-mono text-caption text-muted-foreground" title="Continues in the query bar">{(field as QueryField).token}</code>
+              : <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />}
         </button>
       </li>
     );
@@ -588,19 +627,33 @@ function Catalog({
           spellCheck={false}
           autoCorrect="off"
           autoCapitalize="off"
-          placeholder="Find a filter… (port, severity, unreviewed, ASN)"
+          placeholder="Find a filter… (port, SMB signing, CVE, unreviewed)"
           aria-label="Find a filter"
           className="h-9 pl-7"
         />
       </div>
       {searching ? (
-        results.length > 0 ? (
-          <ul aria-label="Matching filters">{results.map((f) => row(f, true))}</ul>
+        results.length > 0 || valueHits.length > 0 ? (
+          <>
+            {valueHits.length > 0 && (
+              <div>
+                <h4 className="px-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Values</h4>
+                <ul aria-label="Matching values">{valueHits.map(valueRow)}</ul>
+              </div>
+            )}
+            {results.length > 0 && (
+              <div className={cn(valueHits.length > 0 && 'border-t border-border pt-xs')}>
+                {valueHits.length > 0 && (
+                  <h4 className="px-xs text-caption font-semibold uppercase tracking-wider text-muted-foreground">Filters</h4>
+                )}
+                <ul aria-label="Matching filters">{results.map((f) => row(f, true))}</ul>
+              </div>
+            )}
+          </>
         ) : (
           <p className="px-xs text-caption text-muted-foreground break-words">
-            No structured filter matches. The query bar reaches more — CVE (<code className="font-mono">cve:</code>),
-            vulnerability text (<code className="font-mono">vuln:</code>), certificate organisation
-            (<code className="font-mono">certorg:</code>), note text (<code className="font-mono">note:</code>).
+            No filter matches “{needle.trim()}”. The query bar searches host text too — type it there, or press{' '}
+            <kbd className="font-mono">/</kbd>.
           </p>
         )
       ) : (
@@ -645,9 +698,11 @@ function Catalog({
 
 export default function HostFilterPopover({
   open, onOpenChange, fieldId, onFieldChange, filters, onApply, data, optionsLoading, optionsError,
+  onStartQueryCondition,
 }: HostFilterPopoverProps) {
   const field = fieldId ? fieldById(fieldId) : undefined;
   const close = () => onOpenChange(false);
+  const startingQueryRef = useRef(false);
   const commit = (next: HostFilterOptions) => {
     // Choosing "no recorded open ports" drops a port condition it would
     // otherwise silently override (see EndpointEditor for the other direction).
@@ -662,7 +717,24 @@ export default function HostFilterPopover({
       commit(withValue(filters, picked.key, fieldIsApplied(picked, filters) ? undefined : true));
       return;
     }
+    if (picked.kind === 'query') {
+      // Focus goes to the query bar, not back to "Add filter" (see
+      // onCloseAutoFocus below).
+      startingQueryRef.current = true;
+      close();
+      onStartQueryCondition?.(picked.token);
+      return;
+    }
     onFieldChange(picked.id);
+  };
+  // A value found by the catalog search joins its field's condition (OR),
+  // or leaves it when it is already there.
+  const pickValue = ({ field, option }: ValueHit) => {
+    const current = (filters[field.key] as string[] | undefined) ?? [];
+    const next = current.includes(option.value)
+      ? current.filter((v) => v !== option.value)
+      : [...current, option.value];
+    commit(withValue(filters, field.key, next));
   };
 
   return (
@@ -676,6 +748,11 @@ export default function HostFilterPopover({
       <PopoverContent
         align="start"
         collisionPadding={8}
+        onCloseAutoFocus={(event) => {
+          if (!startingQueryRef.current) return;
+          startingQueryRef.current = false;
+          event.preventDefault();
+        }}
         // Capped by the room Radix measures below the trigger, not by the
         // viewport: the trigger sits ~250px down the page, so `100vh - 8rem`
         // still ran off the bottom of a short window.
@@ -706,7 +783,7 @@ export default function HostFilterPopover({
             />
           </div>
         ) : (
-          <Catalog filters={filters} onPick={pick} />
+          <Catalog filters={filters} data={data} onPick={pick} onPickValue={pickValue} />
         )}
       </PopoverContent>
     </Popover>

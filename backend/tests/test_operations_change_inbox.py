@@ -184,13 +184,16 @@ def test_blockers_list_runs_that_stopped_without_completing(client, db_session, 
         ExecutionSession(test_plan_id=plan("Orphaned plan").id, status="active", agent_session_id=ended.id),
         ExecutionSession(test_plan_id=plan("Running plan").id, status="active", agent_session_id=live.id),
         ExecutionSession(test_plan_id=plan("Done plan").id, status="completed", agent_session_id=ended.id),
+        # v2.424.0 — a legacy run (no parent session) whose agent holds no
+        # live key: the Runs list called it stalled; Blocked missed it.
+        ExecutionSession(test_plan_id=plan("Legacy plan").id, status="active", agent_id=test_agent.id),
     ])
     db_session.commit()
 
     b = client.get(_wb(pid)).json()["blockers"]
-    assert b["interrupted_execution_count"] == 2
+    assert b["interrupted_execution_count"] == 3
     assert {e["plan_title"]: e["reason"] for e in b["executions"]} == {
-        "Paused plan": "paused", "Orphaned plan": "session_ended",
+        "Paused plan": "paused", "Orphaned plan": "session_ended", "Legacy plan": "session_ended",
     }
 
 

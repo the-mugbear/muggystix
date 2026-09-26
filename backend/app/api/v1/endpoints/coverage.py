@@ -109,6 +109,9 @@ class ProjectCoverageResponse(BaseModel):
     # Useful for "things we found that we shouldn't have" or
     # "out-of-scope drift".
     hosts_outside_scope: int = 0
+    # v2.424.0 — with hosts_outside_scope, the three coverage states.
+    hosts_in_subnet_scope: int = 0
+    hosts_name_scope_only: int = 0
 
 
 def _cidr_size(cidr: str) -> int:
@@ -276,6 +279,19 @@ def get_project_coverage(
     # declares no scope.  Counted here on its own it included the name-scoped
     # hosts and read higher than its list (review 2026-09-23 R7).
     hosts_outside_scope = scope_coverage.out_of_scope_count(db, project.id)
+    # v2.424.0 — the other two coverage states, so the three add up to the
+    # project's hosts (Operations read "400 discovered" + "18 outside" of 419
+    # and never said where the last one was).  Same predicate as `scope:`.
+    from app.services.host_query_predicates import scope_coverage_predicate
+
+    def _coverage_count(state: str) -> int:
+        return db.query(func.count(Host.id)).filter(
+            Host.project_id == project.id, scope_coverage_predicate([state], project.id),
+        ).scalar() or 0
+
+    has_scope = len(scope_objs) > 0
+    hosts_in_subnet_scope = _coverage_count("subnet") if has_scope else 0
+    hosts_name_scope_only = _coverage_count("name") if has_scope else 0
 
     return ProjectCoverageResponse(
         project_id=project.id,
@@ -287,4 +303,6 @@ def get_project_coverage(
         total_scopes=len(scope_objs),
         scopes=scopes_rows,
         hosts_outside_scope=hosts_outside_scope,
+        hosts_in_subnet_scope=hosts_in_subnet_scope,
+        hosts_name_scope_only=hosts_name_scope_only,
     )

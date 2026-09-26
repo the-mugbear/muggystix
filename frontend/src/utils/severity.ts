@@ -15,11 +15,22 @@ export const SEVERITY_LABEL: Record<Severity, string> = {
 
 /** Severity → theme token (matches the Badge severity variants). */
 export const SEVERITY_HSL: Record<Severity, string> = {
-  critical: 'hsl(var(--destructive))',
-  high: 'hsl(var(--warning))',
-  medium: 'hsl(var(--info))',
-  low: 'hsl(var(--success))',
+  // 5.304.0 — severity's own tokens (theme/cssVars.ts severityVars): Magma's
+  // semantic colours put Low between High and Medium.
+  critical: 'hsl(var(--sev-critical))',
+  high: 'hsl(var(--sev-high))',
+  medium: 'hsl(var(--sev-medium))',
+  low: 'hsl(var(--sev-low))',
   info: 'hsl(var(--muted-foreground))',
+};
+
+/** Text on a filled severity mark: black or white by the step's luminance. */
+export const SEVERITY_FOREGROUND: Record<Severity, string> = {
+  critical: 'hsl(var(--sev-critical-foreground))',
+  high: 'hsl(var(--sev-high-foreground))',
+  medium: 'hsl(var(--sev-medium-foreground))',
+  low: 'hsl(var(--sev-low-foreground))',
+  info: 'hsl(var(--background))',
 };
 
 /** Severity → Badge `variant` (the shared severity-* badge styles). The

@@ -69,6 +69,7 @@ import {
 } from '../components/ui/tooltip';
 import { cn } from '../utils/cn';
 import { formatTimestamp } from '../utils/relativeTime';
+import { isStalledRun } from '../utils/agentRuns';
 
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
   { value: '', label: 'All workflows' },
@@ -235,12 +236,6 @@ const RunsLead: React.FC<{
   );
 };
 
-/** v5.288.0 — an in-progress run whose session can no longer act: it will not
- *  move on its own. Workflow state, not evidence age. */
-const isStalledRun = (row: AgentSessionRow): boolean =>
-  row.kind !== 'project'
-  && row.session_live === false
-  && ['active', 'in_progress'].includes(row.status.toLowerCase());
 
 /** Below this many sessions a percentage says more than the sample does. */
 const MIN_SAMPLE_FOR_PERCENT = 5;

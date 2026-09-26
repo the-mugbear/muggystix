@@ -29,6 +29,8 @@ export interface ChipNameLookups {
   subnetLabel?: (id: string) => string | undefined;
   asn?: (asn: string) => string | undefined;
   followStatus?: (value: string) => string | undefined;
+  weakness?: (flag: string) => string | undefined;
+  check?: (id: string) => string | undefined;
 }
 
 // Values named in the chip before "+N"; the tooltip always carries them all.
@@ -175,6 +177,8 @@ export function hostConditionChips(
     });
   }
   flag('hasExploitAvailable', 'Exploit reported');
+  list('weaknesses', 'Weakness', (f) => names.weakness?.(f) ?? f.replace(/_/g, ' '));
+  list('checks', 'Check', (id) => names.check?.(id) ?? id.replace(/_/g, ' '));
   flag('hasTestExecution', 'Tested by agent');
   flag('outOfScopeOnly', 'Out of scope');
 

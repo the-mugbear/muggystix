@@ -255,12 +255,20 @@ export default function Scans() {
   // empty query string, which churns the browser history.
   const filtersInitialized = useRef(false);
 
+  // 5.304.0 — `?since=<ISO>`: the imports since a moment, so Operations'
+  // "8 new imports" opens those 8 (it opened the whole history).  Choosing a
+  // day range replaces it.
+  const [sinceIso, setSinceIso] = useState<string | null>(() => {
+    const raw = urlParams.get('since');
+    return raw && !Number.isNaN(Date.parse(raw)) ? raw : null;
+  });
   const hasActiveFilters = toolFilter !== '' || debouncedSearchText.trim() !== ''
-    || dateRangeDays !== null || uploaderFilter !== null;
+    || dateRangeDays !== null || sinceIso !== null || uploaderFilter !== null;
   const createdAfterIso = useMemo(() => {
+    if (sinceIso) return sinceIso;
     if (dateRangeDays == null) return undefined;
     return new Date(Date.now() - dateRangeDays * 24 * 60 * 60 * 1000).toISOString();
-  }, [dateRangeDays]);
+  }, [dateRangeDays, sinceIso]);
   // One filter object for every list, the summary and the batch rows, so
   // they can never disagree about what "the current filters" are.
   const listFilters = useMemo(
@@ -505,6 +513,8 @@ export default function Scans() {
     else next.delete('tool');
     if (dateRangeDays != null) next.set('days', String(dateRangeDays));
     else next.delete('days');
+    if (sinceIso) next.set('since', sinceIso);
+    else next.delete('since');
     if (sortBy !== 'created_at') next.set('sort_by', sortBy);
     else next.delete('sort_by');
     if (sortOrder !== 'desc') next.set('sort_order', sortOrder);
@@ -515,7 +525,7 @@ export default function Scans() {
     else next.delete('uploaded_by');
     setUrlParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, toolFilter, dateRangeDays, sortBy, sortOrder, showBatchFiles, uploaderFilter]);
+  }, [debouncedSearchText, toolFilter, dateRangeDays, sinceIso, sortBy, sortOrder, showBatchFiles, uploaderFilter]);
 
   useEffect(() => {
     fetchScans();
@@ -1662,13 +1672,21 @@ export default function Scans() {
               </SelectContent>
             </Select>
             <Select
-              value={dateRangeDays == null ? 'all' : String(dateRangeDays)}
-              onValueChange={(v) => setDateRangeDays(v === 'all' ? null : parseInt(v, 10))}
+              value={sinceIso ? 'since' : dateRangeDays == null ? 'all' : String(dateRangeDays)}
+              onValueChange={(v) => {
+                if (v === 'since') return;
+                setSinceIso(null);
+                setDateRangeDays(v === 'all' ? null : parseInt(v, 10));
+              }}
             >
-              <SelectTrigger className="h-8 w-36 text-metadata" aria-label="Filter scans by upload date">
+              <SelectTrigger className="h-8 w-44 text-metadata" aria-label="Filter scans by upload date"
+                title={sinceIso ? `Uploaded since ${new Date(sinceIso).toLocaleString()}` : undefined}>
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
+                {sinceIso && (
+                  <SelectItem value="since">Since {new Date(sinceIso).toLocaleDateString()}</SelectItem>
+                )}
                 {DATE_RANGE_PRESETS.map((preset) => (
                   <SelectItem key={preset.label} value={preset.days == null ? 'all' : String(preset.days)}>
                     {preset.days == null ? 'Any time' : `Last ${preset.days} days`}
@@ -1764,6 +1782,7 @@ export default function Scans() {
                     setSearchText('');
                     setToolFilter('');
                     setDateRangeDays(null);
+                    setSinceIso(null);
                     setUploaderFilter(null);
                   }}
                 >

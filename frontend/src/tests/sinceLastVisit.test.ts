@@ -52,9 +52,12 @@ describe('sinceChips', () => {
     expect(chips.map((c) => c.label)).toEqual(['1 new host', '1 known host changed']);
   });
 
-  it('sends new imports to the import history', () => {
-    const [scans] = sinceChips(since({ new_scan_count: 2 }));
-    expect(scans).toMatchObject({ label: '2 new imports', href: '/scans' });
+  // 5.304.0 — to the imports it counted, not the whole history.
+  it('sends new imports to the imports since the last visit', () => {
+    const s = since({ new_scan_count: 2 });
+    const [scans] = sinceChips(s);
+    expect(scans).toMatchObject({ label: '2 new imports' });
+    expect(scans.href).toBe(`/scans?since=${encodeURIComponent(s.last_viewed_at!)}`);
   });
 
   it('shows a count without a link rather than a link over the wrong window', () => {

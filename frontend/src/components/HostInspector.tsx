@@ -25,8 +25,6 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
-  Bookmark,
-  BookmarkPlus,
   CheckCircle2,
   ClipboardList,
   Computer,
@@ -34,7 +32,6 @@ import {
   Eye,
   Loader2,
   MessageSquare,
-  MoreHorizontal,
   NotebookPen,
   RefreshCw,
   RotateCcw,
@@ -87,6 +84,8 @@ import EntryResultsPanel from './EntryResultsPanel';
 import NseScriptsCard from './NseScriptsCard';
 import HostFindingsCard from './HostFindingsCard';
 import HostNamesCard from './HostNamesCard';
+import { TimeAgo } from './TimeAgo';
+import { AssigneeControl, TagControl } from './host-inspector/HostWorkControls';
 import HostLineagePanel from './HostLineagePanel';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { NoteThread } from './host-inspector/NoteThread';
@@ -131,12 +130,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from './ui/select';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from './ui/dropdown-menu';
 import { Textarea } from './ui/textarea';
 import {
   ENDPOINT_STATUS_LABEL, STATUS_LABEL as FINDING_STATUS_LABEL,
@@ -303,6 +296,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     [onQueryHosts, navigate],
   );
   const [host, setHost] = useState<Host | null>(null);
+  // After an assignment or tag change from the facts box.
+  const reloadHost = useCallback(() => {
+    getHost(hostId)
+      .then((fresh) => setHost((prev) => (prev && prev.id === fresh.id ? fresh : prev)))
+      .catch(() => { /* the control reported the write; a failed re-read keeps the old view */ });
+  }, [hostId]);
   const [conflicts, setConflicts] = useState<HostConflict[]>([]);
   const [conflictHistory, setConflictHistory] = useState<ConflictHistoryEntry[]>([]);
   // Canonical conflict count from the API (same definition as the Hosts-list
@@ -1418,7 +1417,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     <>
       <button type="button" onClick={() => scrollToSection('host-detail-ports')} className={glanceLinkClass}>
         <strong className="text-foreground">{openPorts.length}</strong> open
-        <span className="opacity-70"> / {host.ports.length} ports</span>
+        {/* The total only when it says more ("5 open / 5 ports"). */}
+        {host.ports.length !== openPorts.length && (
+          <span className="opacity-70"> / {host.ports.length} ports</span>
+        )}
+        {host.ports.length === openPorts.length && ` port${openPorts.length === 1 ? '' : 's'}`}
       </button>
       {host.vulnerability_summary && host.vulnerability_summary.total_vulnerabilities > 0 && (() => {
         // Informational is excluded from the at-a-glance line — it dwarfs
@@ -1540,21 +1543,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             own 5/12 of the overview card, which for an unreviewed host was one
             button over ~200px of nothing while the OS beside it truncated. */}
         <div className="ml-auto flex flex-wrap items-center gap-xs">
-          {followStatus ? (
-            <Bookmark
-              className={cn(
-                'size-4',
-                followStatus === 'reviewed'
-                  ? 'text-success'
-                  : followStatus === 'in_review'
-                    ? 'text-warning'
-                    : 'text-info',
-              )}
-              aria-hidden
-            />
-          ) : (
-            <BookmarkPlus className="size-4 text-muted-foreground" aria-hidden />
-          )}
+          {/* 5.303.0 — the bookmark icon that stood here looked like a button
+              and did nothing; the badge says the state. */}
           <Badge
             variant={followStatus ? FOLLOW_STATUS_META[followStatus].badgeVariant : 'outline'}
             title={followHelperText}
@@ -1579,26 +1569,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               <Eye className="size-3.5" aria-hidden /> Start review
             </Button>
           )}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button size="icon" variant="ghost" disabled={followLoading}
-                aria-label="More review actions">
-                <MoreHorizontal className="size-4" aria-hidden />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
-              {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
-                <DropdownMenuItem onClick={openReviewCompletion}>
-                  Mark reviewed…
-                </DropdownMenuItem>
-              )}
-              {followStatus && (
-                <DropdownMenuItem onClick={() => updateFollow('none')}>
-                  Clear review status
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+          {/* 5.303.0 — the off-path transitions as quiet buttons: the "⋯"
+              menu they lived in held one item on almost every host. */}
+          {followStatus !== 'in_review' && followStatus !== 'reviewed' && (
+            <Button size="sm" variant="ghost" disabled={followLoading} onClick={openReviewCompletion}>
+              Mark reviewed…
+            </Button>
+          )}
+          {followStatus && (
+            <Button size="sm" variant="ghost" disabled={followLoading} onClick={() => updateFollow('none')}
+              title="Clear this host's review status">
+              Clear status
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1687,12 +1670,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                     // but not required" from nmap and (signing:False) from
                     // NetExec; still relay-exposable.  v5.298.0 — the weakness
                     // is listed under Weaknesses; the header states the fact.
-                    <span className="text-foreground" title="SMB signing is not required — NTLM relay is still possible (listed under Weaknesses)">
+                    // 5.303.0 — the tooltip said "listed under Weaknesses",
+                    // which holds only when a scanner reported it as a check.
+                    <span className="text-foreground" title="SMB signing is not required — NTLM relay is still possible">
                       Signing not required
                     </span>
                   ) : host.smb_signing === 'required' ? (
                     <span className="text-foreground">Signing required</span>
-                  ) : <span className="text-muted-foreground">—</span>}
+                  ) : (
+                    // "—" read as "nothing wrong".
+                    <span className="text-muted-foreground" title="No import recorded this host's SMB signing (nmap smb2-security-mode, NetExec)">
+                      signing not checked
+                    </span>
+                  )}
                 </dd>
               </div>
               )}
@@ -1716,14 +1706,33 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               )}
               <div className="flex gap-sm">
                 <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Assignee</dt>
-                <dd className="min-w-0 truncate text-metadata">
-                  {host.assignees && host.assignees.length > 0 ? (
-                    <span className="text-foreground" title={host.assignees.map((a) => a.name).join(', ')}>
-                      {host.assignees.map((a) => a.name).join(', ')}
-                    </span>
-                  ) : <span className="text-warning">unassigned</span>}
+                <dd className="min-w-0 text-metadata">
+                  <AssigneeControl
+                    hostId={host.id}
+                    assignees={host.assignees ?? []}
+                    canEdit={canManageEntries}
+                    onChanged={reloadHost}
+                  />
                 </dd>
               </div>
+              {/* v2.423.0 — the weakness / access flags a Hosts filter can
+                  match (an end-of-life OS read as a plain OS name, and a host
+                  opened from "SMB signing not required" said nothing of it
+                  here). */}
+              {(host.weakness_flags?.length ?? 0) > 0 && (
+                <div className="flex gap-sm sm:col-span-2">
+                  <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground"
+                    title="Weakness and access flags — the Hosts filter “Weakness or access”">Weakness</dt>
+                  <dd className="flex min-w-0 flex-wrap gap-xxs text-metadata">
+                    {host.weakness_flags!.map((flag) => (
+                      <span key={flag}
+                        className="rounded-chip border border-warning/40 bg-warning/10 px-xs text-caption text-warning">
+                        {host.weakness_labels?.[flag] ?? flag.replace(/_/g, ' ')}
+                      </span>
+                    ))}
+                  </dd>
+                </div>
+              )}
               {/* Registered owner of the host's netblock (RDAP). Distinct from
                   "Assignee" above (a person); this is the outside world's answer
                   to "whose is this?" — the scope-validation signal, surfaced at
@@ -1762,16 +1771,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   </dd>
                 </div>
               )}
-              {host.tags && host.tags.length > 0 && (
+              {((host.tags?.length ?? 0) > 0 || canManageEntries) && (
                 <div className="flex gap-sm sm:col-span-2">
                   <dt className="w-20 shrink-0 text-caption uppercase tracking-wide text-muted-foreground">Tags</dt>
-                  <dd className="flex min-w-0 flex-wrap gap-xxs">
-                    {host.tags.map((tag) => (
-                      <span key={tag.id} className="rounded-chip border border-border px-xs text-caption text-foreground"
-                        style={tag.color ? { borderColor: tag.color, color: tag.color } : undefined} title={tag.name}>
-                        {tag.name}
-                      </span>
-                    ))}
+                  <dd className="min-w-0">
+                    <TagControl hostId={host.id} tags={host.tags ?? []} canEdit={canManageEntries} onChanged={reloadHost} />
                   </dd>
                 </div>
               )}
@@ -1847,9 +1851,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 {followInfo && (
                   <span className="text-caption text-muted-foreground">
                     Updated{' '}
-                    {new Date(
-                      followInfo.updated_at ?? followInfo.created_at,
-                    ).toLocaleString()}
+                    <TimeAgo value={followInfo.updated_at ?? followInfo.created_at} absoluteAfterDays={30} />
                   </span>
                 )}
               </div>

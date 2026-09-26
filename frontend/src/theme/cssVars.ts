@@ -181,6 +181,18 @@ function shiftLightness(input: string, deltaL: number): string {
   return `${h} ${s}% ${next}%`;
 }
 
+/** `--sev-{critical,high,medium,low}` (+ `-foreground`): the theme's severity
+ *  ramp, or its semantic colours in the old order when it has none. */
+function severityVars(t: ColorTokens): Record<string, string> {
+  const ramp = t.severity ?? { critical: t.error, high: t.warning, medium: t.info, low: t.success };
+  const out: Record<string, string> = {};
+  (Object.keys(ramp) as Array<keyof typeof ramp>).forEach((k) => {
+    out[`--sev-${k}`] = toHslComponents(ramp[k]);
+    out[`--sev-${k}-foreground`] = foregroundComponentsFor(ramp[k]);
+  });
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // Mapping: ColorTokens -> {var name: components string}
 // ---------------------------------------------------------------------------
@@ -238,6 +250,10 @@ function buildVarMap(t: ColorTokens): Record<string, string> {
     '--warning-foreground': foregroundComponentsFor(t.warning),
     '--info': toHslComponents(t.info),
     '--info-foreground': foregroundComponentsFor(t.info),
+
+    // 5.304.0 — severity has its own tokens: the semantic colours by default,
+    // a theme's `severity` ramp where those cannot carry the order (Magma).
+    ...severityVars(t),
 
     // Sidebar / chrome.  Beta.3: tonally shifted away from the page
     // background — light themes get a subtly darker sidebar (gives

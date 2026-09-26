@@ -14,6 +14,7 @@ import React from 'react';
 import { CornerDownRight } from 'lucide-react';
 
 import { AgentAuthorBadge } from './AgentAuthorBadge';
+import { TimeAgo } from './TimeAgo';
 import { cn } from '../utils/cn';
 
 export interface MessageBubbleProps {
@@ -67,7 +68,7 @@ export const MessageBubble: React.FC<MessageBubbleProps> = ({
         </span>
         <AgentAuthorBadge actorType={actorType ?? undefined} />
         <span className="text-caption text-muted-foreground">
-          {new Date(createdAt).toLocaleString()}
+          <TimeAgo value={createdAt} absoluteAfterDays={30} />
           {edited && <span title={editedAt ? `Edited ${new Date(editedAt).toLocaleString()}` : undefined}> · edited</span>}
         </span>
       </div>

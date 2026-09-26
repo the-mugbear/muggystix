@@ -441,6 +441,16 @@
   --warning-foreground: 0 0% 100%;
   --info: 207 78% 51%;
   --info-foreground: 0 0% 100%;
+  /* Severity ramp (5.304.0) — the light theme's semantic colours, until the
+     runtime theme (theme/cssVars.ts severityVars) replaces them. */
+  --sev-critical: 0 65% 47%;
+  --sev-critical-foreground: 0 0% 100%;
+  --sev-high: 36 100% 30%;
+  --sev-high-foreground: 0 0% 100%;
+  --sev-medium: 207 78% 51%;
+  --sev-medium-foreground: 0 0% 100%;
+  --sev-low: 122 47% 34%;
+  --sev-low-foreground: 0 0% 100%;
   /* --border is the subtle hairline divider for cards / table rows —
      12% alpha is intentional there.  --input is the FORM-CONTROL
      border (checkbox / radio / text input / select / combobox /

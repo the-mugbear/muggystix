@@ -42,12 +42,13 @@ import {
   HostFilterOptions,
   activeFilterPresetId,
 } from '../components/HostFilters';
-import HostCommandBar from '../components/hosts/HostCommandBar';
+import HostCommandBar, { type HostCommandBarHandle } from '../components/hosts/HostCommandBar';
 import HostFilterPopover from '../components/hosts/HostFilterPopover';
 import { fieldForChip } from '../components/hosts/hostFilterFields';
 import HostViewPicker, { type BuiltInHostView } from '../components/hosts/HostViewPicker';
 import {
   FOLLOW_STATUS_OPTIONS,
+  isNewHost,
   useHostColumns,
   type HostFilterPivot,
 } from '../components/hosts/useHostColumns';
@@ -61,6 +62,7 @@ import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
 import { endpointMatchCriteria } from '../utils/endpointMatch';
+import { weaknessMatchCriteria } from '../utils/weaknessMatch';
 import { useConfirm } from '../hooks/useConfirm';
 import { hostConditionChips } from '../utils/hostConditionChips';
 import {
@@ -146,6 +148,8 @@ type HostQueryContext = {
   orgs?: string[];
   asns?: string[];
   countries?: string[];
+  weaknesses?: string;
+  checks?: string;
   // v5.0.0 — boolean query DSL; ANDs with the structured params above.
   q?: string;
   sort_by?: string;
@@ -156,6 +160,11 @@ type HostQueryContext = {
 
 // Conditions shown in the sticky toolbar before "Show all conditions (N)".
 const MAX_STICKY_CHIPS = 8;
+
+/** Filters as a key-order-independent string — the same conditions from the
+ *  URL and from page state compare equal. */
+const canonicalFilters = (filters: HostFilterOptions): string =>
+  JSON.stringify(Object.keys(filters).sort().map((k) => [k, (filters as Record<string, unknown>)[k]]));
 
 export default function Hosts() {
   const navigate = useNavigate();
@@ -255,8 +264,12 @@ export default function Hosts() {
   const [activeViewId, setActiveViewId] = useState<number | null>(null);
   const [chipsExpanded, setChipsExpanded] = useState(false);
   // The last view applied (saved or built-in) and how to apply it again.
-  const [baseView, setBaseView] = useState<{ name: string; reapply: () => void } | null>(null);
+  // `reapply` is absent for a base restored by name after a reload.
+  // `exactFilters` (canonical) marks a base the picker can recognise itself —
+  // a starter query — so it reads "<name>" until edited, not "· Modified".
+  const [baseView, setBaseView] = useState<{ name: string; reapply?: () => void; exactFilters?: string } | null>(null);
   const [confirmEl, confirm] = useConfirm();
+  const commandBarRef = useRef<HostCommandBarHandle>(null);
 
   const scanLookup = useMemo(() => {
     const map = new Map<string, { label: string }>();
@@ -316,6 +329,8 @@ export default function Hosts() {
     if (filters.asns?.length) params.asns = filters.asns;
     if (filters.countries?.length) params.countries = filters.countries;
     if (filters.assignedToMe) params.assigned_to = 'me';
+    if (filters.weaknesses?.length) params.weaknesses = filters.weaknesses.join(',');
+    if (filters.checks?.length) params.checks = filters.checks.join(',');
     if (filters.query?.trim()) params.q = filters.query.trim();
     params.sort_by = ({
       critical_desc: 'critical_vulns',
@@ -515,6 +530,9 @@ export default function Hosts() {
       if (restoredDefault && Object.keys(initialFilters).length > 0) {
         skipActiveClearRef.current = true;
         setAppliedProjectDefault(restoredDefault);
+        // The default is also where later edits start: "<name> · Modified",
+        // not "Custom filters" (Chrome pass 2026-09-26).
+        setBaseView({ name: restoredDefault });
       } else {
         restoredDefault = null;
       }
@@ -525,6 +543,27 @@ export default function Hosts() {
     // v5.290.0 — a nav link to a bare /hosts reopens the session's filters;
     // say so, unless the project-default banner already explains them.
     if (restoredFromSession && !restoredDefault) setRestoredFilters(initialFilters);
+    // The view the restored filters started from, so the picker reads
+    // "<name> · Modified" after a reload as it did before it (it read
+    // "Custom filters").  Only its name survives; Reset needs the view.
+    // Stored with the filters it describes, so a link that brings other
+    // filters never inherits the name.
+    if (!restoredDefault && Object.keys(initialFilters).length > 0) {
+      try {
+        const stored = JSON.parse(sessionStorage.getItem(projectScopedKey('hostBaseView')) ?? 'null');
+        if (stored?.name && stored.filters === canonicalFilters(initialFilters)) {
+          setBaseView({
+            name: stored.name,
+            exactFilters: typeof stored.exactFilters === 'string' ? stored.exactFilters : undefined,
+          });
+          // A saved view still unmodified stays named as itself, not "· Modified".
+          if (typeof stored.viewId === 'number') {
+            skipActiveClearRef.current = true;
+            setActiveViewId(stored.viewId);
+          }
+        }
+      } catch { /* ignore */ }
+    }
     setFilters(initialFilters);
     setIsInitialized(true);
   }, [isInitialized, location.search]);
@@ -617,6 +656,19 @@ export default function Hosts() {
     setFilters({ ...view.filters });
     setActiveViewId(null);
     setBaseView({ name: view.name, reapply: () => handleApplyBuiltIn(view) });
+    setPage(0);
+    setProjectDefaultBanner(null);
+  };
+
+  // A starter query replaces the applied conditions like a built-in view
+  // (5.303.0); it used to be ANDed with them, the project default included.
+  const handleApplyTemplate = (q: string, label: string) => {
+    skipActiveClearRef.current = true;
+    setFilters({ query: q });
+    setActiveViewId(null);
+    setBaseView({
+      name: label, reapply: () => handleApplyTemplate(q, label), exactFilters: canonicalFilters({ query: q }),
+    });
     setPage(0);
     setProjectDefaultBanner(null);
   };
@@ -731,6 +783,20 @@ export default function Hosts() {
       sessionStorage.setItem(projectScopedKey('hostFiltersState'), JSON.stringify(stateToPersist));
     }
   }, [filters, isInitialized]);
+
+  // The base view's name, with the filters it now describes (see the restore).
+  useEffect(() => {
+    if (!isInitialized) return;
+    try {
+      const key = projectScopedKey('hostBaseView');
+      if (baseView) {
+        sessionStorage.setItem(key, JSON.stringify({
+          name: baseView.name, filters: canonicalFilters(filters), viewId: activeViewId,
+          exactFilters: baseView.exactFilters,
+        }));
+      } else sessionStorage.removeItem(key);
+    } catch { /* ignore */ }
+  }, [baseView, filters, activeViewId, isInitialized]);
 
   // v5.0.0 — URL write-sync (the previously-missing write side, so links
   // are shareable).  Serializes the active query context into the URL,
@@ -875,6 +941,9 @@ export default function Hosts() {
   // reachable via the "Open standalone" link inside the sheet, or by
   // bookmark / deep link.
   const [inspectedHostId, setInspectedHostId] = useState<number | null>(null);
+  // The last host the inspector showed — where focus returns when it closes.
+  const lastInspectedHostIdRef = useRef<number | null>(null);
+  if (inspectedHostId !== null) lastInspectedHostIdRef.current = inspectedHostId;
   // UX review C1: the inspector reports whether its note composer holds an
   // unsaved draft; every queue transition (Previous/Next/Next unreviewed,
   // close, Open standalone, vuln pivot) asks before discarding it.
@@ -1162,6 +1231,8 @@ export default function Hosts() {
         subnetLabel: (id) => filterData?.subnet_labels?.find((l) => String(l.id) === id)?.name,
         asn: (asn) => filterData?.asns?.find((a) => String(a.asn) === asn)?.as_name ?? undefined,
         followStatus: (value) => FOLLOW_STATUS_OPTIONS.find((o) => o.value === value)?.label,
+        weakness: (flag) => filterData?.weaknesses?.find((w) => w.name === flag)?.label,
+        check: (id) => filterData?.checks?.find((c) => c.id === id)?.title,
       }).map((chip) => ({
         ...chip,
         fieldId: fieldForChip(chip.key, filters)?.id,
@@ -1241,6 +1312,14 @@ export default function Hosts() {
     }),
     [filters.ports, filters.services, filters.portStates, filters.hasOpenPorts, filters.query],
   );
+  const weaknessMatch = useMemo(
+    () => weaknessMatchCriteria({ weaknesses: filters.weaknesses, checks: filters.checks, query: filters.query }),
+    [filters.weaknesses, filters.checks, filters.query],
+  );
+  const weaknessLabels = useMemo(() => ({
+    flag: (f: string) => filterData?.weaknesses?.find((w) => w.name === f)?.label,
+    check: (id: string) => filterData?.checks?.find((c) => c.id === id)?.title,
+  }), [filterData?.weaknesses, filterData?.checks]);
 
   const baseColumns = useHostColumns({
     updatingHostId,
@@ -1253,6 +1332,11 @@ export default function Hosts() {
     onOpen: openInspector,
     onAddFilter: handleAddFilter,
     endpointMatch,
+    weaknessMatch,
+    weaknessLabels,
+    // "New" on every row of a fresh engagement says nothing (UX review
+    // 2026-09-25); it marks the rows that ARE new among older ones.
+    markNew: !(hosts.length > 1 && hosts.every((h) => isNewHost(h.first_seen))),
   });
 
   // v2.71.0 — prepend a checkbox column to drive the bulk-action bar.
@@ -1309,6 +1393,7 @@ export default function Hosts() {
 
   // Whether any row on this page shows a port-guessed service ("SSH?").
   const hasGuessedServices = hosts.some((h) => exposureChips(h.ports).some((c) => !c.detected));
+  const statesShown = new Set(hosts.map((h) => (h.state === 'up' || h.state === 'down' ? h.state : 'unknown')));
 
   return (
     // The page gutter every Inventory page uses (the title sat 24px left of theirs).
@@ -1377,12 +1462,15 @@ export default function Hosts() {
       )}
 
       <HostCommandBar
+        ref={commandBarRef}
         value={filters.query ?? ''}
         onChange={setQuery}
         onPin={handlePinQuery}
         onCopyLink={handleCopyLink}
         valueSuggestions={queryValueSuggestions}
         valueLabels={queryValueLabels}
+        otherConditions={activeFilterChips.some((c) => c.key !== 'query')}
+        onApplyTemplate={handleApplyTemplate}
       />
 
       {/* One toolbar (5.249.0) — view, filters, the single result count and the
@@ -1402,6 +1490,7 @@ export default function Hosts() {
             activeViewId={activeViewId}
             activeBuiltInId={activeFilterPresetId(filters)}
             baseViewName={appliedProjectDefault ?? baseView?.name ?? null}
+            baseViewUnmodified={!!baseView?.exactFilters && baseView.exactFilters === canonicalFilters(filters)}
             hasConditions={activeFilterChips.length > 0}
             projectDefaultApplied={appliedProjectDefault !== null}
             canSetProjectDefault={canSetProjectDefault}
@@ -1411,7 +1500,7 @@ export default function Hosts() {
             onAllHosts={clearAllFilters}
             onApplyBuiltIn={handleApplyBuiltIn}
             onApplyView={handleApplyView}
-            onReset={baseView && activeViewId === null ? baseView.reapply : undefined}
+            onReset={baseView?.reapply && activeViewId === null ? baseView.reapply : undefined}
             onSaveView={() => {
               setSaveViewName('');
               setSaveViewDialogOpen(true);
@@ -1433,6 +1522,10 @@ export default function Hosts() {
             data={filterData}
             optionsLoading={filterDataLoading}
             optionsError={filterDataError !== null}
+            onStartQueryCondition={(token) => {
+              // After the popover has closed and handed focus back.
+              setTimeout(() => commandBarRef.current?.startCondition(token), 0);
+            }}
           />
           {/* v5.270.0 — team review status, the one filter used often enough
               to stay out of the catalog: a compact select in the toolbar
@@ -1513,32 +1606,29 @@ export default function Hosts() {
             </Button>
           </div>
         )}
-        {/* …and the way back is one click too, once the filters were cleared
-            or changed. */}
-        {projectDefaultView && !projectDefaultActive && (
-          <div className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
-            <Star className="size-3.5 shrink-0 text-warning" aria-hidden />
-            <span className="truncate">
-              Project default view: <strong className="text-foreground">{projectDefaultView.name}</strong>
-            </span>
-            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={applyProjectDefault}>
-              Back to default view
-            </Button>
-          </div>
-        )}
-
-        {/* v5.290.0 — a bare /hosts visit reopens the session's filters (by
+        {/* One provenance line (5.303.0): why these filters are here, and the
+            way back to the default once the filters were cleared or changed.
+            It used to be two lines, the restored notice with its own "Clear"
+            beside the chips' "Clear filters" — four reset controls in a row.
+            v5.290.0 — a bare /hosts visit reopens the session's filters (by
             design); a nav link landing on a filtered list must say why. */}
-        {showRestoredNotice && (
-          <div
-            className="flex min-w-0 items-center gap-xs text-caption text-muted-foreground"
-            data-testid="hosts-restored-notice"
-          >
-            <span className="truncate">Restored your last filters</span>
-            <span aria-hidden>·</span>
-            <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={clearAllFilters}>
-              Clear
-            </Button>
+        {(showRestoredNotice || (projectDefaultView && !projectDefaultActive)) && (
+          <div className="flex min-w-0 flex-wrap items-center gap-x-xs text-caption text-muted-foreground">
+            {showRestoredNotice && (
+              <span className="truncate" data-testid="hosts-restored-notice">Restored your last filters</span>
+            )}
+            {showRestoredNotice && projectDefaultView && !projectDefaultActive && <span aria-hidden>·</span>}
+            {projectDefaultView && !projectDefaultActive && (
+              <>
+                <Star className="size-3.5 shrink-0 text-warning" aria-hidden />
+                <span className="min-w-0 truncate">
+                  Project default: <strong className="text-foreground">{projectDefaultView.name}</strong>
+                </span>
+                <Button variant="ghost" size="sm" className="h-6 shrink-0" onClick={applyProjectDefault}>
+                  Back to default view
+                </Button>
+              </>
+            )}
           </div>
         )}
 
@@ -1676,23 +1766,35 @@ export default function Hosts() {
           {/* v5.270.0 — the "?" on a service chip, said once for the page. */}
           {/* The row keys, said once for the page: the state dot beside each
               IP, and (when present) the "?" on a service chip. */}
+          {/* 5.303.0 — one short line, and only the keys this page shows: two
+              lines of explanation sat above every list.  The explanations are
+              on hover. */}
           <p className="flex flex-wrap items-center gap-x-md gap-y-xxs text-caption text-muted-foreground" data-testid="hosts-legend">
-            <span className="inline-flex items-center gap-xxs">
-              <span className="inline-block size-2 shrink-0 rounded-full bg-success" aria-hidden />
-              up
-            </span>
-            <span className="inline-flex items-center gap-xxs">
-              <span className="inline-block size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
-              down
-            </span>
-            <span className="inline-flex items-center gap-xxs">
-              <span className="inline-block size-2 shrink-0 rounded-full border border-muted-foreground/50" aria-hidden />
-              state unknown (liveness not confirmed, e.g. masscan / naabu / DNS)
-            </span>
+            {statesShown.has('up') && (
+              <span className="inline-flex items-center gap-xxs" title="A scan confirmed the host answered.">
+                <span className="inline-block size-2 shrink-0 rounded-full bg-success" aria-hidden />
+                up
+              </span>
+            )}
+            {statesShown.has('down') && (
+              <span className="inline-flex items-center gap-xxs" title="The last scan found the host not answering.">
+                <span className="inline-block size-2 shrink-0 rounded-full bg-destructive" aria-hidden />
+                down
+              </span>
+            )}
+            {statesShown.has('unknown') && (
+              <span
+                className="inline-flex items-center gap-xxs"
+                title="Liveness not confirmed — e.g. from masscan, naabu or DNS, which do not report host state."
+              >
+                <span className="inline-block size-2 shrink-0 rounded-full border border-muted-foreground/50" aria-hidden />
+                state unknown
+              </span>
+            )}
             {hasGuessedServices && (
-              <span>
+              <span title="A service with “?” was named from its port number; no scanner probed it.">
                 <span className="rounded-chip border border-dashed border-border px-xs py-px text-foreground">SSH?</span>{' '}
-                a service with “?” was guessed from its port number; no scanner probed it.
+                guessed from the port
               </span>
             )}
           </p>
@@ -1720,11 +1822,11 @@ export default function Hosts() {
                   : undefined
               )}
               bare
-              // The four sized columns and the checkbox take 720px; the floor
-              // keeps the Host column (the only unsized one) at ~140px in a
-              // narrowed window, where the wrapper scrolls sideways instead of
-              // crushing it. At a 1246px window the table fits (UX review).
-              tableClassName="table-fixed min-w-[860px]"
+              // The four sized columns and the checkbox take 615px; the Host
+              // column (the only unsized one) gets the rest.  No min-width
+              // (5.303.0): this wrapper cannot scroll (the header is sticky to
+              // the window), so a floor made the whole PAGE scroll sideways.
+              tableClassName="table-fixed"
             />
           </div>
 
@@ -1868,7 +1970,22 @@ export default function Hosts() {
           });
         }}
       >
-        <SideSheetContent width="xl">
+        <SideSheetContent
+          width="xl"
+          // 5.303.0 — focus returns to the row of the host that was open
+          // (after j / k, not the one first clicked), so a keyboard operator
+          // keeps their place; it fell to the page body.
+          onCloseAutoFocus={(event) => {
+            const id = lastInspectedHostIdRef.current;
+            const opener = id != null
+              ? document.querySelector<HTMLElement>(`table a[href="/hosts/${id}"]`)
+              : null;
+            if (opener) {
+              event.preventDefault();
+              opener.focus();
+            }
+          }}
+        >
           <SideSheetHeader>
             <div className="flex items-center justify-between gap-sm pr-xl">
               <SideSheetTitle>

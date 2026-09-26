@@ -119,6 +119,31 @@ def subnet_predicate(values: Sequence[str]) -> Optional[ColumnElement]:
     return or_(*conditions)
 
 
+#: The three scope-coverage states (v2.322.0; the list row's `scope_coverage`).
+SCOPE_COVERAGE_STATES = ("subnet", "name", "none")
+
+
+def scope_coverage_predicate(values: Sequence[str], project_id: int) -> ColumnElement:
+    """Host in any of the given coverage states (v2.424.0): ``subnet`` — in a
+    scope subnet; ``name`` — no subnet, but an in-scope name currently
+    resolves to it; ``none`` — neither (``out_of_scope_count``'s rule).
+    The three partition the project's hosts, so Operations' coverage line
+    adds up and each count opens its own list."""
+    from app.services.dns_name_service import host_reachable_via_in_scope_name_condition
+
+    mapped = exists().where(models.HostSubnetMapping.host_id == models.Host.id)
+    by_name = host_reachable_via_in_scope_name_condition(project_id)
+    conditions = []
+    for value in {v.strip().lower() for v in values}:
+        if value == "subnet":
+            conditions.append(mapped)
+        elif value == "name":
+            conditions.append(and_(~mapped, by_name))
+        elif value == "none":
+            conditions.append(and_(~mapped, ~by_name))
+    return or_(*conditions) if conditions else false()
+
+
 # ---------------------------------------------------------------------------
 # Port-dimension predicates
 # ---------------------------------------------------------------------------

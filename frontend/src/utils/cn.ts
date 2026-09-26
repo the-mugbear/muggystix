@@ -20,6 +20,13 @@
  * and render illegible inherited text (white-on-green in the phosphor theme).
  * Registering the custom sizes in the font-size group keeps size and colour
  * independent so both survive the merge.
+ *
+ * CUSTOM SPACING: the spacing scale is named (`p-sm`, `gap-md`, `px-xs`…).
+ * tailwind-merge did not recognise those names as spacing, so an override
+ * never displaced a primitive's default: `<CardContent className="p-sm">`
+ * kept CardContent's `p-md pt-0`, and `pt-0` won — the host inspector's facts
+ * box sat its first row on the border.  Registering the scale makes a
+ * caller's spacing replace the default as intended.
  */
 
 import { type ClassValue, clsx } from 'clsx';
@@ -27,6 +34,9 @@ import { extendTailwindMerge } from 'tailwind-merge';
 
 const twMerge = extendTailwindMerge({
   extend: {
+    theme: {
+      spacing: ['xxs', 'xs', 'sm', 'md', 'lg', 'xl', 'xxl', 'xxxl'],
+    },
     classGroups: {
       'font-size': [
         {

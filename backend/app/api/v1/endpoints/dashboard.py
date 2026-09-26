@@ -225,7 +225,8 @@ def get_dashboard_stats(
             medium=vuln_data['severity_breakdown'].get('medium', 0),
             low=vuln_data['severity_breakdown'].get('low', 0),
             info=vuln_data['severity_breakdown'].get('info', 0),
-            hosts_with_vulnerabilities=vuln_data['hosts_with_vulnerabilities']
+            hosts_with_vulnerabilities=vuln_data['hosts_with_vulnerabilities'],
+            hosts_by_severity=vuln_data.get('hosts_by_severity', {}),
         )
     except Exception as e:
         logger.error(f"Error getting vulnerability statistics: {e}")

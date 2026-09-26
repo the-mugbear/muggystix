@@ -1,13 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles, SquareArrowOutUpRight } from 'lucide-react';
+import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
   DashboardStats,
   OperationsBlockers,
   ProjectCoverageResponse,
-  ScopeCoverageRow,
   SinceLastVisit,
   TestPlanSummary,
   WorkbenchResponse,
@@ -36,7 +35,9 @@ import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
-import { sinceChips } from '../utils/sinceLastVisit';
+import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
+import { filenameSummary } from '../utils/filenameSummary';
+import { isStalledRun } from '../utils/agentRuns';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
@@ -145,34 +146,47 @@ const ProjectStateSection: React.FC<{
                 className="font-semibold text-foreground hover:text-info hover:underline">
                 {stats.total_hosts.toLocaleString()} hosts
               </Link>
-              <InfoTip text={'Total distinct hosts in the project. "marked up" counts only hosts a scanner explicitly tagged host-status "up"; hosts from masscan/naabu/DNS/subnet seeds are often left "unknown" even when reachable — so it\'s usually far lower than the total and is NOT a liveness count.'} />
               <span className="text-muted-foreground" aria-hidden>·</span>
-              <span className="text-muted-foreground">{stats.up_hosts.toLocaleString()} marked up</span>
+              {/* 5.304.0 — "marked up" was jargon; each count opens its list. */}
+              <Link to={buildHostsUrl({ q: 'state:up' })}
+                className="text-muted-foreground hover:text-info hover:underline">
+                {stats.up_hosts.toLocaleString()} reported up
+              </Link>
+              <InfoTip text={'Hosts a scanner reported as answering (host state "up"). masscan, naabu, DNS and scope seeds do not report host state, so their hosts stay "unknown" even when reachable — this is not a liveness count.'} />
               <span className="text-muted-foreground" aria-hidden>·</span>
-              <span className="text-muted-foreground">
-                {(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()} with vulns
-              </span>
+              {/* Every kind, informational included — the count is every host
+                  with any scanner row. */}
+              <Link to={buildHostsUrl({ q: 'kind:vulnerability,misconfiguration,informational' })}
+                className="text-muted-foreground hover:text-info hover:underline">
+                {(vuln?.hosts_with_vulnerabilities ?? 0).toLocaleString()} with scanner observations
+              </Link>
             </div>
 
             {vuln && actionableTotal > 0 ? (
               <div className="max-w-3xl">
                 <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
-                  <span className="text-caption text-muted-foreground">
-                    Share of scanner-detected vulnerabilities
+                  <span className="inline-flex items-center gap-xxs text-caption text-muted-foreground">
+                    Scanner observations by severity
+                    <InfoTip text="One per scanner check per port, as imported — not yet judged, and a host usually carries several. Each severity opens the hosts carrying at least one observation of it; that host count is under the number." />
                   </span>
                   <span className="text-caption text-muted-foreground tabular-nums">
-                    {actionableTotal.toLocaleString()} actionable ·{' '}
-                    {(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts affected
+                    {actionableTotal.toLocaleString()} observations, informational excluded
                   </span>
                 </div>
                 <SeverityBar
                   variant="summary"
                   counts={vuln}
                   total={actionableTotal}
-                  ariaLabel="Share of scanner-detected vulnerabilities by severity"
+                  ariaLabel="Scanner observations by severity"
                   // SeverityBar never renders info, but the callback is typed
                   // over all severities — guard so the type narrows to HostSeverity.
                   segmentHref={(sev) => (sev === 'info' ? null : buildHostsUrl({ severity: sev }))}
+                  // 5.304.0 — the counts are observations, the links hosts:
+                  // "154 High" opened 122 hosts unannounced.  The link says so.
+                  linkLabel={(sev) => {
+                    const n = vuln.hosts_by_severity?.[sev];
+                    return n == null ? null : `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
+                  }}
                 />
               </div>
             ) : vuln && sevTotal > 0 ? (
@@ -196,7 +210,7 @@ const ProjectStateSection: React.FC<{
             <div className="grid gap-y-md divide-border sm:grid-cols-3 sm:divide-x">
               <PostureMeasure
                 label="With plan entries"
-                info="Hosts that appear in at least one test plan."
+                info="Hosts that appear in at least one test plan, whatever its state. The line below opens the hosts in none."
                 value={coverage.hosts_with_plan_entry.toLocaleString()}
                 to={coverage.hosts_with_plan_entry > 0 ? buildHostsUrl({ q: 'has:planned' }) : undefined}
                 toLabel="With plan entries — view hosts"
@@ -210,7 +224,7 @@ const ProjectStateSection: React.FC<{
               </PostureMeasure>
               <PostureMeasure
                 label="With execution results"
-                info="Hosts with at least one recorded test-plan execution result."
+                info="Hosts an agent actually ran a planned test against (a recorded execution result). Planning alone does not count. The line below opens the hosts with none."
                 value={coverage.hosts_with_execution_result.toLocaleString()}
                 to={buildHostsUrl({ hasTestExecution: true })}
                 toLabel="With execution results — view hosts"
@@ -224,7 +238,7 @@ const ProjectStateSection: React.FC<{
               </PostureMeasure>
               <PostureMeasure
                 label="Outside scope"
-                info="Hosts discovered at addresses no declared scope covers."
+                info="Hosts in no scope subnet and not reached through an in-scope name. Discovered, but nobody approved testing them — confirm they are in scope before acting on them."
                 value={coverage.hosts_outside_scope.toLocaleString()}
                 to={coverage.hosts_outside_scope > 0 ? buildHostsUrl({ outOfScopeOnly: true }) : undefined}
                 toLabel="Outside scope — view hosts"
@@ -233,17 +247,24 @@ const ProjectStateSection: React.FC<{
               </PostureMeasure>
             </div>
 
-            {coverage.scopes.length > 0 && (
-              <div className="mt-md">
-                <h3 className="mb-xs text-metadata font-semibold text-foreground">
-                  Scope coverage ({coverage.total_scopes})
-                </h3>
-                <ul className="divide-y divide-border/60">
-                  {coverage.scopes.map((row) => (
-                    <ScopeCoverageRowDisplay key={row.scope_id} row={row} />
-                  ))}
-                </ul>
-              </div>
+            {/* 5.304.0 — the three coverage states, adding up to every host.
+                It was a list by scope NAME ("Demo scope … 400 hosts
+                discovered") beside "18 outside", and nothing said where the
+                419th host was: reached only through an in-scope name. */}
+            {coverage.total_scopes > 0 && (
+              <p className="mt-md flex flex-wrap items-center gap-x-xs gap-y-xxs text-metadata">
+                <span className="font-semibold text-foreground">Scope</span>
+                <InfoTip text="Every host is in exactly one of these: inside a scope subnet; in no subnet but reached through an in-scope name (the name was approved, not the address); or outside scope." />
+                <ScopeStateLink n={coverage.hosts_in_subnet_scope} q="scope:subnet" label="in scope subnets" />
+                <span className="text-muted-foreground" aria-hidden>·</span>
+                <ScopeStateLink n={coverage.hosts_name_scope_only} q="scope:name" label="reached only through an in-scope name" />
+                <span className="text-muted-foreground" aria-hidden>·</span>
+                <ScopeStateLink n={coverage.hosts_outside_scope} q="scope:none" label="outside scope" />
+                <span className="text-caption text-muted-foreground">
+                  — {scopedSubnets(coverage).toLocaleString()} subnet{scopedSubnets(coverage) === 1 ? '' : 's'},{' '}
+                  {scopedAddresses(coverage).toLocaleString()} addresses
+                </span>
+              </p>
             )}
           </div>
         )}
@@ -252,49 +273,36 @@ const ProjectStateSection: React.FC<{
   );
 };
 
-/** A coverage gap: a link when it has hosts to open, plain text otherwise. */
+/** A coverage gap: a link when it has hosts to open, plain text otherwise.
+ *  5.304.0 — a plain link, not warning colour: "417 not yet in any plan" in
+ *  amber on a project that has barely started planning flagged nearly every
+ *  host, and a warning that is always on stops meaning anything. */
 const GapLine: React.FC<{ text: string; to?: string }> = ({ text, to }) => (to ? (
-  <Link to={to} className="rounded text-warning hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+  <Link to={to} className="rounded text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
     {text}
   </Link>
 ) : <>{text}</>);
 
-// v4.18.0 — scope coverage row no longer pretends to show "% scope
-// completion".  Pre-fix, the denominator was the raw /32 count for
-// every CIDR in the scope (256 addresses for a /24, including
-// network + broadcast + dark space).  A /24 with every live host
-// found rendered as "22 / 256 — 8.59%", which reads as failure when
-// it's actually success.  Address-space size and asset-discovery
-// progress are different questions; this card answers "what
-// inventory does this scope hold?", not "how complete is recon?".
-//
-// Sentinel ``__default__`` (DEFAULT_SCOPE_NAME from the backend's
-// scope helper) is the auto-created scope every fresh project gets.
-// Renamed in display to "Project default scope" so operators don't
-// see the underscores leak through.
-const SENTINEL_SCOPE_NAME = '__default__';
+// The scope's size, summed over its subnets — never a "% discovered" (v4.18.0:
+// a /24 with every live host found read "22 / 256 — 8.59%", a success shown
+// as failure).  Scope names are not shown (5.304.0): they are a relic.
+/** The recon dialog's title only.  ``__default__`` is the scope every project
+ *  is created with; its underscores never reach the screen. */
+const displayScopeName = (rawName: string | null | undefined): string =>
+  !rawName ? '—' : rawName === '__default__' ? 'Project default scope' : rawName;
 
-function displayScopeName(rawName: string | null | undefined): string {
-  if (!rawName) return '—';
-  if (rawName === SENTINEL_SCOPE_NAME) return 'Project default scope';
-  return rawName;
-}
+const scopedSubnets = (c: ProjectCoverageResponse) => c.scopes.reduce((n, s) => n + s.subnet_count, 0);
+const scopedAddresses = (c: ProjectCoverageResponse) => c.scopes.reduce((n, s) => n + s.total_scoped_ips, 0);
 
-const ScopeCoverageRowDisplay: React.FC<{ row: ScopeCoverageRow }> = ({ row }) => {
-  return (
-    <li className="flex flex-wrap items-baseline gap-x-sm gap-y-xxs py-xxs">
-      <p className="min-w-0 flex-1 truncate text-metadata">
-        <strong>{displayScopeName(row.scope_name)}</strong>{' '}
-        <span className="text-caption text-muted-foreground">
-          ({row.subnet_count} subnet{row.subnet_count === 1 ? '' : 's'},{' '}
-          {row.total_scoped_ips.toLocaleString()} scoped IPs)
-        </span>
-      </p>
-      <span className="text-caption text-muted-foreground">
-        {row.discovered_in_scope.toLocaleString()} host
-        {row.discovered_in_scope === 1 ? '' : 's'} discovered
-      </span>
-    </li>
+/** One coverage state: its count opens exactly its hosts (`scope:` DSL). */
+const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string }> = ({ n, q, label }) => {
+  const count = n ?? 0;
+  return count > 0 ? (
+    <Link to={buildHostsUrl({ q })} className="text-info hover:underline">
+      <strong className="tabular-nums">{count.toLocaleString()}</strong> {label}
+    </Link>
+  ) : (
+    <span className="text-muted-foreground"><span className="tabular-nums">0</span> {label}</span>
   );
 };
 
@@ -341,17 +349,10 @@ const NeedsAttentionSection: React.FC<{
     );
   }
 
-  // Nothing waiting: one line under the heading, not a paragraph explaining
-  // a queue that is empty.
-  if (!hasAny) {
-    return (
-      <PostureSection title={heading} actions={updated}>
-        <p className="text-caption text-muted-foreground">
-          {canApprove ? 'Nothing needs your approval right now.' : 'No plans are awaiting approval.'}
-        </p>
-      </PostureSection>
-    );
-  }
+  // Nothing waiting: nothing to show (5.304.0).  A heading over "Nothing needs
+  // your approval right now" took a section of the page to say so; the lead
+  // sentence names approvals whenever there are some.
+  if (!hasAny) return null;
 
   return (
     <PostureSection
@@ -476,10 +477,23 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
     }
   };
 
+  // 5.304.0 — "active" on a run no agent session can act on (a run from 17
+  // days ago read ACTIVE) is stalled: Agent Runs' rule, not an age.
+  const stalled = isStalledRun(session);
+
   return (
     <div className="flex flex-wrap items-center gap-xs">
-      <RunKindBadge kind={session.kind} />
-      <Badge variant={session.status === 'active' ? 'success' : 'muted'}>{session.status}</Badge>
+      {/* Sentence case (5.304.0): two upper-case pills per row shouted. */}
+      <RunKindBadge kind={session.kind} className="normal-case tracking-normal" />
+      <Badge
+        variant={stalled ? 'warning' : session.status === 'active' ? 'success' : 'muted'}
+        className="normal-case tracking-normal"
+        title={stalled
+          ? 'Still open, but no agent session can act on it — it will not move on its own. Open it to resume or close it.'
+          : undefined}
+      >
+        {stalled ? 'Stalled' : session.status.replace('_', ' ')}
+      </Badge>
       <p className="min-w-0 flex-1 truncate text-metadata">
         <strong>#{session.id}</strong> · {subject}{' '}
         <span className="text-caption text-muted-foreground">
@@ -566,7 +580,7 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
       description="Agent sessions on this project — recon, plan generation, execution and assist."
       actions={<>
           {/* A failed refetch keeps the previous rows under its error. */}
-          <UpdatedAt at={runsLoadedAt} stale={!!error} />
+          <UpdatedAt at={runsLoadedAt} stale={!!error} hideWhenFresh />
           <Button size="sm" variant="ghost" className="h-7 text-info" onClick={() => navigate('/agent-activity')}>
             Open Agent Runs
           </Button>
@@ -591,10 +605,13 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
               { value: 'mine', label: 'Mine', disabled: !user },
             ]}
           />
+          {/* Says what is listed: "Last 10 runs" over six rows read as ten. */}
           <span className="ml-auto text-caption text-muted-foreground">
-            {statusFilter === 'all'
-              ? 'Last 10 runs across all kinds'
-              : `Up to 50 ${statusFilter} runs`}
+            {rows && rows.length < (statusFilter === 'all' ? 10 : 50)
+              ? `All ${rows.length} ${statusFilter === 'all' ? '' : `${statusFilter} `}run${rows.length === 1 ? '' : 's'}`
+              : statusFilter === 'all'
+                ? 'The 10 most recent runs, of every kind'
+                : `The 50 most recent ${statusFilter} runs`}
           </span>
         </div>
         {loading && !rows ? (
@@ -642,6 +659,15 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
 // Since your last visit — durable per-user/project diff (P2).
 // ---------------------------------------------------------------------------
 
+/** A change's tone as text colour: severity keeps its colour, the rest read
+ *  as ordinary links. */
+const SINCE_TONE_TEXT: Record<SinceChip['tone'], string> = {
+  info: 'text-info',
+  secondary: 'text-info',
+  destructive: 'font-medium text-sev-critical',
+  warning: 'font-medium text-sev-high',
+};
+
 const SinceLastVisitBanner: React.FC<{
   since: SinceLastVisit;
   onDismiss: () => void;
@@ -660,18 +686,26 @@ const SinceLastVisitBanner: React.FC<{
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-xs">
           <Sparkles className="size-4 shrink-0 text-info" aria-hidden />
           <span className="text-metadata font-semibold text-foreground">Since your last visit</span>
-          <div className="flex min-w-0 flex-wrap items-center gap-xxs">
-            {chips.map((c) => (c.href ? (
-              <Link key={c.key} to={c.href} title={c.hint} aria-label={`${c.label} — ${c.hint}`}
-                className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <Badge variant={c.tone} className="gap-xxs hover:underline">
-                  {c.label}
-                  <SquareArrowOutUpRight className="size-3" aria-hidden />
-                </Badge>
-              </Link>
-            ) : (
-              <Badge key={c.key} variant={c.tone} title={c.hint}>{c.label}</Badge>
-            )))}
+          {/* 5.304.0 — plain in-app links in sentence case, separated by
+              dots.  They were upper-case filled pills (a pink "3 NEW HOSTS")
+              with an external-link icon on links that never leave the app. */}
+          <div className="flex min-w-0 flex-wrap items-center gap-x-xs gap-y-xxs text-metadata">
+            {chips.map((c, i) => (
+              <React.Fragment key={c.key}>
+                {i > 0 && <span className="text-muted-foreground" aria-hidden>·</span>}
+                {c.href ? (
+                  <Link to={c.href} title={c.hint} aria-label={`${c.label} — ${c.hint}`}
+                    className={cn(
+                      'rounded underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                      SINCE_TONE_TEXT[c.tone],
+                    )}>
+                    {c.label}
+                  </Link>
+                ) : (
+                  <span title={c.hint} className={SINCE_TONE_TEXT[c.tone]}>{c.label}</span>
+                )}
+              </React.Fragment>
+            ))}
           </div>
         </div>
         <div className="flex items-center gap-xs">
@@ -733,8 +767,9 @@ const BlockersStrip: React.FC<{
         <div className="flex items-center gap-xs">
           <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
           <h2 className="text-metadata font-semibold text-foreground">Blocked</h2>
-          <span className="text-caption text-muted-foreground">
-            stopped, and will not resume by itself
+          <span className="text-caption text-muted-foreground"
+            title="Failed or partial imports nobody has dismissed, and execution runs that are paused or that no agent session can act on any more. Nothing here moves until someone acts.">
+            waiting on someone — each line has the action that unblocks it
           </span>
         </div>
 
@@ -745,8 +780,8 @@ const BlockersStrip: React.FC<{
               className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
               title={blockers.imports.map((i) => `${i.filename}${i.message ? ` — ${i.message}` : ''}`).join('\n')}
             >
-              {blockers.imports.map((i) => i.filename).join(', ')}
-              {importCount > blockers.imports.length && ` +${importCount - blockers.imports.length} more`}
+              {filenameSummary(blockers.imports.map((i) => i.filename))}
+              {importCount > blockers.imports.length && ` and ${importCount - blockers.imports.length} more`}
               {' — '}
               {blockers.failed_import_count > 0
                 ? 'nothing from a failed file is in the inventory'
@@ -951,6 +986,19 @@ const Operations: React.FC = () => {
     reload();
   }, [reload]);
 
+  // After an action in a queue (take into review, re-open, claim, undo): the
+  // workbench only, without spinners (5.304.0).  The full `reload` blanked
+  // every section, collapsed the expanded lists and moved the page under
+  // the pointer after each click.
+  const refreshWorkbenchQuietly = useCallback(() => {
+    getWorkbench()
+      .then((wb) => {
+        setWorkbench(wb);
+        markLoaded('workbench');
+      })
+      .catch(() => { /* the next full refresh reports it */ });
+  }, []);
+
   // The page Refresh: Runs and Recent activity fetch for themselves, so
   // `reload` alone left them showing what they loaded on mount. The key is
   // bumped only here (not inside `reload`, which also runs on mount — that
@@ -1004,6 +1052,21 @@ const Operations: React.FC = () => {
     refresh: refreshAssistSessions,
   } = useMyAssistSessions();
 
+  const workCardProps = {
+    queue: workbench?.my_queue ?? null,
+    tasks: workbench?.my_tasks ?? null,
+    notes: workbench?.my_notes ?? null,
+    findings: workbench?.my_findings ?? null,
+    investigate: workbench?.investigate ?? null,
+    investigateUnavailable: workbench?.investigate_unavailable ?? false,
+    followups: workbench?.followups ?? null,
+    followupsUnavailable: workbench?.followups_unavailable ?? false,
+    loading: workbenchLoading,
+    error: workbenchError,
+    onRetry: reload,
+    onChanged: refreshWorkbenchQuietly,
+  };
+
   // Approvals: one block, placed by whether anything is waiting (see the
   // ordering note in the layout below).
   const approvalsWaiting = (pendingPlans?.length ?? 0) > 0;
@@ -1023,7 +1086,7 @@ const Operations: React.FC = () => {
         pendingPlans={pendingPlans}
         loading={pendingLoading}
         canApprove={canApprovePlans}
-        updated={<UpdatedAt at={loadedAt.pending ?? null} stale={!!pendingError} />}
+        updated={<UpdatedAt at={loadedAt.pending ?? null} stale={!!pendingError} hideWhenFresh />}
         unavailable={!!pendingError}
       />
     </>
@@ -1157,25 +1220,21 @@ const Operations: React.FC = () => {
               from the single /workbench fetch (P2); the Mine/All toggle
               scopes only Runs. min-w-0: a grid item's default min-width is
               its content, so one unbreakable value would widen the column. */}
+          {/* 5.304.0 — only My work shares a row with the activity feed; the
+              two engagement-wide queues run the full width below.  In the
+              2/3 column they left ~1500px of empty page beside them once the
+              feed (eight rows) ended. */}
           <div className="grid gap-lg lg:grid-cols-3 [&>*]:min-w-0">
             <div className="lg:col-span-2">
               <MyWorkCard
-                queue={workbench?.my_queue ?? null}
-                tasks={workbench?.my_tasks ?? null}
-                notes={workbench?.my_notes ?? null}
-                findings={workbench?.my_findings ?? null}
-                investigate={workbench?.investigate ?? null}
-                investigateUnavailable={workbench?.investigate_unavailable ?? false}
-                followups={workbench?.followups ?? null}
-                followupsUnavailable={workbench?.followups_unavailable ?? false}
-                loading={workbenchLoading}
-                error={workbenchError}
-                onRetry={reload}
-                updated={<UpdatedAt at={loadedAt.workbench ?? null} />}
+                part="mine"
+                {...workCardProps}
+                updated={<UpdatedAt at={loadedAt.workbench ?? null} hideWhenFresh />}
               />
             </div>
             <MyActivityCard refreshKey={refreshKey} />
           </div>
+          <MyWorkCard part="engagement" {...workCardProps} />
           {/* Exposure + neglect analytics live on the Posture pages —
               reachable from the nav, not duplicated here. */}
           {!approvalsWaiting && approvalsBlock}
@@ -1201,6 +1260,7 @@ const Operations: React.FC = () => {
               <UpdatedAt
                 at={olderOf(loadedAt.stats, loadedAt.coverage)}
                 stale={!!statsError || !!error}
+                hideWhenFresh
               />
             )}
           />
@@ -1232,34 +1292,44 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; pendingApprovals:
     workbench.my_queue, workbench.my_tasks, workbench.my_notes, workbench.my_findings,
   );
   const b = workbench.blockers;
-  const blocked = !workbench.blockers_unavailable && b
-    ? b.failed_import_count + b.partial_import_count + b.interrupted_execution_count
-    : 0;
+  const known = !workbench.blockers_unavailable && b;
+  const failed = known ? b.failed_import_count : 0;
+  const partial = known ? b.partial_import_count : 0;
+  const stalled = known ? b.interrupted_execution_count : 0;
+  const blocked = failed + partial + stalled;
   const followups = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
   const worth = workbench.investigate_unavailable ? 0 : (workbench.investigate?.queue_total ?? 0);
   const n = (v: number) => v.toLocaleString();
+  const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
-  const parts = [
-    blocked > 0 ? `${n(blocked)} blocked item${blocked === 1 ? '' : 's'} to unblock` : null,
-    pendingApprovals > 0 ? `${n(pendingApprovals)} plan${pendingApprovals === 1 ? '' : 's'} awaiting your approval` : null,
-    total > 0 ? `${n(total)} item${total === 1 ? '' : 's'} in your queue${overdue > 0 ? ` (${n(overdue)} overdue)` : ''}` : null,
-    followups > 0 ? `${n(followups)} reviewed host${followups === 1 ? '' : 's'} needing another look` : null,
-    worth > 0 ? `${n(worth)} untouched host${worth === 1 ? '' : 's'} worth a look` : null,
+  // 5.304.0 — two sentences, yours and the team's, each thing named for what
+  // it is.  One run-on sentence ("14 blocked items to unblock, 58 items in
+  // your queue, 29 reviewed hosts … and 114 untouched hosts …") mixed the
+  // two and needed a second line to explain which was which.
+  const mine = [
+    total > 0 ? `${s(total, 'item', 'items')} in your queue${overdue > 0 ? ` (${n(overdue)} overdue)` : ''}` : null,
+    pendingApprovals > 0 ? `${s(pendingApprovals, 'plan', 'plans')} to approve` : null,
+  ].filter((p): p is string => !!p);
+  const team = [
+    failed > 0 ? `${s(failed, 'import', 'imports')} failed` : null,
+    partial > 0 ? `${s(partial, 'import', 'imports')} finished partial` : null,
+    stalled > 0 ? `${s(stalled, 'execution run is', 'execution runs are')} stalled` : null,
+    followups > 0 ? `${s(followups, 'reviewed host needs', 'reviewed hosts need')} another look` : null,
+    worth > 0 ? `${s(worth, 'unreviewed host is', 'unreviewed hosts are')} worth a look` : null,
   ].filter((p): p is string => !!p);
 
-  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : pendingApprovals > 0 ? 'warning' : parts.length ? 'neutral' : 'clear';
-  const sentence = parts.length === 0
-    ? 'Nothing is waiting on you.'
-    : parts.length === 1
-      ? `${parts[0].charAt(0).toUpperCase()}${parts[0].slice(1)}.`
-      : `${parts.slice(0, -1).join(', ').replace(/^./, (c) => c.toUpperCase())} and ${parts[parts.length - 1]}.`;
+  const list = (parts: string[]) => (parts.length <= 1
+    ? parts.join('')
+    : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
+  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : pendingApprovals > 0 ? 'warning' : mine.length || team.length ? 'neutral' : 'clear';
 
   return (
     <PostureLead
       tone={tone}
-      restsOn="Your queue is notes and plan steps assigned to you, hosts you have in review and findings you own. Needing another look and worth a look are engagement-wide."
+      restsOn="Your queue: notes and plan steps assigned to you, hosts you have in review, and findings you own. Everything in the second sentence is team-wide — anyone can take it."
     >
-      {sentence}
+      {mine.length > 0 ? `You have ${list(mine)}.` : 'Nothing is waiting on you.'}
+      {team.length > 0 && ` Across the team: ${list(team)}.`}
     </PostureLead>
   );
 };

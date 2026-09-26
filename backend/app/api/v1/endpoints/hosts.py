@@ -55,6 +55,11 @@ from app.services.host_query import (
     make_correlated_subquery as _make_correlated_subquery,
     build_filtered_host_query as _build_filtered_host_query,
     apply_host_sorting as _apply_host_sorting,
+    WEAKNESS_FLAGS,
+    WEAKNESS_LABELS,
+    host_weakness_flags,
+    weakness_descriptions,
+    weakness_predicate,
 )
 from app.services.host_serialization import (
     SEVERITY_ORDER,
@@ -147,6 +152,21 @@ class AttributionCountryFilterItem(BaseModel):
     host_count: int = 0
 
 
+class WeaknessFilterItem(BaseModel):
+    """A weakness / access flag (the DSL's has: value) for the catalog (v2.423.0)."""
+    name: str
+    label: str
+    description: str
+    host_count: int = 0
+
+
+class CheckFilterItem(BaseModel):
+    """A misconfiguration check some host in the project carries (v2.423.0)."""
+    id: str
+    title: str
+    host_count: int = 0
+
+
 class HostFilterDataResponse(BaseModel):
     common_ports: List[PortFilterItem]
     services: List[ServiceFilterItem]
@@ -169,6 +189,10 @@ class HostFilterDataResponse(BaseModel):
     orgs: List[AttributionOrgFilterItem] = []
     asns: List[AttributionAsnFilterItem] = []
     countries: List[AttributionCountryFilterItem] = []
+    # v2.423.0 — weakness / access flags (every flag, counted) and the
+    # misconfiguration checks present in the project.
+    weaknesses: List[WeaknessFilterItem] = []
+    checks: List[CheckFilterItem] = []
 
 class ConfidenceEntry(BaseModel):
     id: int
@@ -287,6 +311,8 @@ class HostFilterParams:
         orgs: Optional[List[str]] = Query(None, description="Registered netblock owner(s) from RDAP; repeat the param per value. OR semantics; substring match.", examples=["Google, LLC"]),
         asns: Optional[List[str]] = Query(None, description="Autonomous system number(s) from RDAP; repeat the param per value. OR semantics.", examples=["15169"]),
         countries: Optional[List[str]] = Query(None, description="ISO country code(s) of the registered netblock; repeat the param per value. OR semantics; exact match.", examples=["US"]),
+        weaknesses: Optional[str] = Query(None, description="Comma-separated weakness / access flags (the DSL's has: values smb_unsigned, eol, weak_tls, cert_issue, cleartext, weak_auth, local_admin, writable_share); OR semantics", examples=["smb_unsigned,weak_tls"]),
+        checks: Optional[str] = Query(None, description="Comma-separated misconfiguration check ids (the DSL's check:); OR semantics", examples=["smb_signing_not_required"]),
         q: Optional[str] = Query(None, description="Boolean query DSL. Fields (port, os, service, subnet, tag, label, cve, vuln, header, note, has:, …) combined with AND/OR/NOT + parentheses. Comma = OR within a field; repeated field = AND. e.g. 'port:80 port:443 AND NOT tag:test', 'cve:CVE-2021-44228 OR vuln:\"log4j\"'. ANDs with the other filters."),
     ):
         self.state = state
@@ -317,6 +343,8 @@ class HostFilterParams:
         self.orgs = orgs
         self.asns = asns
         self.countries = countries
+        self.weaknesses = weaknesses
+        self.checks = checks
         self.q = q
 
     def as_builder_kwargs(self) -> Dict[str, Any]:
@@ -758,6 +786,19 @@ def get_hosts_v2(
     # v2.415.0 — issues per worst severity (and misconfigurations) for the
     # Attention column: one grouped query for the page.
     issue_count_map = _issue_counts(db, host_ids)
+    # v2.423.0 — the weakness / access flags per host: the row names the one
+    # a weakness condition matched.  One statement for the page.
+    weakness_flag_map = host_weakness_flags(db, current_user, project.id, host_ids)
+    check_id_map: Dict[int, List[str]] = {}
+    if host_ids:
+        for hid, cid in (
+            db.query(Vulnerability.host_id, Vulnerability.check_id)
+            .filter(Vulnerability.host_id.in_(host_ids), Vulnerability.check_id.isnot(None))
+            .distinct()
+            .order_by(Vulnerability.host_id, Vulnerability.check_id)
+            .all()
+        ):
+            check_id_map.setdefault(hid, []).append(cid)
 
     # Batch lookup: each host's MOST-SPECIFIC (longest-prefix) subnet + site,
     # so the Host column can show where the host lives.  Bounded by the page's
@@ -820,6 +861,8 @@ def get_hosts_v2(
         serialized["exploitable_count"] = exploit_count_map.get(host.id, 0)
         serialized["critical_exploitable_count"] = critical_exploit_count_map.get(host.id, 0)
         serialized["issue_counts"] = issue_count_map.get(host.id)
+        serialized["weakness_flags"] = weakness_flag_map.get(host.id, [])
+        serialized["check_ids"] = check_id_map.get(host.id, [])
         _loc = host_location_map.get(host.id)
         serialized["primary_subnet"] = _loc["subnet"] if _loc else None
         serialized["primary_site"] = _loc["site"] if _loc else None
@@ -1188,7 +1231,53 @@ def get_host_filter_data_v2(
         .all()
     )
 
+    # v2.423.0 — weakness flags and checks.  Like subnets / sites, each is
+    # counted under the OTHER applied conditions, so ticking one flag does not
+    # zero the counts of the flags not yet ticked.  One statement each.
+    def _hosts_without(own_dimension: str):
+        kwargs = filters.as_builder_kwargs()
+        kwargs[own_dimension] = None
+        base = db.query(models.Host.id).filter(models.Host.project_id == project.id)
+        if all(v is None for v in kwargs.values()):
+            return base
+        return _build_filtered_host_query(
+            db, current_user, **kwargs, project_id=project.id,
+        ).with_entities(models.Host.id)
+
+    from sqlalchemy import case
+    weakness_scope = _hosts_without('weaknesses').subquery()
+    weakness_counts = db.query(*[
+        func.coalesce(func.sum(case(
+            (weakness_predicate(db, current_user, project.id, [flag]), 1), else_=0,
+        )), 0)
+        for flag in WEAKNESS_FLAGS
+    ]).filter(models.Host.id.in_(select(weakness_scope.c.id))).one()
+    descriptions = weakness_descriptions()
+    weaknesses_result = [
+        {'name': flag, 'label': WEAKNESS_LABELS[flag], 'description': descriptions[flag],
+         'host_count': int(weakness_counts[i] or 0)}
+        for i, flag in enumerate(WEAKNESS_FLAGS)
+    ]
+
+    from app.services.misconfig_checks import CHECKS
+    check_scope = _hosts_without('checks').subquery()
+    check_hosts = func.count(func.distinct(Vulnerability.host_id))
+    check_rows = (
+        db.query(Vulnerability.check_id, check_hosts)
+        .filter(Vulnerability.check_id.isnot(None),
+                Vulnerability.host_id.in_(select(check_scope.c.id)))
+        .group_by(Vulnerability.check_id)
+        .order_by(check_hosts.desc(), Vulnerability.check_id)
+        .all()
+    )
+    checks_result = [
+        {'id': cid, 'title': CHECKS[cid].title if cid in CHECKS else cid, 'host_count': int(n or 0)}
+        for cid, n in check_rows
+    ]
+
     return {
+        'weaknesses': weaknesses_result,
+        'checks': checks_result,
         'common_ports': [
             {'port': p.port_number, 'service': p.service_name or 'unknown', 'state': p.state, 'count': p.count}
             for p in common_ports
@@ -1536,6 +1625,10 @@ def get_host_v2(
     # (it needs a user join), so mirror the list endpoint here.  Without this
     # the inspector can't show or manage the host's owner. (1.2b)
     serialized["assignees"] = _host_assignees(db, host_id)
+    # v2.423.0 — the weakness / access flags, so the inspector states the
+    # ones a filter matched (an EOL OS read as a plain OS name).
+    serialized["weakness_flags"] = host_weakness_flags(db, current_user, project.id, [host_id]).get(host_id, [])
+    serialized["weakness_labels"] = {f: WEAKNESS_LABELS[f] for f in serialized["weakness_flags"]}
     return serialized
 
 

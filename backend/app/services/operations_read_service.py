@@ -184,6 +184,9 @@ class InvestigateEvidence(BaseModel):
 class InvestigateAction(BaseModel):
     kind: str  # inspect | collect | plan
     text: str
+    # v2.424.0 — the step says nothing the queue does not (every untouched
+    # host can be taken into review); Operations shows it only on hover.
+    generic: bool = False
 
 
 class InvestigateRow(BaseModel):
@@ -662,6 +665,7 @@ def compute_investigation_queue(
                 # The row already shows the tier beside the host; restating it
                 # here made every row say "exploitable critical" twice.
                 text="Take it into review — nobody has looked at this host yet.",
+                generic=True,
             )
         elif tier == 5:
             action = InvestigateAction(
@@ -1303,27 +1307,31 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
     failed = next((int(r.n) for r in job_rows if r.status == "failed"), 0)
     partial = next((int(r.n) for r in job_rows if r.status != "failed"), 0)
 
-    run_rows = (
+    # Paused runs, and active runs nothing can act on any more — by the Runs
+    # list's own rule (agent_session_service.runs_session_live), so Blocked
+    # and the "stalled" badge cannot disagree (v2.424.0: a legacy run with
+    # no parent session, and one whose session key had run out, were listed
+    # as active runs and counted nowhere).
+    from app.services.agent_session_service import runs_session_live
+
+    candidate_rows = (
         db.query(
             ExecutionSession.id, ExecutionSession.test_plan_id, ExecutionSession.status,
-            ExecutionSession.started_at, TestPlan.title, AgentSession.status.label("agent_status"),
+            ExecutionSession.started_at, TestPlan.title,
+            ExecutionSession.agent_session_id, ExecutionSession.agent_id,
         )
         .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-        .outerjoin(AgentSession, AgentSession.id == ExecutionSession.agent_session_id)
         .filter(
             TestPlan.project_id == project.id,
-            or_(
-                ExecutionSession.status == "paused",
-                and_(
-                    ExecutionSession.status == "active",
-                    AgentSession.id.isnot(None),
-                    AgentSession.status != "active",
-                ),
-            ),
+            ExecutionSession.status.in_(("paused", "active")),
         )
         .order_by(ExecutionSession.started_at.desc())
         .all()
     )
+    active_rows = [r for r in candidate_rows if r.status == "active"]
+    liveness = runs_session_live(db, [(r.agent_session_id, r.agent_id) for r in active_rows])
+    stalled_ids = {r.id for r, live in zip(active_rows, liveness) if live is False}
+    run_rows = [r for r in candidate_rows if r.status == "paused" or r.id in stalled_ids]
 
     return OperationsBlockers(
         failed_import_count=failed,

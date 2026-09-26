@@ -418,3 +418,21 @@ def test_ndjson_is_an_allowed_upload_extension():
     from app.services.ingestion_service import ALLOWED_UPLOAD_EXTENSIONS
     assert ".ndjson" in ALLOWED_UPLOAD_EXTENSIONS
     assert ".jsonl" in ALLOWED_UPLOAD_EXTENSIONS
+
+
+def test_provenance_templates_come_from_this_projects_rdap(
+    client, db_session, test_project, attributed_project
+):
+    """v2.423.0 — the starter query was a fixed `NOT org:"Acme Corp"`, which
+    matched every host of every real project.  It is now the project's own
+    most common registered owner / country, and absent without RDAP data."""
+    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/query/schema").json()
+    queries = [e["q"] for e in body["examples"]]
+    assert 'NOT org:"Acme Corporation"' in queries
+    assert "NOT country:US" in queries
+    assert not any("Acme Corp\"" in q for q in queries)
+
+
+def test_no_provenance_templates_without_rdap(client, test_project):
+    body = client.get(f"/api/v1/projects/{test_project.id}/hosts/query/schema").json()
+    assert not any(e["q"].startswith(("NOT org:", "NOT country:")) for e in body["examples"])

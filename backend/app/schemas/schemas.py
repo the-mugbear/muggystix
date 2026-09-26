@@ -560,6 +560,14 @@ class Host(HostBase):
     # are misconfigurations: the Attention column's counts.  One VNC issue on
     # two ports read "2 high"; an anonymous-FTP host read nothing (medium).
     issue_counts: Optional[Dict[str, int]] = None
+    # v2.423.0 — the weakness / access flags this host carries (the DSL's
+    # has: values in host_query.WEAKNESS_FLAGS), so a row matched by one can
+    # say so and the inspector can state it.  List and detail.
+    weakness_flags: List[str] = []
+    # Detail only: each of those flags' readable name (host_query.WEAKNESS_LABELS).
+    weakness_labels: Dict[str, str] = {}
+    # The misconfiguration checks recorded on the host (list rows only).
+    check_ids: List[str] = []
     # Most-specific (longest-prefix) subnet CIDR + its site that this host
     # falls in, or null when no subnet contains it.  Surfaced in the Host
     # column so an operator sees where the host lives without opening it.
@@ -814,6 +822,9 @@ class VulnerabilityStats(BaseModel):
     low: int
     info: int
     hosts_with_vulnerabilities: int
+    # v2.424.0 — distinct hosts per severity ("critical"…"info"): what a
+    # /hosts?has_<severity>_vulns=true link opens.
+    hosts_by_severity: Dict[str, int] = {}
 
 class DashboardStats(BaseModel):
     total_scans: int

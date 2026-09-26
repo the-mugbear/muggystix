@@ -20,7 +20,7 @@
  * not on a generic host page.
  */
 import React from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   ClipboardList,
   Loader2,
@@ -40,7 +40,7 @@ import type {
   ReviewFollowupRow,
   ReviewFollowupsResponse,
 } from '../services/api';
-import { followHost, updateTestPlanEntry } from '../services/api';
+import { followHost, unfollowHost, updateTestPlanEntry } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
@@ -180,7 +180,9 @@ function buildItems(
       primaryMono: false,
       chip: { label: f.severity, tone: sevTone(f.severity) },
       meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${(STATUS_LABEL as Record<string, string>)[f.status] ?? f.status}`,
-      right: { label: fmtAgo(tsOf(f.updated_at)), tone: null },
+      // "—" when no change was recorded: an empty cell under "1d" read as a
+      // layout fault (UX review 2026-09-26).
+      right: { label: fmtAgo(tsOf(f.updated_at)) || '—', tone: null },
       priorityRank: PRIORITY_RANK[f.severity] ?? 5,
       tsEpoch: tsOf(f.updated_at),
     });
@@ -264,6 +266,13 @@ export interface MyWorkCardProps {
   loading: boolean;
   error: string | null;
   onRetry: () => void;
+  /** After an action here (take, re-open, claim, undo): refresh without
+   *  blanking the sections (5.304.0).  Falls back to `onRetry`. */
+  onChanged?: () => void;
+  /** Which sections to render (5.304.0): Operations puts "My work" beside
+   *  the activity feed and the two engagement-wide queues at full width
+   *  below — in one 2/3 column they left ~1500px of empty page beside them. */
+  part?: 'all' | 'mine' | 'engagement';
   /** "updated …" beside the heading (components/UpdatedAt). */
   updated?: React.ReactNode;
 }
@@ -300,8 +309,18 @@ const MoreFooter: React.FC<{
   const canToggle = expanded || loaded > shown;
   const partial = total > shown;
   if (!canToggle && !partial && !viewAll && !children) return null;
+  // 5.304.0 — one sentence of state, then the two actions.  It read "Show 12
+  // more · Showing 3 of 22 · View all (22)", and "12 more" stopped at 15 of
+  // 22 without saying the rest were only in the full list.
+  const rest = total - loaded;
   return (
     <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
+      {partial && (
+        <span className="text-caption tabular-nums text-muted-foreground">
+          {shown.toLocaleString()} of {total.toLocaleString()}
+          {expanded && rest > 0 && ` — the other ${rest.toLocaleString()} are in the full list`}
+        </span>
+      )}
       {canToggle && (
         <button
           type="button"
@@ -309,13 +328,8 @@ const MoreFooter: React.FC<{
           onClick={onToggle}
           className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          {expanded ? 'Show fewer' : `Show ${(loaded - shown).toLocaleString()} more`}
+          {expanded ? 'Show fewer' : `Show ${(loaded - shown).toLocaleString()} more here`}
         </button>
-      )}
-      {partial && (
-        <span className="text-caption text-muted-foreground">
-          Showing {shown.toLocaleString()} of {total.toLocaleString()}
-        </span>
       )}
       {viewAll && (
         <button
@@ -324,7 +338,7 @@ const MoreFooter: React.FC<{
           title={viewAll.title}
           className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         >
-          View all ({total.toLocaleString()})
+          Open the full list
         </button>
       )}
       {children}
@@ -342,19 +356,48 @@ const MoreFooter: React.FC<{
  */
 const FollowupsSection: React.FC<{
   data: ReviewFollowupsResponse;
-  navigate: ReturnType<typeof useNavigate>;
   onReopened: () => void;
-}> = ({ data, navigate, onReopened }) => {
+}> = ({ data, onReopened }) => {
   const toast = useToast();
   const [expanded, setExpanded] = React.useState(false);
   const [busyId, setBusyId] = React.useState<number | null>(null);
+  // 5.304.0 — re-opening YOUR finished review clears its conclusion, which
+  // an undo cannot put back exactly; that one asks for a second click.
+  const [armedId, setArmedId] = React.useState<number | null>(null);
+  React.useEffect(() => {
+    if (armedId == null) return undefined;
+    const t = setTimeout(() => setArmedId(null), 5000);
+    return () => clearTimeout(t);
+  }, [armedId]);
   const rows = expanded ? data.items : data.items.slice(0, FOLLOWUPS_PREVIEW);
 
   const reopen = async (row: ReviewFollowupRow) => {
+    if (row.mine && armedId !== row.host_id) {
+      setArmedId(row.host_id);
+      return;
+    }
+    setArmedId(null);
     setBusyId(row.host_id);
     try {
       await followHost(row.host_id, 'in_review');
-      toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
+      toast.success(
+        row.mine ? `${row.ip_address} is back in your review queue` : `${row.ip_address} is now in your review queue`,
+        row.mine
+          ? { autoHideMs: 2500 }
+          // Taking over someone else's reviewed host added a review of yours;
+          // theirs is untouched, so removing yours is an exact undo.
+          : {
+              autoHideMs: 6000,
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  unfollowHost(row.host_id)
+                    .then(onReopened)
+                    .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
+                },
+              },
+            },
+      );
       onReopened();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not re-open the review.'));
@@ -369,8 +412,13 @@ const FollowupsSection: React.FC<{
         <span>Needs another look</span>
         <SectionCount>{data.total.toLocaleString()}</SectionCount>
       </>}
+      // 5.304.0 — "an open question" is defined, not left to guess.
       description={<>
-        Reviewed hosts with an open question, or that changed after the review
+        Reviewed hosts that are not done: the review concluded{' '}
+        <span className="font-medium text-foreground" title="The conclusion chosen in Mark reviewed when the host could not be settled. The query conclusion:needs_evidence lists them.">
+          “Needs more evidence”
+        </span>
+        , or the host gained ports or scanner observations after it was reviewed
         {data.total > data.mine_total ? ` — ${data.mine_total} yours` : ''}.
       </>}
     >
@@ -379,23 +427,19 @@ const FollowupsSection: React.FC<{
           <li key={`${row.host_id}-${row.reviewer_id}`} className="flex items-start gap-sm py-xs">
             <div className="min-w-0 flex-1">
               <div className="flex min-w-0 items-baseline gap-xs">
-                <button
-                  type="button"
-                  // The section's hosts ride along, so Next on the host page
-                  // walks THIS list (v5.243.0).
-                  onClick={() => navigate(
-                    `/hosts/${row.host_id}`,
-                    // The whole section, not the rows on screen: `rows` is the
-                    // collapsed preview, and a queue built from it silently
-                    // dropped the hosts behind "Show more".
-                    fromOperationsQueue(data.items.map((r) => r.host_id), 'Needs another look',
-                      { partial: data.total > data.items.length }),
-                  )}
+                {/* A link (5.304.0), so a middle-click opens it in a tab. The
+                    section's hosts ride along, so Next on the host page walks
+                    THIS list (v5.243.0) — the whole section, not the rows on
+                    screen, or the hosts behind "Show more" were dropped. */}
+                <Link
+                  to={`/hosts/${row.host_id}`}
+                  state={fromOperationsQueue(data.items.map((r) => r.host_id), 'Needs another look',
+                    { partial: data.total > data.items.length }).state}
                   className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                   title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                 >
                   {row.ip_address}
-                </button>
+                </Link>
                 {row.hostname && (
                   <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
                     {row.hostname}
@@ -429,10 +473,14 @@ const FollowupsSection: React.FC<{
                 disabled={busyId === row.host_id}
                 onClick={() => void reopen(row)}
                 title={row.mine
-                  ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared.'
+                  ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared — click again to confirm.'
                   : `Take this host into review yourself. ${row.reviewer ?? 'The reviewer'}'s conclusion stays on record.`}
               >
-                {busyId === row.host_id ? 'Re-opening…' : row.mine ? 'Re-open review' : 'Review'}
+                {busyId === row.host_id
+                  ? 'Re-opening…'
+                  : armedId === row.host_id
+                    ? 'Click to confirm — clears the conclusion'
+                    : row.mine ? 'Re-open review' : 'Review'}
               </Button>
             </div>
           </li>
@@ -475,7 +523,19 @@ const InvestigateSection: React.FC<{
     setTakingId(row.host_id);
     try {
       await followHost(row.host_id, 'in_review');
-      toast.success(`${row.ip_address} is now in your review queue`, { autoHideMs: 2500 });
+      // 5.304.0 — undoable: the queue lists only hosts nobody follows, so
+      // removing the new review restores exactly what was there.
+      toast.success(`${row.ip_address} is now in your review queue`, {
+        autoHideMs: 6000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            unfollowHost(row.host_id)
+              .then(onTaken)
+              .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
+          },
+        },
+      });
       onTaken();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not take the host into review.'));
@@ -490,7 +550,7 @@ const InvestigateSection: React.FC<{
         <span>Worth a look</span>
         <SectionCount>{data.queue_total.toLocaleString()}</SectionCount>
       </>}
-      description="Hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet."
+      description="Hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet. Review takes one into your queue."
     >
       {data.items.length === 0 ? (
         <p className="text-caption text-muted-foreground">
@@ -508,18 +568,15 @@ const InvestigateSection: React.FC<{
               <li key={row.host_id} data-tier={row.tier} className="flex items-start gap-sm py-xs">
                 <div className="min-w-0 flex-1">
                   <div className="flex min-w-0 items-baseline gap-xs">
-                    <button
-                      type="button"
-                      onClick={() => navigate(
-                        `/hosts/${row.host_id}`,
-                        fromOperationsQueue(data.items.map((r) => r.host_id), 'Worth a look',
-                          { partial: data.queue_total > data.items.length }),
-                      )}
+                    <Link
+                      to={`/hosts/${row.host_id}`}
+                      state={fromOperationsQueue(data.items.map((r) => r.host_id), 'Worth a look',
+                        { partial: data.queue_total > data.items.length }).state}
                       className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                       title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
                     >
                       {row.ip_address}
-                    </button>
+                    </Link>
                     {row.hostname && (
                       <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
                         {row.hostname}
@@ -538,13 +595,24 @@ const InvestigateSection: React.FC<{
                       </li>
                     ))}
                   </ul>
+                  {/* 5.304.0 — "no scan recorded · seen 77d · scanner-reported"
+                      contradicted itself: the reporting tool was simply not
+                      recorded.  Said so, with what each part means on hover. */}
                   <p
                     className="mt-xxs truncate text-caption text-muted-foreground"
-                    title={row.evidence.sources.join(', ') || 'no scan recorded'}
+                    title={[
+                      row.evidence.sources.length
+                        ? `Reported by: ${row.evidence.sources.join(', ')}`
+                        : 'The import did not record which tool reported this.',
+                      row.evidence.last_seen ? `Last observed ${new Date(row.evidence.last_seen).toLocaleString()}.` : null,
+                      row.evidence.confirmation === 'scanner'
+                        ? 'Scanner-reported: nobody has confirmed it yet.'
+                        : null,
+                    ].filter(Boolean).join(' ')}
                   >
-                    <span>{row.evidence.sources.length ? row.evidence.sources.join(', ') : 'no scan recorded'}</span>
+                    <span>{row.evidence.sources.length ? row.evidence.sources.join(', ') : 'source tool not recorded'}</span>
                     {' · '}
-                    {row.evidence.last_seen ? `seen ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never seen'}
+                    {row.evidence.last_seen ? `last observed ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never observed'}
                     {' · '}
                     {row.evidence.confirmation === 'scanner'
                       ? 'scanner-reported, unconfirmed'
@@ -552,11 +620,18 @@ const InvestigateSection: React.FC<{
                         ? 'has a finding'
                         : 'tested'}
                   </p>
-                  <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.next_action.text}>
-                    Next: {row.next_action.text}
-                  </p>
+                  {/* The step only when it says more than the section does:
+                      "Take it into review — nobody has looked at this host
+                      yet" was on every row, under a heading saying so. */}
+                  {!row.next_action.generic && (
+                    <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.next_action.text}>
+                      Next: {row.next_action.text}
+                    </p>
+                  )}
                 </div>
-                <div className="flex shrink-0 flex-col items-stretch gap-xxs">
+                {/* A fixed-width action column: a row with "Upload evidence"
+                    pushed its "Review" out of line with the rows above. */}
+                <div className="flex w-32 shrink-0 flex-col items-end gap-xxs">
                   <Button
                     size="sm"
                     variant="ghost"
@@ -601,11 +676,12 @@ const GROUP_PREVIEW = 3;
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
   followups = null, followupsUnavailable = false,
-  loading, error, onRetry, updated,
+  loading, error, onRetry, onChanged, part = 'all', updated,
 }) => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const toast = useToast();
+  const changed = onChanged ?? onRetry;
   // v5.237.0 — each category expands by itself.  One global "show more" over
   // a merged list meant reaching "In review" required paging through every
   // category ranked above it.
@@ -627,12 +703,26 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
     if (user?.id == null) return;
     setClaimingId(c.entryId);
     try {
-      await updateTestPlanEntry(c.planId, c.entryId, {
+      const claimed = await updateTestPlanEntry(c.planId, c.entryId, {
         assigned_to_id: user.id,
         expected_updated_at: c.updatedAt ?? undefined,
       });
-      toast.success("Claimed — it's now in your assigned work", { autoHideMs: 2000 });
-      onRetry(); // refetch so it moves from Available → Assigned
+      // 5.304.0 — undoable: the step was unassigned before the claim.
+      toast.success("Claimed — it's now in your assigned work", {
+        autoHideMs: 6000,
+        action: {
+          label: 'Undo',
+          onClick: () => {
+            updateTestPlanEntry(c.planId, c.entryId, {
+              assigned_to_id: null,
+              expected_updated_at: claimed?.updated_at ?? undefined,
+            })
+              .then(changed)
+              .catch((err) => toast.error(formatApiError(err, 'Could not undo the claim.')));
+          },
+        },
+      });
+      changed(); // refetch so it moves from Available → Assigned
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to claim.'));
     } finally {
@@ -668,6 +758,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
 
   return (
     <div className="flex min-w-0 flex-col gap-lg">
+      {part !== 'engagement' && (
       <PostureSection
         title={<>
           <span>My work</span>
@@ -727,17 +818,15 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                     {rows.map((it) => (
                 <li key={it.key}>
                   <div className="flex items-center gap-xxs">
-                    <button
-                      type="button"
-                      onClick={() => navigate(
-                        it.to,
-                        // A host row carries its category's hosts as the queue;
-                        // a finding / plan-step row is not a host page.
-                        hostIdOf(it.to) != null
-                          ? fromOperationsQueue(g.rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label,
-                            { partial: beyond > 0 })
-                          : undefined,
-                      )}
+                    {/* A link (5.304.0), so a middle-click opens it in a tab. */}
+                    <Link
+                      to={it.to}
+                      // A host row carries its category's hosts as the queue;
+                      // a finding / plan-step row is not a host page.
+                      state={hostIdOf(it.to) != null
+                        ? fromOperationsQueue(g.rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label,
+                          { partial: beyond > 0 }).state
+                        : undefined}
                       className={cn(
                         'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
                         'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
@@ -763,7 +852,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
                           <span className="shrink-0 text-caption text-muted-foreground">{it.right.label}</span>
                         )
                       )}
-                    </button>
+                    </Link>
                     {it.claim && (
                       <Button
                         size="sm" variant="ghost" className="h-7 shrink-0 text-info"
@@ -800,19 +889,20 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           </div>
         )}
       </PostureSection>
+      )}
 
-      {!loading && !error && followupsUnavailable && (
+      {part !== 'mine' && !loading && !error && followupsUnavailable && (
         <PostureSection title={<span>Needs another look</span>}>
           <UnavailableLine onRetry={onRetry}>
             Unavailable — reviewed hosts could not be checked for open questions or later changes.
           </UnavailableLine>
         </PostureSection>
       )}
-      {!loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
-        <FollowupsSection data={followups} navigate={navigate} onReopened={onRetry} />
+      {part !== 'mine' && !loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
+        <FollowupsSection data={followups} onReopened={changed} />
       )}
 
-      {!loading && !error && investigateUnavailable && (
+      {part !== 'mine' && !loading && !error && investigateUnavailable && (
         <PostureSection title={<span>Worth a look</span>}>
           <UnavailableLine onRetry={onRetry}>
             Unavailable — this queue could not be computed, so it says nothing about whether
@@ -820,8 +910,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           </UnavailableLine>
         </PostureSection>
       )}
-      {!loading && !error && !investigateUnavailable && investigate && (
-        <InvestigateSection data={investigate} navigate={navigate} onTaken={onRetry} />
+      {part !== 'mine' && !loading && !error && !investigateUnavailable && investigate && (
+        <InvestigateSection data={investigate} navigate={navigate} onTaken={changed} />
       )}
     </div>
   );
