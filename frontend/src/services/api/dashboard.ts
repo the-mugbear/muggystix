@@ -260,7 +260,8 @@ export interface WorkbenchResponse {
   my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
-  investigate?: InvestigationQueueResponse;
+  /** `null` when requested with `includeInvestigate: false` (v2.424.1). */
+  investigate?: InvestigationQueueResponse | null;
   /** The queue could not be computed: `investigate` is an empty placeholder
    *  and must read as "unavailable", never as "no work". */
   investigate_unavailable?: boolean;
@@ -294,8 +295,21 @@ export interface ReviewFollowupsResponse {
   mine_total: number;
 }
 
-export const getWorkbench = async (): Promise<WorkbenchResponse> => {
-  const response = await api.get(`${p()}/workbench`);
+export const getWorkbench = async (
+  opts: { includeInvestigate?: boolean } = {},
+): Promise<WorkbenchResponse> => {
+  // v2.424.1 — Operations leaves the "Worth a look" queue out and loads it
+  // with getInvestigationQueue(): on a large project it is most of the time,
+  // and the personal sections should not wait for it.
+  const params = opts.includeInvestigate === false ? { include_investigate: false } : undefined;
+  const response = await api.get(`${p()}/workbench`, { params });
+  return response.data;
+};
+
+/** The "Worth a look" queue alone. Rejects (503) when it could not be
+ *  computed — callers show "unavailable", never an empty queue. */
+export const getInvestigationQueue = async (): Promise<InvestigationQueueResponse> => {
+  const response = await api.get(`${p()}/workbench/investigate`);
   return response.data;
 };
 

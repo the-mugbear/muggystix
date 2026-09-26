@@ -65,6 +65,8 @@ vi.mock('../../services/api', () => ({
       new_high_findings: 0,
     },
   }),
+  // 5.304.1 — "Worth a look" is its own request.
+  getInvestigationQueue: vi.fn().mockResolvedValue({ items: [], queue_total: 0, untouched_total: 0, tiers: [] }),
   markWorkbenchSeen: vi.fn().mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' }),
   // MyActivityCard (replaces RecentNotesCard) self-fetches this.
   getMyActivity: vi.fn().mockResolvedValue({ items: [] }),
@@ -485,13 +487,13 @@ describe('Operations page', () => {
       my_notes: { items: [], total_open: 1, overdue_count: 1 },
       my_findings: { items: [], total_open: 3 },
       since_last_visit: { is_first_visit: true, as_of: null },
-      investigate: { items: [], queue_total: 4, untouched_total: 9, tiers: [] },
       ...extra,
     });
 
     // 5.304.0 — yours, then the team's, each named for what it is.
-    it('opens with what is waiting on you, then across the team, from the same workbench payload', async () => {
+    it('opens with what is waiting on you, then across the team', async () => {
       mockedApi.getWorkbench.mockResolvedValue(wb({}));
+      mockedApi.getInvestigationQueue.mockResolvedValueOnce({ items: [], queue_total: 4, untouched_total: 9, tiers: [] });
       renderPage();
       expect(await screen.findByText(
         'You have 6 items in your queue (1 overdue) and 1 plan to approve. Across the team: 4 unreviewed hosts are worth a look.',
@@ -504,10 +506,18 @@ describe('Operations page', () => {
         my_queue: { items: [], in_review_count: 0, watching_count: 0 },
         my_notes: { items: [], total_open: 0, overdue_count: 0 },
         my_findings: { items: [], total_open: 0 },
-        investigate_unavailable: true,
       }));
+      mockedApi.getInvestigationQueue.mockRejectedValueOnce(new Error('503'));
       renderPage();
       expect(await screen.findByText('Nothing is waiting on you.')).toBeInTheDocument();
+      expect(await screen.findByText(/Unavailable — this queue could not be computed/)).toBeInTheDocument();
+    });
+
+    // 5.304.1 — on a large project the queue was most of /workbench's time.
+    it('asks for the workbench without the queue and loads the queue on its own request', async () => {
+      renderPage();
+      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalled());
+      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false });
     });
 
     it('renders no card anywhere on the page', async () => {

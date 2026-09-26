@@ -17,7 +17,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func, String
 from sqlalchemy.orm import Session
@@ -117,7 +117,11 @@ class WorkbenchResponse(BaseModel):
     since_last_visit: SinceLastVisit = Field(default_factory=SinceLastVisit)
     # v2.347.0 — engagement-wide: untouched hosts worth a look (design
     # review item 2), beneath the personal queue on My Work.
-    investigate: InvestigationQueueResponse = Field(default_factory=InvestigationQueueResponse)
+    # v2.424.1 — ``None`` when the caller asked for the workbench without it
+    # (``include_investigate=false``) and fetches ``GET /workbench/investigate``
+    # separately: the queue is most of the time on a large project, and the
+    # personal sections should not wait for it.
+    investigate: Optional[InvestigationQueueResponse] = Field(default_factory=InvestigationQueueResponse)
     # True when the queue could not be computed: ``investigate`` is then an
     # empty placeholder and must read as "unavailable", never as "no work".
     investigate_unavailable: bool = False
@@ -243,6 +247,14 @@ def _compute_since_last_visit(
     summary="Operations workbench — personal queue, tasks, team roster, and since-last-visit diff in one call",
 )
 def get_workbench(
+    include_investigate: bool = Query(
+        True,
+        description=(
+            "Include the engagement-wide 'Worth a look' queue. Operations passes "
+            "false and loads it from GET /workbench/investigate so the personal "
+            "sections are not held up by it (v2.424.1)."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -261,8 +273,10 @@ def get_workbench(
     team_review = compute_team_review(db, current_user, project, limit=500)
     since = _compute_since_last_visit(db, current_user, project)
     investigate_unavailable = False
+    investigate: Optional[InvestigationQueueResponse] = None
     try:
-        investigate = compute_investigation_queue(db, project, limit=25)
+        if include_investigate:
+            investigate = compute_investigation_queue(db, project, limit=25)
     except Exception:
         # The personal queue must not go down with the engagement-wide one —
         # but say so: an empty queue reads as "every host has been touched".
@@ -303,6 +317,28 @@ def get_workbench(
         blockers=blockers,
         blockers_unavailable=blockers_unavailable,
     )
+
+
+@router.get(
+    "/investigate",
+    response_model=InvestigationQueueResponse,
+    summary="The 'Worth a look' queue alone — untouched hosts with a reason, in stated tier order",
+)
+def get_investigation_queue(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The same queue ``GET /workbench`` embeds, on its own request (v2.424.1).
+
+    A failure is a 503 that says so — never an empty queue, which would read
+    as "every host has been touched".
+    """
+    try:
+        return compute_investigation_queue(db, project, limit=25)
+    except Exception:
+        logger.exception("investigation queue failed for project %s", project.id)
+        db.rollback()
+        raise HTTPException(status_code=503, detail="The 'Worth a look' queue could not be computed.")
 
 
 @router.post(

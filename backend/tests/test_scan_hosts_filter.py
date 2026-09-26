@@ -145,3 +145,35 @@ def test_scan_host_port_filter_is_scoped_to_that_scan(client, db_session, test_p
     assert {h["ip_address"] for h in client.get(f"{base}/{scan_b.id}", params={"port": 443}).json()} == {"10.0.0.2"}
     # Scan A's own observation of port 22 is still found on scan A.
     assert {h["ip_address"] for h in client.get(f"{base}/{scan_a.id}", params={"port": 22}).json()} == {"10.0.0.2"}
+
+
+def test_scan_hosts_are_lean_and_loaded_in_a_bounded_number_of_statements(client, db_session, test_project):
+    """v2.424.1 — production: a 1,000-host scan page took 4.1 s.  The full
+    Host schema lazy-loaded every host's scanner observations (one query per
+    host) and shipped them, plugin output included, with notes, scan history
+    and scripts the scan page never reads."""
+    from sqlalchemy import event
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
+
+    scan = _seed_scan_with_hosts(db_session, test_project.id)
+    for h in db_session.query(models.Host).filter(models.Host.project_id == test_project.id):
+        db_session.add(Vulnerability(host_id=h.id, title="x", severity=VulnerabilitySeverity.HIGH,
+                                     source=VulnerabilitySource.NESSUS, plugin_output="y" * 1000))
+    db_session.flush()
+
+    statements = []
+    engine = db_session.get_bind()
+    listener = lambda *a, **k: statements.append(a[2])  # noqa: E731
+    event.listen(engine, "before_cursor_execute", listener)
+    try:
+        r = client.get(f"/api/v1/projects/{test_project.id}/hosts/scan/{scan.id}")
+    finally:
+        event.remove(engine, "before_cursor_execute", listener)
+    assert r.status_code == 200, r.text
+    rows = r.json()
+    assert len(rows) == 4
+    for row in rows:
+        assert not {"vulnerabilities", "notes", "host_scripts", "scan_history"} & set(row)
+        assert row["ports"] and "scripts" not in row["ports"][0]
+    host_statements = [s for s in statements if "vulnerabilities" in s.lower()]
+    assert host_statements == [], "the scan page must not load scanner observations"

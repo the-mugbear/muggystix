@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Computer, Shield, Terminal, ExternalLink, RefreshCw, Upload, Globe } from 'lucide-react';
 import { getScan, getScans, getHostsByScan, getScanDnsRecords, getScanHostSnapshots } from '../services/api';
-import type { Host, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
+import type { ScanHost, DNSRecord, Scan as ScanSummaryRow, ScanHostSnapshot } from '../services/api';
 import ImportResult from '../components/scans/ImportResult';
 import CommandExplanation from '../components/CommandExplanation';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -74,7 +74,7 @@ const ScanDetail: React.FC = () => {
   const location = useLocation();
   const fromHost = (location.state as { fromHost?: { id: number; ip: string } } | null)?.fromHost;
   const [scan, setScan] = useState<any>(null);
-  const [hosts, setHosts] = useState<Host[]>([]);
+  const [hosts, setHosts] = useState<ScanHost[]>([]);
   const [snapshots, setSnapshots] = useState<ScanHostSnapshot[]>([]);
   // Which record the Hosts tab shows. Defaults to the scan's own record —
   // this page is a scan artifact, and rendering current inventory under

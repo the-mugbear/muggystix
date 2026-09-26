@@ -471,3 +471,40 @@ def test_my_activity_survives_legacy_plan_sessions_and_lists_project_sessions(
     assert f"/test-plans/{plan.id}" in links          # legacy plan session → its plan
     assert None in links                               # a plan session with no plan links nowhere, and does not 500
     assert by_summary.get("Ran an agent session (active)") == "/agent-activity"
+
+
+# v2.424.1 — Operations loads the "Worth a look" queue on its own request so
+# the personal sections are not held up by it on a large project.
+def test_workbench_can_leave_out_the_queue(client, test_project, monkeypatch):
+    from app.api.v1.endpoints import workbench
+
+    calls = []
+    real = workbench.compute_investigation_queue
+    monkeypatch.setattr(workbench, "compute_investigation_queue",
+                        lambda *a, **k: calls.append(1) or real(*a, **k))
+    r = client.get(_url(test_project.id), params={"include_investigate": "false"})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["investigate"] is None and body["investigate_unavailable"] is False
+    assert calls == []
+    # The default is unchanged for every other caller.
+    assert client.get(_url(test_project.id)).json()["investigate"] is not None
+
+
+def test_the_queue_alone_matches_the_embedded_one(client, test_project):
+    embedded = client.get(_url(test_project.id)).json()["investigate"]
+    alone = client.get(_url(test_project.id, "/investigate"))
+    assert alone.status_code == 200, alone.text
+    assert alone.json() == embedded
+
+
+def test_the_queue_alone_says_when_it_failed(client, test_project, monkeypatch):
+    from app.api.v1.endpoints import workbench
+
+    def _boom(*args, **kwargs):
+        raise RuntimeError("queue down")
+
+    monkeypatch.setattr(workbench, "compute_investigation_queue", _boom)
+    r = client.get(_url(test_project.id, "/investigate"))
+    assert r.status_code == 503
+    assert "could not be computed" in r.json()["detail"]

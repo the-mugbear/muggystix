@@ -10,10 +10,12 @@ import {
   SinceLastVisit,
   TestPlanSummary,
   WorkbenchResponse,
+  InvestigationQueueResponse,
   getDashboardStats,
   getProjectCoverage,
   getTestPlans,
   getWorkbench,
+  getInvestigationQueue,
   listAgentSessions,
   markWorkbenchSeen,
 } from '../services/api';
@@ -860,6 +862,33 @@ const Operations: React.FC = () => {
   // is left on the response for now.)
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [workbenchLoading, setWorkbenchLoading] = useState(true);
+  // v5.304.1 — "Worth a look" loads on its own request: on a large project it
+  // was most of the workbench's time, and My work waited for it.
+  const [investigate, setInvestigate] = useState<InvestigationQueueResponse | null>(null);
+  const [investigateLoading, setInvestigateLoading] = useState(true);
+  const [investigateUnavailable, setInvestigateUnavailable] = useState(false);
+  const investigateGenRef = useRef(0);
+  // `quiet`: after an action in a queue — keep what is shown until the new
+  // queue arrives instead of flashing the loading line.
+  const loadInvestigate = useCallback((quiet = false) => {
+    const gen = ++investigateGenRef.current;
+    if (!quiet) setInvestigateLoading(true);
+    getInvestigationQueue()
+      .then((q) => {
+        if (gen !== investigateGenRef.current) return;
+        setInvestigate(q);
+        setInvestigateUnavailable(false);
+      })
+      .catch(() => {
+        if (gen !== investigateGenRef.current) return;
+        setInvestigate(null);
+        setInvestigateUnavailable(true);
+      })
+      .finally(() => {
+        if (gen !== investigateGenRef.current) return;
+        setInvestigateLoading(false);
+      });
+  }, []);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
   const [sinceDismissed, setSinceDismissed] = useState(false);
   // §27: do NOT advance the "since last visit" cursor merely because the page
@@ -909,7 +938,8 @@ const Operations: React.FC = () => {
     // Workbench is independent of the coverage/stats core load — fetch it
     // alongside but isolate its failure so a workbench outage shows the
     // cards' own error state (with Retry) instead of blanking the page.
-    getWorkbench()
+    loadInvestigate();
+    getWorkbench({ includeInvestigate: false })
       .then((wb) => {
         if (isStale()) return;
         setWorkbench(wb);
@@ -980,7 +1010,7 @@ const Operations: React.FC = () => {
     setCoverageLoading(false);
     setPendingLoading(false);
     setStatsLoading(false);
-  }, []);
+  }, [loadInvestigate]);
 
   useEffect(() => {
     reload();
@@ -991,13 +1021,15 @@ const Operations: React.FC = () => {
   // every section, collapsed the expanded lists and moved the page under
   // the pointer after each click.
   const refreshWorkbenchQuietly = useCallback(() => {
-    getWorkbench()
+    getWorkbench({ includeInvestigate: false })
       .then((wb) => {
         setWorkbench(wb);
         markLoaded('workbench');
       })
       .catch(() => { /* the next full refresh reports it */ });
-  }, []);
+    // Taking a host into review moves it out of "Worth a look".
+    loadInvestigate(true);
+  }, [loadInvestigate]);
 
   // The page Refresh: Runs and Recent activity fetch for themselves, so
   // `reload` alone left them showing what they loaded on mount. The key is
@@ -1057,8 +1089,10 @@ const Operations: React.FC = () => {
     tasks: workbench?.my_tasks ?? null,
     notes: workbench?.my_notes ?? null,
     findings: workbench?.my_findings ?? null,
-    investigate: workbench?.investigate ?? null,
-    investigateUnavailable: workbench?.investigate_unavailable ?? false,
+    investigate,
+    investigateUnavailable,
+    investigateLoading,
+    onRetryInvestigate: () => loadInvestigate(),
     followups: workbench?.followups ?? null,
     followupsUnavailable: workbench?.followups_unavailable ?? false,
     loading: workbenchLoading,
@@ -1190,6 +1224,7 @@ const Operations: React.FC = () => {
           {workbench && !workbenchError && (
             <OperationsLead
               workbench={workbench}
+              worthALook={investigateUnavailable ? 0 : (investigate?.queue_total ?? 0)}
               pendingApprovals={canApprovePlans && !pendingError ? (pendingPlans?.length ?? 0) : 0}
             />
           )}
@@ -1285,8 +1320,8 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
  * the sentence and the sections cannot disagree.  Blocked work and overdue
  * notes colour it; a queue alone does not (work is the page's normal state).
  */
-const OperationsLead: React.FC<{ workbench: WorkbenchResponse; pendingApprovals: number }> = ({
-  workbench, pendingApprovals,
+const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: number; pendingApprovals: number }> = ({
+  workbench, worthALook, pendingApprovals,
 }) => {
   const { total, overdue } = personalWorkCounts(
     workbench.my_queue, workbench.my_tasks, workbench.my_notes, workbench.my_findings,
@@ -1298,7 +1333,9 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; pendingApprovals:
   const stalled = known ? b.interrupted_execution_count : 0;
   const blocked = failed + partial + stalled;
   const followups = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
-  const worth = workbench.investigate_unavailable ? 0 : (workbench.investigate?.queue_total ?? 0);
+  // Loaded on its own request (5.304.1): 0 until it arrives, so the clause
+  // appears when the count is known rather than as a guess.
+  const worth = worthALook;
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 

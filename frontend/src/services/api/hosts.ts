@@ -1218,10 +1218,18 @@ export interface ScanHostsQuery {
   limit?: number;
 }
 
+/** A host as the scan page lists it (v2.424.1): the host's own fields and its
+ *  ports — no scanner observations, notes, scan history or script output.
+ *  The host detail endpoint carries those. */
+export type ScanHost = Pick<Host, 'id' | 'ip_address' | 'hostname' | 'hostname_source' | 'state' | 'state_reason'
+  | 'os_name' | 'os_family' | 'first_seen' | 'last_seen'> & {
+  ports: Array<Omit<Port, 'scripts'>>;
+};
+
 export const getHostsByScan = async (
   scanId: number,
   query: string | ScanHostsQuery = {},
-): Promise<Host[]> => {
+): Promise<ScanHost[]> => {
   // v2.86.9 — second arg accepts either a legacy bare state string
   // (back-compat) or a query object with search / port / skip /
   // limit knobs that the backend gained at the same time.

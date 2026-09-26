@@ -502,6 +502,32 @@ class HostScopeMembership(BaseModel):
     names: List[HostScopeNameEntry] = []
 
 
+class ScanHostPort(PortBase):
+    """A port as the scan page lists it — no NSE script output (v2.424.1)."""
+    id: int
+    host_id: int
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class ScanHost(HostBase):
+    """A host as ``GET /hosts/scan/{id}`` returns it (v2.424.1).
+
+    The full ``Host`` carried every scanner observation (one query per host,
+    Nessus plugin output included), notes, scan history and scripts — a
+    1,000-host page took 4.1 s in production, and the scan page reads none of
+    them.  The host detail endpoint is where those live.
+    """
+    id: int
+    first_seen: Optional[datetime] = None
+    last_seen: Optional[datetime] = None
+    ports: List[ScanHostPort] = []
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class Host(HostBase):
     id: int
     last_updated_scan_id: Optional[int] = None

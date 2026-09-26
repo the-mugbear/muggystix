@@ -36,7 +36,13 @@ def hosts_changed_since_prior_scan(db: Session, host_ids: Union[Iterable[int], Q
         host_ids = list(host_ids)
         if not host_ids:
             return set()
+    return {hid for (hid,) in changed_since_prior_scan_query(db, host_ids).all()}
 
+
+def changed_since_prior_scan_query(db: Session, host_ids: Union[Iterable[int], Query]) -> Query:
+    """The same derivation as :func:`hosts_changed_since_prior_scan`, as a
+    single-column query of host ids — for callers that rank in SQL and must
+    not bring the set back to Python (the investigation queue, v2.424.1)."""
     history = models.HostScanHistory
     ranked = (
         db.query(
@@ -56,7 +62,7 @@ def hosts_changed_since_prior_scan(db: Session, host_ids: Union[Iterable[int], Q
     port_added = exists().where(
         and_(models.Port.host_id == prior.c.hid, models.Port.first_seen > prior.c.disc)
     )
-    rows = (
+    return (
         db.query(latest.c.hid)
         .join(prior, and_(prior.c.hid == latest.c.hid, prior.c.rn == 2))
         .filter(
@@ -65,6 +71,4 @@ def hosts_changed_since_prior_scan(db: Session, host_ids: Union[Iterable[int], Q
             # what Python's `!=` said.
             or_(latest.c.state.is_distinct_from(prior.c.state), port_added),
         )
-        .all()
     )
-    return {hid for (hid,) in rows}

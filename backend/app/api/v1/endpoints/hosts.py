@@ -37,6 +37,7 @@ from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
     Host as HostSchema,
+    ScanHost as ScanHostSchema,
     HostListResponse,
     HostVulnerabilitySummary,
     HostFollowInfo,
@@ -1329,7 +1330,7 @@ def get_host_filter_data_v2(
     }
 
 
-@router.get("/scan/{scan_id}", response_model=List[HostSchema])
+@router.get("/scan/{scan_id}", response_model=List[ScanHostSchema])
 def get_hosts_by_scan_v2(
     scan_id: int,
     state: Optional[str] = None,
@@ -1371,13 +1372,10 @@ def get_hosts_by_scan_v2(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    # Query hosts through HostScanHistory
+    # Query hosts through HostScanHistory.  v2.424.1 — only what ScanHost
+    # carries is loaded: the host row and its ports.
     query = db.query(models.Host).options(
-        selectinload(models.Host.ports).selectinload(models.Port.scripts),
-        selectinload(models.Host.host_scripts),
-        # Everything _serialize_note reads, from the one list beside it.
-        *note_load_options(selectinload(models.Host.notes)),
-        selectinload(models.Host.scan_history).selectinload(models.HostScanHistory.scan),
+        selectinload(models.Host.ports),
     ).join(
         models.HostScanHistory, models.Host.id == models.HostScanHistory.host_id
     ).filter(

@@ -281,7 +281,7 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | GET | `/hosts/` | Deduplicated hosts with rich filter support: `state`, `ports`, `services`, `subnets`, `scan_ids`, `os_filter`, `min_risk_score`, `critical/high/medium/low_vuln_min`, `has_vuln`, `follow_status`, `search`. Supports `sort_by`, `sort_order`, `skip`, `limit`, `include_total`. |
 | GET | `/hosts/{host_id}` | Host detail with ports, scripts, vulnerabilities, follow state, notes, discoveries. |
 | GET | `/hosts/{host_id}/conflicts` | `conflict_count` (the same number as the list badge — host-level disagreements), `confidence` (source ranking per field) and `conflict_history`. Each history row carries both values, both scan ids AND `previous_scan_filename` / `new_scan_filename` / `current_value` — a conflict is recorded whether or not the reported value was adopted, so `current_value` is what says which one the host shows today. A blank being filled in (`state: unknown → up`) is not recorded as a conflict (v2.367.0). |
-| GET | `/hosts/scan/{scan_id}` | Hosts seen in a specific scan. |
+| GET | `/hosts/scan/{scan_id}` | Hosts seen in a specific scan: host fields and ports only (`ScanHost`, v2.424.1). Observations, notes and history are on `GET /hosts/{id}`. |
 | GET | `/hosts/filters/data` | Filter metadata (ports, services, OS, subnets, scans). Supports cascading — pass active filter params to scope the returned metadata. |
 | GET | `/hosts/tool-ready/{format}` | Export filtered host list as a tool-ready target file (nmap list, masscan range, newline-delimited IPs, etc.). |
 | GET | `/hosts/views` | Saved filter/view state for the current user. |

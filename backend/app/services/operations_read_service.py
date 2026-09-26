@@ -431,42 +431,39 @@ def compute_investigation_queue(
         fs = _aware(first_seen)
         return fs is not None and (now - fs).days < _NEW_HOST_DAYS
 
-    # --- signals: one row per host that HAS the signal ----------------------
-    # Only a host with a signal can be in the queue, so only those leave the
-    # database — each with the last_seen it is ranked by.  Every query filters
-    # the joined Host by `untouched_filter` directly (no id list, no subquery).
-    last_seen_by_id: Dict[int, Optional[datetime]] = {}
-
+    # --- rank in the database (v2.424.1) -------------------------------------
+    # Production (70k hosts) spent ~1.5 s here: every host with a signal came
+    # back to Python (~47k rows), was put in dicts and sorted, and 25 were
+    # kept.  Now the signals are joined per host, the tier is a CASE, Postgres
+    # orders and cuts to `limit`, and `count(*) OVER ()` is the exact total.
+    # The tier rule is the one the reasons below state; keep the two in step
+    # (test_investigation_queue pins order and totals).
     def _count_if(cond):
         return func.coalesce(func.sum(case((cond, 1), else_=0)), 0)
 
     is_crit = Vulnerability.severity == VulnerabilitySeverity.CRITICAL
     is_high = Vulnerability.severity == VulnerabilitySeverity.HIGH
     is_expl = Vulnerability.exploitable.is_(True)
-    crit: Dict[int, int] = {}
-    high: Dict[int, int] = {}
-    exploit: Dict[int, int] = {}
-    crit_exploit: Dict[int, int] = {}
-    for hid, last_seen, n_crit, n_crit_expl, n_high, n_expl in (
+    vuln_sig = (
         db.query(
-            models.Host.id, models.Host.last_seen,
-            _count_if(is_crit), _count_if(and_(is_crit, is_expl)),
-            _count_if(is_high), _count_if(is_expl),
+            Vulnerability.host_id.label("hid"),
+            _count_if(is_crit).label("n_crit"),
+            _count_if(and_(is_crit, is_expl)).label("n_crit_expl"),
+            _count_if(is_high).label("n_high"),
+            _count_if(is_expl).label("n_expl"),
         )
-        .join(Vulnerability, Vulnerability.host_id == models.Host.id)
-        .filter(*untouched_filter, or_(is_crit, is_high, is_expl))
-        .group_by(models.Host.id, models.Host.last_seen)
-        .all()
-    ):
-        last_seen_by_id[hid] = last_seen
-        if n_crit:
-            crit[hid] = int(n_crit)
-        if n_crit_expl:
-            crit_exploit[hid] = int(n_crit_expl)
-        if n_high:
-            high[hid] = int(n_high)
-        if n_expl:
-            exploit[hid] = int(n_expl)
+        .join(models.Host, models.Host.id == Vulnerability.host_id)
+        .filter(models.Host.project_id == project.id, or_(is_crit, is_high, is_expl))
+        .group_by(Vulnerability.host_id)
+        .subquery("vuln_sig")
+    )
+    conflict_sig = (
+        db.query(ConflictHistory.host_id.label("hid"), func.count(ConflictHistory.id).label("n_conf"))
+        .join(models.Host, models.Host.id == ConflictHistory.host_id)
+        .filter(models.Host.project_id == project.id)
+        .group_by(ConflictHistory.host_id)
+        .subquery("conflict_sig")
+    )
 
     poi = ports_by_number()
     high_value_open = and_(
@@ -474,74 +471,76 @@ def compute_investigation_queue(
     )
     has_high_value_port = models.Host.id.in_(db.query(models.Port.host_id).filter(high_value_open))
 
-    # Tier 4, first half: a high-value port on a host first seen this week.
-    new_high_value: set = set()
-    for hid, last_seen in (
-        db.query(models.Host.id, models.Host.last_seen)
-        .filter(*untouched_filter, models.Host.first_seen > new_cutoff, has_high_value_port)
-        .all()
-    ):
-        new_high_value.add(hid)
-        last_seen_by_id[hid] = last_seen
-
-    conflicts: Dict[int, int] = {}
-    for hid, last_seen, n in (
-        db.query(models.Host.id, models.Host.last_seen, func.count(ConflictHistory.id))
-        .join(ConflictHistory, ConflictHistory.host_id == models.Host.id)
-        .filter(*untouched_filter)
-        .group_by(models.Host.id, models.Host.last_seen)
-        .all()
-    ):
-        conflicts[hid] = int(n)
-        last_seen_by_id[hid] = last_seen
-
-    # Tier 4, second half: "changed at its latest scan" — the same derivation
-    # the Hosts list badge uses.  Only a host that could land in tier 4 BECAUSE
-    # of it is asked about: a high-value port open, no vulnerability tier, and
-    # not already new (a new host is tier 4 either way; a shown row that
-    # skipped this still gets its "changed" text below).
-    from app.services.host_change_service import hosts_changed_since_prior_scan
+    # Tier 4 — "changed at its latest scan" is asked only of hosts that could
+    # land in tier 4 BECAUSE of it: a high-value port open, no vulnerability
+    # tier, and not already new (a new host is tier 4 either way; a shown row
+    # that skipped this still gets its "changed" text below).
+    from app.services.host_change_service import (
+        changed_since_prior_scan_query, hosts_changed_since_prior_scan,
+    )
     tier4_candidates = db.query(models.Host.id).filter(
         *untouched_filter,
         or_(models.Host.first_seen.is_(None), models.Host.first_seen <= new_cutoff),
         has_high_value_port,
         ~models.Host.id.in_(db.query(Vulnerability.host_id).filter(or_(is_crit, is_expl))),
     )
-    changed = hosts_changed_since_prior_scan(db, tier4_candidates)
-    missing = [hid for hid in changed if hid not in last_seen_by_id]
-    if missing:   # small: hosts whose ONLY signal is the change
-        last_seen_by_id.update(
-            db.query(models.Host.id, models.Host.last_seen).filter(models.Host.id.in_(missing)).all()
+    changed_ids = changed_since_prior_scan_query(db, tier4_candidates).distinct().subquery("changed_ids")
+
+    n_crit = func.coalesce(vuln_sig.c.n_crit, 0)
+    n_crit_expl = func.coalesce(vuln_sig.c.n_crit_expl, 0)
+    n_high = func.coalesce(vuln_sig.c.n_high, 0)
+    n_expl = func.coalesce(vuln_sig.c.n_expl, 0)
+    n_conf = func.coalesce(conflict_sig.c.n_conf, 0)
+    # Each set is JOINED once and its column referenced: an ``IN (subquery)``
+    # used in both a column and the CASE is planned once per use, and the
+    # change detector ran three times (~500 ms instead of ~150 ms).
+    hv_hosts = (
+        db.query(models.Port.host_id.label("hid")).filter(high_value_open).distinct().subquery("hv_hosts")
+    )
+    is_changed = changed_ids.c.hid.isnot(None)
+    new_high_value = and_(models.Host.first_seen > new_cutoff, hv_hosts.c.hid.isnot(None))
+    per_host = (
+        db.query(
+            models.Host.id.label("hid"),
+            models.Host.last_seen.label("last_seen"),
+            n_crit.label("n_crit"), n_crit_expl.label("n_crit_expl"),
+            n_high.label("n_high"), n_expl.label("n_expl"), n_conf.label("n_conf"),
+            is_changed.label("is_changed"),
+            case(
+                (n_crit_expl > 0, 1),
+                (n_crit > 0, 2),
+                (n_expl > 0, 3),
+                (or_(new_high_value, is_changed), 4),
+                (n_conf > 0, 5),
+                else_=None,
+            ).label("tier"),
         )
+        .outerjoin(vuln_sig, vuln_sig.c.hid == models.Host.id)
+        .outerjoin(conflict_sig, conflict_sig.c.hid == models.Host.id)
+        .outerjoin(hv_hosts, hv_hosts.c.hid == models.Host.id)
+        .outerjoin(changed_ids, changed_ids.c.hid == models.Host.id)
+        .filter(*untouched_filter)
+        .subquery("per_host")
+    )
+    ranked_rows = (
+        db.query(per_host, func.count().over().label("queue_total"))
+        .filter(per_host.c.tier.isnot(None))
+        # Most recently seen first within a tier; a host never seen last.
+        .order_by(per_host.c.tier, per_host.c.last_seen.desc().nullslast(), per_host.c.hid)
+        .limit(limit)
+        .all()
+    )
+    queue_total = int(ranked_rows[0].queue_total) if ranked_rows else 0
+    chosen_ids = [r.hid for r in ranked_rows]
+    crit = {r.hid: int(r.n_crit) for r in ranked_rows if r.n_crit}
+    crit_exploit = {r.hid: int(r.n_crit_expl) for r in ranked_rows if r.n_crit_expl}
+    high = {r.hid: int(r.n_high) for r in ranked_rows if r.n_high}
+    exploit = {r.hid: int(r.n_expl) for r in ranked_rows if r.n_expl}
+    conflicts = {r.hid: int(r.n_conf) for r in ranked_rows if r.n_conf}
+    changed = {r.hid for r in ranked_rows if r.is_changed}
 
     def _plural(n: int, one: str, many: Optional[str] = None) -> str:
         return f"{n} {one if n == 1 else (many or one + 's')}"
-
-    # Pass 1 — every host with a signal, integers only: which tier, if any.
-    # This is the SAME decision the reason-building below makes; keep the two
-    # in step (test_workbench's ordering test exercises both from one fixture).
-    def _tier_of(hid: int) -> Optional[int]:
-        if crit_exploit.get(hid):
-            return 1
-        if crit.get(hid):
-            return 2
-        if exploit.get(hid):
-            return 3
-        if hid in new_high_value or hid in changed:
-            return 4
-        if conflicts.get(hid):
-            return 5
-        return None
-
-    epoch = datetime.min.replace(tzinfo=timezone.utc)
-    ranked: List[tuple] = []
-    for hid, last_seen in last_seen_by_id.items():
-        t = _tier_of(hid)
-        if t is not None:
-            ranked.append((t, -(_aware(last_seen) or epoch).timestamp(), hid))
-    ranked.sort()
-    queue_total = len(ranked)
-    chosen_ids = [hid for _t, _s, hid in ranked[:limit]]
 
     # Pass 2 — only the rows shown: address, name, port labels, reasons.
     shown = {

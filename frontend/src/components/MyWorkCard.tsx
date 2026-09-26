@@ -259,6 +259,11 @@ export interface MyWorkCardProps {
   /** The server could not compute that queue: `investigate` is then an empty
    *  placeholder, which must not render as "every host has been touched". */
   investigateUnavailable?: boolean;
+  /** v5.304.1 — the queue loads on its own request (it is most of the
+   *  workbench's time on a large project); this is its loading state. */
+  investigateLoading?: boolean;
+  /** Retry only that queue.  Falls back to `onRetry`. */
+  onRetryInvestigate?: () => void;
   /** v5.237.0 — reviewed hosts that are not done: "needs more evidence", or
    *  changed after the review. */
   followups?: ReviewFollowupsResponse | null;
@@ -675,6 +680,7 @@ const GROUP_PREVIEW = 3;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
+  investigateLoading = false, onRetryInvestigate,
   followups = null, followupsUnavailable = false,
   loading, error, onRetry, onChanged, part = 'all', updated,
 }) => {
@@ -902,9 +908,17 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
         <FollowupsSection data={followups} onReopened={changed} />
       )}
 
+      {part !== 'mine' && !loading && !error && investigateLoading && !investigate && (
+        <PostureSection title={<span>Worth a look</span>}>
+          <p role="status" className="flex items-center gap-xs text-caption text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden />
+            Finding untouched hosts with a reason to look…
+          </p>
+        </PostureSection>
+      )}
       {part !== 'mine' && !loading && !error && investigateUnavailable && (
         <PostureSection title={<span>Worth a look</span>}>
-          <UnavailableLine onRetry={onRetry}>
+          <UnavailableLine onRetry={onRetryInvestigate ?? onRetry}>
             Unavailable — this queue could not be computed, so it says nothing about whether
             hosts are waiting. Your own work above is unaffected.
           </UnavailableLine>
