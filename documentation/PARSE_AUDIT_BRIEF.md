@@ -1,5 +1,9 @@
 # Parse audit brief — for an agent on the assessed network
 
+> To start an agent on this, hand it `scripts/parse-audit-agent-prompt.md`: its
+> header says what to give it (the `collect-logs.sh` bundle, the original
+> files, an agent session), and its prompt bootstraps the audit below.
+
 Hand this file to an agent (Claude Code, Codex…) running **on the network where
 BlueStick and the tool output live**. It checks whether BlueStick read an
 import correctly and returns a report that contains **no client data**, so the
@@ -13,8 +17,8 @@ BlueStick; the operator carries the finished report out.
 1. **The original tool output** that was imported: the operator's copy, or the
    file BlueStick retained (kept for `INGESTION_RETAIN_FILES_DAYS`, 7 by
    default, after the import — Ingestion Results says until when).
-2. **A BlueStick agent session on the same project** (Operations → start an
-   agent session; MCP server `bluestick`, or `X-API-Key` against
+2. **A BlueStick agent session on the same project** (Operations → Start
+   Agent Session; MCP server `bluestick`, or `X-API-Key` against
    `/api/v1/agent/*`). Read-only use is enough; the audit writes nothing.
 3. **What BlueStick is meant to read** from the format: `GET
    /api/v1/references/parser-coverage` (the "What BlueStick reads" page) —
