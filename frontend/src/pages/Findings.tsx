@@ -249,6 +249,10 @@ const FindingsList: React.FC = () => {
 
   const hasActiveFilters = statusFilter !== 'all' || severityFilter !== 'all'
     || sourceFilter !== 'all' || ownerFilter !== 'any' || searchValue !== '';
+  // The page opens on status 'active', so `hasActiveFilters` is true on a
+  // clean URL. The empty state must not blame filters the analyst never set.
+  const onlyDefaultFilter = statusFilter === 'active' && severityFilter === 'all'
+    && sourceFilter === 'all' && ownerFilter === 'any' && searchValue === '';
 
   // Bulk-selection safety — mirrors the guard in Hosts.tsx. The selected set is
   // only meaningful for the result set it was made against: a filter change
@@ -661,9 +665,24 @@ const FindingsList: React.FC = () => {
               {!loading && !error && findings.length === 0 && (
                 <TableRow>
                   <TableCell colSpan={7} className="py-xl text-center text-muted-foreground">
-                    {hasActiveFilters
+                    {onlyDefaultFilter ? (
+                      <>
+                        No active findings.{' '}
+                        <button type="button" className="text-primary hover:underline" onClick={() => setStatusFilter('all')}>
+                          Include closed ones
+                        </button>
+                        {' · '}
+                        <button
+                          type="button"
+                          className="text-primary hover:underline"
+                          onClick={() => setSearchParams({ view: 'observations' }, { replace: true })}
+                        >
+                          Promote from scanner observations
+                        </button>
+                      </>
+                    ) : hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'
-                      : 'No findings yet. Promote a note from a host (Notes → Promote to finding) to record one here.'}
+                      : 'No findings yet. Promote a scanner observation, or a note on a host, to record one here.'}
                   </TableCell>
                 </TableRow>
               )}

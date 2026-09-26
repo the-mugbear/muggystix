@@ -150,7 +150,7 @@ const Activity: React.FC = () => {
   // FRX·H6: the notification bell deep-links here with `?mentions=mine`.
   // When that's set we scroll the notifications panel into view on mount so
   // the operator sees what the bell promised instead of the feed.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const mentionsFilter = searchParams.get('mentions');
   const mentionsPanelRef = useRef<HTMLDivElement | null>(null);
   const [notes, setNotes] = useState<NoteActivityItem[]>([]);
@@ -167,6 +167,7 @@ const Activity: React.FC = () => {
   // dismissed or opened, even after the bell badge has been zeroed out.
   const [unreadNotifications, setUnreadNotifications] = useState<NotificationItem[]>([]);
   const [notificationsFailed, setNotificationsFailed] = useState(false);
+  const [notificationsLoaded, setNotificationsLoaded] = useState(false);
   const [mentionsDismissed, setMentionsDismissed] = useState(false);
   const [fetchError, setFetchError] = useState<string | null>(null);
 
@@ -259,6 +260,7 @@ const Activity: React.FC = () => {
           return;
         }
         setUnreadNotifications(res.notifications);
+        setNotificationsLoaded(true);
       })
       .catch((err) => console.error('Activity initial-load handler threw:', err));
     return () => {
@@ -414,6 +416,26 @@ const Activity: React.FC = () => {
       {notificationsFailed && (
         <p role="status" className="text-metadata text-muted-foreground">
           Your notifications could not be loaded; the bell in the top bar still lists them.
+        </p>
+      )}
+
+      {/* Arriving from the Mentions button with nothing unread: say so, or the
+          page looks unrelated to what was clicked. */}
+      {mentionsFilter === 'mine' && notificationsLoaded && unreadNotifications.length === 0 && (
+        <p role="status" className="flex flex-wrap items-center gap-xs border-l-4 border-l-border py-xs pl-md text-metadata text-muted-foreground">
+          <Bell className="size-4" aria-hidden />
+          No unread notifications. Everything below is the project&apos;s discussion.
+          <button
+            type="button"
+            className="text-primary hover:underline"
+            onClick={() => setSearchParams((prev) => {
+              const next = new URLSearchParams(prev);
+              next.delete('mentions');
+              return next;
+            }, { replace: true })}
+          >
+            Dismiss
+          </button>
         </p>
       )}
 

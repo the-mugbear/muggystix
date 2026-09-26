@@ -929,7 +929,8 @@ const RowDetail: React.FC<{
             <p className="mt-xxs font-mono text-caption break-words">
               {item.error?.error_message || 'No error message available'}
             </p>
-            {item.error?.user_message && (
+            {item.error?.user_message
+              && item.error.user_message.trim() !== (item.error.error_message || '').trim() && (
               <p className="mt-xs">{item.error.user_message}</p>
             )}
           </AlertDescription>

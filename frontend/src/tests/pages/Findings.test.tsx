@@ -409,3 +409,32 @@ describe('Findings — presentation', () => {
     ));
   });
 });
+
+// Report 2026-09-26: the page opens on status "active", so an empty project
+// was told "No findings match these filters" about a filter nobody set.
+describe('Findings — empty states', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocked.listProjectMembers.mockResolvedValue([]);
+    mocked.listFindings.mockImplementation(async () => currentResponse);
+    setResponse([]);
+  });
+
+  it('on a clean URL, says no ACTIVE findings and does not blame filters', async () => {
+    renderFindings();
+    expect(await screen.findByText(/No active findings/)).toBeInTheDocument();
+    expect(screen.queryByText(/match these filters/)).toBeNull();
+    expect(screen.getByRole('button', { name: 'Include closed ones' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Promote from scanner observations' })).toBeInTheDocument();
+  });
+
+  it('blames the filters only when the analyst set one', async () => {
+    renderFindings('/findings?severity=critical');
+    expect(await screen.findByText(/No findings match these filters/)).toBeInTheDocument();
+  });
+
+  it('with every filter cleared, explains how findings are made', async () => {
+    renderFindings('/findings?status=all');
+    expect(await screen.findByText(/Promote a scanner observation/)).toBeInTheDocument();
+  });
+});

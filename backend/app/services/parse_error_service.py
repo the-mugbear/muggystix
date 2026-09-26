@@ -90,7 +90,16 @@ def log_parse_error(
 
 def _generate_user_message(error: Exception, error_type: str, file_type: str, filename: str) -> str:
     """Generate a user-friendly error message"""
-    
+
+    # A parser's own diagnosis ("NetExec parser found no host lines in …") is
+    # a plain ValueError written for the operator. It is more specific than
+    # any template below, so it is the message; appending a generic "may be
+    # corrupted" after it hedged against a diagnosis already made. Library
+    # errors (JSONDecodeError, lxml's XMLSyntaxError) are subclasses or other
+    # types and still get the templates.
+    if error_type == "parsing_error" and type(error) is ValueError and str(error).strip():
+        return str(error).strip()
+
     file_type_display = {
         "nmap_xml": "Nmap XML",
         "nessus_xml": "Nessus XML",

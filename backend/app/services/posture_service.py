@@ -176,7 +176,9 @@ def _gather_signals(
     if active == 0 and detected_vulns > 0:
         signals.append(_signal(
             "assess", 55,
-            f"{detected_vulns} scanner finding{'' if detected_vulns == 1 else 's'} present, none triaged",
+            # A scanner row is an observation until someone promotes it; only
+            # a promoted one is a finding (utils/findingStatus.ts vocabulary).
+            f"{detected_vulns} scanner observation{'' if detected_vulns == 1 else 's'}, none triaged",
             kind="triage", title="Scan data not yet triaged",
             blast_radius=f"{detected_vulns} scanner-detected vulnerabilities", action="Promote real issues to findings",
             severity="medium", owner=None, link="/findings",

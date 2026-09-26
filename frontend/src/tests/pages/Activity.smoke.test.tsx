@@ -34,4 +34,17 @@ describe('Activity page smoke', () => {
     render(<MemoryRouter><Activity /></MemoryRouter>);
     await waitFor(() => expect(screen.getByText('Collaboration')).toBeInTheDocument());
   });
+
+  // Report 2026-09-26: arriving from the Mentions button with nothing unread
+  // landed on the plain feed with no word about mentions.
+  it('says there is nothing unread when opened from the Mentions button', async () => {
+    render(<MemoryRouter initialEntries={['/activity?mentions=mine']}><Activity /></MemoryRouter>);
+    expect(await screen.findByText(/No unread notifications/)).toBeInTheDocument();
+  });
+
+  it('does not show that line on a plain visit', async () => {
+    render(<MemoryRouter><Activity /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('Collaboration')).toBeInTheDocument());
+    expect(screen.queryByText(/No unread notifications/)).toBeNull();
+  });
 });
