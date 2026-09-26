@@ -37,7 +37,8 @@ const linkButton =
 
 interface Props {
   hostId: number;
-  port: Port;
+  /** None for evidence that names no port the host has (v5.299.0). */
+  port: Port | null;
   evidence: ServiceEvidence;
 }
 
@@ -45,7 +46,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
   const [showFailed, setShowFailed] = useState(false);
   const [showAllPaths, setShowAllPaths] = useState(false);
   const access = summariseAccess(foldNetexecRows(evidence.access).map((o) => ({ ...o, auth_success: o.latest.auth_success })));
-  const scripts = port.scripts ?? [];
+  const scripts = port?.scripts ?? [];
   const nothing = evidence.weaknesses.length + evidence.access.length + evidence.web.length
     + evidence.paths.length + scripts.length === 0;
 
@@ -146,7 +147,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
         >
           <Accordion type="multiple" className="rounded-control border border-border px-sm">
             {scripts.map((s) => (
-              <ScriptItem key={s.id} script={s} itemValue={`svc-${port.id}-${s.id}`} />
+              <ScriptItem key={s.id} script={s} itemValue={`svc-${port?.id ?? 'none'}-${s.id}`} />
             ))}
           </Accordion>
         </Block>

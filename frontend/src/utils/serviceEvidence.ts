@@ -48,11 +48,51 @@ export function evidenceForPort(port: Port, all: HostEvidence): ServiceEvidence 
   };
 }
 
-/** NetExec / SMBMap results on no open port the host lists (a port nmap
- *  never saw, or no port at all): shown with the host-level evidence. */
-export function unplacedNetexec(ports: Port[], rows: NetexecResult[]): NetexecResult[] {
-  const numbers = new Set(ports.map((p) => p.port_number));
-  return rows.filter((r) => r.port == null || !numbers.has(r.port));
+/** Evidence that belongs to no OPEN port: its port is closed or filtered now,
+ *  is not in the host's port list (a web tool reached it; nothing scanned
+ *  it), or it names no port.  One group per port number, the port row (and
+ *  its state) when the host has one. */
+export interface UnplacedGroup {
+  portNumber: number | null;
+  /** The host's row for this number, when it has one (a closed / filtered port). */
+  port: Port | null;
+  evidence: ServiceEvidence;
+}
+
+/** v5.299.0 — the Services table shows evidence under open ports only, so a
+ *  web page on a port nothing inventoried, or on a port since closed, was
+ *  loaded and never shown.  Weaknesses are left out: the Weaknesses section
+ *  lists every one on the host. */
+export function unplacedEvidence(openPorts: Port[], allPorts: Port[], all: HostEvidence): UnplacedGroup[] {
+  const openIds = new Set(openPorts.map((p) => p.id));
+  const openNumbers = new Set(openPorts.map((p) => p.port_number));
+  const groups = new Map<number | null, UnplacedGroup>();
+  const group = (n: number | null | undefined): UnplacedGroup => {
+    const key = n ?? null;
+    let g = groups.get(key);
+    if (!g) {
+      g = {
+        portNumber: key,
+        port: key == null ? null : allPorts.find((p) => p.port_number === key && !openIds.has(p.id)) ?? null,
+        evidence: { weaknesses: [], access: [], web: [], paths: [] },
+      };
+      groups.set(key, g);
+    }
+    return g;
+  };
+  for (const r of all.netexec) {
+    if (r.port == null || !openNumbers.has(r.port)) group(r.port).evidence.access.push(r);
+  }
+  for (const w of all.web) {
+    const placed = w.port_id != null ? openIds.has(w.port_id) : w.port != null && openNumbers.has(w.port);
+    if (!placed) group(w.port).evidence.web.push(w);
+  }
+  for (const p of all.paths) {
+    if (p.port == null || !openNumbers.has(p.port)) group(p.port).evidence.paths.push(p);
+  }
+  // Numbered ports in order, "no port" last.
+  return [...groups.values()].sort((a, b) =>
+    (a.portNumber ?? Number.MAX_SAFE_INTEGER) - (b.portNumber ?? Number.MAX_SAFE_INTEGER));
 }
 
 /** The worst severity among a service's weaknesses and how many share it. */

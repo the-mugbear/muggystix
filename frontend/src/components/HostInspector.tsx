@@ -1162,7 +1162,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // connectionHelpersByPort is computed once per host above the early
   // returns (see note near noteThreadGroups) to keep the hook count stable.
   const closedPorts = host.ports.filter((port) => port.state === 'closed');
-  const filteredPorts = host.ports.filter((port) => port.state === 'filtered');
+  // v5.299.0 — every other state too (open|filtered, closed|filtered,
+  // unfiltered): a UDP port nmap could not settle was on no list at all.
+  const filteredPorts = host.ports.filter((port) => port.state !== 'open' && port.state !== 'closed');
   const followInfo = host.follow;
   const followHelperText = followStatus
     ? FOLLOW_STATUS_META[followStatus].description

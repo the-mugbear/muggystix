@@ -17,6 +17,16 @@ class TestGnmapParser:
         assert parser.db == db_session
         assert hasattr(parser, 'correlation_service')
     
+    def test_udp_open_filtered_is_kept(self, db_session):
+        """v2.416.0 — a UDP port that did not answer closed is `open|filtered`;
+        it used to be dropped, so UDP exposure disappeared."""
+        ports = GnmapParser(db_session)._parse_ports_info(
+            "161/open|filtered/udp//snmp///, 69/open|filtered/udp/////, 123/closed/udp/////"
+        )
+        assert [(p['port_number'], p['state'], p['service_name']) for p in ports] == [
+            (161, 'open|filtered', 'snmp'), (69, 'open|filtered', None),
+        ]
+
     def test_parse_valid_gnmap_file(self, db_session, sample_gnmap_data, temp_file):
         """Test parsing a valid gnmap file."""
         parser = GnmapParser(db_session)

@@ -337,11 +337,17 @@ class TestsslParser:
                 # weak is True if any weak protocol offered; False if only strong
                 # protocols were observed; None when protocols weren't enumerated.
                 weak = t["weak"] if t["weak"] is not None else (False if t["strong_seen"] else None)
-                # Key the URL by the IP tested, not the hostname: testssl probes a
-                # specific IP endpoint, and a hostname resolving to several IPs
-                # would otherwise collapse to one URL (and collide on the unique
-                # (scan_id, url, source) constraint across its distinct hosts).
-                url = f"https://[{ip}]:{port}" if ":" in ip else f"https://{ip}:{port}"
+                # v2.416.0 — the URL is the endpoint testssl was asked about:
+                # the NAME (SNI) when it had one, else the IP.  Two names on
+                # one IP:port are two endpoints with their own certificates
+                # and checks; keyed by IP, the second collided and rolled
+                # back with its observations.  The address is part of the
+                # row's key (scan, url, source, ip), so one name on two IPs
+                # stays two rows too.
+                if hostname:
+                    url = f"https://{hostname}:{port}"
+                else:
+                    url = f"https://[{ip}]:{port}" if ":" in ip else f"https://{ip}:{port}"
                 # Phase 2 — testssl knows the NAME it probed (SNI) even though
                 # the URL is keyed by IP; bind it + record the HTTP observation.
                 name_id = bind_hostname(

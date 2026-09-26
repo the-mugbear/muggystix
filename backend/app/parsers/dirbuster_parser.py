@@ -75,18 +75,34 @@ _GENERIC_URL = re.compile(
 # ---------------------------------------------------------------------------
 
 def _parse_url(raw_url: str) -> Optional[Tuple[str, int, str, str]]:
-    """Return (host, port, protocol_scheme, path) or None."""
+    """Return (host, port, protocol_scheme, path) or None.
+
+    v2.416.0 — the path keeps its query string: ``/admin?user=1`` and
+    ``/admin?user=2`` are different requests (query fuzzing), and they were
+    one row."""
     try:
         parsed = urlparse(raw_url)
+        port = parsed.port
     except Exception:
         return None
     host = parsed.hostname
     if not host:
         return None
     scheme = (parsed.scheme or "http").lower()
-    port = parsed.port or (443 if scheme == "https" else 80)
+    port = port or (443 if scheme == "https" else 80)
     path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
     return host, port, scheme, path
+
+
+def _origin(host: str, port: int, scheme: str) -> str:
+    """The URL origin as the tool requested it — the NAME when it asked for a
+    name (v2.416.0).  Rebuilt from the bound address, a virtual host's path
+    pointed at whatever the IP serves by default."""
+    default_port = 443 if scheme == "https" else 80
+    shown = f"[{host}]" if ":" in host else host
+    return f"{scheme}://{shown}" + ("" if port == default_port else f":{port}")
 
 
 HostKey = Tuple[str, int, str]  # (ip, port, scheme)
@@ -255,12 +271,17 @@ class DirBusterParser:
                 host, port, scheme, path = parsed
                 ip = normalize_ip(host) or host
                 status = self._coerce_int(row.get("status") or row.get("Status") or row.get("status_code"))
-                size = self._coerce_int(row.get("content-length") or row.get("length") or row.get("size"))
+                # ffuf's CSV names the size `content_length` (v2.416.0).
+                size = self._coerce_int(
+                    row.get("content_length") or row.get("content-length")
+                    or row.get("length") or row.get("size")
+                )
                 key: HostKey = (ip, port, scheme)
                 hosts.setdefault(key, []).append({
                     "path": path,
                     "status_code": status,
                     "size": size,
+                    "origin": _origin(host, port, scheme),
                 })
         return hosts
 
@@ -309,6 +330,7 @@ class DirBusterParser:
                     "path": path,
                     "status_code": status,
                     "size": size,
+                    "origin": _origin(host, port, scheme),
                 })
 
         return hosts
@@ -349,6 +371,7 @@ class DirBusterParser:
                 "path": path,
                 "status_code": status,
                 "size": size,
+                "origin": _origin(host, port, scheme),
             })
         return hosts
 
@@ -380,12 +403,13 @@ class DirBusterParser:
                 continue
             host, port_map = persisted
             port_row = port_map.get((port, "tcp"))
-            default_port = 443 if scheme == "https" else 80
-            base = f"{scheme}://{ip}" + ("" if port == default_port else f":{port}")
+            base = _origin(ip, port, scheme)
             seen: set = set()
             for f in findings:
                 path = f.get("path") or "/"
-                url = base + (path if path.startswith("/") else f"/{path}")
+                # The URL the tool requested (its name, when it asked for
+                # one); the row is still attached to the bound address.
+                url = (f.get("origin") or base) + (path if path.startswith("/") else f"/{path}")
                 if url in seen:
                     continue
                 seen.add(url)

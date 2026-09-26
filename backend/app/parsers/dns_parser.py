@@ -1,5 +1,5 @@
 import csv
-import re
+import ipaddress
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from app.db import models
@@ -15,10 +15,19 @@ import time
 
 logger = logging.getLogger(__name__)
 
+# The record types a DNS inventory CSV may carry (v2.416.0).  A row naming
+# anything else is rejected, not stored as an unknown kind.
+_RR_TYPES = frozenset({
+    "A", "AAAA", "PTR", "CNAME", "MX", "NS", "TXT", "SRV", "SOA", "CAA",
+    "DNAME", "HINFO", "NAPTR", "SPF", "DS", "DNSKEY", "TLSA", "SSHFP",
+    "HTTPS", "SVCB", "LOC", "RP", "AFSDB",
+})
+
 
 class DNSParser:
     def __init__(self, db: Session):
         self.db = db
+        self.last_parse_stats: Optional[dict] = None
         self.dedup_service = HostDeduplicationService(db)
         self._name_cache = ObservationCache()
 
@@ -52,6 +61,8 @@ class DNSParser:
         hosts_created = 0
         hosts_updated = 0
         dns_records_processed = 0
+        self._rejected = 0
+        self._reject_examples: List[str] = []
 
         with open(file_path, 'r', encoding='utf-8') as csvfile:
             sample = csvfile.read(1024)
@@ -82,10 +93,17 @@ class DNSParser:
 
                     if not all([record_type, dns_name, ip_address]):
                         logger.warning(f"Skipping row {i}: missing required fields")
+                        self._reject(i, "missing type, name or value")
                         continue
 
-                    if not self._is_valid_ip(ip_address):
-                        logger.warning(f"Skipping row {i}: invalid IP address format: {ip_address}")
+                    # v2.416.0 — validated by record type.  Every value used to
+                    # be checked as an IP, so CNAME / MX / NS / TXT / SRV rows
+                    # (most of a zone) were dropped, and so was compressed
+                    # IPv6 such as 2001:db8::1.
+                    problem = self._value_problem(record_type, ip_address)
+                    if problem:
+                        logger.warning(f"Skipping row {i}: {problem}: {ip_address}")
+                        self._reject(i, f"{record_type} {problem}")
                         continue
 
                     # Store the observation regardless of type, through the
@@ -139,6 +157,7 @@ class DNSParser:
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
+                    self._reject(i, str(e)[:80])
                     continue
 
         logger.info(f"Processed {i} DNS records from CSV")
@@ -175,6 +194,19 @@ class DNSParser:
                 self.db.rollback()
                 logger.warning(f"Failed to correlate hosts to subnets for scan {scan.id}: {str(e)}")
 
+        # A mixed file's rejected rows are reported on the import, not only
+        # logged: a clean-looking job must not hide half a zone.
+        self.last_parse_stats = {
+            "skipped": self._rejected,
+            "warnings": (
+                f"{self._rejected} row(s) not imported: " + "; ".join(self._reject_examples)
+                + (" …" if self._rejected > len(self._reject_examples) else "")
+                if self._rejected else None
+            ),
+            "summary": f"{dns_records_processed} DNS record{'s' if dns_records_processed != 1 else ''}",
+            "partial": bool(self._rejected),
+        }
+
         logger.info(
             f"DNS parsing complete - Created: {hosts_created} hosts, "
             f"Updated: {hosts_updated} hosts, "
@@ -199,8 +231,28 @@ class DNSParser:
                 normalized[key] = value
         return normalized
 
-    def _is_valid_ip(self, ip_address: str) -> bool:
-        """Validate IP address format (supports both IPv4 and IPv6)"""
-        ipv4_pattern = r'^(?:(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)\.){3}(?:25[0-5]|2[0-4][0-9]|[01]?[0-9][0-9]?)$'
-        ipv6_pattern = r'^(?:[0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$|^::1$|^::$'
-        return bool(re.match(ipv4_pattern, ip_address) or re.match(ipv6_pattern, ip_address))
+    def _reject(self, row: int, why: str) -> None:
+        self._rejected += 1
+        if len(self._reject_examples) < 10:
+            self._reject_examples.append(f"row {row}: {why}")
+
+    @staticmethod
+    def _value_problem(record_type: str, value: str) -> Optional[str]:
+        """Why this value cannot be a ``record_type`` record, or None.
+
+        A / AAAA carry an address of that family; the CSV's PTR rows carry the
+        address being named (``name`` is the PTR target).  Every other type's
+        value is the record's data — a name, a mail exchanger, text — and is
+        kept as written."""
+        if record_type not in _RR_TYPES:
+            return "is not a DNS record type"
+        if record_type in ("A", "AAAA", "PTR"):
+            try:
+                addr = ipaddress.ip_address(value)
+            except ValueError:
+                return "value is not an IP address"
+            if record_type == "A" and addr.version != 4:
+                return "A value is not IPv4"
+            if record_type == "AAAA" and addr.version != 6:
+                return "AAAA value is not IPv6"
+        return None

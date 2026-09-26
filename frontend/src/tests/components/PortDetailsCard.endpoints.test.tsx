@@ -235,6 +235,53 @@ describe('PortDetailsCard — density', () => {
     expect(screen.queryByRole('columnheader', { name: 'What’s here' })).not.toBeInTheDocument();
   });
 
+  // v5.299.0 — review 2026-09-25 R01: evidence was shown under OPEN ports
+  // only, so a web-only import (httpx/WhatWeb/EyeWitness make no port) and
+  // a port since closed hid what was collected.
+  it('shows web evidence on a host with no port rows at all', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([
+      { id: 1, source: 'httpx', url: 'https://app.example.com:8443/', fqdn: 'app.example.com', port_id: null, port: 8443,
+        title: 'Staff portal', last_seen: iso(-1), has_screenshot: false, scan_id: 1 },
+    ]);
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <PortDetailsCard hostId={1} hostIp="10.0.0.5" openPorts={[]} closedPorts={[]} filteredPorts={[]}
+            connectionHelpersByPort={new Map()} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText('Evidence on no open port')).toBeInTheDocument();
+    expect(screen.getByText(/not in the port list/)).toBeInTheDocument();
+    expect(screen.getByText(/Staff portal/)).toBeInTheDocument();
+  });
+
+  it('keeps a closed port\'s paths reachable, labelled with its state', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    api.getHostWebPaths.mockResolvedValue([
+      { url: 'http://10.0.0.5:81/backup.zip', path: '/backup.zip', status_code: 200, size: 10, source: 'ffuf', port: 81, scans: 1 },
+    ]);
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <PortDetailsCard hostId={1} hostIp="10.0.0.5" openPorts={[ssh]} closedPorts={[closed]} filteredPorts={[]}
+            connectionHelpersByPort={new Map()} webPathCount={1} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(await screen.findByText(':81 /backup.zip')).toBeInTheDocument();
+    expect(screen.getByText(/closed now/)).toBeInTheDocument();
+  });
+
+  it('shows no such section when everything is on an open port', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([
+      { id: 1, source: 'httpx', url: 'https://10.0.0.5/', fqdn: null, port_id: 443, last_seen: iso(-1), has_screenshot: false, scan_id: 1 },
+    ]);
+    renderWith([https]);
+    await waitFor(() => expect(api.getHostWebInterfaces).toHaveBeenCalled());
+    expect(screen.queryByText('Evidence on no open port')).not.toBeInTheDocument();
+  });
+
   it('says so when nothing is open', async () => {
     api.getHostWebInterfaces.mockResolvedValue([]);
     renderWith([], [closed]);

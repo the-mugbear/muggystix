@@ -25,10 +25,10 @@ import {
   getHostNetexecResults, getHostWebInterfaces, getHostWebPaths,
   type HostVulnerability, type NetexecResult, type Port, type WebInterface, type WebPath,
 } from '../../services/api';
-import { foldNetexecRows, NetExecResultRow } from '../NetExecCard';
+import { foldNetexecRows } from '../NetExecCard';
 import { SEVERITY_BADGE_VARIANT, type Severity } from '../../utils/severity';
 import {
-  evidenceForPort, summariseAccess, unplacedNetexec, worstSeverity, type ServiceEvidence,
+  evidenceForPort, summariseAccess, unplacedEvidence, worstSeverity, type ServiceEvidence,
 } from '../../utils/serviceEvidence';
 import ServiceEvidencePanel from './ServiceEvidencePanel';
 import { getConnectionHelpers, isSafeHostname, type ConnectionHelper } from '../../utils/connectionHelpers';
@@ -36,7 +36,7 @@ import {
   EXPIRY_WARN_DAYS, daysUntil, endpointsByPort, summariseEndpointTls,
   type EndpointTls, type PortEndpoint,
 } from '../../utils/portEndpoints';
-import { formatRelativeTime } from '../../utils/relativeTime';
+import { formatDate, formatRelativeTime } from '../../utils/relativeTime';
 import { NOT_REVALIDATED_LABEL, NOT_REVALIDATED_TITLE, portFreshness } from '../../utils/evidenceFreshness';
 import { useToast } from '../../contexts/ToastContext';
 import { Badge } from '../ui/badge';
@@ -330,7 +330,10 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
     () => ({ vulnerabilities, netexec: netexecRows, web: webRows, paths: pathRows }),
     [vulnerabilities, netexecRows, webRows, pathRows],
   );
-  const unplaced = useMemo(() => unplacedNetexec(openPorts, netexecRows), [openPorts, netexecRows]);
+  const unplaced = useMemo(
+    () => unplacedEvidence(openPorts, [...openPorts, ...closedPorts, ...filteredPorts], all),
+    [openPorts, closedPorts, filteredPorts, all],
+  );
   // A host with one open port has one thing to look at: open it.
   const isExpanded = (port: Port) => expanded.has(port.id) || openPorts.length === 1;
   const toggle = (port: Port) => setExpanded((prev) => {
@@ -380,10 +383,13 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   );
 
   const notOpen = [...closedPorts, ...filteredPorts];
-  const notOpenSummary = [
-    closedPorts.length > 0 ? `${closedPorts.length} closed` : null,
-    filteredPorts.length > 0 ? `${filteredPorts.length} filtered` : null,
-  ].filter(Boolean).join(' · ');
+  // Counted per state as nmap wrote it: "3 closed · 2 open|filtered".
+  const stateCounts = new Map<string, number>();
+  for (const p of notOpen) {
+    const s = p.state || 'unknown';
+    stateCounts.set(s, (stateCounts.get(s) ?? 0) + 1);
+  }
+  const notOpenSummary = [...stateCounts].map(([s, n]) => `${n} ${s}`).join(' · ');
 
   return (
     <InspectorSection
@@ -597,17 +603,34 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
         </p>
       )}
 
-      {/* NetExec / SMBMap results on no port listed above. */}
+      {/* v5.299.0 — access results, web pages and paths on no open port
+          above: a port since closed, one nothing scanned (a web tool reached
+          it), or none named.  They were loaded and never shown. */}
       {unplaced.length > 0 && (
-        <div className="pt-sm">
+        <div className="space-y-sm pt-sm">
           <h4 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-            Results on no listed port ({unplaced.length})
+            Evidence on no open port
           </h4>
-          <div className="divide-y divide-border">
-            {foldNetexecRows(unplaced).map(({ latest, count }) => (
-              <NetExecResultRow key={latest.id} result={latest} seenCount={count} />
-            ))}
-          </div>
+          {unplaced.map((g) => (
+            <div key={g.portNumber ?? 'none'} className="min-w-0 border-l-2 border-border pl-sm">
+              <p className="pb-xxs text-metadata">
+                {g.portNumber == null ? (
+                  <span className="text-muted-foreground">No port recorded</span>
+                ) : (
+                  <>
+                    <span className="font-mono">{g.portNumber}{g.port ? `/${g.port.protocol}` : ''}</span>
+                    <span className="text-caption text-muted-foreground">
+                      {' · '}
+                      {g.port
+                        ? `${g.port.state || 'state unknown'} now${g.port.last_seen ? ` (port last seen ${formatDate(g.port.last_seen)})` : ''}`
+                        : 'not in the port list — no port scan recorded it'}
+                    </span>
+                  </>
+                )}
+              </p>
+              <ServiceEvidencePanel hostId={hostId} port={g.port} evidence={g.evidence} />
+            </div>
+          ))}
         </div>
       )}
 

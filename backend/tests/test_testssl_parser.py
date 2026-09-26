@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.db import models
 from app.parsers.testssl_parser import TestsslParser, looks_like_testssl
 from app.services.host_condition_sets import weak_tls_host_ids
@@ -60,39 +62,60 @@ def test_parse_weak_protocol_and_cert(db_session, test_project, tmp_path):
     assert row.host_id in weak_tls_host_ids(db_session, test_project.id)
 
 
-def test_colliding_target_does_not_abort_upload(db_session, test_project, tmp_path):
-    """A second target that collides on (scan_id, url, source) must be isolated
-    by its savepoint and dropped — not poison the session and abort the whole
-    upload (regression: the caught flush error used to leave pending_rollback)."""
-    # Same IP:port reported under two hostnames → two targets, one URL.
+@pytest.mark.parametrize("order", ["a_first", "b_first"])
+def test_two_sni_names_on_one_ip_port_are_two_endpoints(db_session, test_project, tmp_path, order):
+    """v2.416.0 — one IP:443 serving two names with different certificates and
+    different weaknesses.  Keyed by the IP URL, the second name collided and
+    its checks rolled back with it: which tenant survived depended on record
+    order.  Both endpoints and both sets of observations survive now."""
+    from app.db.models_vulnerability import Vulnerability
+
+    a = [
+        {"id": "TLS1", "ip": "a.example.com/10.7.0.9", "port": "443", "severity": "LOW", "finding": "offered (deprecated)"},
+        {"id": "cert_notAfter", "ip": "a.example.com/10.7.0.9", "port": "443", "severity": "INFO", "finding": "2031-01-01 00:00"},
+    ]
+    b = [
+        {"id": "TLS1_2", "ip": "b.example.com/10.7.0.9", "port": "443", "severity": "OK", "finding": "offered"},
+        {"id": "heartbleed", "ip": "b.example.com/10.7.0.9", "port": "443", "severity": "HIGH", "finding": "VULNERABLE"},
+    ]
+    path = _fixture(tmp_path, a + b if order == "a_first" else b + a)
+    parser = TestsslParser(db_session)
+    scan = parser.parse_file(str(path), path.name, project_id=test_project.id)
+
+    rows = {r.url: r for r in db_session.query(models.WebInterface).filter(models.WebInterface.scan_id == scan.id)}
+    assert set(rows) == {"https://a.example.com:443", "https://b.example.com:443"}
+    assert {r.ip_address for r in rows.values()} == {"10.7.0.9"}
+    assert rows["https://a.example.com:443"].tls_weak_protocol is True
+    assert rows["https://b.example.com:443"].tls_weak_protocol is False
+    assert parser.last_parse_stats["skipped"] == 0
+
+    # Each name's checks are on its own named endpoint.
+    vulns = db_session.query(Vulnerability).filter(Vulnerability.scan_id == scan.id).all()
+    by_name = {}
+    for v in vulns:
+        by_name.setdefault(rows_name(db_session, v.name_id), []).append(v.check_id or v.title)
+    assert "tls_deprecated_protocol" in by_name["a.example.com"]
+    assert any("heartbleed" in str(t).lower() for t in by_name["b.example.com"])
+
+
+def test_one_name_on_two_ips_is_two_endpoints(db_session, test_project, tmp_path):
     records = [
-        {"id": "TLS1", "ip": "a.example.com/10.7.0.9", "port": "443", "severity": "LOW", "finding": "offered"},
-        {"id": "TLS1", "ip": "b.example.com/10.7.0.9", "port": "443", "severity": "LOW", "finding": "offered"},
+        {"id": "TLS1", "ip": "a.example.com/10.7.0.11", "port": "443", "severity": "LOW", "finding": "offered"},
+        {"id": "TLS1", "ip": "a.example.com/10.7.0.12", "port": "443", "severity": "LOW", "finding": "offered"},
     ]
     path = _fixture(tmp_path, records)
     parser = TestsslParser(db_session)
-    scan = parser.parse_file(str(path), path.name, project_id=test_project.id)  # must not raise
-
+    scan = parser.parse_file(str(path), path.name, project_id=test_project.id)
     rows = db_session.query(models.WebInterface).filter(models.WebInterface.scan_id == scan.id).all()
-    assert len(rows) == 1                    # collision dropped, first survives
-    assert rows[0].url == "https://10.7.0.9:443"
-    # The session is healthy afterwards — a follow-up query does not raise.
-    assert db_session.query(models.WebInterface).count() >= 1
+    assert sorted(r.ip_address for r in rows) == ["10.7.0.11", "10.7.0.12"]
+    assert {r.url for r in rows} == {"https://a.example.com:443"}
+    assert parser.last_parse_stats["skipped"] == 0
 
-    # v2.332.2 — the dropped target is reported as skipped AND leaves no trace
-    # on the scan history: its note() used to land before the rollback, so the
-    # snapshot carried b.example.com from a target the job said it skipped.
-    assert parser.last_parse_stats["skipped"] == 1
-    assert parser.last_parse_stats["partial"] is True
-    hist = (
-        db_session.query(models.HostScanHistory)
-        .join(models.Host, models.HostScanHistory.host_id == models.Host.id)
-        .filter(models.HostScanHistory.scan_id == scan.id, models.Host.ip_address == "10.7.0.9")
-        .one()
-    )
-    assert hist.hostname_at_scan == "a.example.com", "a rolled-back target must not reach the history"
-    assert hist.state_at_scan == "up"
-    assert hist.host_created is True
+
+def rows_name(db, name_id):
+    if name_id is None:
+        return None
+    return db.get(models.DNSName, name_id).fqdn
 
 
 def test_rolled_back_host_creation_does_not_poison_later_targets(

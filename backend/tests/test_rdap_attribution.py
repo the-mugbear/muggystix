@@ -26,7 +26,7 @@ from app.db.models_attribution import (
     NetworkAttribution,
 )
 from app.parsers.content_detection import looks_like_rdap
-from app.parsers.rdap_parser import RdapParser, _cidr_from_record, _org_from_entities
+from app.parsers.rdap_parser import RdapParser, _cidr_from_record, _cidrs_from_record, _org_from_entities
 from app.services.attribution_correlation import (
     attributions_for_host,
     correlate_project_attributions,
@@ -84,6 +84,33 @@ def test_derives_a_block_from_a_start_end_range_without_cidr0():
     assert _cidr_from_record(
         {"startAddress": "198.51.100.0", "endAddress": "198.51.100.255"}
     ) == "198.51.100.0/24"
+
+
+def test_a_range_that_is_not_one_cidr_is_its_exact_blocks():
+    """v2.416.0 — .1–.6 used to become 192.0.2.0/31: .0 (outside the
+    registration) in, .2–.6 (inside it) out.  The range is its exact blocks."""
+    assert _cidrs_from_record({"startAddress": "192.0.2.1", "endAddress": "192.0.2.6"}) == [
+        "192.0.2.1/32", "192.0.2.2/31", "192.0.2.4/31", "192.0.2.6/32",
+    ]
+
+
+def test_every_cidr0_block_is_kept():
+    rec = {"cidr0_cidrs": [{"v4prefix": "192.0.2.0", "length": 25},
+                           {"v4prefix": "192.0.2.128", "length": 25}]}
+    assert _cidrs_from_record(rec) == ["192.0.2.0/25", "192.0.2.128/25"]
+
+
+def test_each_block_of_a_registration_is_attributed(db_session, test_project, tmp_path):
+    p = tmp_path / "rdap.json"
+    p.write_text(json.dumps({
+        "objectClassName": "ip network", "handle": "NET-TWO", "startAddress": "192.0.2.0",
+        "endAddress": "192.0.2.255",
+        "cidr0_cidrs": [{"v4prefix": "192.0.2.0", "length": 25}, {"v4prefix": "192.0.2.128", "length": 25}],
+    }))
+    RdapParser(db_session).parse_file(str(p), p.name, project_id=test_project.id)
+    cidrs = sorted(r.cidr for r in db_session.query(NetworkAttribution)
+                   .filter(NetworkAttribution.project_id == test_project.id))
+    assert cidrs == ["192.0.2.0/25", "192.0.2.128/25"]
 
 
 def test_detection_does_not_claim_other_json_tools():

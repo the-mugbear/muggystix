@@ -637,8 +637,14 @@ class WebInterface(Base):
     __table_args__ = (
         # Idempotency: re-ingesting the same tool against the same URL
         # on the same scan updates the row in place instead of
-        # inserting duplicates.
-        UniqueConstraint("scan_id", "url", "source", name="uq_web_interface_scan_url_source"),
+        # inserting duplicates.  v2.416.0 — the address is part of the
+        # endpoint: one name served from two IPs is two endpoints, and a
+        # named URL on one IP:port beside another name is its own row
+        # (testssl collapsed SNI targets onto the IP URL).  NULLS NOT
+        # DISTINCT keeps a name-only row idempotent.
+        UniqueConstraint("scan_id", "url", "source", "ip_address",
+                         name="uq_web_interface_scan_url_source_ip",
+                         postgresql_nulls_not_distinct=True),
         Index("idx_web_interface_host", "host_id"),
         Index("idx_web_interface_favicon", "favicon_hash"),
     )

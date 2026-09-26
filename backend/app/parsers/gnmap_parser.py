@@ -264,8 +264,11 @@ class GnmapParser:
                 service_name = fields[4] if len(fields) > 4 and fields[4] else None
                 service_version = fields[6] if len(fields) > 6 and fields[6] else None
                 
-                # Only include meaningful ports (open, closed with some data)
-                if state in ['open'] or (state in ['closed', 'filtered'] and service_name):
+                # Only include meaningful ports (open, closed with some data).
+                # v2.416.0 — `open|filtered` is kept: it is how a UDP scan
+                # reports a port that did not answer "closed", and dropping it
+                # made UDP exposure disappear (nmap XML keeps the state).
+                if state in ['open', 'open|filtered'] or (state in ['closed', 'filtered'] and service_name):
                     port_data = {
                         'port_number': port_number,
                         'protocol': protocol,

@@ -459,7 +459,7 @@
             "PortScanHistory.port_created"
           ],
           "shown": "Host inspector › Ports table; Hosts list › Exposure chips + open count; Scan page ports table · Filter: port:, exploitport:, has:open_ports, has:cleartext · Also: Evidence web_tls / auth_smb_ad eligibility; Segments ports of interest",
-          "note": "Kept: every `open` entry, and `closed`/`filtered` entries only when they carry a service name. `open|filtered` / `closed|filtered` (typical of UDP -sU) are dropped."
+          "note": "Kept: every `open` and `open|filtered` entry (v2.416.0 — how a UDP -sU scan reports most ports), and `closed`/`filtered` entries only when they carry a service name. `closed|filtered` without a service is dropped."
         },
         {
           "what": "Service name (incl. ssl| tunnel prefix and ? guess marker)",
@@ -576,7 +576,6 @@
       ],
       "gaps": [
         "Nmap's footer uses ' -- ' after the date, so the scan end time is never recorded for a real .gnmap file.",
-        "UDP ports reported `open|filtered` are dropped entirely, so a -sU grepable scan loses most of its UDP results.",
         "The combined product/version/extra-info string is stored as the service version, leaving service product empty, so product-based views and filters see nothing from a .gnmap import.",
         "The `ssl|` tunnel prefix is kept as part of the service name ('ssl|http') instead of setting the TLS tunnel field, so TLS services from grepable output do not read as http/TLS.",
         "OS guesses (`OS:` field) are ignored, so a -O grepable scan adds no OS information.",
@@ -1047,10 +1046,12 @@
         {
           "what": "Service name on the port",
           "input": "`<ReportItem svc_name=\"www\">` (e.g. www, cifs, ssh, msrdp)",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "Parsed into NessusVulnerability.service_name but never written to Port.service_name."
+          "level": "field",
+          "stored_as": [
+            "Port.service_name"
+          ],
+          "shown": "Host inspector › Services table · Filter: service:",
+          "note": "v2.416.0 — fills a port no other tool has named (Nessus's own words: www, cifs…); never replaces another tool's identification. `general` / `unknown` name nothing and are ignored."
         },
         {
           "what": "Scanner observation (one per plugin per endpoint)",
@@ -1225,7 +1226,6 @@
         }
       ],
       "gaps": [
-        "The service name Nessus reports for each port (`svc_name`) is parsed but never written to the port, so a Nessus-only host shows open ports with no service.",
         "The `<Report name>` and `<policyName>` are lost: the scan is named after the uploaded file and no column holds the policy.",
         "Whether the scan was credentialed (`Credentialed_Scan` tag, plugin 19506/21745 output) is not recorded, so an analyst cannot tell an authenticated from an unauthenticated result set.",
         "OS, certificate, SMB-signing and service-version facts from informational plugins are not extracted into host or port fields; they exist only as plugin_output text (or not at all when informational items are skipped).",
@@ -1836,7 +1836,7 @@
             "WebInterface.protocol"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page hosts tables · Filter: ip:, subnet:/cidr:, state: · Also: subnet/scope correlation, site grouping; Host inventory CSV",
-          "note": "Findings are folded into one WebInterface per (ip, hostname, port) with url `https://ip:port`, source 'testssl'. A host missing from the inventory is created with state 'up'. Records with no address (e.g. `engine_problem` with ip `/`) are dropped. Port defaults to 443."
+          "note": "Findings are folded into one WebInterface per (ip, hostname, port) with url `https://hostname:port` (`https://ip:port` when no name was tested), source 'testssl'. A host missing from the inventory is created with state 'up'. Records with no address (e.g. `engine_problem` with ip `/`) are dropped. Port defaults to 443."
         },
         {
           "what": "Port row link",
@@ -1863,7 +1863,7 @@
             "HostScanHistory.hostname_at_scan"
           ],
           "shown": "Host inspector header; Hosts list › Host column; Scan page current-hosts table · Filter: hostname:/host: · Also: Host inventory CSV; JSON / Markdown export",
-          "note": "Recorded as an HTTP-kind DNSRecord name->address observation and as the display-name candidate (source 'scanner'). Two hostnames on the same ip:port collide on the (scan_id, url, source) key: the second target rolls back and is reported as a skipped target."
+          "note": "Recorded as an HTTP-kind DNSRecord name->address observation and as the display-name candidate (source 'scanner'). v2.416.0 — the web interface's URL is the name tested (`https://name:port`), so two hostnames on one ip:port are two endpoints, each with its own certificate facts and checks."
         },
         {
           "what": "Protocols offered (SSLv2/SSLv3/TLS1.0/TLS1.1/TLS1.2/TLS1.3)",
@@ -2013,7 +2013,6 @@
       ],
       "gaps": [
         "testssl never creates a Port row, so running it against a port no port scan has recorded leaves every TLS observation host-level with no port attached.",
-        "Two hostnames tested on the same ip:port (SNI vhosts) collide on the WebInterface URL key: only the first target is kept and the second is reported as a skipped target, losing its findings.",
         "Certificate subject/issuer organisation, CN and SANs are left in the raw blob — cert_subject_org/cert_issuer_org stay empty and the certificate names are not recorded as CERT observations, unlike httpx.",
         "A rated check with several CVEs keeps only the first CVE id.",
         "The pretty format's `Invocation`, `version` and `startTime` are discarded, so testssl scans have no command line, tool version or scan window.",
@@ -2671,7 +2670,7 @@
             "WebPath.scan_id"
           ],
           "shown": "Host inspector › Discovered paths · Filter: path:/webpath:",
-          "note": "WebPath.url is REBUILT as scheme://IP[:port]/path - the original hostname, query string and fragment are dropped (urlparse().path only), so `?id=1` / `?id=2` results collapse into one row. One row per (scan, url)."
+          "note": "v2.416.0 — WebPath.url is the URL requested: the name the tool asked for (the row is attached to that name's bound address) and the query string, so `?id=1` / `?id=2` are two rows and WebPath.path carries `/p?id=1`. The fragment is dropped. One row per (scan, url)."
         },
         {
           "what": "HTTP status code",
@@ -2691,7 +2690,7 @@
             "WebPath.size"
           ],
           "shown": "Host inspector › Discovered paths",
-          "note": "Lost for: ffuf CSV (column `content_length` is not in the CSV key list), feroxbuster text (`300c`), dirsearch text (`512B`), dirb, wfuzz (`chars`)."
+          "note": "ffuf CSV `content_length` is read (v2.416.0). Lost for: feroxbuster text (`300c`), dirsearch text (`512B`), dirb, wfuzz (`chars`)."
         },
         {
           "what": "Web service on the host (host + open port)",
@@ -2811,10 +2810,9 @@
         "dirb output is effectively unsupported: files are not detected unless the filename contains a supported tool name, `==> DIRECTORY:` lines are skipped, and `(CODE:200|SIZE:1234)` status/size are not read.",
         "wfuzz is unsupported: its filename token is not recognised, its JSON uses `code`/`chars` (stored NULL) and its text output has no URLs.",
         "OWASP DirBuster's text report lists bare paths under 'Dirs found with a 200 response:' headings; those paths are not read.",
-        "ffuf CSV loses the response size (column `content_length` is not read), and dirsearch/feroxbuster text lose the size too.",
+        "dirsearch and feroxbuster text lose the response size.",
         "Redirect targets, content types, word/line counts, methods and the fuzzed input word are dropped for every tool, and no raw record is kept to recover them.",
-        "Query strings are stripped, so parameter-fuzzing results collapse into one path row; vhost-fuzzing results collapse into one row and the discovered virtual hosts are lost.",
-        "The WebPath URL is rebuilt with the IP, so the hostname the tool actually requested (which matters for virtual hosting) is not recorded.",
+        "Host-header (vhost) fuzzing results collapse into one row: the fuzzed Host value is not in the URL, so the discovered virtual hosts are lost.",
         "Tool attribution comes from the filename only and ignores the operator-named source tool; a file such as `ferox.json` is labelled 'dirbuster'.",
         "ffuf's command line and start time are available but not stored on the Scan.",
         "Paths found against a name with no single known address are not stored at all (only counted in the import warning) and must be re-imported after DNS evidence arrives.",
@@ -2838,8 +2836,8 @@
       "accepted_input": "A delimited file (comma, tab or semicolon, sniffed from the first 1 KB) with a header naming a record-type column (record_type/type/recordtype), a name column (name/domain/dns_name/hostname/host) and an address column (address/ip_address/ip/value/target), optional ttl/time_to_live.",
       "signals": [
         {
-          "what": "Name-to-address record (A, AAAA, PTR or any type whose value is an IP)",
-          "input": "One CSV row: `record_type,name,address` e.g. `A,www.example.com,10.0.0.5`",
+          "what": "DNS record of any type (A, AAAA, PTR, CNAME, MX, NS, TXT, SRV, SOA…)",
+          "input": "One CSV row: `record_type,name,address` e.g. `A,www.example.com,10.0.0.5`, `CNAME,app.example.com,www.example.com`, `MX,example.com,10 mail.example.com`",
           "level": "field",
           "stored_as": [
             "DNSRecord.record_type",
@@ -2852,7 +2850,7 @@
             "DNSName.kind"
           ],
           "shown": "Host inspector › DNS evidence card; Host inspector › Names; Scan page › DNS Records tab · Also: Names evidence counts by kind; name->host binding",
-          "note": "Written through dns_name_service.record_observation: the name is normalised (lowercase, punycode, no trailing dot) into a DNSName; an exact repeat (name, type, value, resolver, scan) is a no-op. A value that is an IP literal where a name is expected is stored unbound (name_id NULL). observed_at is the ingest time; the CSV carries no timestamp column that is read."
+          "note": "Written through dns_name_service.record_observation: the name is normalised (lowercase, punycode, no trailing dot) into a DNSName; an exact repeat (name, type, value, resolver, scan) is a no-op. A value that is an IP literal where a name is expected is stored unbound (name_id NULL). observed_at is the ingest time; the CSV carries no timestamp column that is read. v2.416.0 — validated by type: A must be IPv4, AAAA IPv6 (compressed forms too), PTR an address; other types keep their value as written; an unknown type is rejected. Rejected rows are counted on the import with examples, not only logged."
         },
         {
           "what": "TTL",
@@ -2863,22 +2861,6 @@
           ],
           "shown": "Host inspector › DNS evidence; Scan page › DNS Records",
           "note": "Only when the cell is all digits; anything else is stored as NULL."
-        },
-        {
-          "what": "Records whose value is not an IP address (CNAME, MX, NS, TXT, SRV, SOA…)",
-          "input": "A row such as `CNAME,www.example.com,web.example.net` or `MX,example.com,10 mail.example.com`",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "Every row whose address column is not an IP is skipped with a log warning before record_observation is called, despite the comment 'store the observation regardless of type'."
-        },
-        {
-          "what": "Compressed IPv6 addresses (AAAA / PTR values)",
-          "input": "Address cell like `2001:db8::1` or `fe80::1`",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "_is_valid_ip accepts only the fully expanded 8-group IPv6 form (plus `::1` and `::`), so the usual compressed form is rejected and the row skipped."
         },
         {
           "what": "Reverse-DNS name of an address (PTR row) as the host's display name",
@@ -2927,10 +2909,7 @@
         }
       ],
       "gaps": [
-        "CNAME, MX, NS, TXT and every other record whose value is a name or text are silently dropped, so a zone export in this format yields only its address records.",
-        "Compressed IPv6 addresses (the normal way AAAA values are written) fail the parser's hand-written regex and the row is dropped.",
-        "A/AAAA rows do not add or name hosts, so resolved addresses from a DNS CSV are invisible in the host inventory while the same answer from dnsx or amass would create the host.",
-        "A file where every row is a non-address type fails the whole import with '0 valid records' rather than storing the names."
+        "A/AAAA rows do not add or name hosts, so resolved addresses from a DNS CSV are invisible in the host inventory while the same answer from dnsx or amass would create the host."
       ],
       "unverified": [
         "No DNS CSV fixture exists in backend/tests/fixtures; the column aliases come only from the parser's normaliser, not from a named tool's real export."
@@ -3258,7 +3237,7 @@
       "signals": [
         {
           "what": "Registered netblock (CIDR)",
-          "input": "`cidr0_cidrs[0].v4prefix|v6prefix` + `length`; else `startAddress`/`endAddress`; else a CIDR-shaped `handle`",
+          "input": "every `cidr0_cidrs[].v4prefix|v6prefix` + `length`; else `startAddress`/`endAddress`; else a CIDR-shaped `handle`",
           "level": "field",
           "stored_as": [
             "NetworkAttribution.cidr",
@@ -3266,7 +3245,7 @@
             "NetworkAttribution.source"
           ],
           "shown": "Host inspector › Provenance",
-          "note": "Only the first cidr0 entry is used; a non-aligned start/end range is widened to its covering supernet. One row per (project, cidr, 'rdap'); a re-lookup overwrites it."
+          "note": "v2.416.0 — every cidr0 block is kept, and a start/end range that is not one CIDR is stored as its exact CIDR blocks (only the first cidr0 block was used, and a non-aligned range was 'widened' to a block that was neither the range nor a cover of it). One row per (project, cidr, 'rdap'), each carrying the registration's facts; a re-lookup overwrites it."
         },
         {
           "what": "Registrant organisation",

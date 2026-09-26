@@ -307,6 +307,8 @@ class HttpxParser:
                 models.WebInterface.scan_id == scan.id,
                 models.WebInterface.url == url,
                 models.WebInterface.source == "httpx",
+                # v2.416.0 — the address is part of the endpoint's key.
+                models.WebInterface.ip_address.is_not_distinct_from(ip),
             )
             .first()
         )

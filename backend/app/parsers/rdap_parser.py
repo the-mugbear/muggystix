@@ -25,7 +25,7 @@ import ipaddress
 import json
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
 from sqlalchemy.orm import Session
 
@@ -99,51 +99,59 @@ def _org_from_entities(entities: Iterable[Dict[str, Any]]) -> Optional[str]:
     return fallback
 
 
-def _cidr_from_record(rec: Dict[str, Any]) -> Optional[str]:
-    """Derive the CIDR this RDAP record describes.
+def _cidrs_from_record(rec: Dict[str, Any]) -> List[str]:
+    """Every CIDR block this RDAP record describes, exactly.
 
-    Prefer an explicit ``cidr0_cidrs`` block (RFC 9083 extension); fall back to
-    the start/end range, which every registry returns. A range that isn't
-    CIDR-aligned collapses to the supernet covering it — attribution is about
-    "which registration covers this address", so a slightly wider block is the
-    right answer rather than dropping the record.
+    Every explicit ``cidr0_cidrs`` block (RFC 9083 extension) — a registration
+    can name several; else the start/end range, which every registry returns,
+    as its exact CIDR summary.  v2.416.0 — only the first cidr0 block was
+    kept, and a range that was not CIDR-aligned was "widened" from its first
+    block's address with the shortest prefix, which is neither the range nor a
+    cover of it (.1–.6 became .0/31: one address outside the registration, five
+    inside it lost).  An ownership claim is never wider than the registry's.
     """
+    out: List[str] = []
     cidrs = rec.get("cidr0_cidrs")
-    if isinstance(cidrs, list) and cidrs:
-        first = cidrs[0]
-        if isinstance(first, dict):
-            prefix = first.get("v4prefix") or first.get("v6prefix")
-            length = first.get("length")
+    if isinstance(cidrs, list):
+        for block in cidrs:
+            if not isinstance(block, dict):
+                continue
+            prefix = block.get("v4prefix") or block.get("v6prefix")
+            length = block.get("length")
             if prefix and length is not None:
-                return f"{prefix}/{length}"
+                try:
+                    cidr = str(ipaddress.ip_network(f"{prefix}/{length}", strict=False))
+                except ValueError:
+                    continue
+                if cidr not in out:
+                    out.append(cidr)
+    if out:
+        return out
 
     start, end = rec.get("startAddress"), rec.get("endAddress")
     if start and end:
         try:
-            nets = list(
-                ipaddress.summarize_address_range(
+            return [
+                str(n) for n in ipaddress.summarize_address_range(
                     ipaddress.ip_address(str(start)), ipaddress.ip_address(str(end)),
                 )
-            )
-            if len(nets) == 1:
-                return str(nets[0])
-            if nets:
-                # Non-aligned range: widen to the covering supernet.
-                return str(
-                    ipaddress.ip_network(
-                        f"{nets[0].network_address}/{min(n.prefixlen for n in nets)}",
-                        strict=False,
-                    )
-                )
+            ]
         except (ValueError, TypeError):
-            return None
+            return []
     handle = rec.get("handle")
     if isinstance(handle, str) and "/" in handle:
         try:
-            return str(ipaddress.ip_network(handle, strict=False))
+            return [str(ipaddress.ip_network(handle, strict=False))]
         except ValueError:
-            return None
-    return None
+            return []
+    return []
+
+
+def _cidr_from_record(rec: Dict[str, Any]) -> Optional[str]:
+    """The record's block when it is exactly one CIDR (tests, callers wanting
+    a single answer); None when there are several or none."""
+    cidrs = _cidrs_from_record(rec)
+    return cidrs[0] if len(cidrs) == 1 else None
 
 
 def _asn_from_record(rec: Dict[str, Any]) -> Optional[int]:
@@ -252,12 +260,8 @@ class RdapParser:
         # The script wraps each response as {"query": ..., "rdap": {...}}; a raw
         # RDAP object is accepted too so a hand-saved response still ingests.
         rdap = record.get("rdap") if isinstance(record.get("rdap"), dict) else record
-        cidr = _cidr_from_record(rdap)
-        if not cidr:
-            return False
-        try:
-            cidr = str(ipaddress.ip_network(cidr, strict=False))
-        except ValueError:
+        cidrs = _cidrs_from_record(rdap)
+        if not cidrs:
             return False
 
         org = _org_from_entities(rdap.get("entities") or [])
@@ -269,31 +273,33 @@ class RdapParser:
         )
         asn = _asn_from_record(rdap) or _asn_from_record(record)
 
-        existing = (
-            self.db.query(NetworkAttribution)
-            .filter(
-                NetworkAttribution.project_id == project_id,
-                NetworkAttribution.cidr == cidr,
-                NetworkAttribution.source == AttributionSource.RDAP,
+        # One attribution row per block: the registration's facts on each.
+        for cidr in cidrs:
+            existing = (
+                self.db.query(NetworkAttribution)
+                .filter(
+                    NetworkAttribution.project_id == project_id,
+                    NetworkAttribution.cidr == cidr,
+                    NetworkAttribution.source == AttributionSource.RDAP,
+                )
+                .first()
             )
-            .first()
-        )
-        row = existing or NetworkAttribution(
-            project_id=project_id, cidr=cidr, source=AttributionSource.RDAP,
-        )
-        # A re-lookup should refresh, not accumulate — registration changes and
-        # the newest answer is the one an operator should be shown.
-        row.asn = asn
-        row.as_name = (record.get("as_name") or rdap.get("name") or None)
-        row.org_name = org
-        row.country = (str(country)[:8] if country else None)
-        row.registry = (str(registry)[:32] if registry else None)
-        row.handle = (str(rdap.get("handle"))[:64] if rdap.get("handle") else None)
-        row.raw = rdap
-        row.looked_up_at = _parse_time(record.get("queried_at")) or datetime.now(timezone.utc)
-        if existing is None:
-            self.db.add(row)
-        self.db.flush()
+            row = existing or NetworkAttribution(
+                project_id=project_id, cidr=cidr, source=AttributionSource.RDAP,
+            )
+            # A re-lookup should refresh, not accumulate — registration changes and
+            # the newest answer is the one an operator should be shown.
+            row.asn = asn
+            row.as_name = (record.get("as_name") or rdap.get("name") or None)
+            row.org_name = org
+            row.country = (str(country)[:8] if country else None)
+            row.registry = (str(registry)[:32] if registry else None)
+            row.handle = (str(rdap.get("handle"))[:64] if rdap.get("handle") else None)
+            row.raw = rdap
+            row.looked_up_at = _parse_time(record.get("queried_at")) or datetime.now(timezone.utc)
+            if existing is None:
+                self.db.add(row)
+            self.db.flush()
         return True
 
     def correlate_hosts(self, project_id: Optional[int]) -> int:

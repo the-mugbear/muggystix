@@ -5,7 +5,7 @@
 import { describe, expect, it } from 'vitest';
 
 import type { Port } from '../services/api';
-import { evidenceForPort, summariseAccess, unplacedNetexec, worstSeverity } from '../utils/serviceEvidence';
+import { evidenceForPort, summariseAccess, unplacedEvidence, worstSeverity } from '../utils/serviceEvidence';
 
 const port = (id: number, n: number) => ({ id, port_number: n, protocol: 'tcp', state: 'open' }) as Port;
 
@@ -39,8 +39,44 @@ describe('evidenceForPort', () => {
     expect(e.weaknesses.map((v) => v.id)).toEqual([2]);
   });
 
-  it('finds results on no listed port', () => {
-    expect(unplacedNetexec([port(20, 445)], (all as { netexec: never[] }).netexec).map((r: { id: number }) => r.id)).toEqual([2]);
+});
+
+// v5.299.0 — evidence on no OPEN port was loaded and never shown.
+describe('unplacedEvidence', () => {
+  const closed443 = { id: 10, port_number: 443, protocol: 'tcp', state: 'closed', last_seen: null } as unknown as Port;
+  const open445 = port(20, 445);
+  const host = {
+    vulnerabilities: [],
+    netexec: [{ id: 1, port: 445 }, { id: 2, port: 3389 }, { id: 3, port: null }],
+    // On the closed port by id; on a port no scan recorded; on the open one.
+    web: [{ id: 1, port_id: 10, port: 443 }, { id: 2, port_id: null, port: 8443 }, { id: 3, port_id: 20, port: 445 }],
+    paths: [{ url: 'u1', port: 443 }, { url: 'u2', port: 445 }],
+  } as never;
+
+  it('groups what is on no open port by port number, with the port and its state', () => {
+    const groups = unplacedEvidence([open445], [open445, closed443], host);
+    expect(groups.map((g) => [g.portNumber, g.port?.state ?? null])).toEqual([
+      [443, 'closed'], [3389, null], [8443, null], [null, null],
+    ]);
+    const on443 = groups[0].evidence;
+    expect(on443.web.map((w) => w.id)).toEqual([1]);
+    expect(on443.paths.map((p) => p.url)).toEqual(['u1']);
+    expect(groups[2].evidence.web.map((w) => w.id)).toEqual([2]);
+    expect(groups[3].evidence.access.map((r) => r.id)).toEqual([3]);
+  });
+
+  it('leaves nothing out: every row is under an open port or in a group', () => {
+    const groups = unplacedEvidence([open445], [open445, closed443], host);
+    const placed = evidenceForPort(open445, host);
+    const web = [...placed.web, ...groups.flatMap((g) => g.evidence.web)].map((w) => w.id).sort();
+    const paths = [...placed.paths, ...groups.flatMap((g) => g.evidence.paths)].map((p) => p.url).sort();
+    const access = [...placed.access, ...groups.flatMap((g) => g.evidence.access)].map((r) => r.id).sort();
+    expect([web, paths, access]).toEqual([[1, 2, 3], ['u1', 'u2'], [1, 2, 3]]);
+  });
+
+  it('is empty when everything is on an open port', () => {
+    expect(unplacedEvidence([port(10, 443)], [port(10, 443)],
+      { vulnerabilities: [], netexec: [], web: [{ id: 1, port_id: 10, port: 443 }], paths: [] } as never)).toEqual([]);
   });
 });
 

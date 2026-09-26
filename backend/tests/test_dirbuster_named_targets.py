@@ -52,6 +52,25 @@ def test_name_with_one_known_address_attaches_to_that_host(db_session, test_proj
     # v2.390.0 — paths are web_paths rows, not a string in service_extrainfo.
     paths = {p.path for p in db_session.query(models.WebPath).filter(models.WebPath.host_id == hosts[0].id)}
     assert {"/admin", "/login"} <= paths
+    # v2.416.0 — the URL is the one requested (the name), not the IP: the
+    # IP's default site may be another application.
+    urls = {p.url for p in db_session.query(models.WebPath).filter(models.WebPath.host_id == hosts[0].id)}
+    assert "http://app.example.test/admin" in urls
+
+
+def test_query_strings_are_distinct_requests(db_session, test_project, tmp_path):
+    """v2.416.0 — query fuzzing: /admin?user=1 and ?user=2 were one row."""
+    text = (
+        "https://10.7.3.1/admin?user=1 (Status: 200) [Size: 10]\n"
+        "https://10.7.3.1/admin?user=2 (Status: 500) [Size: 20]\n"
+    )
+    _p, _s, hosts = _parse(db_session, test_project, tmp_path, text)
+    rows = sorted((p.path, p.url, p.status_code)
+                  for p in db_session.query(models.WebPath).filter(models.WebPath.host_id == hosts[0].id))
+    assert rows == [
+        ("/admin?user=1", "https://10.7.3.1/admin?user=1", 200),
+        ("/admin?user=2", "https://10.7.3.1/admin?user=2", 500),
+    ]
 
 
 def test_name_with_several_addresses_is_not_guessed(db_session, test_project, tmp_path):
