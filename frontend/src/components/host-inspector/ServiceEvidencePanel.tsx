@@ -20,7 +20,7 @@ import { Accordion } from '../ui/accordion';
 import { Badge } from '../ui/badge';
 import { SEVERITY_BADGE_VARIANT, type Severity } from '../../utils/severity';
 import { summariseAccess, type ServiceEvidence } from '../../utils/serviceEvidence';
-import { jumpToInspectorSection } from './InspectorSection';
+import { openIssue } from './VulnerabilityGroup';
 
 const PATH_PREVIEW = 15;
 
@@ -70,7 +70,7 @@ const ServiceEvidencePanel: React.FC<Props> = ({ hostId, port, evidence }) => {
                 </Badge>
                 <button type="button" className={`${linkButton} min-w-0 truncate text-left text-metadata text-foreground`}
                   title={`${v.title ?? ''} — open in Weaknesses`}
-                  onClick={() => jumpToInspectorSection('host-detail-vulnerabilities')}>
+                  onClick={() => openIssue(v.issue_key)}>
                   {v.title ?? 'Untitled observation'}
                 </button>
                 <span className="ml-auto shrink-0 text-caption uppercase text-muted-foreground">{v.source}</span>

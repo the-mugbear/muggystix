@@ -75,8 +75,18 @@ DOMAIN_LABELS: Dict[str, str] = {d["key"]: d["label"] for d in EVIDENCE_DOMAINS}
 # Tools whose run against a host IS a vulnerability assessment of it, whatever
 # they reported (v2.372.0).  Matched case-insensitively on ``scans.tool_name``
 # ("Nessus" is stored capitalised).  Nikto is deliberately absent: it assesses
-# one web server, not the host.
-VULN_SCANNER_TOOLS = ("nessus", "openvas")
+# one web server, not the host.  v2.415.0 — Nuclei added: a template run is a
+# vulnerability assessment of the targets it ran against.
+VULN_SCANNER_TOOLS = ("nessus", "openvas", "nuclei")
+
+
+def vulnerability_evidence_filter():
+    """``vulnerabilities`` predicate (v2.415.0): a row that is evidence of a
+    VULNERABILITY assessment.  A misconfiguration-catalog check (NetExec's
+    SMB signing, nmap's vnc-info…) is not: counting it made a host NetExec
+    enumerated read "vulnerabilities assessed" when no vulnerability scanner
+    had looked at it."""
+    return Vulnerability.check_id.is_(None)
 
 
 def vuln_scanned_filter():
@@ -211,8 +221,10 @@ def assessed_host_ids(
         "service_detection": lambda: _host_ids(db, project_id, models.Port, models.Port.service_name.isnot(None)),
         "os_detection": with_os,
         # A scanner's run over the host counts; so does any vulnerability row
-        # (nikto / testssl / a manual import carry them without such a scan).
-        "vuln_assessment": lambda: _host_ids(db, project_id, Vulnerability) | _vuln_scanned_host_ids(db, project_id),
+        # (nikto / testssl / a manual import carry them without such a scan)
+        # — but not a misconfiguration check (v2.415.0).
+        "vuln_assessment": lambda: (_host_ids(db, project_id, Vulnerability, vulnerability_evidence_filter())
+                                    | _vuln_scanned_host_ids(db, project_id)),
         "web_tls": with_web,
         "auth_smb_ad": with_auth,
         "validation": validated,

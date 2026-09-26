@@ -19,7 +19,7 @@ import {
   getObservationIssues,
   promoteObservationIssues,
 } from '../../services/api';
-import type { ObservationIssue, ObservationIssueHost } from '../../services/api';
+import type { ObservationIssue, ObservationIssueHost, WeaknessKind } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { useListCursor } from '../../hooks/useListCursor';
@@ -65,6 +65,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   // single-host issue, criticals included, with nothing saying so.
   const minHosts = Number(params.get('obs_min') ?? 1) || 1;
   const includeJudged = params.get('obs_judged') === '1';
+  // v5.298.0 — misconfigurations (catalog checks) / vulnerabilities.
+  const kind = params.get('obs_kind') ?? 'all';
   const setParam = useCallback((key: string, value: string, fallback: string) => {
     setParams((prev) => {
       const next = new URLSearchParams(prev);
@@ -76,6 +78,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const setSeverity = (v: string) => setParam('obs_severity', v, 'all');
   const setMinHosts = (v: number) => setParam('obs_min', String(v), '1');
   const setIncludeJudged = (v: boolean) => setParam('obs_judged', v ? '1' : '0', '0');
+  const setKind = (v: string) => setParam('obs_kind', v, 'all');
   const [searchInput, setSearchInput] = useState(search);
   const [issues, setIssues] = useState<ObservationIssue[]>([]);
   const [total, setTotal] = useState(0);
@@ -98,8 +101,11 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   }, [searchInput, setParam]);
 
   const filters = useMemo(
-    () => ({ search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged }),
-    [search, severity, minHosts, includeJudged],
+    () => ({
+      search, severity: severity === 'all' ? undefined : severity, minHosts, includeJudged,
+      kind: kind === 'all' ? undefined : (kind as WeaknessKind),
+    }),
+    [search, severity, minHosts, includeJudged, kind],
   );
   // The filters a "Load more" response belongs to: a page that lands after the
   // filters changed is dropped, not appended to the new list.
@@ -242,7 +248,7 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : issues.length,
     (i) => void toggleExpanded(issues[i]),
-    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}` },
+    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}` },
   );
 
   return (
@@ -267,6 +273,15 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
             {SEVERITIES.map((s) => (
               <SelectItem key={s} value={s} className="capitalize">{s}</SelectItem>
             ))}
+          </SelectContent>
+        </Select>
+        <Select value={kind} onValueChange={setKind}>
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-48')} aria-label="Kind"><SelectValue /></SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All kinds</SelectItem>
+            <SelectItem value="misconfiguration">Misconfigurations</SelectItem>
+            <SelectItem value="vulnerability">Vulnerabilities</SelectItem>
+            <SelectItem value="informational">Informational</SelectItem>
           </SelectContent>
         </Select>
         <Select value={String(minHosts)} onValueChange={(v) => setMinHosts(Number(v))}>
@@ -378,7 +393,10 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                         <TableCell className="min-w-0">
                           <p className="line-clamp-2 break-words font-medium" title={issue.title}>{issue.title}</p>
                           <p className="truncate text-caption text-muted-foreground">
-                            {[issue.cve_id, issue.sources.join(', ')].filter(Boolean).join(' · ')}
+                            {[
+                              issue.kind === 'misconfiguration' ? 'misconfiguration' : null,
+                              issue.cve_id, issue.sources.join(', '),
+                            ].filter(Boolean).join(' · ')}
                           </p>
                           {issue.finding_id != null && (
                             <Link to={`/findings/${issue.finding_id}`} className="text-caption text-primary hover:underline">

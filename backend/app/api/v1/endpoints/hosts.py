@@ -328,6 +328,39 @@ class HostFilterParams:
         return any(v is not None for v in self.__dict__.values())
 
 
+_ISSUE_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+_RANK_NAME = {4: "critical", 3: "high", 2: "medium", 1: "low"}
+
+
+def _issue_counts(db: Session, host_ids: List[int]) -> Dict[int, Dict[str, int]]:
+    """v2.415.0 — each host's ISSUES by worst severity (the key the
+    inspector and Findings group by), and how many are misconfigurations.
+    Informational rows are not attention.  One grouped query."""
+    if not host_ids:
+        return {}
+    from sqlalchemy import case
+
+    rank = func.max(case(*[(Vulnerability.severity == name, r) for name, r in _ISSUE_RANK.items()], else_=0))
+    key = func.coalesce(Vulnerability.issue_key, func.concat("row:", Vulnerability.id))
+    out: Dict[int, Dict[str, int]] = {}
+    rows = (
+        db.query(Vulnerability.host_id, key, rank,
+                 func.max(case((Vulnerability.check_id.isnot(None), 1), else_=0)))
+        .filter(Vulnerability.host_id.in_(host_ids))
+        .group_by(Vulnerability.host_id, key)
+        .all()
+    )
+    for host_id, _key, worst, misconfig in rows:
+        name = _RANK_NAME.get(int(worst or 0))
+        if not name:
+            continue
+        counts = out.setdefault(host_id, {"critical": 0, "high": 0, "medium": 0, "low": 0, "misconfiguration": 0})
+        counts[name] += 1
+        if misconfig:
+            counts["misconfiguration"] += 1
+    return out
+
+
 def _host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
     """Canonical per-host data-conflict count → the number of HOST-level
     ``ConflictHistory`` rows (each is a recorded disagreement where a later
@@ -720,6 +753,10 @@ def get_hosts_v2(
             if sev == VulnerabilitySeverity.CRITICAL:
                 critical_exploit_count_map[hid] = cnt
 
+    # v2.415.0 — issues per worst severity (and misconfigurations) for the
+    # Attention column: one grouped query for the page.
+    issue_count_map = _issue_counts(db, host_ids)
+
     # Batch lookup: each host's MOST-SPECIFIC (longest-prefix) subnet + site,
     # so the Host column can show where the host lives.  Bounded by the page's
     # host_ids (paginated), not the whole project.  Most-specific-wins mirrors
@@ -780,6 +817,7 @@ def get_hosts_v2(
         serialized["changed_recently"] = host.id in changed_map
         serialized["exploitable_count"] = exploit_count_map.get(host.id, 0)
         serialized["critical_exploitable_count"] = critical_exploit_count_map.get(host.id, 0)
+        serialized["issue_counts"] = issue_count_map.get(host.id)
         _loc = host_location_map.get(host.id)
         serialized["primary_subnet"] = _loc["subnet"] if _loc else None
         serialized["primary_site"] = _loc["site"] if _loc else None

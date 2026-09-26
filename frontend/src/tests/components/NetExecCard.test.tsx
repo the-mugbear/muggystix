@@ -1,29 +1,41 @@
 /**
  * NetExec shares as the inspector shows them (v5.274.0): the --shares table
  * reads as words, a spider_plus listing as a file count — neither as JSON.
+ * v5.298.0 — the rows render in each service's panel; these render them as
+ * the panel does (folded, newest first).
  */
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi } from 'vitest';
 
-const getHostNetexecResults = vi.fn();
-vi.mock('../../services/api', () => ({
-  getHostNetexecResults: (...a: unknown[]) => getHostNetexecResults(...a),
-}));
+vi.mock('../../services/api', () => ({}));
 
-import NetExecCard from '../../components/NetExecCard';
+import { foldNetexecRows, NetExecResultRow } from '../../components/NetExecCard';
+import ServiceEvidencePanel from '../../components/host-inspector/ServiceEvidencePanel';
+import type { NetexecResult, Port } from '../../services/api';
 
 const row = (id: number, shares: unknown) => ({
   id, scan_id: id, protocol: 'smb', port: 445, auth_success: true, username: 'guest',
   hostname: 'LABSMB', domain_name: 'LABSMB', shares, first_seen: `2026-09-23T05:1${id}:00Z`,
 });
 
-const renderCard = (count: number) =>
-  render(<MemoryRouter><NetExecCard hostId={6} count={count} /></MemoryRouter>);
+let current: NetexecResult[] = [];
+const given = (rows: unknown[]) => { current = rows as NetexecResult[]; };
+
+const renderCard = (_count: number) =>
+  render(
+    <MemoryRouter>
+      <div>
+        {foldNetexecRows(current).map(({ latest, count }) => (
+          <NetExecResultRow key={latest.id} result={latest} seenCount={count} />
+        ))}
+      </div>
+    </MemoryRouter>,
+  );
 
 describe('NetExecCard shares', () => {
   it('reads the --shares table and a spider_plus listing as words', async () => {
-    getHostNetexecResults.mockResolvedValue([
+    given([
       row(1, [
         { name: 'public', permissions: 'READ', remark: 'Parser lab read-only public share' },
         { name: 'restricted', permissions: null, remark: 'Parser lab authenticated-only share' },
@@ -38,7 +50,7 @@ describe('NetExecCard shares', () => {
   });
 
   it('names the tool, the session, local-admin access and SMBv1', async () => {
-    getHostNetexecResults.mockResolvedValue([
+    given([
       { ...row(1, [{ name: 'public', permissions: 'READ ONLY', remark: null }]), tool: 'smbmap', username: '', auth_success: true },
       { ...row(2, null), local_admin: true, username: 'admin' },
       { ...row(3, null), auth_success: null, smbv1: true },
@@ -55,7 +67,7 @@ describe('NetExecCard shares', () => {
 describe('NetExecCard lines (v5.296.0)', () => {
   it('shows the tool line, where uninterpreted flags live, and links to what BlueStick reads', async () => {
     const vncLine = 'VNC 10.0.0.9 5900 10.0.0.9 [+] No password seems to be accepted by the server';
-    getHostNetexecResults.mockResolvedValue([
+    given([
       { ...row(1, null), protocol: 'vnc', port: 5900, raw_output: vncLine, username: null, auth_success: null },
       { ...row(2, { public: {} }), raw_output: 'JSON: {"public": {}}' },
     ]);
@@ -65,13 +77,24 @@ describe('NetExecCard lines (v5.296.0)', () => {
     expect(screen.queryByText(/^JSON:/)).not.toBeInTheDocument();
     // Shares are an SMB matter.
     expect(screen.queryAllByText('· no shares enumerated')).toHaveLength(0);
+  });
+
+  it('a service panel links its access results to what BlueStick reads', () => {
+    const port = { id: 1, port_number: 5900, protocol: 'tcp', state: 'open', scripts: [] } as unknown as Port;
+    const access = [{ ...row(1, null), protocol: 'vnc', port: 5900, username: null, auth_success: null,
+      raw_output: 'VNC 10.0.0.9 5900 10.0.0.9 [*] RFB 3.8 (No Auth:True)' }] as unknown as NetexecResult[];
+    render(
+      <MemoryRouter>
+        <ServiceEvidencePanel hostId={1} port={port} evidence={{ weaknesses: [], access, web: [], paths: [] }} />
+      </MemoryRouter>,
+    );
     expect(screen.getByRole('link', { name: 'What BlueStick reads from NetExec' }))
       .toHaveAttribute('href', '/reference/tool-coverage?tool=netexec');
   });
 
   it('treats lines that differ only in column padding as the same result', async () => {
     const ftp = { ...row(1, null), protocol: 'ftp', port: 21, username: null, auth_success: null };
-    getHostNetexecResults.mockResolvedValue([
+    given([
       { ...ftp, id: 1, raw_output: 'FTP  10.0.0.10   21    10.0.0.10   [*] Banner: (vsFTPd 3.0.5)', first_seen: '2026-09-25T22:09:00Z' },
       { ...ftp, id: 2, raw_output: 'FTP 10.0.0.10 21 10.0.0.10 [*] Banner: (vsFTPd 3.0.5)', first_seen: '2026-09-25T22:10:00Z' },
     ]);
@@ -81,7 +104,7 @@ describe('NetExecCard lines (v5.296.0)', () => {
 
   it('keeps two scans of one port apart when their lines differ', async () => {
     const vnc = { ...row(1, null), protocol: 'vnc', port: 5900, username: null, auth_success: null };
-    getHostNetexecResults.mockResolvedValue([
+    given([
       { ...vnc, id: 1, raw_output: 'VNC 192.168.56.22 5900 192.168.56.22 [*] RFB 3.8 (No Auth:True)', first_seen: '2026-09-25T22:09:00Z' },
       { ...vnc, id: 2, raw_output: 'VNC 192.168.56.22 5900 192.168.56.22 [*] RFB 3.8', first_seen: '2026-09-25T22:10:00Z' },
     ]);

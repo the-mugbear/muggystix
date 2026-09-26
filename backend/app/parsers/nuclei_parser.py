@@ -47,7 +47,7 @@ from app.parsers.parser_utils import (
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, bind_hostname
 from app.services.host_deduplication_service import HostDeduplicationService
-from app.services.misconfig_checks import nuclei_header_check, record_misconfig
+from app.services.misconfig_checks import NUCLEI_TEMPLATE_CHECKS, nuclei_header_check, record_misconfig
 
 logger = logging.getLogger(__name__)
 
@@ -258,7 +258,8 @@ class NucleiParser:
 
         # v2.414.0 — a missing-security-header matcher is a catalog check,
         # titled the same as Nikto's and testssl's report of it.
-        check_id = nuclei_header_check(str(record["template-id"]), record.get("matcher-name"))
+        check_id = (nuclei_header_check(str(record["template-id"]), record.get("matcher-name"))
+                    or NUCLEI_TEMPLATE_CHECKS.get(str(record["template-id"])))
         if check_id:
             record_misconfig(
                 self.db, check_id=check_id, host_id=host.id, scan_id=scan.id,

@@ -172,6 +172,7 @@ def record_misconfig(
         solution=check.solution,
         plugin_output=(evidence or "")[:4000] or None,
         name_id=name_id,
+        check_id=check.id,
     )
 
 
@@ -210,3 +211,44 @@ def nuclei_header_check(template_id: str, matcher: Optional[str]) -> Optional[st
     if template_id != "http-missing-security-headers" or not matcher:
         return None
     return _MISSING_HEADER.get(matcher.lower())
+
+
+# --- Vulnerability scanners' own checks → catalog (v2.415.0) ---------------
+# Each id checked against the vendor's page (tenable.com/plugins/nessus/<id>,
+# projectdiscovery/nuclei-templates, 2026-09-26).  The row keeps the scanner's
+# own severity and write-up; it gains the catalog title and check, so the same
+# weakness from nmap, NetExec and Nessus is one issue.  OpenVAS is not mapped:
+# no OID list could be verified.
+NESSUS_PLUGIN_CHECKS: Dict[str, str] = {
+    "57608": "smb_signing_not_required",   # SMB Signing not required
+    "26920": "smb_null_session",           # SMB NULL Session Authentication
+    "96982": "smbv1_enabled",              # Server Message Block (SMB) Protocol Version 1 Enabled (uncredentialed check)
+    "10079": "ftp_anonymous",              # Anonymous FTP Enabled
+    "26925": "vnc_no_auth",                # VNC Server Unauthenticated Access
+    "104743": "tls_deprecated_protocol",   # TLS Version 1.0 Protocol Detection
+    "157288": "tls_deprecated_protocol",   # TLS Version 1.1 Deprecated Protocol
+    "20007": "tls_deprecated_protocol",    # SSL Version 2 and 3 Protocol Detection
+    "15901": "tls_cert_expired",           # SSL Certificate Expiry
+    "142960": "http_missing_hsts",         # HSTS Missing From HTTPS Server (RFC 6797)
+}
+NUCLEI_TEMPLATE_CHECKS: Dict[str, str] = {
+    "ftp-anonymous-login": "ftp_anonymous",
+    "deprecated-tls": "tls_deprecated_protocol",
+    "expired-ssl": "tls_cert_expired",
+}
+
+# The kinds a weakness is (v2.415.0): the host filter ``kind:`` and the
+# inspector / Scanner observations split.
+KIND_MISCONFIGURATION = "misconfiguration"
+KIND_VULNERABILITY = "vulnerability"
+KIND_INFORMATIONAL = "informational"
+KINDS = (KIND_MISCONFIGURATION, KIND_VULNERABILITY, KIND_INFORMATIONAL)
+
+
+def vuln_kind(check_id: Optional[str], severity) -> str:
+    """A catalog check is a misconfiguration; otherwise an informational row
+    is informational and anything rated is a vulnerability."""
+    if check_id:
+        return KIND_MISCONFIGURATION
+    value = getattr(severity, "value", severity)
+    return KIND_INFORMATIONAL if str(value or "").lower() == "info" else KIND_VULNERABILITY

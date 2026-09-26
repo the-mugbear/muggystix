@@ -491,6 +491,42 @@ def severity_predicate(db: Session, severities: Iterable[str], project_id: int) 
     return models.Host.id.in_(sub)
 
 
+def kind_predicate(db: Session, kinds: Iterable[str], project_id: int) -> ColumnElement:
+    """Host with a weakness of any of the given kinds (v2.415.0):
+    ``misconfiguration`` (a catalog check, whichever tool reported it),
+    ``vulnerability`` (anything else rated low or worse), ``informational``."""
+    _H = aliased(models.Host)
+    wanted = {k.strip().lower() for k in kinds}
+    conditions = []
+    if "misconfiguration" in wanted:
+        conditions.append(Vulnerability.check_id.isnot(None))
+    if "vulnerability" in wanted:
+        conditions.append(and_(Vulnerability.check_id.is_(None), Vulnerability.severity != "INFO"))
+    if "informational" in wanted:
+        conditions.append(and_(Vulnerability.check_id.is_(None), Vulnerability.severity == "INFO"))
+    if not conditions:
+        return false()
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, or_(*conditions))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def check_predicate(db: Session, checks: Iterable[str], project_id: int) -> ColumnElement:
+    """Host with any of the given catalog checks (v2.415.0)."""
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(_H.project_id == project_id, Vulnerability.check_id.in_([c.strip().lower() for c in checks]))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
 def has_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
     """Host has a vulnerability flagged exploitable (project-scoped).
 

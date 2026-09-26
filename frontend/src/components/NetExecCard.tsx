@@ -1,33 +1,17 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { KeyRound, Loader2, FolderTree } from 'lucide-react';
-import { Link } from 'react-router-dom';
+import React from 'react';
+import { FolderTree } from 'lucide-react';
 
-import { NetexecResult, getHostNetexecResults } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { NetexecResult } from '../services/api';
 import { latestObservations } from '../utils/latestObservations';
-import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
-import { InspectorSection } from './host-inspector/InspectorSection';
 
 /**
- * NetExecCard — surfaces NetExec credentialed-enumeration results that
- * the netexec parser stored in `netexec_results` but which had no API
- * surface (and so no UI) before v2.45.7.
- *
- * One row per protocol probe (smb / ldap / winrm / rdp): the
- * authentication outcome and any enumerated SMB shares.  Lazy-loaded —
- * fetches only when the host has results (`count > 0`).
+ * NetExec / SMBMap results as the inspector shows them: one row per protocol
+ * probe — the login outcome, local-admin access, SMBv1, the shares, and the
+ * tool's own line.  v5.298.0 — the per-host section is gone; each service's
+ * panel (host-inspector/ServiceEvidencePanel) and the Services section's
+ * "results on no listed port" render these rows.
  */
-
-interface NetExecCardProps {
-  hostId: number;
-  // Count from the host-detail payload; 0 → the card renders nothing.
-  count: number;
-  /** v5.297.0 — rows already loaded (the Services section loads them once
-   *  and shows here only the ones on no open port); skips the fetch. */
-  rows?: NetexecResult[];
-  title?: string;
-}
 
 const protocolBadgeVariant = (proto: string): 'info' | 'secondary' | 'outline' => {
   switch (proto.toLowerCase()) {
@@ -213,75 +197,3 @@ export const foldNetexecRows = (rows: NetexecResult[]) =>
   );
 
 export { NetExecResultRow };
-
-const NetExecCard: React.FC<NetExecCardProps> = ({ hostId, count, rows: given, title }) => {
-  const [fetched, setRows] = useState<NetexecResult[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const rows = given ?? fetched;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setRows(await getHostNetexecResults(hostId));
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load NetExec results.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [hostId]);
-
-  useEffect(() => {
-    if (count > 0 && !given) load();
-  }, [count, load, given]);
-
-  // Nothing observed — render nothing (host wasn't enumerated with NetExec).
-  if (count <= 0) return null;
-
-  const observed = foldNetexecRows(rows ?? []);
-
-  return (
-    <InspectorSection
-      id="host-detail-netexec"
-      title={title ?? 'NetExec / SMBMap results'}
-      titleHint="NetExec and SMBMap results that belong to no open port listed above — the session or login outcome, local-admin access, and shares."
-      icon={<KeyRound className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
-      count={rows ? observed.length : null}
-    >
-      <div className="space-y-sm">
-        {/* v5.296.0 — say how far these rows were understood. */}
-        <p className="text-caption text-muted-foreground">
-          BlueStick interprets the SMB banner and login lines; other flags (LDAP signing, RDP NLA, VNC,
-          module results) are only in each row&rsquo;s line.{' '}
-          <Link to="/reference/tool-coverage?tool=netexec" className="text-info underline-offset-2 hover:underline">
-            What BlueStick reads from NetExec
-          </Link>
-        </p>
-        {loading && (
-          <div className="flex items-center gap-xs text-caption text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden />
-            Loading NetExec results…
-          </div>
-        )}
-        {error && (
-          <Alert variant="destructive">
-            <AlertDescription>{error}</AlertDescription>
-          </Alert>
-        )}
-        {!loading && !error && rows && rows.length === 0 && (
-          <p className="text-caption text-muted-foreground">No NetExec results recorded.</p>
-        )}
-        {observed.length > 0 && (
-          <div className="divide-y divide-border">
-            {observed.map(({ latest, count: seenCount }) => (
-              <NetExecResultRow key={latest.id} result={latest} seenCount={seenCount} />
-            ))}
-          </div>
-        )}
-      </div>
-    </InspectorSection>
-  );
-};
-
-export default NetExecCard;

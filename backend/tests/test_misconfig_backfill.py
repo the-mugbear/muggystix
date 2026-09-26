@@ -70,6 +70,49 @@ def test_backfill_records_what_the_parsers_would(db_session, test_project):
     assert all(v.port is not None for v in rows)
 
 
+def test_backfill_adopts_rows_stored_under_a_tools_title(db_session, test_project):
+    """A Nikto header row and a testssl HSTS row imported before v2.414.0
+    become the catalog check; a finding promoted from one takes its key."""
+    from app.db.models_findings import Finding
+    from app.parsers.parser_utils import upsert_vulnerability
+    from app.db.models_vulnerability import VulnerabilitySeverity
+    scan = models.Scan(filename="old", tool_name="nikto", project_id=test_project.id)
+    db_session.add(scan)
+    db_session.flush()
+    host = models.Host(project_id=test_project.id, ip_address="10.8.6.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    nikto = upsert_vulnerability(db=db_session, host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NIKTO,
+                                 title="/: Suggested security header missing: strict-transport-security",
+                                 severity=VulnerabilitySeverity.LOW, plugin_id="013587", key_on_title=True)
+    testssl = upsert_vulnerability(db=db_session, host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.TESTSSL,
+                                   title="HSTS not set", severity=VulnerabilitySeverity.LOW, plugin_id="HSTS")
+    other = upsert_vulnerability(db=db_session, host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NIKTO,
+                                 title="/admin/: Directory indexing found.", severity=VulnerabilitySeverity.LOW)
+    finding = Finding(project_id=test_project.id, title="HSTS", severity="low", status="confirmed",
+                      source="scanner", vuln_id=nikto.id, dedup_key=nikto.issue_key)
+    db_session.add(finding)
+    db_session.flush()
+
+    backfill_misconfigs(db_session, project_id=test_project.id)
+    db_session.flush()
+    assert (nikto.check_id, testssl.check_id) == ("http_missing_hsts", "http_missing_hsts")
+    assert nikto.issue_key == testssl.issue_key == "check:http_missing_hsts"
+    assert nikto.title == "HTTP Strict-Transport-Security header missing"
+    assert other.check_id is None
+    assert finding.dedup_key == "check:http_missing_hsts"
+
+
+def test_backfill_marks_nxc_only_hosts_up(db_session, test_project):
+    host, _other = _seed(db_session, test_project)
+    host.state = "unknown"
+    db_session.flush()
+    counts = backfill_misconfigs(db_session, project_id=test_project.id)
+    db_session.refresh(host)
+    assert host.state == "up"
+    assert counts["hosts marked up (NetExec answered)"] == 1
+
+
 def test_backfill_is_idempotent_and_project_scoped(db_session, test_project):
     _seed(db_session, test_project)
     backfill_misconfigs(db_session, project_id=test_project.id)

@@ -49,6 +49,9 @@ export interface HostVulnerability {
    *  and for Finding dedup — one key, one implementation, so the grouping
    *  shown can't diverge from the dedup performed. */
   issue_key?: string | null;
+  /** v5.298.0 — the misconfiguration-catalog check (if any) and the kind. */
+  check_id?: string | null;
+  kind?: 'misconfiguration' | 'vulnerability' | 'informational' | null;
   scan_id: number | null;
   port_id: number | null;
   port_number: number | null;
@@ -208,6 +211,9 @@ export interface Host {
   // v2.344.0 — of those, the ones that are ALSO critical (same vulnerability
   // row).  The Attention badge's "critical · exploit" keys on this.
   critical_exploitable_count?: number;
+  /** v5.298.0 — issues (not scanner rows) per worst severity, and how many
+   *  are misconfigurations; list rows only. */
+  issue_counts?: { critical: number; high: number; medium: number; low: number; misconfiguration: number } | null;
   primary_subnet?: string | null;
   primary_site?: string | null;
   // v2.344.0 — the three-state coverage on the list row (the detail card's

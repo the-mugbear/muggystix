@@ -47,6 +47,7 @@ from app.db.models import FollowStatus
 from app.db.models_auth import User
 from app.schemas.schemas import REVIEW_CONCLUSIONS
 from app.services import host_query_predicates as P
+from app.services.misconfig_checks import CHECKS, KINDS
 from app.services.host_query_common import escape_like  # noqa: F401  (parity w/ predicates)
 
 
@@ -723,6 +724,21 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Exactly one scanner-observation issue, by the key the Findings page "
                           "groups observations by (quote it: `issue:\"title:smb signing not "
                           "required\"`). Exact match, unlike vuln:."),
+    # v2.415.0 — what kind of weakness, and which catalog check.
+    FieldSpec("kind", lambda c, v: P.kind_predicate(c.db, v, c.project_id), value_source="enum",
+              enum_values=list(KINDS),
+              enum_descriptions={
+                  "misconfiguration": "A misconfiguration check, whichever tool reported it "
+                                      "(VNC / SMB / FTP access, SMB signing, SMBv1, TLS, HTTP headers).",
+                  "vulnerability": "Any other scanner observation rated low or worse (CVEs, vendor plugins).",
+                  "informational": "An informational scanner observation.",
+              },
+              description="The kind of weakness a host has: misconfiguration, vulnerability or informational."),
+    FieldSpec("check", lambda c, v: P.check_predicate(c.db, v, c.project_id), value_source="enum",
+              enum_values=sorted(CHECKS),
+              enum_descriptions={cid: check.title for cid, check in CHECKS.items()},
+              description="One misconfiguration check, whichever tool reported it (nmap, NetExec, SMBMap, "
+                          "Nessus, Nuclei, Nikto, testssl)."),
     FieldSpec("exploitport", _b_exploitport, value_source="port",
               description="A port carrying a finding flagged exploitable by a vulnerability "
                           "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),
@@ -881,8 +897,9 @@ EXAMPLES: List[dict] = [
     {"label": "EOL OS, not yet reviewed", "q": "has:eol AND follow:none"},
     {"label": "SMB signing not required", "q": "has:smb_unsigned"},
     # v2.412.0 — catalog observations (app/services/misconfig_checks.py).
-    {"label": "VNC without authentication", "q": 'vuln:"VNC server does not require authentication"'},
-    {"label": "SMB null or guest sessions", "q": 'vuln:"SMB null or guest session allowed"'},
+    {"label": "Misconfigurations, not yet reviewed", "q": "kind:misconfiguration AND follow:none"},
+    {"label": "VNC without authentication", "q": "check:vnc_no_auth"},
+    {"label": "SMB null or guest sessions", "q": "check:smb_null_session"},
     {"label": "Local admin access or a writable share", "q": "has:local_admin OR has:writable_share"},
     {"label": "Reviewed, evidence changed since", "q": "has:stale_review"},
 ]

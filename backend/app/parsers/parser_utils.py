@@ -473,6 +473,9 @@ def upsert_vulnerability(
     # Nessus path sets it in VulnerabilityService).  None leaves it alone; a
     # re-observation only ever raises it.
     exploitable: Optional[bool] = None,
+    # v2.415.0 — the misconfiguration-catalog check the row is (its issue key
+    # and kind); set by record_misconfig and the scanner mappings.
+    check_id: Optional[str] = None,
     # v2.387.0 — the id names a CHECK that reports several distinct results
     # (Nikto 2.6 gives every "Suggested security header missing: X" line the
     # id 013587): the title is part of the identity, or the five headers
@@ -539,6 +542,8 @@ def upsert_vulnerability(
             existing.plugin_output = plugin_output
         if exploitable:
             existing.exploitable = True
+        if check_id:
+            existing.check_id = check_id
         return existing
 
     vulnerability = Vulnerability(
@@ -559,6 +564,7 @@ def upsert_vulnerability(
         plugin_output=plugin_output,
         last_seen_scan_id=scan_id,
         exploitable=bool(exploitable),
+        check_id=check_id,
     )
     db.add(vulnerability)
     db.flush()

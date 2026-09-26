@@ -398,7 +398,12 @@ export interface ObservationIssue {
   judged_host_count: number;
   finding_id: number | null;
   finding_status: string | null;
+  /** v5.298.0 — misconfiguration (a catalog check, whichever tool reported
+   *  it) / vulnerability / informational. */
+  kind?: WeaknessKind;
 }
+
+export type WeaknessKind = 'misconfiguration' | 'vulnerability' | 'informational';
 
 export interface ObservationIssueHost {
   host_id: number;
@@ -417,6 +422,7 @@ export interface ObservationIssueFilters {
   minHosts?: number;
   skip?: number;
   limit?: number;
+  kind?: WeaknessKind;
 }
 
 export const getObservationIssues = async (
@@ -428,6 +434,7 @@ export const getObservationIssues = async (
       severity: filters.severity || undefined,
       include_judged: filters.includeJudged || undefined,
       min_hosts: filters.minHosts && filters.minHosts > 1 ? filters.minHosts : undefined,
+      kind: filters.kind || undefined,
       skip: filters.skip || undefined,
       limit: filters.limit ?? 50,
     },

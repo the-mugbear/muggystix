@@ -34,6 +34,8 @@ class IssueRowOut(BaseModel):
     judged_host_count: int
     finding_id: Optional[int] = None
     finding_status: Optional[str] = None
+    # v2.415.0 — misconfiguration / vulnerability / informational.
+    kind: str = "vulnerability"
 
 
 class IssuePageOut(BaseModel):
@@ -80,13 +82,15 @@ def list_scanner_observation_issues(
     min_hosts: int = Query(1, ge=1, le=100000),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=200),
+    kind: Optional[str] = Query(None, max_length=20,
+                                description="misconfiguration | vulnerability | informational"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     try:
         page = svc.list_issues(
             db, project.id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=skip, limit=limit,
+            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind,
         )
     except svc.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

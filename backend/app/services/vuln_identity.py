@@ -61,13 +61,22 @@ def issue_key(
     cve_id: Optional[str],
     title: Optional[str],
     row_id: Optional[int] = None,
+    check_id: Optional[str] = None,
 ) -> Optional[str]:
     """Stable identity for the issue a vulnerability row describes.
+
+    v2.415.0 — a row mapped to a misconfiguration-catalog check
+    (``Vulnerability.check_id``) is that check, ahead of any CVE: Nessus's
+    "Anonymous FTP Enabled" carries CVE-1999-0497, nmap's ftp-anon does not,
+    and both are the one issue ``check:ftp_anonymous``.
 
     Returns ``None`` when the row carries no identifying information at all
     AND no ``row_id`` was supplied to fall back to — callers that need a
     guaranteed key should pass ``row_id``.
     """
+    check = (check_id or "").strip()
+    if check:
+        return f"check:{check}"
     cve = (cve_id or "").strip()
     if cve:
         return f"cve:{cve.upper()}"
@@ -81,4 +90,5 @@ def issue_key(
 
 def issue_key_for(vuln) -> Optional[str]:
     """``issue_key`` for a Vulnerability ORM row."""
-    return issue_key(cve_id=vuln.cve_id, title=vuln.title, row_id=vuln.id)
+    return issue_key(cve_id=vuln.cve_id, title=vuln.title, row_id=vuln.id,
+                     check_id=getattr(vuln, "check_id", None))

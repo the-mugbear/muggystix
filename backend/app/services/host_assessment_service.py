@@ -33,7 +33,9 @@ from app.db import models
 from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
 from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability
-from app.services.evidence_service import _AUTH_PORTS, _WEB_PORTS, vuln_scanned_filter
+from app.services.evidence_service import (
+    _AUTH_PORTS, _WEB_PORTS, vuln_scanned_filter, vulnerability_evidence_filter,
+)
 
 # A port observed within this window of the host's newest observation counts
 # as seen by the same sweep (parsers stamp rows over a few seconds).
@@ -64,7 +66,8 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
 
     last_vuln_at, vuln_count = (
         db.query(func.max(Vulnerability.last_seen), func.count(Vulnerability.id))
-        .filter(Vulnerability.host_id == hid)
+        # A misconfiguration check is not a vulnerability assessment (v2.415.0).
+        .filter(Vulnerability.host_id == hid, vulnerability_evidence_filter())
         .one()
     )
     # A vulnerability scanner's run over the host is an assessment even when it

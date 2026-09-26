@@ -244,8 +244,12 @@ export const computeAttention = (
   host: Host,
 ): { primary: AttentionReason | null; others: AttentionReason[] } => {
   const vs = host.vulnerability_summary;
-  const crit = vs?.critical ?? 0;
-  const high = vs?.high ?? 0;
+  // v5.298.0 — ISSUES by worst severity (the grouping the inspector and
+  // Findings use), not scanner rows: one VNC issue on two ports read "2 high".
+  const ic = host.issue_counts;
+  const crit = ic ? ic.critical : vs?.critical ?? 0;
+  const high = ic ? ic.high : vs?.high ?? 0;
+  const medium = ic ? ic.medium : 0;
   const exploit = host.exploitable_count ?? 0;
   // v5.220.0 — "critical · exploit" is only claimed when the backend joined
   // the two on the same vulnerability.  Before, a critical with no exploit
@@ -287,7 +291,15 @@ export const computeAttention = (
     });
   }
   if (high > 0) {
-    reasons.push({ label: `${high} high`, tone: 'severity-high', detail: `${high} high-severity vulnerability${high === 1 ? '' : 'ies'}.` });
+    reasons.push({ label: `${high} high`, tone: 'severity-high', detail: `${high} high-severity issue${high === 1 ? '' : 's'}.` });
+  }
+  // v5.298.0 — medium counts too: an anonymous-FTP host read "—".
+  if (medium > 0) {
+    reasons.push({
+      label: `${medium} medium`, tone: 'info',
+      detail: `${medium} medium-severity issue${medium === 1 ? '' : 's'}`
+        + (ic && ic.misconfiguration > 0 ? ` (${ic.misconfiguration} misconfiguration${ic.misconfiguration === 1 ? '' : 's'} across all severities).` : '.'),
+    });
   }
   const findings = host.finding_count ?? 0;
   if (findings > 0) {

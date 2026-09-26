@@ -19,6 +19,7 @@ from typing import List, Optional
 
 from app.db import models
 from app.services.vuln_identity import issue_key_for
+from app.services.misconfig_checks import vuln_kind
 from app.db.models import HostFollow, Annotation as AnnotationModel
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.schemas.schemas import HostVulnerabilitySummary, Annotation, HostFollowInfo
@@ -505,6 +506,9 @@ def serialize_vulnerability(vuln: Vulnerability, coverage: Optional[dict] = None
         # spine dedups on — two implementations of "is this the same issue?"
         # would drift, and the UI would claim a merge the database didn't make.
         "issue_key": issue_key_for(vuln),
+        # v2.415.0 — the catalog check (if any) and the kind it makes the row.
+        "check_id": vuln.check_id,
+        "kind": vuln_kind(vuln.check_id, vuln.severity),
         # scan_id = first recorded by; last_seen_scan_id = most recent
         # re-observation (v2.332.0 — scan_id used to move on every re-upload).
         "scan_id": vuln.scan_id,

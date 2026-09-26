@@ -119,6 +119,24 @@ describe('attention badge', () => {
     expect(others.map((r) => r.label)).toContain('Exploit available');
   });
 
+  it('counts issues, not scanner rows, and shows medium (v5.298.0)', () => {
+    // One VNC issue on two ports (two rows in the summary) is one high issue.
+    const { primary, others } = computeAttention(host({
+      vulnerability_summary: { high: 2, medium: 1 } as Host['vulnerability_summary'],
+      issue_counts: { critical: 0, high: 1, medium: 1, low: 0, misconfiguration: 2 },
+    }));
+    expect(primary?.label).toBe('1 high');
+    expect(others.map((r) => r.label)).toContain('1 medium');
+    expect(others.find((r) => r.label === '1 medium')?.detail).toContain('2 misconfigurations');
+  });
+
+  it('an anonymous-FTP host (medium only) is no longer blank', () => {
+    const { primary } = computeAttention(host({
+      issue_counts: { critical: 0, high: 0, medium: 1, low: 0, misconfiguration: 1 },
+    }));
+    expect(primary?.label).toBe('1 medium');
+  });
+
   it('exploit-only hosts keep the standalone reason', () => {
     const { primary } = computeAttention(host({ exploitable_count: 3 }));
     expect(primary?.label).toBe('Exploit available');

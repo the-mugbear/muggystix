@@ -1,19 +1,16 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { FolderSearch, Loader2 } from 'lucide-react';
+import React from 'react';
 
-import { WebPath, getHostWebPaths } from '../services/api';
-import { formatApiError } from '../utils/apiErrors';
+import { WebPath } from '../services/api';
 import { safeHttpHref } from '../utils/safeHref';
-import { Alert, AlertDescription } from './ui/alert';
 import { Badge } from './ui/badge';
-import { InspectorSection } from './host-inspector/InspectorSection';
 
 /**
- * Paths content discovery found on this host (v5.276.0): ffuf, gobuster,
+ * Paths content discovery found on a host (v5.276.0): ffuf, gobuster,
  * feroxbuster, dirsearch, dirbuster.  They used to be one capped string in the
  * port's service "extra info", lost whenever nmap had named the port.  One
- * line per path — status, size, which tool — ordered by port then path;
- * lazily loaded when the host has any.
+ * line per path — status, size, which tool.  v5.298.0 — rendered in each
+ * service's panel (host-inspector/ServiceEvidencePanel); the per-host
+ * section is gone.
  */
 
 const statusVariant = (code: number | null | undefined) => {
@@ -31,7 +28,7 @@ const formatSize = (bytes: number | null | undefined) => {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 };
 
-/** One discovered path (v5.297.0 — shared with the service panel). */
+/** One discovered path. */
 export const WebPathRow: React.FC<{ row: WebPath }> = ({ row: r }) => (
   <li className="flex min-w-0 items-center gap-sm py-xxs text-metadata">
     <Badge variant={statusVariant(r.status_code) as never} className="w-12 shrink-0 justify-center tabular-nums">
@@ -49,54 +46,3 @@ export const WebPathRow: React.FC<{ row: WebPath }> = ({ row: r }) => (
     </span>
   </li>
 );
-
-const WebPathsCard: React.FC<{ hostId: number; count: number; rows?: WebPath[] }> = ({ hostId, count, rows: given }) => {
-  const [fetched, setRows] = useState<WebPath[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
-  const rows = given ?? fetched;
-
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setRows(await getHostWebPaths(hostId));
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load discovered paths.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [hostId]);
-
-  useEffect(() => {
-    if (count > 0 && !given) void load();
-  }, [count, load, given]);
-
-  if (count <= 0) return null;
-
-  return (
-    <InspectorSection
-      id="host-detail-web-paths"
-      title="Discovered paths"
-      titleHint="Paths found by content discovery (ffuf, gobuster, feroxbuster, dirsearch, dirbuster): the HTTP status and size of the latest response, and which tool found it."
-      icon={<FolderSearch className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
-      count={rows ? rows.length : null}
-    >
-      {loading && (
-        <p className="flex items-center gap-xs text-caption text-muted-foreground">
-          <Loader2 className="size-4 animate-spin" aria-hidden /> Loading discovered paths…
-        </p>
-      )}
-      {error && (
-        <Alert variant="destructive"><AlertDescription>{error}</AlertDescription></Alert>
-      )}
-      {rows && rows.length > 0 && (
-        <ul className="divide-y divide-border">
-          {rows.map((r) => <WebPathRow key={r.url} row={r} />)}
-        </ul>
-      )}
-    </InspectorSection>
-  );
-};
-
-export default WebPathsCard;

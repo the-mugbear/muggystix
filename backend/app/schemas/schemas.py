@@ -265,6 +265,10 @@ class HostVulnerability(BaseModel):
     # the response model — an omission here is invisible in the serializer and
     # silently degrades the UI to its local fallback.
     issue_key: Optional[str] = None
+    # v2.415.0 — the misconfiguration-catalog check (if any) and the row's
+    # kind: misconfiguration | vulnerability | informational.
+    check_id: Optional[str] = None
+    kind: Optional[str] = None
     title: Optional[str] = None
     severity: Optional[str] = None
     source: Optional[str] = None
@@ -552,6 +556,10 @@ class Host(HostBase):
     # the same vulnerability row).  The Attention badge's "critical · exploit"
     # wording keys on this, not on the two counts above being both non-zero.
     critical_exploitable_count: int = 0
+    # v2.415.0 — ISSUES (not scanner rows) per worst severity, and how many
+    # are misconfigurations: the Attention column's counts.  One VNC issue on
+    # two ports read "2 high"; an anonymous-FTP host read nothing (medium).
+    issue_counts: Optional[Dict[str, int]] = None
     # Most-specific (longest-prefix) subnet CIDR + its site that this host
     # falls in, or null when no subnet contains it.  Surfaced in the Host
     # column so an operator sees where the host lives without opening it.

@@ -30,6 +30,7 @@ from app.db.models_findings import Finding, FindingHost, FindingSource, FindingS
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.services.engagement_metrics_service import join_judged, observation_judged_on_host
 from app.services.finding_service import FindingService
+from app.services.misconfig_checks import KIND_INFORMATIONAL, KIND_MISCONFIGURATION, KIND_VULNERABILITY
 
 # Most issues one promotion call may name, and most hosts one issue may list.
 PROMOTE_ISSUE_CAP = 200
@@ -121,6 +122,9 @@ class IssueRow:
     judged_host_count: int
     finding_id: Optional[int] = None
     finding_status: Optional[str] = None
+    # v2.415.0 — misconfiguration (a catalog check) / vulnerability /
+    # informational (misconfig_checks.vuln_kind, at the issue's severity).
+    kind: str = KIND_VULNERABILITY
 
 
 @dataclass
@@ -139,6 +143,7 @@ def list_issues(
     min_hosts: int = 1,
     skip: int = 0,
     limit: int = 50,
+    kind: Optional[str] = None,
 ) -> IssuePage:
     """One row per issue, most severe first, then the most hosts left to judge.
 
@@ -163,7 +168,20 @@ def list_issues(
     if search and search.strip():
         like = f"%{search.strip()}%"
         query = query.filter(or_(Vulnerability.title.ilike(like), Vulnerability.cve_id.ilike(like)))
+    # v2.415.0 — kind: a catalog check's rows all carry it (its issue key is
+    # the check); otherwise the issue's severity decides.
+    info_rank = _RANK[VulnerabilitySeverity.INFO]
+    if kind == KIND_MISCONFIGURATION:
+        query = query.filter(Vulnerability.check_id.isnot(None))
+    elif kind in (KIND_VULNERABILITY, KIND_INFORMATIONAL):
+        query = query.filter(Vulnerability.check_id.is_(None))
+    elif kind:
+        raise ObservationError(f"Unknown kind '{kind}'")
     query = query.group_by(key)
+    if kind == KIND_VULNERABILITY:
+        query = query.having(rank > info_rank)
+    elif kind == KIND_INFORMATIONAL:
+        query = query.having(rank <= info_rank)
     if severity:
         wanted = next((r for r, s in _SEVERITY_OF_RANK.items() if s == severity.lower()), None)
         if wanted is None:
@@ -209,6 +227,8 @@ def list_issues(
             judged_host_count=int(r.judged),
             finding_id=f.id if f else None,
             finding_status=f.status if f else None,
+            kind=(KIND_MISCONFIGURATION if r.issue_key.startswith("check:")
+                  else KIND_INFORMATIONAL if int(r.rank or 0) <= info_rank else KIND_VULNERABILITY),
         ))
     return IssuePage(items=items, total=int(total))
 

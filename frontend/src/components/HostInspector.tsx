@@ -1222,10 +1222,21 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // v5.292.0 — issues about one product on the same ports (one CPE) fold into
   // a product line, so an outdated Tomcat's dozen advisory checks no longer
   // bury the host. The preview limit counts LINES.
-  const observationItems = groupByProduct(vulnGroups);
+  // v5.298.0 — misconfigurations (catalog checks, issue key `check:…`) are
+  // listed apart from vulnerabilities, misconfigurations first; each list
+  // keeps its severity order.
+  const isMisconfig = (item: (typeof groupedItems)[number]) =>
+    item.kind !== 'product' && item.group.key.startsWith('check:');
+  const groupedItems = groupByProduct(vulnGroups);
+  const observationItems = [
+    ...groupedItems.filter(isMisconfig),
+    ...groupedItems.filter((i) => !isMisconfig(i)),
+  ];
   const displayedVulnerabilities = showAllVulnerabilities
     ? observationItems
     : observationItems.slice(0, VULNERABILITY_PREVIEW_LIMIT);
+  const misconfigCount = groupedItems.filter(isMisconfig).length;
+  const splitWeaknesses = misconfigCount > 0 && misconfigCount < groupedItems.length;
   // v5.215.0 — a host whose only findings are informational still gets the
   // card, so the "N informational hidden · show" affordance has somewhere to
   // live; otherwise the hidden rows would be invisible exactly when they are
@@ -1339,7 +1350,14 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       )}
     >
       <div className="space-y-xs">
-        {displayedVulnerabilities.map((item) => {
+        {displayedVulnerabilities.map((item, index) => {
+          const prev = displayedVulnerabilities[index - 1];
+          // A heading where the list changes kind — only when it has both.
+          const heading = splitWeaknesses && (index === 0 || isMisconfig(prev) !== isMisconfig(item))
+            ? (isMisconfig(item)
+              ? `Misconfigurations (${misconfigCount})`
+              : `Vulnerabilities (${groupedItems.length - misconfigCount})`)
+            : null;
           const rowProps = {
             severityBadgeVariant,
             expandedVulnIds,
@@ -1351,7 +1369,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             onQueryHosts: handleQueryHosts,
             onQueryExploitPort: handleQueryExploitPort,
           };
-          return item.kind === 'product' ? (
+          const row = item.kind === 'product' ? (
             <ProductObservationGroup
               key={`${host.id}:${item.product.key}`}
               product={item.product}
@@ -1367,6 +1385,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               {...rowProps}
             />
           );
+          return heading ? (
+            <React.Fragment key={`h-${heading}`}>
+              <h3 className="pt-xxs text-caption font-semibold uppercase tracking-wide text-muted-foreground">{heading}</h3>
+              {row}
+            </React.Fragment>
+          ) : row;
         })}
         {observationItems.length > VULNERABILITY_PREVIEW_LIMIT && (
           <div className="flex justify-end">
@@ -1659,9 +1683,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                   ) : host.smb_signing === 'not_required' || host.smb_signing === 'enabled' ? (
                     // v5.274.0 — 'not_required' is the stored state for "enabled
                     // but not required" from nmap and (signing:False) from
-                    // NetExec; still relay-exposable.
-                    <span className="inline-flex items-center gap-xxs text-warning" title="SMB signing is not required — NTLM relay is still possible">
-                      <AlertTriangle className="size-3.5" aria-hidden /> Signing not required
+                    // NetExec; still relay-exposable.  v5.298.0 — the weakness
+                    // is listed under Weaknesses; the header states the fact.
+                    <span className="text-foreground" title="SMB signing is not required — NTLM relay is still possible (listed under Weaknesses)">
+                      Signing not required
                     </span>
                   ) : host.smb_signing === 'required' ? (
                     <span className="text-foreground">Signing required</span>
