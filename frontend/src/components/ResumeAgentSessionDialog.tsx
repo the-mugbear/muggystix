@@ -27,7 +27,6 @@ import React, { useState } from 'react';
 import { Loader2, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
-import { Checkbox } from './ui/checkbox';
 import {
   Dialog,
   DialogBody,
@@ -43,7 +42,7 @@ import {
   type ResumeAgentSessionResponse,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
-import AgentSessionCredentials from './AgentSessionCredentials';
+import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 
 export interface ResumeAgentSessionDialogProps {
   /** The active project session to resume; null keeps the dialog closed. */
@@ -79,13 +78,13 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<ResumeAgentSessionResponse | null>(null);
-  const [keyAcknowledged, setKeyAcknowledged] = useState(false);
+  const [keyCopied, setKeyCopied] = useState(false);
 
   const reset = () => {
     setLoading(false);
     setError(null);
     setResult(null);
-    setKeyAcknowledged(false);
+    setKeyCopied(false);
   };
 
   const now = Date.now();
@@ -127,13 +126,13 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
           return;
         }
         if (loading) return;
-        // Same rule as the start dialog: a key on screen must be acknowledged
-        // before the dialog can go away.
-        if (result && !keyAcknowledged) return;
+        // Same rule as the start dialog: no accidental close while the key is
+        // on screen and nothing holding it was copied — Done says why.
+        if (result && !keyCopied) return;
         handleClose();
       }}
     >
-      <DialogContent size="xl" showClose={!result || keyAcknowledged}>
+      <DialogContent size="xl" showClose={!result || keyCopied}>
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <RotateCcw className="size-5 text-primary" aria-hidden />
@@ -236,7 +235,8 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
                 apiKey={result.api_key}
                 instructions={result.instructions}
                 mcpClients={result.mcp_clients ?? []}
-                keyLabel="Replacement agent API key (shown once)"
+                keyLabel="The replacement key on its own"
+                onCopied={() => setKeyCopied(true)}
               />
             </div>
           )}
@@ -259,24 +259,11 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
               )}
             </>
           ) : (
-            <div className="flex w-full flex-col gap-xs">
-              <label className="flex items-start gap-xs text-metadata">
-                <Checkbox
-                  checked={keyAcknowledged}
-                  onCheckedChange={(v) => setKeyAcknowledged(v === true)}
-                  aria-label="I copied the replacement agent API key"
-                />
-                <span>
-                  I copied the replacement key. ({result.key_ttl_hours} hour TTL; renewable
-                  until {fmtTime(result.renewable_until)}.)
-                </span>
-              </label>
-              <div className="flex flex-wrap justify-end gap-xs">
-                <Button variant="outline" onClick={handleClose} disabled={!keyAcknowledged}>
-                  Close
-                </Button>
-              </div>
-            </div>
+            <KeyHandoffFooter
+              copied={keyCopied}
+              onDone={handleClose}
+              note={<>Valid {result.key_ttl_hours} h; renewable until {fmtTime(result.renewable_until)}.</>}
+            />
           )}
         </DialogFooter>
       </DialogContent>

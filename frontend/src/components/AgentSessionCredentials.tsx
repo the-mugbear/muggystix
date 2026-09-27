@@ -1,138 +1,189 @@
 /**
- * AgentSessionCredentials — v5.214.0
+ * AgentSessionCredentials — v5.214.0; one choice, one copy (5.309.0)
  *
- * The "hand this session to an agent" panel: the key (shown once) plus the
- * two ways to connect — MCP client setup or the pasted prompt — as tabs.
+ * The "hand this session to an agent" panel, shared by the Start and Resume
+ * dialogs so they cannot drift.
  *
- * Lifted out of StartAssistDialog so the resume dialog on Agent Activity
- * renders exactly what the start dialog renders. Two copies would drift the
- * way the two MCP recipes once did (one silently didn't work).
+ * 5.309.0 — it used to show the key, then two levels of tabs (MCP / prompt,
+ * then a client), the certificate notice, the client's notes as paragraphs
+ * and the verification: ~770 words, scrolling on a tall screen. Now the
+ * operator picks their client once (remembered), sees that client's config
+ * with ONE copy button — the key is inside it — and everything else folds:
+ * setup notes, the certificate step, the bare key. "Other agent" is the
+ * pasted prompt for anything without MCP.
  */
 import React, { useState } from 'react';
 import { CheckCircle2, Copy } from 'lucide-react';
+
 import { copyToClipboard } from '../utils/clipboard';
 import { Button } from './ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
-import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
+import { cn } from '../utils/cn';
 import type { McpClientSetup } from '../services/api';
-import McpConnectPanel from './McpConnectPanel';
+import { McpClientRecipe } from './McpConnectPanel';
+import McpCertTrustNotice from './McpCertTrustNotice';
+
+const PROMPT = 'prompt';
+const CHOICE_KEY = 'bluestick.agentClient';
+
+const readChoice = (): string | null => {
+  try {
+    return window.localStorage.getItem(CHOICE_KEY);
+  } catch {
+    return null;
+  }
+};
+const saveChoice = (id: string) => {
+  try {
+    window.localStorage.setItem(CHOICE_KEY, id);
+  } catch {
+    /* a per-viewer convenience: nothing to do without storage */
+  }
+};
 
 interface Props {
   apiKey: string;
   instructions: string;
   mcpClients?: McpClientSetup[];
-  /** Label above the key. Defaults to the start-dialog wording. */
+  /** Label of the bare-key disclosure. */
   keyLabel?: string;
+  /** Something holding the key was copied (config, prompt or key) — the
+   *  dialog then closes without asking. */
+  onCopied?: () => void;
 }
+
+const CopyText: React.FC<{ text: string; label: string; onCopied?: () => void }> = ({ text, label, onCopied }) => {
+  const [copied, setCopied] = useState(false);
+  return (
+    <Button
+      variant="outline"
+      size="sm"
+      aria-label={label}
+      onClick={async () => {
+        if (await copyToClipboard(text)) {
+          setCopied(true);
+          onCopied?.();
+          setTimeout(() => setCopied(false), 1500);
+        }
+      }}
+    >
+      {copied ? <CheckCircle2 className="size-4 text-success" aria-hidden /> : <Copy className="size-4" aria-hidden />}
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  );
+};
 
 const AgentSessionCredentials: React.FC<Props> = ({
   apiKey,
   instructions,
   mcpClients = [],
-  keyLabel = 'Agent API Key (shown once)',
+  keyLabel = 'The key on its own',
+  onCopied,
 }) => {
-  const [copiedKey, setCopiedKey] = useState(false);
-  const [copiedInstr, setCopiedInstr] = useState(false);
-
-  // A backend that predates the per-client MCP setup returns none; the prompt
-  // tab then stands alone rather than opening on an empty tab.
-  const hasMcp = mcpClients.length > 0;
-
-  const copyKey = async () => {
-    // copyToClipboard falls back to execCommand on http:// / non-secure
-    // contexts where navigator.clipboard is unavailable; the value is also
-    // visible on screen if even that fails.
-    if (await copyToClipboard(apiKey)) {
-      setCopiedKey(true);
-      setTimeout(() => setCopiedKey(false), 1500);
-    }
+  const options = [
+    ...mcpClients.map((c) => ({ id: c.id, label: c.label })),
+    { id: PROMPT, label: mcpClients.length ? 'Other agent' : 'Paste the prompt' },
+  ];
+  const [choice, setChoice] = useState<string>(() => {
+    const saved = readChoice();
+    return saved && options.some((o) => o.id === saved) ? saved : options[0].id;
+  });
+  const choose = (id: string) => {
+    setChoice(id);
+    saveChoice(id);
   };
-  const copyInstructions = async () => {
-    if (await copyToClipboard(instructions)) {
-      setCopiedInstr(true);
-      setTimeout(() => setCopiedInstr(false), 1500);
-    }
-  };
+  const client = mcpClients.find((c) => c.id === choice) ?? null;
 
   return (
     <div className="flex flex-col gap-sm">
       <div>
-        <div className="mb-xxs flex items-center justify-between">
-          <p className="text-metadata font-semibold">{keyLabel}</p>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={copyKey}
-                aria-label="Copy agent API key"
-              >
-                {copiedKey ? (
-                  <CheckCircle2 className="size-4 text-success" aria-hidden />
-                ) : (
-                  <Copy className="size-4" aria-hidden />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent>{copiedKey ? 'Copied!' : 'Copy key'}</TooltipContent>
-          </Tooltip>
-        </div>
-        <div className="break-all rounded-control border border-border bg-accent p-sm font-mono text-caption">
-          {apiKey}
+        <p className="mb-xxs text-metadata font-semibold">Your agent</p>
+        <div role="radiogroup" aria-label="Your agent" className="flex flex-wrap gap-xxs">
+          {options.map((o) => (
+            <button
+              key={o.id}
+              type="button"
+              role="radio"
+              aria-checked={choice === o.id}
+              onClick={() => choose(o.id)}
+              className={cn(
+                'rounded-control border px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                choice === o.id
+                  ? 'border-primary bg-primary/10 font-medium text-foreground'
+                  : 'border-border text-muted-foreground hover:bg-accent hover:text-foreground',
+              )}
+            >
+              {o.label}
+            </button>
+          ))}
         </div>
       </div>
-      {/* Two ways to hand this session to an agent, as tabs rather than
-          stacked (v5.172.0). Stacked, the multi-KB prompt sat between the
-          operator and the MCP config, so the path we recommend was the one
-          they had to scroll past the other to find. */}
-      <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
-        <TabsList className="mb-xs">
-          {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
-          <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
-        </TabsList>
-        {hasMcp && (
-          <TabsContent value="mcp">
-            <McpConnectPanel
-              clients={mcpClients}
-              withCertTrust
-              blurb={
-                'The tools appear natively in your client, and the read tools can be ' +
-                'marked “always allow” so queries run without a prompt. Each client ' +
-                'wants a different shape, so pick yours:'
-              }
-            />
-          </TabsContent>
-        )}
-        <TabsContent value="prompt">
-          <div className="mb-xxs flex items-center justify-between">
-            <p className="text-metadata text-muted-foreground">
-              Paste this into a terminal agent — it drives the same session with curl.
+
+      {client ? (
+        <>
+          <McpCertTrustNotice />
+          <McpClientRecipe client={client} compact onCopied={onCopied} />
+        </>
+      ) : (
+        <div>
+          <div className="mb-xxs flex items-center justify-between gap-sm">
+            <p className="min-w-0 text-caption text-muted-foreground">
+              Paste this into any terminal agent — it drives the session with curl.
             </p>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  onClick={copyInstructions}
-                  aria-label="Copy assist instructions"
-                >
-                  {copiedInstr ? (
-                    <CheckCircle2 className="size-4 text-success" aria-hidden />
-                  ) : (
-                    <Copy className="size-4" aria-hidden />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent>
-                {copiedInstr ? 'Copied!' : 'Copy instructions'}
-              </TooltipContent>
-            </Tooltip>
+            <CopyText text={instructions} label="Copy the agent prompt" onCopied={onCopied} />
           </div>
-          <div className="max-h-80 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
+          <div className="max-h-64 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
             {instructions}
           </div>
-        </TabsContent>
-      </Tabs>
+        </div>
+      )}
+
+      <details className="text-caption">
+        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+          {keyLabel}
+        </summary>
+        <div className="mt-xs flex items-start gap-xs">
+          <div className="min-w-0 flex-1 break-all rounded-control border border-border bg-accent p-sm font-mono">
+            {apiKey}
+          </div>
+          <CopyText text={apiKey} label="Copy agent API key" onCopied={onCopied} />
+        </div>
+      </details>
+    </div>
+  );
+};
+
+/**
+ * The footer of a dialog showing a key (5.309.0). Replaces the "I copied the
+ * key" checkbox: Done closes at once when something holding the key was
+ * copied; otherwise the first press says what is lost and offers to close
+ * anyway. The key really is shown once — but resuming the session issues a
+ * new one, so losing it costs a click on Agent Activity, not the session.
+ */
+export const KeyHandoffFooter: React.FC<{
+  copied: boolean;
+  onDone: () => void;
+  note?: React.ReactNode;
+}> = ({ copied, onDone, note }) => {
+  const [warned, setWarned] = useState(false);
+  return (
+    <div className="flex w-full flex-wrap items-center justify-end gap-sm">
+      {warned && !copied ? (
+        <p role="alert" className="mr-auto min-w-0 flex-1 text-caption text-warning">
+          Nothing was copied — the key will not be shown again. Resume the session from
+          Agent Activity for a new one.
+        </p>
+      ) : (
+        note && <p className="mr-auto min-w-0 flex-1 text-caption text-muted-foreground">{note}</p>
+      )}
+      <Button
+        variant={warned && !copied ? 'outline' : 'default'}
+        onClick={() => {
+          if (copied || warned) onDone();
+          else setWarned(true);
+        }}
+      >
+        {warned && !copied ? 'Close anyway' : 'Done'}
+      </Button>
     </div>
   );
 };

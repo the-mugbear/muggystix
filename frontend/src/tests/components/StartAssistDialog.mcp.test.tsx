@@ -1,16 +1,18 @@
 /**
- * The MCP setup block in the Start Assist dialog.
+ * The Start Agent Session dialog.
  *
  * v2.269.0 fixed a defect this pins: the dialog used to show ONE config, in
  * VS Code's `servers` shape, while telling the operator it worked for several
  * clients. Claude Code reads `mcpServers`, so pasting that JSON produced a
- * server the client silently ignored — no error, the tools just never appeared.
- * Each client now gets its own tab, and this asserts the operator can reach
- * each one and that the payloads stay distinct.
+ * server the client silently ignored. Each client keeps its own recipe.
+ *
+ * 5.309.0 — the dialog was ~770 words and scrolled: the same explanation four
+ * times, the key plus two levels of tabs, every note expanded, and an "I
+ * copied the key" checkbox. Now: one sentence and one field to start; then the
+ * operator picks their agent (remembered), sees that one recipe with one copy
+ * button, and Done warns only when nothing holding the key was copied.
  */
-import { act, render, screen } from '@testing-library/react';
-// Radix tab triggers activate on pointer events, not the synthetic click
-// fireEvent dispatches — use userEvent so the switch actually happens.
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -22,28 +24,9 @@ const startAssistSession = vi.fn();
 vi.mock('../../services/api', () => ({
   startAssistSession: (...args: unknown[]) => startAssistSession(...args),
   endAssistSession: vi.fn(),
-  // The MCP tab now carries the cert-trust notice, which reads the live catalog
-  // for the fingerprint. A minimal resolve keeps the notice off the assertions
-  // here (its command block is collapsed) while satisfying the import.
-  getMcpTools: vi.fn(() =>
-    Promise.resolve({
-      server_name: 'bluestick',
-      protocol_version: '2025-06-18',
-      endpoint: 'https://bluestick.example/api/v1/mcp',
-      max_request_bytes: 1,
-      max_batch_messages: 1,
-      tools: [],
-      trust_script_url: '/api/v1/references/trust-cert-script',
-      tls_fingerprint_sha256: 'AA:BB:CC',
-      tls_certificate: {
-        fingerprint_sha256: 'AA:BB:CC',
-        self_signed: true,
-        subject: null,
-        expires_at: null,
-      },
-    }),
-  ),
+  getMcpTools: vi.fn(() => new Promise(() => {})),
 }));
+vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(() => Promise.resolve(true)) }));
 
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
@@ -90,114 +73,117 @@ const result = (): StartAssistResponse => ({
       hint: 'Codex reads the env var at run time.',
     },
   ],
-  key_ttl_hours: 4,
+  key_ttl_hours: 24,
 });
 
+const onOpenChange = vi.fn();
 const openAndStart = async () => {
   render(
     <TooltipProvider>
-      <StartAssistDialog open onOpenChange={vi.fn()} />
+      <StartAssistDialog open onOpenChange={onOpenChange} />
     </TooltipProvider>,
   );
-  // findBy* is act-aware, so the async state update that follows the start
-  // call settles inside act() and the run stays free of act() warnings — the
-  // rest of this suite is clean, and noise here would hide a real one.
   await act(async () => {
     await userEvent.click(screen.getByRole('button', { name: /start session/i }));
   });
-  await screen.findByText('VS Code Copilot');
+  await screen.findByRole('radiogroup', { name: 'Your agent' });
 };
 
-
-/** Radix activates a tab on pointer events, which cascade into controlled-state
- *  updates; act() keeps those inside React's batch so the run stays warning-free. */
-const switchTab = async (label: string) => {
+const choose = async (label: string) => {
   await act(async () => {
-    await userEvent.click(screen.getByRole('tab', { name: label }));
+    await userEvent.click(screen.getByRole('radio', { name: label }));
   });
 };
 
-describe('StartAssistDialog — MCP setup', () => {
+describe('StartAssistDialog', () => {
   beforeEach(() => {
     startAssistSession.mockReset();
     startAssistSession.mockResolvedValue(result());
+    onOpenChange.mockReset();
+    window.localStorage.clear();
   });
 
-  it('offers a tab per client and defaults to the first', async () => {
+  it('starts from one sentence and one field — no promised TTL before the server says', () => {
+    render(
+      <TooltipProvider>
+        <StartAssistDialog open onOpenChange={onOpenChange} />
+      </TooltipProvider>,
+    );
+    expect(screen.getByText(/Connect Claude Code, Codex or VS Code Copilot to this project/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/What is it for\?/)).toBeInTheDocument();
+    // It said "4 h TTL" here while the server issued 24.
+    expect(screen.queryByText(/TTL|\b4 h\b/)).not.toBeInTheDocument();
+  });
+
+  it('offers one choice per client plus any other agent, and shows only the chosen recipe', async () => {
     await openAndStart();
-    for (const label of ['VS Code Copilot', 'Claude Code', 'Codex']) {
-      expect(screen.getByRole('tab', { name: label })).toBeInTheDocument();
+    for (const label of ['VS Code Copilot', 'Claude Code', 'Codex', 'Other agent']) {
+      expect(screen.getByRole('radio', { name: label })).toBeInTheDocument();
     }
-    // Default tab is VS Code — `servers`, and the file path is stated.
+    expect(screen.getByText(/valid for 24 hours/)).toBeInTheDocument();
+    // Default: the first client — VS Code's `servers`, its file path stated.
     expect(screen.getByText(/"servers"/)).toBeInTheDocument();
     expect(screen.getByText('.vscode/mcp.json')).toBeInTheDocument();
+    expect(screen.queryByText(/^claude mcp add/)).not.toBeInTheDocument();
   });
 
   it('keeps each client’s payload distinct rather than reusing one shape', async () => {
     await openAndStart();
-    // VS Code's tab shows `servers`; Codex gets a command with no wrapper key
-    // at all. Reusing one shape across clients is the bug this file exists for.
-    await switchTab('Codex');
-    await screen.findByText('Run this command');
+    await choose('Codex');
     const shown = screen.getByText(/^read -rs BLUESTICK_ASSIST_KEY/).textContent ?? '';
     expect(shown).toContain('--bearer-token-env-var');
     expect(shown).not.toContain('"servers"');
-  });
-
-  it('gives Claude Code a command instead of a file to place', async () => {
-    await openAndStart();
-    await switchTab('Claude Code');
-    await screen.findByText('Run this command');
+    await choose('Claude Code');
     expect(screen.getByText(/^claude mcp add --transport http/)).toBeInTheDocument();
+    expect(screen.getByText('Run this command')).toBeInTheDocument();
   });
 
-  it('hands the operator a verification prompt after the config (v5.203.0)', async () => {
-    // The config used to be the end of the story. "Registered" says nothing
-    // about the key, and the tool list is public, so the only proof is an
-    // authenticated tool call — the prompt that makes one, copyable, with what
-    // its answer should contain for THIS session.
+  it('remembers the chosen agent for next time', async () => {
     await openAndStart();
-    await switchTab('Claude Code');
-    await screen.findByText('Then verify it works');
+    await choose('Claude Code');
+    expect(window.localStorage.getItem('bluestick.agentClient')).toBe('claude_code');
+  });
+
+  it('hands over a verification prompt, and folds the client’s notes', async () => {
+    await openAndStart();
+    await choose('Claude Code');
+    expect(screen.getByText('Then verify it works')).toBeInTheDocument();
     expect(screen.getByText(/call agent_identity/)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /copy verification prompt/i })).toBeInTheDocument();
     expect(screen.getByText(/assist session #12/)).toBeInTheDocument();
     expect(screen.getByText(/claude mcp list/)).toBeInTheDocument();
+    expect(screen.getByText('Setup notes for Claude Code').closest('details')).not.toHaveAttribute('open');
   });
 
-  it('renders the config alone when a recipe carries no verification', async () => {
-    // The reference page's sample recipes and older payloads have none.
+  it('"Other agent" is the pasted prompt; the key on its own is folded', async () => {
     await openAndStart();
-    expect(screen.queryByText('Then verify it works')).not.toBeInTheDocument();
-  });
-
-  it('puts the curl prompt behind a tab rather than above the MCP setup', async () => {
-    await openAndStart();
-    // Stacked, the multi-KB prompt sat between the operator and the MCP config,
-    // so the path we recommend was the one they had to scroll past the other to
-    // reach — and the dialog was long enough to hide its own footer.
     expect(screen.queryByText('prompt text')).not.toBeInTheDocument();
-
-    await switchTab('Paste the prompt');
+    await choose('Other agent');
     expect(await screen.findByText('prompt text')).toBeInTheDocument();
-    // And the key stays visible in both — it is shown exactly once, so it must
-    // not be the thing hidden behind a tab.
-    expect(screen.getByText(KEY)).toBeInTheDocument();
+    expect(screen.getByText('The key on its own').closest('details')).not.toHaveAttribute('open');
   });
 
   it('falls back to the prompt alone when the server sent no MCP setup', async () => {
     startAssistSession.mockResolvedValue({ ...result(), mcp_clients: [] });
-    render(
-      <TooltipProvider>
-        <StartAssistDialog open onOpenChange={vi.fn()} />
-      </TooltipProvider>,
-    );
-    await act(async () => {
-      await userEvent.click(screen.getByRole('button', { name: /start session/i }));
-    });
-
-    // No empty "Connect via MCP" tab to open onto.
+    await openAndStart();
     expect(await screen.findByText('prompt text')).toBeInTheDocument();
-    expect(screen.queryByRole('tab', { name: 'Connect via MCP' })).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Paste the prompt' })).toBeChecked();
+  });
+
+  it('Done warns once when nothing holding the key was copied, then closes anyway', async () => {
+    await openAndStart();
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/Nothing was copied/);
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+    await userEvent.click(screen.getByRole('button', { name: 'Close anyway' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  it('closes on Done without asking once the setup was copied', async () => {
+    await openAndStart();
+    await userEvent.click(screen.getByRole('button', { name: /Copy VS Code Copilot MCP setup/ }));
+    await waitFor(() => expect(screen.getByRole('button', { name: /Copy VS Code Copilot MCP setup/ })).toHaveTextContent('Copied'));
+    await userEvent.click(screen.getByRole('button', { name: 'Done' }));
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 });

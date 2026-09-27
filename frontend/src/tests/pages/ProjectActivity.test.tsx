@@ -206,11 +206,12 @@ describe('ProjectActivity', () => {
     await waitFor(() => expect(mockedApi.resumeAgentSession).toHaveBeenCalledWith(77));
     await screen.findByText('nm_agent_replacement');
     expect(screen.getByText(/Still open:/)).toBeInTheDocument();
-    // The key on screen must be acknowledged before the dialog can close.
-    const close = screen.getByRole('button', { name: 'Close' });
-    expect(close).toBeDisabled();
-    await user.click(screen.getByLabelText('I copied the replacement agent API key'));
-    expect(close).toBeEnabled();
+    // 5.309.0 — no checkbox: Done warns once while nothing holding the key
+    // was copied, then "Close anyway" closes.
+    await user.click(screen.getByRole('button', { name: 'Done' }));
+    expect(screen.getByRole('alert')).toHaveTextContent(/Nothing was copied/);
+    await user.click(screen.getByRole('button', { name: 'Close anyway' }));
+    await waitFor(() => expect(screen.queryByText('nm_agent_replacement')).not.toBeInTheDocument());
   });
 
   // v5.219.0 — the End flow hands the operator a wrap-up prompt while the
