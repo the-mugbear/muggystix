@@ -159,6 +159,7 @@ Whatever an agent session is doing (assist, recon, plan generation or execution)
 - [Parsers](documentation/PARSERS.md) — what each parser writes, and how to add one
 - [MCP](documentation/MCP.md) — the agent surface as MCP tools, client setup, the certificate
 - [Assist Tools](documentation/ASSIST_TOOLS.md) — how the agent read surface was derived, and the review rule for adding to it
+- [MCP acceptance questions](documentation/MCP_ACCEPTANCE_QUESTIONS.md) — a repeatable question set for testing a live agent session against the app's pages
 - [Testing Framework](documentation/TESTING_FRAMEWORK_DOCUMENTATION.md) — pytest + Vitest harness, and CI
 - [UI Style Guide](documentation/UI_STYLE_GUIDE.md) — frontend behavioral contract
 - [Scripts](scripts/README.md) — deployment and maintenance helpers
