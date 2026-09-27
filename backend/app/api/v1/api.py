@@ -16,6 +16,8 @@ from app.api.v1.endpoints import (
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
     agent_assist, assist,
+    # v2.428.0 — agent reads of scanner observations and client reports.
+    agent_assist_reporting,
     # MCP (Model Context Protocol) front door onto the assist surface — a
     # tools-only Streamable-HTTP JSON-RPC endpoint that loops back into the
     # `/agent/assist/*` endpoints in-process (auth/audit reused, no new dep).
@@ -121,6 +123,12 @@ api_router.include_router(
 )
 api_router.include_router(
     agent_recon.router, prefix="/agent", tags=["agent-recon"],
+    dependencies=_agent_operator_access,
+)
+# v2.428.0 — the Findings hub's scanner-observations view and the Reports
+# page, for agents (wrapping the same services as those pages).
+api_router.include_router(
+    agent_assist_reporting.router, prefix="/agent", tags=["agent-assist"],
     dependencies=_agent_operator_access,
 )
 api_router.include_router(

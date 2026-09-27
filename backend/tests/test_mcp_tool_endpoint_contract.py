@@ -83,7 +83,9 @@ def test_every_declared_property_is_wired_to_the_request():
     problems = []
     for name, spec in TOOLS.items():
         props = set(spec["input_schema"].get("properties", {}))
-        unrouted = props - _advertised(spec)
+        # A path_alternatives arg is routed too — into its own endpoint's path
+        # (checked by test_every_path_alternative_is_a_real_endpoint).
+        unrouted = props - _advertised(spec) - set(spec.get("path_alternatives") or {})
         if unrouted:
             problems.append(f"{name}: properties {sorted(unrouted)} are not sent anywhere")
     assert not problems, "Declared-but-unrouted MCP tool properties:\n" + "\n".join(problems)
@@ -118,3 +120,35 @@ def test_auto_params_are_optional_and_declared():
         if auto - props:
             problems.append(f"{name}: auto_params {sorted(auto - props)} are not declared properties")
     assert not problems, "MCP auto_param invariant violations:\n" + "\n".join(problems)
+
+
+def test_every_path_alternative_is_a_real_endpoint():
+    """v2.428.0 — ``path_alternatives`` lets one tool reach one of several
+    endpoints, chosen by which id the caller passes (``assist_get_image``: an
+    attachment or a screenshot).  Each alternative is held to what the main
+    path is: a routed endpoint of the same method whose only placeholder is its
+    own argument, a declared property, and never also a required one (the
+    dispatcher demands exactly one of the ids, so none can be required)."""
+    import re
+    openapi = app.openapi()
+    problems = []
+    for name, spec in TOOLS.items():
+        alternatives = spec.get("path_alternatives") or {}
+        if not alternatives:
+            continue
+        props = set(spec["input_schema"].get("properties", {}))
+        required = set(spec["input_schema"].get("required", []))
+        choices = set(spec.get("path_params", [])) | set(alternatives)
+        if choices & required:
+            problems.append(f"{name}: {sorted(choices & required)} are required, but only one may be passed")
+        for arg, path in alternatives.items():
+            if arg not in props:
+                problems.append(f"{name}: alternative {arg!r} is not a declared property")
+            if set(re.findall(r"\{(\w+)\}", path)) != {arg}:
+                problems.append(f"{name}: {path} must have exactly the placeholder {{{arg}}}")
+            accepted = _endpoint_params(openapi, path, spec["method"])
+            if accepted is None:
+                problems.append(f"{name}: {spec['method']} {path} is not a routed endpoint")
+            elif arg not in accepted:
+                problems.append(f"{name}: {path} does not accept {arg!r} (accepts {sorted(accepted)})")
+    assert not problems, "MCP path_alternatives drift:\n" + "\n".join(problems)

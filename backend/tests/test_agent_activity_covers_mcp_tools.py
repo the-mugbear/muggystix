@@ -49,9 +49,18 @@ def test_every_mcp_tool_target_is_an_audited_path():
     """
     from app.api.v1.endpoints.mcp_tools import TOOLS
 
+    import re
+
     for name, spec in TOOLS.items():
         # Fill placeholders with a plausible id — the predicate matches the
-        # concrete path a dispatch actually produces, not the template.
+        # concrete path a dispatch actually produces, not the template.  A
+        # tool with path_alternatives (v2.428.0) can dispatch to each of them.
+        for template in (spec["path"], *(spec.get("path_alternatives") or {}).values()):
+            concrete = re.sub(r"\{\w+\}", "1", template)
+            assert is_agent_audited_path(concrete), (
+                f"MCP tool {name!r} dispatches to {concrete}, which the agent "
+                "activity log ignores."
+            )
         concrete = spec["path"]
         for param in spec.get("path_params", []):
             concrete = concrete.replace("{" + param + "}", "1")

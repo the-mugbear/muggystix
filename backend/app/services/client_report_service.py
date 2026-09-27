@@ -43,10 +43,13 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, load_only, noload, selectinload
+
+from app.core.config import settings
 
 from app.db.models import Annotation, Host, NoteAttachment, Port, Scope, ScopeDomain, Subnet
 from app.db.models_findings import (
@@ -138,6 +141,25 @@ def endpoint_key(fh: FindingHost) -> str:
 def _ref_number(ref: Optional[str]) -> int:
     m = _REF.match(ref or "")
     return int(m.group(1)) if m else 0
+
+
+def stored_file_path(storage_path: str) -> Path:
+    """A rendered report file's path on disk, confined to ``REPORT_FILES_DIR``.
+
+    Shared by the report page's download and the agent's (v2.428.0), so the
+    two cannot disagree on where a file is or on what escapes the root.
+    Raises ``ValueError`` for a stored path outside the root and
+    ``FileNotFoundError`` when the file is gone from storage.
+    """
+    root = Path(settings.REPORT_FILES_DIR).resolve()
+    try:
+        target = (root / storage_path).resolve()
+        target.relative_to(root)
+    except (ValueError, OSError):
+        raise ValueError("Report file path invalid")
+    if not target.is_file():
+        raise FileNotFoundError("The file is missing from report storage.")
+    return target
 
 
 class ClientReportService:
@@ -676,6 +698,21 @@ class ClientReportService:
             return self.build(report)[2]
         except ReportStateError as exc:
             return {"error": str(exc)}
+
+    def content(self, report: Report) -> Tuple[Optional[dict], dict]:
+        """``(dataset, summary)`` — what the report says.  An issued (or
+        superseded) report's frozen dataset; a draft's, built from the live
+        findings as a preview would.  The dataset is None when a draft cannot
+        be built (an addendum whose baseline is gone); the summary then
+        carries the reason, as ``summary()`` does."""
+        if report.status != ReportStatus.DRAFT and report.snapshot:
+            snap = report.snapshot or {}
+            return snap.get("dataset"), dict(snap.get("summary") or {})
+        try:
+            dataset, _, summary = self.build(report)
+        except ReportStateError as exc:
+            return None, {"error": str(exc)}
+        return dataset, summary
 
     # ------------------------------------------------------------------
     # Issuing

@@ -11,7 +11,6 @@ files on the report worker.  A draft's preview is an ordinary report job
 from __future__ import annotations
 
 import logging
-from pathlib import Path
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Response
@@ -20,7 +19,6 @@ from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import get_current_project, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
-from app.core.config import settings
 from app.core.security import check_permissions, log_audit_event
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -31,7 +29,7 @@ from app.schemas.client_reports import (
     ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportTemplateProblemOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
-from app.services.client_report_service import ClientReportService, ReportStateError
+from app.services.client_report_service import ClientReportService, ReportStateError, stored_file_path
 from app.services.report_job_service import ReportJobService
 from app.services import report_template_service as templates
 
@@ -585,12 +583,15 @@ def download_report_file(
     record = next((f for f in report.files if f.format == fmt), None)
     if record is None:
         raise HTTPException(status_code=404, detail=f"This report has no {fmt} file.")
-    root = Path(settings.REPORT_FILES_DIR).resolve()
+    return report_file_response(record)
+
+
+def report_file_response(record) -> FileResponse:
+    """One stored report file as a download — shared with the agent's route."""
     try:
-        target = (root / record.storage_path).resolve()
-        target.relative_to(root)
-    except (ValueError, OSError):
-        raise HTTPException(status_code=404, detail="Report file path invalid")
-    if not target.is_file():
-        raise HTTPException(status_code=410, detail="The file is missing from report storage.")
+        target = stored_file_path(record.storage_path)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=410, detail=str(exc))
     return FileResponse(path=str(target), media_type=record.media_type, filename=record.filename)
