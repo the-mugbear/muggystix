@@ -152,3 +152,63 @@ def test_every_path_alternative_is_a_real_endpoint():
             elif arg not in accepted:
                 problems.append(f"{name}: {path} does not accept {arg!r} (accepts {sorted(accepted)})")
     assert not problems, "MCP path_alternatives drift:\n" + "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# Tool names mentioned in prose must exist (v2.428.1, agent feedback #9: the
+# create_test_plan description sent agents to "submit_test_plan" and
+# start_recon to "list_scopes" — neither is a tool).
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+# Tool names here start with one of these; a word that does and is not a tool
+# is either a field name (listed below, on purpose) or a wrong tool name.
+_TOOLISH = _re.compile(
+    r"\b(?:assist|plan|execution|recon|start|session|list|get|submit|create|"
+    r"read|record|suggest|end)_[a-z_]+\b"
+)
+# Field / value names that look tool-shaped. Add to this only for a real
+# payload word — never for a mistyped tool.
+_NOT_TOOLS = {
+    "read_back", "end_date", "plan_generation", "execution_evidence",
+}
+_FIELD_SUFFIXES = ("_id", "_ids", "_at", "_count", "_total", "_path")
+
+
+def _unknown_tool_names(text: str) -> Set[str]:
+    return {
+        t for t in _TOOLISH.findall(text)
+        if t not in TOOLS and t not in _NOT_TOOLS and not t.endswith(_FIELD_SUFFIXES)
+    }
+
+
+def test_tool_descriptions_name_only_real_tools():
+    bad = {
+        name: sorted(_unknown_tool_names(spec["description"]))
+        for name, spec in TOOLS.items()
+        if _unknown_tool_names(spec["description"])
+    }
+    assert not bad, f"tool descriptions name tools that do not exist: {bad}"
+
+
+def test_server_instructions_name_only_real_tools():
+    from app.api.v1.endpoints.mcp_assist import _server_instructions
+
+    bad = _unknown_tool_names(_server_instructions("https://example.test/api/v1"))
+    assert not bad, f"MCP server instructions name tools that do not exist: {sorted(bad)}"
+
+
+def test_agent_guide_names_only_real_tools():
+    import pytest
+    from app.services.agents_guide_service import read_agent_guide
+
+    guide = read_agent_guide()
+    if guide is None:
+        pytest.skip("the agent guide is not mounted in this environment")
+    # Backticked words only — the guide's prose uses words like "plan_generation"
+    # as workflow values, which the allowlist covers; agent_* fields never
+    # match the tool prefixes above.
+    words = set(_re.findall(r"`([a-z_]+)`", guide))
+    bad = {w for w in words if _TOOLISH.fullmatch(w)} & _unknown_tool_names(" ".join(words))
+    assert not bad, f"the agent guide names tools that do not exist: {sorted(bad)}"

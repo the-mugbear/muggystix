@@ -46,6 +46,45 @@ def _fixed_selection_ids(plan) -> Optional[List[int]]:
     return ids or None
 
 
+def _plan_candidate_query(db: Session, plan, project_id: int, *, include_zero_port: bool = False):
+    """The hosts a plan still has to consider: its fixed selection or its
+    ``filter_criteria``, minus hosts already in the plan, minus hosts with no
+    open port unless asked.  ONE definition for ``/context`` (what the agent
+    pages through) and ``/validate`` (what coverage is counted against) —
+    v2.428.1: validate counted the whole project, so a plan filtered to one
+    host reported hundreds of hosts "remaining" (agent feedback #9).
+    """
+    filters = plan.filter_criteria or {}
+    q = db.query(models.Host).filter(models.Host.project_id == project_id)
+    # v2.345.0 — a plan made from a Hosts-page selection targets a FIXED host
+    # list (``source_host_ids``), not a query.
+    fixed_host_ids = _fixed_selection_ids(plan)
+    if fixed_host_ids is not None:
+        q = q.filter(models.Host.id.in_(fixed_host_ids))
+    q = _apply_agent_host_filters(
+        q, db,
+        project_id=project_id,
+        state=filters.get("state"),
+        ports=filters.get("ports"),
+        services=filters.get("services"),
+        subnets=filters.get("subnets"),
+        has_critical_vulns=filters.get("has_critical_vulns"),
+        has_high_vulns=filters.get("has_high_vulns"),
+        search=filters.get("search"),
+        not_in_plan_id=plan.id,
+    )
+    # Zero-port hosts have no actionable surface.
+    if not include_zero_port:
+        q = q.filter(
+            models.Host.id.in_(
+                db.query(models.Port.host_id)
+                .filter(models.Port.state == "open")
+                .distinct()
+            )
+        )
+    return q
+
+
 # High-value ports that qualify medium-vuln hosts for inclusion in
 # selection policy, and that should float to the top of a host's
 # inferred-service hint list in /context.  Used by /context (selection
@@ -243,39 +282,10 @@ def get_planning_context(
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
 
-    filters = plan.filter_criteria or {}
-
-    # Build filtered host query
-    q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
-    # v2.345.0 — a plan made from a Hosts-page selection targets a FIXED host
-    # list (``source_host_ids``), not a query.  Candidates are restricted to
-    # it so the agent plans against what the operator picked; before, the
-    # ids were recorded as provenance and then ignored here.
+    # The plan's candidates: its fixed selection or filter, not yet in the
+    # plan — the same set /validate counts coverage against.
+    q = _plan_candidate_query(db, plan, agent.project_id, include_zero_port=include_zero_port)
     fixed_host_ids = _fixed_selection_ids(plan)
-    if fixed_host_ids is not None:
-        q = q.filter(models.Host.id.in_(fixed_host_ids))
-    q = _apply_agent_host_filters(
-        q, db,
-        project_id=agent.project_id,
-        state=filters.get("state"),
-        ports=filters.get("ports"),
-        services=filters.get("services"),
-        subnets=filters.get("subnets"),
-        has_critical_vulns=filters.get("has_critical_vulns"),
-        has_high_vulns=filters.get("has_high_vulns"),
-        search=filters.get("search"),
-        not_in_plan_id=plan_id,
-    )
-
-    # Exclude zero-port hosts by default — they have no actionable surface
-    if not include_zero_port:
-        q = q.filter(
-            models.Host.id.in_(
-                db.query(models.Port.host_id)
-                .filter(models.Port.state == "open")
-                .distinct()
-            )
-        )
 
     total_project_hosts = (
         db.query(func.count(models.Host.id))
@@ -652,26 +662,10 @@ def validate_test_plan(
     # correctly skipped per policy".  Now we compute both buckets
     # against the same policy function /context uses.
     #
-    # Step 1: collect every host in the project with at least one
-    # open port, excluding hosts already in the plan.
-    remaining_host_rows = (
-        db.query(models.Host)
-        .filter(
-            models.Host.project_id == agent.project_id,
-            models.Host.id.in_(
-                db.query(models.Port.host_id)
-                .filter(models.Port.state == "open")
-                .distinct()
-                .scalar_subquery()
-            ),
-            ~models.Host.id.in_(
-                db.query(TestPlanEntry.host_id)
-                .filter(TestPlanEntry.test_plan_id == plan_id)
-                .scalar_subquery()
-            ),
-        )
-        .all()
-    )
+    # Step 1: the plan's remaining candidates with at least one open port —
+    # its fixed selection or filter, exactly as /context pages them
+    # (v2.428.1; before, every host in the project was counted).
+    remaining_host_rows = _plan_candidate_query(db, plan, agent.project_id).all()
 
     policy_matching_remaining = 0
     non_policy_with_open_ports = 0

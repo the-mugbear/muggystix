@@ -1207,7 +1207,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Open a reconnaissance run against a scope in your session. Returns the "
             "scope's CIDRs, in-scope domains, the recommended tool sequence, and a "
             "`read_back` you MUST state to the operator before scanning. List scopes "
-            "with list_scopes. A run already open on the scope is reused."
+            "with assist_list_scopes. A run already open on the scope is reused."
         ),
         "method": "POST",
         "path": "/api/v1/agent/recon/start",
@@ -1248,7 +1248,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "create_test_plan": {
         "description": (
             "Open a DRAFT test plan in your session. Fill it in with plan_add_entries, "
-            "then submit_test_plan for human approval — you cannot approve it yourself."
+            "then plan_submit for human approval — you cannot approve it yourself."
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans",
