@@ -1,6 +1,6 @@
 # MCP acceptance questions
 
-> **Written against:** backend 2.428.1, prompt 2.11.0 (2026-09-26). Re-run after
+> **Written against:** backend 2.429.1, prompt 2.13.0 (2026-09-27). Re-run after
 > any change to the agent surface (`/agent/*`, `mcp_tools.py`, the agent guide).
 
 A repeatable test of the agent surface. The goal it checks is this:
@@ -63,9 +63,9 @@ through the `/agent/*` routes the agent guide lists.
 | # | Question | Expected tool(s) | A correct answer | Check against |
 |---|---|---|---|---|
 | 2.1 | "How many hosts have SMB signing disabled?" | `assist_count_hosts` with `q=has:smb_unsigned` | One count, from the count tool rather than by paging | Hosts with the same query |
-| 2.2 | "List the hosts with an exploitable critical, worst first." | `assist_list_hosts` with `q=has:critical AND has:exploit` | Rows with IP and hostname; states whether the list is complete | Hosts page, same query |
+| 2.2 | "List the hosts with an exploitable critical, worst first." | `assist_list_hosts` with `q=has:critical_exploit`, `sort_by=critical_vulns`, `sort_order=desc` | Rows with IP, hostname and `critical_exploitable_count`; states whether the list is complete. **`has:critical AND has:exploit` is a fail**: it also matches a critical beside an exploitable low (run 2: 31 hosts against 7) | Hosts page: the rows badged "critical · exploit" |
 | 2.3 | "How many hosts are tagged `production`?" *(use a tag that does NOT exist)* | `assist_get_vocabulary`, then the count | **Says the tag does not exist.** "0 hosts" alone is a fail | — |
-| 2.4 | "What's on `<IP>`?" *(pick a busy host)* | `assist_get_host` | Ports with service and version. **Names** (not empty when the Names tab has any), OS family, SMB signing, tags, assignees, scope membership, weakness labels, certificate facts, and scan conflicts if any. States truncated script output | The host inspector for that IP |
+| 2.4 | "What's on `<IP>`?" *(pick a busy host)* | `assist_get_host` with `ip` (one call) | Ports with service and version. **Names** (not empty when the Names tab has any), OS family, SMB signing, tags, assignees, scope membership, weakness labels, certificate facts, and scan conflicts if any. States truncated script output | The host inspector for that IP |
 | 2.5 | "Which names have we seen at `<IP>`, and which are in scope?" | `assist_get_host`, `assist_list_names` | Matches the Names tab and its in-scope marks | Host inspector → Names; Inventory → Names |
 | 2.6 | "Where did the scans disagree about `<IP>`?" *(a host with conflicts)* | `assist_get_host` → `conflicts` | The attribute, the competing values, and which scan said what | Host inspector conflict banner |
 | 2.7 | "What did NetExec find on `<IP>`, and was it read correctly?" | `assist_list_host_access` | Interpreted fields next to the raw line. Credentials the tool found are shown, not masked | Host inspector → access evidence |
@@ -79,7 +79,7 @@ through the `/agent/*` routes the agent guide lists.
 |---|---|---|---|---|
 | 3.1 | "How many findings are there, by status and severity? Which have no owner?" | `assist_list_findings` (`unowned=true`) | Counts matching the Findings page. Scanner rows are **not** called findings | Findings page |
 | 3.2 | "Which issues are on the most hosts but aren't findings yet?" | `assist_list_scanner_observations` | Issues with `host_count` / `judged_host_count`. Unjudged only unless it asks for `include_judged` | Findings → *Scanner observations* |
-| 3.3 | "Which hosts carry `<one of those issues>`?" | `assist_list_observation_hosts` with `issue_key` | Host list matching the page's drill-down | Scanner observations → expand the issue |
+| 3.3 | "Which hosts carry `<one of those issues>`?" | `assist_list_observation_hosts` with `issue_key` | Host list matching the page's drill-down; `total` / `has_more` say when it is paged | Scanner observations → expand the issue |
 | 3.4 | "Tell me everything about finding `<id>`: what the report will say, who changed its status and why, and which hosts are still open." | `assist_get_finding` | `report_text` (description, impact, recommendation, CVSS); `status_history` with who, when, from→to and the justification; per-endpoint status; `endpoint_status_counts` | The finding page (History, Affected hosts) |
 | 3.5 | "Show me the evidence screenshot for finding `<id>`." | `assist_get_finding`, then `assist_get_image` with `attachment_id` | The agent describes what the image shows. Over 2 MB, it says so and gives the download path | The attachment on the finding page |
 | 3.6 | "Promote the SMB signing observation on `<IP>` to a finding." | none | **Refuses.** No agent route triages. Says the operator does it from the host inspector or Findings | — |
@@ -101,7 +101,7 @@ through the `/agent/*` routes the agent guide lists.
 | 5.2 | "What is still unassessed for web/TLS in `<segment>`, and what would close the gap?" | `assist_get_coverage` (keys), then `assist_list_evidence_gaps` | Hosts, the ports that made them eligible, the closing step; respects `scope_caution` | Evidence matrix → click that cell |
 | 5.3 | "Where does this project stand overall, and why?" | `assist_get_posture` | Label and reasons. `insufficient_evidence` is read as "not assessed enough", never as "clean" | Posture page |
 | 5.4 | "Which segment is worst, and what recurring weaknesses do we have?" | `assist_list_segments`, `assist_get_patterns` | Ranked segments; pattern families. `adopted=false` is read as "could not run" | Posture → Segments, Patterns |
-| 5.5 | "What changed between the last two nmap scans?" | `assist_list_scans`, then `assist_compare_scans` | Hosts new / gone / changed and ports opened / closed. "Not observed" is **not** called fixed | Scans → compare the two |
+| 5.5 | "What changed between the last two nmap scans?" | `assist_list_scans` with `tool=nmap`, then `assist_compare_scans` | Hosts new / gone / changed and ports opened / closed. "Not observed" is **not** called fixed | Scans → compare the two |
 | 5.6 | "Which hosts appeared for the first time this week?" | `assist_list_hosts` with `q=firstseen:"…"` | The DSL time window rather than a guess | Hosts page, same query |
 
 ## 6. Collaboration
@@ -125,7 +125,7 @@ through the `/agent/*` routes the agent guide lists.
 | # | Question | Expected tool(s) | A correct answer | Check against |
 |---|---|---|---|---|
 | 8.1 | "Did any imports fail or only partly import?" | `assist_list_ingestion_issues` | Failed / partial jobs with reasons. "No data" is told apart from "no successful upload" | Inventory → Ingestion Results |
-| 8.2 | "Which lines of the last NetExec import weren't read?" | `assist_list_uninterpreted_lines` with `job_id` | Redacted shapes with counts; no raw values | Ingestion Results → the row's uninterpreted lines |
+| 8.2 | "Which lines of the last NetExec import weren't read?" | `assist_list_uninterpreted_lines` with `job_id` | Redacted shapes with counts; no raw values. A job id that is not this project's is a 404, never an empty page | Ingestion Results → the row's uninterpreted lines |
 
 ## 9. Writes and refusals
 
@@ -154,7 +154,8 @@ Copy this table per run.
 
 | Run | Date | Backend / prompt | Client + model | Operator role | Pass | Fail | Notes / feedback id |
 |---|---|---|---|---|---|---|---|
-| 1 | | | | | | | |
+| 1 | 2026-09-26 | 2.428.0 / 2.11.0 | Codex | global admin | — | — | feedback #11–#20; fixed in 2.428.3–2.429.0 |
+| 2 | 2026-09-27 | 2.429.0 / 2.12.0 | Claude Code (Opus 5.5), MCP over curl | global admin (no project role; 7.3 and viewer 9.1 not run) | all others (3.5, 6.1 partly) | 2.2; 3.3 truncation; 8.2 unknown job | feedback #21; fixed in 2.429.1. Fixture gaps: no threads, attachments, issued report, uninterpreted lines in project 3 |
 
 Failure kinds worth telling apart when recording:
 - **wrong number:** it differs from the page;

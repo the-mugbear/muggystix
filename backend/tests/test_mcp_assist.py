@@ -540,9 +540,18 @@ def test_arguments_are_checked_against_the_advertised_schema(client):
     # Missing required argument, likewise.
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "assist_get_host", "arguments": {}},
+        "params": {"name": "assist_get_host_vulnerabilities", "arguments": {}},
     })
     assert resp.json()["error"]["code"] == -32602
+
+    # assist_get_host takes host_id OR ip (2.429.1): neither is refused, not
+    # sent as a request for no host.
+    resp = _rpc(client, {
+        "jsonrpc": "2.0", "id": 3, "method": "tools/call",
+        "params": {"name": "assist_get_host", "arguments": {}},
+    })
+    result = resp.json()["result"]
+    assert result["isError"] is True and "host_id, ip" in result["content"][0]["text"]
 
 
 # ---------------------------------------------------------------------------

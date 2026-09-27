@@ -99,6 +99,14 @@ def test_a_plan_can_target_exact_hosts_by_id_or_query(client, db_session, test_p
     assert by_q.status_code == 201, by_q.text
     v = client.get(f"/api/v1/agent/test-plans/{by_q.json()['id']}/validate", headers=headers).json()
     assert v["coverage"]["eligible_hosts_remaining"] == 1
+    # The reviewer can see how the list was chosen (MCP acceptance run 2:
+    # the q was lost, and the description was empty).
+    assert by_q.json()["description"] == (
+        "Host selection: 1 host(s) from q=ip:10.10.4.2, resolved when the plan was created."
+    )
+    described = client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "Why", "description": "Hosts in review.", "host_ids": [hosts[1].id]}).json()
+    assert described["description"].startswith("Hosts in review.\n\nHost selection: 1 host(s) from host_ids")
 
     assert client.post("/api/v1/agent/test-plans", headers=headers, json={
         "title": "x", "q": "ip:10.99.99.99"}).status_code == 422

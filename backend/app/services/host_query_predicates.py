@@ -38,7 +38,7 @@ from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationMode
 from app.db.models_auth import User
 from app.services import smb_signing as smb_signing_states
 from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
-from app.db.models_vulnerability import Vulnerability
+from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_confidence import NetexecResult
 
 # Leaf module — no import cycle (host_query imports *us*, not the reverse).
@@ -564,6 +564,28 @@ def has_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
         db.query(Vulnerability.host_id)
         .join(_H, _H.id == Vulnerability.host_id)
         .filter(_H.project_id == project_id, Vulnerability.exploitable.is_(True))
+        .distinct()
+    )
+    return models.Host.id.in_(sub)
+
+
+def critical_exploit_predicate(db: Session, project_id: int) -> ColumnElement:
+    """Host has a CRITICAL vulnerability that is itself flagged exploitable —
+    severity and exploit on the SAME row, the Hosts page's "critical ·
+    exploit" (``critical_exploitable_count``) and Worth-a-look tier 1.
+
+    ``has:critical AND has:exploit`` is not this: it also matches a critical
+    with no exploit beside a low that has one (MCP acceptance run 2 — 31
+    hosts against 7)."""
+    _H = aliased(models.Host)
+    sub = (
+        db.query(Vulnerability.host_id)
+        .join(_H, _H.id == Vulnerability.host_id)
+        .filter(
+            _H.project_id == project_id,
+            Vulnerability.exploitable.is_(True),
+            Vulnerability.severity == VulnerabilitySeverity.CRITICAL,
+        )
         .distinct()
     )
     return models.Host.id.in_(sub)

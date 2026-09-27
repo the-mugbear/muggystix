@@ -392,7 +392,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "kind of work: assist (queries/notes only), reconnaissance, "
             "plan_generation, or in_session_execution; add the matching "
             "recon_session_id / test_plan_id / execution_session_id when you have "
-            "one — the session itself is attributed from your key. tool_suggestions "
+            "one — the session itself is attributed from your key. One row is "
+            "about ONE kind of work: source=assist takes no phase ids, so a "
+            "session that also drafted a plan files that part as its own "
+            "plan_generation row with test_plan_id. tool_suggestions "
             "here are context; suggest_tool files the registry entry."
         ),
         "method": "POST",
@@ -475,15 +478,21 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "assigned: takes me / any / none / a username, so "
             "'has:critical AND assigned:none' is 'hosts with a critical scanner "
             "observation that nobody is assigned' — for unowned triaged "
-            "findings use assist_list_findings unowned=true. Paginate with "
-            "limit/offset — but for a COUNT use "
-            "assist_count_hosts, not the length of a page. Returns host briefs."
+            "findings use assist_list_findings unowned=true. An EXPLOITABLE "
+            "CRITICAL (the critical itself has the exploit) is "
+            "has:critical_exploit — 'has:critical AND has:exploit' also matches "
+            "a critical beside an exploitable low. Each row carries "
+            "exploitable_count and critical_exploitable_count. sort_by="
+            "critical_vulns / exploitable_vulns with sort_order=desc lists worst "
+            "first (default: by address). Paginate with limit/offset — but for a "
+            "COUNT use assist_count_hosts, not the length of a page. Returns host briefs."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
         "query_params": [
             "q", "search", "state", "ports", "services", "subnets",
             "has_critical_vulns", "has_high_vulns", "limit", "offset",
+            "sort_by", "sort_order",
         ],
         # The endpoint's own default is 500 — right for a file download, a lot
         # of tokens for a model that usually wants the first handful.
@@ -501,6 +510,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "has_high_vulns": {"type": "boolean"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 500},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "sort_by": {
+                    "type": "string",
+                    "enum": [
+                        "ip_address", "critical_vulns", "high_vulns", "exploitable_vulns",
+                        "open_ports", "note_count", "discovery_count", "hostname", "last_seen",
+                    ],
+                    "default": "ip_address",
+                },
+                "sort_order": {"type": "string", "enum": ["asc", "desc"], "default": "asc"},
             },
             "additionalProperties": False,
         },
@@ -546,15 +564,19 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "value was picked, not that anyone settled it), note_count and "
             "finding_count. names = every name SEEN at the address. Notes and "
             "individual vulnerabilities are separate — use assist_get_host_notes "
-            "and assist_get_host_vulnerabilities for those."
+            "and assist_get_host_vulnerabilities for those. Pass exactly one of "
+            "host_id or ip (the address itself — one host per address)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
         "path_params": ["host_id"],
+        "path_alternatives": {"ip": "/api/v1/agent/assist/hosts/by-ip/{ip}"},
         "input_schema": {
             "type": "object",
-            "properties": dict(HOST_ID_PROP),
-            "required": ["host_id"],
+            "properties": {
+                **HOST_ID_PROP,
+                "ip": {"type": "string", "maxLength": 64, "description": "The host's address, e.g. 10.0.0.5."},
+            },
             "additionalProperties": False,
         },
     },
@@ -644,8 +666,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "certificate / TLS facts (cert_not_after, cert_self_signed, cert "
             "organisations, tls_weak_protocol — null means the tool did not "
             "report it, not that it is fine; an expired certificate is the "
-            "check:tls_cert_expired observation). Read has_more and page with "
-            "offset; total is the whole record (v2.343.3)."
+            "check:tls_cert_expired observation), plus what the web panel reads "
+            "from the tool's TLS record: tls_version, cert_issuer, "
+            "cert_subject_cn, cert_sans (first 20; cert_san_total). Read "
+            "has_more and page with offset; total is the whole record (v2.343.3)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
@@ -859,7 +883,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "in_review_count, total_open, total — for 'how many', never the "
             "list length. blockers.failed_import_count counts failed imports "
             "nobody has dismissed and no later clean import superseded, so it is "
-            "smaller than assist_list_ingestion_issues' failed."
+            "smaller than assist_list_ingestion_issues' failed. investigate is "
+            "null here because the 'Worth a look' queue is not embedded — null is "
+            "not an empty queue; read it with assist_list_worth_a_look."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench",
@@ -1066,17 +1092,19 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "The hosts carrying one scanner issue (issue_key from "
             "assist_list_scanner_observations), by address: ports, severity, and "
-            "whether a finding covers it on that host (judged, endpoint_status)."
+            "whether a finding covers it on that host (judged, endpoint_status). "
+            "total is every host carrying the issue; read has_more and page with offset."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations/hosts",
-        "query_params": ["issue_key", "limit"],
+        "query_params": ["issue_key", "limit", "offset"],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
                 "issue_key": {"type": "string", "minLength": 1, "maxLength": 600},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 100},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
             "required": ["issue_key"],
             "additionalProperties": False,
@@ -1209,15 +1237,20 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "List the scans ingested into this project (most recent first). Each "
             "carries ingestion_job_id, the import that produced it — the job_id "
-            "assist_list_uninterpreted_lines takes (a scan id is not a job id)."
+            "assist_list_uninterpreted_lines takes (a scan id is not a job id). "
+            "tool narrows to one tool's scans, as the Scans page's chips do — "
+            "'the last two nmap scans' is tool=nmap, limit=2."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
-        "query_params": ["limit"],
+        "query_params": ["limit", "tool"],
         "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
-            "properties": {"limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100}},
+            "properties": {
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "tool": {"type": "string", "maxLength": 100, "description": "A tool name (nmap, nessus, netexec…) or scan type."},
+            },
             "additionalProperties": False,
         },
     },

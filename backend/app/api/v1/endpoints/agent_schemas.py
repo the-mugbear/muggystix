@@ -68,6 +68,11 @@ class HostBrief(BaseModel):
     last_seen: Optional[datetime] = Field(None, description="Timestamp of the most recent scan to see this host.")
     open_port_count: int = Field(0, description="Distinct open-port count across all scans of this host.")
     vuln_summary: Optional[VulnCounts] = Field(None, description="Per-severity vuln counts; null when no vulnerability scan has run.")
+    # v2.429.1 (MCP acceptance run 2) — the Hosts page's Attention counts.
+    exploitable_count: int = Field(0, description="Scanner vulnerabilities on this host flagged exploitable (any severity).")
+    critical_exploitable_count: int = Field(0, description=(
+        "CRITICAL vulnerabilities that are themselves flagged exploitable — severity and exploit "
+        "on the same row (has:critical_exploit). Not critical count × exploit count."))
     # Agent feedback (v1.44.0): to avoid clobbering a human's review state on a
     # follow write, the agent had to run three DSL queries per host. This is the
     # SESSION OPERATOR's follow status on the host — 'watching' / 'in_review' /

@@ -85,3 +85,11 @@ def test_uninterpreted_lines_are_listed_per_import(client, db_session, test_proj
     assert item["shapes"][0]["shape"] == "RDP <IP> 3389 <HOST> [*] (nla:False)"
     one = _mcp(client, key, "assist_list_uninterpreted_lines", job_id=item["job_id"])["structuredContent"]
     assert one["total"] == 1
+
+    # A job that read every line is an empty page; a job that is not this
+    # project's is a 404, not the same empty page (MCP acceptance run 2).
+    clean = db_session.query(models.IngestionJob).filter_by(filename="b.txt").one()
+    assert _mcp(client, key, "assist_list_uninterpreted_lines", job_id=clean.id)["structuredContent"]["total"] == 0
+    missing = _mcp(client, key, "assist_list_uninterpreted_lines", job_id=clean.id + 1000)
+    assert missing["isError"] is True
+    assert "No import job" in missing["content"][0]["text"]

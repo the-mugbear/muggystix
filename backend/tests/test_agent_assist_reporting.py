@@ -85,13 +85,30 @@ def test_observation_hosts_are_the_pages_own_rows(client, test_project, estate):
     headers = _assist_headers(client, test_project.id)
     agent = client.get("/api/v1/agent/assist/scanner-observations/hosts",
                        params={"issue_key": key}, headers=headers)
-    assert agent.json() == page.json()
-    assert [h["ip_address"] for h in agent.json()] == ["10.9.0.1", "10.9.0.2", "10.9.0.3"]
+    body = agent.json()
+    assert body["items"] == page.json()
+    assert [h["ip_address"] for h in body["items"]] == ["10.9.0.1", "10.9.0.2", "10.9.0.3"]
+    assert (body["total"], body["has_more"]) == (3, False)
 
     # And over MCP, as structured content.
     result = _mcp(client, headers, "assist_list_observation_hosts", issue_key=key)
     assert result["isError"] is False
     assert result["structuredContent"]["items"] == page.json()
+
+
+def test_observation_hosts_say_when_the_page_is_cut(client, test_project, estate):
+    """MCP acceptance run 2: 100 of an issue's 146 hosts came back as a bare
+    list — nothing said it was cut, and there was no way to the rest."""
+    key = "title:smb signing not required"
+    headers = _assist_headers(client, test_project.id)
+    first = client.get("/api/v1/agent/assist/scanner-observations/hosts",
+                       params={"issue_key": key, "limit": 2}, headers=headers).json()
+    assert [h["ip_address"] for h in first["items"]] == ["10.9.0.1", "10.9.0.2"]
+    assert (first["total"], first["has_more"]) == (3, True)
+    rest = client.get("/api/v1/agent/assist/scanner-observations/hosts",
+                      params={"issue_key": key, "limit": 2, "offset": 2}, headers=headers).json()
+    assert [h["ip_address"] for h in rest["items"]] == ["10.9.0.3"]
+    assert rest["has_more"] is False
 
 
 def test_observations_are_a_viewer_read(client, db_session, test_project, estate):

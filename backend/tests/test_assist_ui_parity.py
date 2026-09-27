@@ -402,3 +402,111 @@ def test_web_interfaces_carry_their_certificate_facts(client, db_session, test_p
     assert item["tls_weak_protocol"] is True
     assert item["cert_subject_org"] == "Acme"
     assert item["cert_not_after"].startswith("2025-01-01")
+
+
+def test_web_interfaces_carry_what_the_web_panel_reads_from_the_tls_record(
+    client, db_session, test_project
+):
+    """MCP acceptance run 2: a row with the TLS record but no typed columns
+    showed an issuer, expiry and SANs in the web panel and nothing to the agent."""
+    host = models.Host(project_id=test_project.id, ip_address="10.20.0.6", state="up")
+    scan = models.Scan(project_id=test_project.id, filename="httpx.json", tool_name="httpx")
+    db_session.add_all([host, scan])
+    db_session.flush()
+    sans = [f"n{i}.example.com" for i in range(25)]
+    db_session.add(models.WebInterface(
+        project_id=test_project.id, host_id=host.id, scan_id=scan.id, url="https://10.20.0.6/",
+        port=443, source="httpx",
+        tls_info={"subject_cn": "portal.example.com", "subject_an": sans,
+                  "issuer_dn": "CN=Example Issuing CA", "tls_version": "tls13"},
+    ))
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+    item = client.get(f"/api/v1/agent/assist/hosts/{host.id}/web-interfaces", headers=headers).json()["items"][0]
+    assert item["tls_version"] == "tls13"
+    assert item["cert_issuer"] == "CN=Example Issuing CA"
+    assert item["cert_subject_cn"] == "portal.example.com"
+    assert item["cert_sans"] == sans[:20] and item["cert_san_total"] == 25
+
+
+# ---------------------------------------------------------------------------
+# MCP acceptance run 2 (2.429.1)
+# ---------------------------------------------------------------------------
+
+def _vuln(db_session, host, scan, severity, exploitable):
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySource
+    db_session.add(Vulnerability(
+        host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NESSUS,
+        severity=severity, title=f"{severity.value} {exploitable}", exploitable=exploitable,
+    ))
+
+
+def test_an_exploitable_critical_is_one_vulnerability_not_two(client, db_session, test_project):
+    """``has:critical AND has:exploit`` matched a critical beside an exploitable
+    low — 31 hosts where 7 had an exploitable critical.  has:critical_exploit
+    and the rows' critical_exploitable_count are the Hosts page's same-row rule."""
+    from app.db.models_vulnerability import VulnerabilitySeverity as Sev
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus", tool_name="nessus")
+    db_session.add(scan)
+    real = models.Host(project_id=test_project.id, ip_address="10.61.0.1", state="up")
+    paired = models.Host(project_id=test_project.id, ip_address="10.61.0.2", state="up")
+    db_session.add_all([real, paired])
+    db_session.flush()
+    _vuln(db_session, real, scan, Sev.CRITICAL, True)
+    _vuln(db_session, paired, scan, Sev.CRITICAL, False)
+    _vuln(db_session, paired, scan, Sev.CRITICAL, False)
+    _vuln(db_session, paired, scan, Sev.LOW, True)
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+
+    def ips(q, **params):
+        r = client.get("/api/v1/agent/assist/hosts", params={"q": q, **params}, headers=headers)
+        assert r.status_code == 200, r.text
+        return r.json()
+
+    assert [h["ip_address"] for h in ips("has:critical_exploit")] == ["10.61.0.1"]
+    both = ips("has:critical AND has:exploit")
+    assert [h["ip_address"] for h in both] == ["10.61.0.1", "10.61.0.2"]
+    counts = {h["ip_address"]: (h["exploitable_count"], h["critical_exploitable_count"]) for h in both}
+    assert counts == {"10.61.0.1": (1, 1), "10.61.0.2": (1, 0)}
+
+    # The Hosts page states the same counts for the same hosts.
+    page = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"q": "has:exploit"}).json()
+    assert {h["ip_address"]: (h["exploitable_count"], h["critical_exploitable_count"])
+            for h in page["items"]} == counts
+
+    # Worst first is a parameter: the host with two criticals leads.
+    worst = ips("has:critical", sort_by="critical_vulns", sort_order="desc")
+    assert [h["ip_address"] for h in worst] == ["10.61.0.2", "10.61.0.1"]
+    assert client.get("/api/v1/agent/assist/hosts", params={"sort_by": "nonsense"},
+                      headers=headers).status_code == 422
+
+
+def test_host_detail_by_address_is_the_same_answer(client, db_session, test_project):
+    """'What's on 10.0.0.5?' took a list call to find the id first."""
+    host = models.Host(project_id=test_project.id, ip_address="10.62.0.7", state="up")
+    db_session.add(host)
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+    by_id = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers).json()
+    by_ip = client.get("/api/v1/agent/assist/hosts/by-ip/10.62.0.7", headers=headers)
+    assert by_ip.status_code == 200, by_ip.text
+    assert by_ip.json() == by_id
+    assert client.get("/api/v1/agent/assist/hosts/by-ip/10.62.0.8", headers=headers).status_code == 404
+
+    mcp = client.post("/api/v1/mcp", headers=headers, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_get_host", "arguments": {"ip": "10.62.0.7"}},
+    }).json()["result"]
+    assert mcp["isError"] is False
+    assert mcp["structuredContent"]["id"] == host.id
+
+
+def test_scans_narrow_to_one_tool(client, db_session, test_project):
+    """'The last two nmap scans' meant reading every scan."""
+    for name, tool in (("a.xml", "nmap"), ("b.nessus", "nessus"), ("c.xml", "nmap")):
+        db_session.add(models.Scan(project_id=test_project.id, filename=name, tool_name=tool))
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+    rows = client.get("/api/v1/agent/assist/scans", params={"tool": "nmap"}, headers=headers).json()
+    assert sorted(r["filename"] for r in rows) == ["a.xml", "c.xml"]

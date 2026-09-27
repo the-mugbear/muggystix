@@ -229,6 +229,23 @@ def _resolve_plan_selection(db: Session, session, body) -> Optional[List[int]]:
     return None
 
 
+def _with_selection_provenance(body, source_host_ids: Optional[List[int]]) -> Optional[str]:
+    """The plan description, with how its fixed host list was chosen.
+
+    v2.429.1 (MCP acceptance run 2): a plan made from ``q`` kept neither the
+    query nor a description, so its reviewer saw a host list with no reason.
+    The line is the provenance of the selection, not the agent's text; it is
+    appended, so the agent's own description stays first."""
+    if not source_host_ids:
+        return body.description
+    how = f"q={body.q}" if body.q else "host_ids"
+    line = (
+        f"Host selection: {len(source_host_ids)} host(s) from {how}, "
+        "resolved when the plan was created."
+    )
+    return f"{body.description.rstrip()}\n\n{line}" if body.description else line
+
+
 @router.post(
     "/test-plans",
     response_model=PlanResponse,
@@ -254,7 +271,7 @@ def create_test_plan(
         project_id=agent.project_id,
         agent_id=agent.id,
         title=body.title,
-        description=body.description,
+        description=_with_selection_provenance(body, source_host_ids),
         actor_type="agent",
         actor_id=agent.id,
         created_by_user_id=session.started_by_id,
@@ -553,11 +570,13 @@ def get_planning_context(
             {
                 "kind": "manual_hosts",
                 "host_count": len(fixed_host_ids),
+                # v2.429.1 — the list is an operator's Hosts-page pick OR an
+                # agent's host_ids / q; it said "the operator picked" of both.
                 "note": (
-                    "The operator picked these hosts on the Hosts page; "
-                    "candidate_hosts is restricted to that fixed list. Do not "
-                    "add hosts outside it. The plan description says why they "
-                    "were chosen."
+                    "This plan targets a fixed host list — picked on the Hosts "
+                    "page, or given as host_ids / q when the plan was created. "
+                    "candidate_hosts is restricted to it. Do not add hosts "
+                    "outside it. The plan description says why they were chosen."
                 ),
             }
             if fixed_host_ids is not None else None

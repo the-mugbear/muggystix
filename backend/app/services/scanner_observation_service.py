@@ -253,11 +253,22 @@ class IssueHost:
     endpoint_status: Optional[str]
 
 
-def issue_hosts(db: Session, project_id: int, issue_key: str, limit: Optional[int] = None) -> List[IssueHost]:
-    """The hosts carrying the issue (the first ``limit`` by address, or all),
-    with whether a finding covers it there.  The Findings view asks for one
-    more than it shows, so it knows when the list is cut — an issue on 10k
-    hosts rendered 10k rows (review 2026-09-23 R11)."""
+def issue_host_total(db: Session, project_id: int, issue_key: str) -> int:
+    """How many hosts carry the issue — the total ``issue_hosts`` pages over."""
+    return (
+        _project_rows(db, project_id, func.count(distinct(Host.id)))
+        .filter(_key() == issue_key)
+        .scalar()
+    ) or 0
+
+
+def issue_hosts(
+    db: Session, project_id: int, issue_key: str, limit: Optional[int] = None, offset: int = 0,
+) -> List[IssueHost]:
+    """The hosts carrying the issue (``limit`` of them by address from
+    ``offset``, or all), with whether a finding covers it there.  The Findings
+    view asks for one more than it shows, so it knows when the list is cut — an
+    issue on 10k hosts rendered 10k rows (review 2026-09-23 R11)."""
     key = _key()
     judged = func.max(case((observation_judged_on_host(), 1), else_=0))
     query = (
@@ -269,6 +280,8 @@ def issue_hosts(db: Session, project_id: int, issue_key: str, limit: Optional[in
         .group_by(Host.id, Host.ip_address, Host.hostname)
         .order_by(Host.ip_address)
     )
+    if offset:
+        query = query.offset(offset)
     rows = (query.limit(limit) if limit else query).all()
     if not rows:
         return []

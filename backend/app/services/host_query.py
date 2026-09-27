@@ -405,6 +405,14 @@ def build_filtered_host_query(
 # Sorting
 # ---------------------------------------------------------------------------
 
+#: The sort keys ``apply_host_sorting`` understands — the Hosts page's and the
+#: agent host list's ``sort_by`` (v2.429.1: one list for both).
+HOST_SORT_FIELDS = (
+    "critical_vulns", "high_vulns", "exploitable_vulns", "open_ports", "note_count",
+    "discovery_count", "ip_address", "hostname", "last_seen",
+)
+
+
 def apply_host_sorting(query, sort_by: str, sort_order: str):
     """Apply a primary sort + standard tiebreakers to a filtered host query.
 

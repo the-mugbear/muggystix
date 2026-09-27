@@ -61,8 +61,14 @@ from app.api.v1.endpoints.agent_common import (
 from app.services import dns_name_service, host_detail_service
 from app.services.attribution_correlation import attributions_for_host
 from app.services.host_assessment_service import host_assessment
-from app.services.host_query import WEAKNESS_LABELS, host_weakness_flags
+from app.services.host_query import (
+    HOST_SORT_FIELDS,
+    WEAKNESS_LABELS,
+    apply_host_sorting,
+    host_weakness_flags,
+)
 from app.services.host_serialization import (
+    exploit_count_maps,
     note_load_options,
     serialize_attribution,
     serialize_cert_facts,
@@ -378,10 +384,12 @@ def _operator_follow_map(db: Session, host_ids, operator_id) -> dict:
 
 
 def _host_to_brief_dict(
-    h: models.Host, port_counts: dict, vuln_map: dict, follow_map: dict = None
+    h: models.Host, port_counts: dict, vuln_map: dict, follow_map: dict = None,
+    exploit_maps: tuple = ({}, {}),
 ) -> dict:
     """Serialize one host to the HostBrief-shaped dict used by the NDJSON stream."""
     vc = vuln_map.get(h.id, {})
+    exploits, critical_exploits = exploit_maps
     return {
         "id": h.id,
         "ip_address": h.ip_address,
@@ -400,6 +408,8 @@ def _host_to_brief_dict(
         }
         if vc
         else None,
+        "exploitable_count": exploits.get(h.id, 0),
+        "critical_exploitable_count": critical_exploits.get(h.id, 0),
         "follow": (follow_map or {}).get(h.id),
     }
 
@@ -419,8 +429,9 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
         host_ids = [h.id for h in hosts]
         port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
         follow_map = _operator_follow_map(db, host_ids, operator_id)
+        exploit_maps = exploit_count_maps(db, host_ids)
         for h in hosts:
-            yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map, follow_map)) + "\n"
+            yield json.dumps(_host_to_brief_dict(h, port_counts, vuln_map, follow_map, exploit_maps)) + "\n"
         if len(hosts) < _PAGE:
             break
         offset += _PAGE
@@ -513,6 +524,14 @@ def list_assist_hosts(
     ),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
+    sort_by: str = Query(
+        "ip_address", pattern=f"^({'|'.join(HOST_SORT_FIELDS)})$",
+        description=(
+            "The Hosts page's sort keys. ip_address (default, by address); "
+            "critical_vulns / high_vulns / exploitable_vulns for 'worst first'."
+        ),
+    ),
+    sort_order: str = Query("asc", pattern="^(asc|desc)$", description="asc or desc (use desc for 'worst first')."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -542,17 +561,22 @@ def list_assist_hosts(
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
     )
-    hosts = query.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
+    # v2.429.1 (MCP acceptance run 2) — the Hosts page's own sort, so "worst
+    # first" is a parameter rather than a local re-sort of every page.
+    hosts = apply_host_sorting(query, sort_by, sort_order).offset(offset).limit(limit).all()
     if not hosts:
         return []
     host_ids = [h.id for h in hosts]
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
     follow_map = _operator_follow_map(db, host_ids, session.started_by_id)
+    exploits, critical_exploits = exploit_count_maps(db, host_ids)
     result = []
     for h in hosts:
         vc = vuln_map.get(h.id, {})
         result.append(
             HostBrief(
+                exploitable_count=exploits.get(h.id, 0),
+                critical_exploitable_count=critical_exploits.get(h.id, 0),
                 id=h.id,
                 ip_address=h.ip_address,
                 hostname=h.hostname,
@@ -662,6 +686,16 @@ class AssistWebInterface(BaseModel):
         "True when SSLv2/SSLv3/TLS 1.0/1.1 was offered; False when only strong "
         "protocols were seen; null when the tool did not enumerate protocols."
     ))
+    # v2.429.1 (MCP acceptance run 2) — what the host inspector's web panel
+    # reads straight from the tool's TLS record (``WebInterfacesCard``'s
+    # summarizeTls: the same keys, in the same order).  The typed columns
+    # above can be empty where the record is not, and the page showed an
+    # issuer and SANs the agent could not see.
+    tls_version: Optional[str] = None
+    cert_issuer: Optional[str] = Field(None, description="issuer CN, else organisation, else DN, as the tool reported it")
+    cert_subject_cn: Optional[str] = None
+    cert_sans: List[str] = Field(default_factory=list, description="Subject alternative names (first 20)")
+    cert_san_total: int = 0
 
 
 class AssistScript(BaseModel):
@@ -784,12 +818,30 @@ def _assist_port_detail(p, budget: _ScriptBudget) -> AssistPortDetail:
     )
 #: Technology lists come from Wappalyzer and can run long on a CMS.
 _TECH_CAP = 12
+_SAN_CAP = 20
+
+
+def _tls_str(tls: dict, *keys: str) -> Optional[str]:
+    """The first non-empty string among ``keys`` — the web panel's tlsStr."""
+    for k in keys:
+        v = tls.get(k)
+        if isinstance(v, str) and v.strip():
+            return v.strip()
+    return None
 
 
 def _serialize_web_interface(w) -> AssistWebInterface:
     """One web interface as assist reports it — shared by the capped list on
     host detail and the paged list below, so the two never disagree."""
+    tls = w.tls_info if isinstance(w.tls_info, dict) else {}
+    sans = tls.get("subject_an") or tls.get("subject_alt_names")
+    sans = [str(s) for s in sans] if isinstance(sans, list) else []
     return AssistWebInterface(
+        tls_version=_tls_str(tls, "tls_version", "version"),
+        cert_issuer=_tls_str(tls, "issuer_cn", "issuer_org", "issuer_dn"),
+        cert_subject_cn=_tls_str(tls, "subject_cn"),
+        cert_sans=sans[:_SAN_CAP],
+        cert_san_total=len(sans),
         id=w.id,
         url=w.url,
         fqdn=w.name.fqdn if w.name else None,
@@ -987,6 +1039,18 @@ def list_assist_uninterpreted_lines(
         models.IngestionJob.uninterpreted_lines.isnot(None),
     )
     if job_id is not None:
+        # v2.429.1 (MCP acceptance run 2) — an unknown job, or another
+        # project's, answered the same empty page as "every line was read".
+        exists = db.query(models.IngestionJob.id).filter(
+            models.IngestionJob.id == job_id,
+            models.IngestionJob.project_id == session.project_id,
+        ).first()
+        if exists is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No import job {job_id} in this project (a scan id is not a job id — "
+                       "assist_list_scans gives each scan's ingestion_job_id).",
+            )
         scoped = scoped.filter(models.IngestionJob.id == job_id)
     total = scoped.with_entities(func.count(models.IngestionJob.id)).scalar() or 0
     rows = scoped.order_by(models.IngestionJob.created_at.desc(), models.IngestionJob.id.desc()) \
@@ -1004,6 +1068,30 @@ def list_assist_uninterpreted_lines(
         ],
         total=int(total), has_more=offset + len(rows) < total,
     )
+
+
+@router.get(
+    "/assist/hosts/by-ip/{ip}",
+    response_model=AssistHostDetail,
+    summary="Host detail by address — the same answer as /assist/hosts/{host_id}",
+)
+def get_assist_host_by_ip(
+    request: Request,
+    ip: str = Path(..., min_length=2, max_length=64),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """v2.429.1 (MCP acceptance run 2) — "what's on 10.0.0.5?" took a list
+    call to find the id first.  One host per address per project
+    (``uq_project_ip``), so the address names exactly one row."""
+    session = _load_assist_session(db, request)
+    host_id = db.query(models.Host.id).filter(
+        models.Host.project_id == session.project_id,
+        models.Host.ip_address == ip.strip(),
+    ).scalar()
+    if host_id is None:
+        raise HTTPException(status_code=404, detail=f"No host with address {ip} in this project")
+    return get_assist_host(request, host_id=host_id, agent=agent, db=db)
 
 
 @router.get(
@@ -2285,13 +2373,23 @@ def list_assist_names(
 def list_assist_scans(
     request: Request,
     limit: int = Query(100, ge=1, le=500),
+    tool: Optional[str] = Query(
+        None, max_length=100,
+        description="Only this tool's scans (nmap, nessus, netexec…) — the Scans page's tool chips",
+    ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
+    # The Scans page's own filter (v2.429.1, MCP acceptance run 2: "the last
+    # two nmap scans" meant reading every scan).
+    from app.api.v1.endpoints.scans import _apply_scan_inventory_filters
+
     session = _load_assist_session(db, request)
     scans = (
-        db.query(models.Scan)
-        .filter(models.Scan.project_id == session.project_id)
+        _apply_scan_inventory_filters(
+            db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
+            search=None, tool=tool, created_after=None,
+        )
         .order_by(models.Scan.created_at.desc())
         .limit(limit)
         .all()

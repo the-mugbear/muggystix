@@ -364,6 +364,12 @@ _HAS_KEYWORDS = {
               "Has an analyst note (on the host or one of its ports)."),
     "exploit": (lambda ctx: P.has_exploit_predicate(ctx.db, ctx.project_id),
                 "Has a finding flagged exploitable by a vulnerability scanner (currently Nessus)."),
+    # v2.429.1 — severity and exploit on the SAME row ("has:critical AND
+    # has:exploit" pairs them anywhere on the host).
+    "critical_exploit": (lambda ctx: P.critical_exploit_predicate(ctx.db, ctx.project_id),
+                         "Has a CRITICAL finding that is itself flagged exploitable — the "
+                         "Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
+                         "wider: the exploit may be on a lower-severity finding."),
     "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
                "Has had an agentic test executed against it."),
     "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.db, ctx.project_id),

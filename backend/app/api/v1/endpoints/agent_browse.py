@@ -48,6 +48,7 @@ from app.core.security import check_permissions
 from app.db.models_tools import TOOL_APPROVED
 from app.services import dns_name_service
 from app.services.host_follow_service import HostFollowService
+from app.services.host_serialization import exploit_count_maps
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
     close_agent_session_from_agent, session_phase_summary, propagate_probe,
@@ -97,11 +98,14 @@ def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
         return []
     host_ids = [h.id for h in hosts]
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+    exploits, critical_exploits = exploit_count_maps(db, host_ids)
 
     result = []
     for h in hosts:
         vc = vuln_map.get(h.id, {})
         result.append(HostBrief(
+            exploitable_count=exploits.get(h.id, 0),
+            critical_exploitable_count=critical_exploits.get(h.id, 0),
             id=h.id,
             ip_address=h.ip_address,
             hostname=h.hostname,

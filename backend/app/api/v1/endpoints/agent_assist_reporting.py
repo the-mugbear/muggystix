@@ -90,23 +90,39 @@ def list_assist_scanner_observations(
     return IssuePageOut(items=[IssueRowOut(**vars(r)) for r in page.items], total=page.total)
 
 
+class AssistIssueHostPage(BaseModel):
+    """One page of an issue's hosts.  v2.429.1 (MCP acceptance run 2): the
+    bare list stopped at the limit without saying so — 100 of an issue's 146
+    hosts read as the whole list."""
+    items: List[IssueHostOut]
+    total: int = Field(..., description="Hosts carrying the issue — the page's rows are `limit` of them from `offset`")
+    has_more: bool
+    limit: int
+    offset: int
+
+
 @router.get(
     "/assist/scanner-observations/hosts",
-    response_model=List[IssueHostOut],
-    summary="The hosts carrying one scanner issue",
+    response_model=AssistIssueHostPage,
+    summary="The hosts carrying one scanner issue, paged by address",
 )
 def list_assist_scanner_observation_hosts(
     request: Request,
     issue_key: str = Query(..., min_length=1, max_length=600),
-    limit: int = Query(500, ge=1, le=5000, description="The first N hosts by address"),
+    limit: int = Query(500, ge=1, le=5000, description="Hosts per page, by address"),
+    offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     session = _load_assist_session(db, request)
-    return [
+    items = [
         IssueHostOut(**vars(h))
-        for h in observations.issue_hosts(db, session.project_id, issue_key, limit=limit)
+        for h in observations.issue_hosts(db, session.project_id, issue_key, limit=limit, offset=offset)
     ]
+    total = observations.issue_host_total(db, session.project_id, issue_key)
+    return AssistIssueHostPage(
+        items=items, total=total, has_more=offset + len(items) < total, limit=limit, offset=offset,
+    )
 
 
 # ---------------------------------------------------------------------------

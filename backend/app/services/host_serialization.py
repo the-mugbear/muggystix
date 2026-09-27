@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from app.db import models
 from app.services.vuln_identity import issue_key_for
@@ -117,6 +117,30 @@ def build_vuln_summary(data: Optional[dict]) -> Optional[HostVulnerabilitySummar
         low=data.get('by_severity', {}).get('low', 0),
         info=data.get('by_severity', {}).get('info', 0),
     )
+
+
+def exploit_count_maps(db, host_ids: List[int]) -> Tuple[Dict[int, int], Dict[int, int]]:
+    """``(exploitable_count, critical_exploitable_count)`` per host, in one
+    grouped query.  The critical count is joined on the SAME vulnerability row
+    (v2.344.0) — a critical with no exploit beside a low with one is not "a
+    critical with an exploit".  One implementation for the Hosts page and the
+    agent's host rows (v2.429.1)."""
+    exploit: Dict[int, int] = {}
+    critical: Dict[int, int] = {}
+    if not host_ids:
+        return exploit, critical
+    from sqlalchemy import func
+    from app.db.models_vulnerability import VulnerabilitySeverity
+    for hid, sev, cnt in (
+        db.query(Vulnerability.host_id, Vulnerability.severity, func.count(Vulnerability.id))
+        .filter(Vulnerability.host_id.in_(host_ids), Vulnerability.exploitable.is_(True))
+        .group_by(Vulnerability.host_id, Vulnerability.severity)
+        .all()
+    ):
+        exploit[hid] = exploit.get(hid, 0) + cnt
+        if sev == VulnerabilitySeverity.CRITICAL:
+            critical[hid] = cnt
+    return exploit, critical
 
 
 def discovery_dict(history) -> dict:

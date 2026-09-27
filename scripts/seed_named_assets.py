@@ -61,6 +61,7 @@ from app.db.models_project import Project  # noqa: E402
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource  # noqa: E402
 from app.parsers.parser_utils import upsert_vulnerability  # noqa: E402
 from app.services import dns_name_service as names  # noqa: E402
+from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol  # noqa: E402
 from app.services.finding_service import FindingService  # noqa: E402
 from app.services.host_deduplication_service import HostDeduplicationService  # noqa: E402
 from app.services.test_plan_service import TestPlanService  # noqa: E402
@@ -308,14 +309,21 @@ def _seed_body(db, project, owner, hostname_before):
         for san in ("portal.example-corp.com", "*.apps.example-corp.com", "shop.example-corp.com"):
             names.record_observation(db, project_id=project.id, name=san, record_type=DNS_OBS_CERT,
                                      value=LB_IP, scan_id=httpx.id, cache=cache)
+        tls_info = {"subject_cn": "portal.example-corp.com",
+                    "subject_an": ["portal.example-corp.com", "*.apps.example-corp.com", "shop.example-corp.com"],
+                    "issuer_dn": "CN=Example Corp Issuing CA", "not_after": (NOW + timedelta(days=90)).isoformat()}
+        # The typed certificate columns, derived as the httpx parser derives
+        # them — the blob alone left every typed reader (agent, insights) blind.
+        cert_not_after, cert_self_signed = derive_cert_fields(tls_info)
+        cert_subject_org, cert_issuer_org = derive_cert_orgs(tls_info)
         db.add(models.WebInterface(
             scan_id=httpx.id, host_id=lb.id, port_id=port_row.id if port_row else None,
             project_id=project.id, source="httpx", url=url, protocol="https", port=443,
             ip_address=LB_IP, name_id=name_id, status_code=200, title=title,
             server_header="nginx/1.24.0", technologies=["Nginx 1.24.0", "React"],
-            tls_info={"subject_cn": "portal.example-corp.com",
-                      "subject_an": ["portal.example-corp.com", "*.apps.example-corp.com", "shop.example-corp.com"],
-                      "issuer_dn": "CN=Example Corp Issuing CA", "not_after": (NOW + timedelta(days=90)).isoformat()},
+            tls_info=tls_info, cert_not_after=cert_not_after, cert_self_signed=cert_self_signed,
+            cert_subject_org=cert_subject_org, cert_issuer_org=cert_issuer_org,
+            tls_weak_protocol=derive_weak_protocol(tls_info),
         ))
     db.flush()
 

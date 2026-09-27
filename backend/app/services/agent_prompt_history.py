@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.13.0",
+        "app_version": "2.429.1",
+        "summary": (
+            "From MCP acceptance run 2 (feedback #21): has:critical_exploit is "
+            "an exploitable CRITICAL (severity and exploit on the same row) — "
+            "'has:critical AND has:exploit' also matches a critical beside an "
+            "exploitable low; host rows carry exploitable_count and "
+            "critical_exploitable_count, and assist_list_hosts takes the Hosts "
+            "page's sort_by / sort_order; assist_get_host takes ip; "
+            "assist_list_scans takes tool; assist_list_observation_hosts is a "
+            "page with total / has_more / offset; an unknown job_id on "
+            "assist_list_uninterpreted_lines is a 404; web interfaces add the "
+            "web panel's TLS facts (tls_version, cert_issuer, subject, SANs); a "
+            "plan made from q / host_ids records the selection in its "
+            "description; the workbench says investigate is not embedded."
+        ),
+    },
+    {
         "version": "2.12.0",
         "app_version": "2.429.0",
         "summary": (

@@ -188,13 +188,21 @@ def submit_agent_feedback(
     # disentangle.  Plan/execution sources own test_plan_id +
     # execution_session_id; reconnaissance owns recon_session_id;
     # assist owns assist_session_id.
+    # v2.429.1 (MCP acceptance run 2) — the refusal now says how to file it:
+    # a session that did several kinds of work files one row per kind.
+    _split = (
+        " One row is about one kind of work: file this part with the source "
+        "that owns that id (test_plan_id → plan_generation or "
+        "in_session_execution; recon_session_id → reconnaissance), and the "
+        "rest as its own row. Your session is attributed from your key either way."
+    )
     plan_sources = {AgentFeedbackSource.PLAN_GENERATION.value,
                     AgentFeedbackSource.IN_SESSION_EXECUTION.value}
     if body.source in plan_sources:
         if body.recon_session_id is not None or body.assist_session_id is not None:
             raise HTTPException(
                 status_code=400,
-                detail=f"source={body.source!r} cannot reference recon/assist sessions",
+                detail=f"source={body.source!r} cannot reference recon/assist sessions." + _split,
             )
     elif body.source == AgentFeedbackSource.RECONNAISSANCE.value:
         if (body.test_plan_id is not None
@@ -202,7 +210,7 @@ def submit_agent_feedback(
                 or body.assist_session_id is not None):
             raise HTTPException(
                 status_code=400,
-                detail="source=reconnaissance cannot reference plan/execution/assist IDs",
+                detail="source=reconnaissance cannot reference plan/execution/assist IDs." + _split,
             )
     elif body.source == AgentFeedbackSource.ASSIST.value:
         if (body.test_plan_id is not None
@@ -210,7 +218,7 @@ def submit_agent_feedback(
                 or body.recon_session_id is not None):
             raise HTTPException(
                 status_code=400,
-                detail="source=assist cannot reference plan/execution/recon IDs",
+                detail="source=assist cannot reference plan/execution/recon IDs." + _split,
             )
 
     # v2.337.0 — the per-key workflow-pinning guard is gone with per-workflow
