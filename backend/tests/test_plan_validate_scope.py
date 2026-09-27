@@ -57,3 +57,25 @@ def test_validate_counts_the_whole_project_for_an_unfiltered_plan(client, db_ses
                           json={"title": "Everything"}).json()["id"]
     v = client.get(f"/api/v1/agent/test-plans/{plan_id}/validate", headers=headers).json()
     assert v["coverage"]["eligible_hosts_remaining"] == 2
+
+
+def test_list_filters_from_the_agent_route_do_not_crash_context_or_validate(client, db_session, test_project):
+    """POST /agent/test-plans stores subnets/ports/services as LISTS; the host
+    filter took comma strings, so /context answered 500 (agent feedback #19)."""
+    for ip in ("10.10.2.10", "10.10.2.20", "10.10.3.30"):
+        _host_with_open_port(db_session, test_project, ip)
+    db_session.commit()
+    headers = _start(client, test_project)
+    r = client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "Two /32s", "filter_criteria": {
+            "subnets": ["10.10.2.10/32", "10.10.2.20/32"], "ports": [80], "services": ["http"],
+        },
+    })
+    assert r.status_code in (200, 201), r.text
+    plan_id = r.json()["id"]
+    ctx = client.get(f"/api/v1/agent/test-plans/{plan_id}/context", headers=headers)
+    assert ctx.status_code == 200, ctx.text
+    assert ctx.json()["summary"]["matching_filter"] == 2
+    v = client.get(f"/api/v1/agent/test-plans/{plan_id}/validate", headers=headers)
+    assert v.status_code == 200, v.text
+    assert v.json()["coverage"]["eligible_hosts_remaining"] == 2

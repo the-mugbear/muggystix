@@ -46,6 +46,19 @@ def _fixed_selection_ids(plan) -> Optional[List[int]]:
     return ids or None
 
 
+def _csv(value) -> Optional[str]:
+    """A stored filter value as the comma list ``_apply_agent_host_filters``
+    takes.  ``POST /agent/test-plans`` stores ``subnets`` / ``ports`` /
+    ``services`` as JSON LISTS (``_PlanFilterCriteria``) while older plans hold
+    strings — a list reached ``.split`` and ``/context`` answered 500 (agent
+    feedback #19, a plan of 37 /32 subnets; v2.428.3)."""
+    if value is None or value == "" or value == []:
+        return None
+    if isinstance(value, (list, tuple)):
+        return ",".join(str(v).strip() for v in value if str(v).strip()) or None
+    return str(value)
+
+
 def _plan_candidate_query(db: Session, plan, project_id: int, *, include_zero_port: bool = False):
     """The hosts a plan still has to consider: its fixed selection or its
     ``filter_criteria``, minus hosts already in the plan, minus hosts with no
@@ -65,9 +78,12 @@ def _plan_candidate_query(db: Session, plan, project_id: int, *, include_zero_po
         q, db,
         project_id=project_id,
         state=filters.get("state"),
-        ports=filters.get("ports"),
-        services=filters.get("services"),
-        subnets=filters.get("subnets"),
+        ports=_csv(filters.get("ports")),
+        services=_csv(filters.get("services")),
+        subnets=_csv(filters.get("subnets")),
+        # Stored by _PlanFilterCriteria and advertised, but never applied
+        # until v2.428.3.
+        min_severity=filters.get("min_severity"),
         has_critical_vulns=filters.get("has_critical_vulns"),
         has_high_vulns=filters.get("has_high_vulns"),
         search=filters.get("search"),
