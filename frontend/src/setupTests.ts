@@ -144,3 +144,8 @@ if (typeof Element !== 'undefined') {
     Element.prototype.scrollIntoView = () => undefined;
   }
 }
+
+// jsdom has no canvas: getContext logs "Not implemented" on every call. A
+// browser without WebGL returns null — say so quietly (the Operations terrain
+// then shows its table view).
+Object.defineProperty(HTMLCanvasElement.prototype, 'getContext', { value: () => null, configurable: true });

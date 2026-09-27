@@ -25,6 +25,7 @@ import { formatApiError } from '../utils/apiErrors';
 import StartReconDialog from '../components/StartReconDialog';
 import MyWorkCard, { personalWorkCounts } from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
+import AddressTerrainSection from '../components/operations/AddressTerrainSection';
 import UpdatedAt from '../components/UpdatedAt';
 import RunKindBadge from '../components/RunKindBadge';
 import LastUpdated from '../components/LastUpdated';
@@ -1270,6 +1271,10 @@ const Operations: React.FC = () => {
             <MyActivityCard refreshKey={refreshKey} />
           </div>
           <MyWorkCard part="engagement" {...workCardProps} />
+          {/* 5.306.0 — the same team-wide question as the queues above
+              ("who has been where?") as ground: one request, loaded when the
+              section nears the viewport, three.js in its own chunk. */}
+          <AddressTerrainSection refreshKey={refreshKey} />
           {/* Exposure + neglect analytics live on the Posture pages —
               reachable from the nav, not duplicated here. */}
           {!approvalsWaiting && approvalsBlock}

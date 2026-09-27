@@ -35,6 +35,7 @@ from app.api.deps import get_current_project
 # Previously this composed the workbench by *calling* dashboard's route
 # functions, making one router depend on another's handlers.
 from app.services import host_query_predicates as P
+from app.services.address_terrain_service import AddressTerrainResponse, compute_address_terrain
 from app.services.operations_read_service import (
     compute_my_attention_queue,
     compute_my_tasks,
@@ -339,6 +340,26 @@ def get_investigation_queue(
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()
         raise HTTPException(status_code=503, detail="The 'Worth a look' queue could not be computed.")
+
+
+@router.get(
+    "/terrain",
+    response_model=AddressTerrainResponse,
+    summary="Hosts by address block (/24, IPv6 /64), counted by how far the team has taken them",
+)
+def get_address_terrain(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The Operations terrain (v2.426.0): per block, hosts tested / planned /
+    worked / untouched (exclusive, adding up to ``hosts``) and the critical
+    exposure nobody has touched.  503 on failure — never an empty map."""
+    try:
+        return compute_address_terrain(db, project)
+    except Exception:
+        logger.exception("address terrain failed for project %s", project.id)
+        db.rollback()
+        raise HTTPException(status_code=503, detail="The address terrain could not be computed.")
 
 
 @router.post(

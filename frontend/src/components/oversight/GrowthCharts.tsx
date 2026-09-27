@@ -1,35 +1,30 @@
 /**
- * Host growth — three single-series charts on one shared date axis
- * (small multiples, 5.259.0): recorded hosts (cumulative line), hosts
- * first recorded per bucket, reviews concluded per bucket.  (v5.294.0 — "hosts",
- * not "targets", the word every other page uses; dates in the one format.)
+ * Host growth — three single-series charts on one shared date axis (small
+ * multiples, 5.259.0): recorded hosts (cumulative line), hosts first recorded
+ * per bucket, reviews concluded per bucket.
  *
  * Why three and not one: a cumulative total and per-bucket counts are
- * different scales, and one plot with two y-axes invents a relationship; two
- * categorical columns would need a second hue the theme only has as a status
- * colour.  Each chart is one series in the info accent, so its title names it
- * and no legend is needed.
+ * different scales, and one plot with two y-axes invents a relationship. Each
+ * chart is one series in the info accent, so its title names it and no
+ * legend is needed.
  *
- * Hover or arrow keys move ONE crosshair across all three; the readout above
- * lists every value at that bucket.  Every value is also in the table view.
+ * Drawn with Observable Plot since 5.307.0 (kept after a trial against the
+ * hand-built SVG it replaced): a real UTC time axis with dated gridlines
+ * shared by the three plots, columns sized to their interval, whole-number y
+ * ticks. Hover or arrow keys move ONE crosshair across all three; the readout
+ * above lists every value at that bucket. Every value is also in the table view.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Plot from '@observablehq/plot';
 
 import type { OversightGrowthPoint } from '../../services/api/oversight';
 import { formatDate } from '../../utils/relativeTime';
 
 const ACCENT = 'hsl(var(--info))';
-const H = 72;              // plot height per chart
-const PAD_L = 44;          // room for the y tick labels
-const PAD_R = 44;          // room for the end label
-const BAR_MAX = 24;
-
-const niceMax = (v: number): number => {
-  if (v <= 0) return 1;
-  const p = 10 ** Math.floor(Math.log10(v));
-  const f = v / p;
-  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
-};
+const INK = 'hsl(var(--foreground))';
+const PLOT_H = 84;
+const MARGIN_L = 44;
+const MARGIN_R = 56;
 
 /** A bucket's start in the one date format: "Aug 29, 2026", or its month. */
 export const bucketDate = (unit: string, start: string): string => {
@@ -37,9 +32,6 @@ export const bucketDate = (unit: string, start: string): string => {
   const [y, m] = start.slice(0, 7).split('-').map(Number);
   return new Date(y, m - 1, 1).toLocaleDateString(undefined, { month: 'short', year: 'numeric' });
 };
-
-const unitLabel = (unit: string, start: string) =>
-  unit === 'week' ? `Week of ${bucketDate(unit, start)}` : bucketDate(unit, start);
 
 /** Container width, with a fallback where ResizeObserver is missing (tests).
  *
@@ -67,102 +59,150 @@ export function useWidth(): [(el: HTMLDivElement | null) => void, number] {
   return [ref, w];
 }
 
-interface SeriesProps {
-  title: string;
-  points: OversightGrowthPoint[];
-  value: (p: OversightGrowthPoint) => number;
-  kind: 'line' | 'columns';
-  width: number;
-  hover: number | null;
-  onHover: (i: number | null) => void;
-  showDates: boolean;
-  unit: string;
-}
+type Unit = 'day' | 'week' | 'month';
 
-const Series: React.FC<SeriesProps> = ({ title, points, value, kind, width, hover, onHover, showDates, unit }) => {
-  const n = points.length;
-  const plotW = Math.max(1, width - PAD_L - PAD_R);
-  const band = plotW / Math.max(1, n);
-  const max = niceMax(Math.max(0, ...points.map(value)));
-  const x = (i: number) => PAD_L + band * i + band / 2;
-  const y = (v: number) => H - (v / max) * H;
-  const last = n ? value(points[n - 1]) : 0;
-  const barW = Math.max(1, Math.min(BAR_MAX, band - 2));   // 2px surface gap between columns
+interface Row { date: Date; value: number; index: number }
 
-  const line = kind === 'line' && n > 0
-    ? points.map((p, i) => `${i ? 'L' : 'M'}${x(i).toFixed(1)},${y(value(p)).toFixed(1)}`).join(' ')
-    : '';
-  const area = line ? `${line} L${x(n - 1).toFixed(1)},${H} L${x(0).toFixed(1)},${H} Z` : '';
+const asDate = (start: string) => new Date(`${start.slice(0, 10)}T00:00:00Z`);
 
-  const onMove = (e: React.PointerEvent<SVGRectElement>) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const px = ((e.clientX - rect.left) / rect.width) * plotW;
-    onHover(Math.min(n - 1, Math.max(0, Math.floor(px / band))));
-  };
-
-  return (
-    <div className="min-w-0">
-      <p className="text-caption font-medium text-foreground">{title}</p>
-      <svg width={width} height={H + (showDates ? 22 : 6)} role="img" aria-label={`${title}: ${last.toLocaleString()} in the last bucket`}
-        className="block overflow-visible">
-        {/* recessive hairline grid: the top tick and the baseline */}
-        <line x1={PAD_L} x2={PAD_L + plotW} y1={0.5} y2={0.5} stroke="hsl(var(--border))" />
-        <line x1={PAD_L} x2={PAD_L + plotW} y1={H + 0.5} y2={H + 0.5} stroke="hsl(var(--muted-foreground) / 0.35)" />
-        <text x={PAD_L - 6} y={4} textAnchor="end" dominantBaseline="hanging" className="fill-muted-foreground text-[11px] tabular-nums">
-          {max.toLocaleString()}
-        </text>
-        <text x={PAD_L - 6} y={H} textAnchor="end" className="fill-muted-foreground text-[11px] tabular-nums">0</text>
-
-        {kind === 'line' ? (
-          <>
-            <path d={area} fill={ACCENT} fillOpacity={0.1} />
-            <path d={line} fill="none" stroke={ACCENT} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
-            {n > 0 && (
-              <circle cx={x(n - 1)} cy={y(last)} r={4} fill={ACCENT} stroke="hsl(var(--background))" strokeWidth={2} />
-            )}
-          </>
-        ) : (
-          points.map((p, i) => {
-            const v = value(p);
-            if (v <= 0) return null;
-            const top = y(v);
-            const h = H - top;
-            const r = Math.min(4, h, barW / 2);
-            const x0 = x(i) - barW / 2;
-            // 4px rounded data-end, square at the baseline.
-            const d = `M${x0},${H} V${top + r} Q${x0},${top} ${x0 + r},${top} H${x0 + barW - r} Q${x0 + barW},${top} ${x0 + barW},${top + r} V${H} Z`;
-            return <path key={p.start} d={d} fill={ACCENT} fillOpacity={hover == null || hover === i ? 1 : 0.55} />;
-          })
-        )}
-
-        {/* end label: the one value worth reading without hovering */}
-        <text x={PAD_L + plotW + 6} y={kind === 'line' ? y(last) : H} dominantBaseline={kind === 'line' ? 'middle' : 'auto'}
-          className="fill-foreground text-[11px] font-semibold tabular-nums">
-          {last.toLocaleString()}
-        </text>
-
-        {hover != null && n > 0 && (
-          <line x1={x(hover)} x2={x(hover)} y1={0} y2={H} stroke="hsl(var(--foreground) / 0.5)" strokeWidth={1} />
-        )}
-        {showDates && n > 0 && (
-          <>
-            <text x={PAD_L} y={H + 16} className="fill-muted-foreground text-[11px]">{bucketDate(unit, points[0].start)}</text>
-            <text x={PAD_L + plotW} y={H + 16} textAnchor="end" className="fill-muted-foreground text-[11px]">{bucketDate(unit, points[n - 1].start)}</text>
-          </>
-        )}
-        <rect x={PAD_L} y={0} width={plotW} height={H} fill="transparent"
-          onPointerMove={onMove} onPointerLeave={() => onHover(null)} />
-      </svg>
-    </div>
-  );
+/** Whole-number y ticks: 0, a round top at or above the data, and its half
+ *  when that is whole — counts never get a "0.5" tick. */
+const countTicks = (values: number[]): { domain: [number, number]; ticks: number[] } => {
+  const max = Math.max(1, ...values);
+  const p = 10 ** Math.floor(Math.log10(max));
+  const f = max / p;
+  const top = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+  return { domain: [0, top], ticks: top % 2 === 0 ? [0, top / 2, top] : [0, top] };
 };
 
-export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint[] }> = ({ unit, points }) => {
+const unitLabel = (unit: string, start: string) =>
+  unit === 'week' ? `Week of ${bucketDate(unit, start)}` : bucketDate(unit, start);
+
+/** One Plot figure, redrawn when its options change; reports its x scale so
+ *  the pointer can be mapped to a bucket. */
+const Figure: React.FC<{
+  options: Plot.PlotOptions;
+  onScale: (invert: ((px: number) => Date) | null) => void;
+  label: string;
+}> = ({ options, onScale, label }) => {
+  const ref = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const host = ref.current;
+    if (!host) return undefined;
+    const figure = Plot.plot(options);
+    figure.setAttribute('role', 'img');
+    figure.setAttribute('aria-label', label);
+    host.replaceChildren(figure);
+    const x = figure.scale('x');
+    onScale(x?.invert ? (px: number) => x.invert!(px) as Date : null);
+    return () => figure.remove();
+  }, [options, onScale, label]);
+  return <div ref={ref} className="min-w-0 [&_svg]:block [&_svg]:overflow-visible" />;
+};
+
+export const GrowthCharts: React.FC<{ unit: Unit | string; points: OversightGrowthPoint[] }> = ({ unit, points }) => {
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const invertRef = useRef<((px: number) => Date) | null>(null);
+  const onScale = useMemo(() => (inv: ((px: number) => Date) | null) => { invertRef.current = inv; }, []);
   const focus = hover ?? points.length - 1;
   const p = points[focus];
+  const interval = (unit === 'day' || unit === 'week' || unit === 'month' ? unit : 'day') as Unit;
+
+  const series = useMemo(() => {
+    const rows = (value: (q: OversightGrowthPoint) => number): Row[] =>
+      points.map((q, index) => ({ date: asDate(q.start), value: value(q), index }));
+    return {
+      total: rows((q) => q.cumulative_targets),
+      added: rows((q) => q.targets_added),
+      reviews: rows((q) => q.reviews_concluded),
+    };
+  }, [points]);
+
+  // The x domain covers the last bucket whole, so its column is not clipped.
+  const xDomain = useMemo((): [Date, Date] | null => {
+    if (!points.length) return null;
+    const first = asDate(points[0].start);
+    const last = asDate(points[points.length - 1].start);
+    const end = new Date(last);
+    if (interval === 'month') end.setUTCMonth(end.getUTCMonth() + 1);
+    else end.setUTCDate(end.getUTCDate() + (interval === 'week' ? 7 : 1));
+    return [first, end];
+  }, [points, interval]);
+
+  const build = useMemo(() => (rows: Row[], kind: 'line' | 'columns', showAxis: boolean): Plot.PlotOptions => {
+    const hovered = hover == null ? null : rows[hover];
+    const y = countTicks(rows.map((r) => r.value));
+    const mid = (d: Date) => {
+      // A bucket's centre, where its column and the crosshair sit.
+      const e = new Date(d);
+      if (interval === 'month') e.setUTCDate(15);
+      else if (interval === 'week') e.setUTCDate(e.getUTCDate() + 3.5);
+      else e.setUTCHours(12);
+      return e;
+    };
+    const marks: Plot.Markish[] = [
+      Plot.gridX({ stroke: 'currentColor', strokeOpacity: 0.12 }),
+      Plot.gridY(y.ticks, { stroke: 'currentColor', strokeOpacity: 0.12 }),
+      Plot.ruleY([0], { stroke: 'currentColor', strokeOpacity: 0.35 }),
+    ];
+    if (kind === 'line') {
+      marks.push(
+        Plot.areaY(rows, { x: (r: Row) => mid(r.date), y: 'value', fill: ACCENT, fillOpacity: 0.1, curve: 'monotone-x' }),
+        Plot.lineY(rows, { x: (r: Row) => mid(r.date), y: 'value', stroke: ACCENT, strokeWidth: 2, curve: 'monotone-x' }),
+        Plot.dot(rows, Plot.selectLast({ x: (r: Row) => mid(r.date), y: 'value', r: 4, fill: ACCENT, stroke: 'hsl(var(--background))', strokeWidth: 2 })),
+        Plot.text(rows, Plot.selectLast({
+          x: (r: Row) => mid(r.date), y: 'value', text: (r: Row) => r.value.toLocaleString(),
+          dx: 10, textAnchor: 'start', fill: INK, fontWeight: 600,
+        })),
+      );
+    } else {
+      marks.push(
+        Plot.rectY(rows.filter((r) => r.value > 0), {
+          x: 'date', interval, y: 'value', fill: ACCENT, inset: 1, rx: 3,
+          fillOpacity: (r: Row) => (hover == null || hover === r.index ? 1 : 0.55),
+        }),
+        // The last bucket's value, beside its column (the one value worth
+        // reading without hovering).
+        Plot.text(rows, Plot.selectLast({
+          x: (r: Row) => mid(r.date), y: 'value', text: (r: Row) => r.value.toLocaleString(),
+          dx: 14, textAnchor: 'start', fill: INK, fontWeight: 600,
+        })),
+      );
+    }
+    if (hovered) marks.push(Plot.ruleX([mid(hovered.date)], { stroke: INK, strokeOpacity: 0.5 }));
+    return {
+      width,
+      height: PLOT_H + (showAxis ? 36 : 4),
+      marginLeft: MARGIN_L,
+      marginRight: MARGIN_R,
+      marginTop: 8,
+      // Room for Plot's two-line date ticks (day, then month under the first of each).
+      marginBottom: showAxis ? 36 : 4,
+      style: { background: 'transparent', color: 'hsl(var(--muted-foreground))', fontSize: '11px', fontFamily: 'inherit', overflow: 'visible' },
+      x: { type: 'utc', domain: xDomain ?? undefined, axis: showAxis ? 'bottom' : null, tickSize: 0, tickPadding: 6, label: null },
+      y: { domain: y.domain, ticks: y.ticks, tickSize: 0, tickFormat: (v: number) => v.toLocaleString(), label: null },
+      marks,
+    };
+  }, [hover, width, interval, xDomain]);
+
+  const optsTotal = useMemo(() => build(series.total, 'line', false), [build, series]);
+  const optsAdded = useMemo(() => build(series.added, 'columns', false), [build, series]);
+  const optsReviews = useMemo(() => build(series.reviews, 'columns', true), [build, series]);
+
+  const onPointerMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const invert = invertRef.current;
+    if (!invert || !points.length) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    if (px < MARGIN_L || px > width - MARGIN_R) { setHover(null); return; }
+    const t = invert(px).getTime();
+    // The bucket whose start is the last one at or before the pointer.
+    let i = 0;
+    while (i + 1 < points.length && asDate(points[i + 1].start).getTime() <= t) i += 1;
+    setHover(i);
+  };
 
   const onKey = (e: React.KeyboardEvent) => {
     if (!points.length) return;
@@ -180,9 +220,9 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
     return <p className="text-metadata text-muted-foreground">No hosts recorded in these projects yet.</p>;
   }
 
+  const last = points[points.length - 1];
   return (
     <div ref={ref} className="min-w-0 space-y-sm">
-      {/* Readout: values lead, labels follow. */}
       <p className="text-caption text-muted-foreground" aria-live="polite" id="growth-readout">
         <span className="font-medium text-foreground">{unitLabel(unit, p.start)}</span>
         {' · '}<span className="font-semibold text-foreground tabular-nums">{p.cumulative_targets.toLocaleString()}</span> recorded {p.cumulative_targets === 1 ? 'host' : 'hosts'}
@@ -190,15 +230,19 @@ export const GrowthCharts: React.FC<{ unit: string; points: OversightGrowthPoint
         {' · '}<span className="font-semibold text-foreground tabular-nums">{p.reviews_concluded.toLocaleString()}</span> {p.reviews_concluded === 1 ? 'review' : 'reviews'} concluded
         {hover == null && <span> (latest; hover or use ← → to move)</span>}
       </p>
-      <div tabIndex={0} onKeyDown={onKey} aria-describedby="growth-readout"
+      <div tabIndex={0} onKeyDown={onKey} onPointerMove={onPointerMove} onPointerLeave={() => setHover(null)}
+        aria-describedby="growth-readout"
         aria-label="Host growth charts — use the left and right arrow keys to move between dates"
-        className="space-y-sm rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-        <Series title="Recorded hosts (cumulative)" points={points} value={(q) => q.cumulative_targets} kind="line"
-          width={width} hover={hover} onHover={setHover} showDates={false} unit={unit} />
-        <Series title={`Hosts first recorded per ${unit}`} points={points} value={(q) => q.targets_added} kind="columns"
-          width={width} hover={hover} onHover={setHover} showDates={false} unit={unit} />
-        <Series title={`Reviews concluded per ${unit}`} points={points} value={(q) => q.reviews_concluded} kind="columns"
-          width={width} hover={hover} onHover={setHover} showDates unit={unit} />
+        className="space-y-xs rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <p className="text-caption font-medium text-foreground">Recorded hosts (cumulative)</p>
+        <Figure options={optsTotal} onScale={onScale}
+          label={`Recorded hosts (cumulative): ${last.cumulative_targets.toLocaleString()} in the last bucket`} />
+        <p className="text-caption font-medium text-foreground">Hosts first recorded per {unit}</p>
+        <Figure options={optsAdded} onScale={onScale}
+          label={`Hosts first recorded per ${unit}: ${last.targets_added.toLocaleString()} in the last bucket`} />
+        <p className="text-caption font-medium text-foreground">Reviews concluded per {unit}</p>
+        <Figure options={optsReviews} onScale={onScale}
+          label={`Reviews concluded per ${unit}: ${last.reviews_concluded.toLocaleString()} in the last bucket`} />
       </div>
       <p className="text-caption text-muted-foreground">
         In these dates: {totals.added.toLocaleString()} {totals.added === 1 ? 'host' : 'hosts'} first recorded,{' '}

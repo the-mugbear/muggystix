@@ -665,6 +665,25 @@ def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
     return models.Host.id.in_(sub)
 
 
+def untouched_conditions(db: Session) -> List[ColumnElement]:
+    """Nobody has touched the host: no review or assignment (any HostFollow),
+    no note, no test-plan entry, no finding endpoint.  The ONE definition —
+    the "Worth a look" queue, ``has:untouched`` and the Operations terrain
+    all use it (v2.426.0)."""
+    from app.db.models_findings import FindingHost
+
+    return [
+        ~models.Host.id.in_(db.query(HostFollow.host_id)),
+        ~models.Host.id.in_(db.query(AnnotationModel.host_id).filter(AnnotationModel.host_id.isnot(None))),
+        ~models.Host.id.in_(db.query(TestPlanEntry.host_id)),
+        ~models.Host.id.in_(db.query(FindingHost.host_id)),
+    ]
+
+
+def untouched_predicate(db: Session) -> ColumnElement:
+    return and_(*untouched_conditions(db))
+
+
 def has_plan_entry_predicate(db: Session, project_id: int) -> ColumnElement:
     """Host appears in at least one test plan (project-scoped).
 

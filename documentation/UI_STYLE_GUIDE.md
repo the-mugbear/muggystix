@@ -145,7 +145,7 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - Use the v4 `<Card>` / `<CardHeader>` / `<CardContent>` / `<CardFooter>` primitives from `src/components/ui/card.tsx`.
 
 #### Charts
-There is no chart library (§35); charts are small, hand-built SVG inside a section. References: `components/posture/FocusComparison.tsx` (ranked rows with inline bars), `components/oversight/JudgmentBySeverity.tsx` (part-to-whole per row), `components/oversight/GrowthCharts.tsx` (small multiples over time).
+Charts with real axes are drawn with Observable Plot (§35, adopted 5.307.0; reference `components/oversight/GrowthCharts.tsx`); small inline visuals stay hand-built SVG inside a section. The one 3D surface, the Operations terrain, uses three.js under the same rules: colours from theme tokens (`utils/terrainPalette.ts`, validator-checked on every theme), every value in a table view, every count a link. References: `components/posture/FocusComparison.tsx` (ranked rows with inline bars), `components/oversight/JudgmentBySeverity.tsx` (part-to-whole per row), `components/oversight/GrowthCharts.tsx` (small multiples over time).
 - **Pick the form first; sometimes it is not a chart.** A single number is a measure (§7), a handful of exact values is a table. Draw only what a table cannot show (a gap, a trend, a rank).
 - **One y-axis per plot.** Two measures of different scale (a running total and per-day counts) are two charts on a shared x-axis — never a dual-axis plot.
 - **Colour follows meaning.** Severity colours only for severity (`utils/severity.ts`); status tokens only for status; one accent (`--info`) for a single series, or accent + recessive grey when one part is the point (emphasis). Check any colour pair against the light AND dark themes with the dataviz palette validator before shipping.
@@ -428,7 +428,7 @@ Follow the UI style guide (Tailwind v4 + Radix primitives + lucide-react).
 - Data pages use PostureSection / PostureMeasure (heading + rule, one strip of
   quiet measures); detail surfaces use InspectorSection. Never a Card per metric
   or per data source; a repeated evidence row is one line that expands on demand.
-- Charts are hand-built SVG: one y-axis per plot (small multiples, never dual
+- Charts with axes use Observable Plot (§35); inline visuals are hand-built SVG. Either way: one y-axis per plot (small multiples, never dual
   axes), every value also reachable as a direct label or a table view, colours
   from theme tokens checked with the dataviz palette validator.
 - Every count navigates to, or filters to, the rows it summarises. No inert stat cards.
@@ -502,7 +502,8 @@ When editing the current frontend:
 | Command palette | `cmdk` — `src/components/CommandPalette.tsx` (shipped) and `Combobox` |
 | Icons | `lucide-react` (default); `AppIcons.tsx` for custom hand-rolled SVGs |
 | Dates | `date-fns` for formatting; there is no date-picker dependency (`react-day-picker` was removed unused in 5.247.1) |
-| Graphs | No graph or chart library — charts are hand-rolled SVG/CSS (`components/posture/PostureCharts.tsx`, `ui/SeverityBar.tsx`); `reactflow` was removed with the Topology page in 5.285.0 |
+| Graphs | **Observable Plot** (`@observablehq/plot`, pinned exact) — adopted 5.307.0 after a trial on Oversight's Host growth (`components/oversight/GrowthCharts.tsx`, the reference). The old "no chart library" rule was born of chart.js's dated, hard-to-read output; Plot is a grammar of graphics that draws plain SVG under the §7 rules: colours from theme tokens (`hsl(var(--info))`), `currentColor` axes, direct end labels, one y-axis per plot, a table view. Import it in the chart's own component so it stays in that page's lazy chunk. Small inline visuals (`ui/SeverityBar.tsx`, meters, part-to-whole rows) stay hand-rolled — reach for Plot when a chart needs real axes, time scales or intervals. `reactflow` was removed with the Topology page in 5.285.0. |
+| 3D | `three` (pinned exact) for the Operations terrain only (`components/operations/TerrainScene.tsx`, 5.306.0) — chosen by the owner. It is loaded in its own chunk when the section nears the viewport, draws on demand (idle = no frames), and every number it shows is also in the section's Table view. Not a chart library: 2D charts stay hand-built SVG. |
 | File drop | `react-dropzone` (`components/scans/UploadReviewDialog.tsx`) |
 | Theming | CSS variables set by `theme/cssVars.ts`, palette in `theme/palettes.ts` |
 

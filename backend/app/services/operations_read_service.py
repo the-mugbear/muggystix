@@ -37,6 +37,7 @@ from app.services.import_attention_service import (
     superseded_import_condition,
     unsuccessful_import_condition,
 )
+from app.services import host_query_predicates as P
 from app.services.vulnerability_service import VulnerabilityService
 
 # Findings still demanding work — the one definition, in models_findings
@@ -403,16 +404,9 @@ def compute_investigation_queue(
     # signals come back one aggregated row per host, the pass over all hosts is
     # integers only, and names / labels / reasons are built for the rows shown.
     # Same tiers, same order, same rows — test_workbench pins that.
-    followed = db.query(HostFollow.host_id)
-    noted = db.query(Annotation.host_id).filter(Annotation.host_id.isnot(None))
-    planned = db.query(TestPlanEntry.host_id)
-    found = db.query(FindingHost.host_id)
     untouched_filter = (
         models.Host.project_id == project.id,
-        ~models.Host.id.in_(followed),
-        ~models.Host.id.in_(noted),
-        ~models.Host.id.in_(planned),
-        ~models.Host.id.in_(found),
+        *P.untouched_conditions(db),
     )
     untouched_total = int(db.query(func.count(models.Host.id)).filter(*untouched_filter).scalar() or 0)
     tiers = [label for _, label in INVESTIGATE_TIERS]

@@ -411,3 +411,30 @@ export const getAgentActivitySummary = async (
   });
   return response.data;
 };
+
+// v2.426.0 — the Operations terrain: hosts by address block (/24, IPv6 /64),
+// counted by how far the team has taken them.  tested / planned / worked /
+// untouched are exclusive and add up to `hosts`.
+export interface TerrainBlock {
+  cidr: string;
+  hosts: number;
+  tested: number;
+  planned: number;
+  worked: number;
+  untouched: number;
+  critical: number;
+  critical_untouched: number;
+}
+
+export interface AddressTerrainResponse {
+  blocks: TerrainBlock[];
+  total_hosts: number;
+  unplaced_hosts: number;
+  truncated: boolean;
+}
+
+/** Rejects (503) when it could not be computed — never an empty map. */
+export const getAddressTerrain = async (signal?: AbortSignal): Promise<AddressTerrainResponse> => {
+  const response = await api.get(`${p()}/workbench/terrain`, { signal });
+  return response.data;
+};

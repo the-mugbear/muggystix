@@ -67,6 +67,7 @@ vi.mock('../../services/api', () => ({
   }),
   // 5.304.1 — "Worth a look" is its own request.
   getInvestigationQueue: vi.fn().mockResolvedValue({ items: [], queue_total: 0, untouched_total: 0, tiers: [] }),
+  getAddressTerrain: vi.fn().mockResolvedValue({ blocks: [], total_hosts: 0, unplaced_hosts: 0, truncated: false }),
   markWorkbenchSeen: vi.fn().mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' }),
   // MyActivityCard (replaces RecentNotesCard) self-fetches this.
   getMyActivity: vi.fn().mockResolvedValue({ items: [] }),

@@ -368,6 +368,8 @@ _HAS_KEYWORDS = {
                "Has had an agentic test executed against it."),
     "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.db, ctx.project_id),
                 "Appears in at least one test plan (planned, not necessarily tested yet)."),
+    "untouched": (lambda ctx: P.untouched_predicate(ctx.db),
+                  "Nobody has touched it yet: no review or assignment, note, test-plan entry or finding."),
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
                    "Has at least one open port."),
     "critical": (lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
