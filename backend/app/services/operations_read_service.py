@@ -383,6 +383,7 @@ _NEW_HOST_DAYS = 7
 
 def compute_investigation_queue(
     db: Session, project: Project, limit: int = 25, tier: Optional[int] = None,
+    offset: int = 0,
 ) -> InvestigationQueueResponse:
     """Hosts nobody has touched that carry an observed weakness or a
     relevant change — "what should I investigate next?" before anyone has
@@ -540,12 +541,14 @@ def compute_investigation_queue(
     ranked_rows = (
         # Most recently seen first within a tier; a host never seen last.
         ranked.order_by(counted.c.tier, counted.c.last_seen.desc().nullslast(), counted.c.hid)
+        .offset(max(0, offset))
         .limit(limit)
         .all()
     )
     totals_row = ranked_rows[0] if ranked_rows else None
-    if totals_row is None and tier is not None:
-        # The chosen tier is empty: the totals still describe the queue.
+    if totals_row is None and (tier is not None or offset):
+        # The chosen tier is empty, or the page is past the end: the totals
+        # still describe the queue.
         totals_row = db.query(counted).limit(1).first()
     queue_total = int(totals_row.queue_total) if totals_row else 0
     tier_counts = [

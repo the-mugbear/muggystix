@@ -15,7 +15,7 @@ from app.api.v1.endpoints import (
     # v2.64.0 — fourth agent surface: read-only interactive assist.
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
-    agent_assist, assist,
+    agent_assist, agent_assist_operations, assist,
     # MCP (Model Context Protocol) front door onto the assist surface — a
     # tools-only Streamable-HTTP JSON-RPC endpoint that loops back into the
     # `/agent/assist/*` endpoints in-process (auth/audit reused, no new dep).
@@ -125,6 +125,12 @@ api_router.include_router(
 )
 api_router.include_router(
     agent_assist.router, prefix="/agent", tags=["agent-assist"],
+    dependencies=_agent_operator_access,
+)
+# v2.428.0 — the Operations / Evidence / scan-compare reads, each wrapping the
+# service its page uses (agent_assist_operations.py).
+api_router.include_router(
+    agent_assist_operations.router, prefix="/agent", tags=["agent-assist"],
     dependencies=_agent_operator_access,
 )
 # MCP transport lives at /api/v1/mcp — unauthenticated at the FastAPI layer

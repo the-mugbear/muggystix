@@ -819,6 +819,94 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/patterns",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
+    # v2.428.0 — Operations, Evidence gaps and scan compare, each the SAME
+    # service its page uses (agent_assist_operations.py).
+    "assist_get_workbench": {
+        "description": (
+            "Your operator's Operations 'My work', as they see it: hosts they are "
+            "reviewing (my_queue), plan steps (my_tasks), note threads assigned to "
+            "them, findings they own, team review, follow-ups ('needs another "
+            "look'), blockers, and since_last_visit — scans, new and changed hosts, "
+            "new critical/high scanner observations since they last marked "
+            "Operations seen. Answers 'what's mine?' and 'what changed since I was "
+            "last here?'. Reading never marks anything seen. *_unavailable=true "
+            "means that section could not be computed — say so, never 'nothing'."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/workbench",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_list_worth_a_look": {
+        "description": (
+            "Operations' 'Worth a look' queue: hosts NOBODY has touched (no review, "
+            "note, plan entry or finding) that carry an observed weakness or a "
+            "relevant change, each with its reasons and next action, in stated "
+            "tier order (1 exploitable critical, 2 critical vulnerability, 3 "
+            "exploit available, 4 high-value service new/changed, 5 scans "
+            "disagree). queue_total and tier_counts cover the whole queue. The "
+            "answer to 'what should we look at next?'."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/workbench/investigate",
+        "query_params": ["tier", "limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "tier": {"type": "integer", "minimum": 1, "maximum": 5},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 100, "default": 25},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_evidence_gaps": {
+        "description": (
+            "The Evidence page's gap list: hosts an assessment domain applies to "
+            "that carry no evidence in it, the open ports that made each eligible, "
+            "and the step that closes the gap. domain is a key from "
+            "assist_get_coverage (e.g. vuln_assessment, web_tls, auth_smb_ad); "
+            "segment (optional) is a matrix column key from the same call. total "
+            "is exact. Respect scope_caution: hosts outside the declared scope "
+            "must be confirmed in scope first."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/evidence/gaps",
+        "query_params": ["domain", "segment", "limit"],
+        "defaults": {"limit": 50},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "domain": {"type": "string"},
+                "segment": {"type": "string"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
+            },
+            "required": ["domain"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_compare_scans": {
+        "description": (
+            "What changed between two scans (ids from assist_list_scans): hosts "
+            "new / gone / changed state, ports newly open, closed (observed "
+            "not-open) and not_observed (the later scan never looked — NOT "
+            "remediation). counts are exact; lists are capped at limit. Compare "
+            "scans of the same targets and tool, or the difference is coverage."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scans/compare",
+        "query_params": ["a", "b", "limit"],
+        "defaults": {"limit": 100},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "a": {"type": "integer", "description": "Baseline scan id"},
+                "b": {"type": "integer", "description": "Later scan id"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+            },
+            "required": ["a", "b"],
+            "additionalProperties": False,
+        },
+    },
     "assist_list_ingestion_issues": {
         "description": (
             "Uploads that failed, are still in flight, or parsed but dropped "

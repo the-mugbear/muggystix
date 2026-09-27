@@ -211,7 +211,7 @@ def test_seen_never_moves_past_now(client, test_project):
 def test_failed_investigation_queue_is_reported_unavailable(client, test_project, monkeypatch):
     """An empty queue reads as "every host has been touched by someone"; a
     queue that could not be computed must say so instead."""
-    from app.api.v1.endpoints import workbench
+    from app.services import workbench_service as workbench  # the composition (v2.428.0)
 
     ok = client.get(_url(test_project.id)).json()
     assert ok["investigate_unavailable"] is False
@@ -308,7 +308,7 @@ def test_viewing_a_reviewed_host_does_not_reset_changed_since_review(client, db_
 
 
 def test_failed_followups_are_reported_unavailable(client, test_project, monkeypatch):
-    from app.api.v1.endpoints import workbench
+    from app.services import workbench_service as workbench  # the composition (v2.428.0)
 
     def _boom(*args, **kwargs):
         raise RuntimeError("down")
