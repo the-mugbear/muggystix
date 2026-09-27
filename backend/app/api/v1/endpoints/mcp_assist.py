@@ -59,6 +59,7 @@ implement would send capable clients into a dead end.
 
 from __future__ import annotations
 
+import base64
 import json
 import logging
 import re
@@ -274,6 +275,43 @@ def _tool_text_result(text: str, *, is_error: bool = False) -> Dict[str, Any]:
     return {"content": [{"type": "text", "text": text}], "isError": is_error}
 
 
+# v2.428.0 — an image returned inline (``assist_get_image``).  Larger files are
+# refused with their download path: a multi-megabyte screenshot is better saved
+# to disk than spent as context.
+_MAX_INLINE_IMAGE_BYTES = 2 * 1024 * 1024
+
+
+def _tool_image_result(resp: "httpx.Response", path: str) -> Dict[str, Any]:
+    """An MCP ``image`` content block from a download endpoint's response.
+
+    Only an ``image/*`` body is returned inline; anything else, or anything over
+    ``_MAX_INLINE_IMAGE_BYTES``, is a tool error that names the download path,
+    so the agent can still save the file with its API key.
+    """
+    media_type = (resp.headers.get("content-type") or "").split(";")[0].strip().lower()
+    data = resp.content
+    if not media_type.startswith("image/"):
+        return _tool_text_result(
+            f"{path} is not an image ({media_type or 'no content type'}); download it "
+            "with the session's API key instead.",
+            is_error=True,
+        )
+    if len(data) > _MAX_INLINE_IMAGE_BYTES:
+        return _tool_text_result(
+            f"The image is {len(data):,} bytes, over the {_MAX_INLINE_IMAGE_BYTES:,} "
+            f"this tool returns inline. Download it from {path} with the session's "
+            "API key.",
+            is_error=True,
+        )
+    return {
+        "content": [
+            {"type": "text", "text": f"{media_type}, {len(data):,} bytes, from {path}"},
+            {"type": "image", "data": base64.b64encode(data).decode("ascii"), "mimeType": media_type},
+        ],
+        "isError": False,
+    }
+
+
 # ---------------------------------------------------------------------------
 # Loopback into the app's own assist endpoints
 # ---------------------------------------------------------------------------
@@ -369,7 +407,21 @@ async def _dispatch_tool(
 
     # Path params (e.g. host_id) -> substitute into the path template.
     path = spec["path"]
-    for pname in spec.get("path_params", ()):
+    path_params = tuple(spec.get("path_params", ()))
+    # v2.428.0 — a tool that reaches one of several endpoints, chosen by which
+    # id the caller passed (``assist_get_image``: an attachment or a
+    # screenshot).  Exactly one of them.
+    alternatives = spec.get("path_alternatives") or {}
+    if alternatives:
+        choices = (*path_params, *alternatives)
+        given = [p for p in choices if arguments.get(p) is not None]
+        if len(given) != 1:
+            return _tool_text_result(
+                f"Pass exactly one of: {', '.join(choices)}.", is_error=True
+            )
+        if given[0] in alternatives:
+            path, path_params = alternatives[given[0]], (given[0],)
+    for pname in path_params:
         value = arguments.get(pname)
         if value is None:
             if pname in auto:
@@ -419,6 +471,9 @@ async def _dispatch_tool(
         return _tool_text_result(
             f"Internal error dispatching tool {name}.", is_error=True
         )
+
+    if spec.get("result") == "image" and resp.status_code < 400:
+        return _tool_image_result(resp, path)
 
     text = resp.text
     if resp.status_code >= 400:

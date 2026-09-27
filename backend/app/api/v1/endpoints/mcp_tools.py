@@ -20,6 +20,11 @@ Each entry:
     auto_params  : arguments filled from the caller's own identity when omitted
     additive     : True iff the write only appends (drives destructive/idempotent
                    annotations)
+    path_alternatives : {arg: path} — other endpoints the tool may reach, chosen
+                   by which one id the caller passes (exactly one of path_params
+                   and these); v2.428.0, for assist_get_image
+    result       : "image" — the endpoint returns an image, handed back as an
+                   MCP image content block (v2.428.0)
 
 **``workflows`` is an entry-point affordance, not a security boundary.**  Hiding
 a tool from a key that cannot use it stops the model from trying a call whose
@@ -931,10 +936,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # No screenshot-download tool. Note attachments and EyeWitness web-interface
-    # captures both return image bytes, and the agent's job with an image is to
-    # save it next to the report, not read it into context. assist_get_finding
-    # and assist_get_host hand out the download paths to curl.
+    # v2.428.0 — images can be read inline with assist_get_image (below); the
+    # download paths assist_get_finding and assist_get_host hand out stay, for
+    # saving a file beside a report.
     "assist_get_finding": {
         "description": (
             "One finding with the evidence behind it — the note a human wrote "
@@ -946,9 +950,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "person or an agent wrote it (`actor_type`). Use this when writing "
             "a finding up: assist_list_findings gives you titles and "
             "severities, this gives you what to cite. Screenshots come back as "
-            "references (filename, size, download_path), not bytes — fetch "
-            "each from its download_path with the session's API key and save "
-            "it beside the report. scanner_evidence and execution_evidence say "
+            "references (filename, size, download_path): look at one with "
+            "assist_get_image, or save it beside a report from its download_path "
+            "with the session's API key. scanner_evidence and execution_evidence say "
             "whether a claim rests on a scanner's output or on a command a "
             "tester actually ran; state which, they are different assertions."
         ),
@@ -967,6 +971,109 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 },
             },
             "required": ["finding_id"],
+            "additionalProperties": False,
+        },
+    },
+    # v2.428.0 — the Findings hub's scanner-observations view and the Reports
+    # page (agent_assist_reporting.py), and images inline.
+    "assist_list_scanner_observations": {
+        "description": (
+            "Scanner results grouped by ISSUE across the project, most severe "
+            "first: title, severity, kind, sources, host_count and "
+            "judged_host_count (hosts a finding already covers), plus the "
+            "covering finding. Unjudged issues only unless include_judged. Use "
+            "for 'most widespread vulnerabilities' / 'what is not a finding yet'; "
+            "assist_list_observation_hosts lists one issue's hosts."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scanner-observations",
+        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "skip", "limit"],
+        "defaults": {"limit": 25},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "search": {"type": "string", "maxLength": 200},
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+                "kind": {"type": "string", "enum": ["misconfiguration", "vulnerability", "informational"]},
+                "include_judged": {"type": "boolean", "default": False},
+                "min_hosts": {"type": "integer", "minimum": 1, "default": 1},
+                "skip": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_observation_hosts": {
+        "description": (
+            "The hosts carrying one scanner issue (issue_key from "
+            "assist_list_scanner_observations), by address: ports, severity, and "
+            "whether a finding covers it on that host (judged, endpoint_status)."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scanner-observations/hosts",
+        "query_params": ["issue_key", "limit"],
+        "defaults": {"limit": 100},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "issue_key": {"type": "string", "minLength": 1, "maxLength": 600},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 5000, "default": 100},
+            },
+            "required": ["issue_key"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_list_client_reports": {
+        "description": (
+            "The project's client reports (the Reports page): drafts, then issued "
+            "reports by number — kind (full/addendum), status (draft, issued, "
+            "superseded), baseline / revision_of / superseded_by, issued_at, "
+            "files. Needs an auditor operator. assist_get_client_report for one."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/client-reports",
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    "assist_get_client_report": {
+        "description": (
+            "One client report and what it says: engagement details, executive "
+            "summary, counts, and every finding as the report states it (ref, "
+            "report text, affected endpoints, evidence attachment ids). An issued "
+            "report is its frozen text (content_source issued_snapshot); a draft "
+            "is what it would say now (draft_live). For 'what did we tell the "
+            "client', read the latest issued one. Files carry a download_path."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/client-reports/{report_id}",
+        "path_params": ["report_id"],
+        "input_schema": {
+            "type": "object",
+            "properties": {"report_id": {"type": "integer", "minimum": 1}},
+            "required": ["report_id"],
+            "additionalProperties": False,
+        },
+    },
+    "assist_get_image": {
+        "description": (
+            "Look at one image: a note/finding attachment (attachment_id, from "
+            "assist_get_finding or assist_get_client_report) or a web interface's "
+            "EyeWitness screenshot (interface_id, from assist_get_host). Returns "
+            "the image inline, up to 2 MB; larger ones answer with the download "
+            "path. Pass exactly one id."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/attachments/{attachment_id}",
+        "path_params": ["attachment_id"],
+        "path_alternatives": {
+            "interface_id": "/api/v1/agent/assist/web-interfaces/{interface_id}/screenshot",
+        },
+        "result": "image",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "attachment_id": {"type": "integer", "minimum": 1},
+                "interface_id": {"type": "integer", "minimum": 1},
+            },
             "additionalProperties": False,
         },
     },
