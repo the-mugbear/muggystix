@@ -1,3 +1,4 @@
+import { formatDate } from '../utils/relativeTime';
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { ArrowLeft } from 'lucide-react';
@@ -170,7 +171,7 @@ const PlanCard: React.FC<{ label: string; plan: TestPlanDetail }> = ({ label, pl
             <strong>{plan.entries.length}</strong> entries
           </span>
           <span>v{plan.version}</span>
-          <span>{new Date(plan.created_at).toLocaleDateString()}</span>
+          <span>{formatDate(plan.created_at)}</span>
         </div>
       </CardContent>
     </Card>

@@ -93,7 +93,8 @@ export function formatRelativeTime<F = string>(
   if (elapsed < justNowBelowMs || elapsed < 0) return 'just now';
 
   if (absoluteAfterDays !== undefined && elapsed >= absoluteAfterDays * 86_400_000) {
-    return new Date(then).toLocaleDateString();
+    // The one date format ("Sep 8, 2026"), not the locale's numeric default.
+    return new Date(then).toLocaleDateString(undefined, DATE_FORMAT);
   }
 
   const smallest = withSeconds ? 1_000 : 60_000;

@@ -2,6 +2,7 @@
  * /test-plans/:planId/plan — entries table with filters, sortable
  * columns, expandable detail rows.
  */
+import { formatTimestamp } from '../../utils/relativeTime';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import {
@@ -510,16 +511,16 @@ const PlanTab: React.FC = () => {
         <div className="flex flex-wrap items-center gap-md">
           {entry.started_at && (
             <span className="text-caption text-muted-foreground">
-              Started: {new Date(entry.started_at).toLocaleString()}
+              Started: {formatTimestamp(entry.started_at)}
             </span>
           )}
           {entry.completed_at && (
             <span className="text-caption text-muted-foreground">
-              Completed: {new Date(entry.completed_at).toLocaleString()}
+              Completed: {formatTimestamp(entry.completed_at)}
             </span>
           )}
           <span className="text-caption text-muted-foreground">
-            Created: {new Date(entry.created_at).toLocaleString()}
+            Created: {formatTimestamp(entry.created_at)}
           </span>
           <Button
             size="sm"

@@ -136,7 +136,7 @@ describe('HostFilterPopover', () => {
     await user.click(within(screen.getByRole('list', { name: 'Services' })).getByRole('checkbox', { name: /https/ }));
     expect(screen.getByRole('checkbox', { name: 'Any state' })).toBeChecked();
     expect(screen.getByRole('checkbox', { name: 'Open' })).toBeDisabled();
-    expect(screen.getByText(/Any state unless you choose otherwise/)).toBeInTheDocument();
+    expect(screen.getByText(/Counts follow the states ticked/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
     expect(onApply).toHaveBeenCalledWith({ sites: ['East'], ports: ['443'], services: ['https'], portStates: ['any'] });
   });

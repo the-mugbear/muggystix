@@ -68,7 +68,7 @@ import {
   DropdownMenuTrigger,
 } from '../components/ui/dropdown-menu';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../components/ui/select';
-import { formatRelativeTime } from '../utils/relativeTime';
+import { formatDate, formatRelativeTime } from '../utils/relativeTime';
 import ScanContribution from '../components/scans/ScanContribution';
 import ImportResult from '../components/scans/ImportResult';
 import UploadReviewDialog from '../components/scans/UploadReviewDialog';
@@ -1685,7 +1685,7 @@ export default function Scans() {
               </SelectTrigger>
               <SelectContent>
                 {sinceIso && (
-                  <SelectItem value="since">Since {new Date(sinceIso).toLocaleDateString()}</SelectItem>
+                  <SelectItem value="since">Since {formatDate(sinceIso)}</SelectItem>
                 )}
                 {DATE_RANGE_PRESETS.map((preset) => (
                   <SelectItem key={preset.label} value={preset.days == null ? 'all' : String(preset.days)}>

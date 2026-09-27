@@ -1,3 +1,4 @@
+import { formatDate } from '../../utils/relativeTime';
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Flag, ImagePlus, Loader2, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
@@ -271,7 +272,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
             {note.assignee_name && (
               <span>Assigned to <span className="font-medium text-foreground">{note.assignee_name}</span></span>
             )}
-            {note.due_at && <span>Due {new Date(note.due_at).toLocaleDateString()}</span>}
+            {note.due_at && <span>Due {formatDate(note.due_at)}</span>}
             {note.resolution_summary && (
               <div className="rounded-control border border-success/30 bg-success/5 p-xs text-foreground">
                 <span className="font-medium">Resolution: </span>

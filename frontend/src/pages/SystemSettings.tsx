@@ -1,3 +1,4 @@
+import { formatDate } from '../utils/relativeTime';
 import React, { useState, useEffect } from 'react';
 import {
   ShieldCheck,
@@ -110,7 +111,7 @@ const DateTimeCell: React.FC<{ value: string | null }> = ({ value }) => {
   }
   return (
     <span title={d.toLocaleString()}>
-      <span className="block whitespace-nowrap">{d.toLocaleDateString()}</span>
+      <span className="block whitespace-nowrap">{formatDate(d)}</span>
       <span className="block whitespace-nowrap text-caption text-muted-foreground">
         {d.toLocaleTimeString()}
       </span>

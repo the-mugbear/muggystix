@@ -14,6 +14,7 @@
  * at the end.  What the caller may change follows their role in the project
  * (`my_role` from the API) — the server enforces the same.
  */
+import { formatDate } from '../utils/relativeTime';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Trash2, UserPlus } from 'lucide-react';
@@ -79,7 +80,7 @@ export const PROJECT_STATUSES = [
   { value: 'archived', label: 'Archived' },
 ];
 
-const day = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : '—');
+const day = (s?: string | null) => formatDate(s);
 const memberName = (m: { full_name: string | null; username: string }) => m.full_name || m.username;
 
 interface Details { name: string; description: string; status: string; start: string; end: string }

@@ -64,7 +64,9 @@ describe('formatRelativeTime', () => {
     expect(formatRelativeTime(ago(29 * DAY), opts)).toBe('29d ago');
     const old = formatRelativeTime(ago(60 * DAY), opts);
     expect(old).not.toContain('ago');
-    expect(old).toBe(new Date(NOW - 60 * DAY).toLocaleDateString());
+    // The one date format ("Jun 20, 2026"), as formatDate prints it — not the
+    // locale's numeric "6/20/2026" (Test Plans' Created column showed that).
+    expect(old).toBe(formatDate(NOW - 60 * DAY));
   });
 
   it('honours a surface-specific "just now" threshold', () => {

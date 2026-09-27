@@ -5,6 +5,7 @@
  * the two on one page).  Deleting a project lives at the foot of that
  * project's settings, behind a typed-name confirmation.
  */
+import { formatDate } from '../utils/relativeTime';
 import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Plus } from 'lucide-react';
@@ -25,7 +26,7 @@ import {
 import { CharacterCount } from '../components/ui/character-count';
 import { PROJECT_NAME_MAX, PROJECT_STATUSES } from './ProjectSettings';
 
-const day = (s?: string | null) => (s ? new Date(s).toLocaleDateString() : null);
+const day = (s?: string | null) => (s ? formatDate(s) : null);
 const statusLabel = (s: string) => PROJECT_STATUSES.find((x) => x.value === s)?.label ?? s;
 
 const AllProjects: React.FC = () => {

@@ -461,8 +461,8 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
           </label>
         </div>
         <p className="px-xs text-caption text-muted-foreground break-words">
-          Any state unless you choose otherwise; counts follow the states ticked. For a closed or filtered
-          port, nmap names the service from the port number alone — tick Open for evidence it runs.
+          Counts follow the states ticked. For a closed or filtered port, nmap names the service from the
+          port number alone — tick Open for evidence it runs.
         </p>
       </fieldset>
       {otherStates.length > 0 && (

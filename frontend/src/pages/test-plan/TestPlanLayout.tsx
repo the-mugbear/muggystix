@@ -9,6 +9,7 @@
  * v3 alpha.14 IA split: /test-plans/:id/plan, /runs, /activity. Old
  * /test-plans/:id index redirects to /plan.
  */
+import { formatTimestamp } from '../../utils/relativeTime';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
@@ -911,8 +912,8 @@ const TestPlanLayout: React.FC = () => {
           <div className="flex flex-wrap gap-x-lg gap-y-sm">
             <PlanMetaItem label="Version" value={`v${plan.version}`} />
             <PlanMetaItem label="Author" value={plan.agent_name || plan.created_by_username} />
-            <PlanMetaItem label="Created" value={new Date(plan.created_at).toLocaleString()} />
-            <PlanMetaItem label="Last updated" value={new Date(plan.updated_at).toLocaleString()} />
+            <PlanMetaItem label="Created" value={formatTimestamp(plan.created_at)} />
+            <PlanMetaItem label="Last updated" value={formatTimestamp(plan.updated_at)} />
             <PlanMetaItem label="Agent tool" value={plan.generated_by_tool} fallback="not recorded" />
             <PlanMetaItem label="Model" value={plan.generated_by_model} fallback="not recorded" />
             <PlanMetaItem
@@ -921,13 +922,13 @@ const TestPlanLayout: React.FC = () => {
               fallback="not recorded"
             />
             {plan.approved_at && (
-              <PlanMetaItem label="Approved" value={new Date(plan.approved_at).toLocaleString()} />
+              <PlanMetaItem label="Approved" value={formatTimestamp(plan.approved_at)} />
             )}
             {plan.rejected_at && (
-              <PlanMetaItem label="Rejected" value={new Date(plan.rejected_at).toLocaleString()} />
+              <PlanMetaItem label="Rejected" value={formatTimestamp(plan.rejected_at)} />
             )}
             {plan.completed_at && (
-              <PlanMetaItem label="Completed" value={new Date(plan.completed_at).toLocaleString()} />
+              <PlanMetaItem label="Completed" value={formatTimestamp(plan.completed_at)} />
             )}
           </div>
 
@@ -1062,7 +1063,7 @@ const TestPlanLayout: React.FC = () => {
             <p className="font-semibold">New agent API key — copy now, shown only once.</p>
             {newApiKeyExpiresAt && (
               <p className="mt-xxs text-caption text-muted-foreground">
-                Expires {new Date(newApiKeyExpiresAt).toLocaleString()}.
+                Expires {formatTimestamp(newApiKeyExpiresAt)}.
               </p>
             )}
             <div className="mt-xs flex items-center gap-xs">
