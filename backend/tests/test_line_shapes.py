@@ -75,7 +75,9 @@ def test_netexec_reports_what_it_did_not_read(db_session, test_project, tmp_path
     assert by_shape["RDP <IP> 3389 <HOST> [*] Windows 10 (name:<VALUE>) (domain:<VALUE>) (nla:False)"] == ("text_only", 2)
     assert ("LDAP <IP> 389 <HOST> [*] Windows Server 2022 Build 20348 (name:<VALUE>) "
             "(domain:<VALUE>) (signing:None) (channel binding:Never)") in by_shape
-    assert by_shape["ZEROLOGON <IP> 445 <HOST> [+] VULNERABLE"] == ("module_as_login", 1)
+    # v2.428.4 — a module result is not a login unless it starts with a
+    # credential: "[+] VULNERABLE" was stored as a login by user "VULNERABLE".
+    assert by_shape["ZEROLOGON <IP> 445 <HOST> [+] VULNERABLE"] == ("module_as_text", 1)
     assert by_shape["MS17-010 <IP> 445 <HOST> [+] <HOST> is VULNERABLE to MS17-010"] == ("dropped", 1)
     assert receipt["total"] == 5
     assert not any("SMB" in s or "SSH" in s or "First time" in s for s in by_shape)

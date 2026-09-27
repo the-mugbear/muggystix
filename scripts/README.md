@@ -42,6 +42,7 @@ version tracking).
 - **`backup-db.sh`** - Back up the database: logical `pg_dump` (custom format), or a raw volume snapshot if Postgres is down. A logical dump carries the `pg_trgm` extension + all indexes. It also archives `uploads/` (evidence images, issued reports, screenshots) as `nm-uploads-<timestamp>.tar.gz`. Backups go to a sibling `<project>-db-backups` directory next to the project folder, so replacing the folder does not wipe them; override with `BACKUP_DIR=/path`.
 - **`restore-db.sh`** - Restore a `backup-db.sh` artifact — the database and its matching `uploads/` archive. It stops the app containers (keeping `db` up), takes a safety backup of the current database first (`--no-safety-backup` to skip) and checks the credential-encryption key matches (`--ignore-key-mismatch` to skip). The backend's boot-time `alembic upgrade head` then migrates the restored schema forward.
 - **`backfill_misconfigs.py`** - Record misconfiguration-catalog observations from evidence already stored, for imports made before v2.414.0. Idempotent. `docker compose exec backend python scripts/backfill_misconfigs.py [--project ID]`.
+- **`repair_netexec_results.py`** - Correct NetExec rows stored before v2.428.4: command and module results (`[-] ERROR(…)`, `[+] Executed command…`) stored as logins, and hosts named "None". A dry run unless `--apply`; it only clears, never re-attributes; idempotent. `docker compose exec backend python scripts/repair_netexec_results.py [--project ID] [--apply]`.
 - **`test-alembic-roundtrip.sh`** - Pre-release sanity check (run it locally — there is no hosted CI): spins up a throwaway Postgres and verifies every migration's `downgrade()` reverses cleanly (upgrade → downgrade → upgrade).
 - **`apply_scope_labels.py`** - Bulk-assign subnet labels to a project's scope from a CSV (CIDR column + label column). Runs inside the backend container, matches CIDRs to existing subnets, find-or-creates each label, and assigns it. Idempotent and **dry-run by default** (pass `--apply` to write):
   ```bash
@@ -122,6 +123,6 @@ docker compose restart backend db
 
 ## Script Dependencies
 
-- **Inside the backend container** (the seeds, `apply_scope_labels.py`, `backfill_misconfigs.py`): the running stack — `scripts/` is bind-mounted at `/app/scripts`.
+- **Inside the backend container** (the seeds, `apply_scope_labels.py`, `backfill_misconfigs.py`, `repair_netexec_results.py`): the running stack — `scripts/` is bind-mounted at `/app/scripts`.
 - **Stack management** (`deploy.sh`, `status.sh`, `backup-db.sh`, `restore-db.sh`, `upgrade-instance.sh`, `transfer-images.sh`, `test-alembic-roundtrip.sh`): Docker and Docker Compose on the host. `collect-logs.sh` also needs `python3`.
 - **Host-side helpers** (`trust-cert.sh`, `preflight.sh`, `rdap-lookup.py`, the certificate generators): neither the stack nor a database.

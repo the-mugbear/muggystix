@@ -67,6 +67,32 @@ _PASSWORD_ONLY_PROTOCOLS = {'vnc'}
 # "…"'), checked against NetExec main 2026-09-25.
 _ACTION_RESULTS = ('executed command', 'uploaded:', 'downloaded:', 'created file ', 'file "')
 
+# nxc prints this in the hostname column (and in "(name:…)") when the service
+# gave it no name — no name, not a host called "None" (v2.428.4).
+_NO_NAME = {'none', 'null', '-', ''}
+
+
+def _host_name(value: Optional[str], ip: Optional[str] = None) -> Optional[str]:
+    name = (value or '').strip()
+    if name.lower() in _NO_NAME or name == ip:
+        return None
+    return name
+
+
+def _is_credential(details: str) -> bool:
+    """Whether a "[+]" / "[-]" detail starts with a credential — ``user:pass``,
+    ``DOMAIN\\user[:pass]``, ``DOMAIN\\:`` (null session) — and so reports a
+    login.  Everything else on those lines is a command or module result:
+    ``[-] ERROR(MANTIS\\SQLEXPRESS): Line 1: …`` was stored as a failed login
+    by ``SQLEXPRESS)`` (v2.428.4, MCP acceptance feedback #12), ``[+] Dumped …``
+    as a login by a user named "Dumped …".  The first word decides: it carries
+    ``:`` or ``\\`` and no parenthesis."""
+    words = (details or '').split()
+    if not words:
+        return False
+    token = words[0]
+    return (':' in token or '\\' in token) and '(' not in token and ')' not in token
+
 
 def netexec_line_checks(
     protocol: Optional[str], line: str, *, username: Optional[str] = None,
@@ -415,7 +441,10 @@ class NetexecParser:
                 # v2.412.0 — "[+] Uploaded: …", "[+] Executed command" report
                 # an action, not a login (they were stored as logins by a user
                 # named "Uploaded"); they fall through to the plain line.
-                if match and not match.group(4).strip().lower().startswith(_ACTION_RESULTS):
+                if match and not match.group(4).strip().lower().startswith(_ACTION_RESULTS) and (
+                    match.group(1).lower() in _PASSWORD_ONLY_PROTOCOLS
+                    or _is_credential(match.group(4))
+                ):
                     host_data = self._parse_auth_success_line(match, line)
 
             # Try basic host pattern
@@ -538,7 +567,7 @@ class NetexecParser:
         return {
             'ip_address': ip,
             'port': int(port),
-            'hostname': name.strip(),
+            'hostname': _host_name(name, ip),
             'domain': domain.strip(),
             'os_name': os_info.strip(),
             'smb_signing': smb_signing,
@@ -566,7 +595,9 @@ class NetexecParser:
         """
         if not details:
             return None, None
-        identity = details.strip().split(':', 1)[0]  # drop password (+flags)
+        # The first word is the credential; drop the password (and anything
+        # after it). A Kerberos "DOMAIN\\user from ccache" has no password.
+        identity = details.strip().split(None, 1)[0].split(':', 1)[0]
         if '\\' in identity:
             domain, username = identity.split('\\', 1)
         else:
@@ -606,7 +637,7 @@ class NetexecParser:
         data = {
             'ip_address': ip,
             'port': int(port),
-            'hostname': hostname if hostname != ip else None,
+            'hostname': _host_name(hostname, ip),
             'protocol': protocol.lower(),
             # v2.413.0 — nxc prints a line only for a host whose service
             # answered (the "[*] RFB 3.8" / "[*] Banner:" line is that answer):
@@ -620,7 +651,9 @@ class NetexecParser:
         }
         # "[-] DOMAIN\user:pass STATUS_LOGON_FAILURE" is a failed login: a
         # login result, so it can clear an older guest success (v2.388.1).
-        if status.strip() == '-':
+        if status.strip() == '-' and (
+            protocol.lower() in _PASSWORD_ONLY_PROTOCOLS or _is_credential(details)
+        ):
             # The credential's domain is what was TRIED, not the host's own:
             # it is not written to the host.
             _domain, username = self._parse_credential(details)
