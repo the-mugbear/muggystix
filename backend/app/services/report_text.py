@@ -18,6 +18,26 @@ REPORT_TEXT_FIELDS = ("description", "impact", "recommendation", "references", "
 REPORT_TEXT_MAX = 32768
 
 
+def report_text_of(finding) -> dict:
+    """A finding's report text as the finding page and the agent's finding
+    detail both return it (v2.428.0): the Markdown fields, the CVSS vector and
+    score, and whether the vector decides the score (3.x / 2.0)."""
+    from app.services.cvss_service import CvssError, score_vector
+
+    from_vector = False
+    if finding.cvss_vector:
+        try:
+            from_vector = score_vector(finding.cvss_vector)[1] is not None
+        except CvssError:
+            from_vector = False
+    return {
+        **{f: getattr(finding, f) for f in REPORT_TEXT_FIELDS},
+        "cvss_vector": finding.cvss_vector,
+        "cvss_score": finding.cvss_score,
+        "cvss_score_from_vector": from_vector,
+    }
+
+
 def clip(value) -> Optional[str]:
     if value is None:
         return None

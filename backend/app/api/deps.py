@@ -601,10 +601,16 @@ AGENT_READ_ROLE_OVERRIDES = {
     ("GET", "/recon/hosts.ndjson"): ProjectRole.AUDITOR,
     ("GET", "/recon/live-hosts.txt"): ProjectRole.AUDITOR,
     ("GET", "/recon/web-targets.txt"): ProjectRole.AUDITOR,
-    # Evidence files. Individually small, but they are the artefacts a report
-    # cites, and the operator-facing equivalents sit behind the export gate.
-    ("GET", "/assist/attachments/{attachment_id}"): ProjectRole.AUDITOR,
-    ("GET", "/assist/web-interfaces/{interface_id}/screenshot"): ProjectRole.AUDITOR,
+    # v2.428.0 — evidence files (note attachments, EyeWitness screenshots) are
+    # NOT here any more: the UI serves both to a viewer
+    # (GET /hosts/notes/attachments/{id}, GET /hosts/web-interfaces/{id}/
+    # screenshot), so an AUDITOR floor left a viewer's agent holding
+    # references it could not open.  The rule is the UI's level, both ways.
+    #
+    # Ingestion Results is an analyst page (navigation + every /parse-errors
+    # route requires ANALYST); its agent reads were open to any member.
+    ("GET", "/assist/ingestion-issues"): ProjectRole.ANALYST,
+    ("GET", "/assist/uninterpreted-lines"): ProjectRole.ANALYST,
 }
 
 #: Everything else a member may read. Viewers can already see hosts, scans and
@@ -733,9 +739,9 @@ def enforce_agent_operator_access(
         raise HTTPException(
             status_code=403,
             detail=(
-                f"This key acts for a project {membership.role}. Bulk export of "
-                f"project data requires {required_read.value}, the same role the "
-                "equivalent report/export surface requires of a person."
+                f"This key acts for a project {membership.role}. This read "
+                f"requires {required_read.value}, the same role the equivalent "
+                "page or export requires of a person."
             ),
         )
     return agent

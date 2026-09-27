@@ -44,6 +44,15 @@ MATRIX = [
      {"analyst": True, "auditor": False, "viewer": False}),
     ("session metadata", "POST", "/api/v1/agent/tool-suggestions",
      {"analyst": True, "auditor": True, "viewer": True}),
+    # v2.428.0 — the agent read takes the UI page's level, both ways:
+    # Ingestion Results is an analyst page; evidence images are shown to a
+    # viewer (the gate lets the request through; the route then 404s).
+    ("analyst page read", "GET", "/api/v1/agent/assist/ingestion-issues",
+     {"analyst": True, "auditor": False, "viewer": False}),
+    ("evidence file", "GET", "/api/v1/agent/assist/attachments/999999",
+     {"analyst": True, "auditor": True, "viewer": True}),
+    ("screenshot file", "GET", "/api/v1/agent/assist/web-interfaces/999999/screenshot",
+     {"analyst": True, "auditor": True, "viewer": True}),
 ]
 
 

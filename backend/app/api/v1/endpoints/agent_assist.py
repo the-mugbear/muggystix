@@ -24,9 +24,9 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
-from sqlalchemy.orm import Session, aliased, joinedload, Query as SAQuery
+from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import get_db
 from app.db import models
@@ -58,7 +58,17 @@ from app.api.v1.endpoints.agent_common import (
     _batch_host_enrichment,
     load_agent_session,
 )
-from app.services import dns_name_service
+from app.services import dns_name_service, host_detail_service
+from app.services.attribution_correlation import attributions_for_host
+from app.services.host_assessment_service import host_assessment
+from app.services.host_query import WEAKNESS_LABELS, host_weakness_flags
+from app.services.host_serialization import (
+    note_load_options,
+    serialize_attribution,
+    serialize_cert_facts,
+    serialize_host_base,
+)
+from app.services.scope_coverage import host_scope_membership
 from app.services.host_query_common import escape_like
 from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_history import PROMPT_VERSION
@@ -202,6 +212,24 @@ def get_assist_context(
         if names_in_scope else 0
     )
 
+    # Who is on the engagement, with their project role — the Project
+    # settings page's member list.  One join; a project has tens of members.
+    members = [
+        {
+            "user_id": uid,
+            "username": username,
+            "full_name": full_name,
+            "role": role,
+        }
+        for uid, username, full_name, role in (
+            db.query(User.id, User.username, User.full_name, ProjectMembership.role)
+            .join(ProjectMembership, ProjectMembership.user_id == User.id)
+            .filter(ProjectMembership.project_id == project.id)
+            .order_by(User.username)
+            .all()
+        )
+    ]
+
     return {
         "prompt_version": PROMPT_VERSION,
         "session": {
@@ -216,7 +244,12 @@ def get_assist_context(
             "slug": project.slug,
             "description": project.description,
             "status": project.status,
+            # The engagement window as the Project settings page states it
+            # (null when not set) — the dates a report's period is taken from.
+            "start_date": project.start_date.isoformat() if project.start_date else None,
+            "end_date": project.end_date.isoformat() if project.end_date else None,
         },
+        "members": members,
         "totals": {
             "host_count": host_count,
             "up_host_count": up_count,
@@ -618,23 +651,124 @@ class AssistWebInterface(BaseModel):
     screenshot_download_path: Optional[str] = None
 
 
-class AssistHostDetail(HostDetail):
-    """Assist's host detail — ``HostDetail`` plus what the host is serving.
+class AssistScript(BaseModel):
+    """One NSE script result (port- or host-level), output bounded."""
+    script_id: str
+    output: Optional[str] = None
+    output_truncated: bool = False
 
-    A subclass rather than a field on the shared schema: ``HostDetail`` is also
+
+class AssistPortDetail(PortBrief):
+    """A port on assist host detail — ``PortBrief`` plus the NSE script output
+    the inspector shows under it (v2.428.0)."""
+    service_extrainfo: Optional[str] = None
+    scripts: List[AssistScript] = []
+    scripts_truncated: bool = False
+
+
+class AssistHostDetail(HostDetail):
+    """Assist's host detail — what the host inspector shows (v2.428.0).
+
+    A subclass rather than fields on the shared schema: ``HostDetail`` is also
     the recon/plan browse payload, and those workflows have no use for
-    screenshot download paths.
+    screenshot download paths or review state.  Every field below comes from
+    the code the inspector's ``GET /hosts/{id}`` uses (``host_detail_service``,
+    ``host_serialization``, ``scope_coverage``, ``host_assessment_service``,
+    ``host_query.host_weakness_flags``), so the two cannot state different facts.
     """
+    ports: List[AssistPortDetail] = []
     web_interfaces: List[AssistWebInterface] = []
     # v2.343.2 (review) — ``web_interfaces`` is capped at _WEB_INTERFACE_CAP;
     # without these an analyst read the sample as the complete record.
     web_interfaces_total: int = 0
     web_interfaces_truncated: bool = False
+    # --- v2.428.0: the inspector's facts ------------------------------------
+    state_reason: Optional[str] = None
+    os_generation: Optional[str] = None
+    os_type: Optional[str] = None
+    os_vendor: Optional[str] = None
+    os_accuracy: Optional[int] = None
+    mac_address: Optional[str] = None
+    mac_vendor: Optional[str] = None
+    netbios_name: Optional[str] = None
+    smb_signing: Optional[str] = Field(None, description="SMB signing: disabled / enabled / required, or null when no scan said.")
+    tags: List[Dict[str, Any]] = Field(default_factory=list, description="Tags on the host: {id, name, color}.")
+    assignees: List[Dict[str, Any]] = Field(default_factory=list, description="Who the host is assigned to: {user_id, name, assigned_at}.")
+    scope_membership: Dict[str, Any] = Field(default_factory=dict, description=(
+        "Which scope entries cover the host: coverage subnet/name/none, project_has_scope, "
+        "the covering subnets (site, labels) and in-scope names that resolve to it."
+    ))
+    assessment: Dict[str, Any] = Field(default_factory=dict, description=(
+        "Per assessment domain (observed, vulnerabilities, web/TLS, SMB/AD, tested): "
+        "when it was assessed, or not assessed / not applicable."
+    ))
+    weakness_flags: List[str] = Field(default_factory=list, description="The has: weakness flags this host matches (smb_unsigned, weak_tls, eol_os…).")
+    weakness_labels: Dict[str, str] = Field(default_factory=dict, description="Human label per weakness flag.")
+    cert_orgs: List[Dict[str, Any]] = Field(default_factory=list, description="Certificate subject organisations seen on its web services: {org, issuer, url}.")
+    cert_status: List[Dict[str, Any]] = Field(default_factory=list, description="Certificate expiry / self-signed per URL: {url, not_after, self_signed, subject_org}.")
+    attributions: List[Dict[str, Any]] = Field(default_factory=list, description="Network provenance (RDAP/prefix lists): cidr, org, ASN, country, cloud provider.")
+    host_scripts: List[AssistScript] = []
+    host_scripts_truncated: bool = False
+    conflict_count: int = Field(0, description="Recorded disagreements between scans on this host's fields.")
+    conflicts: List[Dict[str, Any]] = Field(default_factory=list, description=(
+        "Newest disagreements first: field, previous/new value and scan filename, current_value."
+    ))
+    conflicts_truncated: bool = False
+    note_count: int = Field(0, description="Notes on the host (read them with the host notes tool).")
+    finding_count: int = Field(0, description="Active findings with this host as a live endpoint.")
 
 
 #: Per host. Enough to characterise what a host serves without turning a host
 #: lookup into a page dump; `assist_list_hosts` with `has:web` finds the rest.
 _WEB_INTERFACE_CAP = 10
+#: NSE script output on host detail (v2.428.0).  Verbose scripts (ssl-enum-
+#: ciphers, http-headers) run to kilobytes each; a host with dozens of ports
+#: would otherwise turn one lookup into a page dump.  Per-script, per-owner
+#: and whole-response bounds, each stated by a ``*_truncated`` flag.
+_SCRIPT_OUTPUT_CAP = 1500
+_SCRIPTS_PER_OWNER = 10
+_SCRIPT_OUTPUT_BUDGET = 40_000
+#: Conflicts listed on host detail (host-level and port-level each);
+#: ``conflict_count`` is the whole number.
+_CONFLICT_CAP = 20
+
+
+class _ScriptBudget:
+    """Characters of script output left for this response."""
+    def __init__(self) -> None:
+        self.left = _SCRIPT_OUTPUT_BUDGET
+        self.exhausted = False
+
+
+def _assist_script(s, budget: _ScriptBudget) -> AssistScript:
+    out = s.output or ""
+    cap = min(_SCRIPT_OUTPUT_CAP, max(budget.left, 0))
+    if len(out) > cap and cap < _SCRIPT_OUTPUT_CAP:
+        budget.exhausted = True
+    text = out[:cap]
+    budget.left -= len(text)
+    return AssistScript(
+        script_id=s.script_id,
+        output=text or None,
+        output_truncated=len(out) > len(text),
+    )
+
+
+def _assist_port_detail(p, budget: _ScriptBudget) -> AssistPortDetail:
+    scripts = sorted(p.scripts or [], key=lambda s: s.script_id or "")
+    shown = [_assist_script(s, budget) for s in scripts[:_SCRIPTS_PER_OWNER]]
+    return AssistPortDetail(
+        id=p.id,
+        port_number=p.port_number,
+        protocol=p.protocol,
+        state=p.state,
+        service_name=p.service_name,
+        service_product=p.service_product,
+        service_version=p.service_version,
+        service_extrainfo=p.service_extrainfo,
+        scripts=shown,
+        scripts_truncated=len(scripts) > len(shown) or any(s.output_truncated for s in shown),
+    )
 #: Technology lists come from Wappalyzer and can run long on a CMS.
 _TECH_CAP = 12
 
@@ -868,7 +1002,11 @@ def get_assist_host(
     session = _load_assist_session(db, request)
     host = (
         db.query(models.Host)
-        .options(joinedload(models.Host.ports))
+        .options(
+            selectinload(models.Host.ports).selectinload(models.Port.scripts),
+            selectinload(models.Host.host_scripts),
+            selectinload(models.Host.tag_assignments).selectinload(models.HostTagAssignment.tag),
+        )
         .filter(
             models.Host.id == host_id,
             models.Host.project_id == session.project_id,
@@ -877,7 +1015,11 @@ def get_assist_host(
     )
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-    port_briefs = [PortBrief.model_validate(p) for p in host.ports]
+    budget = _ScriptBudget()
+    port_details = [
+        _assist_port_detail(p, budget)
+        for p in sorted(host.ports, key=lambda p: (p.port_number, p.protocol or ""))
+    ]
     open_count = sum(1 for p in host.ports if p.state == "open")
     _, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
@@ -908,7 +1050,53 @@ def get_assist_host(
     ) or 0
     web_interfaces = [_serialize_web_interface(w) for w in web_rows]
 
+    # v2.428.0 — the inspector's facts, from the code GET /hosts/{id} uses.
+    base = serialize_host_base(host, None, note_count=0)
+    operator = db.query(User).filter(User.id == session.started_by_id).first()
+    weakness_flags = (
+        host_weakness_flags(db, operator, session.project_id, [host.id]).get(host.id, [])
+        if operator is not None else []
+    )
+    conflicts = host_detail_service.host_conflict_history(
+        db, host, host_limit=_CONFLICT_CAP, port_limit=_CONFLICT_CAP,
+    )
+    conflict_count = host_detail_service.host_conflict_counts(db, [host.id]).get(host.id, 0)
+    note_count = (
+        db.query(func.count(models.Annotation.id))
+        .filter(models.Annotation.host_id == host.id)
+        .scalar()
+    ) or 0
+    host_scripts = [
+        _assist_script(s, budget)
+        for s in sorted(host.host_scripts, key=lambda s: s.script_id or "")[:_SCRIPTS_PER_OWNER]
+    ]
+
     return AssistHostDetail(
+        names=dns_name_service.observed_names_at_address(db, host.project_id, host.ip_address),
+        state_reason=base["state_reason"],
+        os_generation=base["os_generation"],
+        os_type=base["os_type"],
+        os_vendor=base["os_vendor"],
+        os_accuracy=base["os_accuracy"],
+        mac_address=base["mac_address"],
+        mac_vendor=base["mac_vendor"],
+        netbios_name=base["netbios_name"],
+        smb_signing=base["smb_signing"],
+        tags=base["tags"],
+        assignees=host_detail_service.host_assignees(db, host.id),
+        scope_membership=host_scope_membership(db, host),
+        assessment=host_assessment(db, host),
+        weakness_flags=weakness_flags,
+        weakness_labels={f: WEAKNESS_LABELS[f] for f in weakness_flags},
+        **serialize_cert_facts(host_detail_service.cert_web_interfaces(db, host.id)),
+        attributions=[serialize_attribution(a) for a in attributions_for_host(db, host.id)],
+        host_scripts=host_scripts,
+        host_scripts_truncated=len(host.host_scripts) > len(host_scripts) or budget.exhausted,
+        conflict_count=int(conflict_count),
+        conflicts=conflicts,
+        conflicts_truncated=int(conflict_count) > sum(1 for c in conflicts if c["object_type"] == "host"),
+        note_count=int(note_count),
+        finding_count=int(host_detail_service.active_finding_counts(db, [host.id]).get(host.id, 0)),
         id=host.id,
         ip_address=host.ip_address,
         hostname=host.hostname,
@@ -927,7 +1115,7 @@ def get_assist_host(
         if vc
         else None,
         follow=follow_map.get(host.id),
-        ports=port_briefs,
+        ports=port_details,
         web_interfaces=web_interfaces,
         web_interfaces_total=int(web_total),
         web_interfaces_truncated=int(web_total) > len(web_interfaces),
@@ -1231,15 +1419,100 @@ def _unfiltered(value: Optional[str]) -> Optional[str]:
     return value
 
 
+class AssistAttachment(BaseModel):
+    """An image attached to a note — a reference, never the bytes.
+
+    ``download_path`` is relative; join it to the BlueStick base URL the
+    session already uses and fetch it with the same ``X-API-Key``.  The bytes
+    stay out of the tool result deliberately: a base64 screenshot costs
+    thousands of tokens, and a report needs the file on disk beside it anyway.
+    """
+    id: int
+    filename: str
+    content_type: str
+    size_bytes: int
+    download_path: str
+    uploaded_by: Optional[str] = None
+    created_at: Optional[datetime] = None
+
+
+def _assist_attachment(a, uploader_names: Dict[int, str]) -> AssistAttachment:
+    """One attachment reference — shared by notes and finding evidence."""
+    return AssistAttachment(
+        id=a.id,
+        filename=a.filename,
+        content_type=a.content_type,
+        size_bytes=a.size_bytes,
+        download_path=f"/api/v1/agent/assist/attachments/{a.id}",
+        uploaded_by=uploader_names.get(a.uploaded_by_id),
+        created_at=a.created_at,
+    )
+
+
+def _uploader_names(db: Session, attachments) -> Dict[int, str]:
+    ids = {a.uploaded_by_id for a in attachments if a.uploaded_by_id}
+    if not ids:
+        return {}
+    return dict(db.query(User.id, User.username).filter(User.id.in_(ids)).all())
+
+
 class AssistNote(BaseModel):
+    """A note as the host inspector and the Collaboration feed show it
+    (v2.428.0: threads, triage state, attachments and the promoted finding —
+    built from ``host_serialization._serialize_note``, the UI's serializer)."""
     id: int
     body: str
     status: Optional[str] = None
     author: Optional[str] = None
+    author_name: Optional[str] = None
     # Agent-authored notes are stamped as such; a reader deserves to know
     # whether a colleague wrote this or an earlier agent did.
     actor_type: Optional[str] = None
     created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
+    # Threads: a reply names its parent and its thread root; a root has
+    # parent_id null.  Read a thread by grouping on thread_root_id.
+    parent_id: Optional[int] = None
+    thread_root_id: Optional[int] = None
+    note_type: Optional[str] = None
+    assignee: Optional[str] = None
+    due_at: Optional[datetime] = None
+    pinned: bool = False
+    resolution_summary: Optional[str] = None
+    # The finding this thread was promoted to, when it was.
+    finding_id: Optional[int] = None
+    attachments: List[AssistAttachment] = []
+
+
+def _assist_notes(db: Session, notes) -> List[AssistNote]:
+    """Serialize notes loaded with ``note_load_options()`` — one extra query
+    for the attachment uploaders, whatever the page size."""
+    from app.services.host_serialization import _serialize_note
+
+    uploaders = _uploader_names(db, [a for n in notes for a in (n.attachments or [])])
+    out = []
+    for n in notes:
+        ui = _serialize_note(n)
+        out.append(AssistNote(
+            id=n.id,
+            body=n.body,
+            status=n.status.value if hasattr(n.status, "value") else n.status,
+            author=n.author.username if n.author else None,
+            author_name=ui.author_name,
+            actor_type=n.actor_type,
+            created_at=n.created_at,
+            updated_at=n.updated_at,
+            parent_id=n.parent_id,
+            thread_root_id=n.thread_root_id,
+            note_type=n.note_type,
+            assignee=n.assignee.username if n.assignee else None,
+            due_at=n.due_at,
+            pinned=bool(n.pinned),
+            resolution_summary=n.resolution_summary,
+            finding_id=ui.finding_id,
+            attachments=[_assist_attachment(a, uploaders) for a in (n.attachments or [])],
+        ))
+    return out
 
 
 class AssistNotesPage(BaseModel):
@@ -1289,8 +1562,8 @@ def list_assist_host_notes(
         .scalar()
     ) or 0
     rows = (
-        db.query(models.Annotation, User.username)
-        .outerjoin(User, models.Annotation.user_id == User.id)
+        db.query(models.Annotation)
+        .options(*note_load_options())
         .filter(models.Annotation.host_id == host_id)
         .order_by(models.Annotation.created_at.desc(), models.Annotation.id.desc())
         .offset(offset)
@@ -1298,17 +1571,7 @@ def list_assist_host_notes(
         .all()
     )
     return AssistNotesPage(
-        items=[
-            AssistNote(
-                id=a.id,
-                body=a.body,
-                status=a.status.value if hasattr(a.status, "value") else a.status,
-                author=username,
-                actor_type=a.actor_type,
-                created_at=a.created_at,
-            )
-            for a, username in rows
-        ],
+        items=_assist_notes(db, rows),
         total=int(total),
         has_more=offset + len(rows) < int(total),
         limit=limit,
@@ -1697,15 +1960,14 @@ def list_assist_segments(
     )
 
 
-class AssistRecentNote(BaseModel):
-    id: int
+class AssistRecentNote(AssistNote):
     host_id: Optional[int] = None
     host_ip: Optional[str] = None
-    body: str
-    status: Optional[str] = None
-    author: Optional[str] = None
-    actor_type: Optional[str] = None
-    created_at: Optional[datetime] = None
+    # v2.428.0 — what the note is ON.  A note has exactly one target (host,
+    # port, finding, scan, scope, test plan or the project); before this only
+    # host notes said where they were, and a finding comment read as a note
+    # about nothing.  {kind, id, label}.
+    target: Optional[Dict[str, Any]] = None
 
 
 @router.get(
@@ -1753,8 +2015,12 @@ def list_assist_recent_notes(
 
     port_host = aliased(models.Host)
     q = (
-        db.query(models.Annotation, User.username, models.Host.ip_address)
-        .outerjoin(User, models.Annotation.user_id == User.id)
+        db.query(
+            models.Annotation, models.Host.ip_address,
+            Finding.title, models.Scan.filename, models.Scope.name, TestPlan.title,
+            models.Port.port_number, port_host.ip_address,
+        )
+        .options(*note_load_options())
         .outerjoin(models.Host, models.Annotation.host_id == models.Host.id)
         .outerjoin(Finding, models.Annotation.finding_id == Finding.id)
         .outerjoin(models.Scan, models.Annotation.scan_id == models.Scan.id)
@@ -1784,19 +2050,27 @@ def list_assist_recent_notes(
             q = q.filter(models.Annotation.user_id == row[0])
 
     rows = q.order_by(models.Annotation.created_at.desc()).limit(limit).all()
-    return [
-        AssistRecentNote(
-            id=a.id,
-            host_id=a.host_id,
-            host_ip=ip,
-            body=a.body,
-            status=a.status.value if hasattr(a.status, "value") else a.status,
-            author=username,
-            actor_type=a.actor_type,
-            created_at=a.created_at,
-        )
-        for a, username, ip in rows
-    ]
+    serialized = _assist_notes(db, [r[0] for r in rows])
+    out = []
+    for note, (a, ip, f_title, scan_name, scope_name, plan_title, port_no, port_ip) in zip(serialized, rows):
+        if a.host_id:
+            target = {"kind": "host", "id": a.host_id, "label": ip}
+        elif a.port_id:
+            target = {"kind": "port", "id": a.port_id, "label": f"{port_ip}:{port_no}" if port_ip else None}
+        elif a.finding_id:
+            target = {"kind": "finding", "id": a.finding_id, "label": f_title}
+        elif a.scan_id:
+            target = {"kind": "scan", "id": a.scan_id, "label": scan_name}
+        elif a.scope_id:
+            target = {"kind": "scope", "id": a.scope_id, "label": scope_name}
+        elif a.plan_id:
+            target = {"kind": "test_plan", "id": a.plan_id, "label": plan_title}
+        else:
+            target = {"kind": "project", "id": a.project_id, "label": None}
+        out.append(AssistRecentNote(
+            **note.model_dump(), host_id=a.host_id, host_ip=ip, target=target,
+        ))
+    return out
 
 
 @router.get(
@@ -2406,23 +2680,6 @@ def list_assist_ingestion_issues(
 # Finding detail — the evidence behind one finding (v2.294.0)
 # ---------------------------------------------------------------------------
 
-class AssistAttachment(BaseModel):
-    """An image attached to a note — a reference, never the bytes.
-
-    ``download_path`` is relative; join it to the BlueStick base URL the
-    session already uses and fetch it with the same ``X-API-Key``.  The bytes
-    stay out of the tool result deliberately: a base64 screenshot costs
-    thousands of tokens, and a report needs the file on disk beside it anyway.
-    """
-    id: int
-    filename: str
-    content_type: str
-    size_bytes: int
-    download_path: str
-    uploaded_by: Optional[str] = None
-    created_at: Optional[datetime] = None
-
-
 class AssistFindingNote(BaseModel):
     id: int
     body: str
@@ -2475,12 +2732,25 @@ class AssistFindingDetail(BaseModel):
     # Provenance for scanner- and execution-sourced findings.
     scanner_evidence: List[dict] = []
     execution_evidence: Optional[dict] = None
+    # --- v2.428.0: what the finding page shows beyond the evidence ---------
+    updated_at: Optional[datetime] = None
+    # Per-endpoint state counts (open / remediated / retest / false_positive):
+    # the finding's status is the issue's, an endpoint's is its own.
+    endpoint_status_counts: Dict[str, int] = {}
+    # What the client report says about the issue (Markdown), exactly as the
+    # finding page's report-text editor holds it.
+    report_text: Dict[str, Any] = {}
+    # The disposition trail, newest first: who changed the status, when,
+    # from what to what, and the justification they gave.
+    status_history: List[Dict[str, Any]] = []
 
 
 _FINDING_HOST_CAP = 100
+#: A finding's status changes are few; the cap only stops a pathological one.
+_STATUS_HISTORY_CAP = 100
 
 
-def _serialize_finding_note(note, attachments_by_note) -> "AssistFindingNote":
+def _serialize_finding_note(note, attachments_by_note, uploaders=None) -> "AssistFindingNote":
     return AssistFindingNote(
         id=note.id,
         body=note.body,
@@ -2490,15 +2760,7 @@ def _serialize_finding_note(note, attachments_by_note) -> "AssistFindingNote":
         actor_type=note.actor_type,
         created_at=note.created_at,
         attachments=[
-            AssistAttachment(
-                id=a.id,
-                filename=a.filename,
-                content_type=a.content_type,
-                size_bytes=a.size_bytes,
-                download_path=f"/api/v1/agent/assist/attachments/{a.id}",
-                uploaded_by=a.uploaded_by.username if a.uploaded_by else None,
-                created_at=a.created_at,
-            )
+            _assist_attachment(a, uploaders or {})
             for a in attachments_by_note.get(note.id, [])
         ],
     )
@@ -2610,12 +2872,12 @@ def get_assist_finding(
     if note_ids:
         for att in (
             db.query(models.NoteAttachment)
-            .options(joinedload(models.NoteAttachment.uploaded_by))
             .filter(models.NoteAttachment.annotation_id.in_(note_ids))
             .order_by(models.NoteAttachment.created_at)
             .all()
         ):
             attachments_by_note.setdefault(att.annotation_id, []).append(att)
+    uploaders = _uploader_names(db, [a for atts in attachments_by_note.values() for a in atts])
 
     # --- scanner / execution provenance ----------------------------------
     scanner_evidence: List[dict] = []
@@ -2663,7 +2925,37 @@ def get_assist_finding(
                 "output_truncated": len(res.raw_output or "") > 2000,
             }
 
+    # --- v2.428.0: report text, endpoint states, status history -----------
+    from app.db.models_findings import FindingStatusHistory
+    from app.services.report_text import report_text_of
+
+    endpoint_status_counts: Dict[str, int] = {}
+    for fh, _h, _n in host_rows:
+        endpoint_status_counts[fh.host_status] = endpoint_status_counts.get(fh.host_status, 0) + 1
+    status_history = [
+        {
+            "from_status": r.from_status,
+            "to_status": r.to_status,
+            "changed_by": r.changed_by.username if r.changed_by else None,
+            "changed_by_name": (r.changed_by.full_name or r.changed_by.username) if r.changed_by else None,
+            "summary": r.summary,
+            "created_at": r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in (
+            db.query(FindingStatusHistory)
+            .options(joinedload(FindingStatusHistory.changed_by))
+            .filter(FindingStatusHistory.finding_id == finding.id)
+            .order_by(FindingStatusHistory.created_at.desc(), FindingStatusHistory.id.desc())
+            .limit(_STATUS_HISTORY_CAP)
+            .all()
+        )
+    ]
+
     return AssistFindingDetail(
+        updated_at=finding.updated_at,
+        endpoint_status_counts=endpoint_status_counts,
+        report_text=report_text_of(finding),
+        status_history=status_history,
         id=finding.id,
         title=finding.title,
         severity=finding.severity,
@@ -2677,11 +2969,11 @@ def get_assist_finding(
         hosts=hosts,
         hosts_truncated=len(host_rows) > _FINDING_HOST_CAP,
         evidence_note=(
-            _serialize_finding_note(evidence_note, attachments_by_note)
+            _serialize_finding_note(evidence_note, attachments_by_note, uploaders)
             if evidence_note is not None else None
         ),
-        evidence_thread=[_serialize_finding_note(n, attachments_by_note) for n in evidence_replies],
-        comments=[_serialize_finding_note(n, attachments_by_note) for n in comment_notes],
+        evidence_thread=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in evidence_replies],
+        comments=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in comment_notes],
         scanner_evidence=scanner_evidence,
         execution_evidence=execution_evidence,
     )

@@ -397,26 +397,16 @@ def _issue_counts(db: Session, host_ids: List[int]) -> Dict[int, Dict[str, int]]
     return out
 
 
-def _host_conflict_counts(db: Session, host_ids: List[int]) -> Dict[int, int]:
-    """Canonical per-host data-conflict count → the number of HOST-level
-    ``ConflictHistory`` rows (each is a recorded disagreement where a later
-    scan's value displaced a prior value on one of the host's fields, e.g. one
-    scan said OS=Linux, another OS=Windows).
-
-    Single source of truth: BOTH the Hosts-list ``conflict_count`` badge and
-    the host-detail conflicts pane call this, so the two can no longer diverge.
-    They used to disagree (the list counted ``ConflictHistory`` rows while the
-    detail pane counted *confidence records* — a different table, including
-    port-level rows — so the same host showed e.g. 14 vs 12).
-    """
-    if not host_ids:
-        return {}
-    return dict(
-        db.query(ConflictHistory.host_id, func.count(ConflictHistory.id))
-        .filter(ConflictHistory.host_id.in_(host_ids))
-        .group_by(ConflictHistory.host_id)
-        .all()
-    )
+# v2.428.0 — the host-detail facts moved to app/services/host_detail_service.py
+# so the agent's host detail states the same numbers; same names kept here for
+# the endpoints and their tests.
+from app.services.host_detail_service import (  # noqa: E402
+    active_finding_counts as _active_finding_counts,
+    cert_web_interfaces as _cert_web_interfaces,
+    host_assignees as _host_assignees,
+    host_conflict_counts as _host_conflict_counts,
+    host_conflict_history as _host_conflict_history,
+)
 
 
 # v2.347.0 — the "changed at its latest scan" derivation moved to
@@ -747,23 +737,7 @@ def get_hosts_v2(
     # own endpoint is live: a host dismissed as a false positive (or recorded
     # remediated) on a finding kept counting it (review 2026-09-23 R7).  One
     # grouped query for the page — not N+1.
-    finding_count_map: Dict[int, int] = {}
-    if host_ids:
-        from app.db.models_findings import (
-            ACTIVE_FINDING_STATUSES, Finding, FindingHost, finding_active_on_host,
-        )
-        for hid, cnt in (
-            db.query(FindingHost.host_id, func.count(func.distinct(Finding.id)))
-            .join(Finding, Finding.id == FindingHost.finding_id)
-            .filter(
-                FindingHost.host_id.in_(host_ids),
-                Finding.status.in_(ACTIVE_FINDING_STATUSES),
-                finding_active_on_host(),
-            )
-            .group_by(FindingHost.host_id)
-            .all()
-        ):
-            finding_count_map[hid] = cnt
+    finding_count_map: Dict[int, int] = _active_finding_counts(db, host_ids)
 
     # "Changed since last scan" — host ids whose most-recent scan flipped state
     # or added a port vs the prior scan. Batched window-function query.
@@ -1487,32 +1461,6 @@ def get_hosts_by_scan_v2(
     return hosts
 
 
-def _host_assignees(db: Session, host_id: int) -> list:
-    """Assignees for a single host — the detail-endpoint equivalent of the
-    list endpoint's batched ``assignee_map``.  A ``HostFollow`` with a non-null
-    ``assigned_at`` means the host is assigned to that user."""
-    rows = (
-        db.query(
-            HostFollow.user_id,
-            HostFollow.assigned_at,
-            HostFollow.assigned_by_id,
-            User.username,
-            User.full_name,
-        )
-        .join(User, HostFollow.user_id == User.id)
-        .filter(HostFollow.host_id == host_id, HostFollow.assigned_at.isnot(None))
-        .all()
-    )
-    return [
-        {
-            "user_id": uid,
-            "name": full_name or username,
-            "assigned_at": assigned_at,
-            "assigned_by_id": assigned_by_id,
-        }
-        for uid, assigned_at, assigned_by_id, username, full_name in rows
-    ]
-
 
 @router.get("/{host_id:int}", response_model=HostSchema)
 def get_host_v2(
@@ -1618,30 +1566,9 @@ def get_host_v2(
         attributions=attributions_for_host(db, host.id),
         vuln_coverage=issue_coverage_map(db, project.id, host_vulnerabilities, host_id=host.id),
         vulnerabilities=host_vulnerabilities,
-        # Queried by host_id rather than through a relationship — Host has no
-        # `web_interfaces` relationship (it lives on Scan), which is why the
-        # certificate-org half of the ProvenanceCard was always empty.
-        # v2.244.0 — widened from `cert_subject_org IS NOT NULL`. That filter
-        # was right for the org half but wrong for expiry: a DV certificate
-        # (Let's Encrypt et al.) carries no organizationName at all, so every
-        # such host was dropped before the expiry/self-signed fields could be
-        # read — and DV is the common case on the public internet. Now any row
-        # carrying ANY certificate fact qualifies, and the serializer decides
-        # which list each row belongs in.
-        cert_web_interfaces=(
-            db.query(models.WebInterface)
-            .filter(
-                models.WebInterface.host_id == host_id,
-                or_(
-                    models.WebInterface.cert_subject_org.isnot(None),
-                    models.WebInterface.cert_not_after.isnot(None),
-                    models.WebInterface.cert_self_signed.isnot(None),
-                ),
-            )
-            .order_by(models.WebInterface.last_seen.desc().nullslast())
-            .limit(5)
-            .all()
-        ),
+        # Any row carrying ANY certificate fact; the serializer decides which
+        # list each row belongs in (see host_detail_service.cert_web_interfaces).
+        cert_web_interfaces=_cert_web_interfaces(db, host_id),
     )
     # v2.12.0: per-host count of web interfaces (httpx / eyewitness /
     # nikto rows).  HostDetail.tsx uses this to gate the "Web
@@ -1720,20 +1647,6 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
         models.Port.host_id == host_id
     ).all()
 
-    # Get conflict history for this host
-    host_conflicts = db.query(ConflictHistory).filter(
-        ConflictHistory.host_id == host_id
-    # 100, not 10: ``conflict_count`` counts every host-level row, and a badge
-    # reading "14 conflicts" over a list of 10 is a count its drill-down
-    # cannot account for.
-    ).order_by(ConflictHistory.resolved_at.desc()).limit(100).all()
-
-    # Get conflict history for ports of this host
-    port_ids = db.query(models.Port.id).filter(models.Port.host_id == host_id).scalar_subquery()
-    port_conflicts = db.query(ConflictHistory).filter(
-        ConflictHistory.port_id.in_(port_ids)
-    ).order_by(ConflictHistory.resolved_at.desc()).limit(10).all()
-
     # Format response
     confidence_data = []
 
@@ -1768,48 +1681,9 @@ def get_host_conflicts(host_id: int, db: Session = Depends(get_db), project: Pro
             'port_id': conf.port_id
         })
 
-    # Format conflict history.  The storage is now host_id/port_id FKs; the
-    # response keeps the object_type/object_id shape (derived) so the API
-    # contract — and the frontend that reads it — is unchanged.
-    # v2.367.0 — what the panel needs to STATE a disagreement instead of
-    # pointing at scan ids: each scan's filename, and the value the host holds
-    # today (a conflict is recorded whether or not the reported value was
-    # adopted, so "previous → new" alone does not say which one won).
-    _scan_ids = {
-        sid for c in host_conflicts + port_conflicts
-        for sid in (c.previous_scan_id, c.new_scan_id) if sid is not None
-    }
-    _scan_names = dict(
-        db.query(models.Scan.id, models.Scan.filename)
-        .filter(models.Scan.id.in_(_scan_ids)).all()
-    ) if _scan_ids else {}
-    _host_fields = {'state', 'os_name', 'hostname'}
-
-    conflicts = []
-    for conflict in host_conflicts + port_conflicts:
-        _is_host = conflict.host_id is not None
-        _current = (
-            getattr(host, conflict.field_name, None)
-            if _is_host and conflict.field_name in _host_fields else None
-        )
-        conflicts.append({
-            'previous_scan_filename': _scan_names.get(conflict.previous_scan_id),
-            'new_scan_filename': _scan_names.get(conflict.new_scan_id),
-            'current_value': str(_current) if _current is not None else None,
-            'id': conflict.id,
-            'object_type': 'host' if _is_host else 'port',
-            'object_id': conflict.host_id if _is_host else conflict.port_id,
-            'field_name': conflict.field_name,
-            'previous_value': conflict.previous_value,
-            'previous_confidence': conflict.previous_confidence,
-            'previous_scan_id': conflict.previous_scan_id,
-            'previous_method': conflict.previous_method,
-            'new_value': conflict.new_value,
-            'new_confidence': conflict.new_confidence,
-            'new_scan_id': conflict.new_scan_id,
-            'new_method': conflict.new_method,
-            'resolved_at': conflict.resolved_at.isoformat() if conflict.resolved_at else None
-        })
+    # Conflict history — the object_type/object_id shape the panel reads,
+    # assembled by the shared service (the agent host detail uses it too).
+    conflicts = _host_conflict_history(db, host)
 
     return {
         "conflict_count": _host_conflict_counts(db, [host_id]).get(host_id, 0),
