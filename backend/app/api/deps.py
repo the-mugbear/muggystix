@@ -611,6 +611,10 @@ AGENT_READ_ROLE_OVERRIDES = {
     # route requires ANALYST); its agent reads were open to any member.
     ("GET", "/assist/ingestion-issues"): ProjectRole.ANALYST,
     ("GET", "/assist/uninterpreted-lines"): ProjectRole.ANALYST,
+    # v2.428.0 — the Reports page (client_reports router) is AUDITOR.
+    ("GET", "/assist/client-reports"): ProjectRole.AUDITOR,
+    ("GET", "/assist/client-reports/{report_id}"): ProjectRole.AUDITOR,
+    ("GET", "/assist/client-reports/{report_id}/files/{fmt}"): ProjectRole.AUDITOR,
 }
 
 #: Everything else a member may read. Viewers can already see hosts, scans and

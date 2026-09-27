@@ -28,10 +28,10 @@ Every tool is text in the model's context on every session.
 
 | | tools | payload |
 |---|---|---|
-| The catalogue — what EVERY session sees | 57 | ~51 KB (~13k tokens) |
-| of which `assist_*` | 26 (23 reads + 3 writes) | — |
+| The catalogue — what EVERY session sees | 67 | ~62 KB (~15k tokens) |
+| of which `assist_*` | 36 (33 reads + 3 writes) | — |
 
-*(Measured at v2.427.0 via `tool_list_payload()`, not estimated; tokens ≈ bytes/4.)*
+*(Measured at v2.428.0 via `tool_list_payload()`, not estimated; tokens ≈ bytes/4.)*
 
 **This constraint got tighter, not looser, in v2.337.0.** When this was first
 written a session saw only its own workflow's tools (27 for assist, ~22 KB of a
@@ -235,18 +235,23 @@ an agent can list findings and read per-host notes, but cannot reach the
 evidence attached to a specific finding, which is precisely the material a
 write-up cites.
 
-**Screenshots are references, not payloads.** The tool returns filename, media
-type, size and a `download_path`; the agent downloads what it needs to its
-working directory and references the file from the report. Base64 in a tool
-result would spend thousands of tokens on an image the model cannot usefully
-read anyway, and the finished report needs a *file on disk* next to it
-regardless.
+**Screenshots are references, and — since v2.428.0 — optionally payloads.** The
+tool returns filename, media type, size and a `download_path`; the agent
+downloads what it needs to its working directory and references the file from
+the report, which needs a *file on disk* next to it regardless. Until v2.428.0
+images were refused as tool results on the grounds that base64 spends thousands
+of tokens "on an image the model cannot usefully read" — that reason no longer
+holds (current models read images), so `assist_get_image` returns one as MCP
+image content: opt-in, one image per call, capped at 2 MB inline, looping back
+through the same download routes so role, scope and audit are unchanged. The
+token cost is real, which is why it is a separate call and never inlined into
+`assist_get_finding` or `assist_get_host`.
 
 `GET /agent/assist/attachments/{id}` is that download, and it exists because the
 operator-facing equivalent under `/projects/...` requires a JWT — an agent has a
 key, not a session. It is project-scoped and path-checked against the
-attachments root, and deliberately **not** an MCP tool: it returns an image, and
-the agent's job with it is to save it, not to read it into context.
+attachments root. It is not itself an MCP tool (it returns bytes to save);
+`assist_get_image` is the MCP way to look at one.
 
 Web-interface screenshots (EyeWitness) are a second, separate store
 (`web_interfaces.screenshot_path`), and got the same treatment in 2.297.0:
@@ -280,7 +285,7 @@ prompt 1.56.0), as **one** new tool rather than three:
    returns each interface (url, title, server banner, technologies) with a
    `screenshot_download_path`; `GET /assist/web-interfaces/{id}/screenshot`
    serves the PNG to a key-authenticated caller. Same contract as note
-   attachments: a path to curl, never bytes in a tool result.
+   attachments: a path to save; `assist_get_image` (v2.428.0) shows one inline.
 
 **P3 — needs design, not a wrapper.**
 
@@ -292,8 +297,23 @@ prompt 1.56.0), as **one** new tool rather than three:
    (review-rule case 1). What is still uncomputed is a project-level delta
    summary.
 
-The read surface is **23 `assist_*` reads** (26 `assist_*` tools with the
-three writes) inside a 57-tool catalogue. Two of
+**P4 — parity with the pages. ✅ Shipped in 2.428.0** (prompt 2.11.0). A review
+asked whether an agent could answer every question a person answers from the
+app; it could not. Ten tools, each wrapping the service its page uses (rule 3):
+`assist_get_workbench`, `assist_list_worth_a_look`, `assist_get_terrain`
+(Operations), `assist_list_evidence_gaps` (Evidence), `assist_compare_scans`
+(item 8's scan-to-scan delta), `assist_list_scanner_observations` +
+`assist_list_observation_hosts` (the Findings page's issue view),
+`assist_list_client_reports` + `assist_get_client_report` (Reports), and
+`assist_get_image`. The rest was payload, not tools: context gained the
+engagement dates and members; host detail the inspector's fields (names — which
+had always been empty — tags, assignees, scope membership, assessment, weakness
+labels, certificates, NSE output, conflicts); notes their threads, assignee,
+attachments and targets; a finding its report text and status history. Read
+roles now equal the page's.
+
+The read surface is **33 `assist_*` reads** (36 `assist_*` tools with the
+three writes) inside a 67-tool catalogue. Two of
 the three P2 items turned out not to be tools at all: one folded into an
 existing endpoint, one is a payload field plus a download. With the
 per-workflow filter gone there is no longer an "assist budget" to stay under —

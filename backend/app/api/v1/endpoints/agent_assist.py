@@ -647,7 +647,7 @@ class AssistWebInterface(BaseModel):
     # v2.343.2 — the list above is capped at _TECH_CAP; say so when it is.
     technologies_truncated: bool = False
     #: Present only when EyeWitness captured a PNG.  Same contract as note
-    #: attachments: a path to curl to disk, never bytes in a tool result.
+    #: attachments: a path to save to disk; ``assist_get_image`` shows it inline.
     screenshot_download_path: Optional[str] = None
 
 
@@ -2991,9 +2991,9 @@ def download_assist_attachment(
 ):
     """Serve the bytes behind an attachment reference.
 
-    v2.294.0.  Deliberately NOT an MCP tool — it returns an image, and the
-    agent's job with it is to save it next to the report, not to read it into
-    context.  ``assist_get_finding`` hands out the paths; this is what those
+    v2.294.0.  ``assist_get_finding`` hands out the paths (to save beside a
+    report); since v2.428.0 the ``assist_get_image`` MCP tool loops back here to
+    show one inline, so role, scope and audit stay at this route; this is what those
     paths resolve to for a key-authenticated caller (the operator-facing
     equivalent under ``/projects/...`` requires a JWT, which an agent does not
     have).
@@ -3042,9 +3042,8 @@ def download_assist_web_screenshot(
     separate store (``web_interfaces.screenshot_path``). A write-up showing
     what an exposed admin panel actually looks like usually wants this one.
 
-    Also not an MCP tool, for the same reason: it returns a PNG, and the
-    agent's job is to save it beside the report. ``assist_get_host`` hands out
-    the paths.
+    ``assist_get_host`` hands out the paths; ``assist_get_image`` (v2.428.0)
+    loops back here to show one inline.
 
     Project-scoped and path-checked against the screenshot root, mirroring the
     operator-facing route (which requires a JWT an agent does not have).

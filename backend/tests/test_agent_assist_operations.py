@@ -289,3 +289,7 @@ def test_the_mcp_tools_round_trip(client, db_session, test_project):
     diff = call("assist_compare_scans", {"a": scan.id, "b": other.id}, rid=5)
     assert diff["isError"] is False, diff
     assert diff["structuredContent"]["row_cap"] == 100  # the MCP default page
+
+    terrain = call("assist_get_terrain", {"sort": "untouched", "limit": 1}, rid=6)
+    assert terrain["isError"] is False, terrain
+    assert len(terrain["structuredContent"]["blocks"]) <= 1

@@ -21,6 +21,29 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.11.0",
+        "app_version": "2.428.0",
+        "summary": (
+            "Agent parity with the pages: an agent can now answer what a person "
+            "reads in the app. New assist reads (and MCP tools): the Operations "
+            "workbench (assist_get_workbench, assist_list_worth_a_look, "
+            "assist_get_terrain), Evidence gaps (assist_list_evidence_gaps), "
+            "scan compare (assist_compare_scans), scanner observations by issue "
+            "(assist_list_scanner_observations, assist_list_observation_hosts), "
+            "client reports (assist_list_client_reports, "
+            "assist_get_client_report; auditor) and assist_get_image, which "
+            "shows an evidence image inline — images are no longer refused as "
+            "tool results. Existing reads carry what their pages show: context "
+            "has the engagement dates and members; host detail has names (it "
+            "was always empty), tags, assignees, scope membership, assessment, "
+            "weakness labels, certificates, NSE script output and conflicts; "
+            "notes have threads, assignee, attachments and targets; a finding "
+            "has its report text and status history. Roles follow the pages: "
+            "evidence files any member, ingestion issues and uninterpreted "
+            "lines analyst. The guide's assist table and recipes cover them."
+        ),
+    },
+    {
         "version": "2.10.0",
         "app_version": "2.427.1",
         "summary": (

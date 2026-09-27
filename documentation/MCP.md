@@ -76,7 +76,13 @@ What that takes, beyond "which hosts match X":
 | "What has the team been working on?" | `assist_list_recent_notes` (`status=open` = outstanding work) |
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
-| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshots |
+| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history; `assist_get_image` to look at one |
+| "What's worth a look? What's mine? What changed since I was last here?" | `assist_list_worth_a_look` · `assist_get_workbench` (v2.428.0) |
+| "Which ranges has nobody touched?" | `assist_get_terrain` |
+| "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
+| "What changed between these two scans?" | `assist_compare_scans` |
+| "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
+| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) |
 
 Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
@@ -123,7 +129,7 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (57 tools, about 51 KB / ~13k tokens as
+Every session sees the WHOLE catalogue (67 tools, about 62 KB / ~15k tokens as
 `tools/list` returns it) — nothing is filtered by workflow since v2.337.0.
 Eight of those belong to the session rather than to any phase:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
@@ -145,10 +151,11 @@ execution, a write your role does not allow).
 `assist/attachments/{id}` and `POST recon/upload` are file-shaped: they belong
 on disk, not materialised into a model's context. A 40k-host target list read
 through a tool call is the same data, minus the ability to pipe it into the next
-scanner, plus the token bill. A screenshot is worse — base64 in a tool result
-costs thousands of tokens for an image the model cannot show anyone, and the
-report needs the file on disk beside it regardless, which is why
-`assist_get_finding` hands out `download_path` references rather than bytes.
+scanner, plus the token bill. Images are the exception since v2.428.0: to look
+at one, `assist_get_image` returns it as MCP image content (opt-in, one per call,
+2 MB cap, through the same download routes); to put one in a report, the
+`download_path` references from `assist_get_finding` / `assist_get_host` save
+the file beside it.
 The server `instructions` point at the NDJSON and target lists and the upload
 with `curl`; attachment paths come back in `assist_get_finding`'s
 `download_path`.

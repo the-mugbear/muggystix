@@ -876,6 +876,26 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_get_terrain": {
+        "description": (
+            "The Operations terrain as numbers: per /24 (IPv6 /64), hosts tested / "
+            "planned / worked / untouched (exclusive, adding up to hosts), plus "
+            "critical and critical_untouched. Answers 'which ranges has nobody "
+            "touched?'. sort=untouched or critical_untouched puts the neglected "
+            "blocks first."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/workbench/terrain",
+        "query_params": ["sort", "limit"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "sort": {"type": "string", "enum": ["address", "untouched", "critical_untouched"], "default": "address"},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+            },
+            "additionalProperties": False,
+        },
+    },
     "assist_list_evidence_gaps": {
         "description": (
             "The Evidence page's gap list: hosts an assessment domain applies to "

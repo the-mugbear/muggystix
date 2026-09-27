@@ -17,7 +17,7 @@ page cannot disagree on a number (ASSIST_TOOLS.md, review rule 3).
 
 Mounted under ``/agent`` with the same ``enforce_agent_operator_access`` gate
 as every agent router; the client-report routes also take the Reports page's
-floor, AUDITOR (``_require_operator_role``).
+floor, AUDITOR (``deps.AGENT_READ_ROLE_OVERRIDES``).
 """
 from __future__ import annotations
 
@@ -34,7 +34,6 @@ from app.api.v1.endpoints.agent_assist import _load_assist_session
 # page shows, field for field.
 from app.api.v1.endpoints.client_reports import _load, _serialize, report_file_response
 from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
-from app.core.security import check_permissions
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
 from app.db.models_reports import Report, ReportStatus
@@ -54,27 +53,6 @@ def _operator_role(request: Request) -> Optional[str]:
     role = getattr(request.state, "key_operator_role", None)
     return getattr(role, "value", role)
 
-
-def _require_operator_role(required: ProjectRole):
-    """A read floor above the gate's default (VIEWER), for routes whose page
-    needs more.  Runs after the router-level gate, which has already resolved
-    the operator; the refusal reads like the gate's own."""
-    def _check(request: Request) -> None:
-        role = _operator_role(request)
-        # No resolvable operator: the gate lets reads through for a key whose
-        # operator account was deleted (the audit trail is kept); follow it.
-        if role is None and not hasattr(request.state, "key_operator_role"):
-            return
-        if not role or not check_permissions(role, required.value):
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    f"This key acts for a project {role}. Reading client reports "
-                    f"requires {required.value}, the same role the Reports page "
-                    "requires of a person."
-                ),
-            )
-    return _check
 
 
 # ---------------------------------------------------------------------------
@@ -133,7 +111,6 @@ def list_assist_scanner_observation_hosts(
 # Client reports — the Reports page
 # ---------------------------------------------------------------------------
 
-_report_floor = [Depends(_require_operator_role(ProjectRole.AUDITOR))]
 
 
 class AssistReportFile(ReportFileOut):
@@ -190,7 +167,6 @@ def _files_path(report_id: int, fmt: str) -> str:
     "/assist/client-reports",
     response_model=AssistClientReportList,
     summary="The project's client reports — drafts first, then issued ones by number",
-    dependencies=_report_floor,
 )
 def list_assist_client_reports(
     request: Request,
@@ -224,7 +200,6 @@ class _ProjectRef:
     "/assist/client-reports/{report_id}",
     response_model=AssistClientReport,
     summary="One client report: its details, and every finding as the report states it",
-    dependencies=_report_floor,
 )
 def get_assist_client_report(
     request: Request,
@@ -267,7 +242,6 @@ def get_assist_client_report(
 @router.get(
     "/assist/client-reports/{report_id}/files/{fmt}",
     summary="Download one rendered file of a client report (html, docx, qmd)",
-    dependencies=_report_floor,
 )
 def download_assist_client_report_file(
     request: Request,

@@ -120,8 +120,10 @@ backend/app/
 │       ├── agent_execution.py     # /agent/* — execution phase (POST /agent/execution-sessions/start)
 │       ├── agent_recon.py         # /agent/* — reconnaissance phase (POST /agent/recon/start, upload)
 │       ├── agent_assist.py        # /agent/* — the default read surface: inventory, findings, posture…
+│       ├── agent_assist_operations.py  # agent reads of Operations (workbench, Worth a look, terrain), Evidence gaps, scan compare
+│       ├── agent_assist_reporting.py   # agent reads of scanner observations and client reports
 │       ├── mcp_assist.py          # POST /mcp — MCP transport (loops back in-process; no authz of its own)
-│       ├── mcp_tools.py           # declarative MCP tool registry (57 tools → /agent/* routes)
+│       ├── mcp_tools.py           # declarative MCP tool registry (67 tools → /agent/* routes)
 │       ├── mcp_telemetry.py       # admin — per-tool MCP outcomes
 │       ├── agent_sessions.py      # JWT — list / end / resume a project's agent sessions
 │       ├── agent_activity.py      # JWT, project-scoped (NOT under /agent) — human-facing read of the agent API call log
@@ -367,7 +369,7 @@ Re-importing the same file is safe — it upserts, doesn't append. `is_final=Tru
 For the senior-tester case where the operator just wants to *query* a project — "which hosts expose FTP?", "summarize my critical findings", "what did the last recon turn up?" — without a plan or an approval ceremony (v2.64.0). Assist is the DEFAULT surface of every session: it needs no phase.
 
 1. **`POST /projects/{id}/assist/start`** (JWT user, `assist.py`) mints the same project session as every other entry point, with no phase pre-opened, and returns the key plus the agent prompt. It requires only `auditor` (lowered from `analyst` in v2.308.0 — safe because a key carries its operator's permissions). Sessions are listed and ended from the project's agent-sessions surface.
-2. The agent reads through `/agent/assist/*` (`agent_assist.py`): context, hosts (list / count / detail / vulnerabilities / notes / testing / web interfaces), findings, posture, patterns, segments, coverage, vocabulary, names, scans, ingestion issues, plus the NDJSON downloads (`hosts.ndjson`, `report-context.ndjson`). The same host query DSL as the Hosts page drives `q=`.
+2. The agent reads through `/agent/assist/*` (`agent_assist.py`): context, hosts (list / count / detail / vulnerabilities / notes / testing / web interfaces), findings, posture, patterns, segments, coverage, vocabulary, names, scans, ingestion issues, plus the NDJSON downloads (`hosts.ndjson`, `report-context.ndjson`); and, since v2.428.0, what the other pages show — the Operations workbench, Worth a look and terrain, Evidence gaps and scan compare (`agent_assist_operations.py`), scanner observations by issue and client reports (`agent_assist_reporting.py`). **Each agent read wraps the service its page uses** (`workbench_service`, `scan_diff_service`, `host_detail_service`, `scanner_observation_service`, `client_report_service`…), so an agent and a page cannot disagree on a number; read roles equal the page's (`deps.AGENT_READ_ROLE_OVERRIDES`). The same host query DSL as the Hosts page drives `q=`.
 3. **Reads need project membership; bulk exports need `auditor`; writes are whatever the operator's role allows.** There is no "assist-scoped" key and no capability grant (both gone — v2.337.0 / v2.309.0): an analyst's assist session can write notes, review status and hostname/OS corrections; an auditor's or viewer's cannot, because its operator cannot. Nothing narrows writes to "assigned" hosts. An agent cannot approve a plan or triage a finding under any role.
 4. **Reviewable after the fact.** `/assist-sessions` lists every session with what it produced; the detail view leads with the notes the agent wrote (its only durable output) over the per-session API-call feed. A session whose key has expired reports as `ended` immediately — derived on read, with an hourly sweep converging the stored column (`assist_session_service`).
 
@@ -375,7 +377,7 @@ For the senior-tester case where the operator just wants to *query* a project �
 
 Every workflow above is also reachable over the **Model Context Protocol** at `POST /api/v1/mcp` (`mcp_assist.py` for the transport, `mcp_tools.py` for the declarative registry). A `tools/call` loops back into the same `/agent/*` endpoint **in-process** via an ASGI transport, forwarding the caller's `X-API-Key`, so auth, the operator-role check, row scope, and the audit log run unchanged — the MCP layer makes no authorization decision of its own.
 
-`tools/list` returns the WHOLE catalogue to every session (57 tools; the per-workflow filter went with the per-workflow keys in v2.337.0). Listing was always presentation rather than authorisation — the endpoint behind a tool decides on every call. Bulk, file-shaped endpoints (NDJSON streams, target lists, `recon/upload`) are deliberately *not* tools.
+`tools/list` returns the WHOLE catalogue to every session (67 tools; the per-workflow filter went with the per-workflow keys in v2.337.0). Listing was always presentation rather than authorisation — the endpoint behind a tool decides on every call. Bulk, file-shaped endpoints (NDJSON streams, target lists, `recon/upload`) are deliberately *not* tools.
 
 See [MCP.md](MCP.md) for the transport details, the per-client certificate-pinning story, the approved-tool registry, and the guardrail model.
 
