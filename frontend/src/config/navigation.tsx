@@ -269,10 +269,6 @@ export const NAV_PAGES: NavPage[] = [
     id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'workflows',
   },
   {
-    id: 'feedback', path: '/feedback', label: 'Agent Feedback', requiredRole: 'admin', hub: 'workflows',
-    palette: { Icon: MessageSquareHeart, order: 11 },
-  },
-  {
     id: 'recon-runs', path: '/recon/runs', label: 'Recon Runs', requiredRole: 'viewer',
     palette: { Icon: Compass, keywords: ['discovery', 'recon', 'runs'], order: 7 },
   },
@@ -308,6 +304,12 @@ export const NAV_PAGES: NavPage[] = [
   {
     id: 'system-settings', path: '/system-settings', label: 'System', requiredRole: 'admin', hub: 'administration',
     palette: { label: 'System Settings', Icon: SettingsIcon, keywords: ['users', 'admin', 'administration'], order: 17 },
+  },
+  {
+    // v5.310.0 — moved from Workflows: the queue is every project's agent
+    // feedback (a global-admin, instance-wide list), not this project's.
+    id: 'feedback', path: '/feedback', label: 'Agent Feedback', requiredRole: 'admin', hub: 'administration',
+    palette: { Icon: MessageSquareHeart, keywords: ['agent feedback', 'mcp', 'critiques', 'administration'], order: 11 },
   },
 
   // Personal pages — no hub: they are about the signed-in user, reached from

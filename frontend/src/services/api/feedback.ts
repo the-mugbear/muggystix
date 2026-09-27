@@ -6,6 +6,7 @@
  * ``../services/api`` unchanged.
  */
 import { api } from './client';
+import type { Paginated } from './shared';
 
 
 // ---------------------------------------------------------------------------
@@ -30,6 +31,15 @@ export interface AgentFeedbackEntry {
   reviewed_at: string | null;
   reviewer_notes: string | null;
   created_at: string;
+  /** v2.428.2 — who and where: the unified session, the page showing its
+   *  API calls (`/assist-sessions/{session_page_id}`), and its call count. */
+  recon_session_id?: number | null;
+  assist_session_id?: number | null;
+  agent_session_id?: number | null;
+  session_page_id?: number | null;
+  session_api_calls?: number | null;
+  project_name?: string | null;
+  agent_name?: string | null;
 }
 
 export interface AgentFeedbackListParams {
@@ -41,6 +51,7 @@ export interface AgentFeedbackListParams {
   search?: string;
   /** v2.28.0 — narrow to feedback rows attributed to a specific test plan. */
   test_plan_id?: number;
+  project_id?: number;
   skip?: number;
   limit?: number;
 }
@@ -52,12 +63,15 @@ export interface FeedbackStats {
   by_prompt_version: Record<string, number>;
   avg_rating: number | null;
   top_tool_suggestions: Array<{ name: string; count: number; categories: string[] }>;
+  with_api_critiques?: number;
+  with_tool_suggestions?: number;
 }
 
 export const listAgentFeedback = async (
   params: AgentFeedbackListParams = {},
-): Promise<AgentFeedbackEntry[]> => {
-  const response = await api.get<AgentFeedbackEntry[]>('/feedback/', { params });
+): Promise<Paginated<AgentFeedbackEntry>> => {
+  // v2.428.2 — the standard Paginated envelope (was a bare array).
+  const response = await api.get<Paginated<AgentFeedbackEntry>>('/feedback/', { params });
   return response.data;
 };
 

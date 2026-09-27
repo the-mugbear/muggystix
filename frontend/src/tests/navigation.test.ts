@@ -121,11 +121,11 @@ describe('navigation manifest', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
     expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope']);
     expect(tabs('findings')).toEqual(['Findings', 'Reports']);
-    expect(tabs('workflows')).toEqual(['Test Plans', 'Agent Runs', 'Tool Activity', 'Agent Feedback']);
+    expect(tabs('workflows')).toEqual(['Test Plans', 'Agent Runs', 'Tool Activity']);
     expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/test-plans');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
-    expect(tabs('administration')).toEqual(['All projects', 'System']);
+    expect(tabs('administration')).toEqual(['All projects', 'System', 'Agent Feedback']);
     expect(HUBS.find((h) => h.id === 'administration')!.requiredRole).toBe('admin');
     // Findings sits right after Inventory in the sidebar.
     const order = HUBS.map((h) => h.id);

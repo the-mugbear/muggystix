@@ -208,9 +208,9 @@ The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `skip`, `limit`. |
-| GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`. |
-| GET | `/feedback/stats` | admin | Aggregate counts by source, status, average `overall_rating`. |
+| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `agent_session_id`, `session_page_id` (the `/assist-sessions/{id}` page listing the session's API calls) and `session_api_calls`. |
+| GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`, and the same who-and-where fields as the list. |
+| GET | `/feedback/stats` | admin | Aggregate counts by source, status and prompt version, average `overall_rating`, top tool suggestions, and `with_api_critiques` / `with_tool_suggestions`. |
 | PATCH | `/feedback/{id}` | admin | Update status + `reviewer_notes`. |
 
 Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — see §5.

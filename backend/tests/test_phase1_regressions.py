@@ -2296,12 +2296,13 @@ def test_feedback_test_plan_id_filter(client, db_session, test_plan, test_projec
     # Unfiltered should return at least both rows.
     resp = client.get("/api/v1/feedback/")
     assert resp.status_code == 200, resp.text
-    assert len(resp.json()) >= 2
+    # v2.428.2 — the standard Paginated envelope.
+    assert resp.json()["total"] >= 2
 
     # Filtered to this plan: only the row we attributed.
     resp = client.get(f"/api/v1/feedback/?test_plan_id={test_plan.id}")
     assert resp.status_code == 200, resp.text
-    rows = resp.json()
+    rows = resp.json()["items"]
     assert len(rows) == 1
     assert rows[0]["test_plan_id"] == test_plan.id
     assert rows[0]["friction_notes"] == "this plan"

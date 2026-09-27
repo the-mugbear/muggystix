@@ -19,15 +19,17 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func
+from sqlalchemy import Text, func
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
-    Agent, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
+    Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
     AssistSession, ExecutionSession, ReconSession, TestPlan,
 )
+from app.db.models_project import Project
+from app.schemas.pagination import Paginated
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_agent, check_agent_rate_limit
 from app.api.v1.endpoints.auth import get_current_user, require_role
@@ -76,6 +78,15 @@ class AgentFeedbackResponse(BaseModel):
     execution_session_id: Optional[int]
     recon_session_id: Optional[int] = None
     assist_session_id: Optional[int] = None
+    # v2.428.2 — who and where, so the triage queue can check a claim against
+    # the record: the unified session the feedback came from, the page that
+    # shows that session's API calls (``/assist-sessions/{session_page_id}``),
+    # and how many calls it made.  Filled by the admin list/detail routes.
+    agent_session_id: Optional[int] = None
+    session_page_id: Optional[int] = None
+    session_api_calls: Optional[int] = None
+    project_name: Optional[str] = None
+    agent_name: Optional[str] = None
     source: str
     prompt_version: Optional[str]
     overall_rating: Optional[int]
@@ -107,6 +118,9 @@ class FeedbackStatsResponse(BaseModel):
     by_prompt_version: Dict[str, int]
     avg_rating: Optional[float]
     top_tool_suggestions: List[Dict[str, Any]]
+    # v2.428.2 — the counts the page's measures link to.
+    with_api_critiques: int = 0
+    with_tool_suggestions: int = 0
 
 
 # ---------------------------------------------------------------------------
@@ -290,9 +304,51 @@ admin_feedback_router = APIRouter(
 )
 
 
+def _nonempty_json_list(column):
+    """A JSON list column holding at least one item.  ``column != []`` has no
+    operator on PostgreSQL's ``json`` type — it raised, so the page's "Has API
+    critiques" / "Has tool suggestions" filters answered 500 (v2.428.2); the
+    stored text is compared instead."""
+    return column.isnot(None) & column.cast(Text).notin_(["[]", "null"])
+
+
+def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackResponse]:
+    """Rows plus who/where (v2.428.2): project and agent names, the session's
+    page and its API-call count.  Grouped queries — one per kind, never per row."""
+    out = [AgentFeedbackResponse.model_validate(r) for r in rows]
+    if not rows:
+        return out
+    project_ids = {r.project_id for r in rows if r.project_id}
+    agent_ids = {r.agent_id for r in rows if r.agent_id}
+    session_ids = {r.agent_session_id for r in rows if r.agent_session_id}
+    projects = dict(db.query(Project.id, Project.name).filter(Project.id.in_(project_ids)).all()) if project_ids else {}
+    agents = dict(db.query(Agent.id, Agent.name).filter(Agent.id.in_(agent_ids)).all()) if agent_ids else {}
+    pages: Dict[int, int] = {}
+    calls: Dict[int, int] = {}
+    if session_ids:
+        for sid, aid in (
+            db.query(AssistSession.agent_session_id, func.min(AssistSession.id))
+            .filter(AssistSession.agent_session_id.in_(session_ids))
+            .group_by(AssistSession.agent_session_id).all()
+        ):
+            pages[sid] = aid
+        calls = dict(
+            db.query(AgentApiCall.agent_session_id, func.count(AgentApiCall.id))
+            .filter(AgentApiCall.agent_session_id.in_(session_ids))
+            .group_by(AgentApiCall.agent_session_id).all()
+        )
+    for item in out:
+        item.project_name = projects.get(item.project_id)
+        item.agent_name = agents.get(item.agent_id)
+        if item.agent_session_id:
+            item.session_page_id = pages.get(item.agent_session_id)
+            item.session_api_calls = int(calls.get(item.agent_session_id, 0))
+    return out
+
+
 @admin_feedback_router.get(
     "/",
-    response_model=List[AgentFeedbackResponse],
+    response_model=Paginated[AgentFeedbackResponse],
     summary="List agent feedback entries",
 )
 def list_feedback(
@@ -306,11 +362,14 @@ def list_feedback(
         None,
         description="Filter to feedback rows attributed to a specific test plan (v2.28.0).",
     ),
+    project_id: Optional[int] = Query(None, gt=0, description="Feedback from one project."),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
     db: Session = Depends(get_db),
 ):
     q = db.query(AgentFeedback)
+    if project_id is not None:
+        q = q.filter(AgentFeedback.project_id == project_id)
     if status:
         q = q.filter(AgentFeedback.status == status)
     if source:
@@ -325,17 +384,17 @@ def list_feedback(
     # us a portable length check, but ``!= []`` + ``is not None`` gets
     # us close on both postgres and sqlite for the triage use case.
     if has_tool_suggestions:
-        q = q.filter(
-            AgentFeedback.tool_suggestions.isnot(None),
-            AgentFeedback.tool_suggestions != [],
-        )
+        q = q.filter(_nonempty_json_list(AgentFeedback.tool_suggestions))
     if has_api_critiques:
-        q = q.filter(
-            AgentFeedback.api_critiques.isnot(None),
-            AgentFeedback.api_critiques != [],
-        )
-    q = q.order_by(AgentFeedback.created_at.desc())
-    return q.offset(skip).limit(limit).all()
+        q = q.filter(_nonempty_json_list(AgentFeedback.api_critiques))
+    # v2.428.2 — the standard Paginated envelope (was a bare array): the page
+    # says "N of M shown" and pages with has_more.
+    total = q.count()
+    q = q.order_by(AgentFeedback.created_at.desc(), AgentFeedback.id.desc())
+    return Paginated[AgentFeedbackResponse].build(
+        items=_with_context(db, q.offset(skip).limit(limit).all()),
+        total=total, skip=skip, limit=limit,
+    )
 
 
 _TOOL_NAME_NON_TOOL_GIVEAWAYS = frozenset({
@@ -449,7 +508,20 @@ def feedback_stats(db: Session = Depends(get_db)):
         for t in top
     ]
 
+    with_api_critiques = (
+        db.query(func.count(AgentFeedback.id))
+        .filter(_nonempty_json_list(AgentFeedback.api_critiques))
+        .scalar() or 0
+    )
+    with_tool_suggestions = (
+        db.query(func.count(AgentFeedback.id))
+        .filter(_nonempty_json_list(AgentFeedback.tool_suggestions))
+        .scalar() or 0
+    )
+
     return FeedbackStatsResponse(
+        with_api_critiques=int(with_api_critiques),
+        with_tool_suggestions=int(with_tool_suggestions),
         total=total,
         by_status=by_status,
         by_source=by_source,
@@ -470,7 +542,7 @@ def get_feedback(
     row = db.query(AgentFeedback).filter(AgentFeedback.id == feedback_id).first()
     if not row:
         raise HTTPException(status_code=404, detail="Feedback entry not found")
-    return row
+    return _with_context(db, [row])[0]
 
 
 @admin_feedback_router.patch(
@@ -501,4 +573,4 @@ def update_feedback(
         row.reviewer_notes = body.reviewer_notes
     db.commit()
     db.refresh(row)
-    return row
+    return _with_context(db, [row])[0]

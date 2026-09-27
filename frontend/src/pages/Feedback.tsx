@@ -1,13 +1,18 @@
-import React, { useCallback, useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import {
-  Check,
-  X as DismissIcon,
-  ChevronDown,
-  ChevronUp,
-  Star,
-  Loader2,
-} from 'lucide-react';
+/**
+ * Agent Feedback — the instance-wide triage queue of what agents reported
+ * (Administration hub, global admins; v5.310.0 redesign).
+ *
+ * A reviewer's job here is to check an agent's claim against what the agent
+ * actually did, so every row names its project and the session it came from,
+ * with that session's API-call count and a link to the page that lists the
+ * calls.  The layout is the house one (§7): a lead sentence, a strip of quiet
+ * measures whose counts open their rows, then one section with the shared
+ * filter row (ListFilterBar).  Filters live in the URL so a measure is a link.
+ */
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { ChevronDown, ChevronRight, Loader2, MessageSquareText, Star } from 'lucide-react';
+
 import {
   listAgentFeedback,
   getAgentFeedbackStats,
@@ -17,78 +22,63 @@ import {
   FeedbackStats,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
+import { useProject } from '../contexts/ProjectContext';
+import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import LastUpdated from '../components/LastUpdated';
 import TimeAgo from '../components/TimeAgo';
+import PostureLead from '../components/posture/PostureLead';
+import PostureMeasure from '../components/posture/PostureMeasure';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import { ListFilterBar, ListFilterSearch, FILTER_TRIGGER_CLASS } from '../components/ListFilterBar';
 import { formatApiError } from '../utils/apiErrors';
-import { Card, CardContent } from '../components/ui/card';
 import { Button } from '../components/ui/button';
-import { Input } from '../components/ui/input';
-import { Label } from '../components/ui/label';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Textarea } from '../components/ui/textarea';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
 import {
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
+  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from '../components/ui/dialog';
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
+  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from '../components/ui/tooltip';
 import { cn } from '../utils/cn';
 
-const STATUS_OPTIONS = ['new', 'reviewed', 'actioned', 'dismissed'] as const;
-// Must stay in step with AgentFeedbackSource in app/db/models_agent.py. `assist`
-// was added there in backend 2.85.0 and never reached this list, so feedback
-// from assist sessions landed in the table filterable only as "All sources" —
-// invisible to anyone narrowing by the workflow they were investigating.
-const SOURCE_OPTIONS = [
-  { value: '', label: 'All sources' },
-  { value: 'plan_generation', label: 'Plan Generation' },
-  { value: 'reconnaissance', label: 'Reconnaissance' },
-  { value: 'in_session_execution', label: 'In-Session Execution' },
-  { value: 'exported_execution', label: 'Exported Execution' },
-  { value: 'assist', label: 'AI Assist' },
-];
+const PAGE = 50;
 
-const STATUS_VARIANT: Record<string, 'default' | 'success' | 'warning' | 'muted'> = {
-  new: 'default',
-  reviewed: 'warning',
-  actioned: 'success',
-  dismissed: 'muted',
+const STATUSES = [
+  { value: 'new', label: 'New' },
+  { value: 'reviewed', label: 'Reviewed' },
+  { value: 'actioned', label: 'Actioned' },
+  { value: 'dismissed', label: 'Dismissed' },
+] as const;
+
+// Must stay in step with AgentFeedbackSource in app/db/models_agent.py. Since
+// unified sessions (v2.337.0) the agent picks this value itself, so it is a
+// hint about what the agent was doing, not a record of the session's phases.
+const SOURCE_LABELS: Record<string, string> = {
+  plan_generation: 'Plan generation',
+  reconnaissance: 'Reconnaissance',
+  in_session_execution: 'Execution',
+  exported_execution: 'Exported execution',
+  assist: 'Assist',
 };
 
+type Content = '' | 'critiques' | 'suggestions';
+
+const plural = (n: number, word: string) => `${n.toLocaleString()} ${word}${n === 1 ? '' : 's'}`;
+
 const StarRating: React.FC<{ value: number | null | undefined }> = ({ value }) => {
-  if (value == null) return <span className="text-muted-foreground">—</span>;
+  if (value == null) return <span className="text-muted-foreground">Unrated</span>;
   const v = Math.round(value);
   return (
-    <span className="inline-flex" aria-label={`Rating ${v} out of 5`}>
+    <span className="inline-flex" role="img" aria-label={`Rated ${v} of 5`} title={`${v} of 5`}>
       {[1, 2, 3, 4, 5].map((i) => (
         <Star
           key={i}
-          className={cn(
-            'size-3.5',
-            i <= v ? 'fill-warning text-warning' : 'text-muted-foreground/40',
-          )}
+          className={cn('size-3.5', i <= v ? 'fill-warning text-warning' : 'text-muted-foreground/40')}
           aria-hidden
         />
       ))}
@@ -96,284 +86,222 @@ const StarRating: React.FC<{ value: number | null | undefined }> = ({ value }) =
   );
 };
 
+/** Which client wrote it: what the agent said about itself, else the key's agent. */
+const clientOf = (r: AgentFeedbackEntry): string | null => {
+  const said = r.agent_metrics && typeof r.agent_metrics.agent_name === 'string' ? r.agent_metrics.agent_name : null;
+  return said || r.agent_name || null;
+};
+
 const Feedback: React.FC = () => {
   const toast = useToast();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { projects, currentProject, selectProject } = useProject();
+  const [params, setParams] = useSearchParams();
+
+  // Filters live in the URL, so the measures above the list are links to it.
+  const status = params.get('status') ?? '';
+  const source = params.get('source') ?? '';
+  const content = (params.get('content') ?? '') as Content;
+  const minRating = params.get('rating') ?? '';
+  const projectFilter = params.get('project') ?? '';
+  const testPlanFilter = params.get('test_plan_id') ?? '';
+  const [search, setSearch] = useState(params.get('q') ?? '');
+  const debouncedSearch = useDebouncedValue(search.trim(), 300);
+
+  const setParam = useCallback((key: string, value: string) => {
+    setParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) next.set(key, value); else next.delete(key);
+      return next;
+    }, { replace: true });
+  }, [setParams]);
+
+  useEffect(() => { setParam('q', debouncedSearch); }, [debouncedSearch, setParam]);
+
   const [rows, setRows] = useState<AgentFeedbackEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [updatingId, setUpdatingId] = useState<number | null>(null);
 
-  const [statusFilter, setStatusFilter] = useState<string>('');
-  const [sourceFilter, setSourceFilter] = useState<string>('');
-  const [minRating, setMinRating] = useState<string>('');
-  const [hasToolSuggestions, setHasToolSuggestions] = useState(false);
-  const [hasApiCritiques, setHasApiCritiques] = useState(false);
-  const [search, setSearch] = useState('');
-  const initialTestPlanFilter = (() => {
-    const raw = searchParams.get('test_plan_id');
-    const n = raw ? Number(raw) : NaN;
-    return Number.isFinite(n) && n > 0 ? n : null;
-  })();
-  const [testPlanFilter, setTestPlanFilter] = useState<number | null>(initialTestPlanFilter);
-
-  const [notesOpen, setNotesOpen] = useState(false);
   const [notesEntry, setNotesEntry] = useState<AgentFeedbackEntry | null>(null);
   const [notesText, setNotesText] = useState('');
   const [notesSaving, setNotesSaving] = useState(false);
+
+  const query = useMemo<AgentFeedbackListParams>(() => {
+    const q: AgentFeedbackListParams = { limit: PAGE };
+    if (status) q.status = status;
+    if (source) q.source = source;
+    if (minRating) q.min_rating = Number(minRating);
+    if (content === 'critiques') q.has_api_critiques = true;
+    if (content === 'suggestions') q.has_tool_suggestions = true;
+    if (projectFilter) q.project_id = Number(projectFilter);
+    if (testPlanFilter) q.test_plan_id = Number(testPlanFilter);
+    if (debouncedSearch) q.search = debouncedSearch;
+    return q;
+  }, [status, source, minRating, content, projectFilter, testPlanFilter, debouncedSearch]);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const params: AgentFeedbackListParams = { limit: 200 };
-      if (statusFilter) params.status = statusFilter;
-      if (sourceFilter) params.source = sourceFilter;
-      if (minRating !== '') params.min_rating = Number(minRating);
-      if (hasToolSuggestions) params.has_tool_suggestions = true;
-      if (hasApiCritiques) params.has_api_critiques = true;
-      if (search.trim()) params.search = search.trim();
-      if (testPlanFilter != null) params.test_plan_id = testPlanFilter;
-      const [list, s] = await Promise.all([listAgentFeedback(params), getAgentFeedbackStats()]);
-      setRows(list);
+      const [page, s] = await Promise.all([listAgentFeedback(query), getAgentFeedbackStats()]);
+      setRows(page.items);
+      setTotal(page.total);
+      setHasMore(page.has_more);
       setStats(s);
       setLastFetched(new Date());
     } catch (err: unknown) {
-      const msg = formatApiError(err, 'Failed to load feedback.');
-      setError(msg);
-      toast.error(msg);
+      setError(formatApiError(err, 'Could not load agent feedback.'));
     } finally {
       setLoading(false);
     }
-  }, [statusFilter, sourceFilter, minRating, hasToolSuggestions, hasApiCritiques, search, testPlanFilter, toast]);
+  }, [query]);
 
-  useEffect(() => {
-    load();
-  }, [load]);
+  useEffect(() => { load(); }, [load]);
 
-  const toggleRow = (id: number) => {
-    setExpanded((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
-
-  const handleStatusChange = async (entry: AgentFeedbackEntry, status: string) => {
+  const loadMore = async () => {
+    setLoadingMore(true);
     try {
-      const updated = await updateAgentFeedback(entry.id, { status });
-      setRows((prev) => prev.map((r) => (r.id === entry.id ? updated : r)));
-      toast.success(`Marked as ${status}.`);
-      getAgentFeedbackStats().then(setStats).catch(() => undefined);
+      const page = await listAgentFeedback({ ...query, skip: rows.length });
+      setRows((prev) => [...prev, ...page.items]);
+      setTotal(page.total);
+      setHasMore(page.has_more);
     } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to update feedback.'));
+      toast.error(formatApiError(err, 'Could not load more feedback.'));
+    } finally {
+      setLoadingMore(false);
     }
   };
 
-  const openNotes = (entry: AgentFeedbackEntry) => {
-    setNotesEntry(entry);
-    setNotesText(entry.reviewer_notes || '');
-    setNotesOpen(true);
+  const replaceRow = (updated: AgentFeedbackEntry) =>
+    setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+
+  const changeStatus = async (entry: AgentFeedbackEntry, next: string) => {
+    if (next === entry.status) return;
+    setUpdatingId(entry.id);
+    try {
+      replaceRow(await updateAgentFeedback(entry.id, { status: next }));
+      getAgentFeedbackStats().then(setStats).catch(() => undefined);
+    } catch (err: unknown) {
+      toast.error(formatApiError(err, 'Could not change the status.'));
+    } finally {
+      setUpdatingId(null);
+    }
   };
 
   const saveNotes = async () => {
     if (!notesEntry) return;
     setNotesSaving(true);
     try {
-      const updated = await updateAgentFeedback(notesEntry.id, { reviewer_notes: notesText });
-      setRows((prev) => prev.map((r) => (r.id === notesEntry.id ? updated : r)));
-      toast.success('Reviewer notes saved.');
-      setNotesOpen(false);
+      replaceRow(await updateAgentFeedback(notesEntry.id, { reviewer_notes: notesText }));
+      toast.success('Reviewer note saved.');
+      setNotesEntry(null);
     } catch (err: unknown) {
-      toast.error(formatApiError(err, 'Failed to save notes.'));
+      toast.error(formatApiError(err, 'Could not save the note.'));
     } finally {
       setNotesSaving(false);
     }
   };
 
+  /** Open the page that lists this session's API calls — in its own project. */
+  const openSession = (r: AgentFeedbackEntry) => {
+    const target = r.session_page_id != null
+      ? `/assist-sessions/${r.session_page_id}`
+      : r.test_plan_id != null ? `/test-plans/${r.test_plan_id}`
+        : r.recon_session_id != null ? `/recon/runs/${r.recon_session_id}`
+          : r.execution_session_id != null ? `/executions/${r.execution_session_id}` : null;
+    if (!target) return;
+    if (r.project_id != null && r.project_id !== currentProject?.id) {
+      const proj = projects.find((p) => p.id === r.project_id);
+      if (!proj) {
+        toast.error(`You are not a member of ${r.project_name ?? `project #${r.project_id}`}.`);
+        return;
+      }
+      selectProject(proj);
+    }
+    navigate(target);
+  };
+
+  const toggle = (id: number) => setExpanded((prev) => {
+    const next = new Set(prev);
+    if (next.has(id)) next.delete(id); else next.add(id);
+    return next;
+  });
+
   const newCount = stats?.by_status?.new ?? 0;
-  const topTools = stats?.top_tool_suggestions ?? [];
+  const critiqueCount = stats?.with_api_critiques ?? 0;
+  const suggestionCount = stats?.with_tool_suggestions ?? 0;
+  const topTool = stats?.top_tool_suggestions?.[0];
+  const filtered = Boolean(status || source || content || minRating || projectFilter || testPlanFilter || debouncedSearch);
+  const projectOptions = useMemo(
+    () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
+    [projects],
+  );
 
   return (
     <div className="p-md md:p-lg">
-      <div className="mb-md flex flex-col gap-xs sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <h1 className="text-page-title">Agent Feedback</h1>
-          <p className="mt-xxs text-metadata text-muted-foreground">
-            Structured feedback from agents after each prompt workflow — use this to prioritize API
-            improvements, new tool additions, and prompt refinements.
+      <div className="mb-md flex flex-wrap items-start gap-sm">
+        <div className="min-w-0 flex-1">
+          <h1 className="text-page-title font-semibold">Agent feedback</h1>
+          <p className="text-metadata text-muted-foreground">
+            What agents reported at the end of their sessions, from every project. Check a claim against the
+            session's own API calls before acting on it.
           </p>
         </div>
         <LastUpdated compact lastFetched={lastFetched} onRefresh={load} isLoading={loading} label="agent feedback" />
       </div>
 
-      {/* KPI cards */}
-      <div className="mb-md grid grid-cols-2 gap-sm md:grid-cols-4">
-        <KpiCard label="Total" value={stats?.total ?? '—'} />
-        <KpiCard label="New" value={newCount} accent={newCount > 0} />
-        <KpiCard
-          label="Avg Rating"
-          value={stats?.avg_rating != null ? stats.avg_rating.toFixed(2) : '—'}
-        />
-        <KpiCard
-          label="Top Suggested Tool"
-          value={
-            topTools[0] ? (
-              <span className="flex min-w-0 items-baseline gap-xs">
-                <span className="min-w-0 truncate">{topTools[0].name}</span>
-                <span className="shrink-0 text-caption text-muted-foreground">
-                  ×{topTools[0].count}
-                </span>
-              </span>
-            ) : (
-              '—'
-            )
-          }
-        />
-      </div>
-
-      {topTools.length > 1 && (
-        <Card className="mb-md">
-          <CardContent className="p-md">
-            <p className="mb-xs text-caption font-semibold text-muted-foreground">
-              Top tool suggestions (aggregate)
-            </p>
-            <div className="flex flex-wrap gap-xxs">
-              {topTools.map((t) => (
-                <Badge key={t.name} variant="outline">
-                  {t.name} ×{t.count}
-                </Badge>
-              ))}
-            </div>
-          </CardContent>
-        </Card>
+      {stats && (
+        <PostureLead tone={newCount > 0 ? 'info' : 'neutral'} className="mb-md">
+          {stats.total === 0
+            ? 'No agent has filed feedback yet.'
+            : newCount > 0
+              ? `${plural(newCount, 'report')} of ${stats.total.toLocaleString()} ${newCount === 1 ? 'is' : 'are'} waiting for triage.`
+              : `All ${plural(stats.total, 'report')} have been triaged.`}
+        </PostureLead>
       )}
 
-      {/* Filters */}
-      <Card className="mb-md">
-        <CardContent className="p-md">
-          <div className="grid grid-cols-1 gap-md md:grid-cols-12">
-            <div className="md:col-span-3">
-              <Label htmlFor="fb-status">Status</Label>
-              <Select
-                value={statusFilter || 'all'}
-                onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
-              >
-                <SelectTrigger id="fb-status">
-                  <SelectValue placeholder="All statuses" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All statuses</SelectItem>
-                  {STATUS_OPTIONS.map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="md:col-span-3">
-              <Label htmlFor="fb-source">Source</Label>
-              <Select
-                value={sourceFilter || 'all'}
-                onValueChange={(v) => setSourceFilter(v === 'all' ? '' : v)}
-              >
-                <SelectTrigger id="fb-source">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {SOURCE_OPTIONS.map((o) => (
-                    <SelectItem key={o.value || 'all'} value={o.value || 'all'}>
-                      {o.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="md:col-span-2">
-              <Label htmlFor="fb-rating">Min rating</Label>
-              <Select
-                value={minRating || 'any'}
-                onValueChange={(v) => setMinRating(v === 'any' ? '' : v)}
-              >
-                <SelectTrigger id="fb-rating">
-                  <SelectValue placeholder="Any" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="any">Any</SelectItem>
-                  {[1, 2, 3, 4, 5].map((r) => (
-                    <SelectItem key={r} value={String(r)}>
-                      {r}+
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="md:col-span-4">
-              <Label htmlFor="fb-search">Search friction notes</Label>
-              <Input
-                id="fb-search"
-                value={search}
-                onChange={(e) => setSearch(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter') load();
-                }}
-              />
-            </div>
-            <div className="md:col-span-12">
-              <div className="flex flex-wrap gap-xxs">
-                <button
-                  type="button"
-                  onClick={() => setHasToolSuggestions((v) => !v)}
-                  aria-pressed={hasToolSuggestions}
-                  className={cn(
-                    'rounded-chip border px-sm py-xxs text-micro font-semibold uppercase transition-colors',
-                    hasToolSuggestions
-                      ? 'border-transparent bg-primary text-primary-foreground'
-                      : 'border-border text-foreground hover:bg-accent',
-                  )}
-                >
-                  Has tool suggestions
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setHasApiCritiques((v) => !v)}
-                  aria-pressed={hasApiCritiques}
-                  className={cn(
-                    'rounded-chip border px-sm py-xxs text-micro font-semibold uppercase transition-colors',
-                    hasApiCritiques
-                      ? 'border-transparent bg-primary text-primary-foreground'
-                      : 'border-border text-foreground hover:bg-accent',
-                  )}
-                >
-                  Has API critiques
-                </button>
-                {testPlanFilter != null && (
-                  <Badge variant="default" className="cursor-default">
-                    Test plan #{testPlanFilter}
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setTestPlanFilter(null);
-                        const next = new URLSearchParams(searchParams);
-                        next.delete('test_plan_id');
-                        setSearchParams(next, { replace: true });
-                      }}
-                      aria-label="Clear test plan filter"
-                      className="ml-xxs"
-                    >
-                      <DismissIcon className="size-3" aria-hidden />
-                    </button>
-                  </Badge>
-                )}
-              </div>
-            </div>
-          </div>
-        </CardContent>
-      </Card>
+      {stats && stats.total > 0 && (
+        <div className="mb-lg grid gap-y-md divide-border sm:grid-cols-3 lg:divide-x">
+          <PostureMeasure
+            label="Waiting for triage"
+            value={newCount.toLocaleString()}
+            to="/feedback?status=new"
+            toLabel="Show the feedback waiting for triage"
+            info="Feedback no one has marked reviewed, actioned or dismissed yet."
+          >
+            <p className="break-words">
+              {(stats.by_status.reviewed ?? 0).toLocaleString()} reviewed · {(stats.by_status.actioned ?? 0).toLocaleString()} actioned · {(stats.by_status.dismissed ?? 0).toLocaleString()} dismissed
+            </p>
+          </PostureMeasure>
+          <PostureMeasure
+            label="Name an API problem"
+            value={critiqueCount.toLocaleString()}
+            to="/feedback?content=critiques"
+            toLabel="Show the feedback that names an API problem"
+            info="Feedback carrying at least one API critique: an endpoint or tool, what went wrong, and a suggestion. The actionable part of most reports."
+          >
+            <p className="break-words">each names an endpoint, the issue and a suggestion</p>
+          </PostureMeasure>
+          <PostureMeasure
+            label="Suggest a tool"
+            value={suggestionCount.toLocaleString()}
+            to="/feedback?content=suggestions"
+            toLabel="Show the feedback that suggests a tool"
+            info="Feedback asking for a tool BlueStick does not list as approved. The most requested one is named below."
+          >
+            <p className="break-words">
+              {topTool ? `most asked for: ${topTool.name} (${topTool.count.toLocaleString()})` : 'no tool requested yet'}
+            </p>
+          </PostureMeasure>
+        </div>
+      )}
 
       {error && (
         <Alert variant="destructive" className="mb-md">
@@ -381,247 +309,214 @@ const Feedback: React.FC = () => {
         </Alert>
       )}
 
-      {loading ? (
-        <div className="flex justify-center py-xxl">
-          <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
-        </div>
-      ) : rows.length === 0 ? (
-        <Card>
-          <CardContent className="py-xxl text-center text-metadata text-muted-foreground">
-            No feedback entries match the current filters.
-          </CardContent>
-        </Card>
-      ) : (
-        <Card>
-          <CardContent className="p-0">
-            <div className="overflow-x-auto">
-              <Table className="min-w-[900px]">
-                <TableHeader>
-                  <TableRow>
-                    <TableHead className="w-10" />
-                    <TableHead className="w-24">Rating</TableHead>
-                    <TableHead className="w-40">Source</TableHead>
-                    {/* w-24 (96px) wasn't enough for `dismissed` (9 chars
-                        + chip padding) — the badge bled into the Version
-                        column.  w-32 (128px) comfortably fits every
-                        STATUS_VARIANT key. */}
-                    <TableHead className="w-32">Status</TableHead>
-                    <TableHead className="w-24">Version</TableHead>
-                    <TableHead>Friction notes</TableHead>
-                    <TableHead className="w-32">Created</TableHead>
-                    <TableHead className="w-48">Actions</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {rows.map((r) => {
-                    const isOpen = expanded.has(r.id);
-                    return (
-                      <React.Fragment key={r.id}>
-                        <TableRow>
-                          <TableCell>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => toggleRow(r.id)}
-                              aria-expanded={isOpen}
-                              aria-controls={`fb-details-${r.id}`}
-                              aria-label={isOpen ? 'Collapse details' : 'Expand details'}
+      <PostureSection
+        title={<>{filtered ? 'Matching feedback' : 'All feedback'}<SectionCount>{total.toLocaleString()}</SectionCount></>}
+        description="Newest first. Open a row for the full report; the session link lists every API call the agent made."
+      >
+        <ListFilterBar summary={`${rows.length.toLocaleString()} of ${total.toLocaleString()} shown`}>
+          <ListFilterSearch value={search} onChange={setSearch} placeholder="Search the notes…" label="Search feedback notes" />
+          <Select value={status || 'all'} onValueChange={(v) => setParam('status', v === 'all' ? '' : v)}>
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Status"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All statuses</SelectItem>
+              {STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={content || 'all'} onValueChange={(v) => setParam('content', v === 'all' ? '' : v)}>
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-48')} aria-label="Content"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any content</SelectItem>
+              <SelectItem value="critiques">Names an API problem</SelectItem>
+              <SelectItem value="suggestions">Suggests a tool</SelectItem>
+            </SelectContent>
+          </Select>
+          <Select value={projectFilter || 'all'} onValueChange={(v) => setParam('project', v === 'all' ? '' : v)}>
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-48')} aria-label="Project"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All projects</SelectItem>
+              {projectOptions.map((p) => <SelectItem key={p.id} value={String(p.id)}>{p.name}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={source || 'all'} onValueChange={(v) => setParam('source', v === 'all' ? '' : v)}>
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-44')} aria-label="What the agent was doing"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">Any activity</SelectItem>
+              {Object.entries(SOURCE_LABELS).map(([v, l]) => <SelectItem key={v} value={v}>{l}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          <Select value={minRating || 'any'} onValueChange={(v) => setParam('rating', v === 'any' ? '' : v)}>
+            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-36')} aria-label="Minimum rating"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="any">Any rating</SelectItem>
+              {[5, 4, 3, 2, 1].map((r) => <SelectItem key={r} value={String(r)}>{r === 5 ? '5 only' : `${r} or more`}</SelectItem>)}
+            </SelectContent>
+          </Select>
+          {testPlanFilter && (
+            <Button variant="outline" size="sm" className="h-8" onClick={() => setParam('test_plan_id', '')}>
+              Test plan #{testPlanFilter} · clear
+            </Button>
+          )}
+        </ListFilterBar>
+
+        {loading && rows.length === 0 ? (
+          <div className="flex justify-center py-xxl">
+            <Loader2 className="size-6 animate-spin text-muted-foreground" aria-hidden />
+          </div>
+        ) : rows.length === 0 ? (
+          <p className="py-xl text-center text-metadata text-muted-foreground">
+            {filtered ? 'No feedback matches these filters.' : 'No agent has filed feedback yet.'}
+          </p>
+        ) : (
+          <div className="overflow-x-auto">
+            <Table className="min-w-[980px]" style={{ tableLayout: 'fixed' }}>
+              <colgroup>
+                <col style={{ width: 36 }} />
+                <col style={{ width: 96 }} />
+                <col style={{ width: 170 }} />
+                <col style={{ width: 120 }} />
+                <col />
+                <col style={{ width: 96 }} />
+                <col style={{ width: 140 }} />
+                <col style={{ width: 96 }} />
+              </colgroup>
+              <TableHeader>
+                <TableRow>
+                  <TableHead><span className="sr-only">Details</span></TableHead>
+                  <TableHead>Received</TableHead>
+                  <TableHead>Project · session</TableHead>
+                  <TableHead>Agent</TableHead>
+                  <TableHead>Report</TableHead>
+                  <TableHead>Rating</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead><span className="sr-only">Reviewer note</span></TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => {
+                  const open = expanded.has(r.id);
+                  const critiques = r.api_critiques?.length ?? 0;
+                  const suggestions = r.tool_suggestions?.length ?? 0;
+                  const client = clientOf(r);
+                  const canOpen = r.session_page_id != null || r.test_plan_id != null
+                    || r.recon_session_id != null || r.execution_session_id != null;
+                  return (
+                    <React.Fragment key={r.id}>
+                      <TableRow data-testid={`feedback-row-${r.id}`}>
+                        <TableCell className="align-top">
+                          <Button
+                            variant="ghost" size="icon" className="size-7"
+                            onClick={() => toggle(r.id)}
+                            aria-expanded={open}
+                            aria-controls={`fb-details-${r.id}`}
+                            aria-label={open ? `Hide report #${r.id}` : `Show report #${r.id}`}
+                          >
+                            {open ? <ChevronDown className="size-4" aria-hidden /> : <ChevronRight className="size-4" aria-hidden />}
+                          </Button>
+                        </TableCell>
+                        <TableCell className="align-top text-caption text-muted-foreground">
+                          <TimeAgo value={r.created_at} />
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="min-w-0 truncate text-metadata" title={r.project_name ?? undefined}>
+                            {r.project_name ?? (r.project_id != null ? `Project #${r.project_id}` : 'No project')}
+                          </div>
+                          {canOpen ? (
+                            <button
+                              type="button"
+                              onClick={() => openSession(r)}
+                              className="max-w-full truncate text-caption text-primary underline-offset-4 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              title="Open the session and the API calls it made"
                             >
-                              {isOpen ? <ChevronUp className="size-4" aria-hidden /> : <ChevronDown className="size-4" aria-hidden />}
-                            </Button>
-                          </TableCell>
-                          <TableCell>
-                            <StarRating value={r.overall_rating} />
-                          </TableCell>
-                          <TableCell className="truncate">{r.source}</TableCell>
-                          <TableCell>
-                            <Badge
-                              variant={STATUS_VARIANT[r.status] || 'muted'}
-                              className="whitespace-nowrap"
-                            >
-                              {r.status}
-                            </Badge>
-                          </TableCell>
-                          <TableCell className="truncate text-caption text-muted-foreground">
-                            {r.prompt_version || '—'}
-                          </TableCell>
-                          <TableCell>
-                            <p className="line-clamp-2 text-metadata text-foreground">
-                              {r.friction_notes || <em className="text-muted-foreground">(no notes)</em>}
+                              {r.agent_session_id != null ? `Session #${r.agent_session_id}` : 'Open the run'}
+                              {r.session_api_calls != null && ` · ${plural(r.session_api_calls, 'call')}`}
+                            </button>
+                          ) : (
+                            <span className="text-caption text-muted-foreground">No session recorded</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <div className="truncate text-metadata" title={client ?? undefined}>{client ?? '—'}</div>
+                          <div className="truncate text-caption text-muted-foreground">
+                            {r.prompt_version ? `prompt ${r.prompt_version}` : 'no prompt version'}
+                          </div>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <p className="line-clamp-2 break-words text-metadata text-foreground">
+                            {r.friction_notes || <span className="text-muted-foreground">No notes — see the critiques.</span>}
+                          </p>
+                          {(critiques > 0 || suggestions > 0) && (
+                            <p className="mt-xxs text-caption text-muted-foreground">
+                              {critiques > 0 && <span className="text-foreground">{plural(critiques, 'API critique')}</span>}
+                              {critiques > 0 && suggestions > 0 && ' · '}
+                              {suggestions > 0 && plural(suggestions, 'tool suggestion')}
                             </p>
-                          </TableCell>
-                          <TableCell className="truncate text-caption text-muted-foreground">
-                            <TimeAgo value={r.created_at} />
-                          </TableCell>
-                          <TableCell>
-                            <div className="flex gap-xxs">
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => handleStatusChange(r, 'reviewed')}
-                                    aria-label="Mark as reviewed"
-                                    className={r.status === 'reviewed' ? 'text-warning' : ''}
-                                  >
-                                    <Check className="size-4" aria-hidden />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Reviewed</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => handleStatusChange(r, 'actioned')}
-                                    aria-label="Mark as actioned"
-                                    className={r.status === 'actioned' ? 'text-success' : ''}
-                                  >
-                                    <Check className="size-4" aria-hidden strokeWidth={3} />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Actioned</TooltipContent>
-                              </Tooltip>
-                              <Tooltip>
-                                <TooltipTrigger asChild>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    onClick={() => handleStatusChange(r, 'dismissed')}
-                                    aria-label="Dismiss"
-                                  >
-                                    <DismissIcon className="size-4" aria-hidden />
-                                  </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Dismiss</TooltipContent>
-                              </Tooltip>
-                              <Button variant="outline" size="sm" onClick={() => openNotes(r)}>
-                                Notes
-                              </Button>
-                            </div>
+                          )}
+                        </TableCell>
+                        <TableCell className="align-top text-caption"><StarRating value={r.overall_rating} /></TableCell>
+                        <TableCell className="align-top">
+                          <Select value={r.status} onValueChange={(v) => changeStatus(r, v)} disabled={updatingId === r.id}>
+                            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-full')} aria-label={`Status of report #${r.id}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              {STATUSES.map((s) => <SelectItem key={s.value} value={s.value}>{s.label}</SelectItem>)}
+                            </SelectContent>
+                          </Select>
+                        </TableCell>
+                        <TableCell className="align-top">
+                          <Button
+                            variant="ghost" size="sm" className="h-8 px-xs"
+                            onClick={() => { setNotesEntry(r); setNotesText(r.reviewer_notes || ''); }}
+                            aria-label={r.reviewer_notes ? `Edit the reviewer note on report #${r.id}` : `Add a reviewer note to report #${r.id}`}
+                          >
+                            <MessageSquareText className={cn('size-4', r.reviewer_notes ? 'text-primary' : 'text-muted-foreground')} aria-hidden />
+                            {r.reviewer_notes ? 'Note' : 'Add'}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                      {open && (
+                        <TableRow id={`fb-details-${r.id}`}>
+                          <TableCell colSpan={8} className="bg-accent/30 p-md">
+                            <FeedbackDetails r={r} />
                           </TableCell>
                         </TableRow>
-                        {isOpen && (
-                          <TableRow id={`fb-details-${r.id}`}>
-                            <TableCell colSpan={8} className="bg-accent/40 p-md">
-                              <div className="grid grid-cols-1 gap-md md:grid-cols-2">
-                                <div>
-                                  <p className="mb-xs text-caption font-semibold text-foreground">
-                                    API critiques
-                                  </p>
-                                  {r.api_critiques && r.api_critiques.length > 0 ? (
-                                    <ul className="list-inside list-disc text-metadata">
-                                      {r.api_critiques.map((c, i) => (
-                                        <li key={i}>
-                                          <strong>{(c as any).endpoint || '(endpoint?)'}:</strong>{' '}
-                                          {(c as any).issue}
-                                          {(c as any).suggestion && (
-                                            <em> — {(c as any).suggestion}</em>
-                                          )}
-                                        </li>
-                                      ))}
-                                    </ul>
-                                  ) : (
-                                    <p className="text-caption text-muted-foreground">None.</p>
-                                  )}
-                                </div>
-                                <div>
-                                  <p className="mb-xs text-caption font-semibold text-foreground">
-                                    Tool suggestions
-                                  </p>
-                                  {r.tool_suggestions && r.tool_suggestions.length > 0 ? (
-                                    <div className="flex flex-wrap gap-xxs">
-                                      {r.tool_suggestions.map((t, i) => (
-                                        <Tooltip key={i}>
-                                          <TooltipTrigger asChild>
-                                            <Badge variant="outline">
-                                              {(t as any).name}
-                                              {(t as any).category ? ` · ${(t as any).category}` : ''}
-                                            </Badge>
-                                          </TooltipTrigger>
-                                          {(t as any).rationale && (
-                                            <TooltipContent>{(t as any).rationale}</TooltipContent>
-                                          )}
-                                        </Tooltip>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <p className="text-caption text-muted-foreground">None.</p>
-                                  )}
-                                </div>
-                                <div className="md:col-span-2">
-                                  {/* v2.43.3 — surface the full friction_notes
-                                      prose.  The table column line-clamps to
-                                      2 lines and the search box filters by
-                                      this field; without this block the
-                                      reviewer can find a row but can't read
-                                      what the agent actually wrote. */}
-                                  <p className="mb-xs text-caption font-semibold text-foreground">
-                                    Friction notes (full)
-                                  </p>
-                                  {r.friction_notes ? (
-                                    <p className="whitespace-pre-wrap text-metadata text-foreground">
-                                      {r.friction_notes}
-                                    </p>
-                                  ) : (
-                                    <p className="text-caption text-muted-foreground">None.</p>
-                                  )}
-                                </div>
-                                <div className="md:col-span-2">
-                                  <p className="mb-xs text-caption font-semibold text-foreground">
-                                    Agent metrics
-                                  </p>
-                                  {r.agent_metrics && Object.keys(r.agent_metrics).length > 0 ? (
-                                    <pre className="max-h-40 overflow-auto rounded-control bg-card p-xs font-mono text-caption text-foreground">
-                                      {JSON.stringify(r.agent_metrics, null, 2)}
-                                    </pre>
-                                  ) : (
-                                    <p className="text-caption text-muted-foreground">None.</p>
-                                  )}
-                                </div>
-                                {r.reviewer_notes && (
-                                  <div className="md:col-span-2">
-                                    <p className="mb-xs text-caption font-semibold text-foreground">
-                                      Reviewer notes
-                                    </p>
-                                    <p className="text-metadata text-foreground">
-                                      {r.reviewer_notes}
-                                    </p>
-                                  </div>
-                                )}
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        )}
-                      </React.Fragment>
-                    );
-                  })}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </div>
+        )}
 
-      {/* Notes dialog */}
-      <Dialog open={notesOpen} onOpenChange={(next) => !next && !notesSaving && setNotesOpen(false)}>
+        {hasMore && (
+          <div className="mt-sm flex justify-center">
+            <Button variant="outline" size="sm" onClick={loadMore} disabled={loadingMore}>
+              {loadingMore && <Loader2 className="size-4 animate-spin" aria-hidden />}
+              Show {Math.min(PAGE, total - rows.length).toLocaleString()} more
+            </Button>
+          </div>
+        )}
+      </PostureSection>
+
+      <Dialog open={notesEntry != null} onOpenChange={(next) => { if (!next && !notesSaving) setNotesEntry(null); }}>
         <DialogContent>
           <DialogHeader>
-            <DialogTitle>Reviewer Notes</DialogTitle>
+            <DialogTitle>Reviewer note{notesEntry ? ` — report #${notesEntry.id}` : ''}</DialogTitle>
+            <DialogDescription>For other reviewers: what was checked, links to the fix or issue, why it was dismissed.</DialogDescription>
           </DialogHeader>
           <Textarea
             value={notesText}
             onChange={(e) => setNotesText(e.target.value)}
             rows={6}
-            placeholder="Triage notes, links to issues, next steps…"
+            aria-label="Reviewer note"
+            placeholder="Verified against session #57's calls; fixed in 2.428.1…"
           />
           <DialogFooter>
-            <Button variant="outline" onClick={() => setNotesOpen(false)} disabled={notesSaving}>
-              Cancel
-            </Button>
+            <Button variant="outline" onClick={() => setNotesEntry(null)} disabled={notesSaving}>Cancel</Button>
             <Button onClick={saveNotes} disabled={notesSaving}>
-              {notesSaving ? <><Loader2 className="size-4 animate-spin" aria-hidden /> Saving…</> : 'Save'}
+              {notesSaving && <Loader2 className="size-4 animate-spin" aria-hidden />}
+              Save note
             </Button>
           </DialogFooter>
         </DialogContent>
@@ -630,26 +525,69 @@ const Feedback: React.FC = () => {
   );
 };
 
-const KpiCard: React.FC<{ label: string; value: React.ReactNode; accent?: boolean }> = ({
-  label,
-  value,
-  accent,
-}) => (
-  // v2.43.2 — `min-w-0 overflow-hidden` on the value container so a long
-  // string (e.g. agent-submitted "Top Suggested Tool" with a verbose
-  // qualifier) can't push the card wider than its grid cell.  Pre-fix
-  // the v2.43.0 overflow-x-hidden removal exposed the overflow at the
-  // shell level — the card was wider than its 1/4 grid column.
-  <Card className={cn('min-w-0 overflow-hidden', accent && 'border-l-4 border-l-primary')}>
-    <CardContent className="p-md">
-      <p className="text-micro font-semibold uppercase tracking-wider text-muted-foreground">
-        {label}
-      </p>
-      <div className="min-w-0 truncate text-section-title font-semibold text-foreground">
-        {value}
+/** The whole report: critiques first (the actionable part), then the rest. */
+const FeedbackDetails: React.FC<{ r: AgentFeedbackEntry }> = ({ r }) => {
+  const critiques = r.api_critiques ?? [];
+  const suggestions = r.tool_suggestions ?? [];
+  const metrics = r.agent_metrics && Object.keys(r.agent_metrics).length > 0 ? r.agent_metrics : null;
+  const str = (v: unknown) => (typeof v === 'string' ? v : v == null ? '' : JSON.stringify(v));
+  return (
+    <div className="grid min-w-0 grid-cols-1 gap-md lg:grid-cols-2">
+      <div className="min-w-0 lg:col-span-2">
+        <h3 className="mb-xs text-caption font-semibold text-foreground">API critiques</h3>
+        {critiques.length > 0 ? (
+          <ul className="space-y-xs">
+            {critiques.map((c, i) => (
+              <li key={i} className="min-w-0 break-words text-metadata">
+                <code className="rounded bg-card px-xxs font-mono text-caption">{str(c.endpoint) || 'no endpoint named'}</code>{' '}
+                {str(c.issue)}
+                {c.suggestion != null && c.suggestion !== '' && (
+                  <span className="block text-muted-foreground">Suggests: {str(c.suggestion)}</span>
+                )}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-caption text-muted-foreground">None.</p>}
       </div>
-    </CardContent>
-  </Card>
-);
+      <div className="min-w-0">
+        <h3 className="mb-xs text-caption font-semibold text-foreground">Notes</h3>
+        {r.friction_notes
+          ? <p className="whitespace-pre-wrap break-words text-metadata">{r.friction_notes}</p>
+          : <p className="text-caption text-muted-foreground">None.</p>}
+      </div>
+      <div className="min-w-0">
+        <h3 className="mb-xs text-caption font-semibold text-foreground">Tool suggestions</h3>
+        {suggestions.length > 0 ? (
+          <ul className="space-y-xxs">
+            {suggestions.map((t, i) => (
+              <li key={i} className="min-w-0 break-words text-metadata">
+                <Badge variant="outline" className="mr-xs">{str(t.name) || 'unnamed'}</Badge>
+                {t.category != null && <span className="text-muted-foreground">{str(t.category)} </span>}
+                {t.rationale != null && <span>— {str(t.rationale)}</span>}
+              </li>
+            ))}
+          </ul>
+        ) : <p className="text-caption text-muted-foreground">None.</p>}
+      </div>
+      <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] gap-x-md gap-y-xxs text-caption lg:col-span-2">
+        <dt className="text-muted-foreground">What it was doing</dt>
+        <dd className="min-w-0 truncate">{SOURCE_LABELS[r.source] ?? r.source} <span className="text-muted-foreground">(the agent's own label)</span></dd>
+        {r.test_plan_id != null && (<><dt className="text-muted-foreground">Test plan</dt><dd>#{r.test_plan_id}</dd></>)}
+        {r.recon_session_id != null && (<><dt className="text-muted-foreground">Recon run</dt><dd>#{r.recon_session_id}</dd></>)}
+        {r.execution_session_id != null && (<><dt className="text-muted-foreground">Execution run</dt><dd>#{r.execution_session_id}</dd></>)}
+        {r.reviewed_at && (<><dt className="text-muted-foreground">Last triaged</dt><dd><TimeAgo value={r.reviewed_at} /></dd></>)}
+        {r.reviewer_notes && (<><dt className="text-muted-foreground">Reviewer note</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.reviewer_notes}</dd></>)}
+      </dl>
+      {metrics && (
+        <div className="min-w-0 lg:col-span-2">
+          <h3 className="mb-xs text-caption font-semibold text-foreground">What the agent said about itself</h3>
+          <pre className="max-h-40 overflow-auto whitespace-pre-wrap break-words rounded-control bg-card p-xs font-mono text-caption">
+            {JSON.stringify(metrics, null, 2)}
+          </pre>
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default Feedback;
