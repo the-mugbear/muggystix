@@ -52,6 +52,25 @@ def test_rows_link_to_the_session_and_its_calls(client, db_session, test_project
     assert stats["with_api_critiques"] >= 1
 
 
+def test_rows_name_the_mcp_client_the_session_connected_with(client, db_session, test_project):
+    """The agent record is reused across sessions (a seeded "planner"), so the
+    client's own name from MCP ``initialize`` is what says who tested (v2.428.5)."""
+    from app.db.models_agent import McpToolCall
+    from app.db.models_auth import APIKey
+    headers, assist_id = _start(client, test_project)
+    assist = db_session.query(AssistSession).get(assist_id)
+    key = db_session.query(APIKey).filter(APIKey.agent_session_id == assist.agent_session_id).first()
+    # The MCP log keeps a longer prefix than the key row.
+    db_session.add(McpToolCall(rpc_method="initialize", outcome="ok", client_name="claude-code",
+                               api_key_prefix=(key.key_prefix + "zz")[:16]))
+    db_session.commit()
+    assert client.post("/api/v1/agent/feedback", headers=headers, json={
+        "source": "assist", "friction_notes": "client test"}).status_code == 201
+    fb = db_session.query(AgentFeedback).filter(AgentFeedback.friction_notes == "client test").one()
+    row = client.get(f"/api/v1/feedback/{fb.id}").json()
+    assert row["client_name"] == "claude-code"
+
+
 def test_project_filter_and_paging(client, db_session, test_project):
     for i in range(3):
         db_session.add(AgentFeedback(project_id=test_project.id, source="assist",

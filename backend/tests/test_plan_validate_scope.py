@@ -79,3 +79,30 @@ def test_list_filters_from_the_agent_route_do_not_crash_context_or_validate(clie
     v = client.get(f"/api/v1/agent/test-plans/{plan_id}/validate", headers=headers)
     assert v.status_code == 200, v.text
     assert v.json()["coverage"]["eligible_hosts_remaining"] == 2
+
+
+def test_a_plan_can_target_exact_hosts_by_id_or_query(client, db_session, test_project):
+    """MCP acceptance feedback #19: planning "the hosts in review by me" had
+    to be faked with /32 subnet filters.  host_ids / q make a fixed selection."""
+    hosts = [_host_with_open_port(db_session, test_project, f"10.10.4.{i}") for i in (1, 2, 3)]
+    db_session.commit()
+    headers = _start(client, test_project)
+
+    by_ids = client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "Two hosts", "host_ids": [hosts[0].id, hosts[2].id]})
+    assert by_ids.status_code == 201, by_ids.text
+    ctx = client.get(f"/api/v1/agent/test-plans/{by_ids.json()['id']}/context", headers=headers).json()
+    assert {h["id"] for h in ctx["candidate_hosts"]} == {hosts[0].id, hosts[2].id}
+
+    by_q = client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "One host", "q": "ip:10.10.4.2"})
+    assert by_q.status_code == 201, by_q.text
+    v = client.get(f"/api/v1/agent/test-plans/{by_q.json()['id']}/validate", headers=headers).json()
+    assert v["coverage"]["eligible_hosts_remaining"] == 1
+
+    assert client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "x", "q": "ip:10.99.99.99"}).status_code == 422
+    assert client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "x", "host_ids": [999999]}).status_code == 422
+    assert client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "x", "host_ids": [hosts[0].id], "q": "ip:10.10.4.1"}).status_code == 422

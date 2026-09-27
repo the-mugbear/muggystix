@@ -21,7 +21,7 @@ floor, AUDITOR (``deps.AGENT_READ_ROLE_OVERRIDES``).
 """
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Literal, Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse
@@ -74,6 +74,8 @@ def list_assist_scanner_observations(
     limit: int = Query(50, ge=1, le=200),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
+    sort: Literal["severity", "hosts"] = Query(
+        "severity", description="severity: most severe first (default); hosts: most widespread first"),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
@@ -81,7 +83,7 @@ def list_assist_scanner_observations(
     try:
         page = observations.list_issues(
             db, session.project_id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind,
+            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort,
         )
     except observations.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

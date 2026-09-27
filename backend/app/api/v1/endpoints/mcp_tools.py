@@ -542,7 +542,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "NSE script output (bounded), severity counts, your review status, tags, "
             "assignees, scope membership, per-domain assessment state, weakness "
             "flags (smb_unsigned, weak_tls…), SMB signing, certificates, network "
-            "attribution, scan conflicts, note_count and finding_count. Notes and "
+            "attribution, scan conflicts (each has resolved_at = when the shown "
+            "value was picked, not that anyone settled it), note_count and "
+            "finding_count. names = every name SEEN at the address. Notes and "
             "individual vulnerabilities are separate — use assist_get_host_notes "
             "and assist_get_host_vulnerabilities for those."
         ),
@@ -637,9 +639,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Every web interface observed on one host, as a page — the "
             "continuation for assist_get_host, whose web_interfaces list is capped "
             "at 10 (its web_interfaces_truncated says when). Each item carries the "
-            "URL, FQDN, title, server header, technologies and a "
-            "screenshot_download_path when EyeWitness captured one. Read has_more "
-            "and page with offset; total is the whole record (v2.343.3)."
+            "URL, FQDN, title, server header, technologies, a "
+            "screenshot_download_path when EyeWitness captured one, and the "
+            "certificate / TLS facts (cert_not_after, cert_self_signed, cert "
+            "organisations, tls_weak_protocol — null means the tool did not "
+            "report it, not that it is fine; an expired certificate is the "
+            "check:tls_cert_expired observation). Read has_more and page with "
+            "offset; total is the whole record (v2.343.3)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/web-interfaces",
@@ -847,7 +853,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "new critical/high scanner observations since they last marked "
             "Operations seen. Answers 'what's mine?' and 'what changed since I was "
             "last here?'. Reading never marks anything seen. *_unavailable=true "
-            "means that section could not be computed — say so, never 'nothing'."
+            "means that section could not be computed — say so, never 'nothing'. "
+            "The lists are PREVIEWS as on the page (my_queue 10, tasks/notes/"
+            "findings/follow-ups 15): use the section's own count — "
+            "in_review_count, total_open, total — for 'how many', never the "
+            "list length. blockers.failed_import_count counts failed imports "
+            "nobody has dismissed and no later clean import superseded, so it is "
+            "smaller than assist_list_ingestion_issues' failed."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench",
@@ -861,7 +873,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "tier order (1 exploitable critical, 2 critical vulnerability, 3 "
             "exploit available, 4 high-value service new/changed, 5 scans "
             "disagree). queue_total and tier_counts cover the whole queue. The "
-            "answer to 'what should we look at next?'."
+            "answer to 'what should we look at next?'. Tier 5 means scans "
+            "recorded different values for the host: every recorded disagreement "
+            "carries resolved_at (when BlueStick picked the value it shows), so "
+            "'resolved' is not 'settled' — a person should still look."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench/investigate",
@@ -902,7 +917,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "that carry no evidence in it, the open ports that made each eligible, "
             "and the step that closes the gap. domain is a key from "
             "assist_get_coverage (e.g. vuln_assessment, web_tls, auth_smb_ad); "
-            "segment (optional) is a matrix column key from the same call. total "
+            "segment (optional) is matrix.segments[].key from the same call — a "
+            "site id, a subnet key or 'unmapped', NOT a CIDR (a wrong one answers "
+            "404 listing the accepted keys). total "
             "is exact. Respect scope_caution: hosts outside the declared scope "
             "must be confirmed in scope first."
         ),
@@ -955,7 +972,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "project but rows were dropped, so counts drawn from it are "
             "undercounts (everything else reports that job as completed); "
             "queued/processing mean data is still arriving. If has_issues is "
-            "false, an empty result elsewhere is a real absence."
+            "false, an empty result elsewhere is a real absence. Parse-error "
+            "counts: unresolved_parse_errors_total is the project's number; "
+            "unresolved_parse_errors is only the part with no import job (the "
+            "rest is already under failed) — never report it as the total."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/ingestion-issues",
@@ -1014,16 +1034,18 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # page (agent_assist_reporting.py), and images inline.
     "assist_list_scanner_observations": {
         "description": (
-            "Scanner results grouped by ISSUE across the project, most severe "
-            "first: title, severity, kind, sources, host_count and "
-            "judged_host_count (hosts a finding already covers), plus the "
-            "covering finding. Unjudged issues only unless include_judged. Use "
-            "for 'most widespread vulnerabilities' / 'what is not a finding yet'; "
-            "assist_list_observation_hosts lists one issue's hosts."
+            "Scanner results grouped by ISSUE across the project: title, severity, "
+            "kind, sources, host_count and judged_host_count (hosts a finding "
+            "already covers), plus the covering finding. Most severe first; "
+            "sort=hosts puts the most widespread first ('which issues are on the "
+            "most hosts?'). An issue is listed until EVERY host carrying it is "
+            "judged — a row with judged_host_count > 0 is partly judged; "
+            "include_judged adds the fully judged ones. total counts all matching "
+            "issues. assist_list_observation_hosts lists one issue's hosts."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
-        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "skip", "limit"],
+        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "sort", "skip", "limit"],
         "defaults": {"limit": 25},
         "input_schema": {
             "type": "object",
@@ -1033,6 +1055,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "kind": {"type": "string", "enum": ["misconfiguration", "vulnerability", "informational"]},
                 "include_judged": {"type": "boolean", "default": False},
                 "min_hosts": {"type": "integer", "minimum": 1, "default": 1},
+                "sort": {"type": "string", "enum": ["severity", "hosts"], "default": "severity"},
                 "skip": {"type": "integer", "minimum": 0, "default": 0},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
             },
@@ -1160,7 +1183,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "in_scope=true&resolved=false — approved names no upload has ever "
             "resolved. A name whose address is shared with other names (load "
             "balancer / vhost) must be tested by name, not by IP. host_id lists "
-            "the names currently bound to one host's address."
+            "the names that CURRENTLY resolve to one host's address (latest "
+            "A/AAAA); assist_get_host's names is wider — every name ever SEEN at "
+            "the address (PTR, certificate, HTTP, scanner), so a PTR-only name "
+            "appears there and not here."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/names",
@@ -1180,7 +1206,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     "assist_list_scans": {
-        "description": "List the scans ingested into this project (most recent first).",
+        "description": (
+            "List the scans ingested into this project (most recent first). Each "
+            "carries ingestion_job_id, the import that produced it — the job_id "
+            "assist_list_uninterpreted_lines takes (a scan id is not a job id)."
+        ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
         "query_params": ["limit"],
@@ -1248,13 +1278,16 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "create_test_plan": {
         "description": (
             "Open a DRAFT test plan in your session. Fill it in with plan_add_entries, "
-            "then plan_submit for human approval — you cannot approve it yourself."
+            "then plan_submit for human approval — you cannot approve it yourself. "
+            "To plan an EXACT set of hosts, pass host_ids, or q (a host query such as "
+            "'follow:in_review OR assigned:me', resolved to its matching hosts now); "
+            "plan_get_context then offers only those hosts."
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans",
         # A retry creates a second draft plan (v2.343.2).
         "idempotent": False,
-        "body_params": ["title", "description", "filter_criteria"],
+        "body_params": ["title", "description", "filter_criteria", "host_ids", "q"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1276,6 +1309,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                         "search": {"type": "string"},
                     },
                     "additionalProperties": False,
+                },
+                "host_ids": {
+                    "type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 10000,
+                    "description": "Plan exactly these hosts (ids from assist_list_hosts). Not with q.",
+                },
+                "q": {
+                    "type": "string",
+                    "description": "A host query, resolved to its matching hosts when the plan is created. Not with host_ids.",
                 },
             },
             "required": ["title"],

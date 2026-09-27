@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.428.0 / frontend 5.309.1 (2026-09-26) — and see the note at the end: the live OpenAPI is the authority for the full route list.
+> **Last verified against:** backend 2.429.0 / frontend 5.310.1 (2026-09-26) — and see the note at the end: the live OpenAPI is the authority for the full route list.
 
 Base path: `/api/v1`
 
@@ -208,7 +208,7 @@ The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `agent_session_id`, `session_page_id` (the `/assist-sessions/{id}` page listing the session's API calls) and `session_api_calls`. |
+| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `client_name` (the MCP client the session connected with), `agent_session_id`, `session_page_id` (the `/assist-sessions/{id}` page listing the session's API calls) and `session_api_calls`. |
 | GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`, and the same who-and-where fields as the list. |
 | GET | `/feedback/stats` | admin | Aggregate counts by source, status and prompt version, average `overall_rating`, top tool suggestions, and `with_api_critiques` / `with_tool_suggestions`. |
 | PATCH | `/feedback/{id}` | admin | Update status + `reviewer_notes`. |
@@ -343,7 +343,7 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | POST | `/annotations/{annotation_id}/promote` | Promote a note thread to a finding (the note becomes its evidence). |
 | GET | `/findings/{finding_id}/history` · `GET`/`POST /findings/{finding_id}/notes` | Status history; the comment / evidence thread (terminal determinations need a justification). |
 | POST | `/findings/bulk/status` · `/findings/bulk/assign` | Bulk transitions and assignment. |
-| GET | `/scanner-observations` | **v2.386.0** — scanner rows grouped by ISSUE (`Vulnerability.issue_key`) across the project's hosts, with `host_count` and `judged_host_count`. `search`, `severity`, `kind` (misconfiguration \| vulnerability \| informational), `include_judged`, `min_hosts`, `skip`, `limit` (≤200). Drives the Findings page's *Scanner observations* view. |
+| GET | `/scanner-observations` | **v2.386.0** — scanner rows grouped by ISSUE (`Vulnerability.issue_key`) across the project's hosts, with `host_count` and `judged_host_count`. `search`, `severity`, `kind` (misconfiguration \| vulnerability \| informational), `include_judged`, `min_hosts`, `sort` (`severity` default \| `hosts` = most widespread first, v2.429.0), `skip`, `limit` (≤200). Drives the Findings page's *Scanner observations* view. |
 | GET | `/scanner-observations/hosts?issue_key=` | The hosts carrying one issue (`limit` ≤5000). |
 | POST | `/scanner-observations/promote` | Analyst+. `{items: [{issue_key, host_ids?}]}` — promote several issues at once, each on every host carrying it or exactly the named ones (validated all-or-nothing; 422). An issue that already has a finding JOINS it, and the bulk path never changes that finding's status. |
 

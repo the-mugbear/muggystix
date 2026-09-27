@@ -1,6 +1,6 @@
 # BlueStick AI Agent Guide
 
-**Prompt version:** 2.11.0 · **Verified against:** backend 2.428.0 (2026-09-26)
+**Prompt version:** 2.12.0 · **Verified against:** backend 2.429.0 (2026-09-26)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
@@ -265,6 +265,9 @@ Your job is to populate a draft plan with structured test entries and submit it 
 # 0. Open the planning phase — only when you were NOT handed a plan_id.
 POST /agent/test-plans   {"title": "..."}        # optional: description, filter_criteria
 #    → 201 { id, ... }   use that id as {plan_id} below.   (MCP: create_test_plan)
+#    To plan an EXACT set of hosts, add "host_ids": [..] OR "q": "<host query>"
+#    (e.g. "follow:in_review OR assigned:me") — resolved to its matching hosts
+#    NOW, so /context offers only those. 422 names unknown ids / an empty match.
 
 # 1. Review candidate hosts (services, vulnerabilities, port data).
 #    /context is PAGINATED — at most `limit` hosts per call (default 500).
@@ -982,7 +985,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/agent/test-plans` | **Open the planning phase** — create a draft (`{title}`, optional `description`, `filter_criteria`); 201 returns its `id` |
+| POST | `/agent/test-plans` | **Open the planning phase** — create a draft (`{title}`, optional `description`, `filter_criteria`, and `host_ids` or `q` for an exact host selection); 201 returns its `id` |
 | GET | `/agent/test-plans` | List the project's plans. `?mine=true` narrows to the ones this session drafted; `?status=` filters by status |
 | GET | `/agent/test-plans/{id}` | Get test plan detail |
 | GET | `/agent/test-plans/{id}/context` | **Planning context** — candidate hosts + enrichment in one call |
@@ -1330,21 +1333,21 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `GET  /agent/assist/hosts.ndjson` | **The complete matching host set** — same filters + `q` DSL as `/agent/assist/hosts`, but uncapped and streamed one JSON object per line. Use this instead of paging when the project is large: redirect to a file and query it locally (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/hosts.ndjson" -o hosts.jsonl`, then `jq`/`grep`/`wc -l`). Report counts from the file, never a truncated page. Never read the stream into context whole. |
 | `GET  /agent/assist/scopes` | Scope CIDR lists **and declared domains** — **each capped at 100 per scope**. Each ScopeBrief carries `subnet_total` / `subnets_truncated` and `domain_total` / `domains_truncated`; when a `*_truncated` flag is true the list is only a sample, so tell the operator it's partial — full enumeration needs a recon session. `domains[]` entries are `{domain, include_subdomains}` (exact name vs the name and everything under it); `names_in_scope_total` is the deduplicated count of inventory names they cover. **Name scope is independent of subnet scope**: an in-scope name does not put the address it resolves to in scope, and an in-scope subnet does not put names in scope. |
 | `GET  /agent/assist/names` | The named-asset inventory (FQDNs), paged (`limit` default 100, max 1000, `offset`). Each row: `in_scope` (a declared domain covers it), `current_ips` (derived from the latest A/AAAA observations — never stored; empty = unresolved), `current_ip_total`, `sources` (observation kinds: A, AAAA, IMPORT, HTTP, CERT, …). Filters: `q`, `in_scope`, `resolved`, `host_id` (names currently bound to that host's address), `kind`. **How to act:** `in_scope=true&resolved=false` is the queue — names the operator approved that no upload has ever resolved (chase with dnsx/amass output, or tell the operator to drop them from scope). A name whose address is shared with other names (`current_ip_total` on the host's other names, a load balancer / vhost) must be tested **by name**, not by IP — the bare address reaches a different site. |
-| `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
+| `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. Each row carries `ingestion_job_id` — the import that produced it, the `job_id` `/assist/uninterpreted-lines` takes (a scan id is not a job id). |
 | `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, the operator `assigned:me` refers to). |
 | `GET  /agent/assist/vocabulary` | The values this project uses: tags, labels, sites, scope names, usernames (for `assigned:`), finding statuses and severities. |
 | `GET  /agent/assist/findings` | **Triaged findings** (not raw scanner rows): filters `status`, `severity`, `source`, `host_id`, `unowned=true`, `owner` (username or `me`), `search`; default 50, max 500. The report's findings come from here. |
 | `GET  /agent/assist/findings/{finding_id}` | One finding with its affected hosts (per-host endpoint status) and evidence; `report_text` (description, impact, recommendation, references, steps to reproduce, CVSS vector and score — what a report will say), `endpoint_status_counts`, and `status_history` (who changed the status, when, from→to, why). |
-| `GET  /agent/assist/scanner-observations` · `/scanner-observations/hosts?issue_key=` | Scanner results grouped by ISSUE across the project (`host_count`, `judged_host_count`, the covering finding) — the Findings page's "Scanner observations" view; unjudged issues only unless `include_judged=true`. Then the hosts carrying one issue. |
+| `GET  /agent/assist/scanner-observations` · `/scanner-observations/hosts?issue_key=` | Scanner results grouped by ISSUE across the project (`host_count`, `judged_host_count`, the covering finding) — the Findings page's "Scanner observations" view; unjudged issues only unless `include_judged=true`. Then the hosts carrying one issue. `sort=hosts` puts the most widespread first; a row with `judged_host_count > 0` is partly judged (listed until every host is). |
 | `GET  /agent/assist/client-reports` · `/client-reports/{id}` · `/client-reports/{id}/files/{fmt}` | The Reports page (operator needs `auditor`): drafts and issued reports; one report with every finding as the report states it (`content_source`: `issued_snapshot` = what the client was given, `draft_live` = what a draft would say now); the rendered files. |
-| `GET  /agent/assist/hosts/{host_id}/web-interfaces` | Every web interface on a host (URL, title, server, TLS). |
+| `GET  /agent/assist/hosts/{host_id}/web-interfaces` | Every web interface on a host: URL, title, server, technologies, screenshot reference, and the certificate / TLS facts (`cert_not_after`, `cert_self_signed`, cert organisations, `tls_weak_protocol`). Null = the tool did not report it, not "fine"; an expired certificate is `check:tls_cert_expired`. |
 | `GET  /agent/assist/hosts/{host_id}/access` | NetExec / SMBMap results on the host (logins, shares, local admin) next to the raw tool line — which may contain credentials the tool found. |
 | `GET  /agent/assist/hosts/{host_id}/testing` | What has been planned and executed against the host. |
 | `GET  /agent/assist/hosts/{host_id}/notes` · `GET /agent/assist/notes` | Notes on one host · across the project, with their threads (`parent_id` / `thread_root_id`), type, status, assignee, due date, the `finding_id` a thread was promoted to, and attachment references. `/assist/notes` rows carry `target {kind, id, label}` (host, port, finding, scan, scope, test plan or project). |
 | `GET  /agent/assist/workbench` | Your operator's Operations "My work": my queue, tasks, assigned notes, owned findings, team review, `since_last_visit`, follow-ups ("needs another look"), blockers. Reading it never marks anything seen; `*_unavailable: true` means not computed, not "nothing". |
 | `GET  /agent/assist/workbench/investigate?tier=&limit=&offset=` | "Worth a look": untouched hosts with reasons, in stated tier order (1 exploitable critical … 5 scans disagree); `queue_total` / `tier_counts` are whole-queue. |
 | `GET  /agent/assist/workbench/terrain?sort=address\|untouched\|critical_untouched&limit=` | Hosts per /24 (IPv6 /64): tested / planned / worked / untouched, and `critical_untouched`. |
-| `GET  /agent/assist/evidence/gaps?domain=&segment=&limit=` | The Evidence page's gap list: eligible-but-unassessed hosts, their ports, and the step that closes the gap (`domain` = a key from `/assist/coverage`). Respect `scope_caution`. |
+| `GET  /agent/assist/evidence/gaps?domain=&segment=&limit=` | The Evidence page's gap list: eligible-but-unassessed hosts, their ports, and the step that closes the gap (`domain` = a key from `/assist/coverage`). Respect `scope_caution`. `segment` is `matrix.segments[].key` from `/assist/coverage` (a site id, a subnet key or `unmapped`) — NOT a CIDR; a wrong value answers 404 listing the accepted keys. |
 | `GET  /agent/assist/scans/compare?a=&b=&limit=` | What changed between two scans: hosts new / gone / changed, ports newly open / closed / not observed (not observed is not remediation). |
 | `GET  /agent/assist/coverage` · `/segments` · `/posture` · `/patterns` | Scope coverage; the Posture page's segments, headline and recurring-weakness patterns. |
 | `GET  /agent/assist/ingestion-issues` | Imports that failed, were partial, or skipped records (operator needs `analyst`, as the Ingestion Results page does). |
@@ -1389,7 +1392,7 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
    - "What's worth a look / what's mine / what changed since I was last here?" → `GET /agent/assist/workbench/investigate` · `GET /agent/assist/workbench` (`since_last_visit`).
    - "What changed between the last two scans?" → `GET /agent/assist/scans?limit=5` to pick them, then `GET /agent/assist/scans/compare?a=…&b=…`.
    - "What is still unassessed in segment Y?" → `GET /agent/assist/coverage` (domain and segment keys), then `GET /agent/assist/evidence/gaps?domain=…&segment=…`.
-   - "What are the most widespread issues not yet made findings?" → `GET /agent/assist/scanner-observations` (rows run by severity, then by unjudged host count; `min_hosts=` narrows to widespread ones).
+   - "What are the most widespread issues not yet made findings?" → `GET /agent/assist/scanner-observations?sort=hosts` (most widespread first; `min_hosts=` narrows).
    - "What did we report to the client?" → `GET /agent/assist/client-reports`, then `/client-reports/{id}` (`content_source: issued_snapshot`).
    - "Who closed finding X, and why?" → `GET /agent/assist/findings/{id}` → `status_history`.
    - "Which names are we allowed to test but haven't found yet?" → `GET /agent/assist/names?in_scope=true&resolved=false` (the context's `names.in_scope_unresolved` is the count). "What sits behind 10.0.0.5?" → `GET /agent/assist/names?host_id=<id>` — several names on one address means test each **by name**.

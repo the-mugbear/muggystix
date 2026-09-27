@@ -354,3 +354,51 @@ def test_assist_finding_detail_carries_report_text_and_status_history(
         (e["from_status"], e["to_status"], e["summary"]) for e in history
     ]
     assert body["status_history"][0]["changed_by"] == test_user.username
+
+
+def test_scan_rows_name_their_import_job(client, db_session, test_project):
+    """MCP acceptance feedback #18: an agent could not get from a scan to the
+    job whose uninterpreted lines it wanted, and must not guess scan id = job id."""
+    from app.db import models
+    scan = models.Scan(project_id=test_project.id, filename="nxc.txt", tool_name="netexec")
+    db_session.add(scan)
+    db_session.flush()
+    job = models.IngestionJob(project_id=test_project.id, filename="stored-nxc.txt", storage_path="/tmp/stored-nxc.txt", original_filename="nxc.txt",
+                              status="completed", scan_id=scan.id)
+    db_session.add(job)
+    db_session.commit()
+    r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "scans"})
+    headers = {"X-API-Key": r.json()["api_key"]}
+    rows = client.get("/api/v1/agent/assist/scans", headers=headers).json()
+    row = next(x for x in rows if x["id"] == scan.id)
+    assert row["ingestion_job_id"] == job.id
+
+
+def test_web_interfaces_carry_their_certificate_facts(client, db_session, test_project):
+    """MCP acceptance feedback #12: the TLS state of an HTTPS interface was not
+    readable — the typed cert/TLS columns were never serialized."""
+    from datetime import datetime, timezone
+    from app.db import models
+    host = models.Host(project_id=test_project.id, ip_address="10.20.0.5", state="up")
+    db_session.add(host)
+    db_session.flush()
+    scan = models.Scan(project_id=test_project.id, filename="httpx.json", tool_name="httpx")
+    db_session.add(scan)
+    db_session.flush()
+    wi = models.WebInterface(
+        project_id=test_project.id, host_id=host.id, scan_id=scan.id, url="https://10.20.0.5/",
+        port=443, source="httpx",
+        cert_not_after=datetime(2025, 1, 1, tzinfo=timezone.utc), cert_self_signed=True,
+        cert_subject_org="Acme", tls_weak_protocol=True,
+    )
+    db_session.add(wi)
+    db_session.commit()
+    r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "tls"})
+    headers = {"X-API-Key": r.json()["api_key"]}
+    page = client.get(f"/api/v1/agent/assist/hosts/{host.id}/web-interfaces", headers=headers)
+    assert page.status_code == 200, page.text
+    item = page.json()["items"][0]
+    assert item["cert_self_signed"] is True
+    assert item["tls_weak_protocol"] is True
+    assert item["cert_subject_org"] == "Acme"
+    assert item["cert_not_after"].startswith("2025-01-01")

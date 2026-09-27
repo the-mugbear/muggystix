@@ -40,6 +40,8 @@ export interface AgentFeedbackEntry {
   session_api_calls?: number | null;
   project_name?: string | null;
   agent_name?: string | null;
+  /** v2.428.5 — the MCP client the session connected with (its `initialize`). */
+  client_name?: string | null;
 }
 
 export interface AgentFeedbackListParams {

@@ -179,6 +179,56 @@ def _entry_response(entry: TestPlanEntry) -> EntryResponse:
     )
 
 
+_MAX_SELECTION = 10_000
+
+
+def _resolve_plan_selection(db: Session, session, body) -> Optional[List[int]]:
+    """The fixed host list a new plan targets, from ``host_ids`` or ``q``
+    (v2.428.5), or None for a filter / whole-project plan.  422 when a named
+    host is not in the project, or the query matches nothing / too much."""
+    if body.host_ids and body.q:
+        raise HTTPException(status_code=422, detail="Send host_ids or q, not both.")
+    if body.host_ids:
+        wanted = sorted(set(body.host_ids))
+        found = {
+            hid for (hid,) in db.query(models.Host.id)
+            .filter(models.Host.project_id == session.project_id, models.Host.id.in_(wanted))
+        }
+        missing = [h for h in wanted if h not in found]
+        if missing:
+            raise HTTPException(status_code=422, detail={
+                "error": "hosts_not_in_project",
+                "message": f"{len(missing)} host id(s) are not hosts of this project.",
+                "host_ids": missing[:50],
+            })
+        return wanted
+    if body.q:
+        from app.services.host_query_dsl import BuildCtx, DSLError, evaluate, parse_query
+        operator = session.started_by
+        if operator is None:
+            raise HTTPException(status_code=400, detail="This session has no operator bound; a host query cannot be evaluated.")
+        try:
+            pred = evaluate(parse_query(body.q), BuildCtx(db, operator, session.project_id))
+        except DSLError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid query: {exc}")
+        ids = [
+            hid for (hid,) in db.query(models.Host.id)
+            .filter(models.Host.project_id == session.project_id, pred)
+            .order_by(models.Host.id).limit(_MAX_SELECTION + 1)
+        ]
+        if not ids:
+            raise HTTPException(status_code=422, detail={
+                "error": "query_matches_no_hosts", "message": f"q={body.q!r} matches no host in this project.",
+            })
+        if len(ids) > _MAX_SELECTION:
+            raise HTTPException(status_code=422, detail={
+                "error": "selection_too_large",
+                "message": f"q matches more than {_MAX_SELECTION} hosts; narrow it, or plan with filter_criteria.",
+            })
+        return ids
+    return None
+
+
 @router.post(
     "/test-plans",
     response_model=PlanResponse,
@@ -198,6 +248,7 @@ def create_test_plan(
     The agent then fills it in via PATCH / entries and submits for approval.
     """
     session = load_agent_session(db, request)
+    source_host_ids = _resolve_plan_selection(db, session, body)
     svc = TestPlanService(db)
     plan = svc.create_plan(
         project_id=agent.project_id,
@@ -208,6 +259,8 @@ def create_test_plan(
         actor_id=agent.id,
         created_by_user_id=session.started_by_id,
         filter_criteria=body.filter_criteria.model_dump(exclude_none=True) if body.filter_criteria else None,
+        source_kind="manual_hosts" if source_host_ids else None,
+        source_host_ids=source_host_ids,
     )
     plan.agent_session_id = session.id
     db.commit()

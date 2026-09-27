@@ -106,6 +106,16 @@ describe('Agent Feedback', () => {
     expect(screen.getByText('1 of 1 shown')).toBeInTheDocument();
   });
 
+  it('names the MCP client over the reused agent record when the agent did not say', async () => {
+    listAgentFeedback.mockResolvedValue(page([entry({
+      agent_metrics: null, client_name: 'claude-code', agent_name: '[named-assets seed] planner',
+    })]));
+    renderPage();
+    const row = await screen.findByTestId('feedback-row-9');
+    expect(within(row).getByText('claude-code')).toBeInTheDocument();
+    expect(within(row).queryByText('[named-assets seed] planner')).not.toBeInTheDocument();
+  });
+
   it("opens the session's call log in the session's own project", async () => {
     listAgentFeedback.mockResolvedValue(page([entry()]));
     renderPage();

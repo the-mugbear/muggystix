@@ -144,8 +144,14 @@ def list_issues(
     skip: int = 0,
     limit: int = 50,
     kind: Optional[str] = None,
+    sort: str = "severity",
 ) -> IssuePage:
     """One row per issue, most severe first, then the most hosts left to judge.
+
+    ``sort="hosts"`` (v2.428.5) puts the most widespread issues first — most
+    hosts left to judge, then most hosts, then severity: "which issues are on
+    the most hosts?" (MCP acceptance feedback #13 had to page 606 groups and
+    sort them itself).
 
     By default an issue every host of which a finding already covers is left
     out: this is the list of what still waits.  ``include_judged`` shows it.
@@ -197,7 +203,10 @@ def list_issues(
     # no rows to carry it, so only then is it counted on its own.
     rows = (
         query.add_columns(func.count().over().label("total_groups"))
-        .order_by(rank.desc(), (hosts - judged).desc(), hosts.desc(), title)
+        .order_by(*(
+            ((hosts - judged).desc(), hosts.desc(), rank.desc(), title) if sort == "hosts"
+            else (rank.desc(), (hosts - judged).desc(), hosts.desc(), title)
+        ))
         .offset(skip)
         .limit(limit)
         .all()

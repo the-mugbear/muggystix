@@ -649,6 +649,19 @@ class AssistWebInterface(BaseModel):
     #: Present only when EyeWitness captured a PNG.  Same contract as note
     #: attachments: a path to save to disk; ``assist_get_image`` shows it inline.
     screenshot_download_path: Optional[str] = None
+    # v2.428.5 — the certificate and TLS facts BlueStick stores typed on the
+    # interface (MCP acceptance feedback #12: "cannot answer TLS state from
+    # HTTPS URLs").  Null = the tool that saw it did not report it — not "fine".
+    # An expired certificate is the catalog check tls_cert_expired (recorded at
+    # import), not a flag computed against today.
+    cert_not_after: Optional[datetime] = None
+    cert_self_signed: Optional[bool] = None
+    cert_subject_org: Optional[str] = None
+    cert_issuer_org: Optional[str] = None
+    tls_weak_protocol: Optional[bool] = Field(None, description=(
+        "True when SSLv2/SSLv3/TLS 1.0/1.1 was offered; False when only strong "
+        "protocols were seen; null when the tool did not enumerate protocols."
+    ))
 
 
 class AssistScript(BaseModel):
@@ -790,6 +803,11 @@ def _serialize_web_interface(w) -> AssistWebInterface:
             f"/api/v1/agent/assist/web-interfaces/{w.id}/screenshot"
             if w.screenshot_path else None
         ),
+        cert_not_after=w.cert_not_after,
+        cert_self_signed=w.cert_self_signed,
+        cert_subject_org=w.cert_subject_org,
+        cert_issuer_org=w.cert_issuer_org,
+        tls_weak_protocol=w.tls_weak_protocol,
     )
 
 
@@ -2278,7 +2296,19 @@ def list_assist_scans(
         .limit(limit)
         .all()
     )
-    return [ScanBrief.model_validate(s) for s in scans]
+    # The import behind each scan — one grouped query (a re-processed file has
+    # several jobs; the newest is the one that produced this scan row).
+    jobs = dict(
+        db.query(models.IngestionJob.scan_id, func.max(models.IngestionJob.id))
+        .filter(models.IngestionJob.scan_id.in_([s.id for s in scans]))
+        .group_by(models.IngestionJob.scan_id).all()
+    ) if scans else {}
+    out = []
+    for s in scans:
+        row = ScanBrief.model_validate(s)
+        row.ingestion_job_id = jobs.get(s.id)
+        out.append(row)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -2505,11 +2535,18 @@ class AssistIngestionIssues(BaseModel):
     #: reads as "7 unresolved" there and "0 unresolved + 7 failed" here. Both
     #: were right and neither said so. The total is now reported alongside, so
     #: the decomposition is visible instead of inferred.
-    unresolved_parse_errors: int = 0
+    unresolved_parse_errors: int = Field(0, description=(
+        "Unresolved parse errors with NO import job row — NOT the project's total "
+        "(a failed job already counts under `failed`). For 'how many unresolved "
+        "parse errors?' read unresolved_parse_errors_total."
+    ))
     #: Every unresolved parse error in the project, however it is reached —
     #: the number `assist_get_coverage` reports as `parse_errors_unresolved`.
     #: `unresolved_parse_errors` is the subset of these with no job row.
-    unresolved_parse_errors_total: int = 0
+    unresolved_parse_errors_total: int = Field(0, description=(
+        "Every unresolved parse error in the project — the number assist_get_coverage "
+        "reports as parse_errors_unresolved."
+    ))
     #: True when anything at all is wrong or pending — the one field to check
     #: before concluding "there is no data for that".
     has_issues: bool = False

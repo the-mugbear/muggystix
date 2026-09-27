@@ -236,6 +236,11 @@ class ScanBrief(BaseModel):
     start_time: Optional[datetime] = None
     end_time: Optional[datetime] = None
     created_at: Optional[datetime] = None
+    # v2.428.5 — the import that produced this scan: the job_id that
+    # assist_list_uninterpreted_lines and the ingestion reads take (MCP
+    # acceptance feedback #18 — a scan id is NOT a job id).  None for a scan
+    # with no recorded import (seeded, or its job was cleaned up).
+    ingestion_job_id: Optional[int] = None
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -438,6 +443,16 @@ class PlanCreate(BaseModel):
     title: str = Field(..., max_length=200, min_length=1)
     description: Optional[str] = None
     filter_criteria: Optional[_PlanFilterCriteria] = None
+    # v2.428.5 — plan against an EXACT host list, as the Hosts page's "Test
+    # plan" action does (MCP acceptance feedback #19: an agent planning "the
+    # hosts in review by me" had to fake it with /32 subnet filters).  Either
+    # the ids, or a host query (the Hosts DSL) resolved to its matching hosts
+    # when the plan is created — a fixed selection, not a live filter.
+    host_ids: Optional[List[int]] = Field(None, min_length=1, max_length=10_000)
+    q: Optional[str] = Field(None, min_length=1, max_length=2000, description=(
+        "A host query (the Hosts page DSL, e.g. 'follow:in_review OR assigned:me'), "
+        "resolved to its matching hosts when the plan is created."
+    ))
 
 
 class PlanUpdate(BaseModel):

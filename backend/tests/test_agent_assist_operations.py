@@ -185,9 +185,24 @@ def test_agent_evidence_gaps_equal_the_page(client, db_session, test_project):
     assert agent.json() == page.json()
     assert agent.json()["total"] >= 1
 
-    assert client.get(
+    bad_domain = client.get(
         "/api/v1/agent/assist/evidence/gaps", params={"domain": "nope"}, headers=headers,
-    ).status_code == 404
+    )
+    assert bad_domain.status_code == 404
+    assert bad_domain.json()["detail"]["error"] == "unknown_domain"
+    assert "web_tls" in bad_domain.json()["detail"]["accepted"]
+    # MCP acceptance feedback #15: a CIDR where a matrix key belongs — the
+    # refusal names the keys that would work.
+    bad_seg = client.get(
+        "/api/v1/agent/assist/evidence/gaps",
+        params={"domain": "web_tls", "segment": "10.10.1.0/24"}, headers=headers,
+    )
+    assert bad_seg.status_code == 404
+    detail = bad_seg.json()["detail"]
+    assert detail["error"] == "unknown_segment"
+    coverage = client.get("/api/v1/agent/assist/coverage", headers=headers).json()
+    keys = [s["key"] for s in coverage["matrix"]["segments"]]
+    assert [a["key"] for a in detail["accepted"]] == keys[:50]
 
 
 # ---------------------------------------------------------------------------

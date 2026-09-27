@@ -55,6 +55,7 @@ def _role_headers(db_session, project, role):
 @pytest.mark.parametrize("params", [
     {}, {"min_hosts": 2}, {"severity": "low"}, {"search": "CVE-2023"},
     {"include_judged": True}, {"kind": "vulnerability"}, {"limit": 1, "skip": 1},
+    {"sort": "hosts"},
 ])
 def test_observations_are_the_pages_own_numbers(client, test_project, estate, params):
     page = client.get(f"/api/v1/projects/{test_project.id}/scanner-observations", params=params)
@@ -64,6 +65,17 @@ def test_observations_are_the_pages_own_numbers(client, test_project, estate, pa
     )
     assert page.status_code == agent.status_code == 200, agent.text
     assert agent.json() == page.json()
+
+
+def test_sort_by_hosts_puts_the_most_widespread_first(client, test_project, estate):
+    """MCP acceptance feedback #13: ranking by spread took four pages and a
+    local sort."""
+    rows = client.get(
+        "/api/v1/agent/assist/scanner-observations", params={"sort": "hosts", "include_judged": True},
+        headers=_assist_headers(client, test_project.id),
+    ).json()["items"]
+    spread = [r["host_count"] - r["judged_host_count"] for r in rows]
+    assert spread == sorted(spread, reverse=True)
 
 
 def test_observation_hosts_are_the_pages_own_rows(client, test_project, estate):

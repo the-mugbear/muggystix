@@ -26,8 +26,9 @@ from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
-    AssistSession, ExecutionSession, ReconSession, TestPlan,
+    AssistSession, ExecutionSession, McpToolCall, ReconSession, TestPlan,
 )
+from app.db.models_auth import APIKey
 from app.db.models_project import Project
 from app.schemas.pagination import Paginated
 from app.db.models_auth import User, UserRole
@@ -87,6 +88,11 @@ class AgentFeedbackResponse(BaseModel):
     session_api_calls: Optional[int] = None
     project_name: Optional[str] = None
     agent_name: Optional[str] = None
+    # v2.428.5 — the MCP client the session connected with, as its
+    # ``initialize`` named itself (clientInfo), e.g. "claude-code". The agent
+    # record's name is reused across sessions (a seeded "planner"), so it
+    # says nothing about who tested.
+    client_name: Optional[str] = None
     source: str
     prompt_version: Optional[str]
     overall_rating: Optional[int]
@@ -325,6 +331,7 @@ def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackR
     agents = dict(db.query(Agent.id, Agent.name).filter(Agent.id.in_(agent_ids)).all()) if agent_ids else {}
     pages: Dict[int, int] = {}
     calls: Dict[int, int] = {}
+    clients: Dict[int, str] = {}
     if session_ids:
         for sid, aid in (
             db.query(AssistSession.agent_session_id, func.min(AssistSession.id))
@@ -337,12 +344,26 @@ def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackR
             .filter(AgentApiCall.agent_session_id.in_(session_ids))
             .group_by(AgentApiCall.agent_session_id).all()
         )
+        # The MCP log keeps a longer prefix than the key row does, so match on
+        # "starts with"; newest initialize wins.
+        for sid, name in (
+            db.query(APIKey.agent_session_id, McpToolCall.client_name)
+            .join(McpToolCall, McpToolCall.api_key_prefix.startswith(APIKey.key_prefix))
+            .filter(
+                APIKey.agent_session_id.in_(session_ids),
+                McpToolCall.rpc_method == "initialize",
+                McpToolCall.client_name.isnot(None),
+            )
+            .order_by(McpToolCall.id.desc()).all()
+        ):
+            clients.setdefault(sid, name)
     for item in out:
         item.project_name = projects.get(item.project_id)
         item.agent_name = agents.get(item.agent_id)
         if item.agent_session_id:
             item.session_page_id = pages.get(item.agent_session_id)
             item.session_api_calls = int(calls.get(item.agent_session_id, 0))
+            item.client_name = clients.get(item.agent_session_id)
     return out
 
 

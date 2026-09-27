@@ -86,10 +86,12 @@ const StarRating: React.FC<{ value: number | null | undefined }> = ({ value }) =
   );
 };
 
-/** Which client wrote it: what the agent said about itself, else the key's agent. */
+/** Which client wrote it: what the agent said about itself, else the MCP
+ *  client its session connected with, else the key's agent record (which
+ *  sessions reuse — a seeded "planner" says nothing about who tested). */
 const clientOf = (r: AgentFeedbackEntry): string | null => {
   const said = r.agent_metrics && typeof r.agent_metrics.agent_name === 'string' ? r.agent_metrics.agent_name : null;
-  return said || r.agent_name || null;
+  return said || r.client_name || r.agent_name || null;
 };
 
 const Feedback: React.FC = () => {

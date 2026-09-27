@@ -7,7 +7,7 @@ The logic is ``scanner_observation_service``; this module is the HTTP shape.
 """
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Literal, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -84,13 +84,15 @@ def list_scanner_observation_issues(
     limit: int = Query(50, ge=1, le=200),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
+    sort: Literal["severity", "hosts"] = Query(
+        "severity", description="severity: most severe first (default); hosts: most widespread first"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     try:
         page = svc.list_issues(
             db, project.id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind,
+            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort,
         )
     except svc.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))

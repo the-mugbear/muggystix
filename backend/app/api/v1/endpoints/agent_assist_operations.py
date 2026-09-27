@@ -39,7 +39,7 @@ from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
 from app.services.address_terrain_service import TerrainBlock, compute_address_terrain
-from app.services.evidence_service import DOMAIN_LABELS, evidence_gap_hosts
+from app.services.evidence_service import DOMAIN_LABELS, evidence_gap_hosts, evidence_segments
 from app.services.operations_read_service import (
     InvestigationQueueResponse,
     compute_investigation_queue,
@@ -231,7 +231,10 @@ def get_assist_evidence_gaps(
     domain: str = Query(..., max_length=64, description=f"One of: {', '.join(DOMAIN_LABELS)}"),
     segment: Optional[str] = Query(
         None, max_length=64,
-        description="A segment key from assist_get_coverage's matrix — narrows to one cell.",
+        description=(
+            "A segment KEY from assist_get_coverage's matrix.segments[].key (a site id, "
+            "a subnet key, or 'unmapped') — not a CIDR you type; narrows to one cell."
+        ),
     ),
     limit: int = Query(200, ge=1, le=1000),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -246,7 +249,19 @@ def get_assist_evidence_gaps(
     session = _load_assist_session(db, request)
     result = evidence_gap_hosts(db, session.project_id, domain, limit=limit, segment=segment)
     if result is None:
-        raise HTTPException(status_code=404, detail="Unknown evidence domain or segment")
+        # Say WHICH value is wrong and what would be right (MCP acceptance
+        # feedback #15: an agent passed a CIDR where a matrix key belongs).
+        if domain not in DOMAIN_LABELS:
+            raise HTTPException(status_code=404, detail={
+                "error": "unknown_domain", "domain": domain, "accepted": list(DOMAIN_LABELS),
+            })
+        segs = evidence_segments(db, session.project_id)
+        raise HTTPException(status_code=404, detail={
+            "error": "unknown_segment", "segment": segment,
+            "message": "segment is a key from assist_get_coverage's matrix, not a CIDR.",
+            "accepted": [{"key": k, "label": segs["labels"].get(k)} for k in segs["keys"][:50]],
+            "accepted_truncated": len(segs["keys"]) > 50,
+        })
     return result
 
 

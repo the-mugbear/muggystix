@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.12.0",
+        "app_version": "2.429.0",
+        "summary": (
+            "From the MCP acceptance run (feedback #11–#20): create_test_plan "
+            "takes host_ids or q — an exact host selection (q resolved to its "
+            "matching hosts at creation) — so a review list is planned directly, "
+            "not faked with /32 subnet filters; scanner observations take "
+            "sort=hosts (most widespread first) and say a partly judged issue "
+            "stays listed; assist_list_scans rows carry ingestion_job_id (a scan "
+            "id is not a job id); web interfaces carry the certificate / TLS "
+            "facts; an unknown evidence-gaps segment answers 404 listing the "
+            "accepted matrix keys; tool text now states the names list's "
+            "current-resolution semantics, the workbench previews' own totals, "
+            "what a conflict's resolved_at means, and that "
+            "unresolved_parse_errors is not the project total."
+        ),
+    },
+    {
         "version": "2.11.0",
         "app_version": "2.428.0",
         "summary": (
