@@ -311,6 +311,14 @@ def serialize_host_detail(
     serialized["attributions"] = [
         serialize_attribution(a) for a in (attributions or [])
     ]
+    serialized.update(serialize_cert_facts(cert_web_interfaces))
+    return serialized
+
+
+def serialize_cert_facts(cert_web_interfaces: Optional[list]) -> dict:
+    """``cert_orgs`` + ``cert_status`` for a host, from the rows
+    ``host_detail_service.cert_web_interfaces`` returns — shared by the host
+    inspector and the agent host detail (v2.428.0)."""
     # Certificate Organization, most recent first — CA-validated attribution
     # that needs no external lookup.
     #
@@ -323,7 +331,7 @@ def serialize_host_detail(
         w for w in (cert_web_interfaces or [])
         if getattr(w, "cert_subject_org", None)
     ]
-    serialized["cert_orgs"] = [
+    cert_orgs = [
         {"org": w.cert_subject_org, "issuer": w.cert_issuer_org, "url": w.url}
         for w in certs[:5]
     ]
@@ -339,7 +347,7 @@ def serialize_host_detail(
         if getattr(w, "cert_not_after", None) is not None
         or getattr(w, "cert_self_signed", None) is not None
     ]
-    serialized["cert_status"] = [
+    cert_status = [
         {
             "url": w.url,
             "not_after": w.cert_not_after,
@@ -348,7 +356,7 @@ def serialize_host_detail(
         }
         for w in tls[:5]
     ]
-    return serialized
+    return {"cert_orgs": cert_orgs, "cert_status": cert_status}
 
 
 _NO_COVERAGE = {

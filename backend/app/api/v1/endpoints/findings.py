@@ -22,9 +22,9 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.core.security import check_permissions, log_audit_event
-from app.services.cvss_service import CvssError, normalize_cvss, score_vector
+from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_service import FindingService, validate_severity
-from app.services.report_text import REPORT_TEXT_FIELDS
+from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
 from app.services.note_attachment_service import purge_note_files, store_image_attachment
@@ -89,17 +89,8 @@ def _require_modify(viewer: _Viewer, finding: Finding, what: str) -> None:
 
 
 def _report_text(finding: Finding) -> FindingReportText:
-    from_vector = False
-    if finding.cvss_vector:
-        try:
-            from_vector = score_vector(finding.cvss_vector)[1] is not None
-        except CvssError:
-            from_vector = False
-    return FindingReportText(
-        **{f: getattr(finding, f) for f in REPORT_TEXT_FIELDS},
-        cvss_vector=finding.cvss_vector, cvss_score=finding.cvss_score,
-        cvss_score_from_vector=from_vector,
-    )
+    # v2.428.0 — built by the service the agent's finding detail also uses.
+    return FindingReportText(**report_text_of(finding))
 
 
 def _serialize(

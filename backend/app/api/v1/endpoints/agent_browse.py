@@ -46,6 +46,7 @@ from app.api.deps import (
 )
 from app.core.security import check_permissions
 from app.db.models_tools import TOOL_APPROVED
+from app.services import dns_name_service
 from app.services.host_follow_service import HostFollowService
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
@@ -559,25 +560,10 @@ def get_host(
     # Compute vuln summary for consistency with list endpoint
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
-    # v2.323.0 — every name observed at this address (any address-valued
-    # evidence kind), most recently seen first; the valid target_fqdn set.
-    _r, _n = models.DNSRecord, models.DNSName
-    name_rows = (
-        db.query(_n.fqdn, func.max(func.coalesce(_r.observed_at, _r.created_at)).label("last"))
-        .join(_r, _r.name_id == _n.id)
-        .filter(
-            _r.project_id == host.project_id,
-            _r.value == host.ip_address,
-            _r.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
-            _n.kind == "fqdn",
-        )
-        .group_by(_n.fqdn)
-        .order_by(func.max(func.coalesce(_r.observed_at, _r.created_at)).desc())
-        .limit(200)
-        .all()
-    )
+    # v2.323.0 — every name observed at this address, most recently seen
+    # first; the valid target_fqdn set (shared with /assist/hosts/{id}).
     return HostDetail(
-        names=[fq for fq, _ in name_rows],
+        names=dns_name_service.observed_names_at_address(db, host.project_id, host.ip_address),
         id=host.id,
         ip_address=host.ip_address,
         hostname=host.hostname,

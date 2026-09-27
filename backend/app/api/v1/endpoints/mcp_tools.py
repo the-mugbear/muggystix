@@ -404,8 +404,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "idempotent": False,
         "body_params": [
             "source", "prompt_version", "recon_session_id", "test_plan_id",
-            "execution_session_id", "overall_rating", "api_critiques",
-            "tool_suggestions", "friction_notes", "agent_metrics",
+            "execution_session_id", "assist_session_id", "overall_rating",
+            "api_critiques", "tool_suggestions", "friction_notes", "agent_metrics",
         ],
         "input_schema": {
             "type": "object",
@@ -419,6 +419,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "recon_session_id": {"type": "integer", "minimum": 1},
                 "test_plan_id": {"type": "integer", "minimum": 1},
                 "execution_session_id": {"type": "integer", "minimum": 1},
+                "assist_session_id": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Only with source=assist, on a pre-consolidation assist session; normally omit — the session comes from your key.",
+                },
                 "overall_rating": {"type": "integer", "minimum": 1, "maximum": 5},
                 "api_critiques": {
                     "type": "array",
@@ -449,7 +453,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     "assist_get_context": {
         "description": (
-            "Project-inventory orientation: host/port/scope/scan "
+            "Project-inventory orientation: the engagement dates (start/end), the "
+            "members and their project roles, host/port/scope/scan "
             "totals, the scope list (capped at 50), and recent scans. It carries "
             "NO findings — use assist_list_hosts to locate hosts and "
             "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
@@ -532,9 +537,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_get_host": {
         "description": (
-            "Full detail for one host: identity, OS, per-port service detail, "
-            "severity counts, and your review status. Notes and individual "
-            "vulnerabilities are separate — use assist_get_host_vulnerabilities for those."
+            "Full detail for one host, as the host inspector shows it: identity, "
+            "names seen at the address, OS detail, ports with service detail and "
+            "NSE script output (bounded), severity counts, your review status, tags, "
+            "assignees, scope membership, per-domain assessment state, weakness "
+            "flags (smb_unsigned, weak_tls…), SMB signing, certificates, network "
+            "attribution, scan conflicts, note_count and finding_count. Notes and "
+            "individual vulnerabilities are separate — use assist_get_host_notes "
+            "and assist_get_host_vulnerabilities for those."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}",
@@ -699,9 +709,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "BEFORE adding a note — a colleague may have recorded the same "
             "observation an hour ago — and before answering \"what do we know "
             "about X\", where the answer often lives in a note rather than in "
-            "scan data. Notes carry who wrote them and whether an agent did. "
-            "Paged, newest first: read `total` and `has_more`, and pass `offset` "
-            "to continue — a page is not the whole record."
+            "scan data. Notes carry who wrote them and whether an agent did, the "
+            "thread (parent_id / thread_root_id), type, status, assignee, due date, "
+            "the finding a thread was promoted to, and attachments as download "
+            "references. Paged, newest first: read `total` and `has_more`, and pass "
+            "`offset` to continue — a page is not the whole record."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/notes",
@@ -954,7 +966,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "assist_get_image, or save it beside a report from its download_path "
             "with the session's API key. scanner_evidence and execution_evidence say "
             "whether a claim rests on a scanner's output or on a command a "
-            "tester actually ran; state which, they are different assertions."
+            "tester actually ran; state which, they are different assertions. "
+            "Also: `report_text` (what the client report says — description, "
+            "impact, recommendation, references, steps to reproduce, CVSS vector "
+            "and score), `endpoint_status_counts` (per-host state), and "
+            "`status_history` (who changed the status, when, from → to, and why)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
@@ -1082,7 +1098,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Recent notes across the whole project, newest first — what the "
             "team has been working on, as opposed to what a scanner found. "
             "Filter by status (open notes are the outstanding-work list this "
-            "project actually keeps) or by author ('me' or a username)."
+            "project actually keeps) or by author ('me' or a username). Each "
+            "note names its `target` ({kind: host/port/finding/scan/scope/"
+            "test_plan/project, id, label}) and carries the same thread, "
+            "assignee and attachment fields as assist_get_host_notes."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/notes",
@@ -1215,12 +1234,29 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans",
         # A retry creates a second draft plan (v2.343.2).
         "idempotent": False,
-        "body_params": ["title", "description"],
+        "body_params": ["title", "description", "filter_criteria"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "title": {"type": "string", "description": "Plan title."},
                 "description": {"type": "string", "description": "Optional summary of scope/method."},
+                "filter_criteria": {
+                    "type": "object",
+                    "description": (
+                        "Optional: the host filters this plan is scoped to — plan_get_context "
+                        "then pre-filters candidate_hosts by them."
+                    ),
+                    "properties": {
+                        "subnets": {"type": "array", "items": {"type": "string"}},
+                        "ports": {"type": "array", "items": {"type": "integer"}},
+                        "services": {"type": "array", "items": {"type": "string"}},
+                        "min_severity": {"type": "string"},
+                        "has_critical_vulns": {"type": "boolean"},
+                        "has_high_vulns": {"type": "boolean"},
+                        "search": {"type": "string"},
+                    },
+                    "additionalProperties": False,
+                },
             },
             "required": ["title"],
             "additionalProperties": False,
@@ -1397,11 +1433,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/test-plans",
-        "query_params": ["status"],
+        "query_params": ["status", "mine"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "status": {"type": "string", "description": "Filter by plan status (e.g. draft)."},
+                "mine": {"type": "boolean", "description": "Only the plans this session drafted."},
             },
             "additionalProperties": False,
         },
@@ -1531,7 +1568,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "auto_params": {"plan_id": "plan_id"},
         "body_params": [
             "priority", "test_phase", "proposed_tests", "rationale", "status",
-            "findings", "notes", "expected_updated_at",
+            "findings", "results_data", "notes", "expected_updated_at",
         ],
         "input_schema": {
             "type": "object",
@@ -1544,6 +1581,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "rationale": {"type": "string"},
                 "status": {"type": "string"},
                 "findings": {"type": "string"},
+                "results_data": {
+                    "type": "object",
+                    "description": "Structured results for the entry (free-form object), as the REST body takes it.",
+                },
                 "notes": {"type": "string"},
                 "expected_updated_at": {
                     "type": "string",

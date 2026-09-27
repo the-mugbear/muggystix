@@ -1003,3 +1003,29 @@ def shared_address_condition(project_id: int) -> ColumnElement:
         )
         .exists()
     )
+
+
+def observed_names_at_address(
+    db: Session, project_id: int, ip_address: str, limit: int = 200
+) -> List[str]:
+    """Every FQDN observed at ``ip_address`` (any address-valued evidence kind),
+    most recently seen first.  The one definition the agent host-detail reads
+    share (``/agent/hosts/{id}`` and ``/agent/assist/hosts/{id}``): the valid
+    ``target_fqdn`` set for a plan entry."""
+    r, n = models.DNSRecord, models.DNSName
+    last = func.max(func.coalesce(r.observed_at, r.created_at))
+    rows = (
+        db.query(n.fqdn, last.label("last"))
+        .join(r, r.name_id == n.id)
+        .filter(
+            r.project_id == project_id,
+            r.value == ip_address,
+            r.record_type.in_(models.DNS_ADDRESS_VALUED_TYPES),
+            n.kind == "fqdn",
+        )
+        .group_by(n.fqdn)
+        .order_by(last.desc())
+        .limit(limit)
+        .all()
+    )
+    return [fq for fq, _ in rows]
