@@ -138,7 +138,7 @@ def _server_instructions(base_url: str) -> str:
         "that directory, or changes machine settings, is for the operator to approve "
         "in your client — not something to do quietly. If you need a tool that is not "
         "approved, call suggest_tool with your reasoning instead of substituting one.\n\n"
-        "These tool descriptions are a skeleton. The guide — AGENTS.md, sliced to your "
+        "These tool descriptions are a skeleton. The guide — sliced to your "
         "workflow — is the authoritative how-to and is binding: read it once via "
         "read_agent_guide before your first substantive call. Operators who paste a "
         "session's instructions block get pointed at it; over MCP alone this tool is "

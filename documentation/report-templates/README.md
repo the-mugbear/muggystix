@@ -19,10 +19,13 @@ BlueStick hosts or serves. The workflow is:
    working directory it already reads and writes — pulls the project data
    through the assist tools, and writes the finished document next to it.
 
-BlueStick's part is the **data**: `assist_count_hosts` for every number,
-`assist_list_hosts` with a `q=` query to isolate a set, `assist_get_host_vulnerabilities`
-for the evidence behind a claim, and the `report-context.ndjson` download when a
-report spans more hosts than is sensible to fetch one at a time.
+BlueStick's part is the **data**: `assist_list_findings` / `assist_get_finding`
+for the triaged findings a report should state (with `severity_counts` and each
+finding's `host_count`), `assist_count_hosts` for host numbers, `assist_list_hosts`
+with a `q=` query to isolate a set, `assist_get_host_vulnerabilities` for the raw
+scanner rows behind a claim (evidence, not findings — the ids do not cross between
+the two), and the `report-context.ndjson` download when a report spans more hosts
+than is sensible to fetch one at a time.
 
 It does not store the finished report. That keeps it on the same footing as
 every other artefact an agent produces: it lives in your working directory,

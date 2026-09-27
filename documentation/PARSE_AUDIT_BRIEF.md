@@ -33,6 +33,8 @@ BlueStick; the operator carries the finished report out.
    lists each import's lines that no pattern read (`dropped`), that were kept
    only as text (`text_only`), or that came from an nxc module (`module_as_login`
    — probably misread — and `module_as_text`), as redacted shapes with counts.
+   These are recorded for **NetExec imports only**; for any other format, work
+   from the original file and the parser-coverage page.
 2. **Check what WAS read.** For a sample of hosts in the file (every host if
    there are fewer than 30; otherwise 30, choosing hosts whose lines differ in
    shape), compare each tool line with what BlueStick stored:
@@ -63,18 +65,27 @@ One Markdown report, and **only** this — no raw lines, no host names, no
 addresses, no accounts:
 
 ```
-# Parse audit — <tool> <version if known>, <date>
-Imports checked: <n> files, <n> lines, <n> hosts sampled.
+# Parse audit — <tool> <version>, BlueStick <version>, <date>
+Inputs: bundle yes/no · original files <n> · agent session yes/no · source tree yes/no · tool source checked yes/no
+Scope: <n> imports, <n> lines, <n> hosts sampled
 Summary: correct <n> · misread <n> · text_only <n> · dropped <n> · unconfirmed <n>
 
-## <one section per distinct problem>
-Class: misread | text_only | dropped | unconfirmed
-Lines affected: <count> (in <n> of <n> imports)
-Shape:     <the line, redacted — see rules below>
-Stored as: <what BlueStick recorded, e.g. "auth_success=true username=<USER>" or "nothing">
-Should be: <what the line means, e.g. "LDAP signing not enforced">
-Source:    <nxc file:line that prints it, or "not confirmed">
+## <one section per distinct problem, most harmful first>
+Class:      misread | text_only | dropped | unconfirmed
+Lines:      <count> (in <n> of <n> imports)
+Shape:      <redacted line — see rules below>
+Stored as:  <what BlueStick recorded — e.g. "login auth_success=true username=<USER>", "text only", "nothing">
+Should be:  <what the line means — e.g. "LDAP signing not enforced on this DC">
+Source:     <nxc/…/file.py:line, or "not confirmed">
+Suggested:  <optional — the check or field it should become>
+
+## Read correctly
+<one line per protocol/module confirmed correct, with counts — this matters
+as much as the problems: it says which patterns can be trusted>
 ```
+
+This is the same template as `scripts/parse-audit-agent-prompt.md`; if the two
+ever differ, the prompt's wins.
 
 ### Redaction rules (apply to every line you quote)
 
@@ -87,7 +98,8 @@ the same way, and when unsure, redact.
 | The host column and any host or computer name | `<HOST>` |
 | Domain names, FQDNs, URLs' hosts | `<NAME>` |
 | `DOMAIN\user:password`, `user:password`, a password alone, hashes | `<CREDENTIAL>`, `<HASH>` |
-| Account, group and share names; file paths | `<USER>`, `<GROUP>`, `<SHARE>`, `<PATH>` |
+| Account, group and share names; file paths | `<USER>`, `<GROUP>`, `<SHARE>`, `<PATH>` (BlueStick's own shapes write `DOMAIN\account` as `<ACCOUNT>`) |
+| Email addresses | `<EMAIL>` |
 | The value of a `(key:value)` flag, unless it is True / False / None / Never / Required or a number | `(key:<VALUE>)` |
 | Free text a person wrote (descriptions, comments, banners naming the organisation) | `<TEXT>` |
 

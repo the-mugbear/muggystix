@@ -1,122 +1,25 @@
-# Deployment Script Migration Guide
+# Deployment Script Migration Note
 
-## Overview
+The old per-scenario deployment scripts were removed. `./scripts/deploy.sh` is the one entry
+point: an interactive menu with seven options (see [README.md](README.md) in this folder).
 
-BlueStick has **consolidated and replaced** all deployment scripts with a single unified script: `./scripts/deploy.sh`
+| Removed script | Use now |
+|----------------|---------|
+| `docker-compose up -d` (by hand) | `./scripts/deploy.sh` → **1** Start / Rebuild (takes a pre-deploy DB backup first) |
+| `setup-network.sh` | **2** First-time setup (detects the host IP, generates `.env` + SSL certs, starts) — or **3** Reconfigure IP for an existing install |
+| `force-clean-rebuild.sh` | **4** Nuclear clean (destroys ALL data) |
+| `deploy-fresh.sh` | **1** — every rebuild already busts the frontend build cache; there is no separate "fresh" mode |
+| `deploy-test.sh` | Nothing — there is no parallel test instance |
 
-This simplifies deployment by providing an interactive menu with all deployment options in one place.
+The remaining options are **5** Security status, **6** Back up `.env` + SSL to the parent folder
+and **7** Roll back to the previous build.
 
-## Migration Map
+## How deployment works now
 
-### Old Scripts → New Unified Options
-
-| Removed Script | New Command | Description |
-|----------------|-------------|-------------|
-| `setup-network.sh` | `./scripts/deploy.sh` → Option 2 | Network production deployment |
-| `force-clean-rebuild.sh` | `./scripts/deploy.sh` → Option 4 | Nuclear clean rebuild |
-| `deploy-fresh.sh` | `./scripts/deploy.sh` → Option 5 | Ultra-aggressive network deploy |
-| `deploy-test.sh` | `./scripts/deploy.sh` → Option 3 | Test instance deployment |
-| `docker-compose up -d` | `./scripts/deploy.sh` → Option 1 | Local development |
-
-### Legacy Script Status
-
-- **Removed**: Old scripts have been removed to simplify the codebase
-- **Unified**: All functionality moved to `./scripts/deploy.sh`
-- **Documentation**: Updated to reference the new approach only
-
-## Benefits of Unified Script
-
-1. **Single Entry Point**: One script for all deployment scenarios
-2. **Interactive Menu**: Clear options with descriptions
-3. **Consistent Interface**: Same prompts and feedback across all deployments
-4. **Better Error Handling**: Unified error messages and validation
-5. **Enhanced Logging**: Integrated with the updated log collection system
-
-## Quick Start
-
-```bash
-# Run the unified deployment script
-./scripts/deploy.sh
-
-# Follow the interactive prompts to select your deployment type
-```
-
-## Deployment Options Explained
-
-### 1. Local Development
-- **Purpose**: Quick setup for local development
-- **Ports**: Frontend 3000, Backend 8000
-- **Database**: Local container
-- **Use Case**: Development and testing
-
-### 2. Network Production
-- **Purpose**: Production deployment on network IP
-- **Requirements**: `.env` file must exist
-- **Ports**: Configured IP:3000 and IP:8000
-- **Use Case**: Production server deployment
-
-### 3. Test Instance
-- **Purpose**: Parallel testing without affecting production
-- **Ports**: Frontend 3001, Backend 8001
-- **Database**: Separate test database
-- **Use Case**: Testing changes alongside production
-
-### 4. Nuclear Clean
-- **Purpose**: Complete Docker reset when cache issues persist
-- **Warning**: Removes ALL Docker data
-- **Use Case**: Severe Docker cache problems
-
-### 5. Ultra-Fresh Network
-- **Purpose**: Aggressive cache-busting network deployment
-- **Requirements**: `.env` file
-- **Use Case**: Network deployment with persistent cache issues
-
-## Cache Busting Options
-
-Each deployment type offers cache control:
-- **Quick Build**: Use existing cache (fastest)
-- **Clean Build**: Remove app images only (moderate)
-- **Nuclear Build**: Remove all images and cache (slowest, most thorough)
-
-## Authentication & Logging Updates
-
-The deployment system now includes:
-- **Comprehensive Auth Logging**: Frontend and backend authentication tracking
-- **Log Collection**: `./scripts/collect-logs.sh` produces an anonymised diagnostics bundle
-- **Debug Tools**: Browser console commands for authentication debugging
-
-### Working Test Credentials
-```
-Username: testadmin2
-Password: admin123
-Role: admin
-```
-
-## Troubleshooting
-
-If you encounter issues:
-
-1. **Check Authentication**: Use browser console commands in the documentation.
-2. **Collect Logs**: Run `./scripts/collect-logs.sh` for comprehensive diagnostics
-3. **Try Nuclear Option**: Use deployment option 4 for severe cache issues
-4. **Verify Environment**: Ensure `.env` is correctly configured
-
-## Script Cleanup
-
-The old deployment scripts have been removed to simplify maintenance:
-- All functionality is now in the unified `./scripts/deploy.sh`
-- This prevents confusion and ensures everyone uses the same approach
-- The unified script provides better error handling and user experience
-
-## Migration Steps
-
-1. **Try the New Script**: Run `./scripts/deploy.sh` to familiarize yourself
-2. **Update Workflows**: Replace old script calls with the new unified script
-3. **Update Documentation**: Reference the new deployment approach in your docs
-4. **Train Team**: Ensure team members know about the new script
-
-## Questions?
-
-- Review the main documentation.
-- Check the comprehensive logging guide
-- Run `./scripts/collect-logs.sh` for troubleshooting data
+All traffic goes through nginx on port **443** (`https://<host>`); the backend's `:8000` is not
+published to the host, and the API docs are at `https://<host>/docs`. On first boot the backend
+creates the `admin` account: its password is `DEFAULT_ADMIN_PASSWORD` when set, otherwise a
+generated one written to `./uploads/initial-admin-password.txt` (mode 0600, never logged); a
+password change — and TOTP enrolment, with the default `REQUIRE_2FA=true` — is forced on first
+login. For diagnostics run `./scripts/collect-logs.sh`, which writes an anonymised bundle safe to
+share.

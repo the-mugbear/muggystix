@@ -8,7 +8,6 @@ AGENTS.md drops a safety theme.
 """
 from __future__ import annotations
 
-from pathlib import Path
 
 from app.services.agent_policy import (
     SAFETY_RULES,
@@ -48,15 +47,12 @@ def test_every_rule_appears_in_both_surfaces():
 
 
 def test_agents_md_still_covers_each_safety_theme():
-    candidates = [
-        Path(__file__).resolve().parents[1] / "AGENTS.md",
-        Path(__file__).resolve().parents[2] / "AGENTS.md",
-    ]
-    agents_md = next((p for p in candidates if p.exists()), None)
-    if agents_md is None:
+    from app.services.agents_guide_service import read_agent_guide
+    text = read_agent_guide()
+    if text is None:
         import pytest
-        pytest.skip("AGENTS.md not mounted in this environment")
-    text = agents_md.read_text().lower()
+        pytest.skip("the agent guide is not mounted in this environment")
+    text = text.lower()
     assert "approval" in text
     assert "sanity check" in text
     assert "stop" in text and "ask the user" in text
@@ -135,17 +131,12 @@ def test_read_back_asks_for_restatement_not_recital():
 
 def test_agents_md_carries_the_read_back_for_every_workflow_slice():
     import pytest
-    from app.services.agents_guide_service import slice_agents_md
+    from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 
-    candidates = [
-        Path(__file__).resolve().parents[1] / "AGENTS.md",
-        Path(__file__).resolve().parents[2] / "AGENTS.md",
-    ]
-    agents_md = next((p for p in candidates if p.exists()), None)
-    if agents_md is None:
-        pytest.skip("AGENTS.md not mounted in this environment")
+    text = read_agent_guide()
+    if text is None:
+        pytest.skip("the agent guide is not mounted in this environment")
 
-    text = agents_md.read_text()
     for workflow in ("plan_generation", "execution", "reconnaissance"):
         sliced = slice_agents_md(text, workflow=workflow)
         assert "Say the rules back before you start" in sliced, (

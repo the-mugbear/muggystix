@@ -1,13 +1,13 @@
 # Contributing / Maintaining BlueStick
 
-> **Verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19).
+> **Verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26).
 
 This is the orientation a developer needs to maintain BlueStick safely. It captures the
 project's **conventions and invariants** — the things that aren't obvious from reading the
 code and that, if violated, cause subtle breakage. For system topology see
 [documentation/ARCHITECTURE.md](documentation/ARCHITECTURE.md); for the API see
 [documentation/API_GUIDE.md](documentation/API_GUIDE.md); for the agent contract see
-[AGENTS.md](AGENTS.md).
+[the agent guide](documentation/AGENT_GUIDE.md).
 
 ---
 
@@ -53,15 +53,16 @@ unused import fails the image build.
 - **Frontend** tests run on the host: `cd frontend && npx vitest run` / `npx tsc --noEmit`.
 - **Backend** tests do **not** run on the host — there's no host `pytest`, and `app/` is baked
   into the backend image (compose bind-mounts only `tests/`, `pytest.ini`, `scripts/`, `artifacts/`,
-  `uploads/`, `AGENTS.md` and `platform_version.json`), so edits to `backend/app/**` aren't
-  live in the running container. To run the suite against **uncommitted** changes, mount the
+  `uploads/`, `documentation/AGENT_GUIDE.md`, `platform_version.json`, `report-templates/` (read-only, so template
+  edits are live without a rebuild), `frontend/package-lock.json` (for the SBOM) and the TLS
+  certificate), so edits to `backend/app/**` aren't live in the running container. To run the suite against **uncommitted** changes, mount the
   host source into a one-off container:
 
   ```bash
   # FROM THE REPO ROOT — run it from backend/ or frontend/ and Docker creates a
   # root-owned stray tree of mount-point stubs there.
   R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run --rm --no-deps \
-    -v "$R/backend:/app" -v "$R/AGENTS.md:/app/AGENTS.md:ro" -e COVERAGE_FILE=/tmp/.coverage backend \
+    -v "$R/backend:/app" -v "$R/documentation/AGENT_GUIDE.md:/app/AGENT_GUIDE.md:ro" -e COVERAGE_FILE=/tmp/.coverage backend \
     sh -c "cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"
   ```
 
@@ -69,14 +70,14 @@ unused import fails the image build.
   files out of your working tree.
 
   `--no-deps` starts no other service. The suite's DATA is isolated: when the compose `db` is
-  reachable it creates and drops its own `<database>_test_<pid>` database, otherwise it falls
+  reachable it creates and drops its own `<database>_test_<host>_<pid>` database, otherwise it falls
   back to in-memory SQLite (`tests/conftest.py`). It also does not migrate your dev database:
   importing the app normally runs `alembic upgrade head` against `DATABASE_URL`, and the
   harness turns that off with `BLUESTICK_SKIP_DB_INIT=1` (since v2.370.1 — before that, a test
   run with an unmerged migration in the tree applied it to the real dev database). Anything
   ELSE that imports `app.main` — a script, a `python -c` probe — still migrates; a data
   migration gets applied the moment you do that, so export first.
-  Mounting `AGENTS.md` keeps the docs-contract tests from skipping.
+  Mounting the agent guide keeps the docs-contract tests from skipping.
 
 ## Versioning (keep four files in sync)
 
@@ -143,6 +144,22 @@ confidence + conflicts are tracked by the confidence service
 (`app/services/host_deduplication_service.py`, called from every parser). Ports from all scans
 are aggregated per host with conflict-resolution rules.
 
+## Parsers
+
+Read Part 2 of [documentation/PARSERS.md](documentation/PARSERS.md) before adding one: four
+contract tests pin a new parser (dispatch map, `format_registry.py`, the
+public `looks_like_*` list, parser coverage). **Changing what a parser reads? Update
+`backend/app/data/parser_coverage.json` in the same commit** — it is the "What BlueStick reads"
+page (`/reference/tool-coverage`), and `tests/test_parser_coverage.py` fails when it claims
+formats, stored attributes or observations the parsers do not produce.
+
+## Client report templates
+
+Client reports are rendered by Quarto on the report worker from the root `report-templates/`
+folder (mounted read-only, outside the `backend/` build context). The authoring guide — manifest,
+the escaped Jinja fill, written-Markdown placeholders, template images, the hostile-text test
+every shipped template must pass — is [report-templates/README.md](report-templates/README.md).
+
 ## File-size policy
 
 The target is **monoliths** — unfocused files with multiple unrelated responsibilities — not
@@ -165,15 +182,15 @@ re-resolved per request (`enforce_agent_operator_access` in `app/api/deps.py`). 
 record trustworthy is object-level — a plan must be human-approved, one active run per plan,
 and a run belongs to the session that opened it.
 
-- **`AGENTS.md`** (repo root) is the contract every agent reads at startup, served sliced by
+- **`documentation/AGENT_GUIDE.md`** is the contract every agent reads at startup, served sliced by
   workflow at `GET /api/v1/agents-guide?workflow=…` via the `<!-- agents:section -->` markers.
 - **Bump `PROMPT_VERSION`** whenever the agent's instructions change materially: PREPEND an entry
   to `PROMPT_VERSION_HISTORY` in `app/services/agent_prompt_history.py`. The version is computed
   from element 0, so appending does nothing.
-- **`tests/test_docs_contract.py`** guards both surfaces: AGENTS.md section markers stay balanced
+- **`tests/test_docs_contract.py`** guards both surfaces: the guide's section markers stay balanced
   and every workflow slice keeps its body; every described OpenAPI tag is used by a route; and
-  every agent endpoint documented in AGENTS.md's API-reference tables exists. If you rename or
-  remove an agent route, update AGENTS.md (and the OpenAPI tags in `app/main.py`) in the same
+  every agent endpoint documented in the guide's API-reference tables exists. If you rename or
+  remove an agent route, update the agent guide (and the OpenAPI tags in `app/main.py`) in the same
   commit or this test fails.
 
 ## Frontend UI
@@ -183,8 +200,8 @@ All frontend changes **must** comply with [documentation/UI_STYLE_GUIDE.md](docu
 every text-bearing component defines overflow behaviour (truncate/wrap/clamp/collapse); handle
 null/empty/loading/error states with safe fallbacks; tables use `tableLayout: 'fixed'` with
 explicit column widths; flex children that truncate include `minWidth: 0`. Verify changes with
-worst-case data (200-char hostname, long filename, null values) at mobile and desktop widths.
-The app is **desktop-first** — don't build mobile-mirrored layouts.
+worst-case data (200-char hostname, long filename, null values) at desktop widths, including a
+narrowed window. The app is **desktop-only** — don't build mobile layouts.
 
 ## Changelog
 

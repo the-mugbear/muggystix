@@ -47,7 +47,10 @@ they cannot verify "the internal network".}}
 
 ## 2. Headline result
 
-<!-- assist_count_hosts with q=has:critical, then q=has:high, etc. -->
+<!-- assist_list_findings (severity_counts, and host_count per finding; leave out
+     status false_positive) for the triaged results. assist_count_hosts with
+     q=has:critical counts hosts with ANY raw critical scanner row, including
+     untriaged ones — use it only for raw scanner exposure, and say so. -->
 
 {{two or three sentences a non-technical reader can act on. Lead with the thing
 that would matter to them if they read nothing else. Avoid tool names and CVE
@@ -62,8 +65,8 @@ numbers here — those belong in §3.}}
 ## 3. Findings that need action
 
 <!--
-For each: assist_list_hosts with a q= that isolates it, then
-assist_get_host_vulnerabilities on the affected hosts for the evidence.
+assist_list_findings to choose the findings, then assist_get_finding for each
+one's hosts and evidence; assist_get_host_vulnerabilities for scanner detail.
 Order by what you would fix first, not by severity label alone — an
 internet-reachable medium can outrank an isolated critical, and saying so is
 the value you add over a scanner.

@@ -10,8 +10,8 @@ describe('Reference', () => {
     const { container } = render(<MemoryRouter><Reference /></MemoryRouter>);
     expect(screen.getByRole('link', { name: /User guide/ })).toHaveAttribute('href', '/reference/user-guide');
     const agents = screen.getByRole('link', { name: /AI agent guide/ });
-    expect(agents).toHaveAttribute('download', 'AGENTS.md');
-    expect(agents).toHaveTextContent('downloads AGENTS.md');
+    expect(agents).toHaveAttribute('download', 'bluestick-agent-guide.md');
+    expect(agents).toHaveTextContent('downloads the agent guide');
     const swagger = screen.getByRole('link', { name: /Swagger UI/ });
     expect(swagger).toHaveAttribute('target', '_blank');
     expect(swagger).toHaveTextContent('opens in a new tab');

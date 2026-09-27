@@ -320,7 +320,8 @@ def build_session_instructions(
             "before running anything again. Any reconnaissance or execution runs "
             "it had open are listed under `open_phases` on `GET /agent/identity` "
             "— read their progress before continuing (`/agent/recon/summary`, "
-            "`/agent/execution-context`) so you continue coverage rather than "
+            "`/agent/test-plans/{plan_id}/execution-context`) so you continue "
+            "coverage rather than "
             "repeating it. The environment probe is still required for the new "
             "key.\n\n"
         )
@@ -357,7 +358,7 @@ def build_session_instructions(
         f"The guide holds the field shapes, body formats, safety/approval "
         f"protocol, upload formats, and exit criteria for each kind of work. "
         f"Fetch the slice for the phase you are in (`reconnaissance`, "
-        f"`plan_generation`, `execution`, or `assist` for read-only queries); "
+        f"`plan_generation`, `execution`, or `assist` for queries and notes); "
         f"omit `workflow` for the whole thing. Don't improvise from this prompt "
         f"alone.\n\n"
         f"### First — probe your environment (MANDATORY before any command)\n"

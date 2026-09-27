@@ -16,7 +16,7 @@ Each folder here is one client report template. BlueStick lists every valid fold
    ```bash
    cp -r report-templates/remediation-worklist report-templates/my-template
    ```
-2. **Name it.** The folder name must be lower-case letters, digits, `-` or `_`. Give `template.json` a new `title` and `description`: people choose a template by these, on the Reports page and on each draft.
+2. **Name it.** The folder name must be lower-case letters, digits, `-` or `_`, start with a letter or digit, and be at most 64 characters (folders starting with `.` or `_` are ignored). Give `template.json` a new `title` and `description`: people choose a template by these, on the Reports page and on each draft.
 3. **Edit `report.qmd`** and render it with the sample data until it reads right:
    ```bash
    cd report-templates/my-template && make        # needs Quarto and Python with jinja2
@@ -42,6 +42,7 @@ Every issued report records a fingerprint of the template folder, so its history
 | `sample-data.json` | for `make` and the tests | An example of the data a template receives. |
 | `partials/*.qmd` | no | Reusable pieces, pulled in with `include`. |
 | `reference.docx` | no | Word styles: fonts, headings, tables, title page, header and footer. Without it, Quarto's default Word styles are used. |
+| `filters/*.lua` | no | The template's own Pandoc Lua filters, listed under `filters:` in the front matter after `_bluestick/fields.lua` (see `pentest/filters/spacers.lua`). |
 | `scripts/…` | no | A post-processing script for a format (`postprocess`). |
 | `img/…`, `branding/…` | no | The template's own images and files, declared under `assets` and installed on the server, never committed. |
 | `Makefile`, `.gitignore` | no | Local rendering conveniences. |
@@ -72,7 +73,7 @@ Every issued report records a fingerprint of the template folder, so its history
 - **`entry`**: the `.qmd` file in the folder to render (default `report.qmd`).
 - **`formats`**: any of `html`, `docx` and `qmd` (a zip of the filled source with the data and filters). There is no PDF: export the Word file.
 - **`postprocess`**: optional, one script per format, run on the rendered file (see `pentest/scripts/fix-docx-report.py`).
-- **`assets`**: optional, the template's own images and files, each with a unique `id` and a `path` inside the folder. The Reports page lists each asset as installed or missing. A `required` asset that is missing blocks preview and issue. An asset with `"replaces": "reference.docx"` is used in place of that shipped file when it is installed. Inside the template, `asset("logo")` gives the path when the file is installed and an empty string otherwise.
+- **`assets`**: optional, the template's own images and files, each with a unique `id` (lower-case, starting with a letter, at most 32 characters) and a `path` inside the folder. `label`, `description` and an optional `note` are shown on the Reports page, which lists each asset as installed or missing; `formats` says where it appears (`html`, `docx`; default both). A path must be an image (png, jpg, jpeg, svg, gif, webp) unless the asset `replaces` a file of the same type (`.docx` allowed). A `required` asset that is missing blocks preview and issue. An asset with `"replaces": "reference.docx"` is used in place of that shipped file when it is installed. Inside the template, `asset("logo")` gives the path when the file is installed and an empty string otherwise; `asset()` of an id that is not declared fails the render.
 
 ## The data
 
@@ -80,14 +81,15 @@ A template receives one object. `sample-data.json` is a complete example.
 
 | Key | What it holds |
 |---|---|
-| `report` | `kind` (`full` or `addendum`), `title`, `heading`, `number`, `draft`, `date`, `template`, `authors`, `baseline` (the report an addendum follows: `number`, `title`, `date`), `revision_of` |
+| `schema` | The dataset version (`1`) |
+| `report` | `id`, `kind` (`full` or `addendum`), `title`, `heading`, `number`, `draft`, `date`, `issued_at`, `template`, `authors`, `baseline` (the report an addendum follows: `number`, `title`, `date`), `revision_of` |
 | `project` | `name`, `start_date`, `end_date` |
-| `engagement` | `client_name`, `classification`, `engagement_type`, `testers` (`name`, `role`, `email`), `distribution`, and written text: `system_description`, `applications`, `thick_clients`, `other_targets` |
+| `engagement` | `client_name`, `classification`, `engagement_type`, `testers` (`user_id`, `name`, `role`, `email`), `distribution`, and written text: `system_description`, `applications`, `thick_clients`, `other_targets` |
 | `executive_summary` | Written text |
 | `scope` | `subnets` (`cidr`, `site`, `description`), `domains` (`domain`, `include_subdomains`) |
 | `counts` | `critical`, `high`, `medium`, `low`, `info`, `total` |
 | `severity_order`, `severity_labels` | `["critical", …, "info"]` and their display labels |
-| `findings` | Worst first (severity, then CVSS score). Each has `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `evidence`, `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references` |
+| `findings` | Worst first (severity, then CVSS score). Each has `id`, `_path` (its data path, which `md()` uses), `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `evidence` (`file`, `caption`), `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references` |
 | `delta` | Addenda only: `new_findings`, `findings_with_new_endpoints`, `withdrawn` (`ref`, `title`, `severity_label`, `reason`, `endpoints`). In an addendum, each finding's `change` is `new` or `new_hosts`, and `new_affected` lists the new systems. |
 
 What a report includes: findings that are confirmed, accepted risk or remediated. False positives are dropped entirely. Open and retest findings are counted, never shown.
@@ -102,11 +104,13 @@ BlueStick fills the file with Jinja, using delimiters chosen so they never clash
 | Values (printed) | `{{ … }}` | `<< … >>` |
 | Comments | `{# … #}` | `<# … #>` |
 
+The front matter must set `engine: markdown` and list `filters:` with `quarto` and then `_bluestick/fields.lua` (your own filters after it). BlueStick copies that filter into the work folder but does not add it for you; it fills every `md()` field, `todo()` highlight and `bluestick-meta` key, so without it none of them appear.
+
 Helpers:
 
 - `md(f, "recommendation", todo="…")`: a finding's written Markdown. `md("executive_summary")` works the same for a top-level field. When the field is empty, the `todo` text is printed as a highlighted **TODO** instead.
 - `todo("…")`: a highlighted, searchable "TODO: …" for anything the report still needs.
-- `image(e)`: an evidence image (`e` from `f.evidence`).
+- `image(e, width="6in", number=None)`: an evidence image (`e` from `f.evidence`). With `number=`, it prints a numbered "Figure N: caption"; see pentest's `counter` namespace in `report.qmd` and `partials/_table_caption.qmd` for numbered table captions.
 - `asset("logo")`: the path of an installed template image, or an empty string.
 - `plain(v)`: a date, number or reference printed unescaped. It refuses anything that would need escaping.
 
@@ -128,7 +132,7 @@ Things to handle in every template:
 ## Testing a template
 
 - `make` renders `sample-data.json`. Try `make DATA=other.json` with a dataset saved from a real report.
-- `backend/tests/test_report_templates_shipped.py` checks that every shipped template is offered with no problems, and what each one prints for a full report and an addendum. Add a test there for yours.
+- `backend/tests/test_report_templates_shipped.py` checks that every shipped template is offered with no problems, and what each one prints for a full report and an addendum. Add a test there for yours. `test_report_templates_escaping.py` and `test_report_template_assets.py` cover escaping and the `assets` manifest.
 - `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary and the written fields. Quarto only exists in the report-worker image, so run it there:
   ```bash
   docker compose run --rm --no-deps -v "$PWD/backend:/app" report-worker \

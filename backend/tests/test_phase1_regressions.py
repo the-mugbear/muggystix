@@ -2072,11 +2072,8 @@ def test_v2_45_2_execution_prompt_includes_session_complete_step():
     # the step-by-step execution protocol (including the /complete call) lives
     # in the workflow-sliced guide now. Assert the execution guide slice
     # carries the complete step and the terminal-status distinction.
-    from pathlib import Path
-    from app.services.agents_guide_service import slice_agents_md
-    candidates = [Path("/app/AGENTS.md"),
-                  Path(__file__).resolve().parents[1] / "AGENTS.md"]
-    text = next((p.read_text() for p in candidates if p.exists()), "")
+    from app.services.agents_guide_service import read_agent_guide, slice_agents_md
+    text = read_agent_guide() or ""
     execution_slice = slice_agents_md(text, workflow="execution")
     assert "execution-sessions/{session_id}/complete" in execution_slice
     assert "overall_status" in execution_slice

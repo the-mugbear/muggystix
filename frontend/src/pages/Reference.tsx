@@ -41,7 +41,7 @@ const GROUPS: Array<{ title: string; description: string; entries: Entry[] }> = 
         description: 'Connect an AI assistant as native tools — setup per client, the tool catalogue, what a session may do.',
       },
       {
-        kind: 'download', href: '/api/v1/agents-guide', filename: 'AGENTS.md', label: 'AGENTS.md', Icon: Bot,
+        kind: 'download', href: '/api/v1/agents-guide', filename: 'bluestick-agent-guide.md', label: 'the agent guide', Icon: Bot,
         title: 'AI agent guide',
         description: 'The contract an agent reads at startup, with this deployment’s URLs filled in.',
       },

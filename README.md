@@ -1,6 +1,6 @@
 # BlueStick
 
-> **Verified against:** backend 2.370.1 / frontend 5.248.1 (2026-09-19). New here? See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions you'll need on day one.
+> **Verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26). New here? See [CONTRIBUTING.md](CONTRIBUTING.md) for the conventions you'll need on day one.
 
 BlueStick is a network visibility and review platform for aggregating host intelligence from one or more networks. It ingests output from security tooling, normalizes hosts and ports into a shared model, and presents dashboards for triage, reporting, and analyst follow-up. Analysts can flag hosts for review, attach notes, and revisit the same asset as fresh scan data arrives.
 
@@ -8,35 +8,39 @@ BlueStick is a network visibility and review platform for aggregating host intel
 
 - Backend: Python 3.11, FastAPI, SQLAlchemy 2.0, Alembic migrations
 - Database: PostgreSQL 16
-- Frontend: React 18, Vite, TypeScript, **Radix UI primitives + Tailwind CSS 4** (shadcn-style; MUI-free since 4.0.0), TanStack Table, lucide-react icons, reactflow for the Topology map (no chart library — charts are hand-rolled SVG/CSS)
+- Frontend: React 18, Vite, TypeScript, **Radix UI primitives + Tailwind CSS 4** (shadcn-style; MUI-free since 4.0.0), TanStack Table, lucide-react icons, cmdk command palette, sonner toasts, **Observable Plot** for charts with axes, and three.js for the Operations address terrain (loaded lazily); small inline visuals are hand-built SVG
 - Authentication: JWT for humans — a binary global role (admin / member) plus a per-project role (admin > analyst > auditor > viewer), TOTP 2FA enforced by default — and a per-session, project-scoped X-API-Key for agents
+- Client reports: Quarto on a dedicated report-worker container (HTML, Word, and the `.qmd` source)
 - Deployment: Docker and Docker Compose
 
 ## Core Workflows
 
-- **Ingest** scan output from Nmap (XML + grepable), Masscan, Naabu, RustScan, Nessus, OpenVAS, NetExec, Eyewitness, httpx, WhatWeb, testssl.sh, Nikto, Amass/Subfinder, BloodHound/SharpHound, DirBuster/Gobuster/ffuf/Feroxbuster/Dirsearch, dnsx, RDAP, SMBMap, DNS CSV, and subnet CSV sources. Upload is staged: the format is detected, the operator reviews it (and can override it) and then imports — see [Upload Formats](documentation/UPLOAD_FORMATS.md) for the full table.
+- **Ingest** scan output from Nmap (XML + grepable), Masscan, Naabu, RustScan, Nessus, OpenVAS, Nuclei, NetExec, EyeWitness, httpx, WhatWeb, testssl.sh, Nikto, Amass/Subfinder, BloodHound/SharpHound, DirBuster/Gobuster/ffuf/Feroxbuster/Dirsearch, dnsx, RDAP, SMBMap, DNS CSV, and subnet CSV sources. Upload is staged: the format is detected, the operator reviews it (and can override it) and then imports — see [Upload Formats](documentation/UPLOAD_FORMATS.md) for the full table. **Reference → What BlueStick reads** says, per tool, what each import keeps, where it is shown and its known gaps, and every import reports the lines it did not interpret (as redacted shapes) on **Ingestion Results**.
 - **Deduplicate** hosts by IP so repeated scans update a shared asset record instead of creating parallel copies; track per-attribute confidence + conflicts across the scan history.
-- **Triage** host discoveries, open ports, findings/vulnerabilities, web-interface inventory, and parse failures from the **Hosts** page (with a boolean query DSL) and the **Findings** spine.
-- **Analyse posture** — the **Posture** hub answers a manager's questions across four tabs: the executive security condition, remediation trajectory, and highest-leverage action (**Posture**); segment comparison by site or subnet (**Segments**); recurring weaknesses grouped into program-level pattern families (**Patterns**); and whether the conclusions are trustworthy via per-domain assessment coverage (**Evidence**). A network **Topology** map and a cross-project **Portfolio** view round out the manager-facing surfaces.
-- **Collaborate** — each authenticated user can mark a host with a personal follow status and add attributed review notes (threaded, @mentions) that surface in host and activity feeds.
+- **Triage** hosts from the **Hosts** page (a boolean query DSL with autocomplete) and the host inspector, organised by service: weaknesses first, then each service with its per-port evidence. Scanner rows are *scanner observations* until someone judges them; the **Findings** hub groups them by issue (a shared weakness catalog with check ids, so `kind:` / `check:` filters work across tools), promotes or dismisses them per host or per issue, and holds the confirmed findings. The OS family is derived from the OS name when no scanner reported one.
+- **Analyse posture** — the **Posture** hub answers a manager's questions across four tabs: the executive security condition, remediation trajectory, and highest-leverage action (**Posture**); segment comparison by site or subnet (**Segments**); recurring weaknesses grouped into program-level pattern families (**Patterns**); and whether the conclusions are trustworthy via per-domain assessment coverage (**Evidence**). A cross-project **Portfolio** view and, for global administrators, the **Oversight** programme dashboard (any subset of projects) round out the manager-facing surfaces.
+- **Operations** — the landing hub: your own work, **Worth a look** (untouched hosts with a stated reason, ranked by tier), **Needs another look**, and a three.js address terrain showing which /24s are tested, planned, worked or untouched.
+- **Collaborate** — each authenticated user can mark a host with a personal follow status and add attributed review notes; host-note threads and finding comments share one Collaboration feed, and an `@mention` notifies the person named and then the rest of the discussion.
 - **Agent workflows** — an operator starts **one project-scoped agent session** (one time-limited, renewable X-API-Key) for an AI/terminal-side agent (Claude Code, Codex, etc.). The key may do exactly what its operator's project role allows — there are no per-workflow keys and no separate capability grants — and the session opens a *phase* for each kind of work:
   - **AI Assist** (the default, no phase) — answers ad-hoc questions over all project data using the same query DSL as the Hosts page (e.g. "show me the hosts I have in review"), and records notes and review status when the operator's role permits writes. An auditor's or viewer's agent is read-only because its operator is.
   - **Recon** — agent populates host data for a scope from scanner output
   - **Plan generation** — agent reads candidate hosts and drafts a structured test plan for human approval
   - **Execution** — agent works through a **human-approved** plan with per-host sanity-check gates; one environment probe per session makes commands match the operator's host
-  - Every agent request is recorded in an audit log surfaced in the UI so users can review exactly what their agent did and which hosts it touched. The contract agents read at startup is [AGENTS.md](AGENTS.md).
+  - Every agent request is recorded in an audit log surfaced in the UI so users can review exactly what their agent did and which hosts it touched. The contract agents read at startup is the [agent guide](documentation/AGENT_GUIDE.md), served at `GET /api/v1/agents-guide`.
 - **MCP** — every agent workflow is also reachable over the [Model Context Protocol](documentation/MCP.md) at `/api/v1/mcp`, so an MCP-capable client (VS Code Copilot, Claude Code, Codex) calls them as native tools instead of shelling `curl`. Configure **one** server entry, `bluestick`; `tools/list` returns the whole catalogue to every session, and whether a call succeeds is decided per request by the operator's project role — the MCP layer makes no authorization decision of its own. The session dialogs emit ready-to-paste client config, and `scripts/trust-cert.sh` handles the self-signed certificate each client rejects by default.
 - **Approve by exception, not by default** — an agent may run an approved tool against a host already in the inventory and write its output into the session's working directory without asking each time; anything outside those bounds stops for the operator. Which tools are approved is a table an admin vets ([Tool Reference](documentation/MCP.md#5-the-tool-registry)), and an agent that needs something else records the request rather than substituting. BlueStick cannot enforce this — commands run on the operator's machine; the client's sandbox is the real boundary, and the server adds the record.
-- **Export** scoped data and operational reports for downstream analysis — CSV and HTML stream synchronously; JSON, agent-package and markdown-bundle archives run as **async report jobs** on a dedicated report-worker container. (PDF export was removed in v2.196.1; the interactive HTML report is the handover format.)
+- **Client reports** — the **Reports** page (Findings hub) renders a findings-first report from a Quarto template in `report-templates/` (Penetration test report, Executive brief, Remediation worklist) to HTML, Word and the `.qmd` source. Drafts preview; issuing freezes and numbers a report; issued reports are revised or followed by addenda, never edited. There is no PDF output — Word exports it. See [report-templates/README.md](report-templates/README.md) to add a template.
+- **Export** scoped data and operational reports for downstream analysis — CSV and HTML stream synchronously; JSON, agent-package and markdown-bundle archives run as **async report jobs** on the report-worker container.
 
-The app opens on the **Operations** hub; everything else hangs off **Inventory**, **Posture**, **Workflows**, **Collaboration** and **Settings**.
+The app opens on the **Operations** hub; everything else hangs off **Inventory**, **Findings**, **Posture**, **Workflows** and **Collaboration**, with **Settings**, **Administration** (global admins) and **Reference** at the foot of the sidebar.
 
 ## Repository Layout
 
 ```text
 backend/app/
   api/v1/endpoints/   FastAPI route modules
-  main.py, startup.py App entrypoint; first-boot seeding (default admin, default project)
+  main.py, startup.py App entrypoint; first-boot seeding (default admin, default project), background loops
+  data/               parser_coverage.json (the "What BlueStick reads" page), tool_registry_seed.json
   worker.py, report_worker.py   The two worker container entrypoints
   api/deps.py         Auth dependencies (get_current_user, require_project_role, agent access)
   core/               Settings + password/JWT primitives
@@ -50,13 +54,14 @@ frontend/src/
   components/         Shared UI components
   contexts/           Auth/theme context providers
   hooks/, utils/      Shared hooks; pure helpers (kept free of the HTTP client so they test without it)
-  config/             navigation.tsx — the six-hub navigation manifest
+  config/             navigation.tsx — the nine-hub navigation manifest
   data/, theme/       Upload-format table (test-pinned to the docs); palettes and tokens
   pages/              Route-level screens
   services/           API client and typed contracts
   tests/              Vitest test suites
 
-documentation/        Architecture, API, MCP, parsers, upload-format, UI-style and testing docs
+documentation/        Architecture, API, MCP, parsers, upload-format, UI-style, testing and parse-audit docs
+report-templates/     Client report templates (Quarto), mounted read-only into the backend and report worker
 scripts/              Deployment and operational helpers
 artifacts/            Fixture data for parser and ingestion testing
 ```
@@ -119,8 +124,8 @@ npm test -- --run    # Vitest suites
 ./scripts/deploy.sh        # unified deploy menu (start/rebuild, first-time setup, reconfigure IP, nuclear clean, security status, back up .env + SSL, roll back to the previous build)
 ./scripts/status.sh        # quick container health check
 ./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit) — safe to share; needs python3; --since 72h, --terms FILE
-./scripts/backup-db.sh     # database backup (pg_dump, or a raw volume snapshot if Postgres is down)
-./scripts/restore-db.sh    # restore from a backup-db.sh artifact
+./scripts/backup-db.sh     # database + uploads/ backup (pg_dump, or a raw volume snapshot if Postgres is down)
+./scripts/restore-db.sh    # restore the database and uploads/ from a backup-db.sh artifact
 ./scripts/upgrade-instance.sh  # carry a running instance's local state into a freshly copied source tree, then deploy (for hosts that deploy by file copy; read its header for the expected folder layout)
 
 # Seeds run INSIDE the backend container (scripts/ is bind-mounted at /app/scripts); deploy.sh runs none of them:
@@ -138,16 +143,16 @@ docker compose exec backend python scripts/seed_eval_scenarios.py   # a small pr
 
 ## Asynchronous ingestion
 
-`POST /api/v1/projects/{id}/upload/` (analyst project role) stores the file and returns immediately. With `stage=true` — what the UI does — the job is registered as `staged`: `GET /upload/jobs/{id}/detection` reports the detected format and `POST /upload/jobs/{id}/start` queues it, optionally as a chosen format. An identical file already in the project is refused with 409 `duplicate_scan`. A separate worker container processes the queue and the UI polls `/upload/jobs/{job_id}` for completion. Parser failures are recorded with structured user-facing messages on the Parse Errors page.
+`POST /api/v1/projects/{id}/upload/` (analyst project role) stores the file and returns immediately. With `stage=true` — what the UI does — the job is registered as `staged`: `GET /upload/jobs/{id}/detection` reports the detected format and `POST /upload/jobs/{id}/start` queues it, optionally as a chosen format. An identical file already in the project is refused with 409 `duplicate_scan`. A separate worker container processes the queue and the UI polls `/upload/jobs/{job_id}` for completion. Parser failures, and the lines an import did not interpret, are shown on the **Ingestion Results** page (Inventory hub, beside Scans).
 
 ## Agent audit trail
 
-Whatever an agent session is doing (assist, recon, plan generation or execution), BlueStick records every inbound `/api/v1/agent/*` request — method, resolved path, status, duration, body summary (mutations only), and the host/entry/IP references parsed out of the call. The activity table is surfaced on the test plan's API-calls tab, the recon run page and the assist sessions page so users can verify their agent queried the right hosts.
+Whatever an agent session is doing (assist, recon, plan generation or execution), BlueStick records every inbound `/api/v1/agent/*` request — method, resolved path, status, duration, body summary (mutations only), and the host/entry/IP references parsed out of the call. The activity table is surfaced on the test plan's API-calls tab, the recon run page and the Sessions view of Agent Runs so users can verify their agent queried the right hosts.
 
 ## Documentation
 
 - [Contributing](CONTRIBUTING.md) — **start here to maintain the project**: versioning, schema/migration ownership, the file-size policy, host-dedup model, agent workflows, build/test/CI
-- [Agent Guide (AGENTS.md)](AGENTS.md) — the contract every agent reads at startup
+- [Agent Guide](documentation/AGENT_GUIDE.md) — the contract every BlueStick agent reads at startup (not instructions for working on this repository; it was `AGENTS.md` at the root until 2.427.1)
 - [Architecture](documentation/ARCHITECTURE.md) — system topology, package map, security model
 - [API Guide](documentation/API_GUIDE.md) — endpoint reference with auth, shapes, error contracts
 - [Upload Formats](documentation/UPLOAD_FORMATS.md) — supported scanner exports + detection rules
@@ -157,4 +162,6 @@ Whatever an agent session is doing (assist, recon, plan generation or execution)
 - [Testing Framework](documentation/TESTING_FRAMEWORK_DOCUMENTATION.md) — pytest + Vitest harness, and CI
 - [UI Style Guide](documentation/UI_STYLE_GUIDE.md) — frontend behavioral contract
 - [Scripts](scripts/README.md) — deployment and maintenance helpers
+- [Report templates](report-templates/README.md) — authoring a client report template
+- [Parse audit brief](documentation/PARSE_AUDIT_BRIEF.md) — how an on-site agent audits parse accuracy without samples leaving the client network
 - For SBOM, visit **Reference → Software Bill of Materials** in the running app — the live page reflects the deployed build's resolved dependency tree.

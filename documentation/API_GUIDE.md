@@ -1,6 +1,6 @@
 # BlueStick API Guide
 
-> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19) — and see the note at the end: the live OpenAPI is the authority for the full route list.
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26) — and see the note at the end: the live OpenAPI is the authority for the full route list.
 
 Base path: `/api/v1`
 
@@ -24,7 +24,9 @@ Content-Type: application/json
 {"username": "admin", "password": "admin"}
 ```
 
-Returns a JWT in the response body plus a bearer token expected on every subsequent request. Sessions are tracked server-side in `user_sessions` — logout revokes the JWT so a stolen token stops working at the next request. The default admin account (`admin` / `admin`) is seeded on first boot with `must_change_password=True`; every authenticated endpoint except `/auth/*` is gated behind `require_password_changed` until the user rotates.
+Returns a JWT in the response body plus a bearer token expected on every subsequent request. When the account has 2FA enabled, `/auth/login` instead returns `{two_factor_required: true, challenge_token, expires_in}`; finish with `POST /auth/login/2fa` (`{challenge_token, code}`). Sessions are tracked server-side in `user_sessions` — logout revokes the JWT so a stolen token stops working at the next request.
+
+The first-boot admin (`DEFAULT_ADMIN_USERNAME`, default `admin`) gets `DEFAULT_ADMIN_PASSWORD` when that is set to something other than the literal `admin`; otherwise a random password is generated, never logged, and written mode 0600 to `uploads/initial-admin-password.txt`. It starts with `must_change_password=True`. Every JWT endpoint except `/auth/*` is gated until the user rotates (403 `password_change_required`) — and, under `REQUIRE_2FA` (the default), until TOTP is enrolled (403 `two_factor_setup_required`). `/agent/*`, `/mcp` and `/references` are not behind that gate.
 
 **Brute-force defenses (v2.41.0).** Three layers stack:
 
@@ -57,7 +59,7 @@ The session opens any other phase itself, with the same key: `POST /agent/recon/
 - **End (agent-facing)** — `POST /api/v1/agent/session/end`. Revokes the key; `409` while a recon or execution phase is still open.
 
 Keys are:
-- **Hashed at rest** in `api_keys` (`ApiKey`, `app/db/models_auth.py`); the plaintext is returned to the operator **exactly once**, never stored.
+- **Hashed at rest** in `api_keys` (`APIKey`, `app/db/models_auth.py`); the plaintext is returned to the operator **exactly once**, never stored.
 - **Time-bound but renewable** — default 24h TTL (`settings.AGENT_KEY_TTL_HOURS`), extendable by the agent itself while the session lives. **Ending the session, not expiry, is the revocation control**: an open session can renew past its key's deadline, so waiting for expiry is not a revocation.
 - **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, environment probe, session end, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
 
@@ -97,13 +99,15 @@ X-API-Key: nm_agent_<plaintext>
 ├── /projects                 # project list, create, update, delete
 │   ├── /{id}/members         # project membership (admin or project-admin)
 │   └── /{id}/...             # PROJECT-SCOPED SUBTREE — see §4
-├── /portfolio                # cross-project dashboard
+├── /portfolio                # cross-project dashboard (member's own projects)
+├── /oversight                # global admin: programme dashboard over any subset of projects
 ├── /activity                 # scan-correlation timeline ("what was scanning at time X") — NOT the note feed, which is /hosts/notes/activity
 ├── /notifications            # read/unread, mark-seen
 ├── /llm-providers            # per-user LLM credentials + /{id}/complete
-├── /integrations             # per-user scanner tool credentials
+├── /integrations             # scanner credentials (global admin writes; list/types any user)
 ├── /feedback                 # admin triage of agent feedback rows
-├── /references               # SBOM, tool registry, MCP catalog, TLS trust (public reads)
+├── /references               # SBOM, tool registry, parser coverage, MCP catalog, TLS trust (public reads)
+├── /agents-guide             # the agent guide (documentation/AGENT_GUIDE.md), optionally sliced by ?workflow=
 ├── /mcp                      # MCP transport (JSON-RPC 2.0) — see §5.9
 ├── /mcp-telemetry/summary    # admin: per-tool MCP call outcomes
 └── /agent                    # AGENT API — see §5
@@ -117,7 +121,8 @@ X-API-Key: nm_agent_<plaintext>
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/auth/login` | Body: `{username, password}`. Returns JWT + profile. |
+| POST | `/auth/login` | Body: `{username, password}`. Returns JWT + profile, or a 2FA challenge (`two_factor_required`, `challenge_token`). |
+| POST | `/auth/login/2fa` | Body: `{challenge_token, code}` (TOTP or recovery code). Returns JWT + profile. |
 | POST | `/auth/logout` | Revokes the current session. |
 | POST | `/auth/change-password` | Required when `must_change_password=True`. |
 | GET | `/auth/profile` | Current user + `must_change_password` flag. |
@@ -139,17 +144,18 @@ X-API-Key: nm_agent_<plaintext>
 
 ### 3.3 Projects
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/projects/` | List projects the current user can see. |
-| POST | `/projects/` | Create project. |
-| GET | `/projects/{id}` | Project detail. |
-| PUT | `/projects/{id}` | Update metadata. |
-| DELETE | `/projects/{id}` | Delete (cascades to owned data). |
-| GET | `/projects/{id}/members` | List membership. |
-| POST | `/projects/{id}/members` | Add member — body: `{user_id: int, role: str}`. |
-| PUT | `/projects/{id}/members/{user_id}` | Change role. |
-| DELETE | `/projects/{id}/members/{user_id}` | Remove member. |
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/projects/` | any auth | List projects the current user can see. |
+| POST | `/projects/` | global admin | Create project. |
+| GET | `/projects/{id}` | member | Project detail. |
+| PUT | `/projects/{id}` | project admin / global admin | Update metadata. |
+| PATCH | `/projects/{id}/ingest-settings` | analyst+ | Import settings (e.g. skip informational Nessus observations). |
+| DELETE | `/projects/{id}` | global admin | Delete (cascades to owned data). |
+| GET | `/projects/{id}/members` | member | List membership. |
+| POST | `/projects/{id}/members` | project admin / global admin | Add member — body: `{user_id: int, role: str}`. |
+| PUT | `/projects/{id}/members/{user_id}` | project admin / global admin | Change role. |
+| DELETE | `/projects/{id}/members/{user_id}` | project admin / global admin | Remove member. |
 
 `MembershipCreate` takes **`user_id`**, not `username`. Clients should use `/users/directory` to pick the ID.
 
@@ -167,6 +173,7 @@ X-API-Key: nm_agent_<plaintext>
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/portfolio/dashboard` | Cross-project summary (host count, open criticals, recent scans, attention items) scoped to projects the user can see. |
+| GET | `/oversight/dashboard` | **Global admin** — the programme dashboard over any subset of projects. Counts come from `engagement_metrics_service`, the same as Portfolio's. |
 
 ### 3.6 LLM providers (self-service)
 
@@ -180,20 +187,20 @@ Per-user credentials for OpenAI, Anthropic, Azure OpenAI, Ollama, and OpenAI-com
 | DELETE | `/llm-providers/{id}` | |
 | POST | `/llm-providers/{id}/test` | Non-destructive connectivity test via the provider's model-list endpoint (or a one-token completion for Anthropic). Uses `safe_http_client` with DNS re-validation. |
 | GET | `/llm-providers/types` | The provider types this deployment supports. |
-| POST | `/llm-providers/{id}/complete` | Chat completion. Body: `{system?, messages, max_tokens?, temperature?}`. **Server-side prompt sanitization** runs before forwarding — see §8. |
+| POST | `/llm-providers/{id}/complete` | Completion. Body: `{system?, prompt, max_tokens?, temperature?}` (`max_tokens` 1–16384, default 2048; `temperature` 0–2). **Server-side prompt sanitization** runs before forwarding — see §8. |
 
 ### 3.7 Integrations (scanner credentials)
 
-Per-user credentials for Nessus, OpenVAS, Nuclei, Burp, PDCP, and generic-API integrations. Dual-secret support (Nessus needs both Access Key and Secret Key). All secrets Fernet-encrypted.
+Scanner credentials for Nessus, OpenVAS, Nuclei, Burp and generic-API integrations. Dual-secret support (Nessus needs both Access Key and Secret Key). All secrets Fernet-encrypted. Only **global admins** create, update, delete or test them.
 
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/integrations/` | List integrations visible to current user. Supports `?project_id=` to return project-scoped + user-global. |
-| GET | `/integrations/types` | The integration types available. |
-| POST | `/integrations/test` | Connectivity test BEFORE creating one. |
-| POST | `/integrations/` | Create. `base_url` validated via SSRF check with the `is_integration_private_allowed()` carve-out (currently Ollama only). |
-| PATCH | `/integrations/{id}` | Update. `clear_secret` / `clear_secret2` flags remove encrypted material. |
-| DELETE | `/integrations/{id}` | |
+| Method | Path | Auth | Notes |
+|---|---|---|---|
+| GET | `/integrations/` | any auth | List integrations visible to current user. Supports `?project_id=` to return project-scoped + global. |
+| GET | `/integrations/types` | any auth | The integration types available. |
+| POST | `/integrations/test` | global admin | Connectivity test BEFORE creating one. |
+| POST | `/integrations/` | global admin | Create. `base_url` validated via SSRF check; the `is_integration_private_allowed()` carve-out lets ollama, nessus, openvas, nuclei, burp and generic_api use private addresses (metadata / link-local are always refused). |
+| PATCH | `/integrations/{id}` | global admin | Update. `clear_secret` / `clear_secret2` flags remove encrypted material. |
+| DELETE | `/integrations/{id}` | global admin | |
 
 The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit finding C#2). If a future agent workflow needs programmatic scanner credentials, it must come back as a per-plan-scoped endpoint with audit logging. Today, recon prompts inline the credentials the agent needs directly from `agent_prompt_service._integration_block`.
 
@@ -201,7 +208,7 @@ The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new|triaged|reviewed&source=plan_generation|execution|reconnaissance`. |
+| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `skip`, `limit`. |
 | GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`. |
 | GET | `/feedback/stats` | admin | Aggregate counts by source, status, average `overall_rating`. |
 | PATCH | `/feedback/{id}` | admin | Update status + `reviewer_notes`. |
@@ -213,7 +220,8 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/references/` | Index of the reference endpoints below, with descriptions. |
-| GET | `/references/sbom` | **v2.20.0** — Software Bill of Materials reflecting the deployed build's resolved dependency tree. Reads `requirements.txt` + `frontend/package-lock.json`. Memoised by manifest mtimes + `app_version` (so a release bump invalidates the cache even if dependencies didn't change). Classifies each component as direct (listed in `requirements.txt` / `package.json` root) or transitive. |
+| GET | `/references/sbom` | **v2.20.0** — Software Bill of Materials reflecting the deployed build's resolved dependency tree. Walks the installed Python distributions (`importlib.metadata`) and reads `frontend/package-lock.json`; `requirements.txt` only marks which are direct. Memoised by manifest mtimes + `app_version` (so a release bump invalidates the cache even if dependencies didn't change). Classifies each component as direct (listed in `requirements.txt` / `package.json` root) or transitive. |
+| GET | `/references/parser-coverage` | **v2.411.0** — "What BlueStick reads": per tool, what its output reports, the level BlueStick takes each item to (observation / field / text / stored / discarded), where it is shown, and the known gaps. Data in `app/data/parser_coverage.json`; the `/reference/tool-coverage` page. |
 | GET | `/references/preflight-script` | Returns `scripts/preflight.sh` (text/x-shellscript) — the recon-workflow environment probe agents run to check which tools the host has. Supports `--json`, `--strict`, `--help`. |
 | GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
 | GET | `/references/tools` | **v2.277.0** — the tool registry: every tool BlueStick knows about, with install/usage knowledge for humans and, for the `approved` subset, the phase/intrusiveness metadata agents key off. `?status=approved\|reference\|suggested\|rejected`, `?category=`. One source of truth for the Tool Reference page and the agent guardrail. |
@@ -261,13 +269,15 @@ Every endpoint in this subtree requires JWT auth AND project membership with the
 | GET | `/upload/jobs/{job_id}` | Job detail. |
 | POST | `/upload/jobs/{job_id}/cancel` | Cancel a queued or processing job. Only the owner or a global admin. |
 
-The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter surfacing (UI view deferred to v2.11.0).
+The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter surfacing (shown on **Ingestion Results**, §4.9).
 
 ### 4.2 Scans
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/scans/` | List scans. Supports pagination. |
+| GET | `/scans/` | List scans. Supports pagination; `?ids=` fetches specific scans with the full per-scan import summary. |
+| GET | `/scans/history` | The ORDER of the import history — upload batches and individually uploaded files interleaved, newest first, paginated over both kinds at once (`skip`, `limit` ≤200, `search`, `tool`, `created_after`, `uploaded_by`). Hydrate rows through `GET /scans/?ids=` and `GET /scans/batches?ids=`. |
+| GET · POST · PATCH | `/scans/batches` · `/scans/batches/{id}` | Upload batches (create: analyst). `PATCH` names an operator's batch; an agent's batch refuses with 409. |
 | GET | `/scans/{scan_id}` | Scan detail. |
 | DELETE | `/scans/{scan_id}` | Admin. Deletes scan + history rows; hosts seen in other scans are preserved. |
 | GET | `/scans/{scan_id}/hosts/count` | Host count only (lightweight for list views). |
@@ -278,12 +288,12 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/hosts/` | Deduplicated hosts with rich filter support: `state`, `ports`, `services`, `subnets`, `scan_ids`, `os_filter`, `min_risk_score`, `critical/high/medium/low_vuln_min`, `has_vuln`, `follow_status`, `search`. Supports `sort_by`, `sort_order`, `skip`, `limit`, `include_total`. |
+| GET | `/hosts/` | Deduplicated hosts with rich filter support: `state`, `search`, `ports`, `services`, `port_states`, `has_open_ports`, `os_filter`, `subnets`, `has_critical_vulns` / `has_high_vulns` / `has_medium_vulns` / `has_low_vulns`, `has_exploit_available`, `follow_status`, `scan_ids`, `tags`, `sites`, `assigned_to`, `orgs` / `asns` / `countries`, **`weaknesses=`** (comma-separated DSL `has:` flags — smb_unsigned, weak_tls, local_admin, writable_share…; OR), **`checks=`** (misconfiguration check ids; OR), and **`q=`** (the query DSL, §5.7). `sort_by` ∈ critical_vulns · high_vulns · exploitable_vulns · open_ports · note_count · discovery_count · ip_address · hostname · last_seen; also `sort_order`, `skip`, `limit` (≤500), `include_total`. |
 | GET | `/hosts/{host_id}` | Host detail with ports, scripts, vulnerabilities, follow state, notes, discoveries. |
 | GET | `/hosts/{host_id}/conflicts` | `conflict_count` (the same number as the list badge — host-level disagreements), `confidence` (source ranking per field) and `conflict_history`. Each history row carries both values, both scan ids AND `previous_scan_filename` / `new_scan_filename` / `current_value` — a conflict is recorded whether or not the reported value was adopted, so `current_value` is what says which one the host shows today. A blank being filled in (`state: unknown → up`) is not recorded as a conflict (v2.367.0). |
 | GET | `/hosts/scan/{scan_id}` | Hosts seen in a specific scan: host fields and ports only (`ScanHost`, v2.424.1). Observations, notes and history are on `GET /hosts/{id}`. |
 | GET | `/hosts/filters/data` | Filter metadata (ports, services, OS, subnets, scans). Supports cascading — pass active filter params to scope the returned metadata. |
-| GET | `/hosts/tool-ready/{format}` | Export filtered host list as a tool-ready target file (nmap list, masscan range, newline-delimited IPs, etc.). |
+| GET | `/hosts/tool-ready/{format}` | Auditor+ (data egress). Export filtered host list as a tool-ready target file (nmap list, masscan range, newline-delimited IPs, etc.). |
 | GET | `/hosts/views` | Saved filter/view state for the current user. |
 
 #### Host follow state
@@ -299,9 +309,9 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/hosts/{host_id}/notes` | List notes on a host. |
-| POST | `/hosts/{host_id}/notes` | Create. Body: `{body, status?, parent_id?}`. `body` is capped at 16 KB. Returns `mention_warning` if mention notification dispatch failed. |
-| PATCH | `/hosts/{host_id}/notes/{note_id}` | Author edit only. |
-| DELETE | `/hosts/{host_id}/notes/{note_id}` | Author delete only. |
+| POST | `/hosts/{host_id}/notes` | Analyst+. Body: `{body, status?, parent_id?}`. `body` is capped at 16 KB. `@username` notifies that project member, then the thread's writers on a reply. Returns `mention_warning` if mention notification dispatch failed. |
+| PATCH | `/hosts/{host_id}/notes/{note_id}` | Analyst+. `body` is author-only; thread state (`status`, `assignee_id`, `due_at`) can be changed by any analyst. |
+| DELETE | `/hosts/{host_id}/notes/{note_id}` | Analyst+; author delete only. |
 | GET | `/hosts/notes/activity` | Activity-grouped feed for the Activity page with host enrichment. |
 | GET | `/hosts/notes/unread-count` | Count of notes updated since `last_viewed_at`. |
 | POST | `/hosts/notes/mark-seen` | Mark all activity as seen. |
@@ -311,12 +321,8 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/dashboard/stats` | Aggregated host/port/subnet/vuln counts + recent scans + note activity. |
-| GET | `/dashboard/port-stats` | Port frequency breakdown. |
-| GET | `/dashboard/os-stats` | OS distribution. |
-| GET | `/dashboard/risk-insights` | Attention queue, vulnerability hotspots, risk exposure. |
-| GET | `/dashboard/my-attention?limit=10` | Per-user attention list. |
-| GET | `/dashboard/my-tasks?limit=15` | Per-user open tasks. |
-| GET | `/dashboard/new-scans-since` | Recent scans since user's last visit. |
+
+That is the whole `/dashboard` router: the personal routes (`my-attention`, `my-tasks`, `new-scans-since`) were folded into `GET /workbench` in v2.244.0, and the port/OS/risk breakdowns are gone. See `/workbench` in §4.13.
 
 ### 4.5 Findings
 
@@ -333,10 +339,15 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | DELETE | `/findings/{finding_id}/hosts/{host_id}` | Detach a host. |
 | PATCH · DELETE | `/findings/{finding_id}/endpoints/{finding_host_id}` | ONE endpoint row's own state (`open` / `remediated` / `retest` / `false_positive`). The finding's status is the ISSUE's; never read it as the state of a given host. Responses carry `endpoint_status_counts`. |
 | GET | `/vulnerabilities/{vuln_id}/promote-preview` | What promoting this scanner observation would do — the finding it would join, the hosts carrying the issue. |
-| POST | `/vulnerabilities/{vuln_id}/promote` | Promote or dismiss a scanner observation: `{status?, severity?, owner_id?, summary?, scope?}`. **`scope: "host"`** acts on the inspected host only — a `false_positive` dismissal defaults to it; a promotion may use it (v2.366.0: the finding is still the issue's, one per `dedup_key`, but only this host is attached, so "confirmed" is never recorded for hosts nobody verified). `scope: "issue"` is every host carrying it, and is the API default for a promotion. `accepted_risk` is issue-wide only: with `scope: "host"` → **422**. |
+| POST | `/vulnerabilities/{vuln_id}/promote` | Promote or dismiss a scanner observation: `{vuln_id, status?, severity?, owner_id?, summary?, scope?}` — `vuln_id` is required and must equal the path id (400). **`scope: "host"`** acts on the inspected host only — a `false_positive` dismissal defaults to it; a promotion may use it (v2.366.0: the finding is still the issue's, one per `dedup_key`, but only this host is attached, so "confirmed" is never recorded for hosts nobody verified). `scope: "issue"` is every host carrying it, and is the API default for a promotion. `accepted_risk` is issue-wide only: with `scope: "host"` → **422**. |
 | POST | `/annotations/{annotation_id}/promote` | Promote a note thread to a finding (the note becomes its evidence). |
 | GET | `/findings/{finding_id}/history` · `GET`/`POST /findings/{finding_id}/notes` | Status history; the comment / evidence thread (terminal determinations need a justification). |
 | POST | `/findings/bulk/status` · `/findings/bulk/assign` | Bulk transitions and assignment. |
+| GET | `/scanner-observations` | **v2.386.0** — scanner rows grouped by ISSUE (`Vulnerability.issue_key`) across the project's hosts, with `host_count` and `judged_host_count`. `search`, `severity`, `kind` (misconfiguration \| vulnerability \| informational), `include_judged`, `min_hosts`, `skip`, `limit` (≤200). Drives the Findings page's *Scanner observations* view. |
+| GET | `/scanner-observations/hosts?issue_key=` | The hosts carrying one issue (`limit` ≤5000). |
+| POST | `/scanner-observations/promote` | Analyst+. `{items: [{issue_key, host_ids?}]}` — promote several issues at once, each on every host carrying it or exactly the named ones (validated all-or-nothing; 422). An issue that already has a finding JOINS it, and the bulk path never changes that finding's status. |
+
+Renaming a finding (a changed `title`) and deleting it need the finding's author, a project admin or a global admin (responses carry `can_modify`); severity / owner / status are any analyst's. A comment is its author's only, and one with replies is kept (409).
 
 ### 4.6 Scopes & subnets
 
@@ -344,10 +355,10 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 |---|---|---|
 | GET | `/scopes/default` | The project's default scope. |
 | GET | `/scopes/` | List scopes. |
-| POST | `/scopes/upload-subnets` | Import scope from a CSV or flat list — CIDR rows and domain/wildcard rows. Scopes are created through import; there is no bare `POST /scopes/`. |
 | GET | `/scopes/{scope_id}` | Scope detail. |
 | DELETE | `/scopes/{scope_id}` | |
-| POST | `/scopes/upload-subnets` | Analyst+. Upload a scope file: CIDR/IP rows → subnets, domain rows (`*.example.com` = include subdomains) → scope domains. 2 MB cap, 10 000 entry cap. |
+| POST | `/scopes/upload-subnets` | Analyst+. Upload a scope file: CIDR/IP rows → subnets, domain rows (`*.example.com` = include subdomains) → scope domains. 2 MB cap, 50 000 entry cap. Scopes are created through import; there is no bare `POST /scopes/`. |
+| GET · POST | `/scopes/{scope_id}/domains` · `DELETE …/domains/{domain_id}` | Declared domain scope (analyst+ to change). Name scope never confers subnet scope. |
 | POST | `/scopes/correlate-all` | Analyst+. Re-run host ↔ subnet correlation for the project. A repair tool only: imports, subnet adds / CIDR changes and scope-file uploads correlate by themselves, so the Scope page no longer offers it (5.269.0). |
 | GET | `/scopes/coverage?limit=25` | Scope coverage rollups. |
 | GET | `/scopes/{scope_id}/host-mappings` | Host-to-subnet mappings for a scope. |
@@ -359,17 +370,18 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/export/scope/{scope_id}?format_type=csv|html|json|pdf` | Hosts + ports within a scope. |
-| GET | `/export/scan/{scan_id}?format_type=...` | Scan-level export. |
-| GET | `/export/out-of-scope` | Out-of-scope host export. |
-| GET | `/reports/hosts/csv` | Host listing as CSV. |
+| GET | `/export/scope/{scope_id}?format_type=txt\|csv\|json` | Auditor+. Hosts + ports within a scope (default `txt`). |
+| GET | `/export/scan/{scan_id}?format_type=txt\|csv\|json` | Auditor+. Scan-level export. |
+| GET | `/export/out-of-scope?format_type=txt\|csv\|json` | Auditor+. Out-of-scope host export. |
+| GET | `/reports/hosts/csv` | Auditor+ (the whole `/reports` router). Host listing as CSV. |
 | GET | `/reports/hosts/html` | Host listing as HTML. |
+| GET | `/reports/systemic.html` | The systemic-insights report as HTML. |
 
 JSON host export is **not** a `/reports/hosts/*` path — use `/export/...` or `/hosts/tool-ready/{format}`.
 
 #### Reports jobs (async — the comprehensive/heavy formats)
 
-Since v2.196.0 the heavy report formats (PDF, JSON, ZIP bundles, large host-centric dossiers) run on a dedicated report-worker container, mirroring the ingestion pipeline. Submit a job and poll, rather than blocking the request.
+Since v2.196.0 the heavy report formats (JSON, agent package, markdown bundle; there is no PDF) run on a dedicated report-worker container, mirroring the ingestion pipeline. Submit a job and poll, rather than blocking the request.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -378,7 +390,8 @@ Since v2.196.0 the heavy report formats (PDF, JSON, ZIP bundles, large host-cent
 | GET | `/reports/jobs/{job_id}` | Job detail (status, progress, error). |
 | GET | `/reports/jobs/{job_id}/download` | Stream the finished artifact (only once `status=complete`). |
 | POST | `/reports/jobs/{job_id}/dismiss` | Hide a finished/failed job from the report-jobs tray. |
-| GET | `/reports/limits` | Host cap per format (`null` = every matching host). JSON and the agent package stream every host (v2.394.0); the markdown bundle is capped at `REPORT_MAX_INMEMORY_HOSTS`. |
+| POST | `/reports/jobs/{job_id}/retry` · `/cancel` | Re-queue a failed job; cancel a queued job before the worker claims it (409 otherwise). |
+| GET | `/reports/limits` | Host cap per format (`null` = every matching host). CSV, JSON and the agent package are uncapped (v2.394.0); HTML is capped at `ReportGenerator.MAX_REPORT_HOSTS`; the markdown bundle at `REPORT_MAX_INMEMORY_HOSTS`. |
 | POST | `/reports/draft/finding-text` | `{finding_id, fields?, provider_id?}` → `{suggestions}`: the operator's LLM provider suggests Markdown for one finding's empty report sections (default: the empty ones of description / impact / recommendation). Writes nothing — the author saves through the finding update. Author or project admin only (403); 400 no provider / nothing empty; 502 provider failed or answered unreadably. |
 
 ### 4.8 DNS
@@ -395,11 +408,17 @@ server-side lookup/AXFR endpoint. Stored DNS records are read per host/scan via
 
 | Method | Path | Notes |
 |---|---|---|
+Every `/parse-errors` route requires **analyst+**.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/parse-errors/ingestion-results` | The **Ingestion Results** page (Inventory hub): one row per import with its format chain (`detected_file_type` → `format_override` → `final_file_type`), `file_retained` and `retained_until`. |
+| GET | `/parse-errors/ingestion-results/{job_id}/uninterpreted` | **v2.418.0** — the lines an import did not interpret, as REDACTED shapes: `{job_id, original_filename, tool_name, total, distinct, shapes[]}`. Only parsers that publish them (NetExec today) have rows. |
 | GET | `/parse-errors/` | Filterable list. |
 | GET | `/parse-errors/{error_id}` | Detail with `user_message` + full file preview. |
 | GET | `/parse-errors/stats/summary` | Aggregate counts by type, status, file. |
-| PUT | `/parse-errors/{error_id}/status` | Update status (acknowledged, resolved). |
-| DELETE | `/parse-errors/{error_id}` | Analyst+. |
+| PUT | `/parse-errors/{error_id}/status?status=unresolved\|reviewed\|fixed\|ignored` | Update status (query parameter, not a body). |
+| DELETE | `/parse-errors/{error_id}` | |
 
 ### 4.10 Agents (project-scoped) — **removed in v2.295.0**
 
@@ -428,7 +447,8 @@ the removal is inert.
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/test-plans/` | Create an empty plan. Body: `{title, description?}`. |
-| POST | `/test-plans/generate` | Generate a reconnaissance plan from a scope via the agent prompt builder. Mints a plan-generation-scoped API key and returns instructions + key (plaintext, shown once). |
+| POST | `/test-plans/generate` | Create a draft plan and start a project agent session with that plan already open (201). Body: `{title, description?, filter_criteria?, source_kind?, source_recon_session_id?, source_host_ids?}` — the plan's source is a filter set, a recon run or a fixed host list. Returns the key (plaintext, shown once) + instructions. |
+| POST | `/test-plans/from-hosts` | A plan (or a draft's new entries) from a FIXED host list (`source_kind='manual_hosts'`); `dry_run=true` previews exclusions. |
 | GET | `/test-plans/` | List plans visible to the user. Filterable by status. |
 | GET | `/test-plans/{plan_id}` | Plan detail with entries. |
 | POST | `/test-plans/{plan_id}/approve` | Transition draft → approved. Analyst+. |
@@ -439,10 +459,10 @@ the removal is inert.
 | GET | `/test-plans/{plan_id}/progress` | Progress rollup. |
 | GET | `/test-plans/{plan_id}/history` | Audit trail of plan changes. |
 | DELETE | `/test-plans/{plan_id}` | Analyst. Cascade-deletes the plan's entries and history — there is NO "no execution sessions" guard; the UI warns when dispositioned entries exist. |
-| POST | `/test-plans/{plan_id}/execute` | Mint a plan-scoped execution API key and return instructions. |
-| POST | `/test-plans/{plan_id}/rotate-key` | **v2.19.0** — Mint a fresh per-plan agent key and revoke the prior ones. For the case where the original 24h key expired but the user wants to keep working on the same plan. |
+| POST | `/test-plans/{plan_id}/execute` | Start a project agent session with an execution run open on this approved plan (201); returns key + instructions + MCP setup (§6.3). |
+| POST | `/test-plans/{plan_id}/rotate-key` | End the plan's current session (its key is revoked) and start a fresh project session holding a new key (201). |
 | GET | `/test-plans/{plan_id}/entries/{entry_id}/execution-results` | Per-entry test execution results + sanity checks for the latest (or a specified `session_id`) session. |
-| GET | `/test-plans/{plan_id}/execution-report?format_type=html\|pdf\|json\|csv` | Download an execution report from the latest (or a specified) session. `raw_output` trimmed to 16 KB per test result. |
+| GET | `/test-plans/{plan_id}/execution-report?format=html\|json\|csv` | Analyst+. Download an execution report (default `html`) from the latest (or a specified) session. `raw_output` trimmed to 16 KB per test result. |
 | POST | `/test-plans/{plan_id}/export-bundle` | Export an approved plan as an offline zip bundle. Creates an `ExecutionSession` in exported mode and transitions the plan to `in_progress`. Returns the zip bytes + `bundle_id` + `execution_session_id`. |
 | POST | `/test-plans/{plan_id}/import-results` | Import a results file from a terminal-run agent. JSON-depth-guarded, idempotent, cross-plan-safe. |
 | GET | `/test-plans/{plan_id}/api-activity` | **v2.24.0** — JWT-authenticated read of the agent API call log scoped to this plan. Filters: `method`, `status_min`, `status_max`, `host_id`, `target_ip`, `since`, `until`, `limit`, `offset`. Returns `{total, items[]}`. See §6.7. |
@@ -451,7 +471,8 @@ the removal is inert.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/scopes/{scope_id}/recon/start` | Mint a scope-bound `reconnaissance` API key and create an active `ReconSession`. Returns instructions + plaintext key shown exactly once. |
+| POST | `/scopes/{scope_id}/recon/start` | Analyst+. Start a project agent session with a recon run (`ReconSession`) open on this scope (201). Returns instructions + plaintext key shown exactly once. |
+| GET | `/recon-sessions/` · `/recon-sessions/{id}` · `/recon-sessions/{id}/diff/{other_id}` | Recon runs, one run, and what changed between two. `POST /recon-sessions/{id}/abandon` (analyst+) ends one. |
 | GET | `/recon-sessions/{recon_session_id}/api-activity` | **v2.24.0** — JWT-authenticated read of the agent API call log scoped to this recon session. Same filter shape as the plan variant above. |
 
 ### 4.13 Other project-scoped routers
@@ -467,7 +488,8 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 | `/attention` | Project "needs help" attention model (the site-metrics arc). |
 | `/sites` | Site entity management (tier / owner / coverage). |
 | `/coverage` | Project coverage summary (drives v3 Operations). |
-| `/workbench` | Batched Operations workbench + since-last-visit cursor. |
+| `/workbench` | Batched Operations workbench + since-last-visit cursor. `GET /workbench/investigate?tier=1..5` is the "Worth a look" queue on its own (untouched hosts with a reason, ranked by a stated tier in SQL; carries whole-queue `tier_counts`; 503 on failure); `GET /workbench/terrain` counts hosts per /24 (IPv6 /64) as tested / planned / worked / untouched for the Operations terrain; `POST /workbench/seen {as_of}` acknowledges the displayed snapshot; `GET /workbench/my-activity` is the caller's recent work. |
+| `/client-reports` | **v2.380.0** — the client report (Reports page). Reads need auditor, drafts analyst, issuing and re-rendering project admin. `GET`/`POST ""`, `GET`/`PATCH`/`DELETE /{id}`, `POST /{id}/preview` (202, a report job), `/{id}/issue` (freezes and numbers it), `/{id}/render` (retry an issued report's files), `/{id}/revise` (201), `GET /{id}/files/{fmt}`; `GET`/`PUT /profile`, `GET /templates` (and `/templates/problems` for templates that cannot be offered), `GET /team`. See `report-templates/README.md`. |
 | `/webhooks` | Per-project outbound webhook subscriptions + delivery records. |
 | `/hosts/tags` | Project tag catalog with host counts (`host_tags`). |
 | `/hosts/bulk/*` | Bulk host operations (`host_bulk`): `POST /hosts/bulk/tags`, `/bulk/assign` (assign hosts to a user — analyst+), `/bulk/unassign` (remove the **caller's own** assignment — any project member, so an assigned viewer/auditor can drop it), `/bulk/follow`. |
@@ -487,7 +509,9 @@ All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the r
 
 **Session lifecycle:** `POST /agent/session/environment` (ONE probe per session) → open a phase — `POST /agent/recon/start {scope_id}` · `POST /agent/test-plans {title}` · `POST /agent/execution-sessions/start {plan_id}` (201; each returns its context plus a `read_back` of the run's concrete bounds) → work → complete the phase (`POST /agent/recon/complete`, `POST /agent/execution-sessions/{session_id}/complete`, `POST /agent/test-plans/{id}/submit`) → `POST /agent/session/end` (409 while a recon or execution phase is still open). `GET /agent/identity` reports `open_phases`, `can_write_project_data`, `key_expires_at` and `renew_path`. A call about a phase that is not open answers **409**, not 403.
 
-Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, same checks, same audit row.
+Most endpoints below — the assist, plan, execution and recon routes — are also **MCP tools** (§5.9): same key, same checks, same audit row. The §5.1 browse reads and the file downloads are not.
+
+The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET /api/v1/agents-guide`.
 
 ### 5.1 Project context (every session)
 
@@ -495,11 +519,12 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 |---|---|---|
 | GET | `/agent/project` | Project metadata (name, description, status). |
 | GET | `/agent/dashboard` | Stats summary for the bound project. |
-| GET | `/agent/hosts` | Paginated host list. Supports `after_host_id`, `limit`, filters. |
+| GET | `/agent/hosts` | Paginated host list. Supports `limit` (1–5000, default 500) / `offset`, `not_in_plan_id`, and the discrete filters (state, ports, services, subnets, `has_*_vulns`, search). |
 | GET | `/agent/hosts/{host_id}` | Host detail with ports, services, vulns. |
+| PATCH | `/agent/hosts/{host_id}` | Correct hostname / OS (analyst operator); setting `os_name` re-derives `os_family`. |
 | GET | `/agent/scans` | Scan list. |
 | GET | `/agent/scopes` | Scope list with subnet counts. |
-| POST | `/agent/hosts/{host_id}/notes` | Create a host note from the agent's identity. |
+| GET · POST | `/agent/hosts/{host_id}/notes` | Read a host's notes; create one from the agent's identity. An `@username` in an agent's note notifies nobody. |
 | POST | `/agent/hosts/{host_id}/follow` | Follow a host. |
 
 ### 5.2 Test plan CRUD
@@ -507,7 +532,7 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 | Method | Path | Notes |
 |---|---|---|
 | POST | `/agent/test-plans` | Create a new plan under this agent. |
-| GET | `/agent/test-plans` | List agent-owned plans. |
+| GET | `/agent/test-plans` | List the project's plans; `?mine=true` for the plans this session drafted. |
 | GET | `/agent/test-plans/{plan_id}` | Plan detail. |
 | PATCH | `/agent/test-plans/{plan_id}` | Update title/description. |
 
@@ -542,17 +567,19 @@ Every endpoint below is also reachable as an **MCP tool** (§5.9) — same key, 
 | POST | `/agent/recon/upload` | Multipart upload of scanner output. Stamped with the recon session ID. |
 | GET | `/agent/recon/jobs/{job_id}` | Poll an ingestion job to completion. |
 | GET | `/agent/recon/summary` | Per-host rollup of what's been discovered in this session. |
+| GET | `/agent/recon/subnets` · `/agent/recon/domains` | The scope's CIDRs and declared domains, paged. |
+| GET | `/agent/recon/hosts.ndjson` · `/live-hosts.txt` · `/web-targets.txt` | Auditor. File-shaped target lists for the next tool — `curl` them to disk. |
 | POST | `/agent/recon/complete` | Mark the session complete. |
 
 ### 5.6 Feedback ingest
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/feedback` | Record structured feedback at the end of a run. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. Session and plan binding are inferred from the API key. |
+| POST | `/agent/feedback` | Record structured feedback at the end of a run. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required; the plan / execution / recon ids are optional body fields, checked against the project and against `source`; the project and session come from the key. |
 
 ### 5.7 Assist workflow (read-only Q&A — v2.64.0)
 
-For "ask questions about this project" agents that shouldn't trigger the plan-approval ceremony. These reads are the DEFAULT surface of every session — no phase, no special key (`require_assist_scope` is gone). Project membership is the floor; the NDJSON exports, attachments and screenshots require `auditor`. The table below is a sample: the router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/hosts/{id}/testing`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
+For "ask questions about this project" agents that shouldn't trigger the plan-approval ceremony. These reads are the DEFAULT surface of every session — no phase, no special key (`require_assist_scope` is gone). Project membership is the floor; the NDJSON exports, attachments and screenshots require `auditor`. The table below is a sample: the router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/hosts/{id}/testing`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, `/assist/hosts/{id}/access` (NetExec / SMBMap results beside the raw line — which may carry credentials, shown as found), `/assist/uninterpreted-lines?job_id=` (redacted lines a parser did not read), `/assist/attachments/{id}` and `/assist/web-interfaces/{id}/screenshot`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -564,7 +591,7 @@ For "ask questions about this project" agents that shouldn't trigger the plan-ap
 | GET | `/agent/assist/scans` | Scan list. |
 | GET | `/agent/assist/session` | Current assist-session metadata. |
 
-**`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`port:`, `os:`, `service:`, `version:` (service product/version) — these three match **open ports only** unless the value names a state after `@`: `port:22@closed`, `service:ssh@filtered`, `port:22@any` (v2.403.0; a closed/filtered port's service name is nmap's guess from the port number); `portstate:` alone is a separate "has a port in this state" condition — `path:` (a content-discovery path), `subnet:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site), `conclusion:` (what a finished review concluded — e.g. `conclusion:needs_evidence`), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its `issue_key`), `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `country:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows, (start, end]; quote the ISO value — `firstseen:"2026-09-19T20:00:00Z"`, `changedsince:"<start>..<end>"`, `vulnsince:"critical@<start>..<end>"` with severity and time matched on the same observation), `has:`, `follow:`, `assigned:` (alias `assignee:`, taking `me` / `any` / `none` / a username / an id)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `exploit` · `web` · `open_ports` · `tested` · `planned` · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` and `assigned:` accept `me` — which resolves against the **operator who started the (read-only) session** (so `assigned:me` means "hosts assigned to that operator") — and `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); if the session has no bound operator, `follow:`/`assigned:` predicates also return 400. Backed by `host_query_dsl.parse_query` / `evaluate`.
+**`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`state:`, `ip:`, `hostname:` (alias `host:`), `port:`, `os:` (OS name or OS family), `service:`, `version:` (service product/version) — these three match **open ports only** unless the value names a state after `@`: `port:22@closed`, `service:ssh@filtered`, `port:22@any` (v2.403.0; a closed/filtered port's service name is nmap's guess from the port number); `portstate:` alone is a separate "has a port in this state" condition — `path:` (a content-discovery path), `subnet:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site), `conclusion:` (what a finished review concluded — e.g. `conclusion:needs_evidence`), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its `issue_key` — `check:…`, `cve:…`, `title:…`), `kind:` (misconfiguration \| vulnerability \| informational), `check:` (a misconfiguration check id, e.g. `check:smb_signing_not_required`), `scope:` (subnet \| name \| none — the three scope-coverage states), `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `country:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows, (start, end]; quote the ISO value — `firstseen:"2026-09-19T20:00:00Z"`, `changedsince:"<start>..<end>"`, `vulnsince:"critical@<start>..<end>"` with severity and time matched on the same observation), `has:`, `follow:` (watching / in_review / reviewed / none / in_review_any, judged for the session's operator), `assigned:` (alias `assignee:`, taking `me` / `any` / `none` / a username / an id)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `local_admin` · `writable_share` · `exploit` · `web` · `open_ports` · `tested` · `planned` · `untouched` (no review, note, plan entry or finding endpoint) · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` is judged for, and `assigned:me` resolves to, the **operator who started the session** (so `assigned:me` means "hosts assigned to that operator"); `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); any `q=` returns 400 if the session has no bound operator. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
 The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its environment probe, and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed, mirroring the plan and recon ones.
 
@@ -574,7 +601,7 @@ Session status is **derived**: a session whose keys have all expired reports `en
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/agent/identity` | **v2.278.0** — what this key is: workflow, bound project/plan/session ids, the operator it acts for — which since v2.309.0 *is* its authority, so v2.311.0 also returns that operator's `project_role` and a precomputed `can_write_project_data` rather than making the agent infer it or discover it from a 403 — when it expires, and where to renew. Behind **no** workflow guard, deliberately: every other introspection route requires the workflow it describes, so an agent holding an unknown key could otherwise only classify it by trying surfaces until one stopped returning 403. |
+| GET | `/agent/identity` | **v2.278.0** — what this key is: its session, the phases it has open (`open_phases`), the operator it acts for — which since v2.309.0 *is* its authority, so v2.311.0 also returns that operator's `project_role` and a precomputed `can_write_project_data` rather than making the agent infer it or discover it from a 403 — when it expires (`key_expires_at`), and where to renew (`renew_path`). |
 | POST | `/agent/tool-suggestions` | **v2.278.0** — record a request for a tool outside the approved set, with rationale. Lands as `suggested` (which no approval rule reads) for an admin to vet. Deliberately ungated: a capability gate would silence exactly the sessions most likely to hit the edge of the set. |
 
 ### 5.9 MCP transport (`POST /api/v1/mcp`)
@@ -582,9 +609,9 @@ Session status is **derived**: a session whose keys have all expired reports `en
 JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2025-06-18` / `2025-03-26`). `initialize`, `tools/list`, `tools/call`, `ping`.
 
 * **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so workflow scope, the operator's project role, and the audit log are unchanged. The MCP layer makes no authorization decision.
-* **401 vs. isError.** No usable credential answers a real **HTTP 401** with a bare `WWW-Authenticate: Bearer` challenge (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
-* **Unfiltered listing.** `tools/list` returns the whole catalogue (55 tools) to every session; each tool's `workflows` field is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
-* **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages.
+* **401 vs. isError.** No usable credential answers a real **HTTP 401** with a plain RFC 6750 challenge (`WWW-Authenticate: Bearer realm="BlueStick assist"`, plus `error="invalid_token"` when a key was sent) (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
+* **Unfiltered listing.** `tools/list` returns the whole catalogue (57 tools at 2.427; `GET /references/mcp-tools` is the live count) to every session; each tool's `workflows` field is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
+* **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages, and refused outright under protocol `2025-06-18` (which removed batching) — allowed only when `2025-03-26` is declared.
 * **Not tools:** the file-shaped endpoints (`report-context.ndjson`, `recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`, `POST recon/upload`) stay `curl` — they belong on disk, not in a model's context.
 
 `GET /api/v1/mcp-telemetry/summary` (**admin**) reports per-tool call counts and outcomes, including `unknown_tools_called`. Full detail — client setup, certificate pinning, the tool registry, the guardrail model — is in [MCP.md](MCP.md).
@@ -663,21 +690,24 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
 
 ```json
 {
+  "execution_session_id": 17,
   "plan_id": 42,
   "plan_title": "Q2 external recon",
-  "plan_status": "in_progress",
+  "agent_id": 9,
   "api_key": "nm_agent_<plaintext shown once>",
-  "instructions": "...<markdown block pasted into the user's terminal agent>..."
+  "instructions": "...<markdown block pasted into the user's terminal agent>...",
+  "mcp_clients": [ { "...": "per-client connect recipe, with the sandbox flags" } ],
+  "mcp_url": "https://<host>/api/v1/mcp"
 }
 ```
 
-`api_key` is the plaintext, shown exactly once — the caller must display/copy it before dismissing the response. The hash lives in `agent_api_keys`; subsequent recovery is not possible.
+Status **201**. `api_key` is the plaintext, shown exactly once — the caller must display/copy it before dismissing the response. The hash lives in `api_keys`; subsequent recovery is not possible.
 
 ### 6.4 `POST /projects/{id}/test-plans/{plan_id}/export-bundle` (response)
 
 ```
 Content-Type: application/zip
-Content-Disposition: attachment; filename="plan-42-bundle.zip"
+Content-Disposition: attachment; filename="networkmapper_plan_42_v3_20260926_141500.zip"
 X-Bundle-Id: <uuid>
 X-Execution-Session-Id: 17
 ```
@@ -692,6 +722,8 @@ results_schema.json JSON Schema the agent's results file must conform to
 ```
 
 ### 6.5 `POST /projects/{id}/test-plans/{plan_id}/import-results` (request)
+
+Multipart upload, field `file`, containing this JSON (analyst+):
 
 ```json
 {
@@ -729,7 +761,7 @@ results_schema.json JSON Schema the agent's results file must conform to
 **Validation rules:**
 - Missing `bundle_id` → 400.
 - `plan_id` or `execution_session_id` mismatch → 400 with clear detail.
-- Unknown `bundle_id` → 404.
+- Unknown `bundle_id` → 400.
 - `is_final=true` with empty `results` → 400.
 - `is_final` must be a strict bool; the string `"true"` does NOT flip the flag.
 - `is_finding` must be a strict bool; `"false"` does NOT become `True`.
@@ -770,7 +802,7 @@ results_schema.json JSON Schema the agent's results file must conform to
 }
 ```
 
-Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `source`, `project_id`, `test_plan_id`, and `execution_session_id` are inferred from the API key binding.
+Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `project_id` and the session come from the API key; `source` is required in the body; the plan / execution / recon ids are optional body fields, checked against the project and against `source`.
 
 ### 6.7 `GET /api/v1/projects/{project_id}/test-plans/{plan_id}/api-activity` (v2.24.0)
 
@@ -886,12 +918,12 @@ Non-validation errors use the simpler shape:
 Callers should be aware of these enforced constraints — they're documented here so clients don't have to reverse-engineer 422s.
 
 - **Prompt sanitization** is applied to `POST /llm-providers/{id}/complete` on the server before forwarding. Patterns stripped: `X-API-Key: nm_agent_*` lines, credential bullets (Access key / Secret key / Password / Username / API key / PDCP token / Secret), and bare `nm_agent_` tokens ≥20 chars. The frontend runs the same sanitizer in `utils/promptSanitizer.ts` as defense-in-depth. **If you change the bullet shape in `agent_prompt_service._integration_block`, update both sanitizers in lockstep or secrets will leak on one of the two paths.**
-- **SSRF validation** runs on every `base_url` accepted by `/llm-providers/` and `/integrations/`. The validator resolves the hostname and rejects RFC1918, CGNAT, loopback, link-local, and IPv6 equivalents (including `169.254.169.254` metadata). Ollama is the sole integration type with `allow_private=True`.
+- **SSRF validation** runs on every `base_url` accepted by `/llm-providers/` and `/integrations/`. The validator resolves the hostname and rejects RFC1918, CGNAT, loopback, link-local, and IPv6 equivalents (including `169.254.169.254` metadata). Private addresses are allowed only by carve-out: for LLM providers, Ollama alone; for integrations, ollama, nessus, openvas, nuclei, burp and generic_api. Metadata / link-local ranges are refused regardless.
 - **IP-pinning transport** re-resolves hostnames at connect time inside every outbound LLM provider call, closing the DNS rebinding TOCTOU window between the validator and the actual request. Redirects are disabled so a 302 can't land on a private IP.
 - **Max-length caps** on high-risk text fields: HostNote body 16 KB, plan title 200 chars, plan description 4 KB, entry rationale 4 KB, entry notes 8 KB, entry findings 16 KB, reject reason 2 KB.
 - **File uploads** enforce per-extension magic-byte checks. `.xml`/`.nessus` must start with `<`, `.json` with `{` or `[`, `.gnmap` with `#` or `Host:`, text files may not contain NUL bytes. Filenames are slugified before filesystem use. Chunk-level size cap prevents unbounded streams.
 - **JSON depth guard** on `/import-results` rejects payloads nested deeper than 20 levels via a byte-level pre-scan.
-- **XML parsing.** Two-pronged defense (v2.41.0): `nessus_parser.py` and `openvas_parser.py` use `defusedxml.ElementTree`; `nmap_parser.py` and `masscan_parser.py` use `lxml.etree.iterparse` with `resolve_entities=False, no_network=True, huge_tree=False`. Both approaches disable external entities, DTD fetching, and entity expansion at parse time.
+- **XML parsing.** Two-pronged defense (v2.41.0): `nessus_parser.py` uses `defusedxml.ElementTree`; the nmap, masscan and openvas parsers use lxml through `xml_stream_helpers.iterparse_safe` (`resolve_entities=False, no_network=True, huge_tree=False`). Both approaches disable external entities, DTD fetching, and entity expansion at parse time.
 - **EyeWitness ZIPs** (v2.41.0) have per-file (50 MB), running-total (500 MB), and entry-count (5000) decompression-bomb caps. The streaming extractor counts bytes mid-stream and aborts + unlinks the partial file if either cap is exceeded, so a spoofed central-directory size field can't defeat the check.
 - **BloodHound JSON ≥50 MB** streams via `ijson` instead of `json.load` (v2.41.0); the structure (`[…]`, `{"data": […]}`, `{"computers": […]}`) is auto-detected by peeking the first 64 KB.
 
@@ -901,12 +933,12 @@ Callers should be aware of these enforced constraints — they're documented her
 
 - **Schema management.** Tables are owned by **Alembic**. Every backend boot runs `alembic upgrade head` before serving traffic. Migrations live in `backend/alembic/versions/`; baseline at `b46cd59c17f5_baseline_schema`. The previous startup-DDL path has been retired — the model is the schema, and Alembic enforces it.
 - **Upload flow is async.** `POST /upload/` returns a queued `IngestionJob` — poll `GET /upload/jobs/{id}` for status. Don't expect a parsed scan in the upload response.
-- **API keys are shown once.** Every `/generate`, `/execute`, `/recon/start`, and `/assist/start` response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `agent_api_keys`.
-- **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than 3× `INGESTION_JOB_TIMEOUT` are transitioned to `failed` by the worker's reaper loop (~1 min cadence). Users see a clear "worker likely crashed" message in the UI with `retry_count` incremented.
-- **Workflow-scoped AGENTS.md.** Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
-- **Health probes.** `GET /health` on the backend; `/health.html` on the nginx frontend.
-- **Version visibility.** `GET /` returns `{message, version, frontend_version, cors_origins}`. The UI shows both versions in the user menu under **About BlueStick**. Backend and frontend stay in lockstep per-release; always update both.
+- **API keys are shown once.** Every `/generate`, `/execute`, `/recon/start`, and `/assist/start` response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `api_keys`.
+- **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than `INGESTION_JOB_TIMEOUT` × `INGESTION_ORPHAN_CUTOFF_MULTIPLIER` (default 1.5) are re-queued automatically by the worker's reaper, up to `INGESTION_MAX_RETRIES` while the file still exists; after that they are failed ("worker likely crashed") and admins are notified.
+- **Workflow-scoped agent guide** (`documentation/AGENT_GUIDE.md`). Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
+- **Health probes.** nginx serves `/live` (liveness, static) and proxies `/health` and `/ready` to the backend's `/health` (5 s timeouts on purpose); the frontend container's Docker HEALTHCHECK requests `https://localhost/`.
+- **Version visibility.** `GET /` returns `{message, version, frontend_version, instance_id, cors_origins}`. The UI shows both versions in the user menu under **About BlueStick**. Backend and frontend stay in lockstep per-release; always update both.
 
 ---
 
-This document was last reconciled with the routers at v2.370.2. **It is not an exhaustive route list and never stays one for long** — sections 4 and 5 give the shape and the contracts that matter; for every route, parameter and schema use the live OpenAPI at `https://<host>/docs` (Swagger UI), `/redoc`, or `/openapi.json`, all proxied by nginx (the backend's own :8000 is not published). Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
+This document was last reconciled with the routers at v2.427.1 (frontend 5.309.1, 2026-09-26). **It is not an exhaustive route list and never stays one for long** — sections 4 and 5 give the shape and the contracts that matter; for every route, parameter and schema use the live OpenAPI at `https://<host>/docs` (Swagger UI), `/redoc`, or `/openapi.json`, all proxied by nginx (the backend's own :8000 is not published). Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.

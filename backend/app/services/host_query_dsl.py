@@ -734,8 +734,9 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="A finding’s title / plugin name — Nessus, OpenVAS, Nikto."),
     FieldSpec("issue", lambda c, v: P.issue_predicate(c.db, v, c.project_id), value_source="issue",
               description="Exactly one scanner-observation issue, by the key the Findings page "
-                          "groups observations by (quote it: `issue:\"title:smb signing not "
-                          "required\"`). Exact match, unlike vuln:."),
+                          "groups observations by (quote it: "
+                          "`issue:\"check:smb_signing_not_required\"`, `issue:\"cve:CVE-2021-44228\"`). "
+                          "Exact match, unlike vuln:."),
     # v2.415.0 — what kind of weakness, and which catalog check.
     FieldSpec("kind", lambda c, v: P.kind_predicate(c.db, v, c.project_id), value_source="enum",
               enum_values=list(KINDS),

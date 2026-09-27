@@ -1159,7 +1159,7 @@ def resume_plan_generation(
 
     Existing entries are preserved; the resumed agent continues via
     ``GET /agent/test-plans/{plan_id}/context`` with the
-    ``not_in_plan_id`` cursor (see AGENTS.md § Resuming plan
+    ``not_in_plan_id`` cursor (see the agent guide § Resuming plan
     creation).  ``_mint_continuation_session_key`` ends the plan's
     previous session, which revokes the dead agent's key — load-bearing
     so it can't be used to interleave writes.

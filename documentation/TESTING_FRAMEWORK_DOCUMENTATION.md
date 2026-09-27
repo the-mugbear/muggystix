@@ -1,10 +1,10 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19)
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26)
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~1,850 tests** across ~200 modules (v2.370) — the number moves; `pytest --collect-only -q | tail -1` is the source.
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~2,100 test functions** (more after parametrisation) across ~245 modules (v2.427) — the number moves; `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## The gates (run locally — there is no hosted CI)
@@ -30,7 +30,7 @@ Key behavior of the current backend harness:
 
 - **Database selection.** The fixture prefers a real PostgreSQL test DB and falls back to in-memory SQLite when no Postgres server is reachable. Resolution order:
   1. `$TEST_DATABASE_URL` if set (explicit override).
-  2. A `<app-db>_test` database on the app's own Postgres server, auto-created if absent.
+  2. A `<app-db>_test_<host>_<pid>` database on the app's own Postgres server, created for the run and dropped at session end (a hard-killed run leaves it behind).
   3. In-memory SQLite.
   The Postgres path lets Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run; the SQLite fallback skips those tests cleanly via `USING_POSTGRES`.
 - **Transactional isolation.** `conftest.py::db_session` uses the SQLAlchemy join-to-outer-transaction + nested-savepoint pattern so services that commit internally (integration credentials, LLM providers, the agent API log middleware) still leave the test in a clean state. The v2.24.0 middleware writes via its own `SessionLocal()`; the fixture rebinds that to the test connection so middleware-written rows roll back at teardown — no cross-test leakage.
@@ -54,7 +54,7 @@ is baked into the image so only mounting the host source picks up your edits):
 # FROM THE REPO ROOT. Run it from backend/ or frontend/ and Docker creates a root-owned
 # stray tree of mount-point stubs there.
 R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run --rm --no-deps \
-  -v "$R/backend:/app" -v "$R/AGENTS.md:/app/AGENTS.md:ro" -e COVERAGE_FILE=/tmp/.coverage backend \
+  -v "$R/backend:/app" -v "$R/documentation/AGENT_GUIDE.md:/app/AGENT_GUIDE.md:ro" -e COVERAGE_FILE=/tmp/.coverage backend \
   sh -c "cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"
 ```
 
@@ -62,21 +62,21 @@ Running from `/tmp` with the cache plugin off keeps root-owned `.pytest_cache` /
 files out of the working tree (the older `-w /app` form left them in `backend/`).
 
 **The suite does not touch your dev database's schema or data.** Data: it creates and drops its
-own `<database>_test_<pid>` database when the compose `db` is reachable, else uses in-memory
+own `<database>_test_<host>_<pid>` database when the compose `db` is reachable, else uses in-memory
 SQLite. Schema: importing the app normally runs `alembic upgrade head` against `DATABASE_URL`,
 and `tests/conftest.py` sets `BLUESTICK_SKIP_DB_INIT=1` before that import (v2.370.1) — before
 then, a run with an unmerged migration in the tree applied it to the real dev database. Any
 OTHER command that imports `app.main` with the tree mounted still migrates.
 
-Mounting `AGENTS.md` keeps the docs-contract tests from skipping (they read it from disk).
+Mounting the agent guide keeps the docs-contract tests from skipping (they read it from disk).
 
-Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Measured coverage is **70%** as of v2.232.0; the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
+Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) and emits terminal + HTML reports. Coverage was last measured at **70%** at v2.232.0 (not re-measured since); the floor sits just under so ordinary diffs don't trip it on rounding. Raise the floor as coverage climbs — never lower it to turn a red build green. (Before v2.232.0 the gate was configured but CI ran `--no-cov`, so it enforced nothing.)
 
 ## Frontend Tests
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage (~150 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 
@@ -102,11 +102,11 @@ Strict-mode TypeScript is enforced; every PR should typecheck clean before merge
 ## Docs-vs-code contract tests
 
 `backend/tests/test_docs_contract.py` keeps the documentation tied to the code so it can't drift
-silently (it has before — AGENTS.md once ran ~120 releases stale). It asserts: AGENTS.md
+silently (it has before — the guide, then named `AGENTS.md`, once ran ~120 releases stale). It asserts: the guide's
 `<!-- agents:section -->` markers stay balanced and every workflow slice keeps its body; every
 OpenAPI tag described in `app/main.py` is used by a real route (and the agent-workflow tags are
-all described); and every agent endpoint documented in AGENTS.md's API-reference tables exists as
-a route. **If you rename or remove an agent route or an OpenAPI tag, update AGENTS.md / `main.py`
+all described); and every agent endpoint documented in the guide's API-reference tables exists as
+a route. **If you rename or remove an agent route or an OpenAPI tag, update `documentation/AGENT_GUIDE.md` / `main.py`
 in the same commit or this test fails.**
 
 ## Guard tests — they fail on drift, on purpose
@@ -117,10 +117,14 @@ Update these WITH the change, never around it:
 |---|---|
 | `test_schema_fk_ondelete_contract.py` | every `ForeignKey(ondelete=…)` against the ground-truth map (tests build the schema from the models, so a missing `ondelete` makes tests and prod diverge) |
 | `test_parser_dispatch_contract.py`, `test_ingestion_format_chain.py`, `test_phase1_regressions.py::test_v2_27_0_content_detection_module_surface` | the three-place parser registration: detection → dispatch → `format_registry.FORMATS` |
+| `test_parser_coverage.py` | every format has an entry in `app/data/parser_coverage.json` (the "What BlueStick reads" page), and what it claims matches what the parsers write |
+| `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |
+| `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |
+| `test_quarto_render.py::test_hostile_text_stays_text_in_every_format`, `test_report_templates_shipped.py`, `test_report_templates_escaping.py`, `test_report_template_assets.py` | every template in `report-templates/` keeps hostile text as text (run in the report-worker image — Quarto tests skip in the backend image); every shipped template is offered with no problems |
 | `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api` |
 | `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
-| `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | `AGENTS.md` section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
+| `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
 | `test_db_init_migration.py` | boot-migration error handling, and that the harness runs with `BLUESTICK_SKIP_DB_INIT=1` |
 | `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
 | `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |

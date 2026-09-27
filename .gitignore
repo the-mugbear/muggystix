@@ -235,8 +235,9 @@ review_artifacts/
 
 # Internal docs kept local-only — not published to the public repo.
 # CLAUDE.md (architecture/ops guidance) and CHANGELOG.md (detailed dev
-# history) reveal internals with no runtime purpose.  AGENTS.md is NOT
-# here: the backend serves it at /agents-guide, so it must stay tracked.
+# history) reveal internals with no runtime purpose.  The agent guide
+# (documentation/AGENT_GUIDE.md) is NOT here: the backend serves it at
+# /agents-guide, so it must stay tracked.
 CHANGELOG.md
 
 # Session scratch / shared debug bundles — operator-local, never committed.
@@ -248,10 +249,11 @@ dashboard_changes.txt
 all_container_logs.txt
 *_container_logs.txt
 
-# Backend startup resolves AGENTS.md / platform_version.json relative to
+# Backend startup resolves AGENT_GUIDE.md / platform_version.json relative to
 # its CWD; running it with a CWD lacking the real (repo-root) copies — e.g.
 # the mounted test container — leaves 0-byte stand-ins here. Never real.
 /backend/AGENTS.md
+/backend/AGENT_GUIDE.md
 /backend/platform_version.json
 
 # Docker bind-mount placeholder — created at 0 bytes by the SBOM mount

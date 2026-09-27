@@ -24,7 +24,7 @@ be able to re-run them rather than reconstruct your reasoning.
 
 | Question | Query | Count |
 |---|---|---|
-| Critical findings with no owner | `has:critical AND assigned:none` | {{n}} |
+| Hosts with a critical scanner result and no assignee | `has:critical AND assigned:none` | {{n}} |
 | Hosts in review | `follow:in_review` | {{n}} |
 | Assigned to me | `assigned:me` | {{n}} |
 | Never reviewed | `follow:none` | {{n}} |
@@ -32,8 +32,8 @@ be able to re-run them rather than reconstruct your reasoning.
 
 ## Unowned critical findings
 
-<!-- assist_list_hosts q="has:critical AND assigned:none", then
-     assist_get_host_vulnerabilities per host for the evidence. -->
+<!-- assist_list_findings severity=critical unowned=true, then
+     assist_get_finding per finding for its hosts and evidence. -->
 
 | Host | Finding | Evidence | Suggested owner |
 |---|---|---|---|

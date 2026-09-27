@@ -100,9 +100,9 @@ def test_mcp_guidance_describes_the_unified_session():
 
 def test_agent_guide_does_not_describe_inventory_assistance_as_a_separate_session():
     """The guide is part of the MCP contract, not optional supporting copy."""
-    # The suite runs inside the backend container, where AGENTS.md is
-    # bind-mounted at /app/AGENTS.md — not at the repo-root path a local
-    # checkout would give.  Reuse the docs-contract loader, which knows both.
+    # The suite runs inside the backend container, where the guide is
+    # bind-mounted at /app/AGENT_GUIDE.md — not at the documentation/ path a
+    # local checkout would give.  Reuse the docs-contract loader, which knows both.
     from tests.test_docs_contract import _load_agents_md
 
     guide = _load_agents_md()

@@ -133,8 +133,8 @@ _PROBE_PROPERTIES = {
         "additionalProperties": {"type": "boolean"},
         "description": (
             "Map of tool name → present on PATH, e.g. "
-            '{"nmap": true, "masscan": false}. Names follow the AGENTS.md '
-            "inventory."
+            '{"nmap": true, "masscan": false}. Names follow the tool inventory '
+            "in the agent guide."
         ),
     },
     # The field names and the status vocabulary here are a CONTRACT, not a
@@ -144,7 +144,7 @@ _PROBE_PROPERTIES = {
     # `wrong-binary`) which type-checked and planned WRONGLY — a tool reported
     # as `wrong-binary` fell through the `warn|missing` test and was planned
     # around as working. Mirrors `preflight.sh --json`'s `tools[]` output; see
-    # AGENTS.md § Environment probe.
+    # The agent guide § Environment probe.
     "tools_status": {
         "type": "array",
         "items": {
@@ -280,7 +280,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "read_agent_guide": {
         "description": (
-            "AGENTS.md — the authoritative guide for how to work with BlueStick: the "
+            "The agent guide — the authoritative guide for how to work with BlueStick: the "
             "approval and sanity-check protocol, the working-directory rules, endpoint "
             "body shapes, upload formats, exit criteria. A unified project session "
             "gets the full guide; optionally request a phase slice. READ THIS FIRST, "
@@ -456,13 +456,17 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_list_hosts": {
         "description": (
             "List/filter hosts in the project. Prefer the `q` boolean DSL (same "
-            "vocabulary as the Hosts page: port:, os:, service:, subnet:, tag:, "
-            "cve:, vuln:, tech:, has:, follow:, assigned: — combine with AND/OR/"
-            "NOT and parentheses). port:/service: match OPEN ports; add @closed, "
-            "@filtered or @any to the value for others (port:22@any). "
-            "assigned: takes me / any / none / a username, "
-            "so 'has:critical AND assigned:none' is 'critical findings nobody "
-            "owns'. Paginate with limit/offset — but for a COUNT use "
+            "vocabulary as the Hosts page, e.g. port:, os:, service:, cve:, "
+            "check:, has:, follow:, assigned: — combine with AND/OR/NOT and "
+            "parentheses; the full field list is in the agent guide's assist "
+            "slice, and assist_get_vocabulary gives this project's tag / label / "
+            "site / username values). port:/service: match OPEN ports; add "
+            "@closed, @filtered or @any to the value for others (port:22@any). "
+            "assigned: takes me / any / none / a username, so "
+            "'has:critical AND assigned:none' is 'hosts with a critical scanner "
+            "observation that nobody is assigned' — for unowned triaged "
+            "findings use assist_list_findings unowned=true. Paginate with "
+            "limit/offset — but for a COUNT use "
             "assist_count_hosts, not the length of a page. Returns host briefs."
         ),
         "method": "GET",

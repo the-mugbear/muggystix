@@ -575,7 +575,7 @@ class AgentSession(Base):
     # (migration f1a6c92d4b70). A session's authority is its operator's project
     # role, resolved per request, so there is no per-session grant to store.
 
-    # Environment probe (shared) — see AGENTS.md § Environment probe.
+    # Environment probe (shared) — see the agent guide § Environment probe.
     environment = Column(JSON, nullable=True)
     environment_probed_at = Column(DateTime(timezone=True), nullable=True)
     environment_probed_by_user_id = Column(
@@ -673,7 +673,7 @@ class ExecutionSession(Base):
     # when the run opens and refreshed whenever the agent re-posts
     # POST /agent/session/environment, so /execution-context can echo it and
     # the agent picks command flavour from what is actually available on
-    # this operator's host.  See AGENTS.md § Environment probe.
+    # this operator's host.  See the agent guide § Environment probe.
     environment = Column(JSON, nullable=True)
     environment_probed_at = Column(DateTime(timezone=True), nullable=True)
     environment_probed_by_user_id = Column(

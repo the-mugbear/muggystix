@@ -14,7 +14,8 @@ to have the parsers fixed; the files themselves never leave.
 Needs BlueStick 2.418.0 or later (the About item in the user menu), deployed
 BEFORE the imports you want audited: earlier imports carry no record of the
 lines they did not interpret. Re-process an older import from Ingestion
-Results to get one.
+Results to get one (possible only while its file is retained — 7 days by
+default, `INGESTION_RETAIN_FILES_DAYS`; otherwise upload it again).
 
 Give the agent:
 
@@ -77,10 +78,11 @@ say in your report which you had.
 
 - **The diagnostics bundle** (`bluestick_diagnostics_*/`), already anonymised:
   - `parser_audit.txt` → the section **"Lines not interpreted, by shape"**:
-    each import's lines that BlueStick did not fully read, as *shapes* — the
-    line with every value replaced (`<IP>`, `<HOST>`, `<NAME>`, `<VALUE>`,
-    `<CREDENTIAL>`, `<HASH>`, `<PATH>`, and `<T>`/`<N>` for a table cell), with
-    a count and a kind:
+    each format's lines that BlueStick did not fully read, grouped by shape
+    across imports (with line and import counts) — a *shape* is the line with
+    every value replaced (`<IP>`, `<HOST>`, `<NAME>`, `<VALUE>`,
+    `<CREDENTIAL>`, `<ACCOUNT>`, `<EMAIL>`, `<HASH>`, `<PATH>`, and `<T>`/`<N>`
+    for a table cell) — and a kind (recorded for NetExec imports only):
     - `dropped` — no pattern read the line; nothing from it is in BlueStick;
     - `text_only` — stored as the tool's line and shown to analysts, but
       nothing in it was interpreted (no login, flag or finding) although it
@@ -113,8 +115,8 @@ say in your report which you had.
     `text`, `stored`, `discarded`), where it is shown, and the **known gaps**;
   - `backend/app/parsers/netexec_parser.py` (and the other parsers) — the
     patterns themselves;
-  - `documentation/PARSE_AUDIT_BRIEF.md` — the longer version of these
-    instructions, with the report format and redaction table below.
+  - `documentation/PARSE_AUDIT_BRIEF.md` — the short version of these
+    instructions (the report format and redaction table here take precedence).
 
 ## What to look for
 
@@ -172,7 +174,8 @@ redacted; redact your own the same way, and when unsure, redact.
 | The host column, any host or computer name | `<HOST>` |
 | Domain names, FQDNs, hosts in URLs | `<NAME>` |
 | `DOMAIN\user:password`, `user:password`, a password alone, hashes | `<CREDENTIAL>`, `<HASH>` |
-| Account, group, share names; file paths | `<USER>`, `<GROUP>`, `<SHARE>`, `<PATH>` |
+| Account, group, share names; file paths | `<USER>`, `<GROUP>`, `<SHARE>`, `<PATH>` (BlueStick's own shapes write `DOMAIN\account` as `<ACCOUNT>`) |
+| Email addresses | `<EMAIL>` |
 | A `(key:value)` flag's value, unless True / False / None / Never / Required or a number | `(key:<VALUE>)` |
 | Anything a person wrote (descriptions, comments, banners naming the organisation) | `<TEXT>` |
 

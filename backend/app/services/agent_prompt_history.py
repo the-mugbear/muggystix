@@ -21,6 +21,30 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.10.0",
+        "app_version": "2.427.1",
+        "summary": (
+            "The guide is renamed from a root AGENTS.md to "
+            "documentation/AGENT_GUIDE.md — coding agents (Codex, Cursor, …) "
+            "load a root AGENTS.md as rules for working ON the repository. "
+            "Still served at /agents-guide; the download is now "
+            "bluestick-agent-guide.md. Accuracy pass against the code: the "
+            "working directory is the agent's own choice (no prompt names it); "
+            "recon approval is by exception and the server does NOT stop an "
+            "out-of-scope target (the agent is the boundary); /agent/hosts, "
+            "/dashboard and /scans are project-wide (no recon-key scoping) and "
+            "there is no 1200 rpm per-key raise; the recon error bodies "
+            "(no_active_recon_run 409, ambiguous_recon_run 400, 410 archived) "
+            "and the ⟳ RESUMED SESSION notice; the upload table gains the "
+            "remaining parsers and the parser-coverage pointer; the assist "
+            "slice gains the DSL fields (kind:, check:, scope:, ip:, state:, "
+            "org:, has:untouched/local_admin/writable_share, issue keys "
+            "check:/cve:/title:) and the reads it omitted (findings, "
+            "web-interfaces, access, uninterpreted-lines, posture, patterns, "
+            "…); the session prompt's execution-context path is corrected."
+        ),
+    },
+    {
         "version": "2.9.0",
         "app_version": "2.403.0",
         "summary": (

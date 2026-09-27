@@ -28,10 +28,10 @@ Every tool is text in the model's context on every session.
 
 | | tools | payload |
 |---|---|---|
-| The catalogue — what EVERY session sees | 55 | ~51 KB (~13k tokens) |
-| of which `assist_*` | 24 | — |
+| The catalogue — what EVERY session sees | 57 | ~51 KB (~13k tokens) |
+| of which `assist_*` | 26 (23 reads + 3 writes) | — |
 
-*(Measured at v2.370 via `tool_list_payload()`, not estimated.)*
+*(Measured at v2.427.0 via `tool_list_payload()`, not estimated; tokens ≈ bytes/4.)*
 
 **This constraint got tighter, not looser, in v2.337.0.** When this was first
 written a session saw only its own workflow's tools (27 for assist, ~22 KB of a
@@ -68,6 +68,8 @@ returning from leave.
 | Question | Tool | Status |
 |---|---|---|
 | Totals, scopes, recent scans | `assist_get_context` | **have** |
+| Which scopes / scans exist, in full | `assist_list_scopes`, `assist_list_scans` | **have** |
+| Which session am I, for whom (what `assigned:me` means) | `assist_session_info` | **have** |
 | How much has actually been assessed | `assist_get_coverage` | **have** |
 | What's the headline condition, and why | `assist_get_posture` | **have** (2.294.0) |
 | How many hosts match X | `assist_count_hosts` | **have** |
@@ -151,6 +153,7 @@ Largely done. This is the stage the surface was originally built for.
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
 | What the team tested, and what it showed | `assist_get_host_testing` | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |
+| Named assets (FQDNs), whether they are in scope, and what they resolve to | `assist_list_names` | **have** |
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
 | What a host is actually serving on the web | `assist_get_host` → `web_interfaces` | **have** (2.297.0) |
 | Every web interface on a host, past the cap on host detail (`web_interfaces_truncated`) | `assist_list_host_web_interfaces` | **have** (2.343.3) |
@@ -289,7 +292,8 @@ prompt 1.56.0), as **one** new tool rather than three:
    (review-rule case 1). What is still uncomputed is a project-level delta
    summary.
 
-The read surface is **24 `assist_*` tools** inside a 55-tool catalogue. Two of
+The read surface is **23 `assist_*` reads** (26 `assist_*` tools with the
+three writes) inside a 57-tool catalogue. Two of
 the three P2 items turned out not to be tools at all: one folded into an
 existing endpoint, one is a payload field plus a download. With the
 per-workflow filter gone there is no longer an "assist budget" to stay under —

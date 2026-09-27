@@ -187,7 +187,7 @@ class PlanningContext(BaseModel):
     The ``entry_template`` / ``entry_batch_example`` / ``entry_schema``
     fields are the machine-readable contract for the follow-up
     ``POST /entries`` call — agents that previously had to infer the
-    request shape from AGENTS.md examples can copy-paste from these
+    request shape from the agent guide examples can copy-paste from these
     directly.
     """
 
@@ -207,7 +207,7 @@ class PlanningContext(BaseModel):
             "`candidate_hosts[].id`, then adjust `priority`, `test_phase`, "
             "`proposed_tests`, `rationale`, and `notes` for the actual "
             "intent.  Pattern-match on this directly — no need to infer "
-            "the shape from AGENTS.md examples."
+            "the shape from the agent guide examples."
         ),
     )
     entry_batch_example: dict = Field(
@@ -677,7 +677,7 @@ class ExecutionContextResponse(BaseModel):
     hosts: List[ExecutionHostContext] = Field(default_factory=list)
     # v2.23.0 — echo back what the agent reported via the probe endpoint.
     # None means no probe has been recorded for this session yet; the
-    # agent should run one (see AGENTS.md § Environment probe) before
+    # agent should run one (see the agent guide § Environment probe) before
     # proposing commands so this field is populated for subsequent calls.
     environment: Optional["EnvironmentSummary"] = None
 
@@ -843,11 +843,11 @@ class ExecutionProgressResponse(BaseModel):
 # available on the operator's host.  The shape is intentionally loose:
 # the agent reports a small fixed set of high-signal facts plus a free
 # ``extras`` bag for anything else worth recording (kernel version,
-# observed AV agent, custom toolbox).  See AGENTS.md § Environment probe
+# observed AV agent, custom toolbox).  See the agent guide § Environment probe
 # for the agent-facing contract.
 
 class ToolStatusItem(BaseModel):
-    """One tool's preflight result — see AGENTS.md § Environment probe.
+    """One tool's preflight result — see the agent guide § Environment probe.
 
     The status vocabulary is a CONTRACT, not a convenience:
     ``recon_planning_service._env_tool_unavailable`` treats only ``warn`` and
@@ -941,7 +941,7 @@ class EnvironmentSummary(BaseModel):
         default_factory=dict,
         description=(
             "Map of tool-name → present-on-PATH for the agent's preferred "
-            "toolbox. Names follow the AGENTS.md inventory: 'nmap', 'masscan', "
+            "toolbox. Names follow the agent guide's inventory: 'nmap', 'masscan', "
             "'httpx', 'dig', 'curl', 'jq', 'enum4linux', 'nxc', 'nikto', ..."
         ),
     )

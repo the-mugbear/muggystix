@@ -1,7 +1,7 @@
 """Parser for Nuclei JSON results (``-je file.json`` / ``-jsonl`` / ``-j``).
 
 v2.411.0.  Nuclei was advertised as ingestible (tool registry, the output
-contract, AGENTS.md's upload table, the Tool Reference run command) while no
+contract, the agent guide's upload table, the Tool Reference run command) while no
 parser existed, so an upload was "not recognised".  Every result is one
 template match::
 

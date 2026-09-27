@@ -81,7 +81,7 @@ const STATUS_BADGE: Record<string, { tone: CategoryTone; label: string; title: s
  * parser get an entry — the exact invocation (with the machine-readable output
  * flag) that produces a file BlueStick can upload.  `note` explains what to
  * upload / any gotcha.  Kept as a sibling map (not inlined on every TOOLS row)
- * so the ~200-char catalogue lines stay readable; grounded in AGENTS.md's
+ * so the ~200-char catalogue lines stay readable; grounded in the agent guide's
  * "Supported upload formats" table and documentation/UPLOAD_FORMATS.md.
  * `<target>` / list files are placeholders the operator fills.
  *

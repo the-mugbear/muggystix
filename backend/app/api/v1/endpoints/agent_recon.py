@@ -66,7 +66,7 @@ router = APIRouter()
 # does not fit in any context window, so an agent calling /recon/summary on
 # a large session lost the run regardless of how careful it was.
 #
-# AGENTS.md previously handled this by warning the agent not to "read or
+# The agent guide previously handled this by warning the agent not to "read or
 # echo it whole" — advice no agent can follow, because receiving a tool
 # result is what puts it in context.  The cap has to be server-side.
 #
@@ -332,7 +332,7 @@ def _recon_context_payload(db, session, scope, agent, subnet_cidrs, *, include_r
 
     # v2.328.0 — name scope rides along with the CIDRs, bounded the same
     # way.  The agent needs this to know which names it may resolve/probe
-    # without asking (see AGENTS.md "target is in the inventory"); the
+    # without asking (see the agent guide "target is in the inventory"); the
     # authoritative full list pages from GET /agent/recon/domains.
     # Count + a LIMITed projection (same shape as GET /agent/recon/domains):
     # the cap must bound the database transfer, not just the serialisation.

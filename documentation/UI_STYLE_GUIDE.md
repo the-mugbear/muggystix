@@ -1,7 +1,7 @@
 # UI Style Guide
 
 > **Stack:** Tailwind v4 + Radix UI (shadcn-style primitives) + lucide-react + Sonner
-> **Last verified against:** frontend 5.248.1 (2026-09-19) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26) — MUI-free since 4.0.0; Tailwind v4 + Radix substrate
 
 ## Purpose
 This guide defines UI rules for BlueStick so feature work, bug fixes, and LLM-assisted changes preserve layout integrity, readability, and predictable behavior under real application data.
@@ -105,7 +105,7 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - Never render raw `null`, `undefined`, or empty placeholders from the backend.
 - Use consistent fallbacks for absent values:
   - text: `Unknown` or `—`
-  - dates: `Unknown date`
+  - dates: `—` (the default fallback of `formatTimestamp` / `formatDate`)
   - counts: `0`
   - optional metadata: omit only if omission does not destabilize layout
 - The `safeFallback(value, fallback = '—')` helper in `src/utils/uiStyles.ts` is the canonical helper.
@@ -121,6 +121,7 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
   - risk scores
   - hostnames and scan labels
 - Formatting must be stable across pages.
+- **Timestamps have ONE absolute format** (v5.294.0): `formatTimestamp` ("Sep 18, 2026, 10:20 PM") and `formatDate` ("Sep 18, 2026") from `src/utils/relativeTime.ts`. Lists show `<TimeAgo>` (`components/TimeAgo.tsx`) — a relative age, with the absolute moment in the tooltip and the `<time>` element. Durations: `formatDuration` (`src/utils/scanTime.ts`).
 
 ## Component Rules
 
@@ -128,10 +129,10 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - **Data pages are sections over thin rules, not cards — dashboards included.** A card per measure turns a page into a wall of equal-weight boxes: border, shadow, title and two layers of padding around every number. The house pattern is the Posture Overview (`pages/SecurityPosture.tsx`, v5.254.0), also used by Oversight (`pages/Oversight.tsx`, v5.259.0):
   - **Page header:** `text-page-title`, one caption line saying what the page answers, actions (Refresh…) and provenance ("Updated …") at the right.
   - **Filters:** one wrapping row above everything they scope, closed by a `border-b` — never inside a card or a section.
-  - **Lead:** one plain sentence of fact (or the conclusion), `border-l-4` + `text-subheading`, with what it rests on underneath — `PostureLead` (`components/posture/PostureLead.tsx`, tone critical / warning / clear / neutral). Every Posture page opens with one: it answers the page's question in words (Segments names the worst segment, Patterns the estate-wide weaknesses, Evidence the largest in-scope gap) before any table.
+  - **Lead:** one plain sentence of fact (or the conclusion), `border-l-4` + `text-subheading`, with what it rests on underneath — `PostureLead` (`components/posture/PostureLead.tsx`, tone critical / warning / clear / info / neutral). Every Posture page opens with one: it answers the page's question in words (Segments names the worst segment, Patterns the estate-wide weaknesses, Evidence the largest in-scope gap) before any table.
   - **Empty state** ("no scoped subnets yet", "no hosts yet"): `PostureEmpty` — icon, heading, one line, the recovery action, on a rule; not a card.
   - **Measures:** at most four quiet numbers on ONE baseline — `PostureMeasure` (`components/posture/PostureMeasure.tsx`) in a `grid lg:grid-cols-4 lg:divide-x`: label + (i) `InfoTip`, value, one or two caption lines. No icon, meter or border per number; a number that can link, links (§9).
-  - **Sections:** `PostureSection` (`components/posture/PostureSection.tsx`): a sentence-case heading (subheading size, foreground colour) after a short primary accent bar — the heading is what separates sections, v5.269.0 — with an optional (i) and a quiet `SectionCount` for a count or summary, one description line, right-aligned actions or a segmented control, over a `border-b`; the content keeps the full width. Nothing collapses — these pages are read top to bottom.
+  - **Sections:** `PostureSection` (`components/posture/PostureSection.tsx`): a sentence-case heading (subheading size, foreground colour) after a short primary accent bar — the heading is what separates sections, v5.269.0 — with an (i) `InfoTip` passed inside `title` when needed and a quiet `SectionCount` for a count or summary, one description line, right-aligned actions or a segmented control, over a `border-b`; the content keeps the full width. Nothing collapses — these pages are read top to bottom.
   - **Explanations** go on an explicit (i) `InfoTip`, never on hover alone.
 - On a DETAIL surface (the host inspector, a finding, a run) use `InspectorSection` (`components/host-inspector/InspectorSection.tsx`): the same heading-over-divider shape, collapsible, its state remembered per viewer. Giving every data source its own Card meant a host with two ports and two observations needed three screens, most of it chrome. `openInspectorSection` / `jumpToInspectorSection` re-open a collapsed target, so a jump link is never dead.
 - **A `<Card>` is the exception**: a self-contained object in a grid of like objects (a project tile, a person on a roster), a form panel, or an empty/error state that must stand apart. Never a card per metric.
@@ -145,10 +146,10 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - Use the v4 `<Card>` / `<CardHeader>` / `<CardContent>` / `<CardFooter>` primitives from `src/components/ui/card.tsx`.
 
 #### Charts
-Charts with real axes are drawn with Observable Plot (§35, adopted 5.307.0; reference `components/oversight/GrowthCharts.tsx`); small inline visuals stay hand-built SVG inside a section. The one 3D surface, the Operations terrain, uses three.js under the same rules: colours from theme tokens (`utils/terrainPalette.ts`, validator-checked on every theme), every value in a table view, every count a link. References: `components/posture/FocusComparison.tsx` (ranked rows with inline bars), `components/oversight/JudgmentBySeverity.tsx` (part-to-whole per row), `components/oversight/GrowthCharts.tsx` (small multiples over time).
+Charts with real axes are drawn with Observable Plot (§35, adopted 5.307.0; reference `components/oversight/GrowthCharts.tsx`); small inline visuals stay hand-built SVG inside a section. The one 3D surface, the Operations terrain, uses three.js under the same rules: colours from theme tokens (`utils/terrainPalette.ts`, validator-checked on every theme), every value in a table view, every count a link. References: `components/posture/FocusComparison.tsx` (ranked rows with inline bars), `components/oversight/JudgmentBySeverity.tsx` (part-to-whole per row), `components/oversight/GrowthCharts.tsx` (small multiples over time). Plot charts render through `components/charts/PlotFigure.tsx` (memoised options; it reports the x scale's `invert` so a chart can drive one shared crosshair) — users: `GrowthCharts`, `ActivityHistogram`.
 - **Pick the form first; sometimes it is not a chart.** A single number is a measure (§7), a handful of exact values is a table. Draw only what a table cannot show (a gap, a trend, a rank).
 - **One y-axis per plot.** Two measures of different scale (a running total and per-day counts) are two charts on a shared x-axis — never a dual-axis plot.
-- **Colour follows meaning.** Severity colours only for severity (`utils/severity.ts`); status tokens only for status; one accent (`--info`) for a single series, or accent + recessive grey when one part is the point (emphasis). Check any colour pair against the light AND dark themes with the dataviz palette validator before shipping.
+- **Colour follows meaning.** Severity colours only for severity (`utils/severity.ts`); status tokens only for status; one accent (`--info`) for a single series, or accent + recessive grey when one part is the point (emphasis). Check any colour pair against every theme (light, dark, phosphor, magma, absolute-zero) with the dataviz palette validator before shipping.
 - **Every value is readable without hovering**: direct labels (the end value, the gap), plus a table view where the series is long. Hover and keyboard (arrow keys) move one crosshair and a readout; tooltips enhance, never gate.
 - **Marks are thin**: 2px lines, ≤ 24px columns with a 2px gap, 4px rounded data-ends, hairline grid; text wears text tokens, never the series colour.
 
@@ -178,8 +179,8 @@ Always set `table-fixed` (`<Table className="table-fixed">`) when column behavio
 ### 9. Chips, Badges, and Status Labels
 - Use the v4 `<Badge>` primitive from `src/components/ui/badge.tsx`.
 - Chips must not assume short labels.  Long labels must either wrap cleanly or truncate.
-- Status colors and meanings must stay consistent across pages.  The `<Badge>` variant prop (`default` / `secondary` / `destructive` / `success` / `warning` / `info` / `outline` / `muted`) maps to the semantic CSS-var tokens — do not pass raw hex. There are **16** variants: those eight semantic ones, four `severity-critical|high|medium|low`, and four lighter `destructive|warning|info|success-outline` chips that keep the semantic colour (they replaced ~19 sites of bespoke `border-warning/40 text-warning` class soup).
-- Severity → variant mapping: **import `SEVERITY_BADGE_VARIANT` from `src/utils/severity.ts`** — critical → `severity-critical`, high → `severity-high`, medium → `severity-medium`, low → `severity-low`, info → `muted`. Do not re-derive it per page; `severity.ts` is the one source for severity order, label, colour and variant, created precisely because pages had grown their own maps.
+- Status colors and meanings must stay consistent across pages.  The `<Badge>` variant prop (`default` / `secondary` / `destructive` / `success` / `warning` / `info` / `outline` / `muted`) maps to the semantic CSS-var tokens — do not pass raw hex. There are **17** variants: those eight semantic ones, five `severity-critical|high|medium|low|info` on the theme's own severity ramp (`--sev-*`, 5.304.0 — not the semantic tokens), and four lighter `destructive|warning|info|success-outline` chips that keep the semantic colour (they replaced ~19 sites of bespoke `border-warning/40 text-warning` class soup).
+- Severity → variant mapping: **import `SEVERITY_BADGE_VARIANT` from `src/utils/severity.ts`** — critical → `severity-critical`, high → `severity-high`, medium → `severity-medium`, low → `severity-low`, info → `severity-info`. For a severity chip, render `<SeverityBadge severity=…>` (`components/ui/SeverityBadge.tsx`, v5.288.0), which takes both colour and label from `severity.ts`. Do not re-derive it per page; `severity.ts` is the one source for severity order, label, colour and variant, created precisely because pages had grown their own maps.
 - **Every count is a link.** A number shown to an operator navigates to the rows it summarises, or acts as the filter for them. If it cannot, cut it — an inert stat card is a vanity metric.
 - For long-label chips, combine with truncation: `<Badge className="max-w-[12rem]"><span className="truncate">{label}</span></Badge>`.
 
@@ -289,7 +290,7 @@ Example:
 ```
 
 ### 17. The `cn()` Class Composer
-- Use `cn(...)` from `src/utils/cn.ts` (= `clsx` + `tailwind-merge`) to compose conditional class lists.  This gives "last conflicting Tailwind utility wins" semantics so override props work:
+- Use `cn(...)` from `src/utils/cn.ts` (= `clsx` + `tailwind-merge`, extended with the named spacing scale and the type scale, so `className="p-sm"` overrides a primitive's `p-md` and `text-caption` does not drop a text colour) to compose conditional class lists.  This gives "last conflicting Tailwind utility wins" semantics so override props work:
 
 ```tsx
 <Badge className={cn('max-w-[12rem]', isCritical && 'border-destructive text-destructive')}>
@@ -348,7 +349,7 @@ Example:
 
 ### 23. Motion and Interaction Polish
 - Motion should support comprehension, not decorate the page.
-- Use the existing animation utilities (`animate-in`, `fade-in-0`, `slide-in-from-right`, `zoom-in-95`) defined in `src/index.css` — they're tuned to a 180ms `cubic-bezier(0.2, 0, 0, 1)` baseline that matches the rest of the app.
+- Use the existing animation utilities (`animate-in`, `fade-in-0`, `slide-in-from-right`, `zoom-in-95`) defined in `src/index.css` — they run 180ms (220ms in / 200ms out for the `SideSheet` edge slides) with the default easing. `cubic-bezier(0.2, 0, 0, 1)` is the transition token (`motion.standard` in `theme/tokens.ts`), for CSS transitions.
 - Avoid excessive animation, large movement, or repeated micro-animations in dense workflows.
 - Motion must not delay common actions or obscure data changes.
 
@@ -376,6 +377,7 @@ A new field is not complete if it only renders correctly for short fixture value
 - Long content must not move action groups below the fold unless that layout is intentional.
 
 ### 27. Navigation and Filters
+- List pages use `ListFilterBar` / `ListFilterSearch` (`components/ListFilterBar.tsx`, v5.294.0): one wrapping row over a `border-b`, unlabelled `h-8` select triggers (`FILTER_TRIGGER_CLASS`) whose first option names the dimension ("All statuses") and which carry an `aria-label`, and a right-aligned count of what is listed. Hosts keeps its query language on its own row at the same control height.
 - Filter rows must wrap (`flex-wrap`). Do not add breakpoint-stacked variants (`flex-col sm:flex-row`) — that is the mobile pattern §3 retired. Give toolbar controls a fixed width: a bare `SelectTrigger` is `w-full` and will stack the row.
 - Search, dropdowns, toggles, and sort controls must remain usable under narrow layouts.
 - Filter chips must not create unbounded horizontal growth.
@@ -501,22 +503,22 @@ When editing the current frontend:
 | Data grid | `@tanstack/react-table` via the `DataTable` primitive |
 | Command palette | `cmdk` — `src/components/CommandPalette.tsx` (shipped) and `Combobox` |
 | Icons | `lucide-react` (default); `AppIcons.tsx` for custom hand-rolled SVGs |
-| Dates | `date-fns` for formatting; there is no date-picker dependency (`react-day-picker` was removed unused in 5.247.1) |
-| Graphs | **Observable Plot** (`@observablehq/plot`, pinned exact) — adopted 5.307.0 after a trial on Oversight's Host growth (`components/oversight/GrowthCharts.tsx`, the reference). The old "no chart library" rule was born of chart.js's dated, hard-to-read output; Plot is a grammar of graphics that draws plain SVG under the §7 rules: colours from theme tokens (`hsl(var(--info))`), `currentColor` axes, direct end labels, one y-axis per plot, a table view. Import it in the chart's own component so it stays in that page's lazy chunk. Small inline visuals (`ui/SeverityBar.tsx`, meters, part-to-whole rows) stay hand-rolled — reach for Plot when a chart needs real axes, time scales or intervals. `reactflow` was removed with the Topology page in 5.285.0. |
-| 3D | `three` (pinned exact) for the Operations terrain only (`components/operations/TerrainScene.tsx`, 5.306.0) — chosen by the owner. It is loaded in its own chunk when the section nears the viewport, draws on demand (idle = no frames), and every number it shows is also in the section's Table view. Not a chart library: 2D charts stay hand-built SVG. |
-| File drop | `react-dropzone` (`components/scans/UploadReviewDialog.tsx`) |
+| Dates | no date library: `Intl` via `formatTimestamp` / `formatDate` / `formatRelativeTime` (`src/utils/relativeTime.ts`) and `<TimeAgo>`; there is no date-picker dependency (`react-day-picker` was removed unused in 5.247.1) |
+| Graphs | **Observable Plot** (`@observablehq/plot`, pinned exact) — adopted 5.307.0 after a trial on Oversight's Host growth (`components/oversight/GrowthCharts.tsx`, the reference). The old "no chart library" rule was born of chart.js's dated, hard-to-read output; Plot is a grammar of graphics that draws plain SVG under the §7 rules: colours from theme tokens (`hsl(var(--info))`), `currentColor` axes, direct end labels, one y-axis per plot, a table view. Render it through `components/charts/PlotFigure.tsx`, imported from the chart's own component so Plot stays in that page's lazy chunk. Small inline visuals (`ui/SeverityBar.tsx`, meters, part-to-whole rows) stay hand-rolled — reach for Plot when a chart needs real axes, time scales or intervals. `reactflow` was removed with the Topology page in 5.285.0. |
+| 3D | `three` (pinned exact) for the Operations terrain only (`components/operations/TerrainScene.tsx`, 5.306.0) — chosen by the owner. It is loaded in its own chunk by `components/operations/AddressTerrainSection.tsx` when the section nears the viewport, draws on demand (idle = no frames), and every number it shows is also in the section's Table view. Not a chart library: 2D charts with axes use Observable Plot; small inline visuals stay hand-built SVG. |
+| File drop | `react-dropzone` (`components/scans/UploadReviewDialog.tsx`, `pages/Scopes.tsx`) |
 | Theming | CSS variables set by `theme/cssVars.ts`, palette in `theme/palettes.ts` |
 
 ### 36. Available v4 Primitives
 Every primitive lives under `src/components/ui/`:
 
 - Surface: `Card` / `CardHeader` / `CardTitle` / `CardDescription` / `CardContent` / `CardFooter`
-- Form: `Input` / `Textarea` / `Label` / `Select` / `Checkbox` / `Switch` / `RadioGroup` / `PasswordInput` / `Combobox`
-- Action: `Button` / `Badge` (16 variants — see §9)
+- Form: `Input` / `Textarea` / `Label` / `Select` / `Checkbox` / `Switch` / `RadioGroup` / `PasswordInput` / `Combobox` / `CharacterCount`
+- Action: `Button` / `Badge` (17 variants — see §9) / `SeverityBadge`
 - Feedback: `Alert` (info / success / warning / destructive / default) / `Tooltip` / `InfoTip` / `InlineLoader`
 - Layout: `Tabs` / `Accordion` / `Separator` / `Avatar`
 - Overlay: `Dialog` / `ConfirmDialog` (via `useConfirm`) / `SideSheet` / `Popover` / `DropdownMenu`
-- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `MetaField` / `CodeBlock` / `SeverityBar`
+- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `MetaField` / `CodeBlock` / `SeverityBar` / `BreakableName`
 
 ### 37. Suggested Shared Utilities
 These are good candidates for standardization if repeated:
@@ -526,6 +528,10 @@ These are good candidates for standardization if repeated:
 - `useToast()` (from `src/contexts/ToastContext.tsx`)
 - `useConfirm()` (from `src/hooks/useConfirm.tsx`) — typed-name confirmation dialogs
 - `projectScopedKey(name)` (from `src/utils/scopedStorage.ts`) — namespaced localStorage keys
+- `formatTimestamp` / `formatDate` (from `src/utils/relativeTime.ts`) — the one absolute date format (§6)
+- `<TimeAgo>` (from `src/components/TimeAgo.tsx`) — a relative age in lists, the exact time on hover
+- `<RunKindBadge>` (from `src/components/RunKindBadge.tsx`) — one run-kind badge wherever agent runs are listed
+- `ListFilterBar` / `ListFilterSearch` (from `src/components/ListFilterBar.tsx`) — the shared filter row (§27)
 
 ### 38. useEffect cancellation convention (v2.42.0)
 When a `useEffect` kicks off an async fetch, use a **`let cancelled = false;` flag**

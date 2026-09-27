@@ -1,12 +1,12 @@
-# AGENTS.md — BlueStick AI Agent Guide
+# BlueStick AI Agent Guide
 
-**Prompt version:** 1.44.0 · **Verified against:** backend 2.371.0 (2026-09-20)
+**Prompt version:** 2.10.0 · **Verified against:** backend 2.427.1 (2026-09-26)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 
 You are an AI assistant (Claude Code, Codex, ChatGPT, etc.) assigned to a workflow in BlueStick. This file is the entire surface you are authorized to use. Follow it literally — the surrounding scaffolding (human approval, per-session key scope, audit trail) depends on you behaving as described.
 
-Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, mint new keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. The only other surfaces that are yours are the public reference ones this guide sends you to — `/.well-known/networkmapper.json`, `/api/v1/agents-guide` and `/api/v1/references/*`. Everything else is not available to you and will return 401/403.
+Everything below is reachable through one auth mechanism: the API key the user pasted to you. Do not attempt to log in, reach admin surfaces, mint new keys, create new agents, or touch endpoints outside `/api/v1/agent/*`. The only other surfaces that are yours are the public reference ones this guide sends you to — `/.well-known/networkmapper.json`, `/api/v1/agents-guide`, `/api/v1/references/*`, and `/api/v1/mcp` (the same agent endpoints as MCP tools, authenticated by the same key). Everything else is not available to you and will return 401/403.
 
 One exception, and it matters: you **can** extend your own key's deadline via `POST /api/v1/agent/session/renew`. That is renewal, not rotation — same key, later expiry — and it is how you survive a long-running scan outliving your credential. See **If your key expires** below.
 
@@ -46,7 +46,7 @@ If a deployment still publishes `all_commands_require_user_approval`, `no_autono
 
 ## Quick Start
 
-The user will give you an **API key** and an **instructions block** copied from the BlueStick UI. If you don't have one, ask the user to start an agent session from the BlueStick UI — any of **AI Assist**, **Scopes → Start Agentic Recon**, **Test Plans → Generate with AI** or **Execute with AI** on an approved plan — and paste you what it produces. All four mint the SAME kind of key: one session for the project. They differ only in which phase is already open when you start; you open any other phase yourself (`POST /agent/recon/start`, `POST /agent/test-plans`, `POST /agent/execution-sessions/start`).
+The user will give you an **API key** and an **instructions block** copied from the BlueStick UI. If you don't have one, ask the user to start an agent session from the BlueStick UI — any of **Operations → Start Agent Session**, **Scope → Start recon session**, **Test Plans → Generate with AI** or **Execute with AI** on an approved plan — and paste you what it produces. All four mint the SAME kind of key: one session for the project. They differ only in which phase is already open when you start; you open any other phase yourself (`POST /agent/recon/start`, `POST /agent/test-plans`, `POST /agent/execution-sessions/start`).
 
 ### Authentication
 
@@ -132,6 +132,9 @@ Run a short capability check appropriate to the shell you're talking to and capt
 | `tools_available` | Map of tool name → boolean (`{"nmap": true, "masscan": false, ...}`). Cover at least the tools in [§ Tool inventory](#tool-inventory). |
 | `tools_status` | Optional but recommended after preflight: **list of `{name, status, issue}` dicts**, one per tool, mirroring `preflight.sh --json`'s `tools[]` output. `status` is `"ok"` / `"warn"` / `"missing"` / `"info"`. Re-post the env with this populated so `/recon/context` can adapt `recommended_sequence` (drop tools that are absent, swap to fallbacks, surface `manual_action_required` when there's no usable option). See [§ Environment preflight script](#environment-preflight-script-v2133-shell-agnostic-guidance-v2411). |
 | `notes` | Free text — AV product detected, sandbox/VM indicators, network egress restrictions, anything a reviewer should see. ≤2000 chars. |
+| `agent_model` | Optional: your model id (e.g. `claude-opus-4-7`, `gpt-5-codex`). ≤100 chars. |
+| `agent_tool` | Optional: the harness you run in (`claude-code`, `codex`, `chatgpt`, `manual-curl`). ≤100 chars. |
+| `agent_prompt_version` | Optional: the `prompt_version` your instructions block gave you. ≤20 chars. |
 
 > **Shape gotcha for `tools_status`.** Send it as a **list** of `{name, status}` objects (`issue` and `path` optional), not a dict keyed by tool name — as of v2.316.0 the field is typed, so `status` must be one of `ok`/`warn`/`missing`/`info` and a dict or an unknown status is rejected with a 422 rather than silently stored: `[{"name": "curl", "status": "ok"}, {"name": "httpx", "status": "warn", "issue": "Python httpx CLI shadows ProjectDiscovery httpx"}, {"name": "eyewitness", "status": "missing"}]`.
 
@@ -226,7 +229,7 @@ mkdir -p networkmapper-<project_slug>-<workflow>-<session_id>
 cd networkmapper-<project_slug>-<workflow>-<session_id>
 ```
 
-Your prompt's `mkdir` line already fills in the project slug, workflow, and session id — copy it verbatim. The qualified path self-documents which project a folder belongs to and survives a Nuclear-Clean reset (session ids restart at 1) without colliding with leftover folders.
+Build the name yourself: the project slug from `GET /agent/project`, the workflow, and the run id that `/recon/start` or `/execution-sessions/start` returned. Neither your prompt nor the read-back names the directory for you — you choose it, and your read-back states it. The qualified path self-documents which project a folder belongs to and survives a Nuclear-Clean reset (session ids restart at 1) without colliding with leftover folders.
 
 Run **every** tool from inside this directory; every output file, target list, and result directory (`nmap.xml`, `httpx.jsonl`, `targets.txt`, `eyewitness-results/`, …) lives here.
 
@@ -337,13 +340,15 @@ The plan must be in `approved` or `in_progress` status — a human approves it; 
 
 ```bash
 # 0. Open the execution phase. WITHOUT an open run, every call below — starting
-#    with execution-context — answers 409 "No active execution run for this plan".
+#    with execution-context — answers 409 "No active execution run for this plan"
+#    (execution-progress answers 400 "No active execution session").
 #    (If the operator started you from "Execute with AI", the run is already
 #    open: GET /agent/identity lists it under open_phases. Calling start again is
 #    harmless — a run THIS session already has open on the plan is reused.)
 POST /agent/execution-sessions/start   {"plan_id": N}      # MCP: start_execution
 #    → 201: the execution context, plus `read_back` — the concrete bounds of this
-#      run (the plan's hosts, the working directory). State it before you act.
+#      run (the plan's hosts, and a reminder to state the working directory you
+#      chose — the server does not name it). State it before you act.
 #    → 404 unknown plan · 409 the plan is not approved/in_progress, or has no entries
 #    One run per plan is active at a time: opening yours PAUSES any other
 #    session's active run on the same plan. Do not open a plan someone else is
@@ -400,7 +405,7 @@ When your instructions carry that notice:
 - **Fetch `/execution-context` before doing anything else.** It reports each entry's `entry_status` and each test's `result_status`. Any entry already `completed`, and any test already `executed` or `skipped`, is **done** — do not re-run it.
 - **Do not re-sanity-check** a host whose entry already recorded a passing sanity check.
 - Resume at the first host/entry with outstanding work and continue the normal flow.
-- The environment probe (step 1, below) is still required — your new key has no probe yet — but every prior result is intact and must not be overwritten.
+- The environment probe ([§ Environment probe](#environment-probe)) is still required — your new key has no probe yet — but every prior result is intact and must not be overwritten.
 
 The session id is unchanged, so your results append to the same audit trail. To keep that trail readable for the human reviewer — and to make any future resume cleaner — post a real `findings_summary` on each entry `/complete` **as you finish each host**, not only at the end.
 
@@ -408,7 +413,7 @@ The session id is unchanged, so your results append to the same audit trail. To 
 
 Three safety layers — do not skip any of them:
 
-1. **Per-test human approval (terminal layer).** Present each command to the user and wait for `yes/modify/skip/abort` before executing. For agents with shell access (Claude Code, Codex), this is the built-in tool-use approval gate. For agents without shell access (ChatGPT), the user runs commands themselves and pastes you the output.
+1. **Approval by exception (terminal layer).** Present every command. One that is in policy — an approved tool, a host in the plan, output in your working directory — you run, and say that you did; anything else waits for `yes/modify/skip/abort`. For agents with shell access (Claude Code, Codex), this is the built-in tool-use approval gate. For agents without shell access (ChatGPT), the user runs commands themselves and pastes you the output.
 
 2. **Per-host sanity check (network layer).** Before testing any host, verify the target:
    - Report your own source IP, default gateway, and DNS server
@@ -459,6 +464,8 @@ The separate **sanity-check gate** still applies: completion also needs a passin
 - `session_id` — the active execution session
 - `environment` — your last posted environment probe (`os_family`, `shell`, …), or `null` until you POST one; echoed back so you don't re-send it
 - `agent_name` — for attribution in findings
+- `prompt_version` — the live prompt version; if it differs from your instructions block, re-fetch this guide
+- `read_back` — on `POST /agent/execution-sessions/start` only (null on `/execution-context`): the per-host bounds to state before testing
 - `hosts[]` — one per entry, sorted by priority (critical first):
   - `entry_id`, `host_id`, `ip_address`, `hostname`, `os_name`
   - `target_fqdn` — the named endpoint the entry targets, or null for the bare address. Commands carry `{fqdn}` resolved to it. When you record a result for such an entry, include `observed_ip` (the address the command actually reached) — a name behind a load balancer may resolve differently at run time, and the evidence must reference the real binding
@@ -479,7 +486,7 @@ The separate **sanity-check gate** still applies: completion also needs a passin
 
 ## Workflow C — Populate Host Data via Reconnaissance (from `/recon/start`)
 
-This is the flow when the user clicks **Scopes → Start Agentic Recon**. Your job is **completely different** from plan generation:
+This is the flow when the user clicks **Scope → Start recon session** (or you open the run yourself with `POST /agent/recon/start`). Your job is **completely different** from plan generation:
 
 **You are populating BlueStick's host database.** You run scanner tools locally (nmap, masscan, etc.), submit the raw output to BlueStick for parsing, iterate until the scope is well-characterized, and then complete. A human reviews the populated data and (as a separate step) decides what to test.
 
@@ -498,30 +505,39 @@ This is the flow when the user clicks **Scopes → Start Agentic Recon**. Your j
 
 ### Resuming an interrupted recon session
 
-If your host crashed mid-recon, the operator clicks **Resume** on the recon session — this re-issues the **same** session with a fresh API key rather than starting a parallel one (which would fragment the rolling host/scan counts). Your instructions then carry a `⟳ RESUMED RECON SESSION` notice.
+If your host crashed mid-recon, the operator clicks **Resume** — this re-issues the **same** project session with a fresh API key rather than starting a parallel one (which would fragment the rolling host/scan counts). Your instructions then carry a `⟳ RESUMED SESSION` notice, and `GET /agent/identity` lists the recon run under `open_phases`.
 
 When you see it:
 
 - **Call `GET /agent/recon/summary` and `GET /agent/recon/context` before scanning.** They report the rolling host/port counts and the already-known hosts.
 - Continue coverage from where the prior pass stopped rather than re-scanning subnets already characterized. Don't re-upload files the earlier pass already sent — BlueStick refuses an identical file with `409 duplicate_scan` (see § Upload batches & duplicates). Keep using the earlier pass's `batch` labels so new chunks join the same batches.
-- The environment probe (step 1) is still required for the new key.
+- The environment probe ([§ Environment probe](#environment-probe)) is still required for the new key.
 
 ### Recon flow
 
 ```bash
 # 0. Open the reconnaissance phase. WITHOUT an open run, /agent/recon/* answers
-#    409 { "error": "no_active_recon_run" }.  (Started from "Start Agentic Recon"?
+#    409 with detail.error "no_active_recon_run" (the body is
+#    {"detail": {"error": ..., "message": ...}}). Two open runs → 400
+#    detail.error "ambiguous_recon_run" with detail.recon_session_ids; pass
+#    recon_session_id to pick one (404 if this session did not open it).
+#    (Started from "Start recon session"?
 #    The run is already open — GET /agent/identity lists it under open_phases.)
 GET  /agent/scopes                                  # pick the scope
 POST /agent/recon/start   {"scope_id": N}           # optional: notes   (MCP: start_recon)
 #    → 201: the recon context below, plus `read_back` — this run's concrete bounds
-#      (the scope's CIDRs and names, the working directory). State it before you act.
+#      (the scope's CIDRs and names, and a reminder to state the working directory
+#      you chose). State it before you act.
 #    → 400 when the scope has no subnets
 
 # 1. Orient yourself — get the scope's CIDRs, size analysis, recommended sequence, tool catalog
 GET /agent/recon/context
-# → { recon_session_id, scope_id, scope_cidrs, scope_domains, scope_size, recommended_sequence,
-#     known_host_summary, tool_catalog, session_status, started_at, prompt_version }
+# → { recon_session_id, scope_id, scope_name, scope_cidrs, scope_cidrs_total, subnets_truncated,
+#     scope_domains, scope_domains_total, domains_truncated, scope_size, recommended_sequence,
+#     known_host_summary, known_hosts_probe, tool_catalog, environment, session_status,
+#     started_at, prompt_version }   (+ read_back on /recon/start only)
+#   (truncated: the first 100 CIDRs/domains; page the rest from GET /agent/recon/subnets
+#    and GET /agent/recon/domains.)
 #   (scope_domains: [{domain, include_subdomains}] — the names you may resolve/probe;
 #    name scope never puts a resolved address in subnet scope.)
 #   (prompt_version: compare to your instructions block; mismatch → re-fetch the guide.)
@@ -709,7 +725,7 @@ Thresholds:
 
 A scope can contain **thousands** of subnet CIDRs. To keep the prompt and `/recon/context` response inside your context window:
 
-- The **recon prompt inlines at most ~25 CIDRs**. Past that you'll see `… and N more` plus a pointer to the paginated endpoint.
+- Your instructions carry **no CIDRs**; the **`/recon/start` read-back lists at most 100** and then `(+N more)`.
 - **`/recon/context` caps `scope_cidrs` at 100.** Two new fields tell you when: `scope_cidrs_total` (the true count) and `subnets_truncated` (boolean). If `subnets_truncated` is true, `scope_cidrs` is only a sample — do **not** treat it as the whole scope.
 - The **authoritative full list** comes from `GET /agent/recon/subnets?offset=0&limit=500`. Walk `offset` in `limit`-sized pages until the response's `subnets` array is empty (`has_more: false`). Ordered by subnet id, so paging is stable.
 - **Domains are bounded the same way.** `/recon/context` caps `scope_domains` at 100 (`scope_domains_total`, `domains_truncated`); the full list pages from `GET /agent/recon/domains?offset=0&limit=500` with the same shape (`domains[]`, `has_more`).
@@ -730,7 +746,7 @@ A scope can declare **domains** alongside subnets. Each entry is exact (`portal.
 
 ### Recommended sequence
 
-The context response returns `recommended_sequence[]` — a 3-step starter plan stitched from the catalog for this specific scope. Each step has `{step, phase, command, estimated_duration, note, output_file, upload_after}`.
+The context response returns `recommended_sequence[]` — a 3–4-step starter plan (step 4, `web_screenshot`, is optional; a step 0 warning appears when the scope already has data) stitched from the catalog for this specific scope. Each step has `{step, phase, command, estimated_duration, note, output_file, upload_after}`.
 
 **Comprehensive by default.** The plan always leads with fresh discovery, even when prior hosts exist in the scope — skipping discovery when prior data exists silently narrows scope and misses new or changed hosts. The narrowing option is surfaced explicitly so the user owns the speed/coverage trade-off: when prior data exists, `recommended_sequence[0]` is a **warning**, not a suggestion, and a separate `known_hosts_probe` field carries the ready-to-use narrow-path command.
 
@@ -796,9 +812,9 @@ Use this only when the user explicitly chooses to narrow during plan approval. W
 
 ### Web target helper
 
-`/agent/recon/summary` and `/agent/recon/complete` also include `web_targets[]` (shape shown in "Summary response shape" above) — derived from `hosts[].open_ports` via the standard HTTP/HTTPS port map (80/8080/8000/81 → http, 443/8443/4443 → https) plus explicit service-name hits for non-standard ports (e.g. https on 10443 that nmap version-probed). Feed it directly to httpx / eyewitness / nikto without a second round trip.
+`/agent/recon/summary` and `/agent/recon/complete` also include `web_targets[]` (shape shown in "Summary response shape" above) — derived from `hosts[].open_ports`: the detected service decides the scheme (nmap's `tunnel: "ssl"` or an `https`/`ssl/http` service → https, an `http` service → http), and the port map (80/8080/8000/81 → http, 443/8443/4443 → https) is used only for a port with no detected service. Feed it directly to httpx / eyewitness / nikto without a second round trip.
 
-Each `hosts[].open_ports[]` entry carries `{port, protocol, state, service, product, version}` — enough to build any follow-up target list without cross-referencing `/agent/hosts` or parsing the uploaded XML locally.
+Each `hosts[].open_ports[]` entry carries `{port, protocol, state, service, product, version, tunnel}` (`tunnel: "ssl"` = the service runs inside TLS) — enough to build any follow-up target list without cross-referencing `/agent/hosts` or parsing the uploaded XML locally.
 
 The same response also carries `live_hosts_file_content` — a newline-joined, IP-sorted file of every host discovered so far **this** session (unlike `known_hosts_probe.live_hosts_file_content`, which is *prior* recon). Write it straight to `session-hosts.txt` for the staged service-probe pass (`nmap -sV -iL session-hosts.txt`). Past 1000 hosts it is **emptied** and `live_hosts_file_truncated` is set — check that flag before feeding it to `-iL` (a silently short file under-scans the scope) and download `GET /agent/recon/live-hosts.txt` instead (see "Large sessions" above).
 
@@ -850,17 +866,16 @@ Phases:
 
 The catalog is a starting point, not a constraint. Pick freely based on what you learn, as long as you stay within the scope's CIDRs and follow the approval protocol below.
 
-### Approval protocol — plan-level, not per-command
+### Approval protocol — by exception
 
-The prompt you were issued by `POST /scopes/{id}/recon/start` is authoritative on approval mechanics. Summary:
+The rule is the one in [§ The working directory is also the approval boundary](#the-working-directory-is-also-the-approval-boundary): a command runs **without waiting** only when the tool is approved, the target is in the inventory (inside the scope's CIDRs, or a known name a declared domain covers), and its output lands in your working directory. Everything else stops and asks. Summary for recon:
 
-- **Stay in scope — hard stop, not a soft ask.** Out-of-scope targets are refused and the user is alerted; they are not rendered as a normal approval ask.
-- **Approval is required for target-touching commands:** scanners, DNS lookups against in-scope IPs, banner grabs, anything that generates observable traffic to the target network.
-- **Approval is NOT required for:** any request to BlueStick's `/agent/*` endpoints (curl, your runtime's HTTP client, anything), reading/parsing local files (`cat`, `jq`, etc.), tool availability checks (`which`, `Get-Command`), or building target lists from already-ingested data.
-- **Plan-level approval for the standard sequence.** After you fetch `recommended_sequence` from `/recon/context`, present all three steps at once with totals (wall-clock + in-scope confirmation) and ask once. On approval, execute all three and emit delta summaries between steps — do not re-ask. Batch within a step (one approval covers `nmap -sV` against the whole live-host list, not per host).
-- **Intrusive commands always ask per command**, even if the overall plan is already running. Any catalog entry flagged `intrusive: true` (nikto, nuclei, deep `-p-` scans, credentialed Nessus/OpenVAS) is louder, trips IDS, or uses credentials — the friction of an individual ask is warranted.
+- **Stay in scope — you are the boundary.** BlueStick does **not** stop an out-of-scope target: commands run on the operator's machine and the server sees only what you upload (an upload's hosts outside the scope are simply recorded as out of scope). An address outside the scope's CIDRs, or a name no declared domain covers, is outside the exception — present it and ask; never run it on your own judgement.
+- **No approval needed** for requests to BlueStick's own endpoints, reading/parsing local files in your working directory (`cat`, `jq`, …), tool availability checks (`which`, `Get-Command`), or building target lists from already-ingested data.
+- **Present the plan before you start.** After you fetch `recommended_sequence` from `/recon/context`, show the steps with totals (wall-clock, targets) as part of your read-back. In-policy steps then run without a per-step ask; say what you are running and emit delta summaries between steps. Batch within a step (one `nmap -sV` against the whole live-host list, not per host).
+- **Intrusive commands always ask per command**, even when the tool is approved and the plan is running. Any catalog entry flagged `intrusive: true` (nikto, nuclei, deep `-p-` scans, credentialed Nessus/OpenVAS) is louder, trips IDS, or uses credentials — the friction of an individual ask is warranted.
 - **Progress pings during long runs.** For commands estimated to take >2 min, emit a brief progress line every 2–5 min. Non-interactive — don't pause for acknowledgment.
-- **Strict mode.** If the user declines plan-level approval and asks for per-command review, revert to asking before each target-touching command individually.
+- **Strict mode.** If the user asks for per-command review, ask before each target-touching command individually.
 
 **Tool notes:**
 
@@ -870,7 +885,7 @@ The prompt you were issued by `POST /scopes/{id}/recon/start` is authoritative o
 
 ### Tool selection rubric
 
-- **Intrusion & scope** — default to non-intrusive tools (`intrusive: false`: SYN scans, banner grabs, DNS enum, HTTP fingerprinting) which batch under plan-level approval; `intrusive: true` entries (nikto, nuclei, `-p-` deep scans, credentialed scans) ask per-command; only `scope_cidrs` are authorized and out-of-scope targets are a hard stop (see Approval protocol above).
+- **Intrusion & scope** — default to non-intrusive tools (`intrusive: false`: SYN scans, banner grabs, DNS enum, HTTP fingerprinting) which batch under plan-level approval; `intrusive: true` entries (nikto, nuclei, `-p-` deep scans, credentialed scans) ask per-command; only `scope_cidrs` and names covered by `scope_domains` are in scope, and anything outside them stops and asks — the server will not stop it for you (see Approval protocol above).
 - **Rate-limit.** Don't flood the network or trip IDS — masscan's `--rate` and nmap's `-T3` default are sensible.
 - **Read `known_host_summary`** — if BlueStick already has detailed scope data, don't re-sweep; go deeper (service versions, script output) or enrich (DNS, web).
 - **Use machine-readable output.** `-oX` / `-oJ` / `-oG` produce files BlueStick can parse; plain human output won't ingest.
@@ -886,15 +901,25 @@ The prompt you were issued by `POST /scopes/{id}/recon/start` is authoritative o
 | nessus | `.nessus` / `.xml` | Export from Nessus UI |
 | openvas | `.xml` | Export from GSM |
 | httpx | `.json` / `.jsonl` | `-json -o httpx.jsonl` |
-| eyewitness | `.json` / `.csv` | default output (filename must contain `eyewitness` or `report`) |
+| eyewitness | `.json` / `.csv` / `.zip` | default output — the report, or a `.zip` of the report + screenshots; recognised by content |
 | nikto | `.json` / `.csv` / `.txt` | `-Format json` |
 | naabu | `.json` / `.txt` | `-json` |
-| nuclei | `.json` | `-je` |
+| nuclei | `.json` / `.jsonl` | `-je nuclei.json` or `-jsonl -o nuclei.jsonl` |
 | bloodhound | `.json` | default |
 | netexec | `.json` / `.txt` | default |
 | dns inventory | `.csv` | manually formatted |
+| rustscan (native) | `.txt` | console output (`Open ip:port` lines); nmap output embedded in it is not read — upload nmap's XML for services |
+| whatweb | `.json` / `.jsonl` | `--log-json=whatweb.json` |
+| testssl | `.json` | `--jsonfile` / `--jsonfile-pretty` |
+| gobuster / ffuf / feroxbuster / dirsearch / dirb | `.json` / `.csv` / `.txt` | the tool's own output file (name the tool in the filename) |
+| amass / subfinder | `.json` / `.txt` | JSON output or the plain name list (`subfinder -d … -o subfinder.txt`) |
+| dnsx | `.json` / `.jsonl` | `-json` |
+| smbmap | `.json` / `.txt` | redirect stdout to a file |
+| rdap | `.json` / `.ndjson` | `scripts/rdap-lookup.py` output |
 
-Anything else gets rejected by the magic-byte check on upload.
+What each import keeps, where it is shown and its known gaps: `GET /api/v1/references/parser-coverage` ("What BlueStick reads").
+
+Any other extension is refused before the file is stored (the allowlist is `.xml .json .jsonl .ndjson .csv .txt .gnmap .nessus .zip`); a file whose content does not match its extension is refused by the magic-byte check (400).
 
 ### Parse failures
 
@@ -933,10 +958,10 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | Method | Path | Purpose |
 |--------|------|---------|
 | GET | `/agent/project` | Project metadata |
-| GET | `/agent/dashboard` | Host/port/scan/vuln counts (scope-filtered for recon keys) |
-| GET | `/agent/hosts` | List hosts — scope-filtered for recon keys. **Bare array, paginated (default 500, max 5000), no `has_more`/`total` — you MUST page; see Host list filters below** |
-| GET | `/agent/hosts/{id}` | Host detail with ports — 404 if host is not in your scope (recon keys) |
-| GET | `/agent/scans` | List scans — scope-filtered for recon keys. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts).** Optional filters: `tool`, `created_after`, `sort_by` (`created_at`\|`filename`\|`tool_name`), `sort_order` (`asc`\|`desc`) |
+| GET | `/agent/dashboard` | Host/port/scan/vuln counts for the project |
+| GET | `/agent/hosts` | List the project's hosts. **Bare array, paginated (default 500, max 5000), no `has_more`/`total` — you MUST page; see Host list filters below** |
+| GET | `/agent/hosts/{id}` | Host detail with ports — 404 if the host is not in this project |
+| GET | `/agent/scans` | List the project's scans. **Newest-first, default 100 / max 500, NO offset — scans past the newest 500 are not retrievable here (use `scans_ingested` in `/agent/recon/summary` for true per-session counts).** Optional filters: `tool`, `created_after`, `sort_by` (`created_at`\|`filename`\|`tool_name`), `sort_order` (`asc`\|`desc`) |
 | GET | `/agent/scopes` | List scopes |
 | POST | `/agent/hosts/{id}/notes` | Create a note on a host — a project write |
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
@@ -996,7 +1021,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 > **More than one open run?** Every recon endpoint above resolves "which run" from your session. With exactly one open run nothing is needed; with several, pass `?recon_session_id=<id>` (the id `/recon/start` returned) — the same query parameter on the POSTs — or the call answers `400 ambiguous_recon_run` listing the candidates. Over MCP every recon tool takes the same optional `recon_session_id` argument.
 
-> **Scope isolation for recon keys.** The common endpoints above (`/agent/hosts`, `/agent/dashboard`, `/agent/scans`) are automatically filtered to your scope's hosts/scans — they're a different lens on the same data `/agent/recon/summary` reports. Plan endpoints (`/agent/test-plans/*`) are rejected with 403. The full list of hosts across other scopes in the project is deliberately not visible to a recon key.
+> **These reads are project-wide.** A key is bound to a project session, not to a scope: `/agent/hosts`, `/agent/dashboard` and `/agent/scans` return the whole project whatever phase you have open. The scope-bounded views of a recon run are `/agent/recon/summary` and the recon downloads (`/agent/recon/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`). Being able to read a host does not put it in scope.
 
 <!-- agents:end -->
 
@@ -1014,7 +1039,7 @@ Each host in the response includes `open_port_count` and `vuln_summary` (`{criti
 
 ### Rate limit
 
-Default **240 requests/minute** per agent, enforced in FIXED 60-second windows, global across all Uvicorn workers (not per-process). A rejected call still counts toward the window. See the 429 row in **Error Handling** for backoff; admins can raise individual keys up to 1200 rpm in System Settings → Agents.
+Default **240 requests/minute** per agent, enforced in FIXED 60-second windows, global across all Uvicorn workers (not per-process). A rejected call still counts toward the window. See the 429 row in **Error Handling** for backoff.
 
 <!-- agents:end -->
 
@@ -1229,9 +1254,14 @@ Use the `status` field meaningfully:
 | 403 — about your operator | A key carries its operator's project role, re-checked on EVERY request. Writes need the operator to hold `analyst`; bulk exports (`*.ndjson`, target lists, evidence downloads) need `auditor`. You also get 403 if the operator was deactivated or removed from the project mid-session. | Read `can_write_project_data` from `GET /agent/identity` before attempting writes. Do not retry: tell the operator what you were refused and why — only they (or a project admin) can change it. |
 | 403 — other | The operation is not one an agent may perform (approving a plan, promoting/dismissing a finding, user or project administration) | Use the endpoints documented in this guide; report what you wanted in a note instead. |
 | 404 | Resource not found | Verify the `plan_id`, `entry_id`, or `host_id`. The resource may have been deleted. |
+| 404 — `recon_session_id` | You passed a recon run this session did not open | Omit it to use your single active run, or pass an id from your own `POST /agent/recon/start`. |
+| 400 — `detail.error: "ambiguous_recon_run"` | This session has more than one active recon run (`detail.recon_session_ids`) | Pass `recon_session_id` to say which. |
+| 409 — `detail.error: "no_active_recon_run"` | A `/agent/recon/*` call with no recon run open | `POST /agent/recon/start {"scope_id": …}`, then retry. |
+| 409 — recon upload to a finished run | The run is `completed` or `abandoned`; its counts are final | Open a new run for another pass. |
+| 410 | The project is archived | Not retryable. Ending your session still works; tell the operator. |
 | 409 — `detail.code: "duplicate_scan"` (recon upload) | This exact file is already in the project — a scan, still parsing, or staged awaiting its format review (`detail.scan_id` / `detail.job_id`) | Not a failure — the data is in. Mark the file done and continue. Never retry, rename, or alter the file to force a re-import. |
 | 422 | Validation error | Invalid field values — usually a wrong enum (`priority`, `test_phase`, `status`). Check the values against the lists in this file. |
-| 429 | Rate limited | Default 240 req/min in fixed 60 s windows. Wait for the current window to end (at most 60 s) and retry ONCE — rejected calls still count, so retrying in a loop keeps you locked out for the whole window. Admins can raise individual keys up to 1200 rpm. |
+| 429 | Rate limited | Default 240 req/min in fixed 60 s windows. Wait for the current window to end (at most 60 s) and retry ONCE — rejected calls still count, so retrying in a loop keeps you locked out for the whole window. |
 | 503 + `Retry-After` (recon upload) | The sweep's batch label was briefly busy — parallel chunks contended for it. Nothing was stored. | Wait the `Retry-After` seconds and re-POST the same file with the same `batch`. Not a duplicate, not a failure to report. |
 
 ---
@@ -1252,7 +1282,7 @@ Use the `status` field meaningfully:
 
 7. **Don't hallucinate services.** Only report what the API data shows. If a host has port 22 open with `service_name: "ssh"`, say that. Don't infer services that aren't in the data.
 
-8. **During execution, never skip the sanity check or the per-test approval gate.** Both exist because the cost of running the wrong command against the wrong host is very high. They are non-optional.
+8. **During execution, never skip the sanity check, and never run an out-of-policy command without approval.** Both exist because the cost of running the wrong command against the wrong host is very high. They are non-optional.
 
 <!-- agents:end -->
 
@@ -1291,25 +1321,36 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | Endpoint | Purpose |
 |---|---|
 | `POST /agent/session/environment` | Probe (MANDATORY first step; one per session) |
-| `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
-| `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services`, `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `port:`, `os:`, `service:`, `version:` (service product or version, e.g. `version:"OpenSSH 7"`) — **`port:`/`service:`/`version:` match OPEN ports only**; name another state after `@` on the value: `port:22@closed`, `service:ssh@filtered`, `port:22@any` (every state). A closed/filtered port's service name is nmap's guess from the port number, not evidence the service runs. `portstate:closed` alone is a separate "has some closed port" condition, not a qualifier. `path:` (a path content discovery found, e.g. `path:/admin`), `subnet:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site — Posture's "Unassigned"), `conclusion:` (what a finished review concluded: `no_issue` / `finding_created` / `needs_evidence` / `out_of_scope` / `duplicate` — `conclusion:needs_evidence` is every reviewed host whose question is still open), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its key, e.g. `issue:"title:smb signing not required"` — `vuln:` is a title substring), `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows — quote the ISO value: `firstseen:"2026-09-19T20:00:00Z"` = hosts first observed since then; `changedsince:"<start>..<end>"` = hosts already known that gained a port or a scanner observation; `vulnsince:"critical@<start>"` = a critical observation recorded since, severity and time on the same row), `has:`, **`follow:`**, **`assigned:`** (alias `assignee:`) combined with `AND`/`OR`/`NOT` and parentheses. `has:` values: `eol`, `smb_unsigned`, `weak_auth`, `cert_issue`, `weak_tls`, `cleartext`, `critical`/`high`/`medium`/`low`, `exploit`, `web`, `open_ports`, `tested`, `planned`, `notes`, `stale_review`. `assigned:me`/`follow:` resolve against the operator who started the session; `assigned:`/`assignee:` also take a **username** (case-insensitive) or numeric id. `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
+| `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` + `recent_recon_sessions` capped at 5 each. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. |
+| `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services` (known names map to their standard port numbers — an unknown name is ignored, so the filter silently disappears; for a detected service name use `q=service:<name>`), `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `ip:`, `hostname:` (alias `host:`), `state:`, `port:`, `os:` (OS name or OS family), `service:` (alias `svc:`), `version:` (alias `product:`; service product or version, e.g. `version:"OpenSSH 7"`) — **`port:`/`service:`/`version:` match OPEN ports only**; name another state after `@` on the value: `port:22@closed`, `service:ssh@filtered`, `port:22@unfiltered`, `port:22@open|filtered`, `port:22@any` (every state). A closed/filtered port's service name is nmap's guess from the port number, not evidence the service runs. `portstate:closed` alone is a separate "has some closed port" condition, not a qualifier. `path:` (alias `webpath:`; a path content discovery found, e.g. `path:/admin`), `subnet:` (alias `cidr:`), `scope:` (`subnet` = in a scope subnet, `name` = reached only through an in-scope name, `none` = neither), `org:` (alias `owner:`; the netblock's registered owner, RDAP), `certorg:`, `asn:`, `country:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site — Posture's "Unassigned"), `conclusion:` (what a finished review concluded: `no_issue` / `finding_created` / `needs_evidence` / `out_of_scope` / `duplicate` — `conclusion:needs_evidence` is every reviewed host whose question is still open), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its key — `check:<id>`, `cve:<CVE>`, `title:<normalised title>` or `row:<id>`, e.g. `issue:"check:smb_signing_not_required"` or `issue:"cve:CVE-2021-44228"`; `vuln:` is a title substring), `kind:` (`misconfiguration` / `vulnerability` / `informational`), `check:` (one misconfiguration-catalog check whichever tool reported it — e.g. `check:smb_signing_not_required`, `check:smbv1_enabled`, `check:smb_null_session`, `check:vnc_no_auth`, `check:ftp_anonymous`, `check:tls_deprecated_protocol`, `check:tls_cert_expired`, `check:http_missing_hsts` — the `check_id` on a host's findings is the value to use), `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows — quote the ISO value: `firstseen:"2026-09-19T20:00:00Z"` = hosts first observed since then; `changedsince:"<start>..<end>"` = hosts already known that gained a port or a scanner observation; `vulnsince:"critical@<start>"` = a critical observation recorded since, severity and time on the same row), `has:`, **`follow:`** (`watching` / `in_review` / `reviewed` / `none` / `in_review_any`), **`assigned:`** (alias `assignee:`) combined with `AND`/`OR`/`NOT` and parentheses. `has:` values: `eol`, `smb_unsigned`, `weak_auth`, `cert_issue`, `weak_tls`, `cleartext`, `critical`/`high`/`medium`/`low`, `exploit`, `web`, `open_ports`, `tested`, `planned`, `notes`, `stale_review`, `untouched` (nobody has touched it: no review or assignment, note, plan entry or finding), `local_admin` (a credential was local admin — NetExec "Pwn3d!"), `writable_share` (a share granted WRITE). `GET /agent/assist/vocabulary` returns the values this project uses after `tag:`, `label:`, `site:` and `assigned:` — use it instead of guessing (a guessed tag returns zero hosts, not an error). `assigned:me`/`follow:` resolve against the operator who started the session; `assigned:`/`assignee:` also take a **username** (case-insensitive) or numeric id. `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** |
 | `GET  /agent/assist/hosts/count` | **How many hosts match** — same filters and `q=` as the list; returns `{count, query}`. Use this for every counting question instead of paging. |
-| `GET  /agent/assist/hosts/{host_id}` | One host with its FULL open-port list (can be large for hosts with many ports — prefer `open_port_count` from the list for triage). Each port's `protocol` is the IP transport (`tcp`/`udp`); the application (smb/http/…) is `service_name`. `open_port_count` = distinct physical open ports. The host's `vuln_summary` is **severity counts only** — for the actual CVEs/evidence use the findings endpoint below. Both list and detail also carry `follow` = the session operator's review status on the host (watching/in_review/reviewed, or null), so you can check it before writing follow. |
-| `GET  /agent/assist/hosts/{host_id}/findings` | **Individual findings on a host** — the evidence `vuln_summary` only counts. Each carries `severity`, `cve_id`/`plugin_id`, `title`, `port_number`/`service_name` (null = host-level), `exploitable`, `cvss_score`, `description`, `solution` (remediation), and `evidence` (scanner output; truncated). Filter `?severity=critical,high`. **Paginated with `total`/`has_more`** (default 200, max 1000) — page `offset` until `has_more` is false to report complete coverage. Use this for evidence-rich reporting on ONE host. |
+| `GET  /agent/assist/hosts/{host_id}` | One host with ALL its ports, in any state — filter on each port's `state` (can be large — prefer `open_port_count` from the list for triage), `os_family`, and up to 10 `web_interfaces` (`web_interfaces_total` / `web_interfaces_truncated`; the full list is `/hosts/{host_id}/web-interfaces`). Each port's `protocol` is the IP transport (`tcp`/`udp`); the application (smb/http/…) is `service_name`. `open_port_count` = distinct physical open ports. The host's `vuln_summary` is **severity counts only** — for the actual CVEs/evidence use the findings endpoint below. Both list and detail also carry `follow` = the session operator's review status on the host (watching/in_review/reviewed, or null), so you can check it before writing follow. |
+| `GET  /agent/assist/hosts/{host_id}/findings` | **Individual findings on a host** — the evidence `vuln_summary` only counts. Each carries `severity`, `cve_id`/`plugin_id`, `title`, `port_number`/`service_name` (null = host-level), `exploitable`, `cvss_score`, `source` (the scanner), `check_id` (the misconfiguration-catalog check, null for a scanner's own finding), `description`, `solution` (remediation), and `evidence` (scanner output; truncated). Filter `?severity=critical,high`. **Paginated with `total`/`has_more`** (default 200, max 1000) — page `offset` until `has_more` is false to report complete coverage. Use this for evidence-rich reporting on ONE host. |
 | `GET  /agent/assist/report-context.ndjson` | **The report data source — use this to write a report.** Streams the COMPLETE per-host dossier for every matching host, one JSON object per line, **uncapped**: identity, ports (transport + service), findings (severity/CVE/plugin/port/evidence/remediation), notes, scan discoveries, canonical + execution findings, provenance, tags, and the operator's review state. Same discrete filters + `q` DSL as `/agent/assist/hosts`. This is the same correlated record the server-side report builds — populate your report template from it instead of stitching together per-host calls. **Redirect to a file and process it locally; NEVER read the stream whole into context** (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/report-context.ndjson" -o report-context.jsonl`). Safe on tens-of-thousands-of-host projects — the server hydrates one chunk at a time. |
 | `GET  /agent/assist/hosts.ndjson` | **The complete matching host set** — same filters + `q` DSL as `/agent/assist/hosts`, but uncapped and streamed one JSON object per line. Use this instead of paging when the project is large: redirect to a file and query it locally (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/hosts.ndjson" -o hosts.jsonl`, then `jq`/`grep`/`wc -l`). Report counts from the file, never a truncated page. Never read the stream into context whole. |
 | `GET  /agent/assist/scopes` | Scope CIDR lists **and declared domains** — **each capped at 100 per scope**. Each ScopeBrief carries `subnet_total` / `subnets_truncated` and `domain_total` / `domains_truncated`; when a `*_truncated` flag is true the list is only a sample, so tell the operator it's partial — full enumeration needs a recon session. `domains[]` entries are `{domain, include_subdomains}` (exact name vs the name and everything under it); `names_in_scope_total` is the deduplicated count of inventory names they cover. **Name scope is independent of subnet scope**: an in-scope name does not put the address it resolves to in scope, and an in-scope subnet does not put names in scope. |
 | `GET  /agent/assist/names` | The named-asset inventory (FQDNs), paged (`limit` default 100, max 1000, `offset`). Each row: `in_scope` (a declared domain covers it), `current_ips` (derived from the latest A/AAAA observations — never stored; empty = unresolved), `current_ip_total`, `sources` (observation kinds: A, AAAA, IMPORT, HTTP, CERT, …). Filters: `q`, `in_scope`, `resolved`, `host_id` (names currently bound to that host's address), `kind`. **How to act:** `in_scope=true&resolved=false` is the queue — names the operator approved that no upload has ever resolved (chase with dnsx/amass output, or tell the operator to drop them from scope). A name whose address is shared with other names (`current_ip_total` on the host's other names, a load balancer / vhost) must be tested **by name**, not by IP — the bare address reaches a different site. |
 | `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. |
-| `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, etc.). |
+| `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, the operator `assigned:me` refers to). |
+| `GET  /agent/assist/vocabulary` | The values this project uses: tags, labels, sites, scope names, usernames (for `assigned:`), finding statuses and severities. |
+| `GET  /agent/assist/findings` | **Triaged findings** (not raw scanner rows): filters `status`, `severity`, `source`, `host_id`, `unowned=true`, `owner` (username or `me`), `search`; default 50, max 500. The report's findings come from here. |
+| `GET  /agent/assist/findings/{finding_id}` | One finding with its affected hosts (per-host endpoint status) and evidence. |
+| `GET  /agent/assist/hosts/{host_id}/web-interfaces` | Every web interface on a host (URL, title, server, TLS). |
+| `GET  /agent/assist/hosts/{host_id}/access` | NetExec / SMBMap results on the host (logins, shares, local admin) next to the raw tool line — which may contain credentials the tool found. |
+| `GET  /agent/assist/hosts/{host_id}/testing` | What has been planned and executed against the host. |
+| `GET  /agent/assist/hosts/{host_id}/notes` · `GET /agent/assist/notes` | Notes on one host · across the project. |
+| `GET  /agent/assist/coverage` · `/segments` · `/posture` · `/patterns` | Scope coverage; the Posture page's segments, headline and recurring-weakness patterns. |
+| `GET  /agent/assist/ingestion-issues` | Imports that failed, were partial, or skipped records. |
+| `GET  /agent/assist/uninterpreted-lines?job_id=` | Lines an import did not read, as redacted shapes (NetExec imports record them). |
+| `GET  /agent/assist/attachments/{attachment_id}` · `/web-interfaces/{interface_id}/screenshot` | Evidence files (operator needs `auditor`). |
 
 **Write routes.**  Note these live under `/agent/hosts/…`, not `/agent/assist/…`:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). |
+| `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "...", "status": "open"}` (`open` \| `in_progress` \| `resolved`). An `@username` in an agent's note notifies nobody — ask the operator to mention someone. |
 | `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). |
-| `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation. Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable. Use when your investigation established the real hostname/OS a scan mis-detected. |
+| `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation. Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable (setting `os_name` re-derives `os_family`). Use when your investigation established the real hostname/OS a scan mis-detected. |
 
 **Whether you may write is your operator's project role, not a per-session grant.** `GET /agent/identity` returns `can_write_project_data` — check it once at start rather than discovering the answer from a 403. `true` means you can write anywhere in the project, `false` means nowhere in it. The role is re-checked on every request, so it can change mid-session if the operator's membership changes.
 

@@ -6,7 +6,7 @@ document covers what is exposed, how a client connects, and the decisions behind
 both — the parts that are easy to get wrong and expensive to rediscover.
 
 The agent-facing *contract* (how to behave in a session) is
-[AGENTS.md](../AGENTS.md); this is the operator-facing description of the
+[the agent guide](AGENT_GUIDE.md); this is the operator-facing description of the
 transport. The in-app equivalent is **`/reference/mcp`**, which reads the live
 server registry, so it can't drift from what a deployment actually serves.
 
@@ -27,8 +27,9 @@ dependency with its own transitive pins plus a second ASGI app to mount, for no
 capability this doesn't have. Revisit if SSE streaming, sampling, or the
 resources/prompts surfaces are ever needed.
 
-**Every tool call loops back into the app's own `/api/v1/agent/*` endpoint
-in-process** (ASGI transport, no socket), forwarding the caller's `X-API-Key`.
+**Every tool call loops back into the app's own `/api/v1/*` endpoint
+in-process** (all but `read_agent_guide` → `/agents-guide` and
+`list_approved_tools` → `/references/tools` are under `/agent/*`) (ASGI transport, no socket), forwarding the caller's `X-API-Key`.
 So authentication, the operator-role gate, the agent-API audit log, and
 the streaming caps all run **unchanged**. The MCP layer makes no security
 decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
@@ -122,7 +123,7 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (55 tools, about 51 KB / ~13k tokens as
+Every session sees the WHOLE catalogue (57 tools, about 51 KB / ~13k tokens as
 `tools/list` returns it) — nothing is filtered by workflow since v2.337.0.
 Eight of those belong to the session rather than to any phase:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
@@ -148,7 +149,9 @@ scanner, plus the token bill. A screenshot is worse — base64 in a tool result
 costs thousands of tokens for an image the model cannot show anyone, and the
 report needs the file on disk beside it regardless, which is why
 `assist_get_finding` hands out `download_path` references rather than bytes.
-The server `instructions` point at all of them with `curl`.
+The server `instructions` point at the NDJSON and target lists and the upload
+with `curl`; attachment paths come back in `assist_get_finding`'s
+`download_path`.
 
 ---
 
@@ -242,8 +245,9 @@ this, and the reference page detects that and says so.
 nothing. `tools/call` reads `X-API-Key` or `Authorization: Bearer` and forwards
 it. What comes back depends on *why* a call was refused:
 
-* **No usable credential** → a real **HTTP 401** with a bare `WWW-Authenticate:
-  Bearer` challenge. That is a fact about the connection, and a client can act
+* **No usable credential** → a real **HTTP 401** with a plain RFC 6750 challenge
+  (`WWW-Authenticate: Bearer realm="BlueStick assist"`, plus
+  `error="invalid_token"` when a key was sent — no `resource_metadata`). That is a fact about the connection, and a client can act
   on it: prompt for a key, show a connection error, stop retrying.
 * **A valid key that may not do this** (the operator's project role is
   read-only, or the target does not exist)
@@ -261,7 +265,8 @@ header auth is outside the optional profile rather than non-conformant.
 everything before a key is checked is bounded: the body is read through a capped
 stream (1 MiB — never `request.json()`, which would let an anonymous caller
 materialise nginx's 2 GB limit per worker) and a JSON-RPC batch is capped at 50
-messages.
+messages (batching is refused outright under protocol 2025-06-18, which removed
+it; it is allowed only when a client declares 2025-03-26).
 
 ---
 
@@ -295,7 +300,7 @@ as-is).
 Separate from the MCP registry, `tool_registry` is the table of **tools BlueStick
 knows about** — seeded from `app/data/tool_registry_seed.json` (63 entries at
 v2.370; the number moves, the file is the source), rendered for
-humans at `/reference/tools` and filtered to the `approved` subset for agents at
+humans at `/tool-reference` and filtered to the `approved` subset for agents at
 `GET /api/v1/references/tools?status=approved`.
 
 * **`status`** is a *policy* fact: may an agent run it.
@@ -324,8 +329,8 @@ stops and asks. The command is shown either way.
 **BlueStick cannot enforce any of this.** The commands run on the operator's
 machine and the server sees only what the agent reports. The real boundary is
 the client's sandbox — `codex --sandbox workspace-write --ask-for-approval
-on-request`, or Claude Code's default prompting — and the session dialogs hand
-the operator those flags for the two workflows that execute things.
+on-request`, or Claude Code's default prompting — and every connect recipe the session dialogs
+emit carries those flags (any session can open a recon or execution run).
 
 What the server contributes is the record, and one requirement: **every
 workflow's prompt opens with a mandatory read-back**, where the agent states the
@@ -337,7 +342,8 @@ makes the agent's own words part of the audit trail.
 
 ## 7. Reviewing what happened
 
-* **`/assist-sessions`** — every assist session in the project, what it was
+* **Agent Runs → By session** (`/agent-activity?view=sessions`;
+  `/assist-sessions/{id}` opens one) — every agent session in the project, what it was
   allowed to do, and what it produced (notes first — they are the durable
   output; the API feed is the read trail).
 * **Agent API activity** — per plan, recon session, and assist session.
@@ -362,4 +368,4 @@ makes the agent's own words part of the audit trail.
 | `PATCH /api/v1/references/tools/{name}` | admin | vet a suggested tool |
 | `GET /api/v1/agent/identity` | agent key | what this key is |
 | `POST /api/v1/agent/tool-suggestions` | agent key | record a tool request |
-| `GET /api/v1/agents-guide?workflow=…` | none | AGENTS.md, sliced |
+| `GET /api/v1/agents-guide?workflow=…` | none | the agent guide, sliced |

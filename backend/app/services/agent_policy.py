@@ -13,8 +13,8 @@ Author the rules once here; both builders render :func:`render_safety_rules`.
 emit these exact rules, so they can't diverge again.
 
 This is the *terse skeleton* the prompt carries.  The authoritative, detailed
-protocol (the three safety layers) lives in AGENTS.md — the guide — by design
-(see the prompt-vs-guide split).  The parity test also checks AGENTS.md still
+protocol (the three safety layers) lives in the agent guide by design
+(see the prompt-vs-guide split).  The parity test also checks the agent guide still
 covers each rule's theme so a safety layer can't silently drop out of the
 guide either.
 

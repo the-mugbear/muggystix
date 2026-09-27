@@ -6,24 +6,31 @@ This directory contains utility scripts for deployment and maintenance.
 
 ### Deployment Scripts
 
-- **`deploy.sh`** - **Main deployment script**; interactive menu with five options:
-  1. Start / Rebuild
+- **`deploy.sh`** - **Main deployment script**; interactive menu with seven options:
+  1. Start / Rebuild — takes a pre-deploy database backup first (and aborts if it cannot), snapshots the current images for option 7, then rebuilds
   2. First-time setup (generate `.env` + SSL certs + start)
   3. Reconfigure IP address
   4. Nuclear clean (destroy ALL data and rebuild)
   5. Security status check
-- **`upgrade-instance.sh`** - Upgrade a file-copy deployment (no git on the host). Precondition, done by hand first: rename the running instance's folder to `<name>_backup_<date>`, copy the new source tree next to it and rename it to the **original** folder name (docker compose keys the database volume on the folder name — `<name>_postgres_data`). Then, from the new folder, `./scripts/upgrade-instance.sh`: it verifies that volume exists (refuses otherwise, `--allow-fresh-db` to override), carries `.env`, `ssl/certs/*`, the uploads dir (moved; `--copy-uploads` to copy), a custom `NGINX_CONFIG` and `.deploy-rollback-state` across, reports `.env` keys the new `.env.example` adds and any top-level files only the old folder has, then runs `deploy.sh` option 1 and checks the API's reported version against `platform_version.json`. Idempotent: identical files are skipped, differing ones abort rather than overwrite. `--no-deploy` stops before the deploy, `--from <dir>` names the old folder when auto-detection is ambiguous.
+  6. Back up `.env` + SSL to the parent folder (before a re-copy deploy)
+  7. Roll back to the previous build (the images snapshotted before the last option-1 deploy, with an optional DB restore)
+- **`upgrade-instance.sh`** - Upgrade a file-copy deployment (no git on the host). Precondition, done by hand first: rename the running instance's folder to `<name>_backup_<date>`, copy the new source tree next to it and rename it to the **original** folder name (docker compose keys the database volume on the folder name — `<name>_postgres_data`). Then, from the new folder, `./scripts/upgrade-instance.sh`: it verifies that volume exists (refuses otherwise, `--allow-fresh-db` to override), carries `.env`, `ssl/certs/*`, the uploads dir (moved; `--copy-uploads` to copy), a custom `NGINX_CONFIG`, `.deploy-rollback-state` and the report-template images each `template.json` declares (a logo…) across, reports `.env` keys the new `.env.example` adds and any top-level files only the old folder has, then runs `deploy.sh` option 1 and checks the API's reported version against `platform_version.json`. Idempotent: identical files are skipped, differing ones abort rather than overwrite. `--no-deploy` stops before the deploy, `--from <dir>` names the old folder when auto-detection is ambiguous, `--yes` answers yes to every confirmation.
 
 ### Maintenance Scripts
 
-- **`collect-logs.sh`** - Anonymised diagnostics bundle (container logs, ingestion queue, parser audit), safe to share. Scrubbed by `scrub_logs.py`, which needs `python3`. Options: `--since 72h` and `--terms FILE` (extra names to remove).
-- **`status.sh`** - Quick status check for all instances
-- **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so the Posture hub (Posture / Segments / Patterns / Evidence) and Findings are evaluable on a fresh install. Runs inside the backend container.
+- **`collect-logs.sh`** - Anonymised diagnostics bundle (container logs, ingestion queue, parser audit), safe to share. Options: `--since 72h` and `--terms FILE` (extra names to remove).
+- **`scrub_logs.py`** - The scrubber `collect-logs.sh` runs over the bundle (stdlib only, host `python3`); it fails closed.
+- **`parse-audit-agent-prompt.md`** - Bootstrap prompt for an agent auditing parse accuracy on the client network (what the operator provides, the report of redacted shapes it returns); the short version is `documentation/PARSE_AUDIT_BRIEF.md`.
+- **`status.sh`** - Quick status check of the running instance
+- **`seed_demo_data.py`** - Seed a realistic demo project (hosts, scopes, findings) so the Posture hub (Posture / Segments / Patterns / Evidence) and Findings are evaluable on a fresh install. Options: `--name`, `--hosts` (default 400), `--wipe` (delete an existing project of the same name first). Runs inside the backend container.
+- **`seed_eval_scenarios.py`** - A SMALL project where every host is placed on purpose, each with an "open X, expect Y" check, for evaluating a feature by eye. `--wipe` deletes only its own project and rebuilds. Runs inside the backend container.
 - **`seed_named_assets.py`** - Layer the named-asset scenario onto that demo project (imported-but-unresolved FQDNs, domain scope, a load balancer with four vhosts, a rotated address, per-vhost findings, named plan entries and tested bindings). Goes through the real write paths. `--reset` removes only the rows a previous run created (tracked in a per-run manifest under the uploads dir) and re-seeds. Neither seed is run by `deploy.sh` — they are dev/demo-only and always manual.
 - **`transfer-images.sh`** - Export/import container images for offline or air-gapped moves
 - **`preflight.sh`** - Environment probe helper used by the agentic recon workflow
 - **`trust-cert.sh`** - Install this deployment's TLS certificate so MCP clients trust it, without disabling verification. Handles both mechanisms (`NODE_EXTRA_CA_CERTS` for VS Code / Claude Code, `SSL_CERT_DIR` for Codex) and mirrors the system anchors so the directory *adds* trust rather than replacing it. Also served from the app itself at `GET /api/v1/references/trust-cert-script`, so an operator on a different machine can fetch it: `bash trust-cert.sh --url https://<host>`
 - **`generate-ssl-cert.sh`** / **`generate-ssl-cert-simple.sh`** - SSL certificate generators (also invoked by `deploy.sh` during first-time setup)
+- **`postgres/init-ssl.sh`** / **`postgres/ensure-ssl.sh`** - PostgreSQL TLS setup: `init-ssl.sh` is mounted into the `db` container's init directory by compose; `deploy.sh` runs `ensure-ssl.sh` inside `db` after start.
+- **`rdap-lookup.py`** - Bulk RDAP lookup that writes a file you upload like any scanner output (the RDAP parser turns it into per-host registration attribution). Runs wherever you have connectivity, outside BlueStick on purpose — the server makes no network queries.
 
 ### Database Scripts
 
@@ -32,8 +39,9 @@ The schema is owned exclusively by **Alembic** — every backend container runs
 run `Base.metadata.create_all` against a live database (it bypasses Alembic
 version tracking).
 
-- **`backup-db.sh`** - Back up the database: logical `pg_dump` (custom format), or a raw volume snapshot if Postgres is down. A logical dump carries the `pg_trgm` extension + all indexes.
-- **`restore-db.sh`** - Restore from a `backup-db.sh` artifact, then run `alembic upgrade head` to bring the schema to the current revision.
+- **`backup-db.sh`** - Back up the database: logical `pg_dump` (custom format), or a raw volume snapshot if Postgres is down. A logical dump carries the `pg_trgm` extension + all indexes. It also archives `uploads/` (evidence images, issued reports, screenshots) as `nm-uploads-<timestamp>.tar.gz`. Backups go to a sibling `<project>-db-backups` directory next to the project folder, so replacing the folder does not wipe them; override with `BACKUP_DIR=/path`.
+- **`restore-db.sh`** - Restore a `backup-db.sh` artifact — the database and its matching `uploads/` archive. It stops the app containers (keeping `db` up), takes a safety backup of the current database first (`--no-safety-backup` to skip) and checks the credential-encryption key matches (`--ignore-key-mismatch` to skip). The backend's boot-time `alembic upgrade head` then migrates the restored schema forward.
+- **`backfill_misconfigs.py`** - Record misconfiguration-catalog observations from evidence already stored, for imports made before v2.414.0. Idempotent. `docker compose exec backend python scripts/backfill_misconfigs.py [--project ID]`.
 - **`test-alembic-roundtrip.sh`** - Pre-release sanity check (run it locally — there is no hosted CI): spins up a throwaway Postgres and verifies every migration's `downgrade()` reverses cleanly (upgrade → downgrade → upgrade).
 - **`apply_scope_labels.py`** - Bulk-assign subnet labels to a project's scope from a CSV (CIDR column + label column). Runs inside the backend container, matches CIDRs to existing subnets, find-or-creates each label, and assigns it. Idempotent and **dry-run by default** (pass `--apply` to write):
   ```bash
@@ -69,7 +77,7 @@ Read it there, log in as `admin`, and change it immediately. Startup **fails clo
 
 ### Creating Additional Users
 
-Use the admin web UI at **System Settings** or the API:
+Use the admin web UI at **Administration → System** (`/system-settings`) or the API:
 
 ```bash
 # Via API (requires admin JWT token; nginx proxies /api on :443)
@@ -81,11 +89,11 @@ curl -k -X POST https://localhost/api/v1/auth/register \
 
 ## User Roles
 
-Roles are assigned **per project** (a user can be analyst on one project, viewer on another):
+There are two layers. The **global** role is binary — **admin** (user management, system settings, the audit log) or **member** — and gates nothing else. Everything else is a **per-project** role (a user can be analyst on one project, viewer on another):
 
-- **ADMIN**: Full system access, user management, configuration
-- **ANALYST**: Scope management, scan upload, test-plan approval, notes, starting agent sessions
-- **AUDITOR**: Read-only access with audit-log visibility
+- **ADMIN**: Manage project membership, plus everything an analyst can do
+- **ANALYST**: Scope management, scan upload, triage, test-plan approval, notes; an agent session started by an analyst can write
+- **AUDITOR**: Read-only access with audit-log visibility, exports and reports; can start a read-only agent session
 - **VIEWER**: Read-only access to scan results and dashboards
 
 ## Password Requirements
@@ -114,7 +122,6 @@ docker compose restart backend db
 
 ## Script Dependencies
 
-All scripts require:
-- Docker and Docker Compose
-- Running BlueStick containers
-- PostgreSQL database connectivity
+- **Inside the backend container** (the seeds, `apply_scope_labels.py`, `backfill_misconfigs.py`): the running stack — `scripts/` is bind-mounted at `/app/scripts`.
+- **Stack management** (`deploy.sh`, `status.sh`, `backup-db.sh`, `restore-db.sh`, `upgrade-instance.sh`, `transfer-images.sh`, `test-alembic-roundtrip.sh`): Docker and Docker Compose on the host. `collect-logs.sh` also needs `python3`.
+- **Host-side helpers** (`trust-cert.sh`, `preflight.sh`, `rdap-lookup.py`, the certificate generators): neither the stack nor a database.

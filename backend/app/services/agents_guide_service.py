@@ -1,13 +1,38 @@
-"""AGENTS.md slicing — extracted from main.py in v2.42.0.
+"""The agent guide — where it lives, and slicing (extracted from main.py in v2.42.0).
 
-Filters AGENTS.md to the sections tagged for a given workflow so the
+The guide is ``documentation/AGENT_GUIDE.md`` (named ``AGENTS.md`` at the repo
+root until v2.427.1 — renamed because coding agents such as Codex and Cursor
+load a root ``AGENTS.md`` as instructions for working ON the repository).
+Compose mounts it at ``/app/AGENT_GUIDE.md``; a local checkout reads it from
+``documentation/``.  ``read_agent_guide`` is the one resolver.
+
+Slicing filters the guide to the sections tagged for a given workflow so the
 agent's context window stays lean.  See the public guide for the
-section-marker syntax; this module is purely the parser + filter.
+section-marker syntax.
 """
 from __future__ import annotations
 
 import re
-from typing import Optional
+from pathlib import Path
+from typing import List, Optional
+
+AGENT_GUIDE_FILENAME = "AGENT_GUIDE.md"
+
+
+def agent_guide_candidates() -> List[Path]:
+    """Where the guide may be: the container mount, then the checkout."""
+    return [
+        Path("/app") / AGENT_GUIDE_FILENAME,
+        Path(__file__).resolve().parents[3] / "documentation" / AGENT_GUIDE_FILENAME,
+    ]
+
+
+def read_agent_guide() -> Optional[str]:
+    """The guide's text, or None when it is not mounted."""
+    for p in agent_guide_candidates():
+        if p.is_file():
+            return p.read_text(encoding="utf-8")
+    return None
 
 
 _SECTION_START = re.compile(
@@ -28,7 +53,7 @@ _FULL_GUIDE_WORKFLOWS = {"project"}
 
 
 def slice_agents_md(content: str, workflow: Optional[str]) -> str:
-    """Return only the sections of AGENTS.md tagged for the requested workflow.
+    """Return only the sections of the agent guide tagged for the requested workflow.
 
     Sections are delimited by HTML comment markers that render invisible
     to Markdown viewers but are easy to parse server-side::

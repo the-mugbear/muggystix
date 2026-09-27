@@ -50,7 +50,7 @@ def _fixed_selection_ids(plan) -> Optional[List[int]]:
 # selection policy, and that should float to the top of a host's
 # inferred-service hint list in /context.  Used by /context (selection
 # policy evaluation) and /validate (coverage split).  Keep in sync with
-# the AGENTS.md selection-policy description.
+# the agent guide's selection-policy description.
 _HIGH_VALUE_PORTS = {445, 139, 3389, 3306, 1433, 5432, 1521, 27017, 6379, 5900}
 
 # Fallback service names for high-value ports that nmap's service
@@ -80,7 +80,7 @@ def _evaluate_host_policy(
 ) -> bool:
     """Return True if a host meets the selection policy.
 
-    Policy (documented in AGENTS.md):
+    Policy (documented in the agent guide):
       - any critical or high vuln → include
       - medium vuln qualifies only if the host exposes multiple
         services OR a high-value port (SMB, RDP, databases, etc.)
@@ -431,7 +431,7 @@ def get_planning_context(
         updated_at=plan.updated_at,
     )
     # Machine-readable entry-creation contract.  Previously the agent had
-    # to infer the POST /entries body shape from AGENTS.md examples
+    # to infer the POST /entries body shape from the agent guide examples
     # alone; returning a concrete template + JSON schema in the same
     # response removes the guesswork.  Picking a real host id from the
     # current candidate list so the example is "press send" valid.

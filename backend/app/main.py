@@ -94,7 +94,7 @@ session**. The same key can query inventory, open reconnaissance for a selected
 scope, draft a test plan, and execute a human-approved plan. Default TTL is
 24h (`AGENT_KEY_TTL_HOURS`). The surface is intentionally narrow — it cannot
 manage users or other projects; scope, phase state, and approval gates are
-enforced by the relevant endpoint. See AGENTS.md for the full integration guide.
+enforced by the relevant endpoint. See the agent guide (`GET /api/v1/agents-guide`) for the full integration contract.
 
 ## Role hierarchy
 
@@ -292,7 +292,7 @@ _OPENAPI_TAGS = [
     # endpoint, and every key is bound to one session.
     {
         "name": "test-plans",
-        "description": "Human-facing test plan management — list, view, approve, reject, generate (with AI), edit entries, delete. The agent-facing flip side of this surface is documented under `agent-api`. See the workflow explainer on the Test Plans page or AGENTS.md for the five-phase lifecycle (draft → proposed → approved → in_progress → completed).",
+        "description": "Human-facing test plan management — list, view, approve, reject, generate (with AI), edit entries, delete. The agent-facing flip side of this surface is documented under `agent-api`. See the workflow explainer on the Test Plans page or the agent guide for the five-phase lifecycle (draft → proposed → approved → in_progress → completed).",
     },
     {
         "name": "agent-browse",

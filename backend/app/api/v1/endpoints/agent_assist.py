@@ -465,13 +465,15 @@ def list_assist_hosts(
     q: Optional[str] = Query(
         None,
         description=(
-            "Boolean query DSL — the SAME vocabulary as the Hosts page. "
-            "Fields: port, os, service, subnet, tag, label, site, cve, vuln, "
-            "header, webtitle, tech, note, scan, has:, follow:, assigned:. "
+            "Boolean query DSL — the SAME vocabulary as the Hosts page "
+            "(e.g. port, os, service, subnet, cve, check, has:, follow:, "
+            "assigned:; the full field list is in the agent guide's assist "
+            "slice, and GET /agent/assist/vocabulary gives this project's "
+            "tag / label / site / username values). "
             "Combine with AND / OR / NOT and parentheses; comma = OR within a "
             "field, a repeated field = AND. ANDs with the discrete filters "
             "above. follow: and assigned: resolve against the operator who "
-            "started this (read-only) assist session — e.g. "
+            "started this session — e.g. "
             "'follow:in_review' = hosts you have in review, 'assigned:me'. "
             "A malformed query returns 400."
         ),

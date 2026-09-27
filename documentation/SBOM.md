@@ -1,6 +1,6 @@
 # Software Bill of Materials (SBOM)
 
-> **Last verified against:** backend 2.370.2 / frontend 5.248.1 (2026-09-19)
+> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26)
 
 BlueStick exposes its **live** dependency tree at `/reference/sbom` in the running application (route `frontend/src/pages/SbomReference.tsx`, backend `GET /api/v1/references/sbom`). That page reflects whatever the deployed build's `requirements.txt` and `frontend/package-lock.json` actually resolved to — there is no checked-in static list to drift.
 
@@ -8,7 +8,7 @@ BlueStick exposes its **live** dependency tree at `/reference/sbom` in the runni
 
 The previous static table aged the moment any dependency was added or bumped. A live SBOM:
 
-- Reads `requirements.txt` via `importlib.metadata` so the version reported is the **installed** version (resolves the real wheel that pip chose, including any constraints satisfied by transitive pins).
+- Walks the installed venv via `importlib.metadata`, so every version reported is the **installed** one (the real wheel pip chose, transitive dependencies included); `requirements.txt` only marks which packages are direct.
 - Reads `frontend/package-lock.json` directly so transitive npm deps are accurate to the lockfile.
 - Classifies each component as **direct** (listed in `requirements.txt` / `package.json` root) or **transitive** (resolved as a sub-dependency).
 - Includes license info (PEP 639 expression or classifier fallback for Python; lockfile-declared license for npm).
@@ -16,7 +16,7 @@ The previous static table aged the moment any dependency was added or bumped. A 
 
 ## How to view the SBOM
 
-- **In-app:** click **Reference → Software Bill of Materials**. The page supports search, a Backend / Frontend / All segment, a Direct-only toggle, paging up to 250 rows per page, and a "Download JSON" button if you need an offline snapshot.
+- **In-app:** click **Reference → Software bill of materials**. The page supports search, a Backend / Frontend / All segment, an All / Direct / Transitive segment, a license filter, sortable columns, paging (25 / 50 / 100 / 250 rows per page), and a "Download JSON" button if you need an offline snapshot.
 - **Raw API:** `curl -k -H "Authorization: Bearer <token>" https://<host>/api/v1/references/sbom` (signed-in users only since v2.392.1) returns the structured JSON envelope (`{app_version, generated_at, summary, components[]}`).
 
 ## Important caveat (the page repeats this)

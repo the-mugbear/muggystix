@@ -16,7 +16,7 @@ data — same stance as ``/agents-guide``), with one exception noted below:
   * ``GET  /api/v1/references/tool-readiness``      — registry vs. your own probe
     (**authenticated** — it reflects the calling user's host)
   * ``GET  /api/v1/references/``                    — listing of the above
-  * ``GET  /api/v1/agents-guide``                   — AGENTS.md slice
+  * ``GET  /api/v1/agents-guide``                   — agent guide slice
 
 The agents-guide endpoint is colocated here because it's part of the
 same "things-agents-curl-once" surface, not because of route prefix.
@@ -38,7 +38,7 @@ from app.api.v1.endpoints.auth import get_current_user, require_role
 from app.core.config import settings
 from app.db.models_auth import User, UserRole
 from app.db.session import get_db
-from app.services.agents_guide_service import slice_agents_md
+from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 from app.services.agent_prompt_history import PROMPT_VERSION
 
 logger = logging.getLogger(__name__)
@@ -63,7 +63,7 @@ async def preflight_script():
         curl -sk https://<nm-host>/api/v1/references/preflight-script | bash -s -- --json
 
     PowerShell-only environments fetch + inspect + emit the equivalent
-    `tools_status` payload by hand — see AGENTS.md § Environment preflight.
+    `tools_status` payload by hand — see the agent guide § Environment preflight.
     """
     candidates = [
         Path("/app/scripts/preflight.sh"),
@@ -525,7 +525,7 @@ async def references_index():
         "agents_guide": {
             "url": "/api/v1/agents-guide",
             "description": (
-                "Full AGENTS.md reference; supports "
+                "The full agent guide; supports "
                 "?workflow=plan_generation|execution|reconnaissance|assist"
             ),
         },
@@ -602,7 +602,7 @@ async def agents_guide(
     # See tool_registry above — attribution only, never a requirement.
     _agent=Depends(identify_agent_if_present),
 ):
-    """Serve AGENTS.md with the base URL replaced to match the current deployment.
+    """Serve the agent guide (documentation/AGENT_GUIDE.md) with the base URL replaced to match the current deployment.
 
     Accepts an optional phase query parameter (``plan_generation``,
     ``execution``, ``reconnaissance``, ``assist``, or the short forms
@@ -613,17 +613,9 @@ async def agents_guide(
     See ``services.agents_guide_service.slice_agents_md`` for filter
     semantics. Unified project sessions receive the full guide.
     """
-    candidates = [
-        Path("/app/AGENTS.md"),
-        Path(__file__).resolve().parents[4] / "AGENTS.md",
-    ]
-    content = None
-    for p in candidates:
-        if p.is_file():
-            content = p.read_text(encoding="utf-8")
-            break
+    content = read_agent_guide()
     if content is None:
-        raise HTTPException(status_code=404, detail="AGENTS.md not found")
+        raise HTTPException(status_code=404, detail="Agent guide not found")
 
     content = slice_agents_md(content, workflow)
 
@@ -651,5 +643,5 @@ async def agents_guide(
     return PlainTextResponse(
         content,
         media_type="text/markdown; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="AGENTS.md"'},
+        headers={"Content-Disposition": 'attachment; filename="bluestick-agent-guide.md"'},
     )

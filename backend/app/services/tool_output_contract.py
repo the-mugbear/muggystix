@@ -9,7 +9,7 @@ copies of "how to run this tool for BlueStick" are checked against by
     (the agent's session-rendered commands),
   * the frontend Tool Reference page — ``RUN_COMMANDS`` in
     ``frontend/src/pages/ToolReference.tsx`` (the operator-facing commands),
-  * the ``AGENTS.md`` "Supported upload formats" table, and
+  * the agent guide's (``documentation/AGENT_GUIDE.md``) "Supported upload formats" table, and
   * ``documentation/UPLOAD_FORMATS.md``.
 
 Those four exist independently because they serve different consumers (a
@@ -38,21 +38,21 @@ from typing import Dict, Set
 # Extensions BlueStick's ingestion pipeline recognises overall (magic-byte /
 # suffix routing).  Used by the test to sanity-check that no contract entry
 # lists an extension the pipeline can't route at all.
-KNOWN_EXTENSIONS: Set[str] = {"xml", "gnmap", "json", "jsonl", "csv", "txt", "zip"}
+KNOWN_EXTENSIONS: Set[str] = {"xml", "gnmap", "json", "jsonl", "ndjson", "csv", "txt", "zip"}
 
 TOOL_OUTPUT_CONTRACT: Dict[str, Dict[str, object]] = {
     # --- Port / host discovery ---
-    "nmap": {"exts": {"xml", "gnmap"}},
+    "nmap": {"exts": {"xml", "gnmap", "txt"}},  # grepable saved as .txt is detected by content
     "masscan": {"exts": {"xml", "json", "txt"}},
     "rustscan": {"exts": {"xml", "txt"}},  # native .txt console, or piped nmap .xml
     "naabu": {"exts": {"json", "txt"}},
     # --- Web ---
-    "httpx": {"exts": {"json", "jsonl"}},
-    "whatweb": {"exts": {"json", "jsonl"}},
+    "httpx": {"exts": {"json", "jsonl", "ndjson"}},
+    "whatweb": {"exts": {"json", "jsonl", "ndjson"}},
     "eyewitness": {"exts": {"json", "csv", "zip"}, "note": "default / -d directory output; no output-file flag"},
     "nikto": {"exts": {"json", "csv", "txt"}},
     "testssl": {"exts": {"json"}, "note": "--jsonfile / --jsonfile-pretty; ingests via TestsslParser into web_interfaces"},
-    "nuclei": {"exts": {"json", "jsonl"}, "note": "-je (JSON array) or -jsonl; ingests via NucleiParser (v2.411.0)"},
+    "nuclei": {"exts": {"json", "jsonl", "ndjson"}, "note": "-je (JSON array) or -jsonl; ingests via NucleiParser (v2.411.0)"},
     # unified dirbuster-family parser (tool name goes in the filename)
     "gobuster": {"exts": {"json", "csv", "txt"}},
     "feroxbuster": {"exts": {"json", "csv", "txt"}},
@@ -63,7 +63,7 @@ TOOL_OUTPUT_CONTRACT: Dict[str, Dict[str, object]] = {
     # --- DNS / subdomains ---
     "subfinder": {"exts": {"json", "txt"}},
     "amass": {"exts": {"json", "txt"}},
-    "dnsx": {"exts": {"json", "jsonl"}},
+    "dnsx": {"exts": {"json", "jsonl", "ndjson"}},
     # --- SMB / Windows / AD ---
     "smbmap": {"exts": {"json", "txt"}, "note": "default stdout; pipe/redirect to a file"},
     "netexec": {"exts": {"json", "txt"}, "note": "default stdout or --json"},

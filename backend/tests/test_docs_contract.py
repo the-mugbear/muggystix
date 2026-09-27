@@ -21,12 +21,11 @@ tests make the next drift fail CI instead:
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
 import pytest
 
 from app.main import app, _OPENAPI_TAGS
-from app.services.agents_guide_service import slice_agents_md
+from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 
 WORKFLOWS = ["plan_generation", "execution", "reconnaissance", "assist"]
 
@@ -49,14 +48,10 @@ KNOWN_SECTION_TAGS = {"shared", "plan_generation", "execution", "reconnaissance"
 
 
 def _load_agents_md() -> str:
-    candidates = [
-        Path(__file__).resolve().parents[1] / "AGENTS.md",  # /app/AGENTS.md (container)
-        Path(__file__).resolve().parents[2] / "AGENTS.md",  # repo root (local checkout)
-    ]
-    for p in candidates:
-        if p.is_file():
-            return p.read_text(encoding="utf-8")
-    pytest.skip("AGENTS.md not mounted in this environment")
+    text = read_agent_guide()
+    if text is None:
+        pytest.skip("the agent guide is not mounted in this environment")
+    return text
 
 
 # ---------------------------------------------------------------------------

@@ -1014,7 +1014,7 @@ def _block_unrunnable_steps(
     its replacement tool, and a blocked one names none, so neither is touched
     here.  ``blocked_reason`` is ``"tool_unavailable"`` rather than the swap
     path's ``"neither_available"`` — the agent's action differs (there was no
-    fallback to lose), and AGENTS.md says to branch on the reason.
+    fallback to lose), and the agent guide says to branch on the reason.
     """
     if not environment:
         return

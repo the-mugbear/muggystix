@@ -57,7 +57,7 @@ const sections: GuideSection[] = [
           Whichever you use, the dialog shows the key <strong>once</strong>, plus two ways to hand it
           over: <em>Connect via MCP</em> (the tools appear natively in your client) or{' '}
           <em>Paste the prompt</em> (the agent drives the same session with curl). The agent reads
-          its full contract from <strong>AGENTS.md</strong>, downloadable from the Reference page and
+          its full contract from the <strong>agent guide</strong>, downloadable from the Reference page and
           served per-workflow at the URL baked into every prompt.
         </Para>
         <Subhead>What a key is allowed to do</Subhead>

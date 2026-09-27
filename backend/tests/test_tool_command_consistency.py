@@ -46,11 +46,11 @@ from app.services.tool_output_contract import (
 
 # --- Repo-root + source-file resolution ------------------------------------
 def _looks_like_root(p: Path) -> bool:
-    return (p / "AGENTS.md").is_file() and (p / "frontend").is_dir()
+    return (p / "documentation" / "AGENT_GUIDE.md").is_file() and (p / "frontend").is_dir()
 
 
 def _repo_root() -> Optional[Path]:
-    """Locate the repo root (holds AGENTS.md + frontend/).
+    """Locate the repo root (holds documentation/AGENT_GUIDE.md + frontend/).
 
     Order: ``$BLUESTICK_REPO_ROOT`` (set when the repo is mounted alongside the
     backend-only image mount), then any ancestor of this file, then ``/repo``.
@@ -235,7 +235,7 @@ def _table_extensions(cell: str) -> Set[str]:
 
 
 def test_agents_md_table_matches_contract():
-    md = _read("AGENTS.md")
+    md = _read("documentation/AGENT_GUIDE.md")
     if md is None:
         pytest.skip("AGENTS.md not mounted — run with the repo root mounted")
     checked = 0
