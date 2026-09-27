@@ -17,6 +17,8 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as Plot from '@observablehq/plot';
 
+import PlotFigure from '../charts/PlotFigure';
+
 import type { OversightGrowthPoint } from '../../services/api/oversight';
 import { formatDate } from '../../utils/relativeTime';
 
@@ -78,34 +80,14 @@ const countTicks = (values: number[]): { domain: [number, number]; ticks: number
 const unitLabel = (unit: string, start: string) =>
   unit === 'week' ? `Week of ${bucketDate(unit, start)}` : bucketDate(unit, start);
 
-/** One Plot figure, redrawn when its options change; reports its x scale so
- *  the pointer can be mapped to a bucket. */
-const Figure: React.FC<{
-  options: Plot.PlotOptions;
-  onScale: (invert: ((px: number) => Date) | null) => void;
-  label: string;
-}> = ({ options, onScale, label }) => {
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    const host = ref.current;
-    if (!host) return undefined;
-    const figure = Plot.plot(options);
-    figure.setAttribute('role', 'img');
-    figure.setAttribute('aria-label', label);
-    host.replaceChildren(figure);
-    const x = figure.scale('x');
-    onScale(x?.invert ? (px: number) => x.invert!(px) as Date : null);
-    return () => figure.remove();
-  }, [options, onScale, label]);
-  return <div ref={ref} className="min-w-0 [&_svg]:block [&_svg]:overflow-visible" />;
-};
-
 export const GrowthCharts: React.FC<{ unit: Unit | string; points: OversightGrowthPoint[] }> = ({ unit, points }) => {
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
   const invertRef = useRef<((px: number) => Date) | null>(null);
-  const onScale = useMemo(() => (inv: ((px: number) => Date) | null) => { invertRef.current = inv; }, []);
+  const onScale = useMemo(() => (inv: ((px: number) => unknown) | null) => {
+    invertRef.current = inv ? (px: number) => inv(px) as Date : null;
+  }, []);
   const focus = hover ?? points.length - 1;
   const p = points[focus];
   const interval = (unit === 'day' || unit === 'week' || unit === 'month' ? unit : 'day') as Unit;
@@ -235,13 +217,13 @@ export const GrowthCharts: React.FC<{ unit: Unit | string; points: OversightGrow
         aria-label="Host growth charts — use the left and right arrow keys to move between dates"
         className="space-y-xs rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <p className="text-caption font-medium text-foreground">Recorded hosts (cumulative)</p>
-        <Figure options={optsTotal} onScale={onScale}
+        <PlotFigure options={optsTotal} onScale={onScale}
           label={`Recorded hosts (cumulative): ${last.cumulative_targets.toLocaleString()} in the last bucket`} />
         <p className="text-caption font-medium text-foreground">Hosts first recorded per {unit}</p>
-        <Figure options={optsAdded} onScale={onScale}
+        <PlotFigure options={optsAdded} onScale={onScale}
           label={`Hosts first recorded per ${unit}: ${last.targets_added.toLocaleString()} in the last bucket`} />
         <p className="text-caption font-medium text-foreground">Reviews concluded per {unit}</p>
-        <Figure options={optsReviews} onScale={onScale}
+        <PlotFigure options={optsReviews} onScale={onScale}
           label={`Reviews concluded per ${unit}: ${last.reviews_concluded.toLocaleString()} in the last bucket`} />
       </div>
       <p className="text-caption text-muted-foreground">

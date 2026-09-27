@@ -264,6 +264,10 @@ export interface MyWorkCardProps {
   investigateLoading?: boolean;
   /** Retry only that queue.  Falls back to `onRetry`. */
   onRetryInvestigate?: () => void;
+  /** v5.308.0 — the tier the queue is narrowed to (null = every tier), and
+   *  how to change it. Without the handler the tier rows do not narrow. */
+  investigateTier?: number | null;
+  onInvestigateTier?: (tier: number | null) => void;
   /** v5.237.0 — reviewed hosts that are not done: "needs more evidence", or
    *  changed after the review. */
   followups?: ReviewFollowupsResponse | null;
@@ -509,11 +513,77 @@ const FollowupsSection: React.FC<{
  * evidence is, and the next step.  Ordered by a stated tier (the legend
  * lists them); there is deliberately no composite priority number.
  */
+/**
+ * How the queue splits by tier (v5.308.0): one row per tier — name, a bar on
+ * a scale shared by the five, the count. The labels carry identity, so one
+ * colour serves (five steps of one hue could not be told apart). A row is a
+ * button: it narrows the list below to that tier; the counts never change
+ * with the choice (they are whole-queue).
+ */
+const TierLadder: React.FC<{
+  tiers: string[];
+  counts: number[];
+  selected: number | null;
+  onSelect?: (tier: number | null) => void;
+}> = ({ tiers, counts, selected, onSelect }) => {
+  const max = Math.max(1, ...counts);
+  return (
+    <div className="mb-sm max-w-xl" role="group" aria-label="Hosts worth a look, by tier">
+      <ul className="flex flex-col gap-[2px]">
+        {tiers.map((label, i) => {
+          const tier = i + 1;
+          const n = counts[i] ?? 0;
+          const on = selected === tier;
+          const dim = selected != null && !on;
+          const body = (
+            <>
+              <span className="min-w-0 flex-1 truncate text-left" title={label}>{label}</span>
+              <span aria-hidden className="relative h-2 w-40 shrink-0 overflow-hidden rounded-[2px] bg-muted">
+                {n > 0 && (
+                  <span
+                    className="absolute inset-y-0 left-0 rounded-[2px] bg-warning"
+                    style={{ width: `${Math.max(3, (n / max) * 100)}%` }}
+                  />
+                )}
+              </span>
+              <span className="w-10 shrink-0 text-right font-semibold tabular-nums">{n.toLocaleString()}</span>
+            </>
+          );
+          return (
+            <li key={label} className={cn('text-caption', dim && 'opacity-50')}>
+              {onSelect && n > 0 ? (
+                <button
+                  type="button"
+                  aria-pressed={on}
+                  onClick={() => onSelect(on ? null : tier)}
+                  title={on ? 'Show every tier' : `Show only: ${label}`}
+                  className={cn(
+                    'flex w-full items-center gap-sm rounded px-xxs py-[1px] text-foreground hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    on && 'bg-accent font-medium',
+                  )}
+                >
+                  {body}
+                </button>
+              ) : (
+                <div className={cn('flex items-center gap-sm px-xxs py-[1px]', n === 0 ? 'text-muted-foreground' : 'text-foreground')}>
+                  {body}
+                </div>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+};
+
 const InvestigateSection: React.FC<{
   data: InvestigationQueueResponse;
   navigate: ReturnType<typeof useNavigate>;
   onTaken: () => void;
-}> = ({ data, navigate, onTaken }) => {
+  tier?: number | null;
+  onTier?: (tier: number | null) => void;
+}> = ({ data, navigate, onTaken, tier = null, onTier }) => {
   const toast = useToast();
   const [expanded, setExpanded] = React.useState(false);
   const [takingId, setTakingId] = React.useState<number | null>(null);
@@ -557,6 +627,15 @@ const InvestigateSection: React.FC<{
       </>}
       description="Hosts nobody is reviewing, with a reason — no review, assignment, note, plan entry or finding yet. Review takes one into your queue."
     >
+      {data.tier_counts && data.queue_total > 0 && (
+        <TierLadder tiers={data.tiers} counts={data.tier_counts} selected={tier} onSelect={onTier} />
+      )}
+      {tier != null && (
+        <p className="mb-xs text-caption text-muted-foreground">
+          Showing only <span className="font-medium text-foreground">{data.tiers[tier - 1]}</span>.{' '}
+          <button type="button" className="text-info hover:underline" onClick={() => onTier?.(null)}>Show every tier</button>
+        </p>
+      )}
       {data.items.length === 0 ? (
         <p className="text-caption text-muted-foreground">
           {data.untouched_total > 0
@@ -659,7 +738,7 @@ const InvestigateSection: React.FC<{
           <MoreFooter
             shown={rows.length}
             loaded={data.items.length}
-            total={data.queue_total}
+            total={tier != null ? (data.tier_counts?.[tier - 1] ?? data.items.length) : data.queue_total}
             expanded={expanded}
             onToggle={() => setExpanded((v) => !v)}
           >
@@ -680,7 +759,7 @@ const GROUP_PREVIEW = 3;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   queue, tasks, notes, findings, investigate = null, investigateUnavailable = false,
-  investigateLoading = false, onRetryInvestigate,
+  investigateLoading = false, onRetryInvestigate, investigateTier = null, onInvestigateTier,
   followups = null, followupsUnavailable = false,
   loading, error, onRetry, onChanged, part = 'all', updated,
 }) => {
@@ -925,7 +1004,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
         </PostureSection>
       )}
       {part !== 'mine' && !loading && !error && !investigateUnavailable && investigate && (
-        <InvestigateSection data={investigate} navigate={navigate} onTaken={changed} />
+        <InvestigateSection data={investigate} navigate={navigate} onTaken={changed}
+          tier={investigateTier} onTier={onInvestigateTier} />
       )}
     </div>
   );

@@ -89,5 +89,8 @@ describe('niceMax', () => {
     expect(niceMax(3)).toBe(5);
     expect(niceMax(58)).toBe(100);
     expect(niceMax(20)).toBe(20);
+    expect(niceMax(23)).toBe(25);   // the busiest hour fills its row
+    expect(niceMax(2.3)).toBe(5);   // 2.5 only where it is a whole count
+    expect(niceMax(240)).toBe(250);
   });
 });

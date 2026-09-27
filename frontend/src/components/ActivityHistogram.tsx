@@ -5,22 +5,27 @@
  * It replaced a dot-per-activity timeline (still used by Scans as
  * `ActivityTimeline`) whose overlapping dots stacked into lanes — a burst of
  * 60 uploads made a ~1100px column of dots over an otherwise empty week. Bins
- * keep the chart a fixed height (≤ ~190px) whatever the burst.
+ * keep the chart a fixed height (at most five rows) whatever the burst.
  *
  * Why rows and not stacked columns: the theme's only hues are its status
  * colours, and several palettes make them near-identical (magma's success /
  * warning / info are all orange; phosphor's success is its primary). A stack
  * would then encode kind by colour alone and fail. One row per kind in the
- * single info accent, named and counted at its left edge, reads in every
- * palette (the GrowthCharts precedent). Each row has its own y-scale, labelled.
+ * single info accent, named and counted above it, reads in every palette.
+ * Each row has its own y-scale, labelled.
  *
- * Hover or arrow keys move one crosshair across every row and the readout
- * above names every count in that bin; Enter or a click correlates that bin.
- * The table view lists every non-empty bin.
+ * Drawn with Observable Plot since 5.307.2 (UI_STYLE_GUIDE §35): a local-time
+ * axis with a gridline at every midnight through all rows, columns spanning
+ * exactly their bin, rows tall enough to read (they were 24px, ticks
+ * crowding the bars). Hover or arrow keys move one crosshair across every row
+ * and the readout above names every count in that bin; Enter or a click
+ * correlates that bin. The table view lists every non-empty bin.
  */
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import * as Plot from '@observablehq/plot';
 
 import type { ActivityItem, ActivityKind } from '../services/api';
+import PlotFigure from './charts/PlotFigure';
 import {
   ACTIVITY_KINDS,
   binActivity,
@@ -30,14 +35,14 @@ import {
   KIND_PLURAL,
   niceMax,
 } from '../utils/activityBins';
+import type { ActivityBin } from '../utils/activityBins';
 
 const ACCENT = 'hsl(var(--info))';
-const ROW_H = 24;          // plot height per kind
-const ROW_GAP = 10;
-const AXIS_H = 18;
-const PAD_L = 168;         // kind label + y tick
-const PAD_R = 8;
-const BAR_MAX = 24;
+const INK = 'hsl(var(--foreground))';
+const ROW_H = 44;          // plot height per kind
+const AXIS_H = 24;
+const MARGIN_L = 32;       // the row's y ticks
+const MARGIN_R = 8;
 
 /** Container width, with a fallback where ResizeObserver is missing (tests). */
 function useWidth(): [(el: HTMLDivElement | null) => void, number] {
@@ -72,6 +77,8 @@ const binWidthLabel = (binMs: number): string => {
   return h >= 24 ? 'day' : h === 1 ? 'hour' : `${h} hours`;
 };
 
+const titleCase = (s: string) => s.replace(/^./, (c) => c.toUpperCase());
+
 export interface ActivityHistogramProps {
   items: ActivityItem[];
   windowStart: string;
@@ -94,8 +101,10 @@ export const ActivityHistogram: React.FC<ActivityHistogramProps> = ({
   const [ref, width] = useWidth();
   const [hover, setHover] = useState<number | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const invertRef = useRef<((px: number) => unknown) | null>(null);
+  const onScale = useCallback((inv: ((px: number) => unknown) | null) => { invertRef.current = inv; }, []);
 
-  const plotW = Math.max(1, width - PAD_L - PAD_R);
+  const plotW = Math.max(1, width - MARGIN_L - MARGIN_R);
   const ws = new Date(windowStart).getTime();
   const we = new Date(windowEnd).getTime();
   const binMs = chooseBinMs(we - ws, plotW);
@@ -110,41 +119,72 @@ export const ActivityHistogram: React.FC<ActivityHistogramProps> = ({
   const n = bins.length;
   const first = n ? bins[0].start : ws;
   const last = n ? bins[n - 1].end : we;
-  const span = Math.max(1, last - first);
-  const xOf = (t: number) => PAD_L + ((t - first) / span) * plotW;
-  const band = plotW / Math.max(1, n);
-  const barW = Math.max(1, Math.min(BAR_MAX, band - 2)); // 2px gap between columns
 
-  const rows = present.length;
-  const plotH = rows * ROW_H + Math.max(0, rows - 1) * ROW_GAP;
-  const svgH = plotH + AXIS_H;
-
-  // Day ticks at local midnight inside the window.
-  const dayTicks = useMemo(() => {
-    const ticks: number[] = [];
-    const d = new Date(first);
-    d.setHours(24, 0, 0, 0);
-    while (d.getTime() < last) {
-      ticks.push(d.getTime());
-      d.setDate(d.getDate() + 1);
-    }
-    return ticks;
-  }, [first, last]);
-
-  let highlight: { x: number; w: number } | null = null;
-  if (highlightStart && highlightEnd) {
+  // The Correlate window, clipped to the chart.
+  const highlight = useMemo(() => {
+    if (!highlightStart || !highlightEnd) return null;
     const hs = new Date(highlightStart).getTime();
     const he = new Date(highlightEnd).getTime();
-    if (Number.isFinite(hs) && Number.isFinite(he) && he >= first && hs <= last) {
-      const x0 = xOf(Math.max(hs, first));
-      const x1 = xOf(Math.min(he, last));
-      highlight = { x: x0, w: Math.max(2, x1 - x0) };
-    }
-  }
+    if (!Number.isFinite(hs) || !Number.isFinite(he) || he < first || hs > last) return null;
+    // At least a visible sliver: ± 5 minutes on a week is under a pixel.
+    const minW = (last - first) / Math.max(1, plotW) * 2;
+    const x1 = Math.max(hs, first);
+    const x2 = Math.max(Math.min(he, last), x1 + minW);
+    return { x1: new Date(x1), x2: new Date(x2) };
+  }, [highlightStart, highlightEnd, first, last, plotW]);
 
-  const binAt = (clientX: number, rect: DOMRect) => {
-    const px = ((clientX - rect.left) / rect.width) * plotW;
-    return Math.min(n - 1, Math.max(0, Math.floor(px / band)));
+  const rowOptions = useMemo(() => present.map((kind, r): Plot.PlotOptions => {
+    const showAxis = r === present.length - 1;
+    const max = niceMax(Math.max(...bins.map((b) => b.counts[kind])));
+    const marks: Plot.Markish[] = [];
+    if (highlight) {
+      marks.push(Plot.rect([highlight], {
+        x1: 'x1', x2: 'x2', fill: 'hsl(var(--primary))', fillOpacity: 0.14,
+        stroke: 'hsl(var(--primary))', strokeOpacity: 0.45, className: 'activity-focus-band',
+      }));
+    }
+    marks.push(
+      Plot.gridX({ ticks: 'day', stroke: 'currentColor', strokeOpacity: 0.14 }),
+      Plot.ruleY([0], { stroke: 'currentColor', strokeOpacity: 0.35 }),
+      Plot.rectY(bins.map((b, i) => ({ b, i })).filter(({ b }) => b.counts[kind] > 0), {
+        x1: ({ b }: { b: ActivityBin }) => new Date(b.start),
+        x2: ({ b }: { b: ActivityBin }) => new Date(b.end),
+        y: ({ b }: { b: ActivityBin }) => b.counts[kind],
+        // A column never thinner than 2px, with a 1px surface gap each side.
+        insetLeft: 0.5, insetRight: 0.5,
+        fill: ACCENT,
+        fillOpacity: ({ i }: { i: number }) => (hover == null || hover === i ? 1 : 0.5),
+      }),
+    );
+    if (hover != null && bins[hover]) {
+      marks.push(Plot.ruleX([new Date((bins[hover].start + bins[hover].end) / 2)], { stroke: INK, strokeOpacity: 0.5 }));
+    }
+    return {
+      width,
+      height: ROW_H + (showAxis ? AXIS_H : 2),
+      marginLeft: MARGIN_L,
+      marginRight: MARGIN_R,
+      marginTop: 4,
+      marginBottom: showAxis ? AXIS_H : 2,
+      style: { background: 'transparent', color: 'hsl(var(--muted-foreground))', fontSize: '11px', fontFamily: 'inherit', overflow: 'visible' },
+      x: {
+        type: 'time', domain: [new Date(first), new Date(last)], axis: showAxis ? 'bottom' : null,
+        ticks: 'day', tickSize: 0, tickPadding: 6, label: null,
+        tickFormat: (d: Date) => d.toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' }),
+      },
+      y: { domain: [0, max], ticks: [0, max], tickSize: 0, label: null, tickFormat: (v: number) => v.toLocaleString() },
+      marks,
+    };
+  }), [present, bins, highlight, hover, width, first, last]);
+
+  const binAtPointer = (e: React.PointerEvent | React.MouseEvent): number | null => {
+    const invert = invertRef.current;
+    if (!invert || !n) return null;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const px = e.clientX - rect.left;
+    if (px < MARGIN_L || px > width - MARGIN_R) return null;
+    const t = (invert(px) as Date).getTime();
+    return Math.min(n - 1, Math.max(0, Math.floor((t - first) / binMs)));
   };
   const select = (i: number | null) => {
     if (i == null || !bins[i] || !onSelectBin) return;
@@ -190,103 +230,40 @@ export const ActivityHistogram: React.FC<ActivityHistogramProps> = ({
         ) : null}
       </p>
 
-      {rows === 0 ? (
+      {present.length === 0 ? (
         <p className="text-metadata text-muted-foreground">No activity in this window.</p>
       ) : (
         <div
           tabIndex={0}
           onKeyDown={onKey}
+          onPointerMove={(e) => setHover(binAtPointer(e))}
+          onPointerLeave={() => setHover(null)}
+          onClick={(e) => select(binAtPointer(e))}
           aria-describedby="activity-readout"
           aria-label="Activity per time bin — use the left and right arrow keys to move, Enter to correlate a bin"
-          className="rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          data-testid="activity-histogram"
+          className={`space-y-xxs rounded-control focus:outline-none focus-visible:ring-2 focus-visible:ring-ring ${onSelectBin ? 'cursor-pointer' : ''}`}
         >
-          <svg
-            width={width}
-            height={svgH}
-            role="img"
-            aria-label={`Activities started per ${binWidthLabel(binMs)}: ${present.map((k) => kindCount(k, totals[k])).join(', ')}`}
-            className="block overflow-visible"
-            data-testid="activity-histogram"
-          >
-            {highlight && (
-              <rect
-                x={highlight.x}
-                y={0}
-                width={highlight.w}
-                height={plotH}
-                fill="hsl(var(--primary) / 0.14)"
-                stroke="hsl(var(--primary) / 0.45)"
-                data-testid="activity-focus-band"
+          {present.map((kind: ActivityKind, r) => (
+            <div key={kind} data-kind={kind} className="min-w-0">
+              <p className="pl-[32px] text-caption text-foreground">
+                {titleCase(KIND_PLURAL[kind][1])}{' '}
+                <span className="tabular-nums text-muted-foreground">{totals[kind].toLocaleString()}</span>
+              </p>
+              <PlotFigure
+                options={rowOptions[r]}
+                onScale={r === 0 ? onScale : undefined}
+                label={`${titleCase(KIND_PLURAL[kind][1])} started per ${binWidthLabel(binMs)}: ${totals[kind].toLocaleString()} in this window`}
               />
-            )}
-            {dayTicks.map((t) => (
-              <line key={t} x1={xOf(t)} x2={xOf(t)} y1={0} y2={plotH} stroke="hsl(var(--border))" />
-            ))}
-            {present.map((kind: ActivityKind, r) => {
-              const top = r * (ROW_H + ROW_GAP);
-              const base = top + ROW_H;
-              const max = niceMax(Math.max(...bins.map((b) => b.counts[kind])));
-              return (
-                <g key={kind} data-kind={kind}>
-                  <text x={0} y={top + ROW_H / 2} dominantBaseline="middle" className="fill-foreground text-[12px]">
-                    {KIND_PLURAL[kind][1].replace(/^./, (c) => c.toUpperCase())}
-                    <tspan className="fill-muted-foreground tabular-nums"> {totals[kind].toLocaleString()}</tspan>
-                  </text>
-                  <text x={PAD_L - 6} y={top} dominantBaseline="hanging" textAnchor="end" className="fill-muted-foreground text-[10px] tabular-nums">
-                    {max}
-                  </text>
-                  <text x={PAD_L - 6} y={base} textAnchor="end" className="fill-muted-foreground text-[10px] tabular-nums">0</text>
-                  <line x1={PAD_L} x2={PAD_L + plotW} y1={base + 0.5} y2={base + 0.5} stroke="hsl(var(--muted-foreground) / 0.35)" />
-                  {bins.map((b, i) => {
-                    const v = b.counts[kind];
-                    if (v <= 0) return null;
-                    const h = Math.max(2, (v / max) * ROW_H);
-                    const y0 = base - h;
-                    const x0 = PAD_L + band * i + (band - barW) / 2;
-                    const rr = Math.min(4, h, barW / 2);
-                    // Rounded data-end, square at the baseline.
-                    const d = `M${x0},${base} V${y0 + rr} Q${x0},${y0} ${x0 + rr},${y0} H${x0 + barW - rr} Q${x0 + barW},${y0} ${x0 + barW},${y0 + rr} V${base} Z`;
-                    return (
-                      <path key={b.start} d={d} fill={ACCENT} fillOpacity={hover == null || hover === i ? 1 : 0.5} />
-                    );
-                  })}
-                </g>
-              );
-            })}
-            {hover != null && n > 0 && (
-              <line
-                x1={PAD_L + band * hover + band / 2}
-                x2={PAD_L + band * hover + band / 2}
-                y1={0}
-                y2={plotH}
-                stroke="hsl(var(--foreground) / 0.5)"
-              />
-            )}
-            {dayTicks.map((t) => (
-              <text key={`l${t}`} x={xOf(t) + 3} y={plotH + 13} className="fill-muted-foreground text-[11px]">
-                {new Date(t).toLocaleDateString(undefined, { weekday: 'short', day: 'numeric' })}
-              </text>
-            ))}
-            <rect
-              x={PAD_L}
-              y={0}
-              width={plotW}
-              height={plotH}
-              fill="transparent"
-              className={onSelectBin ? 'cursor-pointer' : undefined}
-              data-testid="activity-hit-area"
-              onPointerMove={(e) => setHover(binAt(e.clientX, e.currentTarget.getBoundingClientRect()))}
-              onPointerLeave={() => setHover(null)}
-              onClick={(e) => select(binAt(e.clientX, e.currentTarget.getBoundingClientRect()))}
-            />
-          </svg>
+            </div>
+          ))}
         </div>
       )}
 
       <p className="break-words text-caption text-muted-foreground">
         Counted by start time, per {binWidthLabel(binMs)}; each row has its own scale.
-        {absent.length > 0 && rows > 0 && <> None in this window: {absent.map((k) => KIND_PLURAL[k][1]).join(', ')}.</>}{' '}
-        {rows > 0 && (
+        {absent.length > 0 && present.length > 0 && <> None in this window: {absent.map((k) => KIND_PLURAL[k][1]).join(', ')}.</>}{' '}
+        {present.length > 0 && (
           <button
             type="button"
             className="text-info hover:underline"
@@ -298,7 +275,7 @@ export const ActivityHistogram: React.FC<ActivityHistogramProps> = ({
         )}
       </p>
 
-      {showTable && rows > 0 && (
+      {showTable && present.length > 0 && (
         <div className="max-h-72 overflow-auto">
           <table className="w-full table-fixed text-caption">
             <caption className="sr-only">Activities started per {binWidthLabel(binMs)}</caption>

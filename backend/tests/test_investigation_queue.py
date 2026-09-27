@@ -86,6 +86,9 @@ def test_untouched_hosts_with_reasons_ordered_by_stated_tier(db_session, test_pr
     assert [r.ip_address for r in q.items] == ["10.5.0.1", "10.5.0.2", "10.5.0.3", "10.5.0.4", "10.5.0.5"]
     assert [r.tier for r in q.items] == [1, 2, 3, 4, 5]
     assert q.tiers[0] == "Exploitable critical"
+    # Per-tier totals add up to the queue — and cover tiers the limit cut off.
+    assert q.tier_counts == [1, 1, 1, 1, 1]
+    assert compute_investigation_queue(db_session, test_project, limit=1).tier_counts == [1, 1, 1, 1, 1]
 
     r1 = q.items[0]
     assert r1.tier_label == "Exploitable critical"
@@ -122,6 +125,12 @@ def test_limit_keeps_the_true_total(db_session, test_project):
     assert len(q.items) == 2
     assert q.queue_total == 4
     assert q.untouched_total == 4
+    assert q.tier_counts == [0, 4, 0, 0, 0]  # the whole queue, not the 2 shown
+    # Narrowed to a tier: its rows, with whole-queue totals.
+    only = compute_investigation_queue(db_session, test_project, limit=25, tier=2)
+    assert len(only.items) == 4 and {r.tier for r in only.items} == {2}
+    empty = compute_investigation_queue(db_session, test_project, limit=25, tier=1)
+    assert empty.items == [] and empty.queue_total == 4 and empty.tier_counts == [0, 4, 0, 0, 0]
 
 
 def test_workbench_carries_the_block(client, db_session, test_project):

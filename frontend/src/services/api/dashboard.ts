@@ -250,6 +250,9 @@ export interface InvestigationQueueResponse {
   queue_total: number;
   /** The tier labels in order, for the legend. */
   tiers: string[];
+  /** Hosts per tier, aligned with `tiers`; they add up to `queue_total`
+   *  (v2.427.0). Whole-queue even when the rows are narrowed to one tier. */
+  tier_counts?: number[];
 }
 
 export interface WorkbenchResponse {
@@ -308,8 +311,8 @@ export const getWorkbench = async (
 
 /** The "Worth a look" queue alone. Rejects (503) when it could not be
  *  computed — callers show "unavailable", never an empty queue. */
-export const getInvestigationQueue = async (): Promise<InvestigationQueueResponse> => {
-  const response = await api.get(`${p()}/workbench/investigate`);
+export const getInvestigationQueue = async (tier?: number | null): Promise<InvestigationQueueResponse> => {
+  const response = await api.get(`${p()}/workbench/investigate`, { params: tier ? { tier } : undefined });
   return response.data;
 };
 

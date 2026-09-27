@@ -98,15 +98,19 @@ describe('ToolActivity', () => {
 
   it('draws a burst as a fixed-height chart with a row per kind present', async () => {
     renderPage();
-    const svg = await screen.findByTestId('activity-histogram');
-    expect(Number(svg.getAttribute('height'))).toBeLessThanOrEqual(200);
-    const kinds = Array.from(svg.querySelectorAll('g[data-kind]')).map((g) => g.getAttribute('data-kind'));
+    const chart = await screen.findByTestId('activity-histogram');
+    // Fixed height whatever the burst: one Plot row per kind present, each
+    // of a set height (5.307.2 — rows are separate figures on one time axis).
+    const heights = Array.from(chart.querySelectorAll('svg')).map((s) => Number(s.getAttribute('height')));
+    expect(heights.length).toBe(2);
+    expect(heights.reduce((a, h) => a + h, 0)).toBeLessThanOrEqual(200);
+    const kinds = Array.from(chart.querySelectorAll('[data-kind]')).map((g) => g.getAttribute('data-kind'));
     expect(kinds).toEqual(['scan', 'execution_session']);
-    // Legend-by-row carries counts; absent kinds are said to be absent.
-    expect(svg).toHaveTextContent('Scan uploads 60');
+    // Each row is named and counted; absent kinds are said to be absent.
+    expect(chart).toHaveTextContent('Scan uploads 60');
     expect(screen.getByText(/None in this window: recon runs, commands run, target probes/)).toBeInTheDocument();
     // The Correlate window (now ± 5 min) is inside the week: its band shows.
-    expect(screen.getByTestId('activity-focus-band')).toBeInTheDocument();
+    expect(chart.querySelector('.activity-focus-band')).not.toBeNull();
   });
 
   it('correlates a chosen chart bin as a range query', async () => {

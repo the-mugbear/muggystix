@@ -326,16 +326,20 @@ def get_workbench(
     summary="The 'Worth a look' queue alone — untouched hosts with a reason, in stated tier order",
 )
 def get_investigation_queue(
+    tier: Optional[int] = Query(None, ge=1, le=5, description="Only this tier's hosts (1 = exploitable critical … 5 = scans disagree); the totals stay whole-queue"),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     """The same queue ``GET /workbench`` embeds, on its own request (v2.424.1).
 
+    ``tier`` narrows the rows to one tier (v2.427.0); ``queue_total`` and
+    ``tier_counts`` still describe the whole queue.
+
     A failure is a 503 that says so — never an empty queue, which would read
     as "every host has been touched".
     """
     try:
-        return compute_investigation_queue(db, project, limit=25)
+        return compute_investigation_queue(db, project, limit=25, tier=tier)
     except Exception:
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()

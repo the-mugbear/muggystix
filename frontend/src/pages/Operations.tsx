@@ -869,12 +869,16 @@ const Operations: React.FC = () => {
   const [investigateLoading, setInvestigateLoading] = useState(true);
   const [investigateUnavailable, setInvestigateUnavailable] = useState(false);
   const investigateGenRef = useRef(0);
+  // v5.308.0 — the tier the queue is narrowed to (null = every tier). A ref
+  // too, so a refresh or an action reloads the tier being looked at.
+  const [investigateTier, setInvestigateTier] = useState<number | null>(null);
+  const investigateTierRef = useRef<number | null>(null);
   // `quiet`: after an action in a queue — keep what is shown until the new
   // queue arrives instead of flashing the loading line.
   const loadInvestigate = useCallback((quiet = false) => {
     const gen = ++investigateGenRef.current;
     if (!quiet) setInvestigateLoading(true);
-    getInvestigationQueue()
+    getInvestigationQueue(investigateTierRef.current)
       .then((q) => {
         if (gen !== investigateGenRef.current) return;
         setInvestigate(q);
@@ -1094,6 +1098,12 @@ const Operations: React.FC = () => {
     investigateUnavailable,
     investigateLoading,
     onRetryInvestigate: () => loadInvestigate(),
+    investigateTier,
+    onInvestigateTier: (tier: number | null) => {
+      investigateTierRef.current = tier;
+      setInvestigateTier(tier);
+      loadInvestigate(true);
+    },
     followups: workbench?.followups ?? null,
     followupsUnavailable: workbench?.followups_unavailable ?? false,
     loading: workbenchLoading,

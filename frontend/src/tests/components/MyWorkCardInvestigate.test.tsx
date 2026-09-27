@@ -91,6 +91,32 @@ beforeEach(() => {
 });
 
 describe('MyWorkCard — Worth a look', () => {
+  it('splits the queue by tier; a tier row narrows the list and a second click restores it', () => {
+    const onInvestigateTier = vi.fn();
+    const withCounts = { ...queue, queue_total: 14, tier_counts: [3, 0, 5, 4, 2] };
+    const { rerender } = renderCard(withCounts, false, { onInvestigateTier });
+    const ladder = screen.getByRole('group', { name: 'Hosts worth a look, by tier' });
+    // Every tier named with its whole-queue count; an empty tier is not a button.
+    expect(within(ladder).getByRole('button', { name: /Exploitable critical\s*3/ })).toBeInTheDocument();
+    expect(within(ladder).queryByRole('button', { name: /Critical vulnerability/ })).not.toBeInTheDocument();
+    expect(ladder).toHaveTextContent('Critical vulnerability0');
+    fireEvent.click(within(ladder).getByRole('button', { name: /Exploit available\s*5/ }));
+    expect(onInvestigateTier).toHaveBeenLastCalledWith(3);
+
+    rerender(
+      <MemoryRouter>
+        <MyWorkCard queue={null} tasks={null} notes={null} findings={null} investigate={withCounts}
+          loading={false} error={null} onRetry={onRetry} investigateTier={3} onInvestigateTier={onInvestigateTier} />
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/Showing only/)).toHaveTextContent('Showing only Exploit available.');
+    const on = within(screen.getByRole('group', { name: 'Hosts worth a look, by tier' }))
+      .getByRole('button', { name: /Exploit available/ });
+    expect(on).toHaveAttribute('aria-pressed', 'true');
+    fireEvent.click(on);
+    expect(onInvestigateTier).toHaveBeenLastCalledWith(null);
+  });
+
   it('lists untouched hosts with their reasons, evidence and next step, ordered by stated tier', () => {
     renderCard(queue);
     expect(screen.getByText('Worth a look')).toBeInTheDocument();

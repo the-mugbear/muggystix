@@ -104,10 +104,13 @@ export function kindTotals(bins: ActivityBin[]): Record<ActivityKind, number> {
   return t;
 }
 
-/** A round axis maximum at or above `v` (1, 2, 5 × 10ⁿ). */
+/** A round axis maximum at or above `v` (1, 2, 2.5, 5 × 10ⁿ — 2.5 only where
+ *  it is a whole number): 23 tops at 25, not 50, so the busiest column fills
+ *  its row instead of half of it. */
 export function niceMax(v: number): number {
   if (v <= 0) return 1;
   const p = 10 ** Math.floor(Math.log10(v));
   const f = v / p;
+  if (f > 2 && f <= 2.5 && Number.isInteger(2.5 * p)) return 2.5 * p;
   return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
 }

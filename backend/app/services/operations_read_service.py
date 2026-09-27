@@ -206,6 +206,9 @@ class InvestigationQueueResponse(BaseModel):
     untouched_total: int = 0
     queue_total: int = 0
     tiers: List[str] = Field(default_factory=list)
+    #: Hosts per tier, aligned with ``tiers`` (v2.427.0) — they add up to
+    #: ``queue_total``.  Window sums in the ranking pass: no extra statement.
+    tier_counts: List[int] = Field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -379,7 +382,7 @@ _NEW_HOST_DAYS = 7
 
 
 def compute_investigation_queue(
-    db: Session, project: Project, limit: int = 25,
+    db: Session, project: Project, limit: int = 25, tier: Optional[int] = None,
 ) -> InvestigationQueueResponse:
     """Hosts nobody has touched that carry an observed weakness or a
     relevant change — "what should I investigate next?" before anyone has
@@ -411,7 +414,9 @@ def compute_investigation_queue(
     untouched_total = int(db.query(func.count(models.Host.id)).filter(*untouched_filter).scalar() or 0)
     tiers = [label for _, label in INVESTIGATE_TIERS]
     if not untouched_total:
-        return InvestigationQueueResponse(untouched_total=0, queue_total=0, tiers=tiers)
+        return InvestigationQueueResponse(
+            untouched_total=0, queue_total=0, tiers=tiers, tier_counts=[0] * len(tiers),
+        )
 
     now = datetime.now(timezone.utc)
     new_cutoff = now - timedelta(days=_NEW_HOST_DAYS)   # same test as `_is_new`
@@ -516,15 +521,37 @@ def compute_investigation_queue(
         .filter(*untouched_filter)
         .subquery("per_host")
     )
-    ranked_rows = (
-        db.query(per_host, func.count().over().label("queue_total"))
+    # The totals are windows over the WHOLE queue, taken before `tier`
+    # narrows the rows (v2.427.0): picking a tier never changes the counts.
+    counted = (
+        db.query(
+            per_host, func.count().over().label("queue_total"),
+            *[
+                func.sum(case((per_host.c.tier == k, 1), else_=0)).over().label(f"tier_{k}")
+                for k, _ in INVESTIGATE_TIERS
+            ],
+        )
         .filter(per_host.c.tier.isnot(None))
+        .subquery("counted")
+    )
+    ranked = db.query(counted)
+    if tier is not None:
+        ranked = ranked.filter(counted.c.tier == tier)
+    ranked_rows = (
         # Most recently seen first within a tier; a host never seen last.
-        .order_by(per_host.c.tier, per_host.c.last_seen.desc().nullslast(), per_host.c.hid)
+        ranked.order_by(counted.c.tier, counted.c.last_seen.desc().nullslast(), counted.c.hid)
         .limit(limit)
         .all()
     )
-    queue_total = int(ranked_rows[0].queue_total) if ranked_rows else 0
+    totals_row = ranked_rows[0] if ranked_rows else None
+    if totals_row is None and tier is not None:
+        # The chosen tier is empty: the totals still describe the queue.
+        totals_row = db.query(counted).limit(1).first()
+    queue_total = int(totals_row.queue_total) if totals_row else 0
+    tier_counts = [
+        int(getattr(totals_row, f"tier_{k}") or 0) if totals_row else 0
+        for k, _ in INVESTIGATE_TIERS
+    ]
     chosen_ids = [r.hid for r in ranked_rows]
     crit = {r.hid: int(r.n_crit) for r in ranked_rows if r.n_crit}
     crit_exploit = {r.hid: int(r.n_crit_expl) for r in ranked_rows if r.n_crit_expl}
@@ -688,6 +715,7 @@ def compute_investigation_queue(
         untouched_total=untouched_total,
         queue_total=queue_total,
         tiers=tiers,
+        tier_counts=tier_counts,
     )
 
 
