@@ -94,17 +94,92 @@ def _is_credential(details: str) -> bool:
     return (':' in token or '\\' in token) and '(' not in token and ')' not in token
 
 
+# v2.430.0 — nxc's `nfs --shares` table (nxc/protocols/nfs.py `shares()`,
+# NetExec main 2026-09-28): a header "UID  Perms  Storage Usage  Share  Access
+# List", a rule, then one row per export — mounted, "0  rw-  1.2GB/9.8GB
+# /srv  10.0.0.0/24, 10.1.0.0/24"; not mountable, "-  ---  ---/---  /srv
+# Everyone".  The access list is the export's groups joined with ", ", and
+# "Everyone" when it names none.  Only the SMB header was recognised, so every
+# row was dropped (production 2026-09-28: 2 364 lines over ~600 NFS servers).
+_NFS_ANY_HOST = {'everyone', '*'}
+_NFS_NO_NETWORK = 'no network'
+
+
+def _nfs_share_row(rest: str, share_at: int, access_at: int) -> Optional[Dict[str, Any]]:
+    """One export row of the NFS share table, cut at the header's offsets.
+    A share longer than nxc's 30-character column pushes the access list
+    right, so it is then cut at the first space after the share instead."""
+    head = rest[:share_at].split()
+    tail = rest[share_at:]
+    if len(head) < 3 or not tail.strip():
+        return None
+    uid, perms, storage = head[0], head[1], ' '.join(head[2:])
+    width = access_at - share_at
+    if len(tail) > width and tail[width - 1] == ' ':
+        name, access = tail[:width].strip(), tail[width:].strip()
+    else:
+        name, _, access = tail.strip().partition(' ')
+        access = access.strip()
+    if not name:
+        return None
+    access_list = [] if access.lower() == _NFS_NO_NETWORK else [a.strip() for a in access.split(',') if a.strip()]
+    mounted = uid != '-'
+    return {
+        'protocol': 'nfs',
+        'name': name,
+        # nxc's r/w/x for the UID it mounted as; nothing when it could not mount.
+        'permissions': perms if mounted else None,
+        # Read after the permissions ("rwx · mountable from: …"), so the
+        # access list is named for what it is, not "access" twice.
+        'remark': ' · '.join([
+            'nxc could not mount it' if not mounted else f"{storage} used",
+            f"mountable from: {', '.join(access_list) or 'no network'}",
+        ]),
+        'uid': uid if mounted else None,
+        'storage': storage if mounted else None,
+        'access_list': access_list,
+    }
+
+
+def nfs_open_exports(shares: Any) -> List[str]:
+    """The NFS exports whose access list lets any host mount them."""
+    if not isinstance(shares, list):
+        return []
+    return [
+        str(s.get('name')) for s in shares
+        if isinstance(s, dict) and s.get('protocol') == 'nfs'
+        and any(str(a).lower() in _NFS_ANY_HOST for a in (s.get('access_list') or []))
+    ]
+
+
+def netexec_check_evidence(check_id: str, line: str, shares: Any = None) -> str:
+    """What a catalog observation shows as the tool's output: the line, or
+    for an open NFS export, the exports themselves (the banner names none)."""
+    if check_id == 'nfs_export_any_host':
+        return f"NFS exports any host may mount (nxc --shares): {', '.join(nfs_open_exports(shares))}"
+    return line
+
+
 def netexec_line_checks(
     protocol: Optional[str], line: str, *, username: Optional[str] = None,
     auth_success: Optional[bool] = None, smbv1: Optional[bool] = None,
+    shares: Any = None,
 ) -> List[str]:
     """The catalog checks one NetExec result reports (v2.412.0; a pure
     function since v2.414.0 so the backfill reads stored rows by the same
     rule).  The flags are read from the line itself, as nxc prints them
-    (nxc/protocols/{smb,vnc,ftp}.py)."""
+    (nxc/protocols/{smb,vnc,ftp,nfs}.py); an NFS row's export table too."""
     protocol = (protocol or '').lower()
     low = (line or '').lower()
     found: List[str] = []
+    if protocol == 'nfs':
+        # "(root escape:True)": nxc read the server's root filesystem through
+        # an export.  False and None (no NFSv3 to try) are not findings.
+        if '(root escape:true)' in low:
+            found.append('nfs_root_escape')
+        if nfs_open_exports(shares):
+            found.append('nfs_export_any_host')
+        return found
     if protocol == 'smb':
         if 'signing:false' in low:
             found.append('smb_signing_not_required')
@@ -176,6 +251,9 @@ def uninterpreted_kind(host_data: Dict[str, Any], line: str) -> Optional[str]:
         return None
     if netexec_line_checks(protocol, line, smbv1=host_data.get('smbv1')):
         return None
+    # The NFS banner's claim is its root escape, which is read (v2.430.0).
+    if protocol == 'nfs' and 'supported nfs versions' in line.lower():
+        return None
     status = re.search(r'\s\[([^\]]+)\]\s', f' {line} ')
     claim = (status and status.group(1).strip() in ('+', '!')) or _HAS_FLAG.search(line)
     return 'text_only' if claim else None
@@ -187,10 +265,15 @@ def writable_share(shares: Any) -> Optional[bool]:
     spider_plus listing (an object) says nothing about permissions."""
     if not isinstance(shares, list):
         return None
-    return any(
-        'WRITE' in str((s or {}).get('permissions') or '').upper()
-        for s in shares if isinstance(s, dict)
-    )
+    return any(_share_writable(s) for s in shares if isinstance(s, dict))
+
+
+def _share_writable(share: Dict[str, Any]) -> bool:
+    permissions = str(share.get('permissions') or '')
+    if share.get('protocol') == 'nfs':
+        # nxc's "rwx" triple for the UID it mounted the export as.
+        return 'w' in permissions
+    return 'WRITE' in permissions.upper()
 
 
 class NetexecParser:
@@ -382,8 +465,11 @@ class NetexecParser:
         # prefixed "SMB ip port host".  Only the heading line matched a
         # pattern, so the shares were dropped.  The columns are cut at the
         # header's offsets: an empty Permissions cell is just spaces.
-        shares: Dict[str, List[Dict[str, Any]]] = {}
-        share_columns: Dict[str, Tuple[int, int]] = {}
+        # v2.430.0 — keyed by (ip, port), and the NFS export table read too:
+        # one host's SMB and NFS tables are two services' shares.
+        shares: Dict[Tuple[str, int], List[Dict[str, Any]]] = {}
+        # ip → (kind, port, first cut, second cut) of the table open for it.
+        share_columns: Dict[str, Tuple[str, int, int, int]] = {}
         # v2.418.0 — the lines not interpreted, as redacted shapes (see
         # app/services/line_shapes.py), for the import's receipt.  Names seen
         # in the host column are replaced wherever they recur.
@@ -401,30 +487,48 @@ class NetexecParser:
 
             row = _TABLE_ROW.match(line)
             if row:
-                ip, rest = row.group(2), row.group(4)
+                ip, port, rest = row.group(2), int(row.group(3)), row.group(4)
                 if rest.startswith('Share') and 'Permissions' in rest:
-                    share_columns[ip] = (rest.index('Permissions'), rest.index('Remark') if 'Remark' in rest else len(rest))
-                    shares.setdefault(ip, [])
+                    share_columns[ip] = ('smb', port, rest.index('Permissions'),
+                                         rest.index('Remark') if 'Remark' in rest else len(rest))
+                    shares.setdefault((ip, port), [])
+                    continue
+                if (row.group(1).upper() == 'NFS' and rest.startswith('UID')
+                        and 'Storage Usage' in rest and 'Access List' in rest):
+                    share_columns[ip] = ('nfs', port, rest.index('Share'), rest.index('Access List'))
+                    shares.setdefault((ip, port), [])
                     continue
                 if ip in share_columns:
+                    kind, table_port, first_cut, second_cut = share_columns[ip]
                     if set(rest.replace(' ', '')) <= {'-'}:
                         continue
-                    perm_at, remark_at = share_columns[ip]
-                    name = rest[:perm_at].strip()
+                    if kind == 'nfs':
+                        entry = _nfs_share_row(rest, first_cut, second_cut)
+                        if entry:
+                            shares[(ip, table_port)].append(entry)
+                        else:
+                            gaps.append(('dropped_table_row', line))
+                        continue
+                    name = rest[:first_cut].strip()
                     if name:
-                        shares[ip].append({
+                        shares[(ip, table_port)].append({
                             'name': name,
-                            'permissions': rest[perm_at:remark_at].strip() or None,
-                            'remark': rest[remark_at:].strip() or None,
+                            'permissions': rest[first_cut:second_cut].strip() or None,
+                            'remark': rest[second_cut:].strip() or None,
                         })
                     continue
             else:
                 # The table ends at the IP's next status line.  Left open, every
                 # later bracket-less row for the IP — --rid-brute, --users,
                 # --pass-pol, a second run appended to the log — was stored as a
-                # share ("500: LAB\Adminis", review 2026-09-23 C6d).
+                # share ("500: LAB\Adminis", review 2026-09-23 C6d).  nxc
+                # reports an export it could not list mid-table ("[-] Failed
+                # to list share: …") and goes on with the next row.
                 status = _STATUS_ROW.match(line)
-                if status:
+                if status and not (
+                    share_columns.get(status.group(2), ('',))[0] == 'nfs'
+                    and 'failed to list share:' in line.lower()
+                ):
                     share_columns.pop(status.group(2), None)
 
             # Try different patterns
@@ -482,6 +586,14 @@ class NetexecParser:
         # "hung" from the UI, and kept writing to the end regardless
         # (production, 2026-09-26): report_progress raises ParseFailure once
         # the job is cancelled, which stops the parse here.
+        # Each table belongs to the service it was read from: the line on its
+        # port that describes the host (the SMB banner) or the first one.
+        for (ip, port), table in shares.items():
+            on_port = [o for o in observations.get(ip, []) if o.get('port') == port]
+            target = next((o for o in on_port if o.get('os_name')), on_port[0] if on_port else None)
+            if table and target is not None:
+                target['shares'] = table
+
         from app.services.ingestion_service import report_progress
         total_hosts = len(observations)
         for index, ip_observations in enumerate(observations.values(), start=1):
@@ -493,9 +605,7 @@ class NetexecParser:
             primary = next(
                 (o for o in ip_observations if o.get('os_name')), ip_observations[0]
             )
-            if shares.get(primary['ip_address']):
-                primary['shares'] = shares[primary['ip_address']]
-            host = self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
+            host =self._process_host_with_confidence(primary, scan_id, primary['raw_line'])
             seen_ports = {primary.get('port')}
             for observation in ip_observations:
                 if observation is primary:
@@ -537,14 +647,16 @@ class NetexecParser:
         # v2.422.0 — the port this parse already resolved, when it has; the
         # catalog write looked it up again for every host.
         port_id = self._port_ids.get((host.id, host_data.get('port')))
+        shares = host_data.get('shares')
         for check_id in netexec_line_checks(
             host_data.get('protocol'), line, username=host_data.get('username'),
             auth_success=host_data.get('auth_success'), smbv1=host_data.get('smbv1'),
+            shares=shares,
         ):
             record_misconfig(
                 self.db, check_id=check_id, host_id=host.id, scan_id=scan_id,
-                source=VulnerabilitySource.NETEXEC, port_number=host_data.get('port'), evidence=line,
-                port_id=port_id,
+                source=VulnerabilitySource.NETEXEC, port_number=host_data.get('port'),
+                evidence=netexec_check_evidence(check_id, line, shares), port_id=port_id,
             )
 
     def _parse_smb_enum_line(self, match, full_line: str) -> Dict[str, Any]:

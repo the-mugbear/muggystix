@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_confidence import NetexecResult
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.netexec_parser import netexec_line_checks
+from app.parsers.netexec_parser import netexec_check_evidence, netexec_line_checks
 from app.parsers.nse_vulns import script_text_check
 from app.services import smb_signing as smb_signing_states
 from app.db.models_findings import Finding
@@ -69,13 +69,14 @@ def backfill_misconfigs(db: Session, project_id: Optional[int] = None) -> Dict[s
         else:
             checks = netexec_line_checks(
                 row.protocol, row.raw_output or "", username=row.username,
-                auth_success=row.auth_success, smbv1=row.smbv1,
+                auth_success=row.auth_success, smbv1=row.smbv1, shares=row.shares,
             )
             source = VulnerabilitySource.NETEXEC
         for check_id in checks:
             record_misconfig(
                 db, check_id=check_id, host_id=row.host_id, scan_id=row.scan_id, source=source,
-                port_number=row.port, evidence=row.raw_output,
+                port_number=row.port,
+                evidence=netexec_check_evidence(check_id, row.raw_output or "", row.shares),
             )
             counts[check_id] += 1
 

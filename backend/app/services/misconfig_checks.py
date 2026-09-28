@@ -126,6 +126,28 @@ CHECKS: Dict[str, MisconfigCheck] = {c.id: c for c in (
         description="The FTP service accepted the anonymous account.",
         solution="Disable anonymous FTP unless the service is meant to be public.",
     ),
+    # v2.430.0 — NetExec's NFS enumeration (nxc/protocols/nfs.py), whose
+    # results were dropped until now.
+    MisconfigCheck(
+        id="nfs_root_escape",
+        title="NFS export allows escape to the root filesystem",
+        severity=VulnerabilitySeverity.HIGH,
+        description=(
+            "NetExec read the server's root filesystem through an NFS export: the "
+            "server accepted a file handle outside the exported directory (\"root escape:True\")."
+        ),
+        solution=(
+            "Export whole filesystems rather than subdirectories, or enable subtree_check, "
+            "and limit each export to the hosts that need it."
+        ),
+    ),
+    MisconfigCheck(
+        id="nfs_export_any_host",
+        title="NFS export open to any host",
+        severity=VulnerabilitySeverity.MEDIUM,
+        description="An NFS export's access list names no hosts or networks, so any host may mount it.",
+        solution="Restrict each export to the hosts or networks that need it (/etc/exports).",
+    ),
 )}
 
 

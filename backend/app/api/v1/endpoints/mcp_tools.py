@@ -259,8 +259,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "end_session": {
         "description": (
-            "End your session — the LAST call you make (file any feedback you have "
-            "not filed yet first; the key dies with this call). It "
+            "End your session — the LAST call you make, and only when the operator "
+            "says they are finished (finishing a task is not that: report and wait); "
+            "file any feedback you have not filed yet first; the key dies with this call. It "
             "revokes your key and marks the session ended so the operator's Agent "
             "Activity page stops showing it as running. Refused (409, naming the ids) "
             "while a reconnaissance or execution phase is still open: complete those "

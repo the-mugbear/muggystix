@@ -71,7 +71,9 @@ A 403 is different: it means your key is valid but not allowed to do that. Do no
 
 Your session does not end on its own. Recon and execution runs have their own `/complete`; the **session** ends only when you call `POST /api/v1/agent/session/end` (MCP `end_session`), the operator ends it from Agent Activity, or it lapses days later. Until one of those happens the operator's Agent Activity page shows it as running.
 
-When the operator says you are done, or you have nothing left to do:
+End it only when the operator tells you they are finished. Finishing a task is not that: report what you did and wait for the next instruction. A session opened with no task yet is waiting for one, not done — after the setup steps, say you are ready and wait. Ending early revokes your key, and the operator's next question fails with a `401` they cannot recover from without starting a new session.
+
+When the operator says they are finished:
 
 1. Close every open phase — `POST /agent/recon/complete` for a reconnaissance run, `POST /agent/execution-sessions/{id}/complete` for an execution run. `/session/end` refuses with `409` while any is open and names the ids.
 2. If you have filed no feedback in this session yet, file it now (`POST /agent/feedback` / `submit_feedback`). Feedback belongs at the moment of friction (see below), so by this point there is usually nothing left to add.
@@ -976,7 +978,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/identity` | **Who am I** — `session_id`, `can_write_project_data`, `environment_probed`, `key_expires_at` / `renew_path` / `renewable_until`, and **`open_phases`**: the recon and execution runs this session has open. Read it first after a resume — it is the only way to find the runs a previous key left open. |
 | POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
 | POST | `/agent/session/renew` | Extend your key's deadline (same key; accepts an already-expired key while the session is under its lifetime cap) |
-| POST | `/agent/session/end` | **End the session — the last call you make.** Revokes your key; `409` while a recon / execution phase is still open (complete those first). Over MCP: `end_session`. Optional `notes` |
+| POST | `/agent/session/end` | **End the session — the last call you make, only when the operator says they are finished.** Revokes your key; `409` while a recon / execution phase is still open (complete those first). Over MCP: `end_session`. Optional `notes` |
 | POST | `/agent/tool-suggestions` | Record a request for a tool the approved set does not cover (201). Do this instead of substituting a tool. |
 
 <!-- agents:end -->

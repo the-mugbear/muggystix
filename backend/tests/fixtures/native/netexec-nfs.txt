@@ -1,0 +1,30 @@
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [*] Supported NFS versions: (2, 3, 4) (root escape:True)
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [*] Enumerating NFS Shares
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33mUID        Perms    Storage Usage    Share                          Access List    [0m
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m---        -----    -------------    -----                          -----------    [0m
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m0          rwx      1.2GB/9.8GB      /srv/export                    Everyone       [0m
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m1000       r-x      310.5MB/9.8GB    /home                          10.8.0.0/16, 10.9.0.0/16[0m
+[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m-          ---      ---/---          /backup                        10.8.20.10     [0m
+NFS                      10.8.20.6       20048  NONE             [*] Supported NFS versions: (3, 4) (root escape:False)
+NFS                      10.8.20.6       20048  NONE             [*] Enumerating NFS Shares
+NFS                      10.8.20.6       20048  NONE             UID        Perms    Storage Usage    Share                          Access List    
+NFS                      10.8.20.6       20048  NONE             ---        -----    -------------    -----                          -----------    
+NFS                      10.8.20.6       20048  NONE             -          ---      ---/---          /data                          10.1.0.0/16, 10.2.0.0/16, 10.3.0.0/16, 10.4.0.0/16, 10.5.0.0/16, 10.6.0.0/16, 10.7.0.0/16, 10.8.0.0/16, 10.9.0.0/16, 10.10.0.0/16, 10.11.0.0/16, 10.12.0.0/16, 10.13.0.0/16, 10.14.0.0/16, 10.15.0.0/16, 10.16.0.0/16, 10.17.0.0/16, 10.18.0.0/16, 10.19.0.0/16, 10.20.0.0/16, 10.21.0.0/16, 10.22.0.0/16, 10.23.0.0/16, 10.24.0.0/16, 10.25.0.0/16
+NFS                      10.8.20.6       20048  NONE             [-] Failed to list share: /scratch - RPC timeout
+NFS                      10.8.20.6       20048  NONE             0          r--      0B/50.0GB        /var/lib/exports/projects/archive-2024 10.8.20.0/24   
+NFS                      10.8.20.6       20048  NONE             [*] Enumerating NFS Shares Directories
+NFS                      10.8.20.6       20048  NONE             [+] /var/lib/exports/projects/archive-2024
+NFS                      10.8.20.6       20048  NONE             UID        Perms    File Size      File Path                                     Access List    
+NFS                      10.8.20.6       20048  NONE             ---        -----    ---------      ---------                                     -----------    
+NFS                      10.8.20.6       20048  NONE             0          r--      4.0KB          /var/lib/exports/projects/archive-2024/readme 10.8.20.0/24   
+NFS                      10.8.20.7       635    NONE             [*] Supported NFS versions: (4) (root escape:None)
+SMB                      10.8.20.8       445    FILES01          [*] Unix - Samba (name:FILES01) (domain:lab.local) (signing:True) (SMBv1:False)
+SMB                      10.8.20.8       445    FILES01          [*] Enumerated shares
+SMB                      10.8.20.8       445    FILES01          Share           Permissions     Remark
+SMB                      10.8.20.8       445    FILES01          -----           -----------     ------
+SMB                      10.8.20.8       445    FILES01          public          READ            Public files
+NFS                      10.8.20.8       2049   FILES01          [*] Supported NFS versions: (3, 4) (root escape:False)
+NFS                      10.8.20.8       2049   FILES01          [*] Enumerating NFS Shares
+NFS                      10.8.20.8       2049   FILES01          UID        Perms    Storage Usage    Share                          Access List    
+NFS                      10.8.20.8       2049   FILES01          ---        -----    -------------    -----                          -----------    
+NFS                      10.8.20.8       2049   FILES01          0          r-x      2.0GB/20.0GB     /exports/pub                   *              

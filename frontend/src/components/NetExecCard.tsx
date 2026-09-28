@@ -246,7 +246,13 @@ const NetExecResultRow: React.FC<{ result: NetexecResult; seenCount?: number }> 
                 {share.files ? (
                   <ShareFiles share={share.name} files={share.files} />
                 ) : share.detail && (
-                  <span className="min-w-0 flex-1 truncate text-caption text-muted-foreground">
+                  // v5.310.2 — wraps (3 lines, the rest on hover): an NFS
+                  // export's access list is what the analyst came for, and a
+                  // one-line truncate cut a 25-network list after the fourth.
+                  <span
+                    className="min-w-0 flex-1 break-words line-clamp-3 text-caption text-muted-foreground"
+                    title={share.detail}
+                  >
                     {share.detail}
                   </span>
                 )}

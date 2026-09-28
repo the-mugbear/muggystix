@@ -3508,6 +3508,39 @@
           "note": "Listed on the host; a share with WRITE sets the writable-share flag (filter has:writable_share)."
         },
         {
+          "what": "NFS exports with permissions and access list",
+          "input": "the `nfs --shares` table (UID / Perms / Storage Usage / Share / Access List)",
+          "level": "field",
+          "stored_as": [
+            "NetexecResult.writable_share",
+            "NetexecResult.shares"
+          ],
+          "shown": "Host inspector › SMB / AD enumeration › shares (the NFS row); Host inspector › SMB / AD enumeration · Filter: has:writable_share",
+          "note": "v2.430.0 — each export with nxc's r/w/x for the UID it mounted as, its storage use and the hosts it may be mounted from (\"nxc could not mount it\" when it could not); a w sets the writable-share flag. Before, only the SMB table was recognised and every NFS row was dropped. Each service keeps its own table: a host's SMB shares and NFS exports are no longer one list."
+        },
+        {
+          "what": "NFS export open to any host",
+          "input": "`Everyone` or `*` in an export's Access List (the `nfs --shares` table)",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "NetexecResult.shares"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › shares · Filter: vuln:, check:nfs_export_any_host · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "v2.430.0 — scanner observation \"NFS export open to any host\" (medium) on the NFS port, naming the exports."
+        },
+        {
+          "what": "NFS root escape",
+          "input": "`(root escape:True)` on the NFS banner: `NFS <ip> 2049 <name> [*] Supported NFS versions: (3, 4) (root escape:True)`",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "NetexecResult.raw_output"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln:, check:nfs_root_escape · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "v2.430.0 — scanner observation \"NFS export allows escape to the root filesystem\" (high) on the NFS port. `root escape:False` and `None` (no NFSv3 to try) are not findings; the NFS versions stay in the line."
+        },
+        {
           "what": "spider_plus file listing",
           "input": "spider_plus `<ip>.json` ({share: {path: {size, mtime}}})",
           "level": "text",
@@ -3518,14 +3551,14 @@
           "note": "The address comes from the file name. Each share's files are listed on the host with their sizes."
         },
         {
-          "what": "Protocol banner flags other than SMB (LDAP signing / channel binding, RDP NLA, SSH / FTP / MSSQL / WinRM / VNC details)",
+          "what": "Protocol banner flags other than SMB (LDAP signing / channel binding, RDP NLA, SSH / FTP / MSSQL / WinRM / VNC details, NFS versions)",
           "input": "e.g. `LDAP … (signing:None) (channel binding:No TLS cert)`, `RDP … (nla:False)`",
           "level": "text",
           "stored_as": [
             "NetexecResult.raw_output"
           ],
           "shown": "Host inspector › SMB / AD enumeration › the tool's line",
-          "note": "Only SMB banners are interpreted; every other banner line is kept as text."
+          "note": "Only SMB banners, VNC's No Auth and NFS's root escape are interpreted; every other banner line is kept as text."
         },
         {
           "what": "VNC with no authentication",
@@ -3596,10 +3629,11 @@
       "gaps": [
         "Module results (Zerologon, PetitPotam, noPac, ms17-010 and others) are not parsed: kept as the line, or dropped; lines inside an open share table can still be read as a share.",
         "LDAP signing / channel binding and RDP NLA are not interpreted.",
+        "The NFS `--enum-shares` directory listing (UID / Perms / File Size / File Path) is not read; its rows are dropped.",
         "Each import lists the lines it did not interpret — dropped, kept only as text, or a module's result — as redacted shapes on Ingestion Results (v2.418.0), so these gaps can be measured on real output without the file."
       ],
       "unverified": [
-        "Module, LDAP and RDP line formats are taken from knowledge of nxc; the repository has no captures of them. SMB, VNC, FTP and SSH lines are checked against captures, the nxc wiki and NetExec's protocol source (main, 2026-09-25)."
+        "Module, LDAP and RDP line formats are taken from knowledge of nxc; the repository has no captures of them. SMB, VNC, FTP and SSH lines are checked against captures, the nxc wiki and NetExec's protocol source (main, 2026-09-25). NFS lines are generated from NetExec's own format strings (main, 2026-09-28) and match the redacted shapes of a production import; there is no raw capture."
       ]
     },
     {

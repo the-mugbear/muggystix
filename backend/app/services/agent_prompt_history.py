@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "2.13.1",
+        "app_version": "2.430.0",
+        "summary": (
+            "End the session only when the operator says they are finished. "
+            "The prompt, guide and end_session tool said 'or you have nothing "
+            "left to do', so an agent handed the prompt with no task ended its "
+            "own session 54 s after connecting (prod 2026-09-28) and the "
+            "operator's next question failed with an unrecoverable 401. "
+            "Finishing a task is not the end: report and wait; a session with "
+            "no task yet says it is ready and waits."
+        ),
+    },
+    {
         "version": "2.13.0",
         "app_version": "2.429.1",
         "summary": (
