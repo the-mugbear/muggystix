@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
-"""Correct NetExec rows stored before v2.428.4: command/module results stored
-as logins, and hosts named "None".  Dry run unless --apply; idempotent.
+"""Correct NetExec rows stored by older parser rules.  Dry run unless --apply; idempotent.
+
+  * before v2.428.4: command/module results stored as logins, hosts named "None";
+  * before v2.430.1: the NFS mount daemon's ports (nxc logs NFS lines with
+    them) stored as an "nfs" service — renamed "mountd" when only NetExec
+    named them.
 
     docker compose exec backend python scripts/repair_netexec_results.py [--project ID] [--apply]
 
-See app/services/netexec_repair.py for the rule (it only clears, never invents).
+See app/services/netexec_repair.py for the rules (they only clear or correct
+what NetExec itself wrote; another tool's identification is never touched).
 """
 import argparse
 import sys
@@ -13,7 +18,7 @@ sys.path.insert(0, "/app")
 
 from app.db.session import SessionLocal  # noqa: E402
 from app.db import model_registry  # noqa: E402,F401
-from app.services.netexec_repair import repair_netexec_results  # noqa: E402
+from app.services.netexec_repair import repair_netexec_results, repair_nfs_mount_ports  # noqa: E402
 
 
 def main() -> int:
@@ -24,6 +29,7 @@ def main() -> int:
     db = SessionLocal()
     try:
         counts = repair_netexec_results(db, project_id=args.project, apply=args.apply)
+        counts.update(repair_nfs_mount_ports(db, project_id=args.project, apply=args.apply))
         if args.apply:
             db.commit()
     finally:

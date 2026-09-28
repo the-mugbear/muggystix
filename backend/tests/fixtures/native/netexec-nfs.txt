@@ -1,10 +1,10 @@
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [*] Supported NFS versions: (2, 3, 4) (root escape:True)
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [*] Enumerating NFS Shares
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33mUID        Perms    Storage Usage    Share                          Access List    [0m
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m---        -----    -------------    -----                          -----------    [0m
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m0          rwx      1.2GB/9.8GB      /srv/export                    Everyone       [0m
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m1000       r-x      310.5MB/9.8GB    /home                          10.8.0.0/16, 10.9.0.0/16[0m
-[1m[34mNFS[0m         10.8.20.5       2049   NONE             [1m[33m-          ---      ---/---          /backup                        10.8.20.10     [0m
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [*] Supported NFS versions: (2, 3, 4) (root escape:True)
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [*] Enumerating NFS Shares
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [1m[33mUID        Perms    Storage Usage    Share                          Access List    [0m
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [1m[33m---        -----    -------------    -----                          -----------    [0m
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [1m[33m0          rwx      1.2GB/9.8GB      /srv/export                    Everyone       [0m
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [1m[33m1000       r-x      310.5MB/9.8GB    /home                          10.8.0.0/16, 10.9.0.0/16[0m
+[1m[34mNFS[0m         10.8.20.5       32767  NONE             [1m[33m-          ---      ---/---          /backup                        10.8.20.10     [0m
 NFS                      10.8.20.6       20048  NONE             [*] Supported NFS versions: (3, 4) (root escape:False)
 NFS                      10.8.20.6       20048  NONE             [*] Enumerating NFS Shares
 NFS                      10.8.20.6       20048  NONE             UID        Perms    Storage Usage    Share                          Access List    

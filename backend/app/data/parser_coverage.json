@@ -3440,7 +3440,7 @@
             "Port.state"
           ],
           "shown": "Host inspector › Ports table; Hosts list › Exposure chips + open count; Scan page ports table · Filter: port:, exploitport:, has:open_ports, has:cleartext · Also: Evidence web_tls / auth_smb_ad eligibility; Segments ports of interest",
-          "note": "The protocol token becomes the service name (smb, ldap, winrm, mssql, vnc…), recorded open."
+          "note": "The protocol token becomes the service name (smb, ldap, winrm, mssql, vnc…), recorded open. v2.430.1 — except NFS: nxc logs its NFS lines with the mount daemon's port (a dynamic one such as 20048 or 32767), so that port is recorded as mountd, and nfs only when it is 2049."
         },
         {
           "what": "Successful login",
@@ -3527,7 +3527,7 @@
             "NetexecResult.shares"
           ],
           "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › shares · Filter: vuln:, check:nfs_export_any_host · Also: Patterns insight: vuln monoculture; promoted to a finding",
-          "note": "v2.430.0 — scanner observation \"NFS export open to any host\" (medium) on the NFS port, naming the exports."
+          "note": "v2.430.0 — scanner observation \"NFS export open to any host\" (medium), naming the exports. On 2049/tcp when the host has it recorded open, else on the mount daemon's port nxc reached (v2.430.1 — it was always the latter, a port the host's scanned list usually lacked)."
         },
         {
           "what": "NFS root escape",
@@ -3538,7 +3538,7 @@
             "NetexecResult.raw_output"
           ],
           "shown": "Host inspector › Scanner observations; Findings › Scanner observations view; Host inspector › SMB / AD enumeration › the tool's line · Filter: vuln:, check:nfs_root_escape · Also: Patterns insight: vuln monoculture; promoted to a finding",
-          "note": "v2.430.0 — scanner observation \"NFS export allows escape to the root filesystem\" (high) on the NFS port. `root escape:False` and `None` (no NFSv3 to try) are not findings; the NFS versions stay in the line."
+          "note": "v2.430.0 — scanner observation \"NFS export allows escape to the root filesystem\" (high), on 2049/tcp when the host has it recorded open, else on the mount daemon's port nxc reached. `root escape:False` and `None` (no NFSv3 to try) are not findings; the NFS versions stay in the line."
         },
         {
           "what": "spider_plus file listing",
