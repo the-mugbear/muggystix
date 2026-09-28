@@ -17,6 +17,9 @@ tests make the next drift fail CI instead:
      agent-workflow tags are all described.
   3. Every agent endpoint documented in AGENTS.md's API-reference tables
      exists as a real route.
+  4. Every operator script in scripts/ is described in scripts/README.md
+     (2026-09-28: the NetExec repair grew a second job and nothing forced
+     its documentation to follow).
 """
 from __future__ import annotations
 
@@ -247,4 +250,35 @@ def test_documented_agent_endpoints_exist_as_routes():
     assert not missing, (
         "AGENTS.md documents agent endpoints that no longer exist as routes "
         f"(doc drift): {sorted(missing)}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# 4. scripts/README.md describes every operator script
+# ---------------------------------------------------------------------------
+
+def _scripts_dir():
+    """scripts/ as the backend image sees it (compose bind-mounts it at
+    /app/scripts), or beside backend/ in a checkout."""
+    import pathlib
+
+    here = pathlib.Path(__file__).resolve()
+    for candidate in (here.parents[1] / "scripts", here.parents[2] / "scripts"):
+        if (candidate / "README.md").is_file():
+            return candidate
+    return None
+
+
+def test_every_script_is_described_in_the_scripts_readme():
+    scripts = _scripts_dir()
+    if scripts is None:
+        pytest.skip("scripts/ is not mounted here")
+    readme = (scripts / "README.md").read_text(encoding="utf-8")
+    undocumented = sorted(
+        p.name for p in scripts.iterdir()
+        if p.is_file() and p.suffix in (".py", ".sh") and p.name not in readme
+    )
+    assert not undocumented, (
+        f"scripts/README.md does not describe {undocumented}: a new or changed "
+        "script is documented in the same commit (what it does, how to run it)"
     )

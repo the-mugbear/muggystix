@@ -225,7 +225,16 @@ port (`445`/SMB etc.) + a `NetexecResult` row (`auth_success`, `username`,
 `raw_output`) + per-field `HostConfidence`/`PortConfidence` and
 `ConflictHistory` rows. **Catalog observations** through `record_misconfig`:
 SMB signing not required, SMBv1 enabled, SMB null session, VNC without
-authentication, anonymous FTP. Credentials parsed from
+authentication, anonymous FTP, and (v2.430.0) NFS root escape and NFS export
+open to any host. Share tables are read per (address, port): SMB's
+`Share / Permissions / Remark` and NFS's `UID / Perms / Storage Usage /
+Share / Access List` (each export's r/w/x, storage use and the hosts it may
+be mounted from; a `w` sets `writable_share`). **An NFS line's port is the
+mount daemon's, not NFS's** — nxc connects to the portmapper and logs with
+mountd's dynamic port (20048, 32767, …; `nxc/protocols/nfs.py`
+`create_conn_obj`) — so it is recorded as service `mountd` (2049 stays
+`nfs`), and NFS observations go on 2049/tcp when the host has it recorded
+open, else on that mountd port (v2.430.1). Credentials parsed from
 `DOMAIN\user:pass (flag)`; empty username preserved as a weak-auth/guest
 signal. The lines it drops or keeps only as text are published as redacted
 shapes (`last_parse_stats["uninterpreted"]`, `app/services/line_shapes.py`,

@@ -133,7 +133,8 @@ Every session sees the WHOLE catalogue (67 tools, about 62 KB / ~15k tokens as
 `tools/list` returns it) — nothing is filtered by workflow since v2.337.0.
 Eight of those belong to the session rather than to any phase:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
-**`session_renew`** (same key, later deadline), **`end_session`**,
+**`session_renew`** (same key, later deadline), **`end_session`** (only when
+the operator says they are finished — it revokes the key),
 **`record_environment`** (the one probe), **`read_agent_guide`**,
 **`list_approved_tools`**, **`suggest_tool`** (record a request for a tool the
 approved set doesn't cover) and **`submit_feedback`**.

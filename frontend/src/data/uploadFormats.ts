@@ -147,8 +147,8 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'NetExec (NXC)',
     formats: '.json / .txt',
-    desc: 'SMB and LDAP enumeration lines from the console output (SMB signing posture is recorded), or spider_plus JSON.',
-    hint: '"netexec" or "nxc" in the filename, or the SMB / LDAP column layout in the text.',
+    desc: 'Console output or the --log file: SMB and LDAP enumeration (SMB signing posture is recorded), the SMB --shares table, NFS exports (nfs --shares) with root escape, and logins; or spider_plus JSON.',
+    hint: 'nxc\'s result-line layout for any protocol; "netexec" or "nxc" in the filename is only a hint.',
   },
   {
     tool: 'SMBMap',

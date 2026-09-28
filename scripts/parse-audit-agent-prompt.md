@@ -128,7 +128,9 @@ The problems that matter most, in order:
 1. **Misread** — read, but wrongly. A module's `[+] VULNERABLE` stored as a
    login; an action (`[+] Executed command`, `Uploaded:`) stored as an
    account; a flag stored with the opposite meaning (`signing:False` means
-   signing is *not required*); the wrong port or host.
+   signing is *not required*); the wrong port or host. (Not a misread: an
+   nxc NFS line's port is the mount daemon's, stored as `mountd`, with the
+   NFS weaknesses on 2049/tcp when the host has it.)
 2. **Dropped results** — a result line that is not in BlueStick at all
    (hyphenated module names, IPv6 targets, tables BlueStick does not know).
 3. **Unread claims** — lines kept only as text although they state something

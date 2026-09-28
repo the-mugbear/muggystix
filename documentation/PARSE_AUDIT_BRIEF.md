@@ -40,7 +40,10 @@ BlueStick; the operator carries the finished report out.
    shape), compare each tool line with what BlueStick stored:
    - NetExec / SMBMap: `assist_list_host_access` — `auth_success`, `username`,
      `local_admin`, `smbv1`, `writable_share`, `shares` beside `raw_output`.
-   - Ports and services: `assist_get_host` → `ports`.
+   - Ports and services: `assist_get_host` → `ports`. An nxc NFS line's port
+     is the mount daemon's (nxc logs with it), so it is stored as `mountd`,
+     and NFS weaknesses sit on 2049/tcp when the host has it — that is
+     `correct`, not the wrong port (v2.430.1).
    - Weaknesses: `assist_get_host_vulnerabilities` (scanner observations, with
      `check_id` for catalog checks such as `vnc_no_auth`, `smb_signing_not_required`).
    - Web tools: `assist_list_host_web_interfaces`.
