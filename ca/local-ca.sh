@@ -357,6 +357,35 @@ env_get() {
     { grep -E "^[[:space:]]*${key}=" "$file" || true; } | tail -n 1 | sed -E "s/^[[:space:]]*${key}=//; s/^[\"']//; s/[\"']\$//"
 }
 
+# The deployment folder install writes into: BLUESTICK_DIR when set, else the
+# current directory (the README says to cd there), else the folder above this
+# script.  The script's own location used to be the only candidate, so a copy
+# of ca/ outside the deployment, or a checkout elsewhere, always failed.
+deployment_dir() {
+    local candidates=() c missing report=""
+    if [[ -n "${BLUESTICK_DIR:-}" ]]; then
+        candidates=("$BLUESTICK_DIR")
+    else
+        candidates=("$PWD" "$CA_DIR/..")
+    fi
+    for c in "${candidates[@]}"; do
+        c="$(cd "$c" 2>/dev/null && pwd)" || { report+="
+   $c: does not exist"; continue; }
+        missing=()
+        [[ -f "$c/docker-compose.yml" ]] || missing+=("docker-compose.yml")
+        [[ -f "$c/.env" ]] || missing+=(".env")
+        [[ -d "$c/ssl/certs" ]] || missing+=("ssl/certs/")
+        if (( ${#missing[@]} == 0 )); then
+            echo "$c"
+            return 0
+        fi
+        report+="
+   $c: no ${missing[*]}"
+    done
+    fail "No BlueStick deployment folder found (it needs docker-compose.yml, .env and ssl/certs/):$report
+   cd into the deployment folder first, or set BLUESTICK_DIR=/path/to/deployment."
+}
+
 cmd_install() {
     local src="${1:-}" dry=0
     [[ "${2:-}" == "--dry-run" || "${1:-}" == "--dry-run" ]] && dry=1
@@ -364,10 +393,8 @@ cmd_install() {
     [[ -n "$src" ]] || fail "Usage: ./ca/local-ca.sh install DIR [--dry-run]   (DIR holds networkmapper.crt, networkmapper.key, rootCA.crt)"
     require_openssl
 
-    local root_dir; root_dir="$(cd "$CA_DIR/.." && pwd)"
+    local root_dir; root_dir="$(deployment_dir)"
     step "Install on this BlueStick host ($root_dir)"
-    [[ -f "$root_dir/docker-compose.yml" && -d "$root_dir/ssl/certs" ]] || fail "$root_dir is not a BlueStick deployment folder (no docker-compose.yml or ssl/certs).
-   Run install from the ca/ folder INSIDE the deployment, e.g. /srv/bluestick/ca/local-ca.sh."
     local crt="$src/networkmapper.crt" key="$src/networkmapper.key" ca="$src/rootCA.crt"
     local f
     for f in "$crt" "$key" "$ca"; do [[ -f "$f" ]] || fail "Missing $f"; done

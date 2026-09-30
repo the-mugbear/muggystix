@@ -160,6 +160,15 @@ cd /srv/bluestick
 shred -u /tmp/bluestick-cert/networkmapper.key            # the copy you brought over
 ```
 
+`install` writes into the deployment folder it finds, in this order:
+
+1. `BLUESTICK_DIR`, when set;
+2. the current directory;
+3. the folder above the script.
+
+A folder counts only if it has `docker-compose.yml`, `.env` and `ssl/certs/`. So a copy of `ca/` kept elsewhere works when you run it from the deployment folder, or with
+`BLUESTICK_DIR=/srv/bluestick`. If no folder qualifies, the error names each place it looked and what was missing there.
+
 Before touching anything, `install` checks:
 
 - the key belongs to the certificate;
