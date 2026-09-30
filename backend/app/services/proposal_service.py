@@ -24,14 +24,16 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
 from app.db.models_agent import AgentSession
 from app.db.models_auth import User
 from app.db.models_project import Notification
-from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingStatus
+from app.db.models_findings import (
+    Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
+)
 from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
 )
@@ -299,12 +301,17 @@ def propose_endpoint_status(
 # Deciding
 # ---------------------------------------------------------------------------
 
-def get_proposal(db: Session, project_id: int, proposal_id: int) -> AgentProposal:
-    proposal = (
-        db.query(AgentProposal)
-        .filter(AgentProposal.id == proposal_id, AgentProposal.project_id == project_id)
-        .first()
+def get_proposal(db: Session, project_id: int, proposal_id: int, *, for_update: bool = False) -> AgentProposal:
+    """``for_update`` (deciding) locks the row until the caller commits, so two
+    accepts of one proposal cannot both pass the pending check — without it a
+    proposed finding was created twice.  ``populate_existing``: a row already
+    in the session would otherwise be checked at its pre-lock status."""
+    q = db.query(AgentProposal).filter(
+        AgentProposal.id == proposal_id, AgentProposal.project_id == project_id,
     )
+    if for_update:
+        q = q.with_for_update().populate_existing()
+    proposal = q.first()
     if proposal is None:
         raise HTTPException(status_code=404, detail="Proposal not found in this project")
     return proposal
@@ -329,7 +336,14 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
     if kind == ProposalKind.FINDING_TEXT.value:
         finding = _finding(db, project_id, proposal.finding_id)
         value = edited_value if edited_value is not None else payload.get("value")
-        apply_report_text(finding, finding_actor(db, project_id, user), {proposal.field: value})
+        sent = {proposal.field: value}
+        if proposal.field == "cvss_vector":
+            # A 3.x / 2.0 vector computes its score; a 4.0 one keeps the score
+            # it is given, and the old score belonged to the old vector.
+            # Nobody reviewing a vector proposal sees a score, so leave it
+            # empty (shown as missing) rather than wrong.
+            sent["cvss_score"] = None
+        apply_report_text(finding, finding_actor(db, project_id, user), sent)
         return finding.id
     if kind == ProposalKind.FINDING_CREATE.value:
         finding = FindingService(db).create_finding(
@@ -409,6 +423,32 @@ def accept_proposal(
     return proposal
 
 
+COMPETING_DRAFTS_DETAIL = (
+    "Several drafts of this field were selected — choose one on the finding."
+)
+
+
+def competing_drafts(db: Session, project_id: int, ids: Iterable[int]) -> set:
+    """The pending report-text proposals among ``ids`` that share a finding
+    and field with another one among ``ids``.  A bulk accept must not choose
+    between compared drafts (decision 7): whichever came first would win and
+    supersede the others."""
+    rows = (
+        db.query(AgentProposal.id, AgentProposal.finding_id, AgentProposal.field)
+        .filter(
+            AgentProposal.project_id == project_id,
+            AgentProposal.id.in_(set(ids)),
+            AgentProposal.kind == ProposalKind.FINDING_TEXT.value,
+            AgentProposal.status == ProposalStatus.PENDING.value,
+        )
+        .all()
+    )
+    by_field: Dict[Tuple[int, str], List[int]] = {}
+    for pid, fid, field in rows:
+        by_field.setdefault((fid, field), []).append(pid)
+    return {pid for group in by_field.values() if len(group) > 1 for pid in group}
+
+
 def reject_proposal(db: Session, proposal: AgentProposal, user: User, *, note: Optional[str] = None) -> AgentProposal:
     _require_pending(proposal)
     proposal.status = ProposalStatus.REJECTED.value
@@ -433,7 +473,7 @@ def list_proposals(
     if kind:
         q = q.filter(AgentProposal.kind == kind)
     if finding_id is not None:
-        q = q.filter(AgentProposal.finding_id == finding_id)
+        q = q.filter(_about_findings([finding_id]))
     if host_id is not None:
         # A host's proposals: its observations, and endpoints on it.
         vuln_ids = db.query(Vulnerability.id).filter(Vulnerability.host_id == host_id)
@@ -455,6 +495,44 @@ def list_proposals(
         .offset(offset).limit(limit).all()
     )
     return rows, total
+
+
+_OBSERVATION_KINDS = (ProposalKind.OBSERVATION_PROMOTE.value, ProposalKind.OBSERVATION_DISMISS.value)
+
+
+def _about_findings(finding_ids: List[int]):
+    """The proposals ABOUT these findings — the one definition behind a
+    finding's Proposals section and "needs review" when issuing a report.
+    Those that name the finding, plus promote / dismiss proposals on a scanner
+    observation that evidences it: dismissing one drops an endpoint from the
+    report.  Derived through ``finding_vulnerabilities``, never stamped on
+    the proposal, because the link can change after the proposal is made."""
+    linked = select(FindingVulnerability.vuln_id).where(FindingVulnerability.finding_id.in_(finding_ids))
+    return AgentProposal.finding_id.in_(finding_ids) | (
+        AgentProposal.kind.in_(_OBSERVATION_KINDS) & AgentProposal.vulnerability_id.in_(linked)
+    )
+
+
+def pending_per_finding(db: Session, finding_ids: List[int]) -> Dict[int, int]:
+    """Pending proposals per finding, by :func:`_about_findings` (a finding
+    with any "needs review").  A UNION of (finding, proposal) pairs, so a
+    proposal that both names a finding and evidences it counts once."""
+    if not finding_ids:
+        return {}
+    pending = AgentProposal.status == ProposalStatus.PENDING.value
+    direct = (
+        db.query(AgentProposal.finding_id.label("fid"), AgentProposal.id.label("pid"))
+        .filter(pending, AgentProposal.finding_id.in_(finding_ids))
+    )
+    via_observation = (
+        db.query(FindingVulnerability.finding_id.label("fid"), AgentProposal.id.label("pid"))
+        .join(AgentProposal, AgentProposal.vulnerability_id == FindingVulnerability.vuln_id)
+        .filter(pending, AgentProposal.kind.in_(_OBSERVATION_KINDS),
+                FindingVulnerability.finding_id.in_(finding_ids))
+    )
+    pairs = direct.union(via_observation).subquery()
+    rows = db.query(pairs.c.fid, func.count()).group_by(pairs.c.fid).all()
+    return {fid: n for fid, n in rows}
 
 
 def pending_counts(db: Session, project_id: int) -> Dict[str, int]:

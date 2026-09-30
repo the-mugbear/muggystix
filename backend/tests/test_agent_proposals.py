@@ -87,7 +87,7 @@ def _base(project):
 # Evidence records
 # ---------------------------------------------------------------------------
 
-def test_evidence_is_recorded_directly_with_its_raw_output_as_a_file(client, db_session, test_project):
+def test_evidence_is_recorded_directly_with_its_raw_output_in_the_row(client, db_session, test_project, tmp_path):
     key, sid = _start(client, test_project)
     host = _host(db_session, test_project)
     raw = "Host script results:\n| smb2-security-mode:\n|_    Message signing enabled but not required\n" * 100
@@ -102,11 +102,44 @@ def test_evidence_is_recorded_directly_with_its_raw_output_as_a_file(client, db_
     assert rec["raw_output_bytes"] == len(raw.encode())
     assert len(rec["raw_output_preview"]) == 2000 and rec["raw_output_truncated_in_preview"] is True
 
-    # The whole output comes back from the file — on both surfaces.
+    # The whole output comes back — on both surfaces — and nothing was
+    # written to disk (v2.439.0: a file outlived a deleted host or project).
     assert client.get(f"/api/v1/agent/evidence/{rec['id']}/raw", headers=key).text == raw
     assert client.get(f"{_base(test_project)}/evidence/{rec['id']}/raw").text == raw
     listed = client.get(f"{_base(test_project)}/evidence", params={"host_id": host.id}).json()
     assert [e["id"] for e in listed["items"]] == [rec["id"]]
+    assert not (tmp_path / "evidence").exists()
+
+
+def test_evidence_output_goes_with_its_host(client, db_session, test_project):
+    """The raw output is part of the row, so deleting the host (or project)
+    removes it — no file is left behind."""
+    from app.db.models_proposals import EvidenceRecord
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    rid = client.post("/api/v1/agent/evidence", headers=key, json={
+        "host_id": host.id, "tool": "curl", "outcome": "info", "summary": "banner",
+        "raw_output": "HTTP/1.1 200 OK"}).json()["id"]
+    db_session.delete(host)
+    db_session.commit()
+    db_session.expire_all()
+    assert db_session.get(EvidenceRecord, rid) is None
+
+
+def test_evidence_text_with_nul_is_stored_and_short_non_ascii_is_not_cut(client, db_session, test_project):
+    """PostgreSQL text rejects NUL, which tool output carries; the preview
+    flag compares bytes with bytes (a 100-character accented output is 200
+    bytes, and was flagged as cut)."""
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    r = client.post("/api/v1/agent/evidence", headers=key, json={
+        "host_id": host.id, "tool": "smbclient", "outcome": "info", "summary": "share\x00list",
+        "command": "smbclient -L\x00", "raw_output": "é" * 100 + "\x00"})
+    assert r.status_code == 201, r.text
+    rec = r.json()
+    assert rec["summary"] == "sharelist" and rec["command"] == "smbclient -L"
+    assert rec["raw_output_bytes"] == 200 and rec["raw_output_truncated_in_preview"] is False
+    assert client.get(f"/api/v1/agent/evidence/{rec['id']}/raw", headers=key).text == "é" * 100
 
 
 def test_evidence_output_over_the_cap_is_refused(client, db_session, test_project):
@@ -319,6 +352,119 @@ def test_bulk_decides_each_on_its_own(client, db_session, test_project):
     r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": ids, "action": "accept"}).json()
     assert r["decided"] == [ids[1]]
     assert [f["id"] for f in r["failed"]] == [ids[0]] and r["failed"][0]["status_code"] == 409
+
+
+def test_a_proposal_decided_underneath_is_not_applied_again(client, db_session, test_project):
+    """Two accepts of one proposed finding each passed the pending check and
+    created it twice.  Deciding locks the row and re-reads it: a decision made
+    meanwhile (here written behind the session's back, leaving its loaded copy
+    stale — the state a second request holds) is seen, and nothing is applied."""
+    from sqlalchemy import event, update
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    pid = client.post("/api/v1/agent/proposals/finding", headers=key, json={
+        "title": "Twice?", "severity": "low", "host_ids": [host.id]}).json()["id"]
+    assert db_session.get(AgentProposal, pid).status == "pending"  # loaded, now stale below
+    db_session.execute(
+        update(AgentProposal).where(AgentProposal.id == pid).values(status="accepted")
+        .execution_options(synchronize_session=False)
+    )
+
+    statements = []
+    listener = lambda conn, cur, stmt, *a: statements.append(stmt)  # noqa: E731
+    event.listen(db_session.bind, "before_cursor_execute", listener)
+    try:
+        r = client.post(f"{_base(test_project)}/proposals/{pid}/accept", json={})
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", listener)
+    assert r.status_code == 409, r.text
+    assert db_session.query(Finding).filter(Finding.title == "Twice?").count() == 0
+    if db_session.bind.dialect.name == "postgresql":
+        assert any("FROM agent_proposals" in s and "FOR UPDATE" in s for s in statements)
+
+
+def test_accepting_a_cvss_4_vector_does_not_keep_the_old_vectors_score(client, db_session, test_project):
+    """A 4.0 vector keeps the score it is given, and the finding's score was
+    computed from its previous 3.1 vector; a reviewer of a vector proposal
+    never sees a score, so it is left empty rather than wrong."""
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    v31 = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+    assert client.patch(f"{_base(test_project)}/findings/{finding['id']}",
+                        json={"cvss_vector": v31}).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(Finding, finding["id"]).cvss_score == 9.8
+
+    v40 = "CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:L/VI:N/VA:N/SC:N/SI:N/SA:N"
+    pid = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"cvss_vector": v40}}).json()["proposals"][0]["id"]
+    assert client.post(f"{_base(test_project)}/proposals/{pid}/accept", json={}).status_code == 200
+    db_session.expire_all()
+    f = db_session.get(Finding, finding["id"])
+    assert (f.cvss_vector, f.cvss_score) == (v40, None)
+
+    # A 3.x vector still decides its own score.
+    pid = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"cvss_vector": v31}}).json()["proposals"][0]["id"]
+    assert client.post(f"{_base(test_project)}/proposals/{pid}/accept", json={}).status_code == 200
+    db_session.expire_all()
+    assert db_session.get(Finding, finding["id"]).cvss_score == 9.8
+
+
+def test_a_dismissal_on_a_findings_observation_makes_the_finding_need_review(client, db_session, test_project):
+    """Dismissing an observation that evidences a finding drops an endpoint
+    from the report, so it counts on the finding: its Proposals list and the
+    report's pending-proposal warning (one definition, derived from
+    finding_vulnerabilities)."""
+    from app.db.models_findings import FindingVulnerability
+    from app.services import proposal_service
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    vuln = _vuln(db_session, test_project, host)
+    finding = _finding(client, test_project, host)
+    db_session.add(FindingVulnerability(finding_id=finding["id"], vuln_id=vuln.id))
+    db_session.commit()
+
+    pid = client.post("/api/v1/agent/proposals/observation", headers=key, json={
+        "vulnerability_id": vuln.id, "action": "dismiss", "scope": "host"}).json()["id"]
+    text = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": "i"}}).json()["proposals"][0]["id"]
+
+    listed = client.get(f"{_base(test_project)}/proposals", params={"finding_id": finding["id"]}).json()
+    assert {p["id"] for p in listed["items"]} == {pid, text}
+    assert proposal_service.pending_per_finding(db_session, [finding["id"]]) == {finding["id"]: 2}
+
+    # An observation not linked to the finding does not count on it.
+    other_host = _host(db_session, test_project, "10.40.0.2")
+    stray = _vuln(db_session, test_project, other_host)
+    client.post("/api/v1/agent/proposals/observation", headers=key, json={
+        "vulnerability_id": stray.id, "action": "promote"})
+    assert proposal_service.pending_per_finding(db_session, [finding["id"]]) == {finding["id"]: 2}
+
+
+def test_bulk_accept_does_not_choose_between_drafts_of_one_field(client, db_session, test_project):
+    """Two models' drafts of one section are compared by a person: a bulk
+    accept used to apply whichever was listed first and supersede the other."""
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    drafts = [client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": f"Impact {m}"}, "agent_model": m,
+    }).json()["proposals"][0]["id"] for m in ("model-a", "model-b")]
+    single = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"recommendation": "Require signing."}}).json()["proposals"][0]["id"]
+
+    r = client.post(f"{_base(test_project)}/proposals/bulk",
+                    json={"ids": [*drafts, single], "action": "accept"}).json()
+    assert r["decided"] == [single]
+    assert {f["id"] for f in r["failed"]} == set(drafts)
+    assert all(f["status_code"] == 409 and "choose one" in f["detail"] for f in r["failed"])
+    db_session.expire_all()
+    assert {db_session.get(AgentProposal, d).status for d in drafts} == {"pending"}
+    # Rejecting them all together is not a choice between them: allowed.
+    r = client.post(f"{_base(test_project)}/proposals/bulk", json={"ids": drafts, "action": "reject"}).json()
+    assert sorted(r["decided"]) == sorted(drafts)
 
 
 def test_the_agent_reads_what_happened_to_its_proposals(client, db_session, test_project):

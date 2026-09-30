@@ -58,7 +58,7 @@ class EvidenceCreate(BaseModel):
         ),
     )
     summary: str = Field(..., min_length=1, max_length=10_000, description="What it showed, in a sentence or two.")
-    raw_output: Optional[str] = Field(None, description="The tool's output (up to 5 MB; stored as a file).")
+    raw_output: Optional[str] = Field(None, description="The tool's output (up to 5 MB; kept with the record).")
     observed_ip: Optional[str] = Field(None, max_length=45, description="The address actually reached.")
     executed_at: Optional[datetime] = None
     agent_model: Optional[str] = _MODEL

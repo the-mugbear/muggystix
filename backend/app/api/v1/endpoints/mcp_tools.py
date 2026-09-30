@@ -1283,7 +1283,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Record what you ran against a host and what came back — the tool, the "
             "command verbatim, the outcome, a one-line summary, and the raw output "
-            "(stored as a file, up to 5 MB). No test plan needed. Recorded as it "
+            "(up to 5 MB, kept with the record). No test plan needed. Recorded as it "
             "happened and never changed; cite it from proposals (evidence_ids)."
         ),
         "method": "POST",

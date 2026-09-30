@@ -111,7 +111,7 @@ const Proposals: React.FC = () => {
     const ok = await confirm({
       title: action === 'accept' ? `Accept ${shown.length} proposals?` : `Reject ${shown.length} proposals?`,
       body: action === 'accept'
-        ? 'Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding) or whose target has changed is left pending and listed.'
+        ? 'Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown.'
         : (
           <div className="space-y-xs">
             <p>Each is marked rejected. The agents that proposed them read the decision and this reason.</p>
@@ -128,7 +128,9 @@ const Proposals: React.FC = () => {
       const note = action === 'reject' ? bulkNote.current.trim() || undefined : undefined;
       const res = await decideProposals(shown.map((p) => p.id), action, note);
       if (res.failed.length) {
-        toast.warning(`${res.decided.length} decided; ${res.failed.length} left pending (${String(res.failed[0].detail)}).`);
+        // 5.317.2 — "left pending" was wrong for one already decided or
+        // superseded meanwhile; the server's reason says what happened.
+        toast.warning(`${res.decided.length} decided; ${res.failed.length} not (${String(res.failed[0].detail)}).`);
       } else {
         toast.success(`${res.decided.length} ${action === 'accept' ? 'accepted' : 'rejected'}.`);
       }

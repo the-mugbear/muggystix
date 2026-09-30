@@ -56,11 +56,11 @@ from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
 )
 from app.db.models_project import Project
-from app.db.models_proposals import AgentProposal, ProposalStatus
 from app.db.models_reports import (
     RenderStatus, Report, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
+from app.services import proposal_service
 
 SCHEMA_VERSION = 1
 
@@ -399,19 +399,10 @@ class ClientReportService:
 
     def _pending_proposals(self, finding_ids: List[int]) -> Dict[int, int]:
         """Pending agent proposals per finding (v2.437.0): a finding with one
-        is "needs review".  Issuing warns about them, never blocks."""
-        if not finding_ids:
-            return {}
-        rows = (
-            self.db.query(AgentProposal.finding_id, func.count(AgentProposal.id))
-            .filter(
-                AgentProposal.finding_id.in_(finding_ids),
-                AgentProposal.status == ProposalStatus.PENDING.value,
-            )
-            .group_by(AgentProposal.finding_id)
-            .all()
-        )
-        return {fid: n for fid, n in rows}
+        is "needs review".  Issuing warns about them, never blocks.  The
+        finding's own proposals AND promote / dismiss proposals on its scanner
+        observations — the proposal service's one definition."""
+        return proposal_service.pending_per_finding(self.db, finding_ids)
 
     def _endpoint(self, fh: FindingHost, ports: Dict[int, str]) -> dict:
         host = fh.host

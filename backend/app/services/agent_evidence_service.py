@@ -2,21 +2,18 @@
 
 Recorded directly and never changed — it is the audit trail (acceptance run
 2026-09-30, R1: a structured result used to need a plan, an entry and an
-execution run).  The raw output is kept as a file under
-``uploads/evidence/<project>/``; the row carries a short preview so a list
-never ships megabytes.
+execution run).  The raw output is kept in the row (``raw_output``, deferred,
+so a list never loads it) with a short preview.  Until v2.439.0 it was a file
+under ``uploads/evidence/``, which outlived a deleted host or project.
 """
 from __future__ import annotations
 
-import os
-import uuid
 from datetime import datetime
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
-from app.core.config import settings
 from app.db import models
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_proposals import EvidenceOutcome, EvidenceRecord
@@ -27,10 +24,6 @@ RAW_OUTPUT_MAX_BYTES = 5 * 1024 * 1024
 PREVIEW_CHARS = 2000
 
 OUTCOMES = [o.value for o in EvidenceOutcome]
-
-
-def _evidence_dir(project_id: int) -> str:
-    return os.path.join(settings.UPLOAD_DIR, "evidence", str(project_id))
 
 
 def record_evidence(
@@ -80,27 +73,24 @@ def record_evidence(
             )
         finding_id = finding_id or fh.finding_id
 
-    path = size = preview = None
+    # PostgreSQL text rejects NUL, which tool output does carry (the
+    # ingestion rule, v2.420.0): one byte would fail the whole record.
+    raw_output = _no_nul(raw_output) or None
+    size = preview = None
     if raw_output:
-        data = raw_output.encode("utf-8", errors="replace")
-        if len(data) > RAW_OUTPUT_MAX_BYTES:
+        size = len(raw_output.encode("utf-8", errors="replace"))
+        if size > RAW_OUTPUT_MAX_BYTES:
             raise HTTPException(
                 status_code=413,
-                detail=f"raw_output is {len(data)} bytes; the limit is {RAW_OUTPUT_MAX_BYTES}. "
+                detail=f"raw_output is {size} bytes; the limit is {RAW_OUTPUT_MAX_BYTES}. "
                        "Trim it, or upload the file if it is a supported scanner format.",
             )
-        directory = _evidence_dir(project_id)
-        os.makedirs(directory, exist_ok=True)
-        path = os.path.join(directory, f"{uuid.uuid4().hex}.txt")
-        with open(path, "wb") as fh_out:
-            fh_out.write(data)
-        size = len(data)
         preview = raw_output[:PREVIEW_CHARS]
 
     record = EvidenceRecord(
         project_id=project_id, host_id=host_id, finding_id=finding_id,
-        finding_host_id=finding_host_id, tool=tool.strip()[:100], command=command,
-        outcome=outcome, summary=summary.strip(), raw_output_path=path,
+        finding_host_id=finding_host_id, tool=_no_nul(tool).strip()[:100], command=_no_nul(command),
+        outcome=outcome, summary=_no_nul(summary).strip(), raw_output=raw_output,
         raw_output_bytes=size, raw_output_preview=preview, observed_ip=observed_ip,
         executed_at=executed_at, agent_session_id=agent_session_id,
         recorded_by_user_id=recorded_by_user_id,
@@ -148,11 +138,14 @@ def get_evidence(db: Session, project_id: int, evidence_id: int) -> EvidenceReco
     return record
 
 
+def _no_nul(text: Optional[str]) -> Optional[str]:
+    return text.replace("\x00", "") if text else text
+
+
 def read_raw_output(record: EvidenceRecord) -> str:
-    if not record.raw_output_path or not os.path.isfile(record.raw_output_path):
+    if not record.raw_output:
         raise HTTPException(status_code=404, detail="This evidence record has no stored raw output")
-    with open(record.raw_output_path, "rb") as fh:
-        return fh.read().decode("utf-8", errors="replace")
+    return record.raw_output
 
 
 def serialize_evidence(record: EvidenceRecord) -> dict:
@@ -169,9 +162,11 @@ def serialize_evidence(record: EvidenceRecord) -> dict:
         "summary": record.summary,
         "raw_output_preview": record.raw_output_preview,
         "raw_output_bytes": record.raw_output_bytes,
+        # Bytes against bytes: comparing the preview's characters with the
+        # byte size flagged any short non-ASCII output as cut.
         "raw_output_truncated_in_preview": bool(
             record.raw_output_bytes and record.raw_output_preview is not None
-            and len(record.raw_output_preview) < record.raw_output_bytes
+            and len(record.raw_output_preview.encode("utf-8", errors="replace")) < record.raw_output_bytes
         ),
         "observed_ip": record.observed_ip,
         "executed_at": record.executed_at,

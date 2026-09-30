@@ -21,6 +21,16 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.4.2",
+        "app_version": "2.439.0",
+        "summary": (
+            "Evidence raw output is kept with the record, not as a file (the guide and "
+            "record_evidence no longer say \"stored as a file\"); the /raw read is "
+            "unchanged. A bulk accept no longer chooses between several drafts of one "
+            "field, so a model's draft may stay pending until a person picks one."
+        ),
+    },
+    {
         "version": "3.4.1",
         "app_version": "2.438.0",
         "summary": (

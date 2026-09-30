@@ -68,7 +68,9 @@ class DecideBody(BaseModel):
 
 
 def _decide(db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody):
-    proposal = proposals.get_proposal(db, project_id, proposal_id)
+    # Locked until the commit below: a second decision on it waits, then
+    # finds it decided (409) instead of applying it again.
+    proposal = proposals.get_proposal(db, project_id, proposal_id, for_update=True)
     try:
         if action == "accept":
             proposals.accept_proposal(db, proposal, user, edited_value=body.edited_value, note=body.note)
@@ -119,9 +121,17 @@ def bulk_decide(
 ):
     """One failure (no right to edit that finding, a target that changed) does
     not stop the rest; the response says which were decided and why the
-    others were not."""
+    others were not.  Accepting never picks between several drafts of one
+    field: accepting the first would supersede the rest by list order, so
+    those are left pending for a person to choose on the finding."""
     done, failed = [], []
+    competing = (
+        proposals.competing_drafts(db, project.id, body.ids) if body.action == "accept" else set()
+    )
     for pid in dict.fromkeys(body.ids):
+        if pid in competing:
+            failed.append({"id": pid, "status_code": 409, "detail": proposals.COMPETING_DRAFTS_DETAIL})
+            continue
         try:
             _decide(db, project.id, pid, user, body.action, DecideBody(note=body.note))
             done.append(pid)

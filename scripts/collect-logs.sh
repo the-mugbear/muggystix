@@ -449,17 +449,8 @@ if $DB_UP; then
         q "MCP tool calls by tool and outcome (last 7 days)" "SELECT coalesce(tool_name, rpc_method, '-') AS tool, outcome, coalesce(error_code::text, '-') AS error_code, count(*), round(avg(duration_ms)) AS avg_ms FROM mcp_tool_calls WHERE created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 60;"
         q "MCP handshakes by client (last 7 days; the client names itself only in initialize)" "SELECT coalesce(client_name, '(unnamed)') AS client, coalesce(client_version, '-') AS version, coalesce(protocol_version, '-') AS protocol, count(*) AS handshakes FROM mcp_tool_calls WHERE rpc_method = 'initialize' AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;"
         q "Proposals by kind and status (an accept refused by the target keeps its reason in error)" "SELECT kind, status, source, count(*), count(error) AS with_accept_error FROM agent_proposals GROUP BY 1, 2, 3 ORDER BY 1, 2;"
-        q "Evidence records by outcome" "SELECT outcome, count(*), count(raw_output_path) AS with_raw_output, pg_size_pretty(coalesce(sum(raw_output_bytes), 0)) AS raw_bytes FROM evidence_records GROUP BY 1 ORDER BY 2 DESC;"
+        q "Evidence records by outcome" "SELECT outcome, count(*), count(raw_output_bytes) AS with_raw_output, pg_size_pretty(coalesce(sum(raw_output_bytes), 0)) AS raw_bytes FROM evidence_records GROUP BY 1 ORDER BY 2 DESC;"
         q "Agent feedback by source" "SELECT source, count(*), round(avg(overall_rating), 1) AS avg_rating, max(created_at) AS last FROM agent_feedback GROUP BY 1 ORDER BY 2 DESC;"
-        echo ""
-        echo "--- evidence raw-output files missing on disk (count only) ---"
-        if $BACKEND_UP; then
-            psql_q -A -t -c "SELECT raw_output_path FROM evidence_records WHERE raw_output_path IS NOT NULL;" 2>/dev/null \
-                | compose exec -T backend sh -c 'n=0; t=0; while IFS= read -r p; do [ -z "$p" ] && continue; t=$((t+1)); [ -f "$p" ] || n=$((n+1)); done; echo "$n missing of $t"' 2>&1 \
-                || echo "(check failed)"
-        else
-            echo "backend container not running"
-        fi
     } > "$LOG_DIR/agent_surface.txt" 2>&1
 fi
 

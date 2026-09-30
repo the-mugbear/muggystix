@@ -18,7 +18,7 @@ from __future__ import annotations
 import enum
 
 from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import deferred, relationship
 from sqlalchemy.sql import func
 
 from app.db.session import Base
@@ -36,7 +36,8 @@ class EvidenceOutcome(str, enum.Enum):
 class EvidenceRecord(Base):
     """What an agent ran against a host and what came back.  Immutable: no
     update or delete path (a project's deletion cascades).  The raw output is
-    a file (``raw_output_path``) with a short inline preview."""
+    ``raw_output`` (≤5 MB, deferred — a list never loads it) with a short
+    inline preview; it was a file until v2.439.0, which outlived deletion."""
     __tablename__ = "evidence_records"
 
     id = Column(Integer, primary_key=True, index=True)
@@ -49,7 +50,7 @@ class EvidenceRecord(Base):
     command = Column(Text, nullable=True)
     outcome = Column(String(20), nullable=False)
     summary = Column(Text, nullable=False)
-    raw_output_path = Column(String(500), nullable=True)
+    raw_output = deferred(Column(Text, nullable=True))
     raw_output_bytes = Column(Integer, nullable=True)
     raw_output_preview = Column(Text, nullable=True)
     observed_ip = Column(String(45), nullable=True)
