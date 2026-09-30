@@ -168,7 +168,7 @@ class CandidateHost(BaseModel):
     top_vulnerabilities: List[VulnBrief] = Field(default_factory=list, description="Highest-severity vulnerabilities for triage; capped to keep payloads scannable.")
 
     # --- policy evaluation ---
-    meets_policy: bool = Field(False, description="Server-side recommendation: true iff this host satisfies the project's selection policy. The agent should ordinarily create entries for every `meets_policy: true` host and skip the rest, deviating only with a stated reason.")
+    meets_policy: bool = Field(False, description="The default prioritisation's suggestion (critical/high vulns, or medium with several services or a high-value port) — advice for when the operator gave no direction, never a rule. The operator's request decides what goes in the plan.")
     inferred_service_hints: List[Dict[str, Any]] = Field(
         default_factory=list,
         description=(
@@ -183,10 +183,11 @@ class CandidateHost(BaseModel):
 class PlanningContext(BaseModel):
     """The full bundle returned by `GET /agent/test-plans/{plan_id}/context`.
 
-    Workflow: read `summary` to understand candidate counts and any
-    `filter_criteria` already applied, read `selection_policy` for the
-    rubric, then walk `candidate_hosts` creating entries for those with
-    `meets_policy: true`.  `plan` is the plan's current state (title,
+    Workflow: read `summary` for candidate counts and any `filter_criteria`
+    already applied, then walk `candidate_hosts` creating entries for what
+    the operator asked for.  `prioritization_advice` / `meets_policy` are a
+    default ranking for when they gave no direction (v2.438.0 — advice, no
+    longer a "selection policy" to follow or quote).  `plan` is the plan's current state (title,
     description, status) so the agent can detect a re-fetch on a
     partially-populated plan.
 
@@ -202,9 +203,9 @@ class PlanningContext(BaseModel):
     source: Optional[dict] = Field(None, description="Present when the plan was made from a fixed host selection on the Hosts page: `kind` ('manual_hosts'), `host_count`, `note`. `candidate_hosts` is restricted to that list — do not add hosts outside it.")
     agent_name: str = Field(..., description="The provisioned agent's display name. Must appear in the `🤖 Agent-generated — {agent_name}` attribution prefix on the plan description.")
     prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
-    selection_policy: str = Field(..., description="Human-readable rubric describing how `meets_policy` was computed. Quote it in the plan description to justify entry selection.")
+    prioritization_advice: str = Field(..., description="How `meets_policy` ranks hosts, and that it is advice: the operator's request decides what goes in the plan. You need not follow it or justify a choice against it.")
     summary: dict = Field(..., description="Aggregate counts: `total_hosts`, `matching_filter`, `meets_policy_count`, plus vuln severity rollups. Report this to the user as the first thing after fetching context.")
-    candidate_hosts: List[CandidateHost] = Field(..., description="Per-host candidate details. Already filtered by `filter_criteria`; apply the selection policy on top.")
+    candidate_hosts: List[CandidateHost] = Field(..., description="Per-host candidate details, already filtered by `filter_criteria` (or restricted to the operator's fixed selection).")
     entry_template: dict = Field(
         ...,
         description=(
@@ -649,15 +650,11 @@ class CoverageInfo(BaseModel):
 
     The response now splits into two explicit counts:
 
-    - ``policy_matching_remaining`` — hosts that meet the selection
-      policy AND are not in the plan.  A non-zero value means the
-      agent either missed scope or intentionally narrowed the plan.
-      This is the number worth acting on.
-    - ``non_policy_with_open_ports`` — hosts with open ports that the
-      selection policy correctly skipped (no crit/high vulns, no
-      qualifying medium).  A non-zero value here is *normal* and
-      expected; it's the number of hosts the agent intentionally
-      left out by following the rubric.
+    - ``policy_matching_remaining`` — hosts without an entry that the
+      default prioritisation ranks high.  Information only (v2.438.0): the
+      operator's request decides what belongs in the plan.
+    - ``non_policy_with_open_ports`` — the other hosts with open ports and
+      no entry.
 
     ``eligible_hosts_remaining`` is kept for backwards compatibility
     with v2.9.x clients and equals the sum of both buckets.

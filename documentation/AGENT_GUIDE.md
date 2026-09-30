@@ -283,7 +283,7 @@ The plan stays `draft` until its first execution run moves it to `in_progress`; 
 
 **Control flow:** After step 1, report a brief summary to the user (e.g. "Found 36 actionable hosts, 12 with critical vulnerabilities"), then **continue** through steps 2-4 without waiting — writing the plan runs nothing. Fix what validate warns about where you can. Then tell the operator what the plan holds (e.g. "Plan #8: 28 entries, 9 critical") and propose working it; open the execution run (Workflow B) when they say so.
 
-**Selection policy:** Create entries for all hosts with `meets_policy: true` across **every page** of the context response (page with `after_host_id` until `summary.has_more` is false — don't stop at the first 500). The policy: all critical/high-vuln hosts are included; medium-vuln hosts qualify if they expose multiple services or high-value ports (SMB, RDP, databases). Hosts with zero open ports are excluded from context by default. The summary includes `policy_match_count` (hosts you should create entries for) vs `candidates_reviewed` (total hosts returned for context). `candidates_reviewed` and `policy_match_count` count the **current page** — accumulate them yourself as you page.
+**What goes in the plan is what the operator asked for** — a service, a finding to verify, a host list they chose, a low-severity check the ranking would skip. You never justify their choice against the server. Read **every page** of the context response when their request spans many hosts (page with `after_host_id` until `summary.has_more` is false — don't stop at the first 500). `prioritization_advice` and each host's `meets_policy` are a **default ranking**, advice for when the operator gave no direction: critical/high-vuln hosts first, then medium-vuln hosts that expose several services or a high-value port (SMB, RDP, databases). Hosts with zero open ports are excluded from context by default. `summary.policy_match_count` counts the ranking's picks and `candidates_reviewed` the hosts returned, both for the **current page** — accumulate them yourself as you page. (Before v2.438.0 this was a "selection policy" to follow and quote; it is advice now.)
 
 ### Entry-generation rubric
 
@@ -651,7 +651,7 @@ Default **240 requests/minute** per agent, enforced in FIXED 60-second windows, 
 
 ### Planning context (`GET /agent/test-plans/{id}/context`)
 
-Returns plan metadata, filter criteria, the selection policy, `agent_name` (use for attribution), and a project summary. Hosts with zero open ports are excluded by default; pass `include_zero_port=true` to include them.
+Returns plan metadata, filter criteria, `prioritization_advice` (a default ranking — advice, not a rule), `agent_name` (use for attribution), and a project summary. Hosts with zero open ports are excluded by default; pass `include_zero_port=true` to include them.
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
@@ -699,16 +699,18 @@ The response is a JSON object `{"entries": [...]}`, **not** a bare array. Access
     "non_policy_with_open_ports": 1262,
     "eligible_hosts_remaining": 1274,
     "coverage_pct": 20.4,
-    "note": "Plan covers 326 hosts. 12 additional host(s) match the selection policy and are NOT in the plan..."
+    "note": "Plan covers 326 host(s); 1274 other host(s) in its scope have open ports and no entry (12 of them rank high by the default prioritisation). Nothing to do unless the operator's request covers them."
   }
 }
 ```
 
-**Read `policy_matching_remaining`, not `eligible_hosts_remaining`.** The two buckets mean:
+**Coverage is information, not a verdict.** A host without an entry is not "missed": the operator's request decides what belongs in the plan. The buckets:
 
-- **`policy_matching_remaining`** — hosts that match the selection policy (critical/high vulns, or medium + high-value port) AND are **not** in the plan. A non-zero value means you missed scope. Page through `/context` with `after_host_id` to pick them up, or add a description note explaining why the exclusion is intentional.
-- **`non_policy_with_open_ports`** — hosts with open ports that the policy correctly skipped. Non-zero here is **normal and expected** — it's the count of hosts the rubric intentionally excludes. Do **not** add entries for these just because the number is large.
-- **`eligible_hosts_remaining`** — equals the sum of the two buckets above; prefer the split fields.
+- **`policy_matching_remaining`** — hosts without an entry that the default ranking puts first (critical/high vulns, or medium + high-value port). Worth mentioning to the operator if their request was broad; nothing to do otherwise.
+- **`non_policy_with_open_ports`** — the other hosts with open ports and no entry. Do **not** add entries just because the number is large.
+- **`eligible_hosts_remaining`** — the sum of the two.
+
+For a plan on a fixed host list the note only says how many of the chosen hosts have no entry yet.
 
 Coverage is informational — it does **not** block `ready`. But a non-zero `policy_matching_remaining` is worth acting on.
 

@@ -631,7 +631,7 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
   "plan": { "id": 42, "status": "draft", "title": "...", ... },
   "filter_criteria": null,
   "agent_name": "codex",
-  "selection_policy": "Create entries for all hosts with critical or high vulnerabilities. Include hosts with medium vulnerabilities if they expose multiple services or high-value ports (SMB, RDP, databases). Skip hosts with zero open ports...",
+  "prioritization_advice": "Plan what the operator asked for. If they gave no direction, a default ranking (meets_policy): hosts with critical or high vulnerabilities first, then medium ones that expose several services or a high-value port (SMB, RDP, databases). It is advice — you need not follow it or justify a choice against it.",
   "summary": {
     "total_hosts": 412,
     "matching_filter": 412,
@@ -683,12 +683,12 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
     "non_policy_with_open_ports": 325,
     "eligible_hosts_remaining": 325,
     "coverage_pct": 21.1,
-    "note": "Plan covers all 87 policy-matching host(s). 325 additional host(s) have open ports but don't meet the selection policy..."
+    "note": "Plan covers 87 host(s); 325 other host(s) in its scope have open ports and no entry (0 of them rank high by the default prioritisation). Nothing to do unless the operator's request covers them."
   }
 }
 ```
 
-**v2.10.0 split-coverage:** read `policy_matching_remaining` (actionable — real missed scope) instead of the conflated `eligible_hosts_remaining` (retained for v2.9.x compatibility; equals the sum of the two buckets). A non-zero `non_policy_with_open_ports` is **normal** — those are hosts the agent correctly skipped per the selection rubric.
+**Coverage is information (v2.438.0).** `policy_matching_remaining` counts hosts without an entry that the default ranking puts first, `non_policy_with_open_ports` the rest, `eligible_hosts_remaining` their sum. None of them is "missed scope": the operator's request decides what belongs in the plan. On a fixed host list the note says only how many chosen hosts have no entry. `selection_policy` was replaced by `prioritization_advice` in v2.438.0 — the ranking is advice, never a rule to follow or quote.
 
 ### 6.3 `POST /projects/{id}/assist/start` (response)
 

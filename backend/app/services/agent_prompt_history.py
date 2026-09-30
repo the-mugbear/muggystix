@@ -21,6 +21,20 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.4.1",
+        "app_version": "2.438.0",
+        "summary": (
+            "Planning follows the operator, not a server policy. The plan context's "
+            "selection_policy (\"Create entries for all hosts with critical or high "
+            "vulnerabilities\") is replaced by prioritization_advice — a default ranking "
+            "for when the operator gave no direction, never to be followed or quoted as a "
+            "rule; the rationale template no longer asks for it. /validate's coverage "
+            "note is information (no \"missed coverage\"); on a fixed host list it only "
+            "counts chosen hosts without an entry. Rejected proposals: follow the "
+            "decision_note in a new proposal."
+        ),
+    },
+    {
         "version": "3.4.0",
         "app_version": "2.436.0",
         "summary": (

@@ -114,3 +114,41 @@ def test_a_plan_can_target_exact_hosts_by_id_or_query(client, db_session, test_p
         "title": "x", "host_ids": [999999]}).status_code == 422
     assert client.post("/api/v1/agent/test-plans", headers=headers, json={
         "title": "x", "host_ids": [hosts[0].id], "q": "ip:10.10.4.1"}).status_code == 422
+
+
+def test_an_operators_own_selection_is_not_judged_against_a_server_policy(client, db_session, test_project):
+    """Plan-feedback run 2026-09-30: /context returned "Create entries for
+    all hosts with critical or high vulnerabilities" (and asked the agent to
+    quote it) even for hosts the operator chose, and /validate called the
+    rest "missed coverage".  A fixed, low-severity investigation — which the
+    default ranking would skip — is what the operator asked for: the server
+    offers its ranking as advice only and never calls the plan short."""
+    a = _host_with_open_port(db_session, test_project, "10.11.0.1")
+    b = _host_with_open_port(db_session, test_project, "10.11.0.2")
+    db_session.commit()
+    headers = _start(client, test_project)
+    r = client.post("/api/v1/agent/test-plans", headers=headers, json={
+        "title": "Check the two print servers", "host_ids": [a.id, b.id],
+        "description": "The operator wants the print servers' web consoles checked.",
+    })
+    assert r.status_code in (200, 201), r.text
+    plan_id = r.json()["id"]
+
+    ctx = client.get(f"/api/v1/agent/test-plans/{plan_id}/context", headers=headers).json()
+    assert "selection_policy" not in ctx
+    advice = ctx["prioritization_advice"]
+    assert "operator chose these hosts" in advice and "need not follow it" in advice
+    assert "Create entries for all" not in advice
+    assert "selection_policy" not in ctx["entry_template"]["rationale"]
+    assert {h["id"] for h in ctx["candidate_hosts"]} == {a.id, b.id}
+    assert not any(h["meets_policy"] for h in ctx["candidate_hosts"])  # low severity: the ranking skips them
+
+    entry = {**ctx["entry_template"], "host_id": a.id,
+             "rationale": "The operator asked for the print servers' web consoles to be checked."}
+    added = client.post(f"/api/v1/agent/test-plans/{plan_id}/entries", headers=headers, json={"entries": [entry]})
+    assert added.status_code in (200, 201), added.text
+
+    v = client.get(f"/api/v1/agent/test-plans/{plan_id}/validate", headers=headers).json()
+    note = v["coverage"]["note"]
+    assert note == "1 of the chosen host(s) have no entry yet. Add them if the operator's request covers them."
+    assert "missed" not in note and "policy" not in note

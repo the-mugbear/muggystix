@@ -1563,8 +1563,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "plan_get_context": {
         "description": (
             "Everything you need to draft this plan: candidate hosts with their open "
-            "ports, services and existing findings, plus the selection policy and an "
-            "entry template. Call this first — proposing tests without it means "
+            "ports, services and existing findings, a default ranking (advice only — the "
+            "operator's request decides what goes in the plan) and an entry template. Call this first — proposing tests without it means "
             "proposing against hosts you have not looked at. plan_id is resolved from "
             "your key. Page with `after_host_id` (the last host id from the previous "
             "page); use `detail_level=brief` to pick candidates cheaply, then `full` "

@@ -103,7 +103,7 @@ def _plan_candidate_query(db: Session, plan, project_id: int, *, include_zero_po
 
 
 # High-value ports that qualify medium-vuln hosts for inclusion in
-# selection policy, and that should float to the top of a host's
+# the default ranking (meets_policy), and that should float to the top of a host's
 # inferred-service hint list in /context.  Used by /context (selection
 # policy evaluation) and /validate (coverage split).  Keep in sync with
 # the agent guide's selection-policy description.
@@ -134,7 +134,7 @@ def _evaluate_host_policy(
     service_names: List[str],
     open_port_nums: set,
 ) -> bool:
-    """Return True if a host meets the selection policy.
+    """Return True if a host meets the default ranking (advice — v2.438.0; it was a "selection policy").
 
     Policy (documented in the agent guide):
       - any critical or high vuln → include
@@ -417,7 +417,7 @@ def get_planning_context(
     )
 
     # Even in brief mode, we still need open-port numbers to evaluate the
-    # selection policy honestly — a medium-vuln host that qualifies only
+    # default ranking honestly — a medium-vuln host that qualifies only
     # because it exposes a high-value port (SMB/RDP/etc.) was previously
     # marked meets_policy=false in brief mode, disagreeing with full mode
     # and with /validate.  A single name+number column read is cheap.
@@ -461,7 +461,7 @@ def get_planning_context(
                 )
                 for v in top_vulns.get(h.id, [])
             ]
-        # Evaluate selection policy with the same inputs in both modes —
+        # Evaluate the default ranking with the same inputs in both modes —
         # brief mode pulls just the port-number column above so the
         # high-value-port check matches what /validate and full mode see.
         if is_brief:
@@ -561,8 +561,8 @@ def get_planning_context(
             },
         ],
         "rationale": (
-            "Why this host needs these tests — quote the relevant clause "
-            "from selection_policy and cite observed services / vulns from "
+            "Why this host needs these tests, in terms of what the operator "
+            "asked for — cite observed services / vulns from "
             "candidate_hosts[].ports / .top_vulnerabilities. Target the "
             "already-known open ports; do not propose discovery/version "
             "re-scans (recon already ran them)."
@@ -592,14 +592,26 @@ def get_planning_context(
         ),
         agent_name=agent.name,
         prompt_version=PROMPT_VERSION,
-        selection_policy=(
-            "Create entries for all hosts with critical or high vulnerabilities. "
-            "Include hosts with medium vulnerabilities if they expose multiple "
-            "services or high-value ports (SMB, RDP, databases). "
-            "Skip hosts with zero open ports unless explicitly included via "
-            "include_zero_port=true. "
-            "For each entry, provide tool-specific commands with {ip} placeholders "
-            "and explain what constitutes a finding versus a pass."
+        # v2.438.0 (plan-feedback run 2026-09-30) — advice, not a policy.
+        # The operator's request decides what goes in the plan; this is
+        # only a default ranking for when they gave none.  It used to say
+        # "Create entries for all hosts with critical or high
+        # vulnerabilities" and the rationale template asked the agent to
+        # quote it, even for a host list the operator had chosen.
+        prioritization_advice=(
+            (
+                "The operator chose these hosts: plan what they asked for, for "
+                "each of them. meets_policy is a default ranking only — you "
+                "need not follow it or justify a choice against it."
+            )
+            if fixed_host_ids is not None else
+            (
+                "Plan what the operator asked for. If they gave no direction, a "
+                "default ranking (meets_policy): hosts with critical or high "
+                "vulnerabilities first, then medium ones that expose several "
+                "services or a high-value port (SMB, RDP, databases). It is "
+                "advice — you need not follow it or justify a choice against it."
+            )
         ),
         summary={
             "total_hosts": total_project_hosts,
@@ -785,28 +797,23 @@ def validate_test_plan(
         (progress["total_entries"] / total_eligible) * 100, 1
     ) if total_eligible else 100.0
 
+    # v2.438.0 — information, never a verdict.  What belongs in the plan
+    # is the operator's request; a host without an entry is not "missed
+    # coverage" because the default ranking would have picked it.
     coverage_note = None
-    if policy_matching_remaining > 0:
-        # This is the actionable case — real missed scope.
+    if _fixed_selection_ids(plan) is not None:
+        if remaining_eligible > 0:
+            coverage_note = (
+                f"{remaining_eligible} of the chosen host(s) have no entry yet. "
+                "Add them if the operator's request covers them."
+            )
+    elif remaining_eligible > 0:
         coverage_note = (
-            f"Plan covers {progress['total_entries']} hosts. "
-            f"{policy_matching_remaining} additional host(s) match the "
-            f"selection policy (critical/high vulns, or medium with a "
-            f"high-value port) and are NOT in the plan. These look like "
-            f"missed coverage — page through /context with after_host_id "
-            f"to pick them up, or if the exclusion is intentional, add "
-            f"a description note explaining why. "
-            f"(Separately, {non_policy_with_open_ports} host(s) have "
-            f"open ports but don't meet the policy — those are correctly "
-            f"skipped and do not need entries.)"
-        )
-    elif non_policy_with_open_ports > 0:
-        # Informational only — the agent did the right thing.
-        coverage_note = (
-            f"Plan covers all {progress['total_entries']} policy-matching "
-            f"host(s). {non_policy_with_open_ports} additional host(s) "
-            f"have open ports but don't meet the selection policy (no "
-            f"crit/high vulns, no qualifying medium) — correctly skipped."
+            f"Plan covers {progress['total_entries']} host(s); "
+            f"{remaining_eligible} other host(s) in its scope have open ports "
+            f"and no entry ({policy_matching_remaining} of them rank high by "
+            "the default prioritisation). Nothing to do unless the operator's "
+            "request covers them."
         )
 
     return PlanValidationReport(
