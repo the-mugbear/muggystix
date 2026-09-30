@@ -1,0 +1,45 @@
+{
+  "synthetic": true,
+  "sources": [
+    "soc-alerts.json",
+    "scope_host_export.json",
+    "web_shared_host.json",
+    "in_scope_names.json (complete 12-row selection)"
+  ],
+  "rows": [
+    {
+      "event_id": "synthetic-1",
+      "ip": "10.10.6.54",
+      "at": "2026-09-01T12:00:00Z",
+      "host_ids": [
+        401
+      ],
+      "name_ids": [],
+      "match": "current inventory only",
+      "historical_binding_verified": false
+    },
+    {
+      "event_id": "synthetic-2",
+      "fqdn": "portal.example-corp.com",
+      "ip": "203.0.113.20",
+      "at": "2026-09-09T12:00:00Z",
+      "host_ids": [
+        472
+      ],
+      "name_ids": [
+        114
+      ],
+      "match": "current inventory only",
+      "historical_binding_verified": false
+    },
+    {
+      "event_id": "synthetic-3",
+      "ip": "198.51.100.250",
+      "at": "2026-09-09T12:00:00Z",
+      "host_ids": [],
+      "name_ids": [],
+      "match": "unmatched",
+      "historical_binding_verified": false
+    }
+  ]
+}

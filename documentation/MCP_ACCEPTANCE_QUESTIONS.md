@@ -268,9 +268,14 @@ raw sensitive output.
 
 ## Results for the redesigned surface
 
-No run of this revised suite is claimed by this document. Copy one row per
-scenario; use a run header for deployed commit/version, prompt version, client,
-model, role, fixture IDs, dataset sizes and whether the agent was given hints.
+The [2026-09-30 live acceptance run](MCP_ACCEPTANCE_RUN_2026-09-30.md) records
+112 protocol/HTTP requests, practitioner artifacts, confirmed defects, and the
+remaining unexercised scenarios. It is partial acceptance, not a native-client
+or production-scale certification.
+
+For subsequent runs, copy one row per scenario; include deployed commit/version,
+prompt version, client, model, role, fixture IDs, dataset sizes and whether the
+agent was given hints.
 
 | Run / scenario | Integrity | Capability | Calls / elapsed / data size | Manual steps or hints | Evidence / feedback IDs | Finding and proposed change |
 |---|---|---|---|---|---|---|

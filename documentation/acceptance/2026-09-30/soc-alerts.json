@@ -1,0 +1,22 @@
+{
+  "synthetic": true,
+  "source": "evaluator fixture; NOT EDR access",
+  "events": [
+    {
+      "event_id": "synthetic-1",
+      "ip": "10.10.6.54",
+      "at": "2026-09-01T12:00:00Z"
+    },
+    {
+      "event_id": "synthetic-2",
+      "fqdn": "portal.example-corp.com",
+      "ip": "203.0.113.20",
+      "at": "2026-09-09T12:00:00Z"
+    },
+    {
+      "event_id": "synthetic-3",
+      "ip": "198.51.100.250",
+      "at": "2026-09-09T12:00:00Z"
+    }
+  ]
+}

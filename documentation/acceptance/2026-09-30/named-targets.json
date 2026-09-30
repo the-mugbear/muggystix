@@ -1,0 +1,36 @@
+{
+  "project_id": 3,
+  "purpose": "No network traffic; name authorization does not authorize arbitrary IP scanning",
+  "targets": [
+    {
+      "host_id": 472,
+      "name_id": 114,
+      "fqdn": "portal.example-corp.com",
+      "url": "https://portal.example-corp.com/",
+      "observed_ip": "203.0.113.20",
+      "interface_id": 28,
+      "scan_id": 72,
+      "observed_at": "2026-09-07T23:16:28.186189Z"
+    },
+    {
+      "host_id": 472,
+      "name_id": 117,
+      "fqdn": "api.apps.example-corp.com",
+      "url": "https://api.apps.example-corp.com/",
+      "observed_ip": "203.0.113.20",
+      "interface_id": 29,
+      "scan_id": 72,
+      "observed_at": "2026-09-07T23:16:28.186189Z"
+    },
+    {
+      "host_id": 472,
+      "name_id": 118,
+      "fqdn": "admin.apps.example-corp.com",
+      "url": "https://admin.apps.example-corp.com/",
+      "observed_ip": "203.0.113.20",
+      "interface_id": 30,
+      "scan_id": 72,
+      "observed_at": "2026-09-07T23:16:28.186189Z"
+    }
+  ]
+}
