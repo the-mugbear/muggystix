@@ -178,3 +178,61 @@ def test_a_worklist_with_nothing_to_fix_says_so():
     out = _fill("remediation-worklist", data)
     assert "Nothing to fix" in out
     assert "# How to fix" not in out
+
+
+# --- the scope cutoff (v2.441.0) ------------------------------------------------------
+
+def _with_scope(sample: dict, networks: int, *, inline_max: int = 25) -> dict:
+    """The sample with ``networks`` scoped /24s over two sites, as
+    client_report_service builds the scope block."""
+    from app.services import report_scope
+    data = copy.deepcopy(sample)
+    subnets = [
+        {"cidr": f"10.{i // 256}.{i % 256}.0/24", "site": "Head office" if i % 3 else "Data centre",
+         "description": None}
+        for i in range(networks)
+    ]
+    domains = [{"domain": "example.com", "include_subdomains": True}]
+    block = {"subnets": subnets, "domains": domains}
+    block.update(report_scope.summarise(subnets, domains, inline_max=inline_max))
+    data["scope"] = report_scope.attach_file(block, project_slug="acme", number=3, report_id=9)
+    return data
+
+
+@needs_templates
+def test_a_large_scope_is_summarised_and_its_file_named_not_printed():
+    """Thousands of networks printed as a table that ran for pages (the
+    user's report); over the cutoff the report names the file instead."""
+    data = _with_scope(_sample("pentest"), 3000)
+    out = _fill("pentest", data)
+    sha = data["scope"]["file"]["sha256"]
+    assert "10\\.0\\.5\\.0\\/24" not in out and "10.0.5.0/24" not in out   # no network is listed
+    assert "| Network | Site | Description |" not in out
+    # Printed values are Markdown-escaped: "3\,000" prints as "3,000".
+    assert "**3\\,000 networks**" in out and "768\\,000 IPv4 addresses" in out
+    assert "scope\\-acme\\-report\\-3\\.csv" in out and sha in out
+    assert "Scope by site" in out and "| Head office | 2\\,000 | 512\\,000 |" in out
+    # One domain is under its own cutoff: still listed in its table.
+    assert "| example\\.com | included |" in out
+
+    brief = _fill("executive-brief", _with_scope(_sample("executive-brief"), 3000))
+    assert "3\\,000 network(s)" in brief and sha in brief
+    assert "10.0.5.0/24" not in brief and "10\\.0\\.5\\.0\\/24" not in brief
+
+
+@needs_templates
+def test_a_scope_at_the_cutoff_is_still_a_table():
+    out = _fill("pentest", _with_scope(_sample("pentest"), 25))
+    assert "| Network | Site | Description |" in out and "10\\.0\\.24\\.0\\/24" in out
+    assert "Scope by site" not in out and "SHA\\-256" not in out and "SHA-256" not in out
+
+
+@needs_templates
+def test_the_shipped_templates_declare_the_default_cutoff(monkeypatch):
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(ROOT))
+    for name in ("pentest", "executive-brief"):
+        t = templates.get_template(name)
+        assert (t.scope_inline_max, t.scope_domains_inline_max) == (25, 25)
+    # The worklist prints no scope, so it never names a scope file.
+    w = templates.get_template("remediation-worklist")
+    assert (w.scope_inline_max, w.scope_domains_inline_max) == (None, None)

@@ -111,12 +111,19 @@ No findings above informational severity.
 
 # Scope
 
+<# v2.441.0 — over the template's cutoff, totals and the separate scope file
+   instead of every CIDR joined into one sentence.  scope.get(): reports
+   issued before 2.441.0 lack the summary. #>
 <% if scope.subnets or scope.domains %>
+<% if scope.get("totals") and scope.external %>
+<< "{:,}".format(scope.totals.networks) >> network(s) and << "{:,}".format(scope.totals.domains) >> domain(s). The complete list is provided with the report as the file **<< scope.file.name >>** (SHA-256 << scope.file.sha256 >>).
+<% else %>
 <% if scope.subnets %>
 << scope.subnets|length >> network(s): << scope.subnets|map(attribute="cidr")|join(", ") >>.
 <% endif %>
 <% if scope.domains %>
 << scope.domains|length >> domain(s): << scope.domains|map(attribute="domain")|join(", ") >>.
+<% endif %>
 <% endif %>
 <% else %>
 << todo("No scope is recorded — define the project's scoped networks and domains", block=True) >>

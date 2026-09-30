@@ -42,7 +42,7 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 from app.core.config import settings
-from app.services import quarto_render
+from app.services import quarto_render, report_scope
 from app.services import template_asset_store as asset_store
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -68,11 +68,18 @@ class ReportTemplate:
     formats: tuple
     postprocess: Dict[str, str] = field(default_factory=dict)
     assets: tuple = ()
+    # v2.441.0 — over these, the report summarises the scope and names a
+    # separate scope file instead of listing it (report_scope).
+    # None: the template does not print the scope at all.
+    scope_inline_max: Optional[int] = report_scope.DEFAULT_INLINE_MAX
+    scope_domains_inline_max: Optional[int] = report_scope.DEFAULT_INLINE_MAX
 
     def as_dict(self) -> dict:
         return {
             "name": self.name, "title": self.title, "description": self.description,
             "formats": list(self.formats), "assets": [dict(a) for a in self.assets],
+            "scope_inline_max": self.scope_inline_max,
+            "scope_domains_inline_max": self.scope_domains_inline_max,
         }
 
     def missing_required_assets(self) -> List[dict]:
@@ -117,10 +124,22 @@ def _load(folder: Path) -> ReportTemplate:
         }
         for a in declared
     )
+    cutoffs = {}
+    for key in ("scope_inline_max", "scope_domains_inline_max"):
+        value = data.get(key, report_scope.DEFAULT_INLINE_MAX)
+        # null: this template does not print the scope, so it never names a
+        # scope file (and issuing never asks for one).  bool is an int in
+        # Python; `true` is not a count.
+        if value is not None and (isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 100000):
+            raise TemplateError(
+                f"{folder.name}: template.json: {key} must be a whole number from 0 to 100000, "
+                "or null for a template that does not print the scope."
+            )
+        cutoffs[key] = value
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
-        postprocess=post, assets=assets,
+        postprocess=post, assets=assets, **cutoffs,
     )
 
 

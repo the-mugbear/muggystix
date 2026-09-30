@@ -42,7 +42,12 @@
     ],
     "domains": [
       {"domain": "example.com", "include_subdomains": true}
-    ]
+    ],
+    "totals": {"networks": 1, "ipv4_addresses": 256, "ipv6_networks": 0, "domains": 1, "sites": 1},
+    "by_site": [{"site": "HQ", "networks": 1, "addresses": 256}],
+    "inline_max": 25, "domains_inline_max": 25,
+    "subnets_inline": true, "domains_inline": true, "external": false,
+    "file": null
   },
   "severity_order": ["critical", "high", "medium", "low", "info"],
   "severity_labels": {"critical": "Critical", "high": "High", "medium": "Medium", "low": "Low", "info": "Informational"},

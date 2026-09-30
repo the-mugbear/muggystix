@@ -60,7 +60,7 @@ from app.db.models_reports import (
     RenderStatus, Report, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
-from app.services import proposal_service
+from app.services import proposal_service, report_scope, report_template_service
 
 SCHEMA_VERSION = 1
 
@@ -449,6 +449,24 @@ class ClientReportService:
             "domains": [{"domain": d, "include_subdomains": bool(sub)} for d, sub in domains],
         }
 
+    def _scope_block(self, report: Report, project: Optional[Project], number: Optional[int]) -> dict:
+        """The scope as the report states it (v2.441.0): the lists, their
+        totals and per-site summary, whether each list is printed (the
+        template's cutoff), and — when it is not — the separate file's name
+        and SHA-256 (``report_scope``).  Frozen with the rest of the dataset
+        at issue, so an issued report's file never changes."""
+        scope = self._scope(report.project_id)
+        try:
+            template = report_template_service.get_template(report.template)
+            cutoffs = {"inline_max": template.scope_inline_max,
+                       "domains_inline_max": template.scope_domains_inline_max}
+        except report_template_service.TemplateError:
+            cutoffs = {}
+        scope.update(report_scope.summarise(scope["subnets"], scope["domains"], **cutoffs))
+        return report_scope.attach_file(
+            scope, project_slug=project.slug if project else None, number=number, report_id=report.id,
+        )
+
     # ------------------------------------------------------------------
     # Dataset
     # ------------------------------------------------------------------
@@ -601,7 +619,7 @@ class ClientReportService:
             },
             "engagement": settings,
             "executive_summary": report.executive_summary,
-            "scope": self._scope(report.project_id),
+            "scope": self._scope_block(report, project, number if number is not None else report.number),
             "severity_order": list(SEVERITY_ORDER),
             "severity_labels": SEVERITY_LABEL,
             "counts": counts,
@@ -635,6 +653,15 @@ class ClientReportService:
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
                 for item in items if pending.get(item["id"])
             ],
+            # v2.441.0 — over the template's cutoff the report names a scope
+            # file instead of listing the scope: the operator must send it.
+            "scope_external": {
+                "networks": dataset["scope"]["totals"]["networks"],
+                "domains": dataset["scope"]["totals"]["domains"],
+                "inline_max": dataset["scope"]["inline_max"],
+                "domains_inline_max": dataset["scope"]["domains_inline_max"],
+                "file": dataset["scope"]["file"],
+            } if dataset["scope"]["external"] else None,
             "delta": {
                 "new_findings": delta["new_findings"],
                 "findings_with_new_endpoints": delta["findings_with_new_endpoints"],

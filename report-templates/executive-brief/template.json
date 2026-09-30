@@ -3,6 +3,8 @@
   "description": "A short report for leadership: the executive summary, the findings at a glance (severity, systems affected, status), the scope, and what to do about each finding — no evidence, reproduction steps or host lists. Addenda show only the changes table.",
   "entry": "report.qmd",
   "formats": ["docx", "html"],
+  "scope_inline_max": 25,
+  "scope_domains_inline_max": 25,
   "postprocess": {
     "docx": "scripts/fix-docx-report.py"
   },

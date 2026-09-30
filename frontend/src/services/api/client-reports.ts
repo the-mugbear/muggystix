@@ -136,6 +136,15 @@ export interface ReportSummary {
   agent_images?: number;
   /** v5.316.0 — reported findings with proposals nobody has decided yet. A warning, never a block. */
   pending_proposals?: Array<{ id: number; ref: string; title: string; count: number }>;
+  /** v5.319.0 — the scope is over the template's cutoff: the report summarises it
+   *  and names this file (with its SHA-256), which must be sent with the report. */
+  scope_external?: {
+    networks: number;
+    domains: number;
+    inline_max: number | null;
+    domains_inline_max: number | null;
+    file: { name: string; sha256: string; bytes: number } | null;
+  } | null;
   delta?: { new_findings: number; findings_with_new_endpoints: number; withdrawn: number } | null;
   /** Set when the summary could not be built (e.g. an addendum lost its baseline). */
   error?: string;
@@ -263,6 +272,21 @@ export const getReportProfile = async (): Promise<ReportProfile> =>
 
 export const saveReportProfile = async (body: Omit<ReportProfile, 'updated_at'>): Promise<ReportProfile> =>
   (await api.put<ReportProfile>(`${base()}/profile`, body)).data;
+
+/** v5.319.0 — save the report's complete scope as CSV: the file a report over its
+ *  template's scope cutoff names.  A draft's is today's scope; an issued report's
+ *  is the frozen one, so its SHA-256 is the one the report prints. */
+export const downloadClientReportScope = async (id: number, filename: string): Promise<void> => {
+  const response = await api.get(`${base()}/${id}/scope.csv`, { responseType: 'blob' });
+  const url = window.URL.createObjectURL(new Blob([response.data], { type: 'text/csv' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(a);
+};
 
 /** Save an issued report's file (authenticated blob → browser download). */
 export const downloadClientReportFile = async (id: number, file: ReportFile): Promise<void> => {

@@ -32,7 +32,7 @@ from app.api.deps import check_agent_rate_limit
 from app.api.v1.endpoints.agent_assist import _load_assist_session
 # The Reports page's own serializer and loader: the agent sees the report the
 # page shows, field for field.
-from app.api.v1.endpoints.client_reports import _load, _serialize, report_file_response
+from app.api.v1.endpoints.client_reports import _load, _serialize, report_file_response, report_scope_response
 from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
@@ -255,6 +255,23 @@ def get_assist_client_report(
             "scope": dataset.get("scope"),
         }
     )
+
+
+@router.get(
+    "/assist/client-reports/{report_id}/scope.csv",
+    summary="The report's complete scope as CSV — the file a report over its template's scope cutoff names",
+)
+def download_assist_client_report_scope(
+    request: Request,
+    report_id: int = Path(..., ge=1),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """v2.441.0 — the page's scope-file download, for agents (same builder,
+    same bytes, same SHA-256 as the report prints)."""
+    session = _load_assist_session(db, request)
+    report = _load(db, _ProjectRef(session.project_id), report_id)
+    return report_scope_response(ClientReportService(db), report)
 
 
 @router.get(

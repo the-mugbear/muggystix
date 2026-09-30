@@ -176,6 +176,13 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     # or the executive summary.
     data["findings"][0]["recommendation"] = HOSTILE_MD
     data["executive_summary"] = HOSTILE_MD
+    # v2.441.0 — a scope over the cutoff prints a per-site table and a file
+    # name: a site is typed by a person, so it is hostile text too.
+    from app.services import report_scope
+    subnets = [{"cidr": f"10.9.{i}.0/24", "site": HOSTILE, "description": HOSTILE} for i in range(30)]
+    block = {"subnets": subnets, "domains": []}
+    block.update(report_scope.summarise(subnets, []))
+    data["scope"] = report_scope.attach_file(block, project_slug="hostile", number=1, report_id=1)
     manifest = json.loads((template / "template.json").read_text())
 
     files = quarto_render.render(

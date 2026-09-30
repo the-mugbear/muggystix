@@ -32,6 +32,7 @@ from app.schemas.client_reports import (
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import ClientReportService, ReportStateError, stored_file_path
 from app.services.report_job_service import ReportJobService
+from app.services import report_scope
 from app.services import report_template_service as templates
 from app.services import template_asset_store as asset_store_module
 
@@ -688,6 +689,34 @@ def download_report_file(
     if record is None:
         raise HTTPException(status_code=404, detail=f"This report has no {fmt} file.")
     return report_file_response(record)
+
+
+@router.get("/{report_id}/scope.csv", summary="The report's complete scope as CSV (the file an over-cutoff report names)")
+def download_report_scope(
+    report_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+) -> Response:
+    """v2.441.0 — the scope as the report states it: a draft's live scope,
+    an issued report's frozen one, so its SHA-256 is the one the issued
+    report prints.  Offered for any report; the report names it only when
+    the scope is over its template's cutoff."""
+    report = _load(db, project, report_id)
+    return report_scope_response(ClientReportService(db), report)
+
+
+def report_scope_response(service: ClientReportService, report: Report) -> Response:
+    """The scope file download — shared with the agent's route."""
+    dataset, summary = service.content(report)
+    if dataset is None:
+        raise HTTPException(status_code=409, detail=summary.get("error") or "This report cannot be built.")
+    scope = dataset.get("scope") or {"subnets": [], "domains": []}
+    name = ((scope.get("file") or {}).get("name")
+            or report_scope.file_name(project_slug=None, number=report.number, report_id=report.id))
+    return Response(
+        content=report_scope.scope_csv(scope), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}"'},
+    )
 
 
 def report_file_response(record) -> FileResponse:

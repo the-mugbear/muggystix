@@ -21,6 +21,16 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.5.1",
+        "app_version": "2.441.0",
+        "summary": (
+            "A client report over its template's scope cutoff no longer lists the scope: "
+            "its scope.external is true and it names a separate CSV (name + SHA-256 in "
+            "summary.scope_external.file). GET /agent/assist/client-reports/{id}/scope.csv "
+            "fetches that file — curl it to disk."
+        ),
+    },
+    {
         "version": "3.5.0",
         "app_version": "2.440.0",
         "summary": (

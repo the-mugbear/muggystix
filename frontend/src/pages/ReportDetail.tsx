@@ -21,6 +21,7 @@ import {
   ReportJob,
   ReportTemplate,
   deleteClientReport,
+  downloadClientReportScope,
   downloadReportJob,
   getClientReport,
   getReportJob,
@@ -227,6 +228,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.agent_images && (
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
+          {!!s?.scope_external?.file && (
+            <p className="mt-xs">Its scope ({s.scope_external.networks.toLocaleString()} networks) is over the template&apos;s limit: the report names <span className="font-medium">{s.scope_external.file.name}</span> instead of listing it — send that file with the report.</p>
+          )}
         </>
       ),
       confirmLabel: 'Issue report',
@@ -267,6 +271,17 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
       toast.error(formatApiError(err, 'Could not restart the rendering.'));
     } finally {
       setBusy(null);
+    }
+  };
+
+  // 5.319.0 — the scope file an over-cutoff report names.
+  const downloadScope = async () => {
+    const file = report?.summary?.scope_external?.file;
+    if (!report || !file) return;
+    try {
+      await downloadClientReportScope(report.id, file.name);
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not download the scope file.'));
     }
   };
 
@@ -458,6 +473,27 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
               {showAllMissing ? 'Show fewer' : `Show all ${missingText.length}`}
             </Button>
           )}
+        </PostureSection>
+      )}
+
+      {s.scope_external?.file && (
+        <PostureSection title="Scope file — send it with the report"
+          description={isDraft
+            ? 'The scope is over this template’s limit, so the report summarises it and names this file instead of listing it. The file is today’s scope; issuing freezes it with the report.'
+            : 'The report names this file instead of listing its scope. It is the frozen scope, so its SHA-256 is the one the report prints.'}>
+          <p className="mb-xs break-words text-body">
+            <strong>{s.scope_external.networks.toLocaleString()}</strong> network{s.scope_external.networks === 1 ? '' : 's'}
+            {' '}and <strong>{s.scope_external.domains.toLocaleString()}</strong> domain{s.scope_external.domains === 1 ? '' : 's'}
+            {s.scope_external.inline_max != null && <> (this template lists up to {s.scope_external.inline_max} networks)</>}.
+            {' '}The client needs <span className="font-medium">{s.scope_external.file.name}</span> to see what was in scope.
+          </p>
+          <dl className="mb-sm grid gap-x-lg gap-y-xxs text-caption sm:grid-cols-[10rem_minmax(0,1fr)]">
+            <dt className="text-muted-foreground">SHA-256</dt>
+            <dd className="break-all font-mono">{s.scope_external.file.sha256}</dd>
+          </dl>
+          <Button size="sm" variant="outline" onClick={() => void downloadScope()} disabled={busy !== null}>
+            <Download className="size-4" aria-hidden /> Download scope file (CSV)
+          </Button>
         </PostureSection>
       )}
 

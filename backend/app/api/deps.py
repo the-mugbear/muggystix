@@ -625,6 +625,8 @@ AGENT_READ_ROLE_OVERRIDES = {
     ("GET", "/assist/client-reports"): ProjectRole.AUDITOR,
     ("GET", "/assist/client-reports/{report_id}"): ProjectRole.AUDITOR,
     ("GET", "/assist/client-reports/{report_id}/files/{fmt}"): ProjectRole.AUDITOR,
+    # v2.441.0 — the report's complete scope file: the Reports page's read floor.
+    ("GET", "/assist/client-reports/{report_id}/scope.csv"): ProjectRole.AUDITOR,
 }
 
 #: Everything else a member may read. Viewers can already see hosts, scans and
