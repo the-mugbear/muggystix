@@ -40,14 +40,13 @@ from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
 
 #: Mutating agent routes deliberately reachable by a read-only operator.
-#: These record something about the SESSION — its environment, its key
-#: deadline, feedback about the prompt — rather than project data, so a
+#: These record something about the SESSION — its key deadline, its end,
+#: feedback about the prompt — rather than project data, so a
 #: read-only operator's agent needs them as much as anyone's.
 #: Mirrors ``AGENT_SESSION_METADATA_WRITES`` in deps.py, stated here as full
 #: paths because that is what a caller sees.
 OPERATOR_METADATA_WRITES = {
     ("POST", "/api/v1/agent/session/renew"),
-    ("POST", "/api/v1/agent/session/environment"),
     ("POST", "/api/v1/agent/feedback"),
     ("POST", "/api/v1/agent/tool-suggestions"),
     # v2.343.2 (MCP review finding 6) — closing one's own session is lifecycle

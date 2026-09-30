@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.2.0",
+        "app_version": "2.434.0",
+        "summary": (
+            "No environment probe. POST /agent/session/environment and the MCP "
+            "record_environment tool are removed, with the 'MANDATORY first step' "
+            "in the prompt: BlueStick no longer shapes commands to the operator's "
+            "machine or checks it against a tool catalogue (the recon planning "
+            "service, the preflight script and the host-readiness check are gone "
+            "too). Attribution instead: the client is recorded from the MCP "
+            "initialize handshake (User-Agent for curl), the prompt version by the "
+            "server, and the agent passes an optional agent_model when it "
+            "registers a plan, opens an execution run or ends the session. "
+            "Execution context and identity no longer echo an environment."
+        ),
+    },
+    {
         "version": "3.1.0",
         "app_version": "2.433.1",
         "summary": (

@@ -38,7 +38,6 @@ from app.api.v1.endpoints.agent_schemas import (
     SanityCheckRequest, TestResultRequest, CompleteEntryRequest,
     ExecutionProgressResponse, ExecutionStartRequest,
     ExecutionSessionCompleteRequest, ExecutionSessionCompleteResponse,
-    EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import load_agent_session
 
@@ -132,7 +131,7 @@ def _require_executable_plan(plan) -> None:
 
 # --- Open an execution run (v2.337.0) ---
 #
-# The session already holds the operator's authority and environment probe;
+# The session already holds the operator's authority and attribution;
 # this picks the plan to execute — any draft or in-progress plan with entries.
 
 @router.post(
@@ -152,7 +151,7 @@ def start_execution_phase(
     plan = svc.get_plan(body.plan_id, agent.project_id)
     if not plan:
         raise HTTPException(status_code=404, detail="Test plan not found")
-    run = open_execution_phase(db, session=session, plan=plan)
+    run = open_execution_phase(db, session=session, plan=plan, agent_model=body.agent_model)
     db.commit()
     return _execution_context_payload(db, plan, run, agent.name, include_read_back=True)
 
@@ -349,11 +348,6 @@ def _execution_context_payload(db, plan, session, agent_name, *, include_read_ba
         prompt_version=PROMPT_VERSION,
         read_back=read_back,
         hosts=result_hosts,
-        # Echo the session's environment probe (snapshotted onto the run).
-        environment=(
-            EnvironmentSummary(**session.environment)
-            if session.environment else None
-        ),
     )
 
 

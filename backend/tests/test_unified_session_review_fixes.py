@@ -10,7 +10,7 @@ Each test names the defect it guards against:
   crashed agent's key; minting on the new session never touched it;
 * ``/agent/identity`` reports recon and execution run ids in separate fields,
   so MCP ``execution_complete`` never auto-fills a recon id;
-* the assist-sessions review page reads activity / probe state through the
+* the assist-sessions review page reads activity state through the
   unified session row, which is the one that is actually written;
 * an operator can end any project session, not only one started from the
   assist dialog;
@@ -237,24 +237,19 @@ def test_identity_reports_the_execution_run_and_mcp_completes_it(
 # H4 — the review page reads the columns that are written
 # ---------------------------------------------------------------------------
 
-def test_assist_sessions_page_reflects_probe_and_activity(client, test_project, db_session):
+def test_assist_sessions_page_reflects_activity(client, test_project, db_session):
     body = _start_session(client, test_project)
     key, assist_id = body["api_key"], body["assist_session_id"]
-    r = client.post(
-        "/api/v1/agent/session/environment", headers=_hdr(key),
-        json={"os_family": "linux", "shell": "bash"},
-    )
-    assert r.status_code == 200, r.text
     assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 200
 
     rows = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions").json()
     mine = next(s for s in rows if s["id"] == assist_id)
-    assert mine["environment_probed"] is True
     assert mine["last_activity_at"] is not None
     assert mine["purpose"] == "review"
-    detail = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions/{assist_id}").json()
-    assert detail["environment_probed_at"] is not None
-    assert detail["environment"]["os_family"] == "linux"
+    assert mine["call_count"] >= 1
+    detail = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions/{assist_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["last_activity_at"] is not None
 
 
 # ---------------------------------------------------------------------------

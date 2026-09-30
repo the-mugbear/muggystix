@@ -1,19 +1,12 @@
 """Targeted tests for the workflow-resume + host-readiness paths.
 
-These cover the load-bearing behaviors introduced by Plan B (workflow
-resume) and Plan C (host readiness):
+Minting a key for a session REVOKES every prior active key for that session
+(the fix that closed the two-agents-one-session hole) and leaves other
+sessions' keys alone.
 
-* ``_mint_plan_agent_key`` REVOKES every prior active key for the plan
-  before minting a new one (the Critical-1 fix that closes the
-  two-agents-one-session hole — see the helper's docstring).
-* ``build_tool_readiness`` correctly cross-references the agent tool
-  catalog against a probe (tools_status path, tools_available
-  fallback, no-probe path).
-
-The endpoint-level resume and tool-readiness HTTP paths share the same
-helpers but require project-role auth wiring that the existing test
-fixtures do not stand up; the helpers below are where the load-bearing
-logic actually lives.
+v2.434.0 — the host-readiness tests (``build_tool_readiness``) went with the
+recon planning service and the environment probe: BlueStick no longer checks
+an operator's machine against a tool catalogue.
 """
 
 from __future__ import annotations
@@ -24,7 +17,6 @@ import pytest
 
 from app.db.models_auth import APIKey
 from app.services.agent_session_service import create_agent_session, mint_session_key
-from app.services.recon_planning_service import build_tool_readiness
 
 
 # ---------------------------------------------------------------------------
@@ -97,101 +89,3 @@ def test_mint_session_key_leaves_other_sessions_keys_alone(
     db_session.refresh(other_key)
 
     assert other_key.is_active is True, "minting for one session must not revoke another's key"
-
-
-# ---------------------------------------------------------------------------
-# Plan C — build_tool_readiness
-# ---------------------------------------------------------------------------
-
-
-def test_build_tool_readiness_no_probe_marks_all_unknown():
-    result = build_tool_readiness(probe=None)
-    assert result["has_probe"] is False
-    assert result["os_family"] is None
-    assert result["summary"]["total"] > 0
-    assert result["summary"]["unknown"] == result["summary"]["total"]
-    assert all(t["status"] == "unknown" for t in result["tools"])
-    assert all(isinstance(t["install_hints"], dict) for t in result["tools"])
-
-
-def test_build_tool_readiness_uses_tools_status_when_present():
-    probe = {
-        "os_family": "linux",
-        "shell": "bash",
-        "tools_status": [
-            {"name": "nmap", "status": "ok", "path": "/usr/bin/nmap"},
-            {"name": "masscan", "status": "missing"},
-            {
-                "name": "httpx",
-                "status": "warn",
-                "issue": "Python httpx shadows ProjectDiscovery httpx",
-            },
-        ],
-    }
-    result = build_tool_readiness(probe=probe)
-
-    assert result["has_probe"] is True
-    assert result["os_family"] == "linux"
-    assert result["preferred_provider"] == "apt"
-
-    by_name = {t["tool"]: t for t in result["tools"]}
-    assert by_name["nmap"]["status"] == "installed"
-    assert by_name["nmap"]["path"] == "/usr/bin/nmap"
-    assert by_name["masscan"]["status"] == "missing"
-    assert by_name["httpx"]["status"] == "warn"
-    assert "Python httpx shadows" in (by_name["httpx"]["issue"] or "")
-
-
-def test_build_tool_readiness_falls_back_to_tools_available():
-    """tools_status is authoritative; tools_available is the simpler
-    fallback when the agent has not run the preflight script yet."""
-    probe = {
-        "os_family": "darwin",
-        "tools_available": {"nmap": True, "masscan": False},
-    }
-    result = build_tool_readiness(probe=probe)
-
-    assert result["preferred_provider"] == "brew"
-    by_name = {t["tool"]: t for t in result["tools"]}
-    assert by_name["nmap"]["status"] == "installed"
-    assert by_name["masscan"]["status"] == "missing"
-
-
-def test_build_tool_readiness_dict_form_tools_status_also_accepted():
-    """tools_status accepts the dict-keyed shape some agents emit, not
-    just the documented list shape (parity with _env_tool_unavailable)."""
-    probe = {
-        "os_family": "linux",
-        "tools_status": {
-            "nmap": {"status": "ok", "path": "/usr/bin/nmap"},
-            "masscan": {"status": "missing"},
-        },
-    }
-    result = build_tool_readiness(probe=probe)
-    by_name = {t["tool"]: t for t in result["tools"]}
-    assert by_name["nmap"]["status"] == "installed"
-    assert by_name["masscan"]["status"] == "missing"
-
-
-def test_build_tool_readiness_summary_counts_match_per_tool_statuses():
-    probe = {
-        "os_family": "linux",
-        "tools_status": [
-            {"name": "nmap", "status": "ok"},
-            {"name": "masscan", "status": "missing"},
-            {"name": "httpx", "status": "warn"},
-        ],
-    }
-    result = build_tool_readiness(probe=probe)
-    statuses = [t["status"] for t in result["tools"]]
-    assert result["summary"]["installed"] == statuses.count("installed")
-    assert result["summary"]["missing"] == statuses.count("missing")
-    assert result["summary"]["warn"] == statuses.count("warn")
-    assert result["summary"]["unknown"] == statuses.count("unknown")
-    assert (
-        result["summary"]["installed"]
-        + result["summary"]["missing"]
-        + result["summary"]["warn"]
-        + result["summary"]["unknown"]
-        == result["summary"]["total"]
-    )

@@ -72,20 +72,6 @@ def test_execution_context_without_an_active_run_409s(
     assert "no active execution run" in resp.text.lower()
 
 
-def test_session_environment_probe_roundtrips(client, exec_ctx):
-    """One probe per session (replaces the per-phase probe endpoints)."""
-    key, _sid, _run = exec_ctx
-    resp = client.post(
-        "/api/v1/agent/session/environment",
-        headers={"X-API-Key": key},
-        json={"os_family": "linux"},
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["session_type"] == "session"
-    assert body["probed_at"] is not None
-
-
 def test_a_different_session_cannot_complete_this_run(
     client, db_session, exec_ctx, test_project, test_agent,
 ):

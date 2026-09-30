@@ -18,11 +18,9 @@ import { TooltipProvider } from '../../components/ui/tooltip';
 import type { ToolRegistryEntry } from '../../services/api/references';
 
 const getToolRegistry = vi.fn();
-const getToolReadiness = vi.fn();
 const updateToolRegistryEntry = vi.fn();
 vi.mock('../../services/api', () => ({
   getToolRegistry: () => getToolRegistry(),
-  getToolReadiness: () => getToolReadiness(),
   updateToolRegistryEntry: (...args: unknown[]) => updateToolRegistryEntry(...args),
 }));
 
@@ -65,18 +63,10 @@ const renderPage = () =>
 describe('ToolReference', () => {
   beforeEach(() => {
     getToolRegistry.mockReset();
-    getToolReadiness.mockReset();
     updateToolRegistryEntry.mockReset();
     hasRole.mockReset();
     hasRole.mockReturnValue(false);
     getToolRegistry.mockResolvedValue({ count: 1, tools: [tool()] });
-    // The readiness panel is a separate concern; give it the "never probed"
-    // shape so it renders its own empty state and stays out of the way.
-    getToolReadiness.mockResolvedValue({
-      has_probe: false,
-      summary: { installed: 0, missing: 0, warn: 0, unknown: 0, total: 0 },
-      tools: [],
-    });
   });
 
   it('renders the registry rather than a built-in list', async () => {

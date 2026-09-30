@@ -53,15 +53,6 @@ def test_one_key_reaches_identity_scope_and_plan(client, test_project, db_sessio
     assert ident["open_phases"]["active_execution_session_ids"] == []
     assert ident["can_write_project_data"] is True  # admin operator
 
-    # environment probe on the session (one, not three).
-    r = client.post(
-        "/api/v1/agent/session/environment",
-        headers=_hdr(key),
-        json={"os_family": "linux", "shell": "bash"},
-    )
-    assert r.status_code == 200, r.text
-    assert r.json()["session_type"] == "session"
-
     # read a scope — same key, no new credential.
     scope = _scope_with_subnet(db_session, test_project)
     r = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=_hdr(key))

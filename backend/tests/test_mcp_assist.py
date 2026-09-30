@@ -684,35 +684,6 @@ def test_unauthenticated_calls_write_no_audit_row(client, caplog):
     assert not [m for m in caplog.messages if "agent_api_call write failed" in m]
 
 
-def test_environment_probe_tool_resolves_the_session_from_the_key(client, test_project):
-    """The guide makes the environment probe the mandatory first step, but no
-    tool exposed it — an MCP-only client had to fall back to curl for the one
-    call it must make first (v2.271.0).
-
-    The session id is resolved from the key rather than made the model's
-    problem: the key is already bound to exactly one assist session.
-    """
-    body = _start_session(client, test_project.id)
-    result = _rpc(client, {
-        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
-        "params": {
-            "name": "record_environment",
-            "arguments": {"os_family": "linux", "shell": "bash"},
-        },
-    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
-
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["environment"]["os_family"] == "linux"
-    assert result["structuredContent"]["session_type"] == "session"
-
-    # And the session now reports it as probed, so the agent's context reflects it.
-    info = _rpc(client, {
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "assist_session_info", "arguments": {}},
-    }, headers={"X-API-Key": body["api_key"]}).json()["result"]
-    assert info["structuredContent"]["environment_probed"] is True
-
-
 def test_mcp_page_size_defaults_are_smaller_than_the_download_defaults(client, test_project):
     """500 hosts is right for a file download and a lot of tokens for a model
     that usually wants the first handful."""
@@ -788,21 +759,26 @@ def test_advertised_defaults_match_what_the_server_injects(client):
     assert catalog["assist_list_hosts"]["input_schema"]["properties"]["limit"]["default"] == 100
 
 
-def test_probe_accepts_the_attribution_fields_the_prompt_asks_for(client, test_project):
-    """The assist prompt tells agents to send agent_model / agent_tool /
-    agent_prompt_version. The tool omitted them, and since unknown arguments
-    became an error an agent following its instructions got -32602."""
+def test_tools_accept_the_attribution_field_the_prompt_asks_for(client, test_project):
+    """The prompt tells agents to send agent_model. When a tool omitted an
+    attribution field the prompt asked for, an agent following its
+    instructions got -32602 (unknown arguments are an error). The environment
+    probe that used to carry these is gone; agent_model now rides on
+    create_test_plan / start_execution / end_session, so the MCP schema must
+    advertise it on each."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+
+    for name in ("create_test_plan", "start_execution", "end_session"):
+        spec = TOOLS[name]
+        assert "agent_model" in spec["input_schema"]["properties"], name
+        assert "agent_model" in spec["body_params"], name
+
     body = _start_session(client, test_project.id)
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "record_environment",
-            "arguments": {
-                "os_family": "linux", "shell": "bash",
-                "agent_model": "claude-opus-5",
-                "agent_tool": "claude-code",
-                "agent_prompt_version": "1.49.0",
-            },
+            "name": "create_test_plan",
+            "arguments": {"title": "attributed", "agent_model": "claude-opus-5"},
         },
     }, headers={"X-API-Key": body["api_key"]}).json()
 
@@ -820,14 +796,14 @@ def test_overwriting_tools_are_not_advertised_as_additive(client):
     assert tools["assist_add_note"]["destructiveHint"] is False
     for name in ("assist_set_follow", "assist_patch_host"):
         assert tools[name]["destructiveHint"] is True, name
-    # The environment probe is a metadata_write (v2.316.0): it replaces session
-    # bookkeeping, not project data, and re-probing converges — so it is
+    # Session renewal is a metadata_write (v2.316.0): it replaces session
+    # bookkeeping, not project data, and a retry converges — so it is
     # non-destructive and idempotent, and a client may auto-approve it. It still
     # writes, so it is not read-only.
-    probe = tools["record_environment"]
-    assert probe["destructiveHint"] is False
-    assert probe["idempotentHint"] is True
-    assert probe["readOnlyHint"] is False
+    renew = tools["session_renew"]
+    assert renew["destructiveHint"] is False
+    assert renew["idempotentHint"] is True
+    assert renew["readOnlyHint"] is False
     # Reads are never destructive.
     assert tools["assist_list_hosts"]["destructiveHint"] is False
 

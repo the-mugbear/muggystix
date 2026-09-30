@@ -122,20 +122,6 @@ export interface PlanFilterCriteria {
  *  picker (v2.28.0).  A plan can be executed multiple times so the
  *  attribution fields (started_by_username, agent_name, generated_by_model)
  *  are what lets the UI distinguish runs. */
-/** Operator-environment probe captured at execution-session start. */
-export interface ExecutionEnvironmentSnapshot {
-  probed_at?: string | null;
-  probed_from_ip?: string | null;
-  os_family?: string | null;
-  os_release?: string | null;
-  shell?: string | null;
-  arch?: string | null;
-  python?: string | null;
-  notes?: string | null;
-  tools_status?: Array<Record<string, unknown>>;
-  raw?: Record<string, unknown> | null;
-}
-
 export interface ExecutionSessionSummary {
   id: number;
   status: string;
@@ -151,12 +137,6 @@ export interface ExecutionSessionSummary {
   generated_by_model?: string | null;
   generated_by_tool?: string | null;
   prompt_version?: string | null;
-  environment_os_family?: string | null;
-  environment_shell?: string | null;
-  environment_probed_at?: string | null;
-  /** Full operator-environment probe (tools on PATH, python real-vs-stub,
-   *  arch, notes). Null when no probe arrived. */
-  environment?: ExecutionEnvironmentSnapshot | null;
   /** Timestamp of the most recent agent API call against this session
    *  (from the agent_api_calls audit log), or null if the agent never
    *  called in.  An `active` session with no recent activity is likely

@@ -174,10 +174,8 @@ const AgentSessionDetail: React.FC = () => {
   }
 
   const operator = rowOperatorName(row);
-  const env = (review?.environment ?? {}) as Record<string, unknown>;
-  const envLine = [env.os_family, env.os_release, env.shell]
-    .filter((v) => typeof v === 'string' && v)
-    .join(' · ');
+  // The agent's client, recorded from its MCP handshake.
+  const clientName = row.generated_by_tool ?? review?.agent_tool ?? null;
   const phases = row.phases ?? [];
   const openPhases = phases.filter(isOpenPhase).length;
   const ended = row.status !== 'active';
@@ -218,10 +216,13 @@ const AgentSessionDetail: React.FC = () => {
           <Fact label="Started">{formatTimestamp(row.started_at)}</Fact>
           <Fact label={ended ? 'Ran for' : 'Running for'}>{sessionDuration(row.started_at, row.completed_at)}</Fact>
           <Fact label="Last call">{row.last_activity_at ? formatTimestamp(row.last_activity_at) : 'none yet'}</Fact>
-          <Fact label="Agent" title={row.agent_name ?? undefined}>
-            {[row.generated_by_model, row.generated_by_tool].filter(Boolean).join(' · ') || safeFallback(row.agent_name, '—')}
+          <Fact
+            label="Model"
+            title={review?.prompt_version ? `Prompt ${review.prompt_version}` : undefined}
+          >
+            {safeFallback(row.generated_by_model ?? review?.agent_model ?? row.agent_name, 'not reported')}
           </Fact>
-          <Fact label="Operator’s machine" title={envLine || undefined}>{envLine || '—'}</Fact>
+          <Fact label="Client" title={clientName ?? undefined}>{safeFallback(clientName, '—')}</Fact>
           <Fact label="API calls">{review ? review.call_count.toLocaleString() : '—'}</Fact>
           <Fact label="Feedback left">{(row.feedback_count ?? 0).toLocaleString()}</Fact>
         </dl>

@@ -6,7 +6,9 @@ endpoint's behaviour in isolation, and all four bugs live in the *gaps between*
 endpoints:
 
   * a note written through one tool was invisible to another,
-  * one tool said the environment was probed and another said it was not,
+  * one tool said the environment was probed and another said it was not
+    (the environment probe itself was removed in v2.433.x; those tests went
+    with it),
   * a tool's advertised input could not express what the endpoint requires,
   * two tools reported different totals for the same thing.
 
@@ -17,7 +19,6 @@ with tool B" rather than as per-endpoint assertions.
 
 from datetime import datetime, timezone
 
-import pytest
 
 
 def _start(client, project_id, purpose="cross-tool consistency"):
@@ -169,113 +170,9 @@ def test_recent_notes_stays_inside_the_project(client, db_session, test_project)
 
 
 # ---------------------------------------------------------------------------
-# 2. Every tool that reports "has this session probed its environment" agrees.
+# 2. What MCP advertises must be able to express what the endpoint requires.
+#    (The environment-probe cases that lived here went with the probe.)
 # ---------------------------------------------------------------------------
-
-def test_all_three_tools_agree_the_environment_was_probed(
-    client, db_session, test_project,
-):
-    """`agent_identity` said false while `assist_session_info` and
-    `assist_get_context` said true, immediately after a successful probe.
-
-    Identity read `AgentSession.environment_probed_at`; the probe writes the
-    per-workflow detail row (AssistSession / ReconSession / ExecutionSession).
-    Nothing writes the unified row, so identity's answer was false for every
-    workflow, forever — an agent following its own instructions would re-probe
-    on every turn.
-    """
-    started = _start(client, test_project.id)
-    headers = {"X-API-Key": started["api_key"]}
-    sid = started["assist_session_id"]
-
-    def probed_flags():
-        return {
-            "identity": client.get(
-                "/api/v1/agent/identity", headers=headers,
-            ).json()["environment_probed"],
-            "session_info": client.get(
-                "/api/v1/agent/assist/session", headers=headers,
-            ).json()["environment_probed"],
-            "context": client.get(
-                "/api/v1/agent/assist/context", headers=headers,
-            ).json()["session"].get("environment_probed"),
-        }
-
-    before = probed_flags()
-    assert set(before.values()) == {False}, f"expected all false before: {before}"
-
-    probe = client.post(
-        f"/api/v1/agent/session/environment",
-        headers=headers,
-        json={"os_family": "linux", "shell": "bash"},
-    )
-    assert probe.status_code == 200, probe.text
-
-    after = probed_flags()
-    assert set(after.values()) == {True}, (
-        f"tools disagree about whether the environment was probed: {after}"
-    )
-
-
-# ---------------------------------------------------------------------------
-# 3. What MCP advertises must be able to express what the endpoint requires.
-# ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("field", ["tools_available", "tools_status"])
-def test_the_probe_schema_can_express_the_tool_inventory(field):
-    """The environment contract asks for a tool inventory; the MCP schema set
-    `additionalProperties: false` and omitted both inventory fields, so an MCP
-    agent could not send one. Every probe recorded through MCP therefore stored
-    `tools_available: {}` while a curl agent could send it — the two transports
-    disagreed about what a complete probe is."""
-    from app.api.v1.endpoints.mcp_tools import TOOLS, _PROBE_PROPERTIES
-
-    assert field in _PROBE_PROPERTIES
-
-    probes = [
-        (name, spec) for name, spec in TOOLS.items()
-        if spec["path"].endswith("/environment")
-    ]
-    assert probes, "expected the per-workflow environment probe tools"
-    for name, spec in probes:
-        props = spec["input_schema"]["properties"]
-        assert field in props, f"{name} cannot send {field}"
-        assert field in spec["body_params"], (
-            f"{name} advertises {field} but would not forward it"
-        )
-
-
-def test_the_probe_schema_accepts_every_os_family_the_model_documents():
-    """The enum allowed windows/darwin/linux; EnvironmentSummary documents bsd
-    and other as well, so an operator on either had to misreport their OS."""
-    from app.api.v1.endpoints.mcp_tools import _PROBE_PROPERTIES
-
-    allowed = set(_PROBE_PROPERTIES["os_family"]["enum"])
-    assert {"windows", "darwin", "linux", "bsd", "other"} <= allowed
-
-
-def test_an_mcp_probe_round_trips_the_tool_inventory(
-    client, db_session, test_project,
-):
-    """End to end: send the inventory the way MCP would, read it back."""
-    started = _start(client, test_project.id)
-    headers = {"X-API-Key": started["api_key"]}
-    sid = started["assist_session_id"]
-
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers=headers,
-        json={
-            "os_family": "bsd",
-            "tools_available": {"nmap": True, "masscan": False},
-            "tools_status": [{"name": "nmap", "status": "ok", "version": "7.94"}],
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    env = resp.json()["environment"]
-    assert env["tools_available"] == {"nmap": True, "masscan": False}
-    assert env["os_family"] == "bsd"
-
 
 def test_no_tool_schema_uses_a_top_level_union(
     ):
@@ -297,7 +194,7 @@ def test_no_tool_schema_uses_a_top_level_union(
 
 
 # ---------------------------------------------------------------------------
-# 4. Two tools counting the same thing must be reconcilable.
+# 3. Two tools counting the same thing must be reconcilable.
 # ---------------------------------------------------------------------------
 
 def test_ingestion_issues_and_coverage_report_reconcilable_parse_errors(

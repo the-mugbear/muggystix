@@ -126,13 +126,6 @@ def test_unrecognized_workflow_denied(client, db_session, test_agent, recon_scop
     assert _subnets(client, raw, recon_scope.id).status_code == 403
 
 
-def test_environment_probe_roundtrips(client, recon_key):
-    r = client.post("/api/v1/agent/session/environment",
-                    headers={"X-API-Key": recon_key},
-                    json={"os_family": "linux", "shell": "bash"})
-    assert r.status_code in (200, 201), r.text
-
-
 # --- uploads ---------------------------------------------------------------
 
 _NMAP = b'<?xml version="1.0"?>\n<nmaprun scanner="nmap"><!-- %d --></nmaprun>\n'

@@ -119,9 +119,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                       the session's capability grant. Grants are gone: a session
                       acts with its operator's own project permissions, so there
                       is no per-session authority to report here. */}
-                  {/* v5.203.0 — connection state from observed calls, not the
-                      environment probe (a client can skip the probe and still
-                      work, or post it via curl and never use MCP). "Waiting"
+                  {/* v5.203.0 — connection state from observed calls. "Waiting"
                       is the common dead end: key minted, client never
                       connected. A past call proves the client connected, not
                       that it is still running — so this is never a green

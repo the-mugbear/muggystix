@@ -202,43 +202,6 @@ def test_end_session_revokes_key(client, test_project):
     assert second.status_code == 409, second.text
 
 
-def test_environment_probe_returns_valid_response(client, test_project):
-    """v2.64.1 regression — the initial v2.64.0 commit omitted
-    session_type from EnvironmentProbeResponse, so Pydantic 500'd
-    the response AFTER the DB write committed.  An agent saw a
-    confusing 500 and retried, polluting the audit log.  Guard against
-    a future schema bump that breaks the response again.
-    """
-    body = _start_session(client, test_project.id)
-    headers = _auth_headers(body["api_key"])
-
-    # Minimal valid EnvironmentProbeRequest — os_family is the only
-    # required field (everything else is shaped for richer probes).
-    resp = client.post(
-        "/api/v1/agent/session/environment",
-        headers=headers,
-        json={
-            "os_family": "linux",
-            "agent_model": "gpt-5",
-            "agent_tool": "codex",
-            "agent_prompt_version": "1.44.0",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    data = resp.json()
-    assert data["session_type"] == "session"
-    assert data["probed_at"] is not None
-    # environment echo back — empty input round-trips to an empty
-    # EnvironmentSummary, not a 500.
-    assert isinstance(data["environment"], dict)
-    # Agent feedback (v1.44.0): the three required attribution fields must be
-    # echoed so the agent can verify they persisted (they land on separate
-    # session columns and were previously dropped from the response).
-    assert data["agent_model"] == "gpt-5"
-    assert data["agent_tool"] == "codex"
-    assert data["agent_prompt_version"] == "1.44.0"
-
-
 def test_context_totals_includes_scan_count(client, test_project):
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])

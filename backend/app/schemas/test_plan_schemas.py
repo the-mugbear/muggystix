@@ -95,29 +95,6 @@ class TestPlanSummary(BaseModel):
     agent_session_id: Optional[int] = None
 
 
-class ExecutionEnvironmentSnapshot(BaseModel):
-    """Operator-environment probe captured at the start of an execution
-    session — parity with recon's ReconEnvironmentSnapshot.
-
-    The execution summary previously exposed only ``os_family`` + ``shell``
-    (flattened), so an analyst reviewing a run couldn't see the operator's
-    tool inventory / PowerShell policy / real-vs-stub Python that determined
-    which command flavours the agent chose — the same context recon
-    reviewers already get.  Sourced from ``execution_sessions.environment``
-    (JSON) plus the dedicated probe-audit columns.
-    """
-    probed_at: Optional[datetime] = None
-    probed_from_ip: Optional[str] = None
-    os_family: Optional[str] = None
-    os_release: Optional[str] = None
-    shell: Optional[str] = None
-    arch: Optional[str] = None
-    python: Optional[str] = None
-    notes: Optional[str] = None
-    tools_status: List[Dict[str, Any]] = Field(default_factory=list)
-    raw: Optional[Dict[str, Any]] = None
-
-
 class ExecutionSessionSummary(BaseModel):
     """Snapshot of an ExecutionSession for a plan (v2.28.0).
 
@@ -137,20 +114,13 @@ class ExecutionSessionSummary(BaseModel):
     started_by_username: Optional[str] = None
     agent_name: Optional[str] = None
     # Executing-agent attribution (v2.28.0) — stamped by the agent
-    # via the environment-probe call.  Lets the UI distinguish runs
+    # (v2.434.0: the model the agent self-reports, the client its MCP
+    # handshake names, the prompt the server issued).  Lets the UI distinguish runs
     # by model/tool so a user can compare claude-opus vs gpt-5-codex
     # on the same plan.
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
     prompt_version: Optional[str] = None
-    # Environment probe summary, when one has been recorded.  The flat
-    # os_family/shell fields are kept for back-compat (existing callers);
-    # ``environment`` carries the full probe (tools, python, arch, notes)
-    # for the detail panel — parity with recon.
-    environment_os_family: Optional[str] = None
-    environment_shell: Optional[str] = None
-    environment_probed_at: Optional[datetime] = None
-    environment: Optional[ExecutionEnvironmentSnapshot] = None
     # Timestamp of the most recent agent API call against this session
     # (from the agent_api_calls audit log), or None if the agent never
     # called in.  An `active` session with no recent activity is likely

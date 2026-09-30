@@ -2,13 +2,13 @@
 
 `app.services.tool_output_contract.TOOL_OUTPUT_CONTRACT` is the single source of
 truth for which file extensions each recon tool's output must carry to be
-parseable.  Four independent, human/agent-facing copies describe "how to run a
-tool for BlueStick", and they can't share code (a session-parameterised agent
-command, a static operator-facing page, and two markdown tables):
+parseable.  Three independent, human/agent-facing copies describe "how to run
+a tool for BlueStick", and they can't share code (a static operator-facing
+page and two markdown tables).  The backend recon catalog was a fourth until
+v2.434.0, when BlueStick stopped handing agents commands to run:
 
-  1. backend recon catalog — ``recon_planning_service.build_tool_catalog``
   2. frontend Tool Reference — ``RUN_COMMANDS`` in ``frontend/src/pages/ToolReference.tsx``
-  3. ``AGENTS.md`` "Supported upload formats" table
+  3. ``documentation/AGENT_GUIDE.md`` "Supported upload formats" table
   4. ``documentation/UPLOAD_FORMATS.md`` parser-coverage table
 
 The invariant this test pins: **every output extension any source recommends or
@@ -35,7 +35,6 @@ from typing import Optional, Set
 
 import pytest
 
-from app.services.recon_planning_service import build_tool_catalog
 from app.services.tool_output_contract import (
     KNOWN_EXTENSIONS,
     TOOL_OUTPUT_CONTRACT,
@@ -115,38 +114,8 @@ def test_contract_extensions_are_all_routable():
         assert not unknown, f"{tool}: extensions not in KNOWN_EXTENSIONS: {unknown}"
 
 
-# --- Source 1: backend recon catalog ---------------------------------------
-def test_backend_catalog_matches_contract():
-    catalog = build_tool_catalog(["10.0.0.0/24"], {"size_bucket": "small"})
-    assert catalog, "build_tool_catalog returned nothing"
-    for entry in catalog:
-        tool = entry["tool"]
-        assert tool in TOOL_OUTPUT_CONTRACT, (
-            f"recon catalog tool '{tool}' has no TOOL_OUTPUT_CONTRACT entry — "
-            f"add it (or the agent will recommend an output nothing verifies)."
-        )
-        exts = accepted_extensions(tool)
-        # The declared output_format is effectively the target extension.
-        fmt = entry.get("output_format")
-        assert fmt in exts, (
-            f"recon catalog '{tool}': output_format '{fmt}' not in contract {exts}"
-        )
-        # And the extension the command actually writes.
-        cmd_ext = output_extension(entry["command"])
-        if writes_output_file(tool):
-            assert cmd_ext is not None, (
-                f"recon catalog '{tool}': no recognised output-file flag in command "
-                f"— an unparseable output form would ship undetected.\n  command: {entry['command']}"
-            )
-            assert cmd_ext in exts, (
-                f"recon catalog '{tool}': command writes .{cmd_ext}, not in contract {exts}\n"
-                f"  command: {entry['command']}"
-            )
-        elif cmd_ext is not None:
-            assert cmd_ext in exts, (
-                f"recon catalog '{tool}': command writes .{cmd_ext}, not in contract {exts}\n"
-                f"  command: {entry['command']}"
-            )
+# --- (The backend recon catalog was Source 1; it went with the recon planning
+# service in v2.434.0 — BlueStick no longer hands agents commands to run.)
 
 
 # --- Source 2: frontend Tool Reference RUN_COMMANDS ------------------------

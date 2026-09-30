@@ -5,22 +5,20 @@ output must carry to be ingested.  This is the HUB that the human/agent-facing
 copies of "how to run this tool for BlueStick" are checked against by
 ``tests/test_tool_command_consistency.py``:
 
-  * the backend recon catalog — ``recon_planning_service.build_tool_catalog``
-    (the agent's session-rendered commands),
   * the frontend Tool Reference page — ``RUN_COMMANDS`` in
     ``frontend/src/pages/ToolReference.tsx`` (the operator-facing commands),
   * the agent guide's (``documentation/AGENT_GUIDE.md``) "Supported upload formats" table, and
   * ``documentation/UPLOAD_FORMATS.md``.
 
-Those four exist independently because they serve different consumers (a
-session-parameterised agent command is not a generic operator template, and a
-static docs page shouldn't fetch at runtime).  They can't share code — but they
+Those three exist independently because they serve different consumers (a
+static docs page shouldn't fetch at runtime); a fourth, the backend recon
+catalog, went with the recon planning service in v2.434.0.  They can't share
+code — but they
 must not disagree.  The contract is the referee: when any of them recommends a
 command whose output extension isn't accepted here (i.e. the parser can't ingest
 it), the consistency test fails instead of the drift shipping silently.
 
-Keyed by tool BINARY name (matches the ``tool`` field in the recon catalog and
-the ``RUN_COMMANDS`` keys).  ``exts`` is the set of accepted upload extensions
+Keyed by tool BINARY name (matches the ``RUN_COMMANDS`` keys).  ``exts`` is the set of accepted upload extensions
 and is authoritative — it mirrors the parser registry / UPLOAD_FORMATS.md.  A
 tool may legitimately be recommended with different-but-valid output across
 sources (e.g. subfinder ``.txt`` in the agent catalog vs ``.json`` on the

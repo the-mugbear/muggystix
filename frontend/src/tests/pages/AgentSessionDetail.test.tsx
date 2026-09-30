@@ -79,14 +79,11 @@ const review = {
   started_at: ago(2 * HOUR),
   ended_at: null,
   last_activity_at: ago(60 * 1000),
-  environment_probed: true,
   key_expires_at: null,
   call_count: 14,
   note_count: 1,
   connection: 'mcp',
   first_call_at: ago(HOUR),
-  environment: { os_family: 'linux', shell: 'bash' },
-  environment_probed_at: ago(HOUR),
   agent_model: null,
   agent_tool: null,
   prompt_version: '2.13.1',
@@ -132,6 +129,11 @@ describe('AgentSessionDetail', () => {
     expect(screen.getByText('Analyst role')).toBeInTheDocument();
     expect(await screen.findByText('MCP verified')).toBeInTheDocument();
     expect(screen.getByText('Running for')).toBeInTheDocument();
+    // Attribution: the model the agent reported, and its client (from the
+    // MCP handshake). The operator's machine is no longer a fact.
+    expect(screen.getByText('claude-opus-5-5')).toBeInTheDocument();
+    expect(screen.getByText('claude-code')).toBeInTheDocument();
+    expect(screen.queryByText(/Operator’s machine/)).not.toBeInTheDocument();
   });
 
   it('lists the work it opened, each linking to its page', async () => {

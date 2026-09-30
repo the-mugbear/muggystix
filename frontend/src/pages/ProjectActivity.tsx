@@ -118,7 +118,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
   if (!reported) {
     return (
       <p className="text-caption text-muted-foreground">
-        No agent has reported its model or tool yet, so there is no breakdown by model — it appears
+        No agent has reported its model or client yet, so there is no breakdown by model — it appears
         here once one does.
       </p>
     );
@@ -133,7 +133,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
           <TableHeader>
             <TableRow>
               <TableHead>Model</TableHead>
-              <TableHead>Tool / harness</TableHead>
+              <TableHead>Client</TableHead>
               <TableHead className="w-20 text-right">Sessions</TableHead>
               <TableHead className="w-20 text-right">Plan-gen</TableHead>
               <TableHead className="w-20 text-right">Execution</TableHead>
@@ -660,11 +660,11 @@ const ProjectActivity: React.FC = () => {
             )}
             {showToolFilter && (
               <Select value={toolFilter || 'all'} onValueChange={(v) => setToolFilter(v === 'all' ? '' : v)}>
-                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter sessions by tool">
-                  <SelectValue placeholder="All tools" />
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter sessions by client">
+                  <SelectValue placeholder="All clients" />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="all">All tools</SelectItem>
+                  <SelectItem value="all">All clients</SelectItem>
                   {knownTools.map((t) => (
                     <SelectItem key={t} value={t}>{t}</SelectItem>
                   ))}

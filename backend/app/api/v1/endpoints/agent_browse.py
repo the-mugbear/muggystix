@@ -41,9 +41,8 @@ from app.services.host_follow_service import HostFollowService
 from app.services.host_serialization import exploit_count_maps
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
-    close_agent_session_from_agent, session_phase_summary, propagate_probe,
+    close_agent_session_from_agent, note_agent_model, session_phase_summary,
 )
-from app.services.agent_environment_probe_service import apply_environment_probe
 
 from app.api.v1.endpoints.agent_schemas import (
     PortBrief, VulnCounts, HostBrief, HostDetail,
@@ -52,7 +51,6 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentNoteCreate, AgentNoteResponse, AgentFollowRequest,
     AgentHostUpdate, AgentHostUpdateResponse,
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
-    EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters, _batch_host_enrichment, load_agent_session,
@@ -136,6 +134,10 @@ class SessionEndRequest(BaseModel):
         None, max_length=2000,
         description="One or two lines on what the session did; lands on the session record.",
     )
+    agent_model: Optional[str] = Field(
+        None, max_length=200,
+        description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the session.",
+    )
 
 
 class SessionEndResponse(BaseModel):
@@ -171,11 +173,12 @@ def end_own_session(
     until the hourly sweep lapsed it — after the key had expired *and* the
     session had passed its lifetime cap, a week by default.
 
-    Refuses with 409 while a recon or execution phase is still open, naming
-    the ids: complete those first, then end the session.  Feedback goes
-    before this call, not after — the key is revoked on the way out.
+    Refuses with 409 while an execution run is still open, naming the ids:
+    complete it first, then end the session.  Feedback goes before this call,
+    not after — the key is revoked on the way out.
     """
     session = load_agent_session(db, request)
+    note_agent_model(session, body.agent_model)
     close_agent_session_from_agent(db, session, notes=body.notes)
     db.commit()
     db.refresh(session)
@@ -287,7 +290,7 @@ def get_agent_identity(
     )
 
     # v2.337.0 — the phases this session has open, so the MCP layer can fill
-    # tool arguments (a recon_session_id, an execution session's plan_id) and
+    # tool arguments (an execution session's plan_id) and
     # the client can see what is in flight without probing surfaces.
     phases = session_phase_summary(db, session) if session is not None else {}
 
@@ -307,56 +310,9 @@ def get_agent_identity(
         agent_name=agent.name,
         operator=operator,
         can_write_project_data=can_write_project_data,
-        environment_probed=(
-            session is not None and session.environment_probed_at is not None
-        ),
         key_expires_at=getattr(request.state, "key_expires_at", None),
         renew_path=AGENT_SESSION_RENEW_PATH,
         renewable_until=session_renewal_deadline(session),
-    )
-
-
-@router.post(
-    "/session/environment",
-    response_model=EnvironmentProbeResponse,
-    summary="Record this session's operator environment (MANDATORY first step)",
-)
-def record_session_environment(
-    body: EnvironmentProbeRequest,
-    request: Request,
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    """Persist the environment probe onto the session (v2.337.0).
-
-    One probe per session — it replaces the three per-phase probe endpoints.
-    The probe is snapshotted onto every recon/execution run the session opens
-    (and refreshed on the open runs when re-posted) so command-flavour choices
-    match this operator's host. Session-metadata write: allowed for any
-    operator whose membership is current, regardless of role.
-    """
-    session = load_agent_session(db, request)
-    apply_environment_probe(
-        session=session,
-        body=body,
-        request=request,
-        agent=agent,
-        active_statuses={"active"},
-        session_kind="session",
-    )
-    propagate_probe(db, session)
-    db.commit()
-    db.refresh(session)
-    return EnvironmentProbeResponse(
-        session_id=session.id,
-        session_type="session",
-        probed_at=session.environment_probed_at,
-        probed_by_user_id=session.environment_probed_by_user_id,
-        probed_from_ip=session.environment_probed_from_ip,
-        environment=EnvironmentSummary(**(session.environment or {})),
-        agent_model=session.generated_by_model,
-        agent_tool=session.generated_by_tool,
-        agent_prompt_version=session.prompt_version,
     )
 
 

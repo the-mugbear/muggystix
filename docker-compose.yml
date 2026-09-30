@@ -85,8 +85,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.433.1}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.313.1}
+      APP_VERSION: ${APP_VERSION:-2.434.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.314.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -98,7 +98,7 @@ services:
       - ./scripts:/app/scripts
       - ./platform_version.json:/app/platform_version.json:ro
       # The agent guide served at /api/v1/agents-guide (renamed from a root
-      # AGENTS.md in v2.433.1: coding agents load a root AGENTS.md as repo rules).
+      # AGENTS.md in v2.434.0: coding agents load a root AGENTS.md as repo rules).
       - ./documentation/AGENT_GUIDE.md:/app/AGENT_GUIDE.md:ro
       # Public half of the deployment's TLS certificate, so the API can hand it
       # to operators for NODE_EXTRA_CA_CERTS (see /references/tls-certificate).
@@ -169,7 +169,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.433.1}
+      APP_VERSION: ${APP_VERSION:-2.434.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -212,7 +212,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.433.1}
+      APP_VERSION: ${APP_VERSION:-2.434.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -235,12 +235,12 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.433.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.434.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.313.1}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.314.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255

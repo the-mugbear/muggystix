@@ -364,7 +364,7 @@ describe('Agent Sessions', () => {
       }],
     });
     renderPage();
-    await screen.findByText(/No agent has reported its model or tool yet/);
+    await screen.findByText(/No agent has reported its model or client yet/);
     expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
   });
 });

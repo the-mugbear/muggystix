@@ -40,8 +40,8 @@ function wrap(node: React.ReactNode) {
   );
 }
 
-// Canonical session shape used across the tests below — claude on
-// Kali, paused mid-run.  Subtests override specific fields.
+// Canonical session shape used across the tests below — claude,
+// paused mid-run.  Subtests override specific fields.
 const session: ExecutionSessionSummary = {
   id: 42,
   status: 'paused',
@@ -53,8 +53,6 @@ const session: ExecutionSessionSummary = {
   generated_by_model: 'claude-opus-4-7',
   generated_by_tool: 'claude-code',
   prompt_version: '1.13.0',
-  environment_os_family: 'linux',
-  environment_shell: 'bash',
 };
 
 // ---------------------------------------------------------------------------
@@ -62,15 +60,16 @@ const session: ExecutionSessionSummary = {
 // ---------------------------------------------------------------------------
 
 describe('ExecutionSessionHeader', () => {
-  it('renders session metadata, attribution, and env probe', () => {
+  it('renders session metadata and attribution, and no operator-host line', () => {
     wrap(<ExecutionSessionHeader session={session} totalSessionCount={1} />);
     expect(screen.getByText('Execution run')).toBeInTheDocument();
     expect(screen.getByText('paused')).toBeInTheDocument();
     expect(screen.getByText('guided')).toBeInTheDocument();
     // Attribution line names the model.
     expect(screen.getByText('claude-opus-4-7')).toBeInTheDocument();
-    // Env-probe line names the host family.
-    expect(screen.getByText('linux')).toBeInTheDocument();
+    // The client is named; the environment probe is gone, so no host line.
+    expect(screen.getByText(/via claude-code/)).toBeInTheDocument();
+    expect(screen.queryByText(/Operator host/)).not.toBeInTheDocument();
     // No "N runs" chip when totalSessionCount is 1.
     expect(screen.queryByText(/1 runs/)).not.toBeInTheDocument();
   });
@@ -91,18 +90,15 @@ describe('ExecutionSessionHeader', () => {
     expect(screen.getByText('open-report')).toBeInTheDocument();
   });
 
-  it('omits attribution and env-probe lines when null', () => {
+  it('omits the attribution line when null', () => {
     const bare: ExecutionSessionSummary = {
       ...session,
       generated_by_model: null,
       generated_by_tool: null,
       prompt_version: null,
-      environment_os_family: null,
-      environment_shell: null,
     };
     wrap(<ExecutionSessionHeader session={bare} />);
     expect(screen.queryByText(/Executed by/)).not.toBeInTheDocument();
-    expect(screen.queryByText(/Operator host/)).not.toBeInTheDocument();
   });
 });
 

@@ -243,7 +243,6 @@ class AssistSessionRow(BaseModel):
     started_at: Optional[datetime]
     ended_at: Optional[datetime]
     last_activity_at: Optional[datetime]
-    environment_probed: bool
     # When the session's agent key stops working — the practical question an
     # operator has ("end it now, or let it lapse?").  Deliberately the KEY's
     # expiry rather than a session field: the session row has no lifetime of
@@ -291,11 +290,8 @@ class AssistSessionNote(BaseModel):
 
 class AssistSessionDetail(AssistSessionRow):
     """One session, with the material an operator reviews after the fact."""
-    # The operator's machine as the agent saw it — the same probe the prompts
-    # mandate, kept because "which host was this run from" is part of the
-    # audit answer, not just live context.
-    environment: Optional[dict] = None
-    environment_probed_at: Optional[datetime] = None
+    # Which model and client did the work, and against which prompt
+    # (v2.434.0: from the session's attribution, not an environment probe).
     agent_model: Optional[str] = None
     agent_tool: Optional[str] = None
     prompt_version: Optional[str] = None
@@ -375,7 +371,7 @@ def start_assist_session(
     # An AssistSession detail row is still created, linked to the base
     # session, because the /assist-sessions review page and its end/detail
     # routes are keyed by this table's ids.  It is a pointer, not the record:
-    # ``purpose``, ``last_activity_at`` and the probe live on the base row and
+    # ``purpose``, ``last_activity_at`` and the attribution live on the base row and
     # the page reads them through it (``_session_row``).  Collapsing the page
     # onto ``agent_sessions`` outright would change every id it links on, so
     # that is a separate change.
@@ -630,13 +626,11 @@ def _latest(a: Optional[datetime], b: Optional[datetime]) -> Optional[datetime]:
     return max(a, b)
 
 
-def _probe_source(session: AssistSession):
-    """The row whose environment probe to show: the unified session when it
-    has one, else this legacy detail row."""
-    base = session.agent_session
-    if base is not None and base.environment_probed_at is not None:
-        return base
-    return session
+def _attribution_source(session: AssistSession):
+    """The row whose model / client / prompt version to show: the unified
+    session when there is one (it is what those writes update), else this
+    legacy detail row."""
+    return session.agent_session if session.agent_session is not None else session
 
 
 def _session_row(
@@ -657,10 +651,9 @@ def _session_row(
     both — and the one you forget is the one that silently reads as its default.
     """
     # v2.338.0 — read the live columns through the unified AgentSession.  The
-    # audit middleware refreshes ``agent_sessions.last_activity_at`` and the
-    # probe writes ``agent_sessions.environment*``; nothing writes those
-    # columns on this detail row any more, so reading them here reported
-    # every post-consolidation session as idle-forever and never-probed.
+    # audit middleware refreshes ``agent_sessions.last_activity_at``; nothing
+    # writes that column on this detail row any more, so reading it here
+    # reported every post-consolidation session as idle-forever.
     # Sessions from before the consolidation carry the values on this row
     # and have no live base row worth preferring.
     base = session.agent_session
@@ -694,10 +687,6 @@ def _session_row(
         last_activity_at=_latest(
             session.last_activity_at,
             base.last_activity_at if base is not None else None,
-        ),
-        environment_probed=(
-            session.environment_probed_at is not None
-            or (base is not None and base.environment_probed_at is not None)
         ),
         key_expires_at=key_expires_at,
         call_count=activity.call_count,
@@ -885,7 +874,7 @@ def get_assist_session(
 
     # Detail EXTENDS the list row, so the shared fields are mapped once. The two
     # used to build the same 18 fields independently.
-    probe = _probe_source(session)
+    source = _attribution_source(session)
     return AssistSessionDetail(
         **_session_row(
             session,
@@ -897,11 +886,9 @@ def get_assist_session(
             full_name=full_name,
             operator_role=_operator_role(global_role, membership_role),
         ).model_dump(),
-        environment=probe.environment,
-        environment_probed_at=probe.environment_probed_at,
-        agent_model=probe.generated_by_model,
-        agent_tool=probe.generated_by_tool,
-        prompt_version=probe.prompt_version,
+        agent_model=source.generated_by_model,
+        agent_tool=source.generated_by_tool,
+        prompt_version=source.prompt_version,
         notes=notes,
         feedback_count=feedback_count,
     )

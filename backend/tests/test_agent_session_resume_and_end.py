@@ -129,7 +129,7 @@ def test_end_session_is_an_mcp_tool():
     from app.api.v1.endpoints.mcp_tools import TOOLS
     spec = TOOLS["end_session"]
     assert spec["method"] == "POST" and spec["path"] == "/api/v1/agent/session/end"
-    assert spec["body_params"] == ["notes"]
+    assert spec["body_params"] == ["notes", "agent_model"]
     assert spec.get("metadata_write") is True
 
 

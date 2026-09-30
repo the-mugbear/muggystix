@@ -201,27 +201,6 @@ def test_an_explicit_argument_beats_the_auto_filled_one(client, test_project):
     assert result["structuredContent"]["id"] == second["plan_id"]
 
 
-def test_probe_records_on_the_session(
-    client, test_project, scope_with_subnets, db_session
-):
-    """The probe is the mandated first step; it records on the agent session."""
-    recon = _recon_key(client, test_project, scope_with_subnets)
-    headers = {"X-API-Key": recon["api_key"]}
-
-    result = _call(
-        client, headers, "record_environment",
-        {"os_family": "linux", "shell": "bash"},
-    )
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["session_type"] == "session"
-
-    from app.db.models_agent import AgentSession
-    db_session.expire_all()
-    session = db_session.get(AgentSession, recon["agent_session_id"])
-    assert session.environment_probed_at is not None
-    assert session.environment["os_family"] == "linux"
-
-
 # ---------------------------------------------------------------------------
 # Plan generation over MCP, end to end
 # ---------------------------------------------------------------------------

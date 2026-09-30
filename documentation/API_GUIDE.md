@@ -49,12 +49,12 @@ There is ONE operator entry point (v2.433.0): `POST /api/v1/projects/{id}/assist
 The agent opens whatever work it needs itself, with the same key and in whatever order the work needs: it reads a scope (`GET /agent/scopes`, `/agent/scopes/{scope_id}/subnets|domains` and the target files), uploads scanner output (`POST /agent/uploads`, no run required), registers a plan (`POST /agent/test-plans {title}`) and works it (`POST /agent/execution-sessions/start {plan_id}` — any draft or in-progress plan; nothing waits on approval). Operators list, end and resume sessions at `GET /projects/{id}/agent-sessions`, `POST …/agent-sessions/{sid}/end`, `POST …/agent-sessions/{sid}/resume` (resume rotates the key and re-issues the prompt; the previous key is revoked).
 
 - **Renew (agent-facing, v2.304.0)** — `POST /api/v1/agent/session/renew`, called by the agent with its **own** key. Same key, later deadline. It deliberately **accepts an already-expired key** while the session is active and under `AGENT_SESSION_MAX_LIFETIME_HOURS` (168h), because the failure it exists for is discovered late: an agent blocks for hours on nmap / masscan / Nessus and only learns its key lapsed when it tries to upload, with the scanning already done. No path parameter — the key identifies its own session.
-- **End (agent-facing)** — `POST /api/v1/agent/session/end`. Revokes the key; `409` while an execution run it opened is still active. However a session ends — this call, the operator's End, or the hourly lapse sweep — `agent_session_service.end_agent_session` marks every execution run it still has open (active, or paused because another session took the plan over) `abandoned`, with its results kept; a later session opens a fresh run on the plan and continues from them. Draft plans stay drafts. Agents are told to call it only when the operator says they are finished (prompt 2.13.1, v2.430.0): an agent that ended its own session after setup left the operator's next question with an unrecoverable `401`.
+- **End (agent-facing)** — `POST /api/v1/agent/session/end {notes?, agent_model?}`. Revokes the key; `409` while an execution run it opened is still active. However a session ends — this call, the operator's End, or the hourly lapse sweep — `agent_session_service.end_agent_session` marks every execution run it still has open (active, or paused because another session took the plan over) `abandoned`, with its results kept; a later session opens a fresh run on the plan and continues from them. Draft plans stay drafts. Agents are told to call it only when the operator says they are finished (prompt 2.13.1, v2.430.0): an agent that ended its own session after setup left the operator's next question with an unrecoverable `401`.
 
 Keys are:
 - **Hashed at rest** in `api_keys` (`APIKey`, `app/db/models_auth.py`); the plaintext is returned to the operator **exactly once**, never stored.
 - **Time-bound but renewable** — default 24h TTL (`settings.AGENT_KEY_TTL_HOURS`), extendable by the agent itself while the session lives. **Ending the session, not expiry, is the revocation control**: an open session can renew past its key's deadline, so waiting for expiry is not a revocation.
-- **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, environment probe, session end, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
+- **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, session end, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
 
   **Reads are not uniform (v2.308.0).** Most need only project membership, but bulk exports — `/assist/report-context.ndjson`, `/assist/hosts.ndjson`, `/scopes/{scope_id}/hosts.ndjson`, the scope target lists (`live-hosts.txt`, `web-targets.txt`), and evidence downloads — require `auditor`, the same floor `export.py` and `reports.py` place on their JWT equivalents.
 - **Bound to ONE session, not to a workflow, a plan or a scope.** A call about a run the session has not opened answers `409` (e.g. `no_active_execution_run`), not `403`; a `403` is always about the operator's standing.
@@ -215,8 +215,6 @@ Feedback **ingest** (the agent-facing path) lives under `/agent/feedback` — se
 | GET | `/references/` | Index of the reference endpoints below, with descriptions. |
 | GET | `/references/sbom` | **v2.20.0** — Software Bill of Materials reflecting the deployed build's resolved dependency tree. Walks the installed Python distributions (`importlib.metadata`) and reads `frontend/package-lock.json`; `requirements.txt` only marks which are direct. Memoised by manifest mtimes + `app_version` (so a release bump invalidates the cache even if dependencies didn't change). Classifies each component as direct (listed in `requirements.txt` / `package.json` root) or transitive. |
 | GET | `/references/parser-coverage` | **v2.411.0** — "What BlueStick reads": per tool, what its output reports, the level BlueStick takes each item to (observation / field / text / stored / discarded), where it is shown, and the known gaps. Data in `app/data/parser_coverage.json`; the `/reference/tool-coverage` page. |
-| GET | `/references/preflight-script` | Returns `scripts/preflight.sh` (text/x-shellscript) — the recon-workflow environment probe agents run to check which tools the host has. Supports `--json`, `--strict`, `--help`. |
-| GET | `/references/tool-readiness` | **Authenticated** — the agent tool catalog checked against the current user's most recent environment probe: per-tool `installed`/`missing`/`warn`/`unknown` status + install hints. Returns `has_probe: false` (all `unknown`) when the user hasn't probed yet. Powers the ToolReference page's Host Readiness panel. |
 | GET | `/references/tools` | **v2.277.0** — the tool catalogue: every tool BlueStick knows about, with install/usage knowledge, phases, intrusiveness and whether BlueStick parses its output (`ingestible`). `?status=reference\|suggested\|rejected`, `?category=`. One source for the Tool Reference page and the agent's `list_tools`. Since v2.433.0 no status is a permission — the `approved` allowlist was retired (its rows became `reference`); the operator decides what their agent runs. |
 | PATCH | `/references/tools/{name}` | **Admin** — curate a tool: set `status` (`reference` = take a suggestion into the catalogue / `rejected` = decline it) and the human-facing prose. `ingestible` is deliberately not editable (it records whether a parser exists, not an operator decision), and `suggested` cannot be *set* — it means an agent proposed it. |
 | GET | `/references/mcp-tools` | The live MCP tool catalog: every tool, its input schema, whether it reads or writes, and which workflows see it — plus the per-client connect recipes (with a placeholder key) and this deployment's certificate fingerprint / self-signed status. Read off the server registry, so it cannot drift from what is served. |
@@ -487,7 +485,7 @@ All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the r
 
 **One key, one session, every surface.** The Swagger tags — `agent-plan-generation`, `agent-execution`, `agent-scope` (scope reads and uploads; `agent-recon` until v2.433.1), `agent-assist` — group the routes by kind of work; they are not scopes, and nothing is rejected for being "the wrong workflow" (that model ended in v2.337.0). There is no required order either (v2.433.0): the operator drives the agent, and the agent uploads, plans and executes as the work needs, within the operator's project role. No step waits on a human approval.
 
-**Session lifecycle:** `POST /agent/session/environment` (ONE probe per session) → work, in whatever order it needs: to read a scope, `GET /agent/scopes` then `/agent/scopes/{scope_id}/subnets|domains` or the target files; to add scanner output, `POST /agent/uploads` (no run needed) and poll `GET /agent/uploads/{job_id}`; to register and work a plan, `POST /agent/test-plans {title}` then `POST /agent/execution-sessions/start {plan_id}` (which returns its context plus a `read_back` of the run's concrete bounds) and `POST /agent/execution-sessions/{session_id}/complete` → `POST /agent/session/end` when the operator says they are finished (409 while an execution run is still active). `GET /agent/identity` reports `open_phases`, `can_write_project_data`, `key_expires_at` and `renew_path`. A call about a run that is not open answers **409**, not 403.
+**Session lifecycle:** work, in whatever order it needs (there is no setup call — the environment probe was removed in v2.434.0): to read a scope, `GET /agent/scopes` then `/agent/scopes/{scope_id}/subnets|domains` or the target files; to add scanner output, `POST /agent/uploads` (no run needed) and poll `GET /agent/uploads/{job_id}`; to register and work a plan, `POST /agent/test-plans {title}` then `POST /agent/execution-sessions/start {plan_id}` (which returns its context plus a `read_back` of the run's concrete bounds) and `POST /agent/execution-sessions/{session_id}/complete` → `POST /agent/session/end` when the operator says they are finished (409 while an execution run is still active). `GET /agent/identity` reports `open_phases`, `can_write_project_data`, `key_expires_at` and `renew_path`. A call about a run that is not open answers **409**, not 403.
 
 **The safety rules are the agent's, not the server's** (`agent_policy.SAFETY_RULES`): show the operator every command; the operator drives (propose next steps, don't take them unasked); stay inside the declared scope — a target outside it needs the operator's explicit go-ahead, and a name in scope does not scope its address; write output into the working directory — outside it, installing software, or changing settings/credentials needs explicit go-ahead; record every command and outcome verbatim and upload scanner output. There is no approved-tool allowlist, no approve-by-exception rule, no mandatory target check and no plan approval (all retired in v2.433.0, prompt 3.0.0). `/.well-known/networkmapper.json` publishes `command_approval: "operator_driven"` and no longer carries `plan_execution_requires_human_approval`. `backend/tests/test_well_known.py` pins its `safety_properties`: the server-enforced claims (`server_executes_commands: false`, `agent_authority`, `agent_key_binding`, time-limited renewable keys, persistent audit trail), the not-enforced ones (`command_approval`, `command_approval_enforced_by`), and the retired claims as absent.
 
@@ -513,7 +511,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/test-plans` | Register a new plan (a draft) in this session; optional `host_ids` or `q` for an exact host selection. Executable as soon as it has entries. |
+| POST | `/agent/test-plans` | Register a new plan (a draft) in this session; optional `host_ids` or `q` for an exact host selection, and `agent_model` (§6.8). Executable as soon as it has entries. |
 | GET | `/agent/test-plans` | List the project's plans; `?mine=true` for the plans this session drafted. |
 | GET | `/agent/test-plans/{plan_id}` | Plan detail. |
 | PATCH | `/agent/test-plans/{plan_id}` | Update title/description. |
@@ -531,9 +529,8 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/session/environment` | **One probe per SESSION** (it replaced the three per-phase probe routes in v2.337.0). Records the operator-host environment — OS, shell, PowerShell version + execution policy, real-vs-stub Python, WSL, tools on PATH — plus `agent_model` / `agent_tool` / `agent_prompt_version`; snapshotted onto every run the session opens. |
-| POST | `/agent/execution-sessions/start` | **Open an execution run** on a plan (`{plan_id}`) that is `draft` or `in_progress` — 201, execution context + `read_back`. Reuses a run this session already has open; pauses another session's active run. 409 if the plan is archived/completed or has no entries, or if it is a `draft` whose drafting agent session is still active and is not the caller (starting a run freezes a draft's tests, so only its own session may start it until that session ends — `agent_session_service.open_execution_phase`). The draft → `in_progress` move writes a `status_changed` row to `test_plan_history`. |
-| GET | `/agent/test-plans/{plan_id}/execution-context` | Hosts + entries + tests with `{ip}` resolved. Response now carries an `environment` block echoing the probe so the agent translates intent → command for the right platform. |
+| POST | `/agent/execution-sessions/start` | **Open an execution run** on a plan (`{plan_id, agent_model?}` — see §6.8) that is `draft` or `in_progress` — 201, execution context + `read_back`. Reuses a run this session already has open; pauses another session's active run. 409 if the plan is archived/completed or has no entries, or if it is a `draft` whose drafting agent session is still active and is not the caller (starting a run freezes a draft's tests, so only its own session may start it until that session ends — `agent_session_service.open_execution_phase`). The draft → `in_progress` move writes a `status_changed` row to `test_plan_history`. |
+| GET | `/agent/test-plans/{plan_id}/execution-context` | Hosts + entries + tests with `{ip}` resolved. The agent translates each test's intent into the command for the operator's machine; nothing about that machine is recorded (the `environment` echo was removed in v2.434.0). |
 | POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check` | Record a target check (reverse DNS, banner, source address) — **optional evidence** since v2.433.0; nothing is refused for lacking one. |
 | POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/test-results` | Record test execution results (upserts by `test_index`). `sanity_override_reason` was removed. |
 | POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/complete` | Close an entry. Every proposed test needs a terminal result, or the body carries `no_tests_run_reason` (audit-logged). `results_data` records `sanity_checks_passed`; the v2.22.0 sanity-check gate and its `override_reason` were removed in v2.433.0. |
@@ -573,7 +570,7 @@ For "ask questions about this project" agents. These reads are the DEFAULT surfa
 
 **`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`state:`, `ip:`, `hostname:` (alias `host:`), `port:`, `os:` (OS name or OS family), `service:`, `version:` (service product/version) — these three match **open ports only** unless the value names a state after `@`: `port:22@closed`, `service:ssh@filtered`, `port:22@any` (v2.403.0; a closed/filtered port's service name is nmap's guess from the port number); `portstate:` alone is a separate "has a port in this state" condition — `path:` (a content-discovery path), `subnet:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site), `conclusion:` (what a finished review concluded — e.g. `conclusion:needs_evidence`), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its `issue_key` — `check:…`, `cve:…`, `title:…`), `kind:` (misconfiguration \| vulnerability \| informational), `check:` (a misconfiguration check id, e.g. `check:smb_signing_not_required`), `scope:` (subnet \| name \| none — the three scope-coverage states), `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `country:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows, (start, end]; quote the ISO value — `firstseen:"2026-09-19T20:00:00Z"`, `changedsince:"<start>..<end>"`, `vulnsince:"critical@<start>..<end>"` with severity and time matched on the same observation), `has:`, `follow:` (watching / in_review / reviewed / none / in_review_any, judged for the session's operator), `assigned:` (alias `assignee:`, taking `me` / `any` / `none` / a username / an id)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `local_admin` · `writable_share` · `exploit` · `critical_exploit` (a critical that is itself exploitable — same row) · `web` · `open_ports` · `tested` · `planned` · `untouched` (no review, note, plan entry or finding endpoint) · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` is judged for, and `assigned:me` resolves to, the **operator who started the session** (so `assigned:me` means "hosts assigned to that operator"); `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); any `q=` returns 400 if the session has no bound operator. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
-The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once), with `agent_session_id` (the session's id — the one `/agent-sessions/{id}` takes) beside `assist_session_id` (its detail row, which the `/assist/sessions/*` routes below take; rows there carry `agent_session_id` too, set only for a project session — a pre-consolidation assist row has no session page, so it is null there); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its environment probe, and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed, mirroring the plan one.
+The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once), with `agent_session_id` (the session's id — the one `/agent-sessions/{id}` takes) beside `assist_session_id` (its detail row, which the `/assist/sessions/*` routes below take; rows there carry `agent_session_id` too, set only for a project session — a pre-consolidation assist row has no session page, so it is null there); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its attribution (`agent_model`, `agent_tool`, `prompt_version` — §6.8), and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed, mirroring the plan one.
 
 Session status is **derived**: a session whose keys have all expired reports `ended` immediately, with an hourly sweep converging the stored column. Nothing accumulates as "active" waiting to be tidied up by hand.
 
@@ -829,48 +826,17 @@ Null metrics are acceptable — the guide explicitly notes that agents running i
 - **The `referenced_*` lists** are parsed out of path + query + body so a filter like `?target_ip=10.0.0.5` is a single indexed query.
 - Authentication: **JWT only** — agents cannot read their own audit log.
 
-### 6.8 `POST /api/v1/agent/session/environment` (v2.23.0; one route since v2.337.0)
+### 6.8 Agent attribution (v2.434.0)
 
-No path parameter — the key identifies its session. ONE probe per session; it replaced the three per-phase routes (`/agent/execution-sessions/{id}/environment`, `/agent/recon/sessions/{id}/environment`, `/agent/assist/sessions/{id}/environment`), which no longer exist.
+The environment probe (`POST /agent/session/environment`, MCP `record_environment`) was removed in v2.434.0 with its columns; BlueStick no longer records the operator's machine or checks it against the tool catalogue. What an `AgentSession` records about the agent comes from three sources (`agent_session_service`):
 
-Request body (`EnvironmentProbeRequest` — `extra="allow"`, so the agent can attach observed facts beyond the fixed shape):
+| Field | Source |
+|---|---|
+| `generated_by_tool` (the client / harness) | The MCP `initialize` handshake's `clientInfo` — `"<name> <version>"` — when the handshake carries a live key (`record_mcp_client`; it never fails the handshake). Otherwise the first authenticated call's `User-Agent` (a curl agent: `curl/8.5.0`), written once and replaced by a later handshake name, never the reverse. The MCP loopback forwards the client's own `User-Agent`; httpx's default is ignored. |
+| `prompt_version` | Set by the server at session start and at resume (`PROMPT_VERSION`). |
+| `generated_by_model` | Self-reported: optional `agent_model` (≤200 chars, cut to the column width) on `POST /agent/test-plans`, `POST /agent/execution-sessions/start` and `POST /agent/session/end` — MCP `create_test_plan`, `start_execution`, `end_session`. The session keeps the LAST value reported. |
 
-```json
-{
-  "os_family": "linux",
-  "os_release": "Kali rolling",
-  "arch": "x86_64",
-  "shell": "bash",
-  "powershell_version": null,
-  "powershell_execution_policy": null,
-  "python": "/usr/bin/python3",
-  "python_version": "Python 3.11.4",
-  "wsl_available": false,
-  "tools_available": {
-    "nmap": true, "masscan": true, "httpx": true, "dig": true, "curl": true, "jq": true
-  },
-  "notes": "running from a fresh Kali VM, no AV"
-}
-```
-
-- For Windows operators, `python` may be the literal string `"microsoft-store-stub"` — the Win10/11 trap where `python` on PATH opens a Microsoft Store page instead of running. Treat that as "Python not available."
-- `powershell_execution_policy` is critical for the agent's command-flavour choice: inline `powershell -Command "..."` works under `RemoteSigned` because the unsigned-script gate fires on `.ps1` files, not inline strings.
-
-Response is the same shape echoed back plus the audit-trail fields:
-
-```json
-{
-  "session_id": 17,
-  "session_type": "session",
-  "agent_model": "…", "agent_tool": "…", "agent_prompt_version": "2.7.0",
-  "probed_at": "2026-05-15T09:30:00.000Z",
-  "probed_by_user_id": 42,
-  "probed_from_ip": "192.168.10.55",
-  "environment": { ... same shape as the request ... }
-}
-```
-
-Subsequent `/execution-context` responses carry an `environment` block reflecting this probe so the agent doesn't have to re-send. The probe is snapshotted onto every execution run the session opens.
+A test plan and an execution run snapshot the session's `generated_by_model` / `generated_by_tool` / `prompt_version` when they are created; plan, run and agent-session responses on the JWT side carry them.
 
 ---
 

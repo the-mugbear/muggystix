@@ -29,17 +29,6 @@ def _seed(db):
     registry.seed_registry(db)
 
 
-def test_registry_covers_every_tool_the_recon_catalogue_offers(db_session):
-    """A tool the recon catalogue suggests but the registry lacks is a tool the
-    reference page cannot explain — how `testssl` ended up undocumented."""
-    from app.services.recon_planning_service import build_tool_catalog
-
-    _seed(db_session)
-    catalogued = {t.name for t in registry.list_tools(db_session, status=TOOL_REFERENCE)}
-    offered = {entry["tool"] for entry in build_tool_catalog(["10.0.0.0/24"])}
-    assert offered <= catalogued, f"recon suggests tools absent from the catalogue: {offered - catalogued}"
-
-
 def test_a_fresh_seed_holds_only_catalogue_states(db_session):
     """Code review (v2.433.0): the checked-in seed still carried `approved`,
     so a FRESH install re-created the retired status after the migration had

@@ -29,7 +29,6 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   started_at: new Date(Date.now() - 40 * 60_000).toISOString(),
   ended_at: null,
   last_activity_at: new Date(Date.now() - 5 * 60_000).toISOString(),
-  environment_probed: true,
   key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
   call_count: 3,
   note_count: 0,
@@ -75,15 +74,12 @@ describe('AssistSessionsPanel', () => {
 
   it('flags a session no client has reached yet', () => {
     // Key minted, client never connected — different from merely idle, and the
-    // operator usually wants to end it. v5.203.0: decided by observed calls,
-    // not the environment probe — a probed session with no calls is still
-    // waiting, and an unprobed one with calls is connected.
+    // operator usually wants to end it. v5.203.0: decided by observed calls.
     renderPanel([
       session({
         connection: 'none',
         call_count: 0,
         first_call_at: null,
-        environment_probed: true,
         last_activity_at: null,
       }),
     ]);
@@ -94,7 +90,7 @@ describe('AssistSessionsPanel', () => {
   it('says how the agent reached the session, from observed calls', () => {
     // Never a green "live" badge: MCP is request/response, so a past call
     // proves the client connected, not that it is still running.
-    renderPanel([session({ connection: 'mcp', environment_probed: false })]);
+    renderPanel([session({ connection: 'mcp' })]);
     expect(screen.getByText('MCP verified')).toBeInTheDocument();
     expect(screen.queryByText('Waiting for client')).not.toBeInTheDocument();
   });

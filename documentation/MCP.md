@@ -50,11 +50,17 @@ its own plans — there is no approval step, approved-tool list or required orde
 |---|---|---|
 | Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
 | Scope reads, scanning and uploads | (default — no phase) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
-| Test plan | `create_test_plan {title}` | entry drafting, validation (advice, not a gate) |
-| Execution | `start_execution {plan_id}` (a draft or in-progress plan) | execution context, optional target checks (evidence), test results, completion |
+| Test plan | `create_test_plan {title, agent_model?}` | entry drafting, validation (advice, not a gate) |
+| Execution | `start_execution {plan_id, agent_model?}` (a draft or in-progress plan) | execution context, optional target checks (evidence), test results, completion |
 
-Every session starts by probing its environment once (`record_environment` →
-`POST /agent/session/environment`); the probe rides into every run it opens.
+There is no setup call: the environment probe (`record_environment`) was
+removed in v2.434.0. The session records its **client** from the `initialize`
+handshake — `clientInfo` name and version, when the handshake carries the key
+(curl agents: the first call's `User-Agent`) — and its prompt version at start
+or resume. The **model** is the agent's own report: an optional `agent_model`
+argument on `create_test_plan`, `start_execution` and `end_session`; the
+session keeps the last one, and a plan or run snapshots the session's
+attribution when it is created (`API_GUIDE.md` §6.8).
 
 ### Assist: answering questions, and filling in a report
 
@@ -130,13 +136,13 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (66 tools at v2.433.0, about 60 KB /
-~15k tokens as `tools/list` returns it) — nothing is filtered by workflow since
-v2.337.0. Nine of those belong to the session rather than to any phase:
+Every session sees the WHOLE catalogue (61 tools at v2.434.0, as `tools/list`
+returns it) — nothing is filtered by workflow since
+v2.337.0. Eight of those belong to the session rather than to any phase:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
 **`session_renew`** (same key, later deadline), **`end_session`** (only when
-the operator says they are finished — it revokes the key),
-**`record_environment`** (the one probe), **`read_agent_guide`**,
+the operator says they are finished — it revokes the key; takes an optional
+`agent_model`), **`read_agent_guide`**,
 **`list_tools`** (the tool catalogue — a reference, not a permission list; it was
 `list_approved_tools` before v2.433.0), **`suggest_tool`** (propose a tool the
 catalogue lacks, for a curator — it grants nothing), **`get_upload_job`** (poll
@@ -267,7 +273,9 @@ trusted. The walkthrough, for a remote host, is [`ca/README.md`](../ca/README.md
 ## 4. Auth, and the 401/403 split
 
 `initialize` / `tools/list` / `ping` need no key — they are static and leak
-nothing. `tools/call` reads `X-API-Key` or `Authorization: Bearer` and forwards
+nothing. When `initialize` does carry a live key, its `clientInfo` names the
+session's client (`generated_by_tool`); recording it can never fail the
+handshake. `tools/call` reads `X-API-Key` or `Authorization: Bearer` and forwards
 it. What comes back depends on *why* a call was refused:
 
 * **No usable credential** → a real **HTTP 401** with a plain RFC 6750 challenge
@@ -307,8 +315,7 @@ Entries carry MCP **annotations** (`readOnlyHint`, `destructiveHint`,
 operator classifying them by hand. `destructiveHint` follows the spec's meaning:
 false only for genuinely additive writes (a note, a test result), true for ones
 that replace stored values. `idempotentHint` answers "is a retry safe?": true
-for writes that converge (set follow, patch a host, complete a run, re-probe the
-environment), false for anything that creates a row per call — every additive
+for writes that converge (set follow, patch a host, complete a run), false for anything that creates a row per call — every additive
 tool, and the creators `create_test_plan`, `start_execution` and
 `submit_feedback`, which say so explicitly with `"idempotent": False`
 (v2.343.2; the inferred value had advertised them as safe to retry).

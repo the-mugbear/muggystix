@@ -17,6 +17,7 @@ from app.db.models_agent import Agent, TestPlanEntry
 from app.api.deps import check_agent_rate_limit
 from app.services.test_plan_service import TestPlanService
 from app.services.agent_prompt_history import PROMPT_VERSION
+from app.services.agent_session_service import note_agent_model
 
 from app.api.v1.endpoints.agent_schemas import (
     VulnCounts, VulnBrief, PortTuple, CandidateHost, PlanningContext,
@@ -281,6 +282,13 @@ def create_test_plan(
         source_host_ids=source_host_ids,
     )
     plan.agent_session_id = session.id
+    # v2.434.0 — attribution comes from the session (harness from the MCP
+    # handshake, prompt version from the server) plus the model the agent
+    # reports here, which the session keeps as its latest.
+    note_agent_model(session, body.agent_model)
+    plan.generated_by_model = session.generated_by_model
+    plan.generated_by_tool = session.generated_by_tool
+    plan.prompt_version = session.prompt_version
     db.commit()
     db.refresh(plan)
     return _plan_response(plan, db)

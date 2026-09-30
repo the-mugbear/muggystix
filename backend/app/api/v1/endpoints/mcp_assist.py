@@ -191,9 +191,9 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
                 "name": name,
                 "description": spec["description"],
                 # Mutation is decided by HTTP method, matching readOnlyHint —
-                # the environment probe is a POST that touches only session
-                # metadata, and calling that a "read" on the reference page
-                # would be a lie.
+                # a session-bookkeeping POST touches only session metadata,
+                # and calling that a "read" on the reference page would be a
+                # lie.
                 "kind": "read" if spec["method"] == "GET" else "write",
                 "method": spec["method"],
                 "path": spec["path"],
@@ -391,8 +391,8 @@ async def _dispatch_tool(
     for arg, default in spec.get("defaults", {}).items():
         arguments.setdefault(arg, default)
 
-    # Arguments the caller's own key already answers — the session id its probe
-    # posts to, the plan it is bound to.  Filling these server-side is not a
+    # Arguments the caller's own key already answers — its session id, the
+    # plan it is bound to.  Filling these server-side is not a
     # convenience: a model asked to supply them guesses, and a guessed session id
     # is a 404 (or another session's row) rather than an obvious error.  An
     # explicitly-passed value always wins, so a legitimately unbound key can
@@ -674,6 +674,13 @@ async def _handle_message(
             else _PREFERRED_PROTOCOL_VERSION
         )
         from app.core.config import settings
+
+        # v2.434.0 — the client names itself here (``clientInfo``); that is
+        # the session's harness, recorded without asking the agent anything.
+        if api_key:
+            from starlette.concurrency import run_in_threadpool
+            from app.services.agent_session_service import record_mcp_client
+            await run_in_threadpool(record_mcp_client, api_key, params.get("clientInfo"))
 
         result = {
             "protocolVersion": protocol_version,

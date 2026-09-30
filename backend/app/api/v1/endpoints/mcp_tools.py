@@ -97,99 +97,19 @@ SCOPE_ID_PROP = {
     }
 }
 
-# Shared environment-probe fields.  All three probes accept the same body (the
-# endpoints share `apply_environment_probe`), so the schema is written once —
-# a field added for recon must not silently go missing for execution.
-_PROBE_PROPERTIES = {
-    # v2.313.0 — was ["windows", "darwin", "linux"], which the model and the
-    # guide never agreed with: EnvironmentSummary documents 'bsd' and 'other'
-    # too, so an operator on FreeBSD had to misreport their OS to satisfy the
-    # schema.
-    "os_family": {
-        "type": "string",
-        "enum": ["windows", "darwin", "linux", "bsd", "other"],
-    },
-    "os_release": {"type": "string"},
-    "arch": {"type": "string"},
-    "shell": {"type": "string", "description": "e.g. bash, zsh, powershell."},
-    "powershell_version": {"type": "string"},
-    "powershell_execution_policy": {
-        "type": "string",
-        "description": "Windows only — e.g. RemoteSigned, Restricted.",
-    },
-    "python": {"type": "string", "description": "Path or command that runs a real Python."},
-    "python_version": {"type": "string"},
-    "wsl_available": {"type": "boolean"},
-    # v2.313.0 — the tool inventory was missing, and because the probe schemas
-    # set `additionalProperties: false` it was not merely undocumented but
-    # *rejected*: an MCP agent could not submit the inventory the environment
-    # contract requires, and every probe recorded through MCP stored
-    # `tools_available: {}`. A curl agent hitting the same endpoint could send
-    # it, because EnvironmentSummary is `extra="allow"` — so the two transports
-    # disagreed about what a complete probe is.
-    "tools_available": {
-        "type": "object",
-        "additionalProperties": {"type": "boolean"},
-        "description": (
-            "Map of tool name → present on PATH, e.g. "
-            '{"nmap": true, "masscan": false}. Names follow the tool inventory '
-            "in the agent guide."
-        ),
-    },
-    # The field names and the status vocabulary here are a CONTRACT, not a
-    # convenience: `recon_planning_service._env_tool_unavailable` treats only
-    # `warn` and `missing` as a problem and reads the reason from `issue`.
-    # v2.313.0 shipped an invented shape (`detail`, plus statuses like
-    # `wrong-binary`) which type-checked and planned WRONGLY — a tool reported
-    # as `wrong-binary` fell through the `warn|missing` test and was planned
-    # around as working. Mirrors `preflight.sh --json`'s `tools[]` output; see
-    # The agent guide § Environment probe.
-    "tools_status": {
-        "type": "array",
-        "items": {
-            "type": "object",
-            "properties": {
-                "name": {"type": "string", "description": "Tool name, e.g. httpx."},
-                "status": {
-                    "type": "string",
-                    "enum": ["ok", "warn", "missing", "info"],
-                    "description": (
-                        "ok = usable; warn = present but not the tool you want "
-                        "(wrong binary, no privileges); missing = not on PATH; "
-                        "info = advisory only. Only warn and missing make the "
-                        "server plan around the tool."
-                    ),
-                },
-                "issue": {
-                    "type": "string",
-                    "description": (
-                        "Why, in one line — surfaced verbatim as the step's "
-                        "swap_reason. e.g. 'Python httpx CLI shadows "
-                        "ProjectDiscovery httpx'."
-                    ),
-                },
-                "path": {"type": "string", "description": "Resolved path, when known."},
-            },
-            "required": ["name", "status"],
-            "additionalProperties": False,
-        },
-        "description": (
-            "Per-tool preflight result, posted after running the preflight "
-            "check. Richer than tools_available and takes precedence over it: "
-            "re-post the probe with this populated so the scope reads can "
-            "adapt the recommended sequence."
-        ),
-    },
-    "notes": {"type": "string"},
-    "agent_model": {"type": "string", "description": "Model you are running as."},
-    "agent_tool": {"type": "string", "description": "Harness you run in (e.g. claude-code)."},
-    "agent_prompt_version": {
-        "type": "string",
-        "description": "PROMPT_VERSION from your session's instructions.",
-    },
-}
+# (The environment-probe fields and the ``record_environment`` tool went with
+# the probe in v2.434.0.)
 
-_PROBE_BODY_PARAMS = list(_PROBE_PROPERTIES)
+# The model the agent says it is running as (v2.434.0).  No protocol carries
+# it, so the writes where it matters ask for it: it labels the plan, the run or
+# the session, and lets output from different models be compared.
+AGENT_MODEL_PROP = {
+    "agent_model": {
+        "type": "string",
+        "maxLength": 200,
+        "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
+    }
+}
 
 # A proposed test, as the plan entries carry it.  Mirrors ProposedTest in
 # app/schemas/schemas.py.
@@ -262,7 +182,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "POST",
         "metadata_write": True,
         "path": "/api/v1/agent/session/end",
-        "body_params": ["notes"],
+        "body_params": ["notes", "agent_model"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -271,6 +191,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "maxLength": 2000,
                     "description": "What the session did, in a line or two.",
                 },
+                **AGENT_MODEL_PROP,
             },
             "additionalProperties": False,
         },
@@ -1260,11 +1181,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         # A retry is refused (one active run per plan) or opens a second run
         # on a later call — either way not a converging write (v2.343.2).
         "idempotent": False,
-        "body_params": ["plan_id"],
+        "body_params": ["plan_id", "agent_model"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "plan_id": {"type": "integer", "minimum": 1, "description": "The plan to execute."},
+                **AGENT_MODEL_PROP,
             },
             "required": ["plan_id"],
             "additionalProperties": False,
@@ -1283,7 +1205,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/test-plans",
         # A retry creates a second draft plan (v2.343.2).
         "idempotent": False,
-        "body_params": ["title", "description", "filter_criteria", "host_ids", "q"],
+        "body_params": ["title", "description", "filter_criteria", "host_ids", "q", "agent_model"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -1314,29 +1236,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "description": "A host query, resolved to its matching hosts when the plan is created. Not with host_ids.",
                 },
+                **AGENT_MODEL_PROP,
             },
             "required": ["title"],
-            "additionalProperties": False,
-        },
-    },
-    "record_environment": {
-        "description": (
-            "Record the operator's environment (OS family, shell, tools on PATH) "
-            "on your session. REQUIRED FIRST STEP — BlueStick's command guidance, "
-            "and every execution run you open, is shaped to the machine you "
-            "report here. The session is resolved from your key. Re-post it any "
-            "time the environment changes."
-        ),
-        "method": "POST",
-        "metadata_write": True,
-        "path": "/api/v1/agent/session/environment",
-        # Field names mirror EnvironmentSummary exactly — the schema advertises
-        # additionalProperties:false and we reject unknown arguments.
-        "body_params": _PROBE_BODY_PARAMS,
-        "input_schema": {
-            "type": "object",
-            "properties": {**_PROBE_PROPERTIES},
-            "required": ["os_family"],
             "additionalProperties": False,
         },
     },
@@ -1680,7 +1582,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "execution_get_context": {
         "description": (
             "The plan to work through: every entry with its host, proposed tests, "
-            "priority and current status, plus the environment probe echoed back. "
+            "priority and current status. "
             "Work entries in the order given. plan_id is resolved from your key."
         ),
         "method": "GET",
@@ -1951,7 +1853,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 # reference page (which kind of work a tool belongs to), and v2.338.0 derives
 # it from the tool's name in this one function instead of carrying a
 # ``workflows`` field on every entry that a loop then rewrote.  Universal tools
-# (identity, the guide/catalogue readers, the session probe, the phase
+# (identity, the guide/catalogue readers, the session bookkeeping, the phase
 # openers any session calls) report every kind and the page shows them as
 # shared.
 _KIND_BY_PREFIX = (
@@ -2001,24 +1903,23 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     """
     # A tool is read-only iff it doesn't mutate — the HTTP method, nothing else.
     # This used to be qualified against the (now removed) per-tool capability,
-    # which would have advertised the environment probe as safe to auto-approve:
-    # it is a POST that carried no capability because it writes session metadata
-    # rather than project data.  Authority and mutation are different questions,
+    # which would have advertised the (since removed) environment probe as safe
+    # to auto-approve: it was a POST that carried no capability because it wrote
+    # session metadata rather than project data.  Authority and mutation are different questions,
     # and only mutation belongs in an annotation a client auto-approves from.
     is_write = spec["method"] != "GET"
     # The spec defines destructiveHint:false as "additive updates only", so the
     # flag lives on the entry rather than being inferred from the name: adding a
-    # note or a test result appends, while setting follow state, patching a host
-    # or re-probing the environment REPLACES a stored value.  The operative
+    # note or a test result appends, while setting follow state or patching a
+    # host REPLACES a stored value.  The operative
     # question for idempotency is whether a retry is safe — re-sending a
     # replacement converges, a second append is a second row.
     additive = bool(spec.get("additive"))
-    # The environment probe is a POST, but it writes SESSION bookkeeping, not
-    # project data — and re-probing replaces rather than appends, so it is both
-    # non-destructive and idempotent.  Marking it destructive (v2.316.0 fix)
-    # meant a client could not auto-approve the one call every workflow mandates
-    # first.  readOnlyHint stays false — it does write — but that is the honest
-    # limit; destructiveHint is the flag that gates auto-approval.
+    # A session-bookkeeping write (renewing the key, ending the session) is a
+    # POST, but it writes SESSION metadata, not project data, so it is not
+    # destructive (v2.316.0; the environment probe, removed in v2.434.0, was
+    # the case that prompted it).  readOnlyHint stays false — it does write —
+    # but destructiveHint is the flag that gates auto-approval.
     metadata_write = bool(spec.get("metadata_write"))
     # idempotentHint answers one question: is a RETRY safe?  The inference
     # below ("a non-additive write converges") is right for updates and for

@@ -78,23 +78,24 @@ def test_detail_returns_the_notes_the_session_wrote(client, db_session, test_pro
     assert note["hostname"] == "ftp01"
 
 
-def test_detail_carries_the_environment_the_agent_reported(
+def test_detail_carries_the_agent_attribution(
     client, db_session, test_project
 ):
-    """Which machine the run happened on is part of the audit answer, not just
-    live context for the agent."""
+    """Which agent and model did the work is part of the audit answer, not just
+    live context for the agent. (The environment the detail used to carry went
+    with the environment probe.)"""
     started = _start(client, test_project.id)
     sid = started["assist_session_id"]
-    session = db_session.get(AssistSession, sid)
-    session.environment = {"os_family": "linux", "shell": "bash"}
-    session.environment_probed_at = datetime.now(timezone.utc)
-    session.generated_by_model = "claude-opus-5"
-    session.generated_by_tool = "claude-code"
+    # Attribution is written on the unified session row (MCP handshake /
+    # agent_model on start, plan and end), which is what the detail reads.
+    base = db_session.get(AssistSession, sid).agent_session
+    base.generated_by_model = "claude-opus-5"
+    base.generated_by_tool = "claude-code"
     db_session.commit()
 
     body = _detail(client, test_project.id, sid)
-    assert body["environment"]["os_family"] == "linux"
-    assert body["environment_probed"] is True
+    assert "environment" not in body
+    assert "environment_probed" not in body
     assert body["agent_model"] == "claude-opus-5"
     assert body["agent_tool"] == "claude-code"
 
@@ -206,9 +207,6 @@ def test_connection_state_comes_from_observed_calls_not_the_probe(
     }
     assert rows[mcp_sid]["connection"] == "mcp"
     assert rows[curl_sid]["connection"] == "curl"
-    # Neither posted a probe; the old signal would have called both unconnected.
-    assert rows[mcp_sid]["environment_probed"] is False
-    assert rows[curl_sid]["environment_probed"] is False
 
     # The audit rows carry the marker the list derived this from.
     _mcp_as = db_session.query(AssistSession.agent_session_id).filter(AssistSession.id == mcp_sid).scalar()

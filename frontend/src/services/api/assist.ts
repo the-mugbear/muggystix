@@ -78,7 +78,6 @@ export interface AssistSessionRow {
   started_at: string | null;
   ended_at: string | null;
   last_activity_at: string | null;
-  environment_probed: boolean;
   /** When the session's agent key stops working — the field that answers
    *  "end it now, or let it lapse?". This is the KEY's expiry, not the
    *  session's: the session row has no lifetime of its own and can outlive
@@ -114,10 +113,9 @@ export interface AssistSessionNote {
 }
 
 export interface AssistSessionDetail extends AssistSessionRow {
-  /** The operator's machine as the agent reported it. */
-  environment: Record<string, unknown> | null;
-  environment_probed_at: string | null;
+  /** The model as the agent reported it (optional self-report). */
   agent_model: string | null;
+  /** The agent's client, from the MCP handshake. */
   agent_tool: string | null;
   prompt_version: string | null;
   notes: AssistSessionNote[];

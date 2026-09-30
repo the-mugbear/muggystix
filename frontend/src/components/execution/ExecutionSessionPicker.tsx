@@ -35,8 +35,7 @@ export const ExecutionSessionPicker: React.FC<ExecutionSessionPickerProps> = ({
           if (s.started_by_username) labelParts.push(s.started_by_username);
           const tooltipText = [
             s.started_at && `Started ${new Date(s.started_at).toLocaleString()}`,
-            s.generated_by_tool && `Tool: ${s.generated_by_tool}`,
-            s.environment_os_family && `Host: ${s.environment_os_family}`,
+            s.generated_by_tool && `Client: ${s.generated_by_tool}`,
           ]
             .filter(Boolean)
             .join(' · ');

@@ -1,7 +1,8 @@
 # MCP acceptance questions — investigate, test, and preserve evidence
 
 > **Revision:** 2026-09-30, against the in-progress project-session redesign
-> (platform file: backend 2.433.0; prompt history: 3.1.0 / backend 2.433.1).
+> (platform file: backend 2.433.0; prompt history: 3.2.0 / backend 2.434.0 —
+> the environment probe removed, attribution from the MCP handshake and `agent_model`).
 > Record the actual deployed version and commit for each run; these changes are
 > still moving. This is an acceptance and design-discovery exercise, not a claim
 > that every capability below already exists.
@@ -144,7 +145,7 @@ authoritative; record differences.
 | Ingest recognized output | `POST /api/v1/agent/uploads` (multipart), `get_upload_job`, `assist_list_ingestion_issues`, `assist_list_uninterpreted_lines` | An upload is not evidence of successful parsing or complete field retention |
 | Record work | `assist_add_note`, `assist_set_follow`, `assist_patch_host`; optional `create_test_plan`, `plan_add_entries`, `start_execution`, `execution_record_test_result` | A host note is not necessarily a structured custom observation, finding comment, or artifact upload; test those missing distinctions |
 | Handoff and reporting | `assist_get_host_notes`, `assist_list_recent_notes`, `assist_get_host_testing`, `plan_list`, `plan_get`, `assist_list_client_reports`, `assist_get_client_report`, `assist_get_image` | Can another session retrieve everything needed without the original chat? |
-| Catalogue and session lifecycle | `list_tools`, `suggest_tool`, `record_environment`, `session_renew`, `submit_feedback`, `end_session` | Catalogue inclusion grants nothing; local execution stays in the user's client; session lifecycle must not impose an investigation sequence |
+| Catalogue and session lifecycle | `list_tools`, `suggest_tool`, `session_renew`, `submit_feedback`, `end_session` | Catalogue inclusion grants nothing; local execution stays in the user's client; session lifecycle must not impose an investigation sequence; the session's recorded client (from the MCP handshake) and model (`agent_model` on `create_test_plan` / `start_execution` / `end_session`) are what the operator sees on the session, plan and run |
 
 ## A. Orient and prioritize without committing to a workflow
 

@@ -43,6 +43,7 @@ from app.db.models_agent import (
 )
 from app.db.models_auth import APIKey, User
 from app.db.models_project import ProjectMembership
+from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_key_ttl import resolve_expires_at, session_renewal_deadline
 from app.services.assist_session_service import operator_role
 
@@ -91,6 +92,9 @@ def create_agent_session(
         started_by_id=started_by_id,
         purpose=(purpose or "").strip() or None,
         status=status,
+        # v2.434.0 — the server issued this prompt, so it records the version
+        # itself (the environment probe used to carry the agent's claim of it).
+        prompt_version=PROMPT_VERSION,
     )
     db.add(base)
     db.flush()
@@ -271,8 +275,12 @@ def open_execution_phase(
     *,
     session: AgentSession,
     plan: TestPlan,
+    agent_model: Optional[str] = None,
 ) -> ExecutionSession:
     """Open (or resume) an execution run on ``plan`` within ``session``.
+
+    ``agent_model`` is the agent's optional self-report of its model; the
+    session records it and a new run snapshots it (``note_agent_model``).
 
     The plan must be a draft or already in progress, and non-empty.  There is
     no approval step (v2.433.0): the operator drives their agent, and a plan
@@ -331,6 +339,7 @@ def open_execution_phase(
                 ),
             )
 
+    note_agent_model(session, agent_model)
     own = (
         db.query(ExecutionSession)
         .filter(
@@ -361,7 +370,7 @@ def open_execution_phase(
             status=ExecutionSessionStatus.ACTIVE.value,
             agent_session_id=session.id,
         )
-        _copy_probe(session, run)
+        _copy_attribution(session, run)
         db.add(run)
     if plan.status == "draft":
         plan.status = "in_progress"
@@ -396,28 +405,84 @@ def open_execution_phase(
     return run
 
 
-def _copy_probe(session: AgentSession, run) -> None:
-    """Snapshot the session's environment probe + attribution onto a phase row."""
-    if session.environment_probed_at is None:
-        return
-    run.environment = session.environment
-    run.environment_probed_at = session.environment_probed_at
-    run.environment_probed_by_user_id = session.environment_probed_by_user_id
-    run.environment_probed_from_ip = session.environment_probed_from_ip
+def _copy_attribution(session: AgentSession, run) -> None:
+    """Snapshot the session's attribution (model, harness, prompt version)
+    onto a run as it opens, so a later model switch does not relabel it."""
     run.generated_by_model = session.generated_by_model
     run.generated_by_tool = session.generated_by_tool
     run.prompt_version = session.prompt_version
 
 
-def propagate_probe(db: Session, session: AgentSession) -> None:
-    """After a (re-)probe on the session, refresh every open phase's copy."""
-    for run in db.query(ExecutionSession).filter(
-        ExecutionSession.agent_session_id == session.id,
-        ExecutionSession.status.in_([
-            ExecutionSessionStatus.ACTIVE.value, ExecutionSessionStatus.PAUSED.value,
-        ]),
-    ).all():
-        _copy_probe(session, run)
+# Column widths of the attribution fields (``generated_by_model`` /
+# ``generated_by_tool``), so a long self-report is cut, not refused.
+_ATTRIBUTION_MAX = 100
+
+
+def note_agent_model(session: Optional[AgentSession], model: Optional[str]) -> None:
+    """Record the model the agent says it is running as (v2.434.0).
+
+    Self-reported and optional — no protocol carries the model — on the writes
+    where it matters (registering a plan, opening a run, ending the session).
+    The session keeps the LAST one reported: a session can switch models
+    mid-way, and each run snapshots the value current when it opened.
+    """
+    model = (model or "").strip()
+    if session is not None and model:
+        session.generated_by_model = model[:_ATTRIBUTION_MAX]
+
+
+def note_agent_harness(session: Optional[AgentSession], harness: Optional[str], *, overwrite: bool) -> None:
+    """Record the client the agent runs in (v2.434.0).
+
+    From the MCP ``initialize`` handshake's ``clientInfo`` (``overwrite=True``:
+    the client names itself) or, failing that, the first call's
+    ``User-Agent`` (``overwrite=False``: a fallback never replaces a name).
+    """
+    harness = (harness or "").strip()
+    if session is None or not harness:
+        return
+    if overwrite or not session.generated_by_tool:
+        session.generated_by_tool = harness[:_ATTRIBUTION_MAX]
+
+
+def record_mcp_client(raw_key: Optional[str], client_info: Optional[dict]) -> None:
+    """Name the session's harness from an MCP ``initialize`` (v2.434.0).
+
+    ``initialize`` needs no key, so this only acts when the client sent one
+    that is live.  Its own DB session, and it never raises: attribution must
+    not be able to fail a handshake.
+    """
+    import hashlib
+
+    from app.db import session as _session_module
+
+    if not raw_key or not isinstance(client_info, dict):
+        return
+    name = client_info.get("name")
+    version = client_info.get("version")
+    if not isinstance(name, str) or not name.strip():
+        return
+    harness = f"{name.strip()} {version.strip()}" if isinstance(version, str) and version.strip() else name.strip()
+    db: Session = _session_module.SessionLocal()
+    try:
+        session = (
+            db.query(AgentSession)
+            .join(APIKey, APIKey.agent_session_id == AgentSession.id)
+            .filter(
+                APIKey.key_hash == hashlib.sha256(raw_key.encode()).hexdigest(),
+                APIKey.is_active.is_(True),
+                AgentSession.status == SESSION_ACTIVE,
+            )
+            .first()
+        )
+        if session is not None and session.generated_by_tool != harness[:_ATTRIBUTION_MAX]:
+            note_agent_harness(session, harness, overwrite=True)
+            db.commit()
+    except Exception:
+        logger.exception("recording the MCP client on its session failed")
+        db.rollback()
+    finally:
+        db.close()
 
 
 def session_phase_summary(db: Session, session: AgentSession) -> dict:
@@ -648,6 +713,9 @@ def resume_agent_session(
     raw_key = mint_session_key(db, agent=agent, session=session, ttl_hours=ttl_hours)
     if session.agent_id != agent.id:
         session.agent_id = agent.id
+    # The resumed agent is handed the CURRENT prompt.  Its client and model
+    # are updated as the new process reports them (handshake, self-report).
+    session.prompt_version = PROMPT_VERSION
     who = resumed_by.full_name or resumed_by.username
     line = f"[{now.isoformat()}] Session resumed by {who}: key rotated, previous key revoked"
     session.notes = (f"{session.notes}\n{line}" if session.notes else line)[-8192:]

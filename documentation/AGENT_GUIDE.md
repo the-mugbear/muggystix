@@ -78,7 +78,7 @@ When the operator says they are finished:
 
 1. Close every execution run you opened — `POST /agent/execution-sessions/{id}/complete`. `/session/end` refuses with `409` while any is open and names the ids.
 2. If you have filed no feedback in this session yet, file it now (`POST /agent/feedback` / `submit_feedback`). Feedback belongs at the moment of friction (see below), so by this point there is usually nothing left to add.
-3. `POST /agent/session/end` with a line of `notes`. It revokes your key; nothing you call afterwards authenticates, so it is the last call.
+3. `POST /agent/session/end` with a line of `notes` (and `agent_model` — see [§ Attribution](#attribution--what-the-record-says-about-you)). It revokes your key; nothing you call afterwards authenticates, so it is the last call.
 
 ### Feedback — file it when the friction happens
 
@@ -111,71 +111,21 @@ The API uses HTTPS with a self-signed certificate. All `curl` commands require `
 
 <!-- agents:section tags="shared" -->
 
-## Environment probe (MANDATORY first step)
+## Attribution — what the record says about you
 
-> **One probe per session, whatever work follows.** POST it once to your session — `POST /agent/session/environment` (v2.337.0; it replaced the three per-phase probe endpoints). It rides along into every execution run you open. A plan you only *write* does not need it for its own sake — a plan describes intent, and whoever executes it probes then — but the session you write it in may go on to scan or execute, so probe first regardless.
+BlueStick does not inspect the operator's machine and does not choose your tools or commands: which tools are installed and which command fits this host is yours to work out with the operator. What the server records is who did the work, from three sources:
 
-Before you propose, scan, or run anything else, **probe the operator's environment and report it back to BlueStick.** Two operators on the same project can have very different environments (Windows + RemoteSigned vs Kali Linux), and the right command for one is wrong for the other — the probe is what lets you translate test intent into the correct command (see "Plans describe intent" below).
-
-### What to probe
-
-Run a short capability check appropriate to the shell you're talking to and capture this fixed shape:
-
-| Field | What to capture |
+| Recorded | Source |
 |---|---|
-| `os_family` | `windows`, `linux`, `darwin`, `bsd`, or `other` |
-| `os_release` | Distribution + version when known (`Ubuntu 22.04`, `Kali rolling`, `Windows 11 23H2`) |
-| `arch` | `x86_64`, `arm64`, … |
-| `shell` | `pwsh`, `powershell`, `bash`, `zsh`, `cmd` |
-| `powershell_version` | `$PSVersionTable.PSVersion` if PowerShell is available |
-| `powershell_execution_policy` | `Get-ExecutionPolicy` result (`Restricted` / `AllSigned` / `RemoteSigned` / `Unrestricted` / `Bypass`) |
-| `python` | path to a usable Python — or the literal string `microsoft-store-stub` if `python` resolves to the Win10/11 Store stub (unusable) |
-| `python_version` | `python --version` output, null when not present |
-| `wsl_available` | Windows only: did `wsl --status` succeed? |
-| `tools_available` | Map of tool name → boolean (`{"nmap": true, "masscan": false, ...}`). Cover at least the tools in [§ Tool inventory](#tool-inventory). |
-| `tools_status` | Optional but recommended after preflight: **list of `{name, status, issue}` dicts**, one per tool, mirroring `preflight.sh --json`'s `tools[]` output. `status` is `"ok"` / `"warn"` / `"missing"` / `"info"`. Re-post the env with this populated so the session record (and every execution run it opens) shows which tools the operator's host actually has. See [§ Environment preflight script](#environment-preflight-script-v2133-shell-agnostic-guidance-v2411). |
-| `notes` | Free text — AV product detected, sandbox/VM indicators, network egress restrictions, anything a reviewer should see. ≤2000 chars. |
-| `agent_model` | Optional: your model id (e.g. `claude-opus-4-7`, `gpt-5-codex`). ≤100 chars. |
-| `agent_tool` | Optional: the harness you run in (`claude-code`, `codex`, `chatgpt`, `manual-curl`). ≤100 chars. |
-| `agent_prompt_version` | Optional: the `prompt_version` your instructions block gave you. ≤20 chars. |
+| **Client** (the harness — `generated_by_tool`) | Over MCP, the `initialize` handshake's `clientInfo` (name and version, e.g. `claude-code 2.1.0`), when the handshake carries your key. A curl agent: the first call's `User-Agent` (e.g. `curl/8.5.0`); a handshake name replaces it, never the other way round. You send nothing for this. |
+| **Prompt version** | Set by the server when the session starts or is resumed — the version of the instructions you were given. You send nothing for this. |
+| **Model** (`generated_by_model`) | Your own report, the one thing no protocol carries. Pass the optional `agent_model` (e.g. `"claude-opus-5-5"`) on `POST /agent/test-plans` (MCP `create_test_plan`), `POST /agent/execution-sessions/start` (`start_execution`) and `POST /agent/session/end` (`end_session`). |
 
-> **Shape gotcha for `tools_status`.** Send it as a **list** of `{name, status}` objects (`issue` and `path` optional), not a dict keyed by tool name — as of v2.316.0 the field is typed, so `status` must be one of `ok`/`warn`/`missing`/`info` and a dict or an unknown status is rejected with a 422 rather than silently stored: `[{"name": "curl", "status": "ok"}, {"name": "httpx", "status": "warn", "issue": "Python httpx CLI shadows ProjectDiscovery httpx"}, {"name": "eyewitness", "status": "missing"}]`.
-
-### How to report it
-
-POST it to your session's environment endpoint — `POST /agent/session/environment` (one probe per session, whatever work it goes on to do):
-
-```bash
-curl -sk -X POST https://<host>/api/v1/agent/session/environment \
-  -H "X-API-Key: $KEY" -H "Content-Type: application/json" \
-  -d '{"os_family":"linux","os_release":"Kali rolling", ...}'
-```
-
-The example above is bash/zsh. **On Windows PowerShell**, the bare `curl` is an alias for `Invoke-WebRequest` and will not accept these flags — use **`curl.exe`** (and double-quote, since single-quoted JSON isn't a PowerShell idiom):
-
-```powershell
-curl.exe -sk -X POST "https://<host>/api/v1/agent/session/environment" `
-  -H "X-API-Key: $KEY" -H "Content-Type: application/json" `
-  -d (@{ os_family = "windows"; os_release = "Windows 11 23H2"; shell = "pwsh" } | ConvertTo-Json -Compress)
-```
-
-…or native `Invoke-RestMethod -SkipCertificateCheck -Method Post -Headers @{ 'X-API-Key' = $KEY } -ContentType 'application/json' -Body (... | ConvertTo-Json)`. The endpoint + body shape are identical to the bash form.
-
-The endpoint echoes back the persisted record with `probed_at`, `probed_by_user_id`, and `probed_from_ip` for the audit trail. The same data is then echoed on subsequent `/execution-context` responses, so once you've probed you don't have to re-send it — just read `environment` from the next context call.
-
-### Command-flavour preference order (use the environment to pick)
-
-When the environment tells you what's available, prefer in this order:
-
-1. **Inline `powershell -Command "..."` one-liners** on Windows. The unsigned-script gate (`RemoteSigned` / `AllSigned`) fires on `.ps1` *files*, not on inline commands — so `Get-NetTCPConnection`, `Resolve-DnsName`, and `Test-NetConnection` work even under restricted policies. This is the most under-used capability in constrained Windows environments.
-2. **Built-in OS binaries** — `nslookup`, `tracert`, `netstat`, `arp`, `nbtstat`, `net`, `nltest`, `ipconfig`, `whoami /all`, `qwinsta`, `systeminfo` on Windows; `dig`, `ip`, `ss`, `traceroute`, `ping` on POSIX. These bypass execution policy entirely.
-3. **Python** — only when the probe shows a real Python (not the Microsoft Store stub). `python --version` produced a real version string and `python` is not `microsoft-store-stub`.
-4. **WSL** — when `wsl_available: true`, you can fall back to the full Linux toolbox transparently.
-5. **`.ps1` script on disk** — last resort. If you must use one, include the elevated `-ExecutionPolicy Bypass -File ...` invocation explicitly in the command you show, and wait for the operator's go-ahead (it changes how their machine treats scripts), so the bypass is on the record, not in the script silently.
+The session keeps the last model reported; a test plan and an execution run each take a snapshot of the session's attribution (client, model, prompt version) when they are created. **Pass `agent_model` on those three calls** — a plan or run registered without it is recorded with no model.
 
 ### Plans describe intent — you translate at execution time
 
-A plan entry's `proposed_tests` may include a sample command, but treat the description and `expected_evidence` as authoritative. Two examples of the same intent, two valid translations:
+A plan entry's `proposed_tests` may include a sample command, but treat the description and `expected_evidence` as authoritative; pick the command that fits the operator's machine. Two examples of the same intent, two valid translations:
 
 | Intent | Kali Linux (recon from Kali, executing from Kali) | Windows + RemoteSigned, no Python, no WSL |
 |---|---|---|
@@ -183,7 +133,7 @@ A plan entry's `proposed_tests` may include a sample command, but treat the desc
 | DNS reverse lookup for 10.0.0.5 | `dig -x 10.0.0.5` | `nslookup 10.0.0.5` |
 | List listening ports on the local host | `ss -tlnp` | `powershell -Command "Get-NetTCPConnection -State Listen \| Format-Table"` |
 
-When you record the test result, put the *actual command you ran* in `command_run` so a reviewer can correlate the plan's intent with what happened on this operator's machine. The audit trail is then full: BlueStick has the inbound API calls, the probe identifying the environment, and the agent-reported `command_run` per test.
+When you record the test result, put the *actual command you ran* in `command_run` so a reviewer can correlate the plan's intent with what happened on this operator's machine. The audit trail is then full: BlueStick has the inbound API calls, the session's attribution, and the agent-reported `command_run` per test.
 
 ### What the user sees
 
@@ -426,7 +376,7 @@ When your instructions carry that notice:
 - **Fetch `/execution-context` before doing anything else.** It reports each entry's `entry_status` and each test's `result_status`. Any entry already `completed`, and any test already `executed` or `skipped`, is **done** — do not re-run it.
 - **Do not repeat a target check** a host's entry already recorded (`sanity_check_passed` on the context).
 - Resume at the first host/entry with outstanding work and continue the normal flow.
-- The environment probe ([§ Environment probe](#environment-probe)) is still required — your new key has no probe yet — but every prior result is intact and must not be overwritten.
+- Every prior result is intact and must not be overwritten.
 
 The session id is unchanged, so your results append to the same audit trail. To keep that trail readable for the human reviewer — and to make any future resume cleaner — post a real `findings_summary` on each entry `/complete` **as you finish each host**, not only at the end.
 
@@ -483,7 +433,6 @@ These are the only gates. There is **no sanity-check gate** (retired in v2.433.0
 
 - `plan` — plan id, title, status, entry count
 - `session_id` — the active execution session
-- `environment` — your last posted environment probe (`os_family`, `shell`, …), or `null` until you POST one; echoed back so you don't re-send it
 - `agent_name` — for attribution in findings
 - `prompt_version` — the live prompt version; if it differs from your instructions block, re-fetch this guide
 - `read_back` — on `POST /agent/execution-sessions/start` only (null on `/execution-context`): the per-host bounds to state before testing
@@ -591,8 +540,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
 | PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
 | POST | `/agent/feedback` | **File structured feedback at the moment you hit friction** (a retry, a guess, a workaround, a re-read of this guide) — several short submissions per session; `feedback_recorded: false` on a phase completion means you have filed none yet. Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work (`assist` / `reconnaissance` / `plan_generation` / `in_session_execution`) and the matching `test_plan_id` / `execution_session_id` is optional context. See the `## Feedback Requested` block at the end of the session prompt for the payload shape. |
-| GET | `/agent/identity` | **Who am I** — `session_id`, `can_write_project_data`, `environment_probed`, `key_expires_at` / `renew_path` / `renewable_until`, and **`open_phases`**: the execution runs this session has open (`active_execution_session_ids`) and the plans it drafted (`drafted_plan_ids`). Read it first after a resume — it is the only way to find the runs a previous key left open. |
-| POST | `/agent/session/environment` | Record the operator-environment probe on your session (once; rides into every run) |
+| GET | `/agent/identity` | **Who am I** — `session_id`, `can_write_project_data`, `key_expires_at` / `renew_path` / `renewable_until`, and **`open_phases`**: the execution runs this session has open (`active_execution_session_ids`) and the plans it drafted (`drafted_plan_ids`). Read it first after a resume — it is the only way to find the runs a previous key left open. |
 | POST | `/agent/session/renew` | Extend your key's deadline (same key; accepts an already-expired key while the session is under its lifetime cap) |
 | POST | `/agent/session/end` | **End the session — the last call you make, only when the operator says they are finished.** Revokes your key; `409` while an execution run you opened is still active (complete those first). A run left paused (another session took its plan over) is marked `abandoned` when the session ends, its results kept. Over MCP: `end_session`. Optional `notes` |
 | POST | `/agent/uploads` | **Submit scanner output here** — multipart upload, any supported tool format; no run needed. Form fields: `file`, optional `tool_name`, `command_run`, `batch` (see Upload batches & duplicates), and `skip_informational=true|false` (Nessus only, v2.341.0): drop severity-0 report items instead of storing a vulnerability row each — ports are still derived from them. Omit it to follow the project's setting; do not set it on your own initiative, it is the operator's choice. `409 duplicate_scan` = already ingested |
@@ -607,7 +555,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 
 | Method | Path | Purpose |
 |--------|------|---------|
-| POST | `/agent/test-plans` | **Register a plan** — create a draft (`{title}`, optional `description`, `filter_criteria`, and `host_ids` or `q` for an exact host selection); 201 returns its `id` |
+| POST | `/agent/test-plans` | **Register a plan** — create a draft (`{title}`, optional `description`, `filter_criteria`, `host_ids` or `q` for an exact host selection, and `agent_model`); 201 returns its `id` |
 | GET | `/agent/test-plans` | List the project's plans. `?mine=true` narrows to the ones this session drafted; `?status=` filters by status |
 | GET | `/agent/test-plans/{id}` | Get test plan detail |
 | GET | `/agent/test-plans/{id}/context` | **Planning context** — candidate hosts + enrichment in one call |
@@ -615,7 +563,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/test-plans/{id}/entries` | Batch-add entries (up to 500) |
 | PATCH | `/agent/test-plans/{id}/entries/{eid}` | Update an entry |
 | GET | `/agent/test-plans/{id}/validate` | Check the plan for gaps (no entries, no description, short rationales) and its candidate-host coverage — advice, not a gate |
-| POST | `/agent/execution-sessions/start` | **Open an execution run** on a `draft` or `in_progress` plan (`{plan_id}`); 201 returns the execution context + `read_back`. The first run moves a draft to `in_progress`. Reuses a run this session already has open; PAUSES another session's active run on the plan. 409 if the plan is completed/archived or has no entries, or if it is a draft still open in ANOTHER active agent session (starting a run freezes its tests — start it from that session, or once that session has ended) |
+| POST | `/agent/execution-sessions/start` | **Open an execution run** on a `draft` or `in_progress` plan (`{plan_id, agent_model?}`); 201 returns the execution context + `read_back`. The first run moves a draft to `in_progress`. Reuses a run this session already has open; PAUSES another session's active run on the plan. 409 if the plan is completed/archived or has no entries, or if it is a draft still open in ANOTHER active agent session (starting a run freezes its tests — start it from that session, or once that session has ended) |
 | GET | `/agent/test-plans/{id}/execution-context` | Execution context — hosts + tests + known services with `{ip}` resolved |
 | POST | `/agent/test-plans/{id}/entries/{eid}/sanity-check` | Record an optional target check — evidence that you reached the intended host |
 | POST | `/agent/test-plans/{id}/entries/{eid}/test-results` | Record one test's execution result |
@@ -920,8 +868,6 @@ Inventory assistance has **no host-tool requirements** — its "commands" are HT
 - **bash / zsh** (Linux, macOS): `curl -sk -H 'X-API-Key: …' '<url>'`
 - **Windows PowerShell:** use **`curl.exe`** — bare `curl` is an alias for `Invoke-WebRequest` and won't accept these flags — e.g. `curl.exe -sk -H "X-API-Key: …" "<url>"`; or native `Invoke-RestMethod -SkipCertificateCheck -Headers @{'X-API-Key'='…'} '<url>'`. For POST bodies, pass `-d (ConvertTo-Json $obj)` to `curl.exe` or `-Body ($obj | ConvertTo-Json)` to `Invoke-RestMethod` rather than bash single-quoted JSON.
 
-The environment probe (below) only needs `os_family` (`windows`/`darwin`/`linux`) + `shell` for assist — the recon/execution tool-inventory + preflight flow does **not** apply here.
-
 ### Hard contract
 
 - **You have the operator's permissions, not more.** The key is bound to one project session; project writes require the operator's role to permit them. A 403 is a guardrail, not a route-around opportunity.
@@ -937,7 +883,6 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 
 | Endpoint | Purpose |
 |---|---|
-| `POST /agent/session/environment` | Probe (MANDATORY first step; one per session) |
 | `GET  /agent/assist/context` | **Headline** project summary. Scope list capped at 50 (check `scopes_truncated`); `recent_scans` capped at 5. Read BEFORE answering — but take real counts from the `totals` block, not the truncated lists. Also the engagement dates (`project.start_date` / `end_date`) and `members` with their project roles ("who is on this engagement"). |
 | `GET  /agent/assist/hosts` | List hosts. Discrete filters: `state`, `ports`, `services` (known names map to their standard port numbers — an unknown name is ignored, so the filter silently disappears; for a detected service name use `q=service:<name>`), `subnets`, `has_critical_vulns`, `has_high_vulns`, `search`, `limit`, `offset`. **`q` — the full boolean query DSL** (same engine as the human Hosts page): `ip:`, `hostname:` (alias `host:`), `state:`, `port:`, `os:` (OS name or OS family), `service:` (alias `svc:`), `version:` (alias `product:`; service product or version, e.g. `version:"OpenSSH 7"`) — **`port:`/`service:`/`version:` match OPEN ports only**; name another state after `@` on the value: `port:22@closed`, `service:ssh@filtered`, `port:22@unfiltered`, `port:22@open|filtered`, `port:22@any` (every state). A closed/filtered port's service name is nmap's guess from the port number, not evidence the service runs. `portstate:closed` alone is a separate "has some closed port" condition, not a qualifier. `path:` (alias `webpath:`; a path content discovery found, e.g. `path:/admin`), `subnet:` (alias `cidr:`), `scope:` (`subnet` = in a scope subnet, `name` = reached only through an in-scope name, `none` = neither), `org:` (alias `owner:`; the netblock's registered owner, RDAP), `certorg:`, `asn:`, `country:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site — Posture's "Unassigned"), `conclusion:` (what a finished review concluded: `no_issue` / `finding_created` / `needs_evidence` / `out_of_scope` / `duplicate` — `conclusion:needs_evidence` is every reviewed host whose question is still open), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its key — `check:<id>`, `cve:<CVE>`, `title:<normalised title>` or `row:<id>`, e.g. `issue:"check:smb_signing_not_required"` or `issue:"cve:CVE-2021-44228"`; `vuln:` is a title substring), `kind:` (`misconfiguration` / `vulnerability` / `informational`), `check:` (one misconfiguration-catalog check whichever tool reported it — e.g. `check:smb_signing_not_required`, `check:smbv1_enabled`, `check:smb_null_session`, `check:vnc_no_auth`, `check:ftp_anonymous`, `check:tls_deprecated_protocol`, `check:tls_cert_expired`, `check:http_missing_hsts` — the `check_id` on a host's findings is the value to use), `exploitport:`, `header:`, `webtitle:`, `tech:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows — quote the ISO value: `firstseen:"2026-09-19T20:00:00Z"` = hosts first observed since then; `changedsince:"<start>..<end>"` = hosts already known that gained a port or a scanner observation; `vulnsince:"critical@<start>"` = a critical observation recorded since, severity and time on the same row), `has:`, **`follow:`** (`watching` / `in_review` / `reviewed` / `none` / `in_review_any`), **`assigned:`** (alias `assignee:`) combined with `AND`/`OR`/`NOT` and parentheses. `has:` values: `eol`, `smb_unsigned`, `weak_auth`, `cert_issue`, `weak_tls`, `cleartext`, `critical`/`high`/`medium`/`low`, `exploit`, `critical_exploit` (a critical that is ITSELF exploitable — `has:critical AND has:exploit` also matches a critical beside an exploitable low), `web`, `open_ports`, `tested`, `planned`, `notes`, `stale_review`, `untouched` (nobody has touched it: no review or assignment, note, plan entry or finding), `local_admin` (a credential was local admin — NetExec "Pwn3d!"), `writable_share` (a share granted WRITE). `GET /agent/assist/vocabulary` returns the values this project uses after `tag:`, `label:`, `site:` and `assigned:` — use it instead of guessing (a guessed tag returns zero hosts, not an error). `assigned:me`/`follow:` resolve against the operator who started the session; `assigned:`/`assignee:` also take a **username** (case-insensitive) or numeric id. `q` ANDs with the discrete filters; a malformed `q` returns 400. **Bare array, paginated (default 500, max 5000), NO `has_more`/`total` — page with `offset` until a short page; never report a count from one page.** Rows carry `exploitable_count` and `critical_exploitable_count` (same-row, as the Hosts page's "critical · exploit"). `sort_by` takes the Hosts page's keys (`ip_address` default, `critical_vulns`, `high_vulns`, `exploitable_vulns`, `open_ports`, `note_count`, `discovery_count`, `hostname`, `last_seen`) with `sort_order=asc\|desc`. `GET /agent/assist/hosts/by-ip/{ip}` is the host detail by address. |
 | `GET  /agent/assist/hosts/count` | **How many hosts match** — same filters and `q=` as the list; returns `{count, query}`. Use this for every counting question instead of paging. |
@@ -993,9 +938,8 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
 
 ### How to operate
 
-1. **Environment probe first.** Same shape as recon/execution.  Less critical (your commands are API calls, not shell invocations) but recorded for audit symmetry.  Don't skip it.
-2. **Fetch `/agent/assist/context`.**  This grounds you — but it's a HEADLINE summary: the scope list is capped at 50 (check `scopes_truncated`), and recent scans at 5. Read `totals` for real counts and use the dedicated list endpoints for full enumeration. Don't answer "how many scopes/scans/hosts does this project have" from the truncated lists. Anchor every response in something you actually read.
-3. **Answer the operator's question** using the filter vocabulary above.  Examples:
+1. **Fetch `/agent/assist/context`.**  This grounds you — but it's a HEADLINE summary: the scope list is capped at 50 (check `scopes_truncated`), and recent scans at 5. Read `totals` for real counts and use the dedicated list endpoints for full enumeration. Don't answer "how many scopes/scans/hosts does this project have" from the truncated lists. Anchor every response in something you actually read.
+2. **Answer the operator's question** using the filter vocabulary above.  Examples:
    - "Which hosts have FTP open?" → `GET /agent/assist/hosts?ports=21` (or `services=ftp`, or `q=port:21`).
    - "Which hosts do I have in review?" → `GET /agent/assist/hosts?q=follow:in_review` (resolves to the session operator). "Assigned to me?" → `q=assigned:me`.
    - "Generate a test plan for the hosts assigned to me or in review by me" → `POST /agent/test-plans {"title": …, "q": "assigned:me OR follow:in_review"}` (the query is resolved to its hosts now, and the plan's description records it), then `/context` for exactly those hosts and `POST /agent/test-plans/{id}/entries`. The operator takes hosts into review from the **Worth a look** queue on Operations, so this is how their review queue becomes a plan; do not add hosts outside the query result.
@@ -1011,8 +955,8 @@ Every note you create is stamped agent-authored and surfaces in the operator's U
    - "What did we report to the client?" → `GET /agent/assist/client-reports`, then `/client-reports/{id}` (`content_source: issued_snapshot`).
    - "Who closed finding X, and why?" → `GET /agent/assist/findings/{id}` → `status_history`.
    - "Which names are we allowed to test but haven't found yet?" → `GET /agent/assist/names?in_scope=true&resolved=false` (the context's `names.in_scope_unresolved` is the count). "What sits behind 10.0.0.5?" → `GET /agent/assist/names?host_id=<id>` — several names on one address means test each **by name**.
-4. **Cite what you read — and count with the count endpoint.** Every claim maps back to a specific endpoint + filter. "How many" is ONE call: `GET /agent/assist/hosts/count` (MCP `assist_count_hosts`) takes the same filters and `q=` as the list and returns `{count, query}`. Page the list, or take the `hosts.ndjson` download, only when you need the rows themselves — and then one 500-row page is **not** "500 hosts." Say "12 hosts (per `?ports=21`, from `/hosts/count`)," never a one-page count on a project that may have thousands of hosts.
-5. **Flag uncertainty.**  If the data is ambiguous (e.g. the host has port 21 open but no service name), say so.  Don't infer.
+3. **Cite what you read — and count with the count endpoint.** Every claim maps back to a specific endpoint + filter. "How many" is ONE call: `GET /agent/assist/hosts/count` (MCP `assist_count_hosts`) takes the same filters and `q=` as the list and returns `{count, query}`. Page the list, or take the `hosts.ndjson` download, only when you need the rows themselves — and then one 500-row page is **not** "500 hosts." Say "12 hosts (per `?ports=21`, from `/hosts/count`)," never a one-page count on a project that may have thousands of hosts.
+4. **Flag uncertainty.**  If the data is ambiguous (e.g. the host has port 21 open but no service name), say so.  Don't infer.
 
 ### When to hand off
 
@@ -1027,7 +971,7 @@ The operator drives every action; you assist their query.
 ### What you can NOT do
 
 - Create notes or change follow status when `can_write_project_data` is false. Cannot assign hosts to anyone, ever.
-- Access other projects, or list other operators' assist sessions / environment probes.
+- Access other projects, or list other operators' assist sessions.
 - **Promote, dismiss or otherwise triage a finding.** There is no agent route for it — that judgement is the operator's (and theirs can be about one host or the whole issue). You can READ findings (`/agent/assist/findings`, `/agent/assist/findings/{id}`); if a scanner observation looks real or looks like a false positive, say so in a note on the host with your evidence.
 - Archive or delete a test plan — that is the operator's, from the Test Plans page.
 

@@ -375,11 +375,10 @@ class AgentIdentity(BaseModel):
     # than left as an inference from `operator.project_role`.  It is the same
     # predicate `enforce_agent_operator_access` applies to a project write
     # (ANALYST or above, or global admin), so a `false` here and a 403 on the
-    # first write can never disagree.  Session-metadata writes — the
-    # environment probe, key renewal — are not project writes and stay
+    # first write can never disagree.  Session-metadata writes — key
+    # renewal, feedback, ending the session — are not project writes and stay
     # available to a read-only operator.
     can_write_project_data: bool = False
-    environment_probed: bool = False
     # Agent keys are short-lived (24h for plan keys). An agent that knows when
     # its credential dies can finish or hand back cleanly instead of failing
     # mid-run on a 401 it has no way to anticipate.
@@ -455,6 +454,10 @@ class PlanCreate(BaseModel):
         "A host query (the Hosts page DSL, e.g. 'follow:in_review OR assigned:me'), "
         "resolved to its matching hosts when the plan is created."
     ))
+    agent_model: Optional[str] = Field(
+        None, max_length=200,
+        description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the plan.",
+    )
 
 
 class PlanUpdate(BaseModel):
@@ -681,6 +684,10 @@ class ExecutionHostContext(BaseModel):
 class ExecutionStartRequest(BaseModel):
     """Body for POST /agent/execution-sessions/start — open an execution run."""
     plan_id: int = Field(..., gt=0, description="The plan to execute (a draft or one in progress).")
+    agent_model: Optional[str] = Field(
+        None, max_length=200,
+        description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the run.",
+    )
 
 
 class ExecutionContextResponse(BaseModel):
@@ -692,11 +699,6 @@ class ExecutionContextResponse(BaseModel):
     # per-host read-back to state before testing. Null on /execution-context.
     read_back: Optional[str] = None
     hosts: List[ExecutionHostContext] = Field(default_factory=list)
-    # v2.23.0 — echo back what the agent reported via the probe endpoint.
-    # None means no probe has been recorded for this session yet; the
-    # agent should run one (see the agent guide § Environment probe) before
-    # proposing commands so this field is populated for subsequent calls.
-    environment: Optional["EnvironmentSummary"] = None
 
 
 class SanityCheckRequest(BaseModel):
@@ -836,202 +838,12 @@ class ExecutionProgressResponse(BaseModel):
     critical_findings: int = 0
 
 
-# ---------------------------------------------------------------------------
-# Schemas — environment probe (v2.23.0)
-# ---------------------------------------------------------------------------
-#
-# Both workflows (recon + execution) carry a per-session probe so the
-# agent's command-flavour choices are grounded in what is *actually*
-# available on the operator's host.  The shape is intentionally loose:
-# the agent reports a small fixed set of high-signal facts plus a free
-# ``extras`` bag for anything else worth recording (kernel version,
-# observed AV agent, custom toolbox).  See the agent guide § Environment probe
-# for the agent-facing contract.
-
-class ToolStatusItem(BaseModel):
-    """One tool's preflight result — see the agent guide § Environment probe.
-
-    The status vocabulary is a CONTRACT, not a convenience:
-    ``recon_planning_service._env_tool_unavailable`` treats only ``warn`` and
-    ``missing`` as a problem and reads the reason from ``issue``. Declared as a
-    typed field (v2.316.0) rather than riding in on the parent's ``extra=allow``,
-    so a malformed status (e.g. the invented ``wrong-binary`` that v2.313.0
-    fixed) is rejected at the boundary instead of stored and planned around.
-    """
-    name: str = Field(description="Tool name, e.g. httpx.")
-    status: Literal["ok", "warn", "missing", "info"] = Field(
-        description=(
-            "ok = usable; warn = present but not the tool you want; "
-            "missing = not on PATH; info = advisory only. Only warn and missing "
-            "make the server plan around the tool."
-        ),
-    )
-    issue: Optional[str] = Field(
-        None,
-        description="Why, in one line — surfaced verbatim as the step's swap_reason.",
-    )
-    path: Optional[str] = Field(None, description="Resolved path, when known.")
-
-
-class EnvironmentSummary(BaseModel):
-    """Result of the agent's environment probe.
-
-    Per-session, per-user (the user who owns the agent that ran the
-    probe). Plans describe test *intent*; the executing agent uses this
-    summary to pick command flavour at runtime — same plan, different
-    environment, different translation.
-    """
-    # Use Pydantic's default config + extra="allow" so the agent can
-    # include observed facts beyond the fixed shape without us shipping
-    # a new schema version each time.
-    model_config = ConfigDict(extra="allow")
-
-    # Host fingerprint
-    os_family: str = Field(
-        description="High-level OS family: 'windows', 'linux', 'darwin', 'bsd', 'other'."
-    )
-    os_release: Optional[str] = Field(
-        None,
-        description="Distribution + version when known ('Ubuntu 22.04', 'Windows 11 23H2', 'Kali rolling').",
-    )
-    arch: Optional[str] = Field(
-        None,
-        description="CPU architecture ('x86_64', 'arm64'). Used to pick prebuilt-binary flavours.",
-    )
-
-    # Shell + scripting capabilities
-    shell: Optional[str] = Field(
-        None,
-        description="The shell the agent is talking to. 'pwsh' / 'powershell' / 'bash' / 'zsh' / 'cmd'.",
-    )
-    powershell_version: Optional[str] = Field(
-        None,
-        description="$PSVersionTable.PSVersion if PowerShell is available; otherwise null.",
-    )
-    powershell_execution_policy: Optional[str] = Field(
-        None,
-        description=(
-            "Get-ExecutionPolicy result. Critical for choosing inline -Command vs "
-            ".ps1 file. 'Restricted' / 'AllSigned' / 'RemoteSigned' / 'Unrestricted' / 'Bypass'."
-        ),
-    )
-    python: Optional[str] = Field(
-        None,
-        description=(
-            "Resolved Python interpreter path *or* the literal string "
-            "'microsoft-store-stub' when `python` resolves to the Win10/11 "
-            "Store stub (which is unusable). null when not present."
-        ),
-    )
-    python_version: Optional[str] = Field(
-        None,
-        description="`python --version` output, or null when Python is unavailable.",
-    )
-    wsl_available: Optional[bool] = Field(
-        None,
-        description=(
-            "Windows: did `wsl --status` succeed?  Lets the agent fall back to a "
-            "Linux toolbox transparently.  null when the concept doesn't apply "
-            "(non-Windows hosts) or the agent didn't check — semantically distinct "
-            "from `false` ('WSL absent on a Windows host')."
-        ),
-    )
-
-    # Tool inventory — bool per tool name.  Loose dict so the agent
-    # can include any toolbox member without us iterating the schema.
-    tools_available: Dict[str, bool] = Field(
-        default_factory=dict,
-        description=(
-            "Map of tool-name → present-on-PATH for the agent's preferred "
-            "toolbox. Names follow the agent guide's inventory: 'nmap', 'masscan', "
-            "'httpx', 'dig', 'curl', 'jq', 'enum4linux', 'nxc', 'nikto', ..."
-        ),
-    )
-    # Richer per-tool preflight result; takes precedence over tools_available.
-    # Typed (v2.316.0) so the status vocabulary the planner branches on is
-    # validated here rather than accepted as free-form extra.
-    tools_status: List[ToolStatusItem] = Field(
-        default_factory=list,
-        description=(
-            "Per-tool preflight result, posted after running the preflight "
-            "check. Richer than tools_available and takes precedence over it."
-        ),
-    )
-
-    # Free-text notes the agent thinks the human reviewer should see —
-    # AV product detected, sandbox/VM indicators, network egress
-    # restrictions, etc.  Capped to keep the JSON row scannable.
-    notes: Optional[str] = Field(
-        None,
-        max_length=2000,
-        description="Free-form notes worth surfacing to a human reviewing the audit trail.",
-    )
-
-
-class EnvironmentProbeRequest(EnvironmentSummary):
-    """The body of POST /agent/{recon,execution-sessions}/{id}/environment.
-
-    v2.28.0 — optional executing-agent attribution fields ride along
-    with the probe so a user comparing two execution sessions of the
-    same plan can see which agent/model ran each.  These mirror the
-    plan-generation provenance from v2.19.0; on execution sessions
-    they persist to ``execution_sessions.generated_by_*`` columns.
-    Recon sessions persist them into the environment JSON for now
-    (recon doesn't have first-class attribution columns yet).
-    """
-    agent_model: Optional[str] = Field(
-        None,
-        max_length=100,
-        description=(
-            "Model id of the agent running this session "
-            "(e.g. `claude-opus-4-7`, `gpt-5-codex`).  Optional."
-        ),
-    )
-    agent_tool: Optional[str] = Field(
-        None,
-        max_length=100,
-        description=(
-            "Harness / CLI the agent runs inside "
-            "(`claude-code`, `codex`, `chatgpt`, `manual-curl`).  Optional."
-        ),
-    )
-    agent_prompt_version: Optional[str] = Field(
-        None,
-        max_length=20,
-        description=(
-            "PROMPT_VERSION the agent received from BlueStick "
-            "for this session.  Echo back what the prompt told you."
-        ),
-    )
-
-
-class EnvironmentProbeResponse(BaseModel):
-    """Confirmation echo after a probe is persisted.
-
-    Tells the agent what we stored (so it can verify the round-trip) and
-    surfaces the audit fields we stamped on the row.
-    """
-    session_id: int
-    # v2.65.0 — was `session_type: str` with a freehand comment listing
-    # valid values.  Promoted to a typed Literal so the constraint is
-    # compile-time visible (Pydantic v2 enforces) and so the OpenAPI
-    # schema surfaces it as an enum for downstream consumers.
-    session_type: Literal["session", "recon", "execution", "assist"]
-    probed_at: datetime
-    probed_by_user_id: Optional[int] = None
-    probed_from_ip: Optional[str] = None
-    environment: EnvironmentSummary
-    # Agent feedback (v1.44.0): the probe REQUIRES these three attribution
-    # fields but the echo dropped them (they're stamped on separate session
-    # columns, then pruned from `environment`), so the agent couldn't verify
-    # they persisted. Echo them back from the stored columns.
-    agent_model: Optional[str] = None
-    agent_tool: Optional[str] = None
-    agent_prompt_version: Optional[str] = None
+# (The environment probe schemas — ToolStatusItem, EnvironmentSummary,
+# EnvironmentProbeRequest/Response — went with the probe in v2.434.0.)
 
 
 # ---------------------------------------------------------------------------
-# Schemas — agentic reconnaissance
+# Schemas — scope reads and uploads
 # ---------------------------------------------------------------------------
 
 class ReconUploadResponse(BaseModel):

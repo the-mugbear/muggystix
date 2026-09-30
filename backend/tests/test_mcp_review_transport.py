@@ -117,7 +117,7 @@ _CREATES_A_ROW = {
 }
 #: Writes that converge on retry.
 _CONVERGES = {
-    "record_environment", "session_renew", "end_session",
+    "session_renew", "end_session",
     "execution_complete_session", "execution_complete_entry",
     "assist_set_follow", "assist_patch_host", "plan_update", "plan_update_entry",
 }

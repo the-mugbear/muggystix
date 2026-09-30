@@ -514,11 +514,10 @@ class AgentSession(Base):
     survive on older rows as labels, with their single detail row
     (:class:`AssistSession` included) still attached.
 
-    Shared lifecycle state (status, timestamps, the environment probe, the
-    agent/model attribution, the operator's stated purpose, notes) lives here.
-    The phase tables keep their own copies of the probe + attribution columns
-    (they predate this row) — the probe endpoint writes both, so either read
-    is right.
+    Shared lifecycle state (status, timestamps, the agent/model attribution,
+    the operator's stated purpose, notes) lives here.  An execution run keeps
+    its own copy of the attribution, snapshotted when it opens (a session can
+    switch models).  The environment probe columns went in v2.434.0.
     """
     __tablename__ = "agent_sessions"
 
@@ -563,15 +562,9 @@ class AgentSession(Base):
     # (migration f1a6c92d4b70). A session's authority is its operator's project
     # role, resolved per request, so there is no per-session grant to store.
 
-    # Environment probe (shared) — see the agent guide § Environment probe.
-    environment = Column(JSON, nullable=True)
-    environment_probed_at = Column(DateTime(timezone=True), nullable=True)
-    environment_probed_by_user_id = Column(
-        Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True,
-    )
-    environment_probed_from_ip = Column(String(45), nullable=True)
-
-    # Executing-agent attribution (shared).
+    # Executing-agent attribution (v2.434.0): the model the agent last
+    # self-reported, its client from the MCP handshake (User-Agent fallback),
+    # and the prompt version the server issued.
     generated_by_model = Column(String(100), nullable=True)
     generated_by_tool = Column(String(100), nullable=True)
     prompt_version = Column(String(20), nullable=True)
@@ -582,9 +575,6 @@ class AgentSession(Base):
     project = relationship("Project")
     agent = relationship("Agent")
     started_by = relationship("User", foreign_keys=[started_by_id])
-    environment_probed_by = relationship(
-        "User", foreign_keys=[environment_probed_by_user_id]
-    )
     # The phases this session opened.  Ordered oldest-first so "what did this
     # session do" reads as a timeline.
     execution_sessions = relationship(
@@ -653,22 +643,8 @@ class ExecutionSession(Base):
     completed_at = Column(DateTime(timezone=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
-    # Environment probe (v2.23.0).  Snapshotted from the parent AgentSession
-    # when the run opens and refreshed whenever the agent re-posts
-    # POST /agent/session/environment, so /execution-context can echo it and
-    # the agent picks command flavour from what is actually available on
-    # this operator's host.  See the agent guide § Environment probe.
-    environment = Column(JSON, nullable=True)
-    environment_probed_at = Column(DateTime(timezone=True), nullable=True)
-    environment_probed_by_user_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    environment_probed_from_ip = Column(String(45), nullable=True)
-
-    # Executing-agent attribution (v2.28.0).  Stamped by the agent on
-    # the same call that records the environment probe so users can
+    # Executing-agent attribution (v2.28.0).  Snapshotted from the session
+    # when the run opens (v2.434.0) so users can
     # compare runs across agents/models on the same plan — e.g. the
     # same TestPlan executed by claude-opus-4-7 (claude-code) vs
     # gpt-5-codex.  Plan-generation provenance already lives on
@@ -688,9 +664,6 @@ class ExecutionSession(Base):
     test_plan = relationship("TestPlan")
     agent = relationship("Agent")
     started_by = relationship("User", foreign_keys=[started_by_id])
-    environment_probed_by = relationship(
-        "User", foreign_keys=[environment_probed_by_user_id]
-    )
     agent_session = relationship(
         "AgentSession", back_populates="execution_sessions",
         foreign_keys=[agent_session_id],
@@ -1075,22 +1048,8 @@ class AssistSession(Base):
     # without scanning agent_api_calls.
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Environment probe — same shape as AgentSession.environment.
-    # Optional: the assist agent's commands are read-only API calls,
-    # not shell invocations, so probe matters less than for execution
-    # or recon.  Kept for symmetry with the other workflows and
-    # because future assist features (bulk follow, scan-from-filter)
-    # may need it.
-    environment = Column(JSON, nullable=True)
-    environment_probed_at = Column(DateTime(timezone=True), nullable=True)
-    environment_probed_by_user_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    environment_probed_from_ip = Column(String(45), nullable=True)
-
-    # Executing-agent attribution.
+    # Executing-agent attribution (pre-consolidation rows; a unified session's
+    # lives on its AgentSession).
     generated_by_model = Column(String(100), nullable=True)
     generated_by_tool = Column(String(100), nullable=True)
     prompt_version = Column(String(20), nullable=True)
@@ -1099,9 +1058,6 @@ class AssistSession(Base):
     project = relationship("Project", foreign_keys=[project_id])
     agent = relationship("Agent", foreign_keys=[agent_id])
     started_by = relationship("User", foreign_keys=[started_by_id])
-    environment_probed_by = relationship(
-        "User", foreign_keys=[environment_probed_by_user_id]
-    )
     agent_session = relationship("AgentSession")
 
     __table_args__ = (

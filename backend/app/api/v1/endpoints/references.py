@@ -3,7 +3,6 @@
 Unauthenticated by design (documentation / environment tooling, not sensitive
 data — same stance as ``/agents-guide``), with one exception noted below:
 
-  * ``GET  /api/v1/references/preflight-script``    — bash preflight script
   * ``GET  /api/v1/references/trust-cert-script``   — TLS trust installer
   * ``GET  /api/v1/references/sbom``                — software bill of materials
   * ``GET  /api/v1/references/mcp-tools``           — MCP tool catalog, connect
@@ -13,8 +12,6 @@ data — same stance as ``/agents-guide``), with one exception noted below:
   * ``PATCH /api/v1/references/tools/{name}``       — vet one (**admin only**)
   * ``GET  /api/v1/references/parser-coverage``     — what each import format
     keeps, where it is shown, and what is discarded
-  * ``GET  /api/v1/references/tool-readiness``      — registry vs. your own probe
-    (**authenticated** — it reflects the calling user's host)
   * ``GET  /api/v1/references/``                    — listing of the above
   * ``GET  /api/v1/agents-guide``                   — agent guide slice
 
@@ -50,38 +47,6 @@ SAMPLE_KEY_PLACEHOLDER = "<your-session-key>"  # noqa: S105 - not a credential
 router = APIRouter()
 
 
-@router.get("/references/preflight-script", include_in_schema=True)
-async def preflight_script():
-    """Serve scripts/preflight.sh as text/x-shellscript.
-
-    The script queries the local host for recon-workflow tools and prints
-    installation guidance pointing only at official upstream sources
-    (project repos, vendor pages, distro packages).  Agents can invoke it
-    directly in bash-capable environments::
-
-        curl -sk https://<nm-host>/api/v1/references/preflight-script | bash --
-        curl -sk https://<nm-host>/api/v1/references/preflight-script | bash -s -- --json
-
-    PowerShell-only environments fetch + inspect + emit the equivalent
-    `tools_status` payload by hand — see the agent guide § Environment preflight.
-    """
-    candidates = [
-        Path("/app/scripts/preflight.sh"),
-        Path(__file__).resolve().parents[4] / "scripts" / "preflight.sh",
-    ]
-    for p in candidates:
-        if p.is_file():
-            content = p.read_text(encoding="utf-8")
-            return PlainTextResponse(
-                content,
-                media_type="text/x-shellscript; charset=utf-8",
-                headers={
-                    "Content-Disposition": 'attachment; filename="preflight.sh"',
-                },
-            )
-    raise HTTPException(status_code=404, detail="preflight.sh not found in deployment")
-
-
 @router.get("/references/trust-cert-script", include_in_schema=True)
 async def trust_cert_script():
     """Serve scripts/trust-cert.sh as text/x-shellscript (v2.286.0).
@@ -97,8 +62,8 @@ async def trust_cert_script():
         less trust-cert.sh
         bash trust-cert.sh --url https://<host>
 
-    Deliberately NOT advertised as ``curl … | bash``, unlike the preflight
-    script: this one installs a trust anchor, and piping an unverified download
+    Deliberately NOT advertised as ``curl … | bash``: it installs a trust
+    anchor, and piping an unverified download
     straight into a shell is exactly the habit that makes trust-on-first-use
     dangerous.  The script prints the certificate's SHA-256 so it can be
     compared against the fingerprint the reference page shows.
@@ -436,64 +401,10 @@ def mcp_tools(request: Request):
     return catalog
 
 
-@router.get("/references/tool-readiness")
-def tool_readiness(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    """Host readiness — the agent tool catalog cross-referenced against
-    the calling user's most recent environment probe.
-
-    Unlike the other ``/references`` endpoints this one is **authenticated**:
-    it reflects *your* host's tool inventory, taken from the environment
-    probe of your most recent execution or recon session (whichever
-    probed last).  Each catalog tool comes back as ``installed`` /
-    ``missing`` / ``warn`` / ``unknown`` — ``unknown`` meaning the probe
-    never reported on it.  When you have never run an agent workflow,
-    ``has_probe`` is false and every tool is ``unknown``.
-
-    The response carries per-tool ``install_hints`` and the probe's
-    ``preferred_provider`` so the UI can generate install guidance for
-    the tools still missing from this host.
-    """
-    from app.db.models_agent import AgentSession
-    from app.services.recon_planning_service import build_tool_readiness
-
-    # The probe lives per agent session; pull the caller's most recent one.
-    row = (
-        db.query(AgentSession.environment, AgentSession.environment_probed_at)
-        .filter(
-            AgentSession.environment_probed_by_user_id == current_user.id,
-            AgentSession.environment.isnot(None),
-        )
-        .order_by(AgentSession.environment_probed_at.desc())
-        .first()
-    )
-    probe, probed_at = (row[0], row[1]) if row else (None, None)
-    return build_tool_readiness(probe, probed_at=probed_at)
-
-
 @router.get("/references/")
 async def references_index():
     """List available reference assets served under /api/v1/references/."""
     return {
-        "preflight_script": {
-            "url": "/api/v1/references/preflight-script",
-            "description": (
-                "Bash script that queries the local host for recon-workflow "
-                "tools and prints installation guidance.  All install URLs "
-                "point only at official upstream sources."
-            ),
-            "flags": {
-                "--json": "machine-readable output for agents",
-                "--strict": "exit 1 if any essential tool is missing",
-                "--help": "show script-level help",
-            },
-            "usage": [
-                "curl -sk <base>/api/v1/references/preflight-script | bash --",
-                "curl -sk <base>/api/v1/references/preflight-script | bash -s -- --json",
-            ],
-        },
         "agents_guide": {
             "url": "/api/v1/agents-guide",
             "description": (
@@ -553,15 +464,6 @@ async def references_index():
                 "The MCP tool catalog this deployment serves — every tool "
                 "name, its input schema, whether it reads or writes, and the "
                 "workflows that see it. Drives the in-app MCP reference page."
-            ),
-        },
-        "tool_readiness": {
-            "url": "/api/v1/references/tool-readiness",
-            "description": (
-                "Host readiness — the agent tool catalog cross-referenced "
-                "against your most recent environment probe (installed / "
-                "missing / warn / unknown), with install hints.  "
-                "Authenticated: reflects the calling user's own host."
             ),
         },
     }

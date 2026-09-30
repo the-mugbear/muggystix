@@ -321,8 +321,7 @@ def build_session_instructions(
             "progress before continuing "
             "(`/agent/test-plans/{plan_id}/execution-context`) so you continue "
             "coverage rather than "
-            "repeating it. The environment probe is still required for the new "
-            "key.\n\n"
+            "repeating it.\n\n"
         )
 
     purpose_line = (
@@ -357,13 +356,11 @@ def build_session_instructions(
         f"endpoint details. Fetch the slice for what you are doing "
         f"(`reconnaissance`, `plan_generation`, `execution`, or `assist` for "
         f"queries and notes); omit `workflow` for the whole thing.\n\n"
-        f"### First — probe your environment (MANDATORY before any command)\n"
-        f"`POST {base_url}/agent/session/environment` with your OS family, shell, "
-        f"and the tools on PATH (guide § Environment probe). Include "
-        f"`agent_model`, `agent_tool`, `agent_prompt_version: \"{PROMPT_VERSION}\"`. "
-        f"The probe rides along into every execution run you open so "
-        f"commands match this operator's host. Re-post it any time the "
-        f"environment changes.\n\n"
+        f"**Say which model you are.** Pass `agent_model` (the model you are "
+        f"running as, e.g. `claude-opus-5-5`) when you register a plan, open an "
+        f"execution run or end the session — it labels that work, so the "
+        f"operator can tell which model produced what. Your client is recorded "
+        f"from the MCP handshake; there is nothing else to report.\n\n"
         f"### What you can do — in whatever order the work needs\n"
         f"- **Answer questions / write a report.** Query the inventory read-only "
         f"via the `/agent/assist/*` reads — `GET /agent/assist/context`, "

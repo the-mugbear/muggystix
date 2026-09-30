@@ -405,6 +405,16 @@ def get_current_agent(
     if _stale(agent.last_activity_at):
         agent.last_activity_at = now
         need_commit = True
+    # v2.434.0 — the harness, when no MCP handshake named it: a curl agent's
+    # User-Agent ("curl/8.5.0").  Written once; the handshake overwrites it.
+    # The MCP loopback forwards the client's own User-Agent, and sends httpx's
+    # default only when the client sent none, which names nothing.
+    if not agent_session.generated_by_tool:
+        ua = (request.headers.get("user-agent") or "").strip()
+        if ua and not ua.startswith("python-httpx/"):
+            from app.services.agent_session_service import note_agent_harness
+            note_agent_harness(agent_session, ua, overwrite=False)
+            need_commit = True
     if need_commit:
         db.commit()
 
@@ -563,9 +573,8 @@ AGENT_SESSION_METADATA_WRITES = frozenset({
     # reach it). Listed for completeness — if it were ever moved back under the
     # gate, it must not become a project write.
     ("POST", "/session/renew"),
-    # v2.337.0 — one probe per session, on the session (the three per-phase
-    # probe routes are gone with the per-workflow keys).
-    ("POST", "/session/environment"),
+    # (``/session/environment``, the environment probe, was here until
+    # v2.434.0, when the probe was removed.)
     # v2.343.2 (external review, finding 6) — ending one's own session is
     # lifecycle bookkeeping, not a project write: an auditor could start a
     # session (AUDITOR floor on /assist/start) and then not end it, because

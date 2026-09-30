@@ -432,11 +432,10 @@ def test_complete_accepts_with_passing_sanity_check(client, owned_execution_targ
 
 
 # ---------------------------------------------------------------------------
-# v2.23.0 — environment probe.  Recon and execution sessions each carry a
-# per-session, per-user probe blob plus four audit columns.  Verify the
-# write endpoints persist correctly and the read endpoints echo back the
-# stored data.  Verify the two sessions are isolated (a user posting to
-# their session does not poison another user's session on the same plan).
+# An active execution run + key, shared by the execution-path regressions
+# below. (Its v2.23.0 environment-probe tests went with the probe; cross-
+# session isolation of execution writes is pinned in test_agent_execution.py
+# and test_unified_session_review_fixes.py.)
 # ---------------------------------------------------------------------------
 
 @pytest.fixture
@@ -478,152 +477,10 @@ def execution_session_with_key(db_session, test_agent, test_plan):
     return {"session": session, "key": raw}
 
 
-_PROBE_BODY = {
-    "os_family": "linux",
-    "os_release": "Kali rolling",
-    "arch": "x86_64",
-    "shell": "bash",
-    "python": "/usr/bin/python3",
-    "python_version": "Python 3.11.4",
-    "wsl_available": False,
-    "tools_available": {"nmap": True, "masscan": True, "httpx": True, "dig": True},
-    "notes": "fixture probe",
-}
-
-
-def test_execution_environment_persists_and_is_echoed(
-    client, execution_session_with_key, test_plan, db_session,
-):
-    """Round-trip: POST probe → read /execution-context → see the probe in `environment`."""
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    # Make the plan executable (the context endpoint demands approved/in_progress).
-    test_plan.status = "draft"
-    db_session.commit()
-
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": key, "X-Plan-Id": str(test_plan.id)},  # plan_id only via path on get; key is what matters
-        json=_PROBE_BODY,
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["session_type"] == "session"
-    assert body["probed_at"] is not None
-    assert body["environment"]["os_family"] == "linux"
-    assert body["environment"]["tools_available"]["nmap"] is True
-
-    # Probe row is on the session record itself.
-    db_session.refresh(es)
-    assert es.environment is not None
-    assert es.environment_probed_at is not None
-    assert es.environment_probed_by_user_id is not None  # populated from agent.owner_id
-    # ExecutionContextResponse should now echo it back.
-    ctx = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
-    assert ctx.status_code == 200, ctx.text
-    assert ctx.json()["environment"]["os_family"] == "linux"
-
-
-def test_execution_probe_rejects_other_users_session(
-    client, db_session, test_project, execution_session_with_key,
-):
-    """Another agent's plan-scoped key must not be able to overwrite this
-    session's environment.  The scoped key chain (key → plan → agent →
-    owner) is enforced by require_plan_scope + the agent_id check in the
-    handler."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey, User
-    from app.db.models_agent import Agent, TestPlan, TestPlanStatus
-    es = execution_session_with_key["session"]
-
-    # Build a second user + agent + plan + plan-scoped key.  Two separate
-    # users on the same project can both work, but they cannot reach each
-    # other's sessions.
-    # Explicit id sidesteps the conftest test_user fixture (id=1), which
-    # leaves the users-id sequence pointing at 1 on Postgres.
-    intruder = User(
-        id=9999, username="intruder", email="i@example.com",
-        hashed_password="$2b$12$dummy", role="analyst", is_active=True,
-        must_change_password=False,
-    )
-    db_session.add(intruder)
-    db_session.flush()
-    intruder_agent = Agent(
-        name="intruder-agent", project_id=test_project.id,
-        owner_id=intruder.id, description="fixture", is_active=True,
-    )
-    db_session.add(intruder_agent)
-    db_session.flush()
-    # Version 1 is already taken by the test_plan fixture, so use 2.
-    intruder_plan = TestPlan(
-        project_id=test_project.id, agent_id=intruder_agent.id,
-        version=2, title="intruder's plan", status=TestPlanStatus.DRAFT.value,
-    )
-    db_session.add(intruder_plan)
-    db_session.flush()
-    raw = "nm_agent_intruder_" + "x" * 28
-    from app.db.models_agent import AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    intruder_session = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.EXECUTION.value,
-        project_id=intruder_plan.project_id,
-        agent_id=intruder_agent.id,
-        started_by_id=None,
-    )
-    api_key = APIKey(
-        agent_id=intruder_agent.id,
-        agent_session_id=intruder_session.id,
-        name=f"plan-{intruder_plan.id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    )
-    db_session.add(api_key)
-    db_session.commit()
-
-    # Intruder's key is scoped to intruder_plan.  Try to write to the
-    # victim's execution session id — require_plan_scope sees plan_id
-    # in the path mismatch is N/A here (the path is the session id, not
-    # a plan id), so the in-handler check (session.test_plan.agent_id !=
-    # caller.agent.id) is the one that must catch this.  403 expected.
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": raw},
-        json=_PROBE_BODY,
-    )
-    # Either 403 (handler-side check) or 404 (the scoped_plan_id !=
-    # session.test_plan_id catches it before the handler runs) is
-    # acceptable.  What matters is "not 200" and "no row written".
-    assert resp.status_code in (403, 404), resp.text
-    db_session.refresh(es)
-    assert es.environment is None  # victim row untouched
-
-
-def test_environment_summary_accepts_extras():
-    """The schema declares extra='allow' so an agent can surface
-    observed facts beyond the fixed shape without a schema bump."""
-    from app.api.v1.endpoints.agent_schemas import EnvironmentSummary
-    env = EnvironmentSummary(
-        os_family="linux",
-        tools_available={"nmap": True},
-        # Extras: kernel version, observed AV agent — not in the model.
-        kernel="6.5.0-kali",
-        observed_av="none",
-    )
-    dumped = env.model_dump()
-    assert dumped["kernel"] == "6.5.0-kali"
-    assert dumped["observed_av"] == "none"
-
-
 def test_prompt_version_bumped_for_environment_probe():
-    """PROMPT_VERSION must reflect the new probe contract so agents
-    using older prompts can tell they're on the wrong version."""
+    """PROMPT_VERSION must never fall below the v2.23.0 floor (1.10.0) so
+    agents using older prompts can tell they're on the wrong version. (The
+    probe that raised the floor has since been removed; the floor stays.)"""
     from app.services.agent_prompt_service import PROMPT_VERSION
     # v2.23.0 raised the floor to 1.10.0 — anything lower is stale.
     major, minor, _ = PROMPT_VERSION.split(".")
@@ -1970,13 +1827,9 @@ def test_plan_detail_carries_latest_execution_session(
     client, db_session, test_plan, test_project, execution_session_with_key,
 ):
     """TestPlanDetail now includes latest_execution_session for the
-    UI's session-summary card.  An active session must surface with
-    environment-probe metadata when one's been recorded."""
-    from datetime import datetime, timezone
+    UI's session-summary card.  An active session must surface there.
+    (The environment-probe fields it used to carry went with the probe.)"""
     es = execution_session_with_key["session"]
-    es.environment = {"os_family": "linux", "shell": "bash"}
-    es.environment_probed_at = datetime.now(timezone.utc)
-    db_session.commit()
 
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
@@ -1986,8 +1839,9 @@ def test_plan_detail_carries_latest_execution_session(
     assert body["latest_execution_session"] is not None
     assert body["latest_execution_session"]["id"] == es.id
     assert body["latest_execution_session"]["status"] == "active"
-    assert body["latest_execution_session"]["environment_os_family"] == "linux"
-    assert body["latest_execution_session"]["environment_shell"] == "bash"
+    for gone in ("environment", "environment_os_family", "environment_shell",
+                 "environment_probed_at"):
+        assert gone not in body["latest_execution_session"], gone
 
 
 def test_feedback_test_plan_id_filter(client, db_session, test_plan, test_project, test_agent):
@@ -2172,34 +2026,6 @@ def test_session_summary_carries_agent_attribution(
     assert s["generated_by_model"] == "claude-opus-4-7"
     assert s["generated_by_tool"] == "claude-code"
     assert s["prompt_version"] == "1.12.0"
-
-
-def test_environment_probe_stamps_session_attribution(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """POSTing the environment probe with agent_model / agent_tool /
-    agent_prompt_version persists them to the execution_sessions
-    row's dedicated columns (not into the JSON blob)."""
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": key},
-        json={
-            "os_family": "linux",
-            "tools_available": {"nmap": True},
-            "agent_model": "claude-opus-4-7",
-            "agent_tool": "claude-code",
-            "agent_prompt_version": "1.12.0",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    db_session.refresh(es)
-    assert es.generated_by_model == "claude-opus-4-7"
-    assert es.generated_by_tool == "claude-code"
-    assert es.prompt_version == "1.12.0"
-    # Attribution lives in the columns, not the JSON.
-    assert "agent_model" not in (es.environment or {})
 
 
 # ---------------------------------------------------------------------------

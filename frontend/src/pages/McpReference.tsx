@@ -64,7 +64,7 @@ const CAPABILITY_GROUPS: Array<{ key: string; label: string; blurb: string }> = 
     key: 'shared',
     label: 'Session and catalogue',
     blurb:
-      'Who am I, probe my environment, read the guide and the tool catalogue, suggest a tool the catalogue lacks, and end the session.',
+      'Who am I, read the guide and the tool catalogue, suggest a tool the catalogue lacks, and end the session.',
   },
 ];
 
@@ -475,10 +475,7 @@ const McpReference: React.FC = () => {
               (analyst or above), checked on <em>every</em> request rather than at key-mint
               time, so a role change reaches a live session immediately. An agent can ask
               first: <span className="font-mono">agent_identity</span> returns{' '}
-              <span className="font-mono">can_write_project_data</span>. The one exception is
-              <span className="font-mono"> assist_record_environment</span>, which writes session
-              metadata (your OS and shell) rather than project data and is therefore open to every
-              session.
+              <span className="font-mono">can_write_project_data</span>.
             </p>
           </div>
           <div className="flex gap-sm">
@@ -486,7 +483,12 @@ const McpReference: React.FC = () => {
             <p className="text-caption text-muted-foreground">
               <strong className="text-foreground">Everything is audited.</strong> Each call lands
               in the agent API log with the session, the tool, the hosts it touched, and the
-              status — visible on the session&rsquo;s activity view.
+              status — visible on the session&rsquo;s activity view. The client is recorded from
+              the MCP handshake; the model is the agent&rsquo;s own report, passed as the optional{' '}
+              <span className="font-mono">agent_model</span> argument of{' '}
+              <span className="font-mono">create_test_plan</span>,{' '}
+              <span className="font-mono">start_execution</span> or{' '}
+              <span className="font-mono">end_session</span>.
             </p>
           </div>
           <div className="flex gap-sm">

@@ -74,7 +74,7 @@ const sections: GuideSection[] = [
           <li><strong>Reads</strong> need current project membership — a viewer's agent sees what a viewer sees.</li>
           <li><strong>Bulk exports</strong> (the whole-project dossier, host dumps, target lists, evidence files) need <strong>auditor</strong>, the same floor the Reports and Export pages have.</li>
           <li><strong>Writes</strong> to project data — uploads, execution runs, plans and their entries, test results, notes, corrections — need <strong>analyst</strong>. A 403 on a write is the guardrail working, not a fault.</li>
-          <li>Reporting its environment, renewing its key, and filing feedback are about the session, not the project, so any member's agent can do them.</li>
+          <li>Renewing its key and filing feedback are about the session, not the project, so any member's agent can do them.</li>
         </UnorderedList>
         <Para>Treat the key like a password with an expiry date. It is exactly as capable as you are.</Para>
         <Subhead>The bounds, and what BlueStick can and cannot enforce</Subhead>
@@ -95,11 +95,11 @@ const sections: GuideSection[] = [
           you and the agent read — it does not decide what may run; an agent that needs a tool the
           catalogue lacks records it with <Mono>suggest_tool</Mono> for an admin to add.
         </Para>
-        <Subhead>The environment probe</Subhead>
+        <Subhead>Which agent did the work</Subhead>
         <Para>
-          A session's first call reports the operator's environment once — OS family, shell,
-          PowerShell policy, WSL, tools on PATH. That probe rides into every run the session opens,
-          so the same test intent becomes the right command for Kali and for Windows + RemoteSigned.
+          The client (Claude Code, Codex, VS Code…) is recorded from the MCP handshake, and the
+          prompt version by the server. The model is the agent's own report: it may pass{' '}
+          <Mono>agent_model</Mono> when it registers a plan, opens a run or ends the session.
         </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
@@ -308,13 +308,6 @@ const sections: GuideSection[] = [
             <strong>Codex.</strong> Its certificate pin (<Mono>SSL_CERT_DIR</Mono>) has only been
             verified on Linux and macOS, and its key-entry line (<Mono>read -rs</Mono>) is bash. On
             Windows, run Codex inside WSL and follow the Linux steps there.
-          </li>
-          <li>
-            <strong>The environment probe</strong> still comes first, but for questions alone it
-            only needs <Mono>os_family: windows</Mono> and the shell — there is no tool inventory or
-            preflight to report. Scanning and execution on Windows do need one, and the agent's
-            contract tells it how to build the tool list with <Mono>Get-Command</Mono> when there is
-            no bash to run the preflight script.
           </li>
         </UnorderedList>
       </div>

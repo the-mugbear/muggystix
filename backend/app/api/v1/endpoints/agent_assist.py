@@ -233,7 +233,6 @@ def get_assist_context(
             "id": session.id,
             "purpose": session.purpose,
             "started_at": session.started_at.isoformat() if session.started_at else None,
-            "environment_probed": session.environment_probed_at is not None,
         },
         "project": {
             "id": project.id,
@@ -2462,7 +2461,6 @@ def get_assist_session_self(
         "last_activity_at": session.last_activity_at.isoformat()
         if session.last_activity_at
         else None,
-        "environment_probed": session.environment_probed_at is not None,
         # v2.309.0 — `capabilities` / `capability_constraint` removed. What this
         # key may write is the operator's project role, so `operator` is the
         # answer to "what may I do here" and there is no second list to consult.
