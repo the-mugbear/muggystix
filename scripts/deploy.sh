@@ -355,6 +355,21 @@ get_configured_ip() {
 # ------------------------------------------------------------------
 # SSL certificate check / generation
 # ------------------------------------------------------------------
+# A certificate whose issuer is not itself was issued by the operator's CA
+# (ca/local-ca.sh): it is theirs, never ours to regenerate.
+cert_is_ca_issued() {
+    local crt="ssl/certs/networkmapper.crt" issuer subject
+    [[ -f "$crt" ]] && command -v openssl >/dev/null || return 1
+    issuer="$(openssl x509 -in "$crt" -noout -issuer 2>/dev/null | sed 's/^issuer=//')"
+    subject="$(openssl x509 -in "$crt" -noout -subject 2>/dev/null | sed 's/^subject=//')"
+    [[ -n "$issuer" && "$issuer" != "$subject" ]]
+}
+
+cert_names_ip() {
+    openssl x509 -in ssl/certs/networkmapper.crt -noout -ext subjectAltName 2>/dev/null \
+        | tail -n +2 | tr -d ' ' | tr ',' '\n' | grep -qxF "IPAddress:$1"
+}
+
 ensure_ssl_certs() {
     if [[ -f "ssl/certs/networkmapper.crt" && -f "ssl/certs/networkmapper.key" ]]; then
         print_success "SSL certificates found"
@@ -821,6 +836,25 @@ case $DEPLOY_CHOICE in
 
         select_ip
 
+        # A CA-issued certificate is kept, never replaced by a self-signed
+        # one: every analyst machine trusts its root, not a new self-signed
+        # certificate.  It must already name the new address.
+        keep_cert=0
+        if cert_is_ca_issued; then
+            if cert_names_ip "$SELECTED_IP"; then
+                print_info "ssl/certs/networkmapper.crt is issued by your CA and names $SELECTED_IP — keeping it."
+                keep_cert=1
+            else
+                print_error "ssl/certs/networkmapper.crt is issued by your CA and does not name $SELECTED_IP."
+                print_info "Reconfiguring would replace it with a self-signed certificate. Instead:"
+                print_info "  1. add $SELECTED_IP to SERVER_IPS in ca/ca.conf, keeping the current address"
+                print_info "  2. ./ca/local-ca.sh server on the admin workstation, then install it on this host"
+                print_info "  3. run this option again"
+                print_info "Nothing was changed. See ca/README.md, 'Renewing, changing address'."
+                exit 1
+            fi
+        fi
+
         # Atomic reconfigure: snapshot the current .env + cert pair into
         # a backup dir, run the regenerate, and roll back on any failure
         # so the host can't end up wedged between two configurations
@@ -854,10 +888,13 @@ case $DEPLOY_CHOICE in
 
         generate_env "$SELECTED_IP"
 
-        # Regenerate SSL certs for new IP
-        print_info "Regenerating SSL certificates..."
-        rm -f ssl/certs/networkmapper.key ssl/certs/networkmapper.crt ssl/certs/openssl.conf
-        ensure_ssl_certs "$SELECTED_IP"
+        # Regenerate the self-signed certificate for the new IP (a CA-issued
+        # one was checked above and is kept).
+        if [[ $keep_cert -eq 0 ]]; then
+            print_info "Regenerating SSL certificates..."
+            rm -f ssl/certs/networkmapper.key ssl/certs/networkmapper.crt ssl/certs/openssl.conf
+            ensure_ssl_certs "$SELECTED_IP"
+        fi
 
         # Success — drop the rollback trap and the snapshot.
         trap - EXIT

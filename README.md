@@ -70,7 +70,7 @@ artifacts/            Fixture data for parser and ingestion testing
 
 ### Full stack with Docker
 
-First-time setup is easiest via the deploy script, which generates `.env` (with a random `SECRET_KEY`) and self-signed SSL certs, then starts the stack:
+First-time setup is easiest via the deploy script, which generates `.env` (with a random `SECRET_KEY`) and self-signed SSL certs, then starts the stack. To have agents and browsers trust it without per-client workarounds, replace the certificate with one from a local CA afterwards ([`ca/README.md`](ca/README.md)):
 
 ```bash
 ./scripts/deploy.sh        # choose option 2, "First-time setup"
@@ -163,6 +163,7 @@ Whatever an agent session is doing (assist, recon, plan generation or execution)
 - [Testing Framework](documentation/TESTING_FRAMEWORK_DOCUMENTATION.md) — pytest + Vitest harness, and CI
 - [UI Style Guide](documentation/UI_STYLE_GUIDE.md) — frontend behavioral contract
 - [Scripts](scripts/README.md) — deployment and maintenance helpers
+- [Local CA](ca/README.md) — replace the self-signed certificate with one from your own root CA, which each analyst machine trusts once (recommended on closed networks)
 - [Report templates](report-templates/README.md) — authoring a client report template
 - [Parse audit brief](documentation/PARSE_AUDIT_BRIEF.md) — how an on-site agent audits parse accuracy without samples leaving the client network
 - For SBOM, visit **Reference → Software Bill of Materials** in the running app — the live page reflects the deployed build's resolved dependency tree.

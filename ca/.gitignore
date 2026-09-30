@@ -1,0 +1,10 @@
+# Site-specific configuration and everything the CA produces.  The root key in
+# out/root/ is the most sensitive file in the whole deployment — it must never
+# be committed or copied to the BlueStick host.
+ca.conf
+out/
+*.key
+*.crt
+*.pem
+*.csr
+*.srl

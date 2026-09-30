@@ -243,7 +243,12 @@ bash steps there. The same guidance is in the start dialog's certificate step,
 on `/reference/mcp`, and in the Assist entry of the User Guide.
 
 Deployments running an internal-CA or DNS-validated certificate need none of
-this, and the reference page detects that and says so.
+this, and the reference page detects that and says so. **On a closed network,
+a local CA is the better setup:** `ca/local-ca.sh` creates a name-constrained
+root that each analyst machine trusts once, and issues BlueStick's certificate
+from it, so redeploys and address changes stop forcing every client to re-trust.
+Some `rustls`-based clients reject the self-signed default even when it is
+trusted. The walkthrough, for a remote host, is [`ca/README.md`](../ca/README.md).
 
 ---
 

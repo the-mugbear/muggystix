@@ -1,0 +1,44 @@
+# local-ca.sh configuration.  Copy to ca.conf and set EVERY value:
+#
+#     cp ca/ca.conf.example ca/ca.conf
+#
+# local-ca.sh refuses to run while any value below is empty, still says
+# CHANGE_ME, or uses a documentation-only address or name.  The ROOT_* and
+# PERMITTED_* values are written into the root certificate that every analyst
+# machine will trust, and a root cannot be edited after it is issued — changing
+# them later means issuing a new root and re-installing it everywhere.
+#
+# Values are shell strings; lists are space-separated.
+
+# ── The root CA ─────────────────────────────────────────────────────────────
+# The name analysts see in their trust store.  Make it identify your team and
+# the engagement or year, e.g. "Acme Red Team Lab Root CA 2026".
+# Letters, digits, spaces and . , - _ ( ) only.
+ROOT_COMMON_NAME="CHANGE_ME"
+ROOT_ORGANIZATION="CHANGE_ME"
+
+# How long the root is valid, in days (1-3650).  Shorter is safer: the root
+# only needs to outlive the engagement(s) it serves.  e.g. 730
+ROOT_VALIDITY_DAYS=""
+
+# What the root may vouch for (X.509 name constraints).  A certificate the root
+# signs for anything outside these is rejected by clients, so a stolen root key
+# cannot impersonate an outside site.  List YOUR networks and internal domain —
+# the narrowest that covers the BlueStick host(s).
+#   IPv4 networks in CIDR form, prefix /8 or longer, e.g. "10.20.0.0/16 172.16.5.0/24"
+PERMITTED_IPV4_CIDRS="CHANGE_ME"
+#   DNS domains, no leading dot; each also covers its subdomains, e.g. "lab.internal"
+PERMITTED_DNS_DOMAINS="CHANGE_ME"
+
+# ── BlueStick's server certificate ──────────────────────────────────────────
+# The name(s) analysts reach BlueStick by (inside PERMITTED_DNS_DOMAINS),
+# e.g. "bluestick.lab.internal".  The first is the certificate's common name.
+SERVER_DNS_NAMES="CHANGE_ME"
+
+# The address(es) analysts reach BlueStick by (inside PERMITTED_IPV4_CIDRS).
+# Must include HOST_IP from the deployment's .env — `install` checks.
+SERVER_IPS="CHANGE_ME"
+
+# Server certificate lifetime in days (1-397; clients reject longer).  Renewing
+# is one `server` + `install`; analyst machines are not touched.
+SERVER_VALIDITY_DAYS="397"
