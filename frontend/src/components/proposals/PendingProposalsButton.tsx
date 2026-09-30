@@ -10,6 +10,7 @@ import { ListChecks } from 'lucide-react';
 import { getProposalSummary } from '../../services/api';
 import { useProject } from '../../contexts/ProjectContext';
 import { useVisibilityPoll } from '../../hooks/useVisibilityPoll';
+import { PROPOSALS_CHANGED_EVENT } from '../../utils/proposalEvents';
 import { Button } from '../ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
 
@@ -28,6 +29,12 @@ const PendingProposalsButton: React.FC = () => {
   }, [currentProject]);
 
   useEffect(() => { void load(); }, [load]);
+  // A decision anywhere (a finding page, the Proposals page, a draft) re-reads at once.
+  useEffect(() => {
+    const onChange = () => { void load(); };
+    window.addEventListener(PROPOSALS_CHANGED_EVENT, onChange);
+    return () => window.removeEventListener(PROPOSALS_CHANGED_EVENT, onChange);
+  }, [load]);
   useVisibilityPoll(load, 60_000, !!currentProject);
 
   if (pending <= 0) return null;

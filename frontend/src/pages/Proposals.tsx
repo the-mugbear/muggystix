@@ -21,6 +21,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
+import { announceProposalsChanged } from '../utils/proposalEvents';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
 import ProposalItem from '../components/proposals/ProposalItem';
@@ -118,6 +119,7 @@ const Proposals: React.FC = () => {
       } else {
         toast.success(`${res.decided.length} ${action === 'accept' ? 'accepted' : 'rejected'}.`);
       }
+      announceProposalsChanged();
       await load();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not decide them.'));

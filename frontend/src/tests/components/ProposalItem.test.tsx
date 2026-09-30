@@ -83,3 +83,31 @@ describe('ProposalItem', () => {
       .toBe('Mark 10.0.0.5 remediated on “SMB signing not required”');
   });
 });
+
+describe('v5.316.1 — walkthrough fixes', () => {
+  it('names a client briefly: a browser UA is not a line of text', async () => {
+    const { shortClient } = await import('../../utils/proposalEvents');
+    expect(shortClient('claude-code 2.1.0')).toBe('claude-code 2.1.0');
+    expect(shortClient('Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0 Safari/537.3'))
+      .toBe('a browser');
+    expect(shortClient('curl/8.5.0')).toBe('curl/8.5.0');
+  });
+
+  it('a decision tells the top bar at once', async () => {
+    const { PROPOSALS_CHANGED_EVENT } = await import('../../utils/proposalEvents');
+    const heard = vi.fn();
+    window.addEventListener(PROPOSALS_CHANGED_EVENT, heard);
+    rejectProposal.mockResolvedValue({ ...base, status: 'rejected' });
+    renderItem(base);
+    fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
+    await waitFor(() => expect(heard).toHaveBeenCalledTimes(1));
+    window.removeEventListener(PROPOSALS_CHANGED_EVENT, heard);
+  });
+
+  it('on the finding’s own page the target is text, not a link back to it', () => {
+    const pr = { ...base, kind: 'endpoint_status' as const, field: null, payload: { host_status: 'retest' } };
+    render(<MemoryRouter><ProposalItem proposal={pr} canDecide onDecided={vi.fn()} showTarget linkTarget={false} /></MemoryRouter>);
+    expect(screen.queryByRole('link', { name: /Mark/ })).not.toBeInTheDocument();
+    expect(screen.getByText(/^Mark .* retest on/)).toBeInTheDocument();
+  });
+});

@@ -31,6 +31,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
+import { announceProposalsChanged } from '../utils/proposalEvents';
 import { Button } from './ui/button';
 import PostureSection from './posture/PostureSection';
 import { Input } from './ui/input';
@@ -108,6 +109,7 @@ const FindingReportTextCard: React.FC<Props> = ({
     try {
       const { proposals } = await draftFindingText(finding.id, empty);
       onDrafted?.();
+      announceProposalsChanged();
       toast.success(
         `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review them under Proposals.`,
       );

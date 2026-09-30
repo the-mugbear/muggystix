@@ -14,6 +14,7 @@ import { Check, Loader2, Pencil, X } from 'lucide-react';
 import { acceptProposal, Proposal, rejectProposal } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
+import { announceProposalsChanged, shortClient } from '../../utils/proposalEvents';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
@@ -70,7 +71,9 @@ const Source: React.FC<{ pr: Proposal }> = ({ pr }) => {
         </Link>
       ) : 'An agent session'}
       {pr.proposed_by && <> ({pr.proposed_by}&apos;s)</>}
-      {model}{pr.agent_client ? ` · ${pr.agent_client}` : ''}{when && ` · ${when}`}
+      {model}
+      {pr.agent_client && <> · <span title={pr.agent_client}>{shortClient(pr.agent_client)}</span></>}
+      {when && ` · ${when}`}
     </span>
   );
 };
@@ -139,9 +142,13 @@ interface Props {
   onDecided: (updated: Proposal) => void;
   /** Show the target line (the Proposals page; the finding page knows it). */
   showTarget?: boolean;
+  /** Link the target line to its finding — off on the finding's own page. */
+  linkTarget?: boolean;
 }
 
-const ProposalItem: React.FC<Props> = ({ proposal: pr, canDecide, onDecided, showTarget = false }) => {
+const ProposalItem: React.FC<Props> = ({
+  proposal: pr, canDecide, onDecided, showTarget = false, linkTarget = true,
+}) => {
   const toast = useToast();
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
@@ -157,6 +164,7 @@ const ProposalItem: React.FC<Props> = ({ proposal: pr, canDecide, onDecided, sho
         : await rejectProposal(pr.id);
       setEditing(null);
       onDecided(updated);
+      announceProposalsChanged();
       toast.success(action === 'accept' ? 'Accepted — applied as you.' : 'Rejected.');
     } catch (err) {
       setError(formatApiError(err, action === 'accept' ? 'Could not accept it.' : 'Could not reject it.'));
@@ -169,7 +177,7 @@ const ProposalItem: React.FC<Props> = ({ proposal: pr, canDecide, onDecided, sho
     <article className="min-w-0 space-y-xs border-b border-border py-sm last:border-b-0" data-proposal={pr.id}>
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
         {showTarget && (
-          pr.finding_id != null
+          pr.finding_id != null && linkTarget
             ? <Link to={`/findings/${pr.finding_id}#proposals`} className="min-w-0 truncate font-medium text-info hover:underline"
                 title={describeProposal(pr)}>{describeProposal(pr)}</Link>
             : <span className="min-w-0 truncate font-medium" title={describeProposal(pr)}>{describeProposal(pr)}</span>

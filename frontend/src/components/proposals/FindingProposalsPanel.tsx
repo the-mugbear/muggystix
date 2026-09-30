@@ -92,7 +92,7 @@ const FindingProposalsPanel: React.FC<Props> = ({ findingId, canDecide, reloadKe
             <section className="min-w-0">
               <h3 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Endpoints and triage</h3>
               {groups.other.map((pr) => (
-                <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} onDecided={decided} showTarget />
+                <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} onDecided={decided} showTarget linkTarget={false} />
               ))}
             </section>
           )}
