@@ -1067,7 +1067,9 @@ class FindingService:
             self.db.query(Annotation)
             .filter(Annotation.finding_id == finding_id)
             .options(*note_load_options())  # all that _serialize_note reads
-            .order_by(Annotation.created_at.asc())  # oldest-first reads as a thread
+            # Oldest-first reads as a thread; the id breaks a tie (two comments in
+            # one transaction share a timestamp, and their order was arbitrary).
+            .order_by(Annotation.created_at.asc(), Annotation.id.asc())
             .limit(limit)
             .all()
         )

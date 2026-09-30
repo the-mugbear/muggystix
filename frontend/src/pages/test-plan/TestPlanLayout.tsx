@@ -649,7 +649,7 @@ const TestPlanLayout: React.FC = () => {
             <PlanMetaItem label="Author" value={plan.agent_name || plan.created_by_username} />
             <PlanMetaItem label="Created" value={formatTimestamp(plan.created_at)} />
             <PlanMetaItem label="Last updated" value={formatTimestamp(plan.updated_at)} />
-            <PlanMetaItem label="Agent tool" value={plan.generated_by_tool} fallback="not recorded" />
+            <PlanMetaItem label="Client" value={plan.generated_by_tool} fallback="not recorded" />
             <PlanMetaItem label="Model" value={plan.generated_by_model} fallback="not recorded" />
             <PlanMetaItem
               label="Prompt version"

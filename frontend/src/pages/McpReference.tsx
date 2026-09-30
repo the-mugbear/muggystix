@@ -470,8 +470,9 @@ const McpReference: React.FC = () => {
             <p className="text-caption text-muted-foreground">
               <strong className="text-foreground">An agent writes exactly what its operator
               can write.</strong>{' '}
-              The three tools that touch project data — notes, review status, hostname/OS —
-              succeed only if the person who started the session may write to the project
+              The tools that change project data — uploads, plans and their results, notes,
+              review status, hostname/OS — succeed only if the person who started the session
+              may write to the project
               (analyst or above), checked on <em>every</em> request rather than at key-mint
               time, so a role change reaches a live session immediately. An agent can ask
               first: <span className="font-mono">agent_identity</span> returns{' '}

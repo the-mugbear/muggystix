@@ -92,6 +92,19 @@ const AgentSessionCredentials: React.FC<Props> = ({
     saveChoice(id);
   };
   const client = mcpClients.find((c) => c.id === choice) ?? null;
+  // 5.314.1 — Codex's recipe keeps the key out of the command (`read -rs`
+  // waits for it to be pasted), so for such a client the key is part of the
+  // steps, not a folded extra.
+  const keyIsSeparateStep = client !== null && !client.payload.includes(apiKey);
+
+  const keyRow = (
+    <div className="flex items-start gap-xs">
+      <div className="min-w-0 flex-1 break-all rounded-control border border-border bg-accent p-sm font-mono text-caption" data-testid="agent-key">
+        {apiKey}
+      </div>
+      <CopyText text={apiKey} label="Copy agent API key" onCopied={onCopied} />
+    </div>
+  );
 
   return (
     <div className="flex flex-col gap-sm">
@@ -122,6 +135,14 @@ const AgentSessionCredentials: React.FC<Props> = ({
         <>
           <McpCertTrustNotice />
           <McpClientRecipe client={client} compact onCopied={onCopied} />
+          {keyIsSeparateStep && (
+            <div>
+              <p className="mb-xxs text-caption text-muted-foreground">
+                Paste this key when the first line waits for it:
+              </p>
+              {keyRow}
+            </div>
+          )}
         </>
       ) : (
         <div>
@@ -137,17 +158,14 @@ const AgentSessionCredentials: React.FC<Props> = ({
         </div>
       )}
 
-      <details className="text-caption">
-        <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
-          {keyLabel}
-        </summary>
-        <div className="mt-xs flex items-start gap-xs">
-          <div className="min-w-0 flex-1 break-all rounded-control border border-border bg-accent p-sm font-mono">
-            {apiKey}
-          </div>
-          <CopyText text={apiKey} label="Copy agent API key" onCopied={onCopied} />
-        </div>
-      </details>
+      {!keyIsSeparateStep && (
+        <details className="text-caption">
+          <summary className="cursor-pointer text-muted-foreground hover:text-foreground">
+            {keyLabel}
+          </summary>
+          <div className="mt-xs">{keyRow}</div>
+        </details>
+      )}
     </div>
   );
 };

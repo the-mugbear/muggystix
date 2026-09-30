@@ -258,9 +258,13 @@ workflow state. For each gap, compare the smallest useful remedy:
 A useful issue report contains the practitioner task, minimal fixture, expected
 outcome, actual response/record IDs, the manual workaround and its cost, and the
 smallest proposed improvement. Keep hypotheses about deficiencies separate from
-reproduced bugs. File feedback through `submit_feedback` when that is part of the
-acceptance run, then verify the feedback record is readable. Do not include keys,
-credentials, or unnecessary raw sensitive output.
+reproduced bugs. File feedback through `submit_feedback` **at the moment of each
+friction** — a retry, a guessed field, a workaround, a re-read of the guide — as
+the session prompt asks; an acceptance run is exactly where it applies, and a
+written run report does not replace it (the 2026-09-30 run filed none because
+this line used to make it optional). Then verify the feedback records are
+readable on the Feedback page. Do not include keys, credentials, or unnecessary
+raw sensitive output.
 
 ## Results for the redesigned surface
 

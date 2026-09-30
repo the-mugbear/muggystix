@@ -111,6 +111,36 @@ AGENT_MODEL_PROP = {
     }
 }
 
+# Closed vocabularies the endpoints enforce (v2.434.1, acceptance run H2: a
+# tool said "e.g. completed" for an enum that has no ``completed``, and left
+# ``test_phase`` free while the endpoint 422'd on anything off its list).
+# Plain literals because this module has no DB imports;
+# tests/test_mcp_enum_contract.py fails if one drifts from its endpoint.
+TEST_PHASE_FIELD = {
+    "type": "string",
+    "enum": ["reconnaissance", "enumeration", "exploitation", "post_exploitation", "reporting"],
+    "description": "Which phase of the engagement this belongs to.",
+}
+ENTRY_STATUS_FIELD = {
+    "type": "string",
+    "enum": ["proposed", "in_progress", "completed", "rejected"],
+    "description": "proposed (not tested yet), in_progress, completed, or rejected (dropped from the plan).",
+}
+TEST_RESULT_STATUS_FIELD = {
+    "type": "string",
+    "enum": ["pending", "pending_approval", "executed", "skipped", "failed", "not_applicable"],
+    "description": (
+        "executed (it ran — record what it produced), skipped, failed (it could not "
+        "run), not_applicable; pending / pending_approval (you showed the command and "
+        "wait for the operator's go-ahead) are not final and block completing the entry."
+    ),
+}
+SANITY_METHOD_FIELD = {
+    "type": "string",
+    "enum": ["ping", "banner_grab", "reverse_dns", "network_context"],
+    "description": "How you checked the target is the one the plan names.",
+}
+
 # A proposed test, as the plan entries carry it.  Mirrors ProposedTest in
 # app/schemas/schemas.py.
 _PROPOSED_TEST_ITEM = {
@@ -289,9 +319,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "File feedback about BlueStick AT THE MOMENT you hit friction — when "
             "you retry a call, guess a field, work around a tool, or re-read the "
             "guide to make something work — not from memory at the end. Several "
-            "one-line submissions during a session are the norm; a session that "
-            "reaches execution_complete_session / end_session "
-            "with none filed is told so in the response. It is read by a coding "
+            "one-line submissions during a session are the norm. "
+            "execution_complete_session reports `feedback_recorded: false` when "
+            "the session has filed none; end_session does not (it revokes your "
+            "key), so file before you end. It is read by a coding "
             "agent working on BlueStick itself, so write for that reader: name the "
             "tool or endpoint, expected vs actual, the exact error text or missing "
             "field, and what would have let you finish faster. `source` names the "
@@ -1481,10 +1512,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                                 "type": "string",
                                 "enum": ["critical", "high", "medium", "low"],
                             },
-                            "test_phase": {
-                                "type": "string",
-                                "description": "Which phase of the engagement this belongs to.",
-                            },
+                            "test_phase": TEST_PHASE_FIELD,
                             "proposed_tests": {
                                 "type": "array",
                                 "minItems": 1,
@@ -1534,10 +1562,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
                 "entry_id": {"type": "integer", "minimum": 1},
                 "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                "test_phase": {"type": "string"},
+                "test_phase": TEST_PHASE_FIELD,
                 "proposed_tests": {"type": "array", "items": _PROPOSED_TEST_ITEM},
                 "rationale": {"type": "string"},
-                "status": {"type": "string"},
+                "status": ENTRY_STATUS_FIELD,
                 "findings": {"type": "string"},
                 "results_data": {
                     "type": "object",
@@ -1618,10 +1646,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
                 "entry_id": {"type": "integer", "minimum": 1},
-                "method": {
-                    "type": "string",
-                    "description": "How you checked the target (see the guide's target-check methods).",
-                },
+                "method": SANITY_METHOD_FIELD,
                 "target_ip": {"type": "string", "description": "The IP you actually reached."},
                 "port_checked": {"type": "integer", "minimum": 1, "maximum": 65535},
                 "expected_value": {"type": "string"},
@@ -1661,10 +1686,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "minimum": 0,
                     "description": "Index into the entry's proposed_tests array.",
                 },
-                "status": {
-                    "type": "string",
-                    "description": "Outcome of running it (e.g. completed, failed, skipped).",
-                },
+                "status": TEST_RESULT_STATUS_FIELD,
                 "command_run": {
                     "type": "string",
                     "description": (

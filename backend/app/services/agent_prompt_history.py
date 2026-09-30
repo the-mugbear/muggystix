@@ -21,6 +21,22 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.2.1",
+        "app_version": "2.434.1",
+        "summary": (
+            "From the 2026-09-30 MCP acceptance run. Tool schemas now advertise "
+            "the enums their endpoints enforce: execution_record_test_result "
+            "status (no 'completed' — it was advertised and 422'd), test_phase on "
+            "plan_add_entries / plan_update_entry, the entry status, and the "
+            "target-check method (pinned by test_mcp_enum_contract.py). Scan rows "
+            "carry time_source: tool_clock times are the scanner's zone-less wall "
+            "clock and come without an offset; others are UTC instants. Host "
+            "detail now carries exploit counts, and exports keep an agent note's "
+            "actor_type. submit_feedback no longer claims end_session reports "
+            "missing feedback."
+        ),
+    },
+    {
         "version": "3.2.0",
         "app_version": "2.434.0",
         "summary": (

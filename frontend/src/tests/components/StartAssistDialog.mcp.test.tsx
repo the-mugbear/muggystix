@@ -20,6 +20,7 @@ import { MemoryRouter } from 'react-router-dom';
 import { StartAssistDialog } from '../../components/StartAssistDialog';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import type { StartAssistResponse } from '../../services/api';
+import { copyToClipboard } from '../../utils/clipboard';
 
 const startAssistSession = vi.fn();
 vi.mock('../../services/api', () => ({
@@ -242,5 +243,17 @@ describe('StartAssistDialog', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: /Copy VS Code Copilot MCP setup/ })).toHaveTextContent('Copied'));
     await userEvent.click(screen.getByRole('button', { name: 'Done' }));
     expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
+
+  // 5.314.1 — Codex's recipe waits for the key to be pasted (`read -rs`), so
+  // the key sits beside it rather than folded away.
+  it('puts the key beside a recipe that waits for it to be pasted (Codex)', async () => {
+    await openAndStart();
+    await choose('Codex');
+    expect(screen.getByText(/Paste this key when the first line waits for it/)).toBeInTheDocument();
+    expect(screen.getByTestId('agent-key')).toHaveTextContent(KEY);
+    expect(screen.queryByText('The key on its own')).not.toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Copy agent API key' }));
+    expect(copyToClipboard).toHaveBeenLastCalledWith(KEY);
   });
 });

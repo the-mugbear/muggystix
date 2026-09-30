@@ -169,9 +169,31 @@ describe('AgentSessionDetail', () => {
       completed_at: ago(HOUR), can_end: false, can_resume: false,
     }));
     renderAt('72');
-    expect(await screen.findByText(/some of its work is still open/)).toBeInTheDocument();
+    expect(await screen.findByText(/an execution run it opened is still open/)).toBeInTheDocument();
     expect(screen.getByText('Ran for')).toBeInTheDocument();
     expect(screen.getByText('ended by operator · 1 feedback')).toBeInTheDocument();
+  });
+
+  // 5.314.1 — seen in the walkthrough: session #73 left a draft plan and the
+  // page called it stranded work to abandon. A draft is a resting state.
+  it('does not call a draft plan left by an ended session stranded', async () => {
+    getAgentSession.mockResolvedValue(row({
+      status: 'ended', end_reason: 'agent', key_expires_at: null,
+      completed_at: ago(HOUR), can_end: false, can_resume: false,
+      phases: [{ kind: 'plan', id: 63, status: 'draft', label: 'draft', scope_id: null, test_plan_id: 63, started_at: ago(HOUR) }],
+    }));
+    renderAt('72');
+    expect(await screen.findByText('The plans and execution runs this session opened, each on its own page.')).toBeInTheDocument();
+    expect(screen.queryByText(/still open/)).not.toBeInTheDocument();
+  });
+
+  it('never presents the agent’s name as its model', async () => {
+    getAgentSession.mockResolvedValue(row({ generated_by_model: null }));
+    getAssistSession.mockResolvedValue({ ...review, agent_model: null });
+    renderAt('72');
+    const model = (await screen.findByText('Model')).parentElement!;
+    expect(model).toHaveTextContent('not reported');
+    expect(model).not.toHaveTextContent("alice's-agent");
   });
 
   it('never shows the previous session’s notes under the next session', async () => {

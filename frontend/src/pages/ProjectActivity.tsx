@@ -199,7 +199,7 @@ const SessionsLead: React.FC<{
   return (
     <PostureLead
       tone={tone}
-      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, same open work, a new key. Ending a session revokes its key, pauses open executions and keeps draft plans."
+      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, same open work, a new key. Ending a session revokes its key, abandons its open executions (their results are kept) and keeps draft plans."
     >
       {parts.join(' ')}
     </PostureLead>

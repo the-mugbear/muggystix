@@ -9,7 +9,7 @@ agent_execution / agent_recon) can share a single schema definition.
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.db.models_agent import (
     SanityCheckMethod,
@@ -19,6 +19,7 @@ from app.db.models_agent import (
     TestPhase,
 )
 from app.schemas.schemas import ProposedTestItem, StoredProposedTestItem
+from app.services.scan_time import scan_time_for_api
 
 # Use ORM enums directly — Pydantic accepts enum values in JSON and validates membership
 PriorityValue = TestEntryPriority
@@ -246,8 +247,28 @@ class ScanBrief(BaseModel):
     # acceptance feedback #18 — a scan id is NOT a job id).  None for a scan
     # with no recorded import (seeded, or its job was cleaned up).
     ingestion_job_id: Optional[int] = None
+    # v2.434.1 (acceptance run H4) — what start/end MEAN: ``tool_clock`` is
+    # the scanner's zone-less wall clock (returned without an offset, never
+    # convert it); anything else is an instant (returned in UTC with an
+    # offset).  Both came out as bare "2024-04-01T00:00:00" before, so an
+    # agent could not tell an instant from a local clock reading.
+    time_source: Optional[str] = Field(
+        None,
+        description=(
+            "tool_run / tool_records: start/end are instants (UTC). tool_clock: the "
+            "scanner's local wall clock, zone unknown — do not treat as UTC. Null: "
+            "the output carried no run time."
+        ),
+    )
 
     model_config = ConfigDict(from_attributes=True)
+
+    @model_validator(mode="after")
+    def _time_basis(self) -> "ScanBrief":
+        # The one rule every surface uses (services/scan_time.py).
+        self.start_time = scan_time_for_api(self.start_time, self.time_source)
+        self.end_time = scan_time_for_api(self.end_time, self.time_source)
+        return self
 
 
 class ScopeDomainBrief(BaseModel):

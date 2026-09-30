@@ -1182,6 +1182,7 @@ def get_assist_host(
         _assist_script(s, budget)
         for s in sorted(host.host_scripts, key=lambda s: s.script_id or "")[:_SCRIPTS_PER_OWNER]
     ]
+    exploit_counts = exploit_count_maps(db, [host.id])
 
     return AssistHostDetail(
         names=dns_name_service.observed_names_at_address(db, host.project_id, host.ip_address),
@@ -1209,6 +1210,11 @@ def get_assist_host(
         conflicts_truncated=int(conflict_count) > sum(1 for c in conflicts if c["object_type"] == "host"),
         note_count=int(note_count),
         finding_count=int(host_detail_service.active_finding_counts(db, [host.id]).get(host.id, 0)),
+        # v2.434.1 (acceptance run H1) — the detail left these at their
+        # default 0 while the list filled them, so a drill-down contradicted
+        # the row that led to it.  One helper for both.
+        exploitable_count=exploit_counts[0].get(host.id, 0),
+        critical_exploitable_count=exploit_counts[1].get(host.id, 0),
         id=host.id,
         ip_address=host.ip_address,
         hostname=host.hostname,

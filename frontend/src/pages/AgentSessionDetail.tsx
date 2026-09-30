@@ -177,7 +177,10 @@ const AgentSessionDetail: React.FC = () => {
   // The agent's client, recorded from its MCP handshake.
   const clientName = row.generated_by_tool ?? review?.agent_tool ?? null;
   const phases = row.phases ?? [];
-  const openPhases = phases.filter(isOpenPhase).length;
+  // Only an execution RUN can be stranded by its session ending (and ending
+  // abandons them since 5.313.1, so this is legacy data); a draft plan is a
+  // resting state, not stranded work.
+  const strandedRuns = phases.filter((p) => p.kind === 'execution' && isOpenPhase(p)).length;
   const ended = row.status !== 'active';
 
   return (
@@ -220,7 +223,9 @@ const AgentSessionDetail: React.FC = () => {
             label="Model"
             title={review?.prompt_version ? `Prompt ${review.prompt_version}` : undefined}
           >
-            {safeFallback(row.generated_by_model ?? review?.agent_model ?? row.agent_name, 'not reported')}
+            {/* The agent's own report; never its name (5.314.1: "admin-agent"
+                read as a model). */}
+            {safeFallback(row.generated_by_model ?? review?.agent_model, 'not reported')}
           </Fact>
           <Fact label="Client" title={clientName ?? undefined}>{safeFallback(clientName, '—')}</Fact>
           <Fact label="API calls">{review ? review.call_count.toLocaleString() : '—'}</Fact>
@@ -231,8 +236,8 @@ const AgentSessionDetail: React.FC = () => {
       <PostureSection
         title={<>Work opened {phases.length > 0 && <SectionCount>{phases.length}</SectionCount>}</>}
         description={
-          openPhases > 0 && ended
-            ? 'This session has ended but some of its work is still open — nothing will move it until someone abandons it from its page.'
+          strandedRuns > 0 && ended
+            ? 'This session has ended but an execution run it opened is still open — nothing will move it until someone abandons it from its page.'
             : 'The plans and execution runs this session opened, each on its own page.'
         }
       >
