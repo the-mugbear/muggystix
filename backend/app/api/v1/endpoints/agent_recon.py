@@ -26,6 +26,7 @@ from app.api.v1.endpoints.agent_common import load_agent_session
 from app.services.scope_targets_service import (
     iter_scope_hosts_ndjson as _iter_scope_hosts_ndjson,
     iter_scope_live_hosts as _iter_scope_live_hosts,
+    iter_scope_named_targets_ndjson as _iter_scope_named_targets_ndjson,
     iter_scope_web_targets as _iter_scope_web_targets,
 )
 
@@ -205,6 +206,36 @@ def download_scope_web_targets(
         _iter_scope_web_targets(db, scope.id),
         "text/plain",
         f"scope-{scope.id}-web-targets.txt",
+    )
+
+
+@router.get(
+    "/scopes/{scope_id}/named-targets.ndjson",
+    summary="Stream every in-scope NAME with its current addresses and web evidence",
+    response_class=StreamingResponse,
+)
+def download_scope_named_targets(
+    scope_id: int = Path(..., gt=0),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """Name scope as a target file, one JSON object per line: every name the
+    scope's domain rules cover (``scope_rule``: the matching domain, exact or
+    subdomain), the addresses it CURRENTLY resolves to (latest A/AAAA batch)
+    each flagged ``in_subnet_scope``, the web interfaces reached as that name,
+    and ``unresolved`` + ``reason`` when no address is known.  A declared
+    domain with no observed name is listed too.
+
+    Separate from the IP files on purpose: a name in scope authorises that
+    name on its address, never the address, and never the other names on it
+    — test by name (Host header / SNI) where ``in_subnet_scope`` is false.
+    Names only a certificate SAN or a shared address connect to are not
+    listed."""
+    scope = _load_scope(db, agent, scope_id)
+    return _stream(
+        _iter_scope_named_targets_ndjson(db, scope),
+        "application/x-ndjson",
+        f"scope-{scope.id}-named-targets.jsonl",
     )
 
 

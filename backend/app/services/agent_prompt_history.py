@@ -21,6 +21,21 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.3.0",
+        "app_version": "2.435.0",
+        "summary": (
+            "The guide is reference, not required reading: the prompt, the MCP "
+            "server instructions and read_agent_guide no longer call it binding or "
+            "ask for it before the first call — read the part you need when a tool "
+            "leaves you guessing. Certificate: BlueStick's is issued by the "
+            "operator's local root CA, so curl needs no -k once that root is "
+            "installed (per-client pinning and trust-cert.sh are retired). New "
+            "scope file named-targets.ndjson: one row per in-scope name with its "
+            "current addresses, whether each is also in subnet scope, and its web "
+            "evidence. assist_list_scans takes offset."
+        ),
+    },
+    {
         "version": "3.2.1",
         "app_version": "2.434.1",
         "summary": (

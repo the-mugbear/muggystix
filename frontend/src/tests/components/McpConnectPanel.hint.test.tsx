@@ -3,17 +3,13 @@
  * backticks. It used to render as ONE paragraph — a 12-line wall in the Start
  * Agent Session dialog, backticks shown literally.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
-
-// The panel imports the cert-trust notice, which imports the API barrel; the
-// real client cannot load in jsdom. withCertTrust is off here, so nothing calls it.
-vi.mock('../../services/api', () => ({ getMcpTools: vi.fn(() => new Promise(() => {})) }));
 
 import McpConnectPanel from '../../components/McpConnectPanel';
 import { TooltipProvider } from '../../components/ui/tooltip';
 
-const LONG = `curl -sk https://${'a'.repeat(200)}.example/api/v1/references/tls-certificate -o bluestick.pem`;
+const LONG = `codex mcp add bluestick --url https://${'a'.repeat(200)}.example/api/v1/mcp`;
 
 const client = {
   id: 'vscode',
@@ -23,8 +19,8 @@ const client = {
   payload: '{}',
   hint:
     'Save as .vscode/mcp.json in your workspace. ' +
-    '\n\nSelf-signed cert? Run `./scripts/trust-cert.sh` first.' +
-    `\n\nRemote host? Fetch the cert first: \`${LONG}\`` +
+    '\n\nKeep it out of version control; `read -rs` keeps the key out of history.' +
+    `\n\nRemote host? Register it with: \`${LONG}\`` +
     '\n\nRun the client FROM the directory you want the output in.',
 };
 
@@ -40,7 +36,7 @@ describe('McpConnectPanel hint', () => {
     expect(screen.getByText(/^Run the client FROM/).tagName).toBe('P');
 
     const codes = Array.from(container.querySelectorAll('code')).map((c) => c.textContent);
-    expect(codes).toEqual(['./scripts/trust-cert.sh', LONG]);
+    expect(codes).toEqual(['read -rs', LONG]);
     // No literal backtick survives, and an unbounded URL can wrap.
     expect(container.textContent).not.toContain('`');
     expect(container.querySelectorAll('code')[1].className).toContain('break-all');

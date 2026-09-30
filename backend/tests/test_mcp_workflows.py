@@ -405,36 +405,13 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
         assert "--sandbox workspace-write" in codex["hint"]
         assert "--ask-for-approval" in codex["hint"]
 
-    # Every recipe still warns about the self-signed certificate, which is the
-    # failure every client hits first — but with the mechanism that actually
-    # applies to it. Node clients read NODE_EXTRA_CA_CERTS; Codex is a Rust
-    # binary that reads SSL_CERT_DIR, and telling its operators to export the
-    # Node variable was advice that could only ever fail (v2.282.0). Claiming
-    # it could not be pinned at all was wrong too — v2.285.0 verified
-    # SSL_CERT_DIR against codex 0.147.0.
+    # The per-client certificate-pinning notes are retired (the local root CA
+    # is installed once per machine), and no recipe switches verification off.
     for body in (recon, plan):
         for setup in body["mcp_clients"]:
-            if setup["id"] == "codex":
-                assert "SSL_CERT_DIR" in setup["hint"]
-                assert "NODE_EXTRA_CA_CERTS does nothing" in setup["hint"], (
-                    "the Codex recipe must say the Node variable doesn't apply"
-                )
-                assert "CA-trusted certificate" not in setup["hint"], (
-                    "a self-hosted deployment will never have one — telling an "
-                    "operator to get one is a dead end, not a fix"
-                )
-            else:
-                assert "NODE_EXTRA_CA_CERTS" in setup["hint"]
-            # Both recipes point at the helper that installs it, and spell out
-            # the two steps operators actually miss (v2.331.0): the script
-            # cannot export into the shell that ran it, so the exports go in a
-            # profile, and the client is relaunched from a NEW shell because
-            # the variables are read at client start.
-            assert "trust-cert.sh" in setup["hint"]
-            assert "cannot apply" in setup["hint"]
-            assert "shell profile" in setup["hint"]
-            assert "new shell" in setup["hint"]
-            assert "client start" in setup["hint"]
+            assert "trust-cert.sh" not in setup["hint"]
+            assert "NODE_EXTRA_CA_CERTS" not in setup["hint"]
+            assert "NODE_TLS_REJECT_UNAUTHORIZED" not in setup["hint"]
 
 
 # ---------------------------------------------------------------------------

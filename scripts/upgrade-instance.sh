@@ -222,7 +222,7 @@ for f in ssl/certs/networkmapper.crt ssl/certs/networkmapper.key ssl/certs/opens
 done
 if [[ $certs_found -eq 0 ]]; then
     warn "No TLS certificate in $OLD/ssl/certs — deploy.sh will generate a new one."
-    warn "Every MCP client that trusted the old fingerprint will need scripts/trust-cert.sh again."
+    warn "A new self-signed certificate is not trusted by any client: issue one from the local root CA (ca/local-ca.sh)."
 fi
 
 NGINX_CONF="$(env_get "$PROJECT_ROOT/.env" NGINX_CONFIG)"

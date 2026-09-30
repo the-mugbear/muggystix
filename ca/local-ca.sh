@@ -487,7 +487,7 @@ trusting it.  Then, once per analyst machine:
        export NODE_EXTRA_CA_CERTS='$path'                        # Claude Code, VS Code (Node)
        export SSL_CERT_DIR=/etc/ssl/certs                         # Codex (after step 1, Linux)
        export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt   # Python tools
-     If trust-cert.sh set these before, point them here instead: the old
+     If the retired trust-cert.sh set these before, point them here: the old
      self-signed certificate is no longer served.
 
   3. Check:

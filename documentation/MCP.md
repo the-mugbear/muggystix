@@ -49,7 +49,7 @@ its own plans — there is no approval step, approved-tool list or required orde
 | Work | Opened by | Tools |
 |---|---|---|
 | Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Scope reads, scanning and uploads | (default — no phase) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
+| Scope reads, scanning and uploads | (default — no phase) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`, and `named-targets.ndjson` for name scope) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
 | Test plan | `create_test_plan {title, agent_model?}` | entry drafting, validation (advice, not a gate) |
 | Execution | `start_execution {plan_id, agent_model?}` (a draft or in-progress plan) | execution context, optional target checks (evidence), test results, completion |
 
@@ -163,7 +163,7 @@ execution run on, a write your role does not allow).
 
 **Bulk data is deliberately not a tool.** `report-context.ndjson`,
 `scopes/{scope_id}/hosts.ndjson`, `scopes/{scope_id}/live-hosts.txt`,
-`scopes/{scope_id}/web-targets.txt` (auditor role or above),
+`scopes/{scope_id}/web-targets.txt`, `scopes/{scope_id}/named-targets.ndjson` (auditor role or above),
 `assist/attachments/{id}` and `POST uploads` (`/agent/uploads`, no run needed)
 are file-shaped: they belong
 on disk, not materialised into a model's context. A 40k-host target list read
@@ -174,7 +174,7 @@ at one, `assist_get_image` returns it as MCP image content (opt-in, one per call
 `download_path` references from `assist_get_finding` / `assist_get_host` save
 the file beside it.
 The server `instructions` point at the NDJSON, the scope target files
-(`/agent/scopes/{scope_id}/live-hosts.txt`, `web-targets.txt`, `hosts.ndjson`)
+(`/agent/scopes/{scope_id}/live-hosts.txt`, `web-targets.txt`, `hosts.ndjson`, `named-targets.ndjson`)
 and the upload with `curl`; attachment paths come back in `assist_get_finding`'s
 `download_path`.
 
@@ -205,68 +205,29 @@ Clients disagree on config shape, which is why one blob can't serve them:
 | Claude Code | `claude mcp add --transport http …`, config uses **`mcpServers`** | `-s local` keeps the key out of the repo |
 | Codex | `codex mcp add --url … --bearer-token-env-var` | the only client where the key never touches a config file |
 
-### The certificate (read this first — it is where every client fails)
+### The certificate
 
-BlueStick defaults to a **self-signed certificate**, and no public CA will issue
-one for a private address. Every client refuses the connection until it trusts
-that certificate, and **the mechanism differs per client**:
+BlueStick's certificate is issued by your organisation's **local root CA**
+(`ca/local-ca.sh`: a name-constrained root that the administrator creates on
+their own workstation). Install that root **once** on the machine running your
+agent client — the administrator gives you `rootCA.crt` and its fingerprint,
+and `ca/local-ca.sh trust-help` prints the trust-store steps for each system,
+plus the one-line environment variables for clients that ignore the system
+store. After that the client trusts BlueStick with no per-client pinning, and
+redeploys or address changes do not force anyone to re-trust. The walkthrough
+is [`ca/README.md`](../ca/README.md) (step 6 for analyst machines).
 
-| Client | Variable | Takes |
-|---|---|---|
-| VS Code, Claude Code (Node) | `NODE_EXTRA_CA_CERTS` | a PEM **file** |
-| Codex (Rust / native-tls) | `SSL_CERT_DIR` | a **directory** of hash-named symlinks |
+The per-client pinning installer (`scripts/trust-cert.sh`, served at
+`/references/trust-cert-script`) is retired. If it set `NODE_EXTRA_CA_CERTS` or
+`SSL_CERT_DIR` on your machine, point them at the root instead (as
+`trust-help` shows): the self-signed certificate they named is no longer served.
 
-Node ignores the OS trust store, so installing the certificate system-wide does
-nothing for it. Codex reads neither `NODE_EXTRA_CA_CERTS` **nor**
-`SSL_CERT_FILE` — both verified against codex 0.147.0.
-
-```bash
-curl -sk https://<host>/api/v1/references/trust-cert-script -o trust-cert.sh
-less trust-cert.sh          # it installs a trust anchor — read it first
-bash trust-cert.sh --url https://<host>
-```
-
-The script installs both shapes, mirrors the system trust anchors into the
-directory (so `SSL_CERT_DIR` *adds* this certificate rather than replacing your
-trust), and prints the certificate's SHA-256 — compare it against the
-fingerprint on `/reference/mcp` before relying on a downloaded copy.
-
-**Both variables are read at process start.** Export them, then restart the
-client; setting them inside a running client changes nothing, which is the usual
-reason a pin looks like it "didn't work".
-
-**Windows without WSL (PowerShell 7).** The script is bash, and the profile
-exports it prints would not reach a client launched from the Start menu anyway.
-Do the same by hand — this covers VS Code and Claude Code:
-
-```powershell
-New-Item -ItemType Directory -Force "$HOME\.bluestick" | Out-Null
-curl.exe -sk https://<host>/api/v1/references/tls-certificate -o "$HOME\.bluestick\bluestick.pem"
-$c = [System.Security.Cryptography.X509Certificates.X509Certificate2]::new("$HOME\.bluestick\bluestick.pem")
-$c.GetCertHashString([System.Security.Cryptography.HashAlgorithmName]::SHA256) -replace '(..)(?!$)', '$1:'   # compare with the fingerprint
-setx NODE_EXTRA_CA_CERTS "$HOME\.bluestick\bluestick.pem"   # per-user, for every process started from now on
-$env:NODE_EXTRA_CA_CERTS = "$HOME\.bluestick\bluestick.pem"   # this shell too — setx does not update it
-```
-
-`curl.exe`, not `curl`: in PowerShell the bare name is an `Invoke-WebRequest`
-alias that rejects these flags. `setx` stores a per-user variable that every
-process started from now on reads — a client launched from the Start menu or a
-new terminal — but it does not change the window you ran it in, so the `$env:`
-line covers a client launched from that same shell. A `$PROFILE` export only
-reaches clients started from that shell. Launch the client from a new terminal
-or the Start menu afterwards. Codex's pin
-(`SSL_CERT_DIR`) has only been verified on Linux and macOS, and its `read -rs`
-key-entry line is bash too — on Windows, run Codex inside WSL and follow the
-bash steps there. The same guidance is in the start dialog's certificate step,
-on `/reference/mcp`, and in the Assist entry of the User Guide.
-
-Deployments running an internal-CA or DNS-validated certificate need none of
-this, and the reference page detects that and says so. **On a closed network,
-a local CA is the better setup:** `ca/local-ca.sh` creates a name-constrained
-root that each analyst machine trusts once, and issues BlueStick's certificate
-from it, so redeploys and address changes stop forcing every client to re-trust.
-Some `rustls`-based clients reject the self-signed default even when it is
-trusted. The walkthrough, for a remote host, is [`ca/README.md`](../ca/README.md).
+**Fingerprint check.** `/reference/mcp` shows the SHA-256 of the certificate
+BlueStick presents (`tls_fingerprint_sha256` in `/references/mcp-tools`; the
+PEM itself is `GET /references/tls-certificate`). Compare it with what your
+client receives to confirm you reached the right server. If the deployment
+still presents a self-signed certificate, the page says so — ask the
+administrator to issue one from the local root.
 
 ---
 
@@ -414,8 +375,7 @@ makes the agent's own words part of the audit trail.
 |---|---|---|
 | `POST /api/v1/mcp` | key on `tools/call` | the transport |
 | `GET /api/v1/references/mcp-tools` | none | live tool catalog + connect recipes + certificate info |
-| `GET /api/v1/references/trust-cert-script` | none | the certificate-trust installer |
-| `GET /api/v1/references/tls-certificate` | none | the deployment certificate (PEM) |
+| `GET /api/v1/references/tls-certificate` | none | the deployment certificate (PEM), for inspection and the fingerprint check |
 | `GET /api/v1/references/tools` | none | the tool catalogue (`?status=reference\|suggested\|rejected`) |
 | `PATCH /api/v1/references/tools/{name}` | admin | curate a suggested tool (`reference` / `rejected`) |
 | `GET /api/v1/agent/identity` | agent key | what this key is |

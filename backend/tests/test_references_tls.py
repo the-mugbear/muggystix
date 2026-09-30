@@ -1,9 +1,9 @@
-"""The deployment's TLS certificate, served so operators can pin it.
+"""The deployment's TLS certificate, served for inspection and fingerprint checks.
 
-Node-based MCP clients ignore the OS trust store and refuse a self-signed
-deployment outright (verified against a real client). The fix we point people
-at is NODE_EXTRA_CA_CERTS, which needs the certificate as a file — so the API
-hands it over rather than making the operator find it on the host.
+Clients trust BlueStick through the local root CA (ca/local-ca.sh), installed
+once per machine; the per-client pinning installer (scripts/trust-cert.sh and
+GET /references/trust-cert-script) is retired. The leaf and its fingerprint
+stay available so an operator can confirm they reached the right server.
 """
 from __future__ import annotations
 
@@ -40,38 +40,17 @@ def test_listed_in_the_references_index(client):
     assert body["tls_certificate"]["url"] == "/api/v1/references/tls-certificate"
 
 
-# ---------------------------------------------------------------------------
-# Serving the trust script (v2.286.0)
-#
-# The pinning variable differs per client and the operator running the client
-# usually has no checkout of this repo, so "run ./scripts/trust-cert.sh" was
-# advice only reachable on the deployment host. Serving it turns six
-# translate-them-yourself steps into one command.
-# ---------------------------------------------------------------------------
-
-def test_trust_script_is_served_as_a_downloadable_script(client):
-    resp = client.get("/api/v1/references/trust-cert-script")
-    assert resp.status_code == 200, resp.text
-    assert "x-shellscript" in resp.headers["content-type"]
-    # Downloaded, not piped — an operator should read a script that installs a
-    # trust anchor before running it, and the filename makes that natural.
-    assert 'filename="trust-cert.sh"' in resp.headers.get("content-disposition", "")
-
-    body = resp.text
-    assert body.startswith("#!")
-    # It has to carry BOTH mechanisms, since that is the whole reason a script
-    # beats instructions: the two clients need different variables.
-    assert "NODE_EXTRA_CA_CERTS" in body
-    assert "SSL_CERT_DIR" in body
-    # And it must be able to run away from the repo, against a remote host.
-    assert "--url" in body
+def test_retired_trust_script_is_gone(client):
+    """The per-client pinning installer is retired in favour of the local
+    root CA; neither the route nor its catalogue/index entries remain."""
+    assert client.get("/api/v1/references/trust-cert-script").status_code == 404
+    assert "trust_cert_script" not in client.get("/api/v1/references/").json()
+    assert "trust_script_url" not in client.get("/api/v1/references/mcp-tools").json()
 
 
-def test_catalog_carries_the_trust_script_and_fingerprint(client):
-    """The page needs both exactly when it needs the tool list, and a
-    fingerprint an operator has to go and find is one nobody checks."""
+def test_catalog_carries_the_fingerprint(client):
+    """A fingerprint an operator has to go and find is one nobody checks."""
     body = client.get("/api/v1/references/mcp-tools").json()
-    assert body["trust_script_url"].endswith("/references/trust-cert-script")
     assert body["tls_certificate_url"].endswith("/references/tls-certificate")
     # None when the cert isn't mounted (the test container) — the field must
     # exist either way so the page can decide what to render.
@@ -231,30 +210,15 @@ def test_reference_page_recipes_come_from_the_session_builder(client):
     assert "--bearer-token-env-var" in by_id["codex"]["payload"]
 
 
-def test_client_hints_give_windows_operators_a_route(client):
-    """v2.342.1 — every hint said "run ./scripts/trust-cert.sh and add the
-    exports to your shell profile", which a Windows operator without WSL can
-    do neither half of: there is no bash for the script, and a profile export
-    never reaches a client launched from the Start menu. The Node clients get
-    the PowerShell equivalent (curl.exe + a per-user setx); Codex, whose pin is
-    verified on Linux/macOS only, is routed to WSL rather than handed an
-    unverified native recipe.
-    """
+def test_client_hints_carry_no_per_client_pinning(client):
+    """The per-client pinning notes (trust-cert.sh, NODE_EXTRA_CA_CERTS /
+    SSL_CERT_DIR exports, the Windows setx route) are retired: the local root
+    CA, installed once per machine, is how a client trusts BlueStick."""
     from app.api.v1.endpoints.references import SAMPLE_KEY_PLACEHOLDER
     from app.services.mcp_client_setup_service import build_mcp_clients
 
-    by_id = {
-        e["id"]: e
-        for e in build_mcp_clients("https://bluestick.example/api/v1/mcp", SAMPLE_KEY_PLACEHOLDER)
-    }
-    for node_client in ("vscode", "claude_code"):
-        hint = by_id[node_client]["hint"]
-        assert "curl.exe -sk https://bluestick.example/api/v1/references/tls-certificate" in hint
-        assert "setx NODE_EXTRA_CA_CERTS" in hint
-        # setx reaches future windows only; the current shell needs $env: too.
-        assert "$env:NODE_EXTRA_CA_CERTS" in hint
-        # The route adds trust; it never switches verification off.
-        assert "NODE_TLS_REJECT_UNAUTHORIZED=0" not in hint
-    codex = by_id["codex"]["hint"]
-    assert "WSL" in codex
-    assert "setx" not in codex
+    for entry in build_mcp_clients("https://bluestick.example/api/v1/mcp", SAMPLE_KEY_PLACEHOLDER):
+        hint = entry["hint"]
+        for retired in ("trust-cert", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "setx", "tls-certificate"):
+            assert retired not in hint, (entry["id"], retired)
+        assert "NODE_TLS_REJECT_UNAUTHORIZED" not in hint

@@ -17,6 +17,8 @@ shapes below lived in ``agent_schemas`` only because this module used them.
 """
 from __future__ import annotations
 
+import ipaddress
+from datetime import timezone
 from typing import Any, Dict, Iterator, List, Optional
 
 from pydantic import BaseModel, Field
@@ -25,6 +27,8 @@ from sqlalchemy.dialects.postgresql import INET
 from sqlalchemy.orm import Session
 
 from app.db import models
+from app.services import dns_name_service as names
+from app.services import web_interface_observation
 
 
 class ScopePortBrief(BaseModel):
@@ -268,3 +272,285 @@ def iter_scope_web_targets(db: Session, scope_id: int) -> Iterator[str]:
     for brief in iter_scope_hosts(db, scope_id):
         for target in web_targets_from_hosts([brief]):
             yield target.url + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Named targets — the scope's NAME scope, one record per in-scope name
+# ---------------------------------------------------------------------------
+#
+# The files above are subnet scope and stay that way: an IP-only file cannot
+# say "only these names on that address", and widening it to the addresses
+# in-scope names resolve to would authorise every other name and service on a
+# shared address.  ``named-targets.ndjson`` is the separate answer: one
+# record per name the scope's domain rules cover, with the addresses it
+# CURRENTLY resolves to (``dns_name_service.address_state_for_names`` — the
+# one "latest A/AAAA batch" rule host coverage uses), whether each address is
+# ALSO in this scope's subnet scope, and the web interfaces reached AS that
+# name (``WebInterface.name_id`` — the URL's host, i.e. the Host header / SNI
+# the tool used).  A name is here only because a declared rule covers it:
+# a certificate SAN or a co-hosted name that no rule covers never appears.
+
+
+class NamedTargetRule(BaseModel):
+    """The scope-domain rule that puts a name in scope (the most specific)."""
+    domain: str
+    include_subdomains: bool
+    match: str  # "exact" | "subdomain"
+
+
+class NamedTargetAddress(BaseModel):
+    """An address the name currently resolves to."""
+    ip_address: str
+    record_type: str  # A | AAAA
+    last_observed: Optional[Any] = None
+    host_id: Optional[int] = None
+    #: True when the address is ALSO in this scope's subnet scope.  False
+    #: means the name is authorised on this address, the address is not:
+    #: test the name (Host header / SNI), never the whole address.
+    in_subnet_scope: bool = False
+
+
+class NamedTargetWeb(BaseModel):
+    """The latest observation of one URL reached as this name, per tool."""
+    interface_id: int
+    url: str
+    scheme: Optional[str] = None
+    port: Optional[int] = None
+    ip_address: Optional[str] = None
+    #: Whether ``ip_address`` is one the name currently resolves to — an
+    #: interface captured before the name moved is history, not a target.
+    at_current_address: bool = False
+    source: str
+    status_code: Optional[int] = None
+    title: Optional[str] = None
+    observed_at: Optional[Any] = None
+
+
+class NamedTarget(BaseModel):
+    """One ``named-targets.ndjson`` line."""
+    name: str
+    name_id: Optional[int] = None
+    scope_rule: NamedTargetRule
+    addresses: List[NamedTargetAddress] = Field(default_factory=list)
+    unresolved: bool = False
+    reason: Optional[str] = None
+    web: List[NamedTargetWeb] = Field(default_factory=list)
+
+
+def _best_rule(fqdn: str, domains: List[Any]) -> Optional[NamedTargetRule]:
+    """The most specific covering rule: an exact match first, then the
+    longest covering domain.  ``domain_matches`` is the Python twin of the
+    SQL cover rule used to select the names."""
+    best = None
+    for domain, include_sub in domains:
+        if not names.domain_matches(fqdn, domain, include_sub):
+            continue
+        key = (fqdn == domain, len(domain))
+        if best is None or key > best[0]:
+            best = (key, domain, bool(include_sub))
+    if best is None:
+        return None
+    _key, domain, include_sub = best
+    return NamedTargetRule(
+        domain=domain, include_subdomains=include_sub,
+        match="exact" if fqdn == domain else "subdomain",
+    )
+
+
+def _subnet_scope_for_addresses(
+    db: Session, scope_id: int, host_by_ip: Dict[str, int], ips: List[str], networks_cache: Dict[str, Any],
+) -> Dict[str, bool]:
+    """Is each address in the scope's subnet scope?  A host row answers by its
+    subnet mapping (the rule ``hosts.ndjson`` uses, so the two files agree);
+    an address with no host row by CIDR containment."""
+    out: Dict[str, bool] = {}
+    host_ids = [host_by_ip[ip] for ip in ips if ip in host_by_ip]
+    mapped = set()
+    if host_ids:
+        mapped = {
+            hid for (hid,) in db.execute(
+                scope_host_ids(scope_id).where(models.HostSubnetMapping.host_id.in_(host_ids))
+            ).all()
+        }
+    for ip in ips:
+        if ip in host_by_ip:
+            out[ip] = host_by_ip[ip] in mapped
+            continue
+        if "networks" not in networks_cache:
+            nets = []
+            for (cidr,) in db.query(models.Subnet.cidr).filter(models.Subnet.scope_id == scope_id).all():
+                try:
+                    nets.append(ipaddress.ip_network(cidr, strict=False))
+                except ValueError:
+                    continue
+            networks_cache["networks"] = nets
+        try:
+            addr = ipaddress.ip_address(ip)
+        except ValueError:
+            out[ip] = False
+            continue
+        out[ip] = any(addr.version == n.version and addr in n for n in networks_cache["networks"])
+    return out
+
+
+def _ts_key(ts: Any):
+    """Sort key tolerating a naive datetime (SQLite) beside an aware one."""
+    if ts is None:
+        return (0, None)
+    if getattr(ts, "tzinfo", None) is None:
+        ts = ts.replace(tzinfo=timezone.utc)
+    return (1, ts)
+
+
+def _web_for_names(db: Session, project_id: int, name_ids: List[int]) -> Dict[int, List[Any]]:
+    """Latest web-interface row per (name, tool, URL) — the inspector's
+    latest-per-(source, url) rule (newest observation, higher id breaking a
+    tie), with observation time from ``web_interface_observation`` (scan
+    time, else import time).  Columns only: ``raw`` / ``page_text`` can be
+    large and are not part of a target list."""
+    if not name_ids:
+        return {}
+    w = models.WebInterface
+    rows = (
+        db.query(
+            w.id, w.scan_id, w.first_seen, w.name_id, w.source, w.url, w.protocol,
+            w.port, w.ip_address, w.status_code, w.title,
+        )
+        .filter(w.project_id == project_id, w.name_id.in_(name_ids))
+        .all()
+    )
+    observed = web_interface_observation.observations(db, rows)
+    latest: Dict[tuple, Any] = {}
+    for r in rows:
+        key = (r.name_id, r.source, r.url)
+        ts = observed[r.id].observed_at
+        cur = latest.get(key)
+        if cur is None or (_ts_key(ts), r.id) > (_ts_key(cur[1]), cur[0].id):
+            latest[key] = (r, ts)
+    out: Dict[int, List[Any]] = {}
+    for (name_id, _src, _url), (r, ts) in sorted(
+        latest.items(), key=lambda kv: (kv[0][0], kv[0][2], kv[0][1]),
+    ):
+        out.setdefault(name_id, []).append((r, ts))
+    return out
+
+
+def iter_scope_named_targets(
+    db: Session, scope: models.Scope, *, chunk_size: int = 500,
+) -> Iterator[NamedTarget]:
+    """Every name the scope's domain rules cover, fqdn-ordered, streamed in
+    bounded memory (only the ordered name ids are held whole), then one
+    record per declared domain the inventory holds no name for.
+
+    Selection is the declared rule and nothing else: wildcard patterns
+    (``kind != 'fqdn'``) and names only a certificate or a shared address
+    connect to are not in scope and are not listed.
+    """
+    project_id = scope.project_id
+    sd = models.ScopeDomain
+    domains = [
+        (d, bool(sub)) for d, sub in
+        db.query(sd.domain, sd.include_subdomains).filter(sd.scope_id == scope.id).order_by(sd.id).all()
+    ]
+    if not domains:
+        return
+
+    n = models.DNSName
+    covered = (
+        select(sd.id)
+        .where(sd.scope_id == scope.id, names.scope_domain_covers_condition(sd, n.fqdn))
+        .exists()
+    )
+    name_ids = [
+        row[0] for row in
+        db.query(n.id)
+        .filter(n.project_id == project_id, n.kind == "fqdn", covered)
+        .order_by(n.fqdn.asc(), n.id.asc())
+        .all()
+    ]
+    networks_cache: Dict[str, Any] = {}
+    seen_fqdns = set()
+
+    for start in range(0, len(name_ids), chunk_size):
+        page = name_ids[start:start + chunk_size]
+        rows = (
+            db.query(n.id, n.fqdn)
+            .filter(n.id.in_(page))
+            .order_by(n.fqdn.asc(), n.id.asc())
+            .all()
+        )
+        states = names.address_state_for_names(db, project_id, page)
+        ips = sorted({ip for st in states.values() for ip in st.current})
+        host_by_ip = names.hosts_for_addresses(db, project_id, ips)
+        in_subnet = _subnet_scope_for_addresses(db, scope.id, host_by_ip, ips, networks_cache)
+        web = _web_for_names(db, project_id, page)
+
+        for nid, fqdn in rows:
+            seen_fqdns.add(fqdn)
+            rule = _best_rule(fqdn, domains)
+            if rule is None:  # the SQL cover rule and its Python twin disagree
+                continue
+            state = states.get(nid)
+            current = state.current if state else {}
+            addresses = [
+                NamedTargetAddress(
+                    ip_address=ip,
+                    record_type=entry["record_type"],
+                    last_observed=entry["last_observed"],
+                    host_id=host_by_ip.get(ip),
+                    in_subnet_scope=in_subnet.get(ip, False),
+                )
+                for ip, entry in sorted(current.items())
+            ]
+            reason = None
+            if not addresses:
+                other = {
+                    k: v for k, v in (state.evidence if state else {}).items()
+                    if k not in models.DNS_RESOLVING_TYPES
+                }
+                reason = "no A/AAAA observation for this name"
+                if other:
+                    reason += " (other evidence, not a resolution: " + ", ".join(
+                        f"{k}×{v}" for k, v in sorted(other.items())
+                    ) + ")"
+            yield NamedTarget(
+                name=fqdn,
+                name_id=nid,
+                scope_rule=rule,
+                addresses=addresses,
+                unresolved=not addresses,
+                reason=reason,
+                web=[
+                    NamedTargetWeb(
+                        interface_id=r.id, url=r.url, scheme=r.protocol, port=r.port,
+                        ip_address=r.ip_address,
+                        at_current_address=bool(r.ip_address and r.ip_address in current),
+                        source=r.source, status_code=r.status_code, title=r.title,
+                        observed_at=ts,
+                    )
+                    for r, ts in web.get(nid, [])
+                ],
+            )
+
+    # A declared domain the inventory holds no name for — listed so the
+    # operator sees it, never guessed at.
+    for domain, include_sub in domains:
+        if domain in seen_fqdns:
+            continue
+        seen_fqdns.add(domain)
+        reason = "declared in scope; no observation of this name in the inventory"
+        if include_sub:
+            reason += " (the rule also covers its subdomains; any observed are their own records)"
+        yield NamedTarget(
+            name=domain,
+            name_id=None,
+            scope_rule=NamedTargetRule(domain=domain, include_subdomains=include_sub, match="exact"),
+            unresolved=True,
+            reason=reason,
+        )
+
+
+def iter_scope_named_targets_ndjson(db: Session, scope: models.Scope) -> Iterator[str]:
+    """One in-scope name per line — stream to a file and process locally."""
+    for record in iter_scope_named_targets(db, scope):
+        yield record.model_dump_json() + "\n"

@@ -56,8 +56,8 @@ fi
 # v2.314.0 — always cover this machine's own LAN addresses, whatever $DOMAIN
 # said.  A cert generated with `localhost` came out valid for loopback ONLY, so
 # every MCP client and browser reaching BlueStick over the network hit a name
-# mismatch and had to disable verification — which defeats the point of running
-# trust-cert.sh at all.  Found by an agent connecting to 192.168.7.245:443 and
+# mismatch and had to disable verification — which defeats the point of
+# trusting the certificate at all.  Found by an agent connecting to 192.168.7.245:443 and
 # being handed a certificate for 127.0.0.1.
 #
 # Loopback entries are skipped (already in the base SAN) and the whole list is

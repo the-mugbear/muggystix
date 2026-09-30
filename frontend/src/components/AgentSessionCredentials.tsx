@@ -9,7 +9,7 @@
  * and the verification: ~770 words, scrolling on a tall screen. Now the
  * operator picks their client once (remembered), sees that client's config
  * with ONE copy button — the key is inside it — and everything else folds:
- * setup notes, the certificate step, the bare key. "Other agent" is the
+ * setup notes, the bare key. "Other agent" is the
  * pasted prompt for anything without MCP.
  */
 import React, { useState } from 'react';
@@ -20,7 +20,6 @@ import { Button } from './ui/button';
 import { cn } from '../utils/cn';
 import type { McpClientSetup } from '../services/api';
 import { McpClientRecipe } from './McpConnectPanel';
-import McpCertTrustNotice from './McpCertTrustNotice';
 
 const PROMPT = 'prompt';
 const CHOICE_KEY = 'bluestick.agentClient';
@@ -133,7 +132,6 @@ const AgentSessionCredentials: React.FC<Props> = ({
 
       {client ? (
         <>
-          <McpCertTrustNotice />
           <McpClientRecipe client={client} compact onCopied={onCopied} />
           {keyIsSeparateStep && (
             <div>

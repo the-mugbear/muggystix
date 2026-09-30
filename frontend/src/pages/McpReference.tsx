@@ -15,7 +15,6 @@ import { Link } from 'react-router-dom';
 import { Lock, Radio, ShieldCheck } from 'lucide-react';
 import { getMcpTools, type McpCatalog, type McpToolDoc } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
-import { buildCertTrust } from '../utils/mcpCert';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
 import McpFlowDiagram from '../components/mcp/McpFlowDiagram';
@@ -116,17 +115,10 @@ const McpReference: React.FC = () => {
     })).filter((g) => g.tools.length > 0);
   }, [catalog]);
 
-  // The certificate story, resolved from the same catalog call (shared with the
-  // in-dialog McpCertTrustNotice so the two can't disagree on whether the step
-  // even exists — they did once). `selfSigned` is null when we couldn't read
-  // the cert, which is not "it is self-signed", so the pinning block stays for
-  // null and only softens on an explicit `false`.
-  const {
-    fingerprint,
-    selfSigned,
-    commands: trustScriptCommands,
-    windowsCommands: trustWindowsCommands,
-  } = buildCertTrust(catalog);
+  // The certificate: its fingerprint to check, and whether a CA issued it.
+  // `selfSigned` is null when the backend could not read it.
+  const fingerprint = catalog?.tls_fingerprint_sha256 ?? null;
+  const selfSigned = catalog?.tls_certificate?.self_signed ?? null;
   const keyPlaceholder = catalog?.sample_key_placeholder ?? '<your-session-key>';
 
   // The endpoint is server-resolved; fall back to a relative path so the
@@ -258,87 +250,35 @@ const McpReference: React.FC = () => {
         client&rsquo;s snippet rather than adapting another&rsquo;s. Starting an assist session
         emits these with the key already filled in; the placeholder below is only for reading.
       </p>
-      {/* Every client fails here first, and each needs a different variable —
-          so the page leads with the one command that handles both rather than
-          six steps an operator has to translate for their client. */}
-      <div className="mb-sm space-y-sm border-l-4 border-l-warning py-xs pl-md">
-        <div className="space-y-sm">
-          <div className="flex gap-sm">
-            <ShieldCheck className="mt-xxs size-4 shrink-0 text-warning" aria-hidden />
-            <div className="min-w-0">
-              <p className="text-metadata font-semibold text-foreground">
-                First: trust this deployment&rsquo;s certificate
-              </p>
-              <p className="mt-xxs text-caption text-muted-foreground">
-                {selfSigned === false ? (
-                  <>
-                    This deployment presents a <strong className="text-foreground">CA-issued</strong>{' '}
-                    certificate, so a client whose trust store includes that CA connects with no
-                    setup at all — skip this section and try connecting first. If the CA is an
-                    internal one your client doesn&rsquo;t know, pin it exactly as below.
-                  </>
-                ) : (
-                  <>
-                    BlueStick defaults to a self-signed certificate, and no public CA will issue one
-                    for a private address. Until the client trusts it, every connection is refused.
-                  </>
-                )}{' '}
-                The variable{' '}
-                <strong className="text-foreground">differs per client</strong>:
-                VS Code and Claude Code are Node-based and read{' '}
-                <span className="font-mono">NODE_EXTRA_CA_CERTS</span> (a file); Codex is a Rust
-                binary and reads <span className="font-mono">SSL_CERT_DIR</span> (a directory of
-                hash-named symlinks). This script installs both and prints the exports:
-              </p>
-            </div>
-          </div>
-          <CodeBlock
-            text={trustScriptCommands}
-            label="certificate trust setup"
-          />
+      {/* The per-client pinning installer (scripts/trust-cert.sh) is retired:
+          BlueStick's certificate comes from the organisation's local root CA
+          (ca/local-ca.sh), which each analyst machine trusts once. */}
+      <div className="mb-sm flex gap-sm border-l-4 border-l-info py-xs pl-md">
+        <ShieldCheck className="mt-xxs size-4 shrink-0 text-info" aria-hidden />
+        <div className="min-w-0 space-y-xs">
+          <p className="text-metadata font-semibold text-foreground">Certificate</p>
           <p className="text-caption text-muted-foreground">
-            Read it before running it — it installs a trust anchor, which is not something to pipe
-            from a download straight into a shell.
-            {fingerprint ? (
-              <>
-                {' '}The script prints the certificate&rsquo;s SHA-256; it should match{' '}
-                <span className="break-all font-mono text-foreground">{fingerprint}</span>. If it
-                doesn&rsquo;t, you fetched a different host — stop.
-              </>
-            ) : null}
+            BlueStick&rsquo;s certificate is issued by your organisation&rsquo;s local root CA
+            (<span className="font-mono">ca/local-ca.sh</span>). Install that root once on the
+            machine running your agent client &mdash; your administrator gives you{' '}
+            <span className="font-mono">rootCA.crt</span> and its fingerprint, and{' '}
+            <span className="font-mono">ca/local-ca.sh trust-help</span> prints the steps for each
+            system (see <span className="font-mono">ca/README.md</span>, step 6). The client then
+            trusts BlueStick with no per-client pinning.
           </p>
-          <p className="text-caption text-muted-foreground">
-            <strong className="text-foreground">Then restart the client.</strong> Both variables
-            are read at process startup, so exporting them inside a running client changes
-            nothing — that is the usual reason a pin looks like it didn&rsquo;t work. Verified
-            against Codex 0.147.0: pinning adds this certificate to the client&rsquo;s existing
-            trust, so it keeps validating public hosts normally. That is the difference from{' '}
-            <span className="font-mono">NODE_TLS_REJECT_UNAUTHORIZED=0</span>, which switches
-            verification off for everything the process talks to.
-          </p>
-          {/* v5.217.0 — Windows without WSL. The script is bash and its
-              profile exports would not reach a client launched from the Start
-              menu; setx stores the variable per user, which is what does. */}
-          <p className="text-caption text-muted-foreground">
-            <strong className="text-foreground">Windows without WSL</strong> (PowerShell 7): the
-            script is bash, so do the same by hand — fetch the PEM with{' '}
-            <span className="font-mono">curl.exe</span> (bare <span className="font-mono">curl</span>{' '}
-            is an <span className="font-mono">Invoke-WebRequest</span> alias), check the SHA-256,
-            and store <span className="font-mono">NODE_EXTRA_CA_CERTS</span> twice: with{' '}
-            <span className="font-mono">setx</span>, a per-user variable for every process started
-            from now on, and with <span className="font-mono">$env:</span> for the shell you are in,
-            because <span className="font-mono">setx</span> does not update the current window.
-            Then launch the client from a new terminal or the Start menu.
-          </p>
-          <CodeBlock
-            text={trustWindowsCommands}
-            label="certificate trust setup (PowerShell)"
-          />
-          <p className="text-caption text-muted-foreground">
-            Codex&rsquo;s pin (<span className="font-mono">SSL_CERT_DIR</span>) has only been
-            verified on Linux and macOS. On Windows, run Codex inside WSL and use the bash script
-            there; its key-entry line (<span className="font-mono">read -rs</span>) is bash as well.
-          </p>
+          {selfSigned === true ? (
+            <p className="text-caption text-warning">
+              This deployment still presents a self-signed certificate, so clients will refuse it.
+              Ask your administrator to issue one from the local root CA.
+            </p>
+          ) : null}
+          {fingerprint ? (
+            <p className="text-caption text-muted-foreground">
+              To check you reached the right server, compare the certificate your client receives
+              with this SHA-256:{' '}
+              <span className="break-all font-mono text-foreground">{fingerprint}</span>
+            </p>
+          ) : null}
         </div>
       </div>
       <Alert variant="warning" className="mb-sm">
@@ -356,7 +296,7 @@ const McpReference: React.FC = () => {
       {/* The recipes come from the server — the same builder a live session
           uses, with a placeholder key. The page used to carry its own copy in
           TypeScript, and the pair drifted twice: on the config wrapper key (the
-          bug the shared builder exists to fix) and on the Codex TLS note. */}
+          bug the shared builder exists to fix) and on a per-client note. */}
       {catalog?.sample_clients?.length ? (
         <McpConnectPanel
           clients={catalog.sample_clients}

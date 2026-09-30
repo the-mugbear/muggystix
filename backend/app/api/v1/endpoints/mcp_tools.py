@@ -228,13 +228,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "read_agent_guide": {
         "description": (
-            "The agent guide — the authoritative guide for how to work with BlueStick: "
-            "the scope and working-directory rules, endpoint body shapes, upload "
-            "formats, exit criteria. A unified project session "
-            "gets the full guide; optionally request a phase slice. READ THIS FIRST, "
-            "once, before your first "
-            "substantive call. The tool descriptions here are a skeleton; the guide is "
-            "the part that tells you how, and it is binding."
+            "The agent guide — reference for working with BlueStick: endpoint body "
+            "shapes, upload formats, recipes, and the scope and working-directory "
+            "rules in full. Read the part you need when a tool's description leaves "
+            "you guessing; there is no need to read it all before starting. Omit "
+            "workflow for the whole guide, or ask for one slice."
         ),
         "method": "GET",
         "path": "/api/v1/agents-guide",
@@ -1179,12 +1177,16 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
-        "query_params": ["limit", "tool"],
+        "query_params": ["limit", "offset", "tool"],
         "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
+                "offset": {
+                    "type": "integer", "minimum": 0,
+                    "description": "Skip this many (newest first). Page until a page is shorter than limit.",
+                },
                 "tool": {"type": "string", "maxLength": 100, "description": "A tool name (nmap, nessus, netexec…) or scan type."},
             },
             "additionalProperties": False,

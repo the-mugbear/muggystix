@@ -4,7 +4,7 @@ Extracted from ``assist.py`` in v2.279.0 because MCP stopped being
 assist-only: every session start mints a key with the same shape and the
 operator has the same "how do I point my client at this" problem.  Keeping one
 builder means a fix to a client recipe (VS Code's wrapper key, Codex's env-var
-flag, the self-signed-cert note) lands everywhere at once — the divergence this
+flag, the sandbox note) lands everywhere at once — the divergence this
 replaces is the reason two of the three original recipes silently didn't work.
 
 v2.337.0 — one project session, one server entry (``bluestick``) and one key
@@ -42,81 +42,6 @@ def _mcp_server_entry(mcp_url: str, raw_key: str) -> Dict[str, Any]:
     }
 
 
-# BlueStick is self-hosted on a private address, so its certificate is
-# self-signed and always will be — "get one from a public CA" is not an option
-# for something that only ever listens on 127.0.0.1 or a LAN address. Every MCP
-# client therefore refuses the connection until told to trust THIS certificate,
-# and the way to tell it differs by client:
-#
-#   * VS Code and Claude Code are Node/Electron. Node ignores the OS trust
-#     store, so installing the cert system-wide does nothing; NODE_EXTRA_CA_CERTS
-#     takes a single PEM file.
-#   * Codex is a Rust binary built against native-tls (OpenSSL). It reads
-#     SSL_CERT_DIR — a directory of hash-named symlinks, not a file.
-#
-# v2.282.0 told Codex operators to export NODE_EXTRA_CA_CERTS, which nothing in
-# a Rust binary reads, and then concluded there was "no supported way to pin" and
-# they needed a CA-signed certificate. Both halves were wrong. Verified against
-# codex 0.147.0: SSL_CERT_FILE alone does NOT take effect, SSL_CERT_DIR does, and
-# a client pinned this way still validates public hosts normally — so this ADDS
-# trust rather than replacing it, unlike NODE_TLS_REJECT_UNAUTHORIZED=0.
-#
-# Both variables are read at process START. That is the failure operators
-# actually hit: exporting them inside a running client changes nothing, which
-# reads as "the pin doesn't work".
-def tls_note(mcp_url: str, client_id: str = "vscode") -> str:
-    cert_url = mcp_url.rsplit("/mcp", 1)[0] + "/references/tls-certificate"
-    # v2.331.0 — the exports are the step operators miss. The script runs in a
-    # child shell and cannot set variables for the shell that launched it, so
-    # "run it, then restart" leaves the client with no trust unless the exports
-    # went into a profile (or the client was launched from a shell that has
-    # them). Say so here, where the config is copied.
-    # v2.374.7 — the hint is several separate notes (save step, certificate,
-    # remote host, Windows, sandbox). They were concatenated with single spaces
-    # and the dialog rendered one 12-line paragraph; each note is now its own
-    # paragraph ("\n\n") and every command is a backtick span, which
-    # McpConnectPanel renders as paragraphs and <code>.
-    common = (
-        " Run `./scripts/trust-cert.sh` on the machine running the client: it "
-        "installs the certificate and PRINTS two exports, which it cannot apply "
-        "to your shell for you. Add them to your shell profile, then relaunch "
-        "the client from a new shell — both are read only at client start."
-        f"\n\nRemote host? Fetch the cert first: `curl -sk {cert_url} -o bluestick.pem`"
-    )
-    if client_id == "codex":
-        # v2.342.1 — the pin is verified on Linux/macOS only; a Windows
-        # operator gets a route that works (WSL) rather than silence.
-        return (
-            "\n\nSelf-signed cert? Codex refuses it until pinned. Codex is a Rust "
-            "binary: NODE_EXTRA_CA_CERTS does nothing for it, and SSL_CERT_FILE "
-            "does not take effect either (tested on 0.147.0) — it reads "
-            "SSL_CERT_DIR, a directory of hash-named symlinks."
-            + common
-            + "\n\nWindows: this pin (and the `read -rs` line above) is bash and has "
-            "only been verified on Linux/macOS — run Codex inside WSL and do "
-            "these steps there."
-        )
-    # v2.342.1 — Windows without WSL has no bash for the script, and the
-    # profile exports it prints never reach a client launched from the Start
-    # menu. setx stores the variable per user, which is what such a client
-    # reads. curl.exe, because bare curl in PowerShell is Invoke-WebRequest.
-    return (
-        "\n\nSelf-signed cert? Node-based clients refuse it — Node ignores the OS "
-        "trust store, so trusting it system-wide won't help. Export "
-        "`NODE_EXTRA_CA_CERTS=/path/to/bluestick.pem`, which trusts this one "
-        "deployment and leaves verification on everywhere else."
-        + common
-        + "\n\nWindows without WSL (PowerShell 7): the script is bash, so fetch the "
-        f"PEM with `curl.exe -sk {cert_url} -o bluestick.pem` (bare curl is an "
-        "Invoke-WebRequest alias), check its SHA-256 against the reference "
-        "page, then `setx NODE_EXTRA_CA_CERTS <full path>` (a per-user variable "
-        "for every process started from now on; a shell profile would not reach "
-        "a Start-menu launch) AND `$env:NODE_EXTRA_CA_CERTS = <full path>` for the "
-        "current window, which setx does not update — then launch the client "
-        "from a new terminal or the Start menu."
-    )
-
-
 def sandbox_note(client_id: str) -> str:
     """Client flags that keep a command-running agent inside its directory.
 
@@ -126,7 +51,8 @@ def sandbox_note(client_id: str) -> str:
     The wording is deliberately "your client enforces this": an operator who
     believes the server is enforcing it would grant more than they meant to.
     """
-    # One paragraph ("\n\n" opens it — see tls_note): launch line, then why.
+    # One paragraph ("\n\n" opens it; McpConnectPanel renders paragraphs and
+    # backtick spans as <code>): launch line, then why.
     common = (
         "Run the client FROM the directory you want the run's output in: that "
         "directory is the sandbox, and anything outside it — other paths, machine "
@@ -281,7 +207,6 @@ def build_mcp_clients(
             "hint": (
                 "Save as .vscode/mcp.json in your workspace, then start the server from the "
                 "Copilot MCP panel. The file holds a live key — keep it out of version control. "
-                + tls_note(mcp_url, "vscode")
                 + sandbox_note("vscode")
             ),
         },
@@ -297,7 +222,6 @@ def build_mcp_clients(
             "hint": (
                 "Run in your project directory. -s local keeps the key in your own config; "
                 "-s project writes .mcp.json into the repo, so do not use it with a live key. "
-                + tls_note(mcp_url, "claude_code")
                 + sandbox_note("claude_code")
             ),
         },
@@ -315,7 +239,6 @@ def build_mcp_clients(
                 "Codex keeps the key out of config.toml — it reads the env var at run time. "
                 "`read -rs` keeps it out of your shell history too; re-run it in each new shell "
                 "rather than writing the key into a profile. "
-                + tls_note(mcp_url, "codex")
                 + sandbox_note("codex")
             ),
         },

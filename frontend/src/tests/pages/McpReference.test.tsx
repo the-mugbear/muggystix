@@ -26,7 +26,6 @@ const catalog = (): McpCatalog => ({
   endpoint: 'https://bluestick.example/api/v1/mcp',
   max_request_bytes: 1048576,
   max_batch_messages: 50,
-  trust_script_url: 'https://bluestick.example/api/v1/references/trust-cert-script',
   tls_certificate_url: 'https://bluestick.example/api/v1/references/tls-certificate',
   tls_fingerprint_sha256: 'AA:BB:CC:DD',
   tls_certificate: {
@@ -64,7 +63,7 @@ const catalog = (): McpCatalog => ({
       kind: 'command',
       path: '',
       payload: 'codex mcp add bluestick-assist --url https://bluestick.example/api/v1/mcp',
-      hint: 'Codex reads the env var at run time. SSL_CERT_DIR pins the cert.',
+      hint: 'Codex reads the env var at run time.',
     },
   ],
   tools: [
@@ -192,26 +191,9 @@ describe('McpReference', () => {
     expect(screen.queryByRole('tab', { name: 'Cursor' })).not.toBeInTheDocument();
   });
 
-  it('hands over a runnable certificate-trust command, not six manual steps', async () => {
-    renderPage();
-    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
-
-    // Every client fails on the self-signed cert first, and each needs a
-    // different variable — so the page leads with the script that does both.
-    const block = screen.getByText(/curl -sk .*trust-cert-script -o trust-cert\.sh/);
-    expect(block.textContent).toContain('bash trust-cert.sh --url https://bluestick.example');
-    // Read-then-run, never piped: this one installs a trust anchor.
-    expect(block.textContent).toContain('less trust-cert.sh');
-    expect(block.textContent).not.toContain('| bash');
-
-    // The fingerprint is what makes a downloaded certificate checkable.
-    expect(screen.getByText('AA:BB:CC:DD')).toBeInTheDocument();
-  });
-
-  it('softens the pinning section when the deployment has a CA-issued cert', async () => {
-    // Self-signed is this project's default, not an invariant — an operator can
-    // mount an internal-CA or DNS-validated certificate, and telling them to pin
-    // one their clients already trust is busywork.
+  it('points at the local root CA and shows the fingerprint as a check, with no per-client pinning', async () => {
+    // scripts/trust-cert.sh (per-client pinning) is retired: the certificate is
+    // issued by the local root CA, installed once per machine.
     getMcpTools.mockResolvedValue({
       ...catalog(),
       tls_certificate: {
@@ -222,49 +204,23 @@ describe('McpReference', () => {
       },
     });
     renderPage();
-
-    expect(await screen.findByText(/CA-issued/)).toBeInTheDocument();
-    expect(screen.getByText(/try connecting first/)).toBeInTheDocument();
-    // The recipe stays available — an internal CA the client doesn't know is
-    // exactly the case where pinning is still needed.
-    expect(screen.getByText(/bash trust-cert\.sh --url/)).toBeInTheDocument();
-  });
-
-  it('keeps the setup command runnable when the catalog fetch failed', async () => {
-    // The fallback is a bare path, and `curl -sk /api/v1/...` has no host.
-    getMcpTools.mockRejectedValue(new Error('boom'));
-    renderPage();
-
-    const block = await screen.findByText(/curl -sk .*trust-cert-script -o trust-cert\.sh/);
-    // Absolute against the page's own origin, whatever that is.
-    expect(block.textContent).toContain(
-      `curl -sk ${window.location.origin}/api/v1/references/trust-cert-script`,
-    );
-    expect(block.textContent).toContain(`bash trust-cert.sh --url ${window.location.origin}`);
-    expect(block.textContent).not.toMatch(/curl -sk \/api/);
-  });
-
-  it('gives a Windows operator without WSL a PowerShell path to the same trust anchor', async () => {
-    // The script is bash. Before v5.217.0 the Windows operator had nothing:
-    // no bash to run it in, and the "add the exports to your profile" step
-    // would not reach a client launched from the Start menu anyway.
-    renderPage();
     await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
 
-    const block = screen.getByText(/curl\.exe -sk .*tls-certificate -o/);
-    // curl.exe, because bare curl in PowerShell is an Invoke-WebRequest alias.
-    expect(block.textContent).toContain(
-      'curl.exe -sk https://bluestick.example/api/v1/references/tls-certificate',
-    );
-    // A per-user variable, not a profile export — that is the Windows-specific part.
-    expect(block.textContent).toContain('setx NODE_EXTRA_CA_CERTS');
-    // setx affects future windows only, so the current shell is set as well —
-    // a client launched from this same window would otherwise still refuse.
-    expect(block.textContent).toContain('$env:NODE_EXTRA_CA_CERTS =');
-    // Never the switch-verification-off escape hatch.
-    expect(block.textContent).not.toContain('NODE_TLS_REJECT_UNAUTHORIZED');
-    // Codex is routed to WSL rather than given an unverified native recipe.
-    expect(screen.getByText(/run Codex inside WSL/)).toBeInTheDocument();
+    expect(screen.getByText(/local root CA/)).toBeInTheDocument();
+    expect(screen.getByText('ca/local-ca.sh trust-help')).toBeInTheDocument();
+    // The fingerprint stays — as a "right server?" check.
+    expect(screen.getByText('AA:BB:CC:DD')).toBeInTheDocument();
+    expect(screen.queryByText(/still presents a self-signed/)).not.toBeInTheDocument();
+    // None of the retired pinning path survives.
+    const text = document.body.textContent ?? '';
+    expect(text).not.toContain('trust-cert');
+    expect(text).not.toContain('NODE_EXTRA_CA_CERTS');
+    expect(text).not.toContain('SSL_CERT_DIR');
+  });
+
+  it('says so when the deployment still presents a self-signed certificate', async () => {
+    renderPage();
+    expect(await screen.findByText(/still presents a self-signed certificate/)).toBeInTheDocument();
   });
 
   it('degrades to the static guidance when the catalog cannot be loaded', async () => {

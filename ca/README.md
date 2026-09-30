@@ -226,7 +226,7 @@ export SSL_CERT_DIR=/etc/ssl/certs                              # Codex (Linux, 
 export REQUESTS_CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt    # Python tools
 ```
 
-If `scripts/trust-cert.sh` set these before, point them at the root instead.
+If the retired `scripts/trust-cert.sh` set these before, point them at the root instead.
 The self-signed certificate they named is no longer served.
 
 Then check (no `-k`, no "insecure" flags anywhere):

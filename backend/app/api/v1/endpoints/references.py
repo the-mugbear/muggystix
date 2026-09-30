@@ -3,7 +3,6 @@
 Unauthenticated by design (documentation / environment tooling, not sensitive
 data — same stance as ``/agents-guide``), with one exception noted below:
 
-  * ``GET  /api/v1/references/trust-cert-script``   — TLS trust installer
   * ``GET  /api/v1/references/sbom``                — software bill of materials
   * ``GET  /api/v1/references/mcp-tools``           — MCP tool catalog, connect
     recipes, and this deployment's certificate info
@@ -47,43 +46,6 @@ SAMPLE_KEY_PLACEHOLDER = "<your-session-key>"  # noqa: S105 - not a credential
 router = APIRouter()
 
 
-@router.get("/references/trust-cert-script", include_in_schema=True)
-async def trust_cert_script():
-    """Serve scripts/trust-cert.sh as text/x-shellscript (v2.286.0).
-
-    Pinning this deployment's certificate takes a different variable per client
-    (``NODE_EXTRA_CA_CERTS`` for the Node-based ones, ``SSL_CERT_DIR`` — a
-    directory of hash-named symlinks — for Codex), and the operator running the
-    client usually has no reason to have this repository checked out.  Serving
-    the script from the deployment is the difference between "follow these six
-    steps" and "run this once"::
-
-        curl -sk https://<host>/api/v1/references/trust-cert-script -o trust-cert.sh
-        less trust-cert.sh
-        bash trust-cert.sh --url https://<host>
-
-    Deliberately NOT advertised as ``curl … | bash``: it installs a trust
-    anchor, and piping an unverified download
-    straight into a shell is exactly the habit that makes trust-on-first-use
-    dangerous.  The script prints the certificate's SHA-256 so it can be
-    compared against the fingerprint the reference page shows.
-    """
-    candidates = [
-        Path("/app/scripts/trust-cert.sh"),
-        Path(__file__).resolve().parents[4] / "scripts" / "trust-cert.sh",
-    ]
-    for p in candidates:
-        if p.is_file():
-            return PlainTextResponse(
-                p.read_text(encoding="utf-8"),
-                media_type="text/x-shellscript; charset=utf-8",
-                headers={
-                    "Content-Disposition": 'attachment; filename="trust-cert.sh"',
-                },
-            )
-    raise HTTPException(status_code=404, detail="trust-cert.sh not found in deployment")
-
-
 @router.get("/references/sbom")
 def sbom(current_user: User = Depends(get_current_user)):
     """Software bill of materials for the deployed app.
@@ -110,7 +72,7 @@ def sbom(current_user: User = Depends(get_current_user)):
 
 # The deployment's own certificate, mounted read-only (public half only — the
 # private key is never mounted into this container).  Serving it lets an operator
-# pin it via NODE_EXTRA_CA_CERTS instead of switching TLS verification off.
+# inspect it and check its fingerprint against what their client receives.
 _TLS_CERT_PATH = Path("/certs/networkmapper.crt")
 
 
@@ -128,10 +90,8 @@ class TlsCertificateInfo(BaseModel):
 
     # None when the certificate isn't mounted into the backend container.
     fingerprint_sha256: Optional[str] = None
-    # True when the leaf is its own issuer.  False means a CA issued it, in
-    # which case pinning may be unnecessary — the page softens rather than
-    # skips, because "a CA issued it" does not prove the CLIENT trusts that CA
-    # (an internal CA is exactly the case where it might not).
+    # True when the leaf is its own issuer (the bootstrap self-signed cert);
+    # False means a CA issued it — normally the local root from ca/local-ca.sh.
     self_signed: Optional[bool] = None
     subject: Optional[str] = None
     expires_at: Optional[str] = None
@@ -163,7 +123,7 @@ def tls_certificate_info() -> TlsCertificateInfo:
         pem = _TLS_CERT_PATH.read_bytes()
         # load_pem_x509_certificate takes the leaf and ignores what follows,
         # which is what we want: the leaf is the certificate the client
-        # actually validates and the one an operator would pin.
+        # actually validates and the one an operator compares.
         cert = x509.load_pem_x509_certificate(pem)
         digest = cert.fingerprint(hashes.SHA256()).hex().upper()
         return TlsCertificateInfo(
@@ -183,24 +143,11 @@ def tls_certificate_info() -> TlsCertificateInfo:
 def tls_certificate():
     """Serve the deployment's public TLS certificate as PEM.
 
-    Deployments default to a self-signed certificate, and the Node-based MCP
-    clients (VS Code, Claude Code) ignore the OS trust store, so "trust it in
-    Keychain" doesn't help.  What does work is ``NODE_EXTRA_CA_CERTS=<this
-    file>``, which trusts THIS certificate and nothing else, leaving
-    verification on.  The alternative operators reach for,
-    ``NODE_TLS_REJECT_UNAUTHORIZED=0``, disables verification for every host
-    that process talks to.
-
-    **The variable differs per client.**  Codex is a Rust binary built against
-    native-tls; it reads ``SSL_CERT_DIR`` (a directory of hash-named symlinks),
-    not ``NODE_EXTRA_CA_CERTS``, and not ``SSL_CERT_FILE`` either — all three
-    verified against codex 0.147.0.  ``scripts/trust-cert.sh`` installs this
-    certificate in both shapes and prints the exports; both are read at process
-    start, so the client has to be restarted afterwards.
-
-    v2.282.0 claimed Codex could not pin at all and needed a CA-signed
-    certificate.  That was wrong, and it was also a dead end: an application
-    that only ever listens on a private address cannot obtain one.
+    Clients are meant to trust BlueStick through the organisation's local root
+    CA (``ca/local-ca.sh``, installed once per analyst machine), not by pinning
+    this leaf per client — the per-client installer (``scripts/trust-cert.sh``)
+    is retired.  The leaf stays downloadable for inspection and so
+    its fingerprint can be compared with what a client actually receives.
 
     This is the certificate the server already presents in every TLS handshake,
     so publishing it discloses nothing new.  Fetching it over the same untrusted
@@ -375,11 +322,9 @@ def mcp_tools(request: Request):
 
     base_url = resolve_base_url(request)
     catalog = tool_catalog(f"{base_url}/mcp")
-    # Connecting is the other half of what this page is for, and every client
-    # fails at the certificate first (v2.286.0).  The script URL and the
-    # fingerprint ride along here rather than in a second fetch: the page needs
-    # both exactly when it needs the tool list, and a fingerprint the operator
-    # has to go and find is a fingerprint nobody checks.
+    # Connecting is the other half of what this page is for.  The fingerprint
+    # rides along here rather than in a second fetch: a fingerprint the
+    # operator has to go and find is a fingerprint nobody checks.
     # The connect recipes come from the SAME builder the session dialogs use,
     # with a placeholder in place of a key (v2.289.0).  The page used to carry
     # its own copy in TypeScript, and that pair drifted twice: once on the
@@ -391,7 +336,6 @@ def mcp_tools(request: Request):
         catalog["endpoint"], SAMPLE_KEY_PLACEHOLDER
     )
     catalog["sample_key_placeholder"] = SAMPLE_KEY_PLACEHOLDER
-    catalog["trust_script_url"] = f"{base_url}/references/trust-cert-script"
     catalog["tls_certificate_url"] = f"{base_url}/references/tls-certificate"
     info = tls_certificate_info()
     catalog["tls_fingerprint_sha256"] = info.fingerprint_sha256
@@ -420,24 +364,13 @@ async def references_index():
                 "direct vs transitive.  For operational CVE triage."
             ),
         },
-        "trust_cert_script": {
-            "url": "/api/v1/references/trust-cert-script",
-            "description": (
-                "Shell script that installs this deployment's certificate in "
-                "both shapes MCP clients need (NODE_EXTRA_CA_CERTS for VS Code "
-                "/ Claude Code, SSL_CERT_DIR for Codex) and prints the exports. "
-                "Download and read it before running — it installs a trust "
-                "anchor: `bash trust-cert.sh --url https://<host>`."
-            ),
-        },
         "tls_certificate": {
             "url": "/api/v1/references/tls-certificate",
             "description": (
-                "The deployment's public TLS certificate (PEM). Pin it so MCP "
-                "clients trust this deployment without disabling certificate "
-                "verification: NODE_EXTRA_CA_CERTS for the Node-based clients "
-                "(VS Code, Claude Code), SSL_CERT_DIR for Codex. "
-                "scripts/trust-cert.sh sets up both."
+                "The deployment's public TLS certificate (PEM), for inspection "
+                "and fingerprint checks. Clients trust BlueStick through the "
+                "organisation's local root CA (ca/local-ca.sh trust-help), "
+                "installed once per machine — not by pinning this certificate."
             ),
         },
         "tools": {

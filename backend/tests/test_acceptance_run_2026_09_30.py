@@ -94,3 +94,21 @@ def test_the_scan_list_says_whether_a_time_is_an_instant(client, db_session, tes
         assert rows[instant.id]["start_time"].endswith(("Z", "+00:00")), path
         assert rows[wall_clock.id]["time_source"] == "tool_clock"
         assert rows[wall_clock.id]["start_time"] == "2024-04-01T00:00:00", path
+
+
+def test_the_scan_list_pages_past_its_limit(client, db_session, test_project):
+    """R4: there was no way past the newest 500. offset pages back; scans that
+    share an import time are neither repeated nor skipped across pages."""
+    scans = [models.Scan(project_id=test_project.id, filename=f"s{i}.xml", tool_name="nmap")
+             for i in range(5)]
+    db_session.add_all(scans)
+    db_session.commit()
+    hdr = _key(client, test_project)
+
+    seen = []
+    for offset in (0, 2, 4):
+        page = client.get("/api/v1/agent/assist/scans", headers=hdr,
+                          params={"limit": 2, "offset": offset}).json()
+        seen += [r["id"] for r in page]
+    assert sorted(seen) == sorted(s.id for s in scans)
+    assert len(seen) == len(set(seen))

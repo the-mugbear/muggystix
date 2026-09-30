@@ -2387,6 +2387,9 @@ def list_assist_names(
 def list_assist_scans(
     request: Request,
     limit: int = Query(100, ge=1, le=500),
+    # v2.434.2 (acceptance run R4) — no way past the newest 500 before.  A
+    # page shorter than ``limit`` is the last one.
+    offset: int = Query(0, ge=0, description="Skip this many (newest first); page until a page is shorter than limit."),
     tool: Optional[str] = Query(
         None, max_length=100,
         description="Only this tool's scans (nmap, nessus, netexec…) — the Scans page's tool chips",
@@ -2404,7 +2407,10 @@ def list_assist_scans(
             db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
             search=None, tool=tool, created_after=None,
         )
-        .order_by(models.Scan.created_at.desc())
+        # id breaks a tie: scans imported together share created_at, and a
+        # page boundary between them would repeat or skip one.
+        .order_by(models.Scan.created_at.desc(), models.Scan.id.desc())
+        .offset(offset)
         .limit(limit)
         .all()
     )

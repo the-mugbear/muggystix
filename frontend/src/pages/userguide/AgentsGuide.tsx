@@ -278,12 +278,12 @@ const sections: GuideSection[] = [
           <Mono>bluestick</Mono> server entry serves every tool — and the read tools can be marked
           "always allow" once. See{' '}
           <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link> for the per-client
-          setup, the certificate step, and the full tool list.
+          setup, the certificate, and the full tool list.
         </Para>
         <Subhead>On Windows</Subhead>
         <Para>
           Asking questions needs no scanner toolchain — its "commands" are HTTPS API calls — so a
-          Windows operator without WSL is fully served. Four things differ from the Linux/macOS path
+          Windows operator without WSL is fully served. Three things differ from the Linux/macOS path
           the rest of this page assumes:
         </Para>
         <UnorderedList>
@@ -295,19 +295,16 @@ const sections: GuideSection[] = [
             <Mono>ConvertTo-Json</Mono> rather than bash single quotes.
           </li>
           <li>
-            <strong>The certificate.</strong> The trust installer is a bash script. Without WSL,
-            download the PEM with <Mono>curl.exe</Mono>, compare its SHA-256 with the fingerprint
-            shown on the MCP reference page, and store <Mono>NODE_EXTRA_CA_CERTS</Mono> with{' '}
-            <Mono>setx</Mono> so it is a per-user variable — VS Code or Claude Code launched from
-            the Start menu never reads a shell profile, which is why the "add the exports to your
-            profile" step does nothing on Windows. The exact PowerShell lines are in the start
-            dialog's certificate step and on{' '}
-            <Link to="/reference/mcp" className="underline">MCP for AI Assist</Link>.
+            <strong>The certificate.</strong> Install the local root CA once, elevated:{' '}
+            <Mono>certutil -addstore -f Root rootCA.crt</Mono> (your administrator gives you the file
+            and its fingerprint; <Mono>ca/local-ca.sh trust-help</Mono> prints the steps for every
+            system). Node-based clients (VS Code, Claude Code) may also need{' '}
+            <Mono>NODE_EXTRA_CA_CERTS</Mono> pointed at that root — set it with <Mono>setx</Mono>,
+            since a client launched from the Start menu never reads a shell profile.
           </li>
           <li>
-            <strong>Codex.</strong> Its certificate pin (<Mono>SSL_CERT_DIR</Mono>) has only been
-            verified on Linux and macOS, and its key-entry line (<Mono>read -rs</Mono>) is bash. On
-            Windows, run Codex inside WSL and follow the Linux steps there.
+            <strong>Codex.</strong> Its key-entry line (<Mono>read -rs</Mono>) is bash. On Windows,
+            run Codex inside WSL and follow the Linux steps there.
           </li>
         </UnorderedList>
       </div>

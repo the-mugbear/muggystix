@@ -610,6 +610,7 @@ AGENT_READ_ROLE_OVERRIDES = {
     ("GET", "/scopes/{scope_id}/hosts.ndjson"): ProjectRole.AUDITOR,
     ("GET", "/scopes/{scope_id}/live-hosts.txt"): ProjectRole.AUDITOR,
     ("GET", "/scopes/{scope_id}/web-targets.txt"): ProjectRole.AUDITOR,
+    ("GET", "/scopes/{scope_id}/named-targets.ndjson"): ProjectRole.AUDITOR,
     # v2.428.0 — evidence files (note attachments, EyeWitness screenshots) are
     # NOT here any more: the UI serves both to a viewer
     # (GET /hosts/notes/attachments/{id}, GET /hosts/web-interfaces/{id}/

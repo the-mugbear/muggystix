@@ -382,7 +382,7 @@ Every workflow above is also reachable over the **Model Context Protocol** at `P
 
 `tools/list` returns the WHOLE catalogue to every session (67 tools; the per-workflow filter went with the per-workflow keys in v2.337.0). Listing was always presentation rather than authorisation — the endpoint behind a tool decides on every call. Bulk, file-shaped endpoints (NDJSON streams, target lists, `POST /agent/uploads`) are deliberately *not* tools.
 
-See [MCP.md](MCP.md) for the transport details, the per-client certificate-pinning story, the tool catalogue, and the guardrail model.
+See [MCP.md](MCP.md) for the transport details, the certificate (local root CA + fingerprint check), the tool catalogue, and the guardrail model.
 
 ---
 
@@ -564,7 +564,6 @@ Auxiliary scripts (`scripts/README.md` has the full list):
 - `scripts/collect-logs.sh` — anonymised diagnostics bundle (with `scripts/scrub_logs.py`).
 - `scripts/backup-db.sh` / `restore-db.sh` — database (+ `uploads/`) backup and restore.
 - `scripts/upgrade-instance.sh` — carry a running instance's local state into a freshly copied source tree, then deploy.
-- `scripts/trust-cert.sh` — install the deployment certificate for MCP clients.
 - `scripts/status.sh` — quick container status check.
 - `scripts/transfer-images.sh` — export/import container images for offline or air-gapped moves.
 - `scripts/generate-ssl-cert.sh` / `generate-ssl-cert-simple.sh` — SSL certificate helpers (also invoked by `deploy.sh` during first-time setup).

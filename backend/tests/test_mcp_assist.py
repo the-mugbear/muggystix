@@ -75,21 +75,10 @@ def test_start_session_emits_per_client_mcp_setup(client, test_project):
     assert "read -rs BLUESTICK_API_KEY" in codex["payload"]
     assert f"export {codex['payload'].split()[1]}=" not in codex["payload"]
 
-    # Every recipe warns about the self-signed certificate, which blocks every
-    # client before it sends a request — but with the mechanism that applies to
-    # it, and none of them by switching verification off. BlueStick is
-    # self-hosted on a private address and will never hold a CA-signed cert, so
-    # "pin this one" is the only fix that exists (v2.285.0).
+    # No per-client certificate pinning (retired: the local root CA is
+    # installed once per machine), and never by switching verification off.
     for entry in body["mcp_clients"]:
-        if entry["id"] == "codex":
-            # Rust binary: reads SSL_CERT_DIR, not the Node variable, and not
-            # SSL_CERT_FILE either (both verified against codex 0.147.0).
-            assert "SSL_CERT_DIR" in entry["hint"]
-            assert "NODE_EXTRA_CA_CERTS does nothing" in entry["hint"]
-        else:
-            assert "NODE_EXTRA_CA_CERTS" in entry["hint"], entry["id"]
-        # Every recipe can still fetch the cert from a remote deployment.
-        assert "/references/tls-certificate" in entry["hint"], entry["id"]
+        assert "trust-cert.sh" not in entry["hint"], entry["id"]
         assert "NODE_TLS_REJECT_UNAUTHORIZED" not in entry["hint"], entry["id"]
 
     # Every entry is renderable: label, hint, payload all present.

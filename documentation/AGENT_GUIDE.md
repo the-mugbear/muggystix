@@ -473,6 +473,7 @@ GET /agent/scopes/{scope_id}/domains?offset=0&limit=500   (MCP: scope_list_domai
 GET /agent/scopes/{scope_id}/hosts.ndjson            # every in-scope host + open ports
 GET /agent/scopes/{scope_id}/live-hosts.txt          # one IP per line, an -iL target file
 GET /agent/scopes/{scope_id}/web-targets.txt         # http/https URLs, a -l / -f target file
+GET /agent/scopes/{scope_id}/named-targets.ndjson    # every in-scope NAME: current addresses + web evidence
 
 # 3. Run your tools from the working directory, staying inside the scope.
 #    Upload each output file as it finishes — do not hold results for one
@@ -496,7 +497,22 @@ Keep them out of your context window:
 curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/scopes/$SCOPE/hosts.ndjson"    -o scope-hosts.jsonl
 curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/scopes/$SCOPE/live-hosts.txt"   -o scope-hosts.txt
 curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/scopes/$SCOPE/web-targets.txt"  -o web-targets.txt
+curl -sS -H "X-API-Key: $KEY" "$URL/api/v1/agent/scopes/$SCOPE/named-targets.ndjson" -o named-targets.jsonl
 ```
+
+- **Name scope is its own file.** `hosts.ndjson`, `live-hosts.txt` and
+  `web-targets.txt` are subnet scope (IP-only). For a domain-scoped engagement
+  read `named-targets.ndjson`: one record per name a scope domain rule covers —
+  `{name, name_id, scope_rule: {domain, include_subdomains, match:
+  exact|subdomain}, addresses: [{ip_address, record_type, last_observed,
+  host_id, in_subnet_scope}], unresolved, reason, web: [{interface_id, url,
+  scheme, port, ip_address, at_current_address, source, status_code, title,
+  observed_at}]}`. `addresses` is what the name CURRENTLY resolves to (the
+  latest A/AAAA batch). Where `in_subnet_scope` is false, the name is
+  authorised on that address and the address is not: test by name (Host header
+  / SNI), never the whole address, and never the other names on it. Names only
+  a certificate SAN or a shared address connect to are not listed; a declared
+  domain nothing has observed is listed `unresolved` with its reason.
 
 ### Uploading
 
@@ -586,10 +602,11 @@ To get a scope's ranges, names or target files, read them by `scope_id` (from `G
 | GET | `/agent/scopes/{scope_id}/hosts.ndjson` | **Complete** in-scope per-host dataset, newline-delimited JSON. Streamed — redirect to a file (`-o scope-hosts.jsonl`) and query it with `jq`, never read it into context. curl only; auditor role or above |
 | GET | `/agent/scopes/{scope_id}/live-hosts.txt` | **Complete** in-scope IP list, one per line — an `-iL` target file. curl only; auditor role or above |
 | GET | `/agent/scopes/{scope_id}/web-targets.txt` | **Complete** http/https URL list, one per line — a `-l` / `-f` target file. curl only; auditor role or above |
+| GET | `/agent/scopes/{scope_id}/named-targets.ndjson` | **Complete** name-scope list, one JSON object per in-scope name: the matching scope rule, the addresses it currently resolves to (each flagged `in_subnet_scope`), web interfaces reached as the name, `unresolved` + `reason` when no address is known. A name never puts its address in scope. curl only; auditor role or above |
 | POST | `/agent/uploads` | Upload scanner output for ingestion (multipart; curl). No run needed; batches are keyed per agent session |
 | GET | `/agent/uploads/{job_id}` | Poll an upload's parse status. MCP `get_upload_job` |
 
-> **These reads are project-wide.** A key is bound to a project session: `/agent/hosts`, `/agent/dashboard` and `/agent/scans` return the whole project. The scope reads above bound to one scope's subnets. Being able to read a host does not put it in scope.
+> **These reads are project-wide.** A key is bound to a project session: `/agent/hosts`, `/agent/dashboard` and `/agent/scans` return the whole project. The scope reads above bound to one scope's subnets (`named-targets.ndjson`: to its domain rules). Being able to read a host does not put it in scope.
 
 <!-- agents:end -->
 
@@ -892,7 +909,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | `GET  /agent/assist/hosts.ndjson` | **The complete matching host set** — same filters + `q` DSL as `/agent/assist/hosts`, but uncapped and streamed one JSON object per line. Use this instead of paging when the project is large: redirect to a file and query it locally (`curl -sk -H "X-API-Key: $KEY" ".../agent/assist/hosts.ndjson" -o hosts.jsonl`, then `jq`/`grep`/`wc -l`). Report counts from the file, never a truncated page. Never read the stream into context whole. |
 | `GET  /agent/assist/scopes` | Scope CIDR lists **and declared domains** — **each capped at 100 per scope**. Each ScopeBrief carries `subnet_total` / `subnets_truncated` and `domain_total` / `domains_truncated`; when a `*_truncated` flag is true the list is only a sample, so tell the operator it's partial — full enumeration needs a recon session. `domains[]` entries are `{domain, include_subdomains}` (exact name vs the name and everything under it); `names_in_scope_total` is the deduplicated count of inventory names they cover. **Name scope is independent of subnet scope**: an in-scope name does not put the address it resolves to in scope, and an in-scope subnet does not put names in scope. |
 | `GET  /agent/assist/names` | The named-asset inventory (FQDNs), paged (`limit` default 100, max 1000, `offset`). Each row: `in_scope` (a declared domain covers it), `current_ips` (derived from the latest A/AAAA observations — never stored; empty = unresolved), `current_ip_total`, `sources` (observation kinds: A, AAAA, IMPORT, HTTP, CERT, …). Filters: `q`, `in_scope`, `resolved`, `host_id` (names currently bound to that host's address), `kind`. **How to act:** `in_scope=true&resolved=false` is the queue — names the operator approved that no upload has ever resolved (chase with dnsx/amass output, or tell the operator to drop them from scope). A name whose address is shared with other names (`current_ip_total` on the host's other names, a load balancer / vhost) must be tested **by name**, not by IP — the bare address reaches a different site. |
-| `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500, NO offset**; you cannot page past the most-recent 500. Qualify "all scans" answers accordingly. `tool=` narrows to one tool's scans (the Scans page's chips): the last two nmap scans are `tool=nmap&limit=2`. Each row carries `ingestion_job_id` — the import that produced it, the `job_id` `/assist/uninterpreted-lines` takes (a scan id is not a job id) — and `time_source`: `tool_run` / `tool_records` mean the start and end times are instants, returned in UTC with an offset; `tool_clock` means the scanner's own wall clock, zone unknown, returned WITHOUT an offset — never correlate it with a UTC event as if it were UTC. |
+| `GET  /agent/assist/scans` | Scan inventory, newest-first — **default 100, max 500**; `offset=` pages further back (a page shorter than `limit` is the last one). `tool=` narrows to one tool's scans (the Scans page's chips): the last two nmap scans are `tool=nmap&limit=2`. Each row carries `ingestion_job_id` — the import that produced it, the `job_id` `/assist/uninterpreted-lines` takes (a scan id is not a job id) — and `time_source`: `tool_run` / `tool_records` mean the start and end times are instants, returned in UTC with an offset; `tool_clock` means the scanner's own wall clock, zone unknown, returned WITHOUT an offset — never correlate it with a UTC event as if it were UTC. |
 | `GET  /agent/assist/session` | Your own session metadata (purpose, started_at, the operator `assigned:me` refers to). |
 | `GET  /agent/assist/vocabulary` | The values this project uses: tags, labels, sites, scope names, usernames (for `assigned:`), finding statuses and severities. |
 | `GET  /agent/assist/findings` | **Triaged findings** (not raw scanner rows): filters `status`, `severity`, `source`, `host_id`, `unowned=true`, `owner` (username or `me`), `search`; default 50, max 500. The report's findings come from here. |

@@ -17,7 +17,6 @@ import { CodeBlock, CopyButton } from './ui/code-block';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from './ui/tabs';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { copyToClipboard } from '../utils/clipboard';
-import McpCertTrustNotice from './McpCertTrustNotice';
 
 export interface McpClientSetup {
   id: string;
@@ -39,15 +38,10 @@ interface Props {
   clients: McpClientSetup[];
   /** One line above the tabs, describing what this session's tools are for. */
   blurb?: string;
-  /** Surface the certificate-trust prerequisite above the recipes. On by
-   *  default in the start dialogs (where the first connection happens and the
-   *  cert wall is invisible until it refuses); off on the reference page,
-   *  which already carries the full cert write-up. */
-  withCertTrust?: boolean;
 }
 
-/** The server's hint is several separate notes — save step, certificate,
- *  remote host, Windows, sandbox — joined by blank lines, with commands in
+/** The server's hint is several separate notes — save step, key handling,
+ *  sandbox — joined by blank lines, with commands in
  *  backticks. Rendered as one <p> it was a 12-line wall with the commands lost
  *  in the prose (and the backticks shown literally). */
 const inlineCode = (text: string) =>
@@ -213,7 +207,7 @@ const CompactVerify: React.FC<{ client: McpClientSetup }> = ({ client }) => {
   );
 };
 
-const McpConnectPanel: React.FC<Props> =({ clients, blurb, withCertTrust = false }) => {
+const McpConnectPanel: React.FC<Props> =({ clients, blurb }) => {
   const [selected, setSelected] = useState<string | null>(null);
 
   if (!clients?.length) return null;
@@ -221,7 +215,6 @@ const McpConnectPanel: React.FC<Props> =({ clients, blurb, withCertTrust = false
   return (
     <div>
       <p className="mb-xxs text-metadata font-semibold">Connect via MCP</p>
-      {withCertTrust ? <McpCertTrustNotice /> : null}
       {blurb ? (
         <p className="mb-xs text-caption text-muted-foreground">{blurb}</p>
       ) : null}
