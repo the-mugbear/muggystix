@@ -46,6 +46,8 @@ const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
 
 const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'superseded'];
 
+type Scope = 'mine' | 'all';
+
 const Proposals: React.FC = () => {
   const toast = useToast();
   const { hasPermission } = useAuth();
@@ -56,6 +58,18 @@ const Proposals: React.FC = () => {
   const kind = (params.get('kind') as ProposalKind | null) ?? undefined;
   const sessionParam = params.get('agent_session_id');
   const sessionId = sessionParam ? Number(sessionParam) : undefined;
+  // 5.318.0 — whose findings: `mine` (authored or owned — what you were
+  // notified about) or `all`.  Unset, a project admin sees all and everyone
+  // else their own; the server says which (the summary's flag).
+  const scopeParam = params.get('scope');
+  const [defaultScope, setDefaultScope] = useState<Scope | null>(null);
+  useEffect(() => {
+    if (scopeParam === 'mine' || scopeParam === 'all') return;
+    getProposalSummary()
+      .then((s) => setDefaultScope(s.viewer_is_project_admin ? 'all' : 'mine'))
+      .catch(() => setDefaultScope('mine'));
+  }, [scopeParam]);
+  const scope: Scope | null = scopeParam === 'mine' || scopeParam === 'all' ? scopeParam : defaultScope;
 
   const [items, setItems] = useState<Proposal[] | null>(null);
   const [total, setTotal] = useState(0);
@@ -70,10 +84,11 @@ const Proposals: React.FC = () => {
   const loaded = useRef(PAGE);
 
   const query = useCallback((offset: number, limit: number = PAGE) => listProposals({
-    status, kind, agent_session_id: sessionId, limit, offset,
-  }), [status, kind, sessionId]);
+    status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined, limit, offset,
+  }), [status, kind, sessionId, scope]);
 
   const load = useCallback(async () => {
+    if (scope === null) return;  // the default is still being read
     try {
       const [res, sum] = await Promise.all([
         query(0, Math.min(MAX_RELOAD, Math.max(PAGE, loaded.current))), getProposalSummary(),
@@ -85,7 +100,7 @@ const Proposals: React.FC = () => {
     } catch (err) {
       setError(formatApiError(err, 'Could not load the proposals.'));
     }
-  }, [query]);
+  }, [query, scope]);
 
   // A new filter starts from the first page again.
   useEffect(() => { loaded.current = PAGE; setItems(null); void load(); }, [load]);
@@ -153,7 +168,8 @@ const Proposals: React.FC = () => {
     }
   };
 
-  const pending = summary?.pending ?? 0;
+  const pending = (scope === 'mine' ? summary?.pending_mine : summary?.pending) ?? 0;
+  const byKind = (scope === 'mine' ? summary?.by_kind_mine : summary?.by_kind) ?? {};
   const pendingShown = (items ?? []).filter((p) => p.status === 'pending').length;
 
   return (
@@ -165,9 +181,9 @@ const Proposals: React.FC = () => {
           {pending === 0
             ? 'Nothing waiting. When an agent (or an AI draft) proposes a change to what the team has concluded, it lands here for a person to accept or reject.'
             : <>
-                <strong className="text-foreground">{pending}</strong> proposed change{pending === 1 ? '' : 's'} to what
-                the team has concluded {pending === 1 ? 'is' : 'are'} waiting. Nothing has changed yet: accepting one applies
-                it as you.
+                <strong className="text-foreground">{pending}</strong> proposed change{pending === 1 ? '' : 's'} to
+                {scope === 'mine' ? ' your findings' : ' what the team has concluded'} {pending === 1 ? 'is' : 'are'} waiting.
+                Nothing has changed yet: accepting one applies it as you.
               </>}
         </p>
       </div>
@@ -175,8 +191,8 @@ const Proposals: React.FC = () => {
       {summary && (
         <div className="grid grid-cols-2 gap-y-md lg:grid-cols-5 lg:divide-x lg:divide-border">
           {KINDS.map((k) => (
-            <PostureMeasure key={k.kind} label={k.label} value={summary.by_kind[k.kind] ?? 0} info={k.info}
-              to={`/proposals?kind=${k.kind}`} toLabel="Show them">
+            <PostureMeasure key={k.kind} label={k.label} value={byKind[k.kind] ?? 0} info={k.info}
+              to={`/proposals?kind=${k.kind}${scope ? `&scope=${scope}` : ''}`} toLabel="Show them">
               pending
             </PostureMeasure>
           ))}
@@ -196,6 +212,14 @@ const Proposals: React.FC = () => {
         ) : undefined}
       >
         <div className="mb-sm flex flex-wrap items-center gap-sm">
+          <Label htmlFor="proposal-scope" className="shrink-0">Findings</Label>
+          <Select value={scope ?? 'mine'} onValueChange={(v) => setParam('scope', v)}>
+            <SelectTrigger id="proposal-scope" className="h-8 w-44"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="mine">Mine (authored or owned)</SelectItem>
+              <SelectItem value="all">Everyone&apos;s</SelectItem>
+            </SelectContent>
+          </Select>
           <Label htmlFor="proposal-status" className="shrink-0">Status</Label>
           <Select value={status} onValueChange={(v) => setParam('status', v === 'pending' ? undefined : v)}>
             <SelectTrigger id="proposal-status" className="h-8 w-40"><SelectValue /></SelectTrigger>

@@ -12,7 +12,10 @@ def _host_with_open_port(db, project, ip):
     host = models.Host(project_id=project.id, ip_address=ip, state="up")
     db.add(host)
     db.flush()
-    db.add(models.Port(host_id=host.id, port_number=80, protocol="tcp", state="open"))
+    # service_name as nmap -sV reports it: since v2.440.0 an agent's
+    # services= matches the identified service (the Hosts page's rule), not
+    # a standard port number.
+    db.add(models.Port(host_id=host.id, port_number=80, protocol="tcp", state="open", service_name="http"))
     return host
 
 

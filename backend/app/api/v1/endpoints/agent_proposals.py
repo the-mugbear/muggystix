@@ -126,7 +126,9 @@ class FindingTextProposal(_ProposalBase):
     fields: Dict[str, str] = Field(
         ..., description=(
             "Report fields to propose: description, impact, recommendation, references, "
-            "steps_to_reproduce, cvss_vector. Markdown. One proposal per field."
+            "steps_to_reproduce, cvss_vector. Markdown. One proposal per field. Each value is the "
+            "section's COMPLETE new text as it will read in the client report — accepting replaces "
+            "the section with it — never a critique or suggestions (those go in rationale)."
         ),
     )
 

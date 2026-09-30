@@ -174,6 +174,11 @@ describe('FindingReportTextCard — 5.317.0 work on this with your agent', () =>
     expect(task).toMatch(/finding #42/);
     expect(task).toMatch(/propose_finding_text/);
     expect(task).toMatch(/Do not change the finding directly/);
+    // 5.318.0 — the rewrite itself, not a critique: the text replaces the section.
+    expect(task).toMatch(/complete new section/);
+    expect(task).toMatch(/replaces the section/);
+    expect(task).toMatch(/rationale/);
+    expect(task).not.toMatch(/propose improvements/);
     expect(task).toMatch(/Still empty: impact, recommendation\./);
     expect(agentInstruction.reviewFinding(42)).not.toMatch(/Still empty/);
   });

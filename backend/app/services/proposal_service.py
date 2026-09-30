@@ -498,8 +498,11 @@ def reject_proposal(db: Session, proposal: AgentProposal, user: User, *, note: O
 def list_proposals(
     db: Session, project_id: int, *, status: Optional[str] = None, kind: Optional[str] = None,
     finding_id: Optional[int] = None, host_id: Optional[int] = None,
-    agent_session_id: Optional[int] = None, limit: int = 100, offset: int = 0,
+    agent_session_id: Optional[int] = None, mine_user_id: Optional[int] = None,
+    limit: int = 100, offset: int = 0,
 ) -> Tuple[List[AgentProposal], int]:
+    """``mine_user_id``: only proposals about findings that person authored
+    or owns — the ones they were notified about (:func:`findings_of`)."""
     q = db.query(AgentProposal).filter(AgentProposal.project_id == project_id)
     if status:
         q = q.filter(AgentProposal.status == status)
@@ -507,6 +510,8 @@ def list_proposals(
         q = q.filter(AgentProposal.kind == kind)
     if finding_id is not None:
         q = q.filter(_about_findings([finding_id]))
+    if mine_user_id is not None:
+        q = q.filter(_about_findings(findings_of(project_id, mine_user_id)))
     if host_id is not None:
         # A host's proposals: its observations, and endpoints on it.
         vuln_ids = db.query(Vulnerability.id).filter(Vulnerability.host_id == host_id)
@@ -533,9 +538,19 @@ def list_proposals(
 _OBSERVATION_KINDS = (ProposalKind.OBSERVATION_PROMOTE.value, ProposalKind.OBSERVATION_DISMISS.value)
 
 
-def _about_findings(finding_ids: List[int]):
-    """The proposals ABOUT these findings — the one definition behind a
-    finding's Proposals section and "needs review" when issuing a report.
+def findings_of(project_id: int, user_id: int):
+    """The findings a person is told about (decision 6): those they authored
+    or own.  A subquery, so it composes with :func:`_about_findings`."""
+    return select(Finding.id).where(
+        Finding.project_id == project_id,
+        (Finding.created_by_id == user_id) | (Finding.owner_id == user_id),
+    )
+
+
+def _about_findings(finding_ids):
+    """The proposals ABOUT these findings (a list of ids, or a subquery of
+    them) — the one definition behind a finding's Proposals section, "needs
+    review" when issuing a report, and a person's own proposals.
     Those that name the finding, plus promote / dismiss proposals on a scanner
     observation that evidences it: dismissing one drops an endpoint from the
     report.  Derived through ``finding_vulnerabilities``, never stamped on
@@ -568,14 +583,15 @@ def pending_per_finding(db: Session, finding_ids: List[int]) -> Dict[int, int]:
     return {fid: n for fid, n in rows}
 
 
-def pending_counts(db: Session, project_id: int) -> Dict[str, int]:
-    rows = (
-        db.query(AgentProposal.kind, func.count(AgentProposal.id))
-        .filter(AgentProposal.project_id == project_id, AgentProposal.status == ProposalStatus.PENDING.value)
-        .group_by(AgentProposal.kind)
-        .all()
+def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] = None) -> Dict[str, int]:
+    """Pending proposals per kind; with ``mine_user_id``, only those about
+    that person's findings (the same rule as the list's ``mine``)."""
+    q = db.query(AgentProposal.kind, func.count(AgentProposal.id)).filter(
+        AgentProposal.project_id == project_id, AgentProposal.status == ProposalStatus.PENDING.value,
     )
-    return {kind: n for kind, n in rows}
+    if mine_user_id is not None:
+        q = q.filter(_about_findings(findings_of(project_id, mine_user_id)))
+    return {kind: n for kind, n in q.group_by(AgentProposal.kind).all()}
 
 
 def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Finding]] = None) -> dict:

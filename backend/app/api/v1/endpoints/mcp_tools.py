@@ -418,8 +418,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "a critical beside an exploitable low. Each row carries "
             "exploitable_count and critical_exploitable_count. sort_by="
             "critical_vulns / exploitable_vulns with sort_order=desc lists worst "
-            "first (default: by address). Paginate with limit/offset — but for a "
-            "COUNT use assist_count_hosts, not the length of a page. Returns host briefs."
+            "first (default: by address). Returns {items, total, has_more, limit, "
+            "offset}: `total` is every matching host — quote it, never the length "
+            "of `items` (a page); raise offset by limit while has_more. For a "
+            "count alone, assist_count_hosts."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts",
@@ -437,8 +439,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "q": {"type": "string", "description": "Boolean query DSL (see tool description)."},
                 "search": {"type": "string", "description": "Substring match on IP, hostname, or OS."},
                 "state": {"type": "string", "description": "Host state filter (e.g. up)."},
-                "ports": {"type": "string", "description": "Comma-separated port numbers."},
-                "services": {"type": "string", "description": "Comma-separated service names."},
+                "ports": {"type": "string", "description": (
+                    "Comma-separated port numbers, any of them OPEN. No ranges or names (422)."
+                )},
+                "services": {"type": "string", "description": (
+                    "Comma-separated service names, matched on the service the scanner identified "
+                    "on an OPEN port, on any port — the Hosts page's service: (a masscan-only open "
+                    "port has no name and does not match; use ports= for standard ports)."
+                )},
                 "subnets": {"type": "string", "description": "Comma-separated CIDR blocks."},
                 "has_critical_vulns": {"type": "boolean"},
                 "has_high_vulns": {"type": "boolean"},
@@ -1342,9 +1350,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "propose_finding_text": {
         "description": (
             "Propose report text for a finding — a person accepts (then may edit) or "
-            "rejects it; nothing changes until then. One proposal per field; several "
-            "may stand side by side (e.g. from different models). Fields: description, "
-            "impact, recommendation, references, steps_to_reproduce (Markdown), cvss_vector."
+            "rejects it; nothing changes until then. EACH FIELD'S VALUE IS THE COMPLETE "
+            "REPLACEMENT for that section, written as it will read in the client report: "
+            "on accept it overwrites the section word for word. Never a critique, a list "
+            "of suggestions, a diff or notes to the author — put why you changed it in "
+            "`rationale`. Propose only the sections you would change. One proposal per "
+            "field; several may stand side by side (e.g. from different models). Fields: "
+            "description, impact, recommendation, references, steps_to_reproduce "
+            "(Markdown), cvss_vector."
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding-text",
@@ -1358,9 +1371,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "fields": {
                     "type": "object",
                     "additionalProperties": {"type": "string"},
-                    "description": "Field name → proposed text.",
+                    "description": (
+                        "Field name → the section's complete new text, report-ready (it replaces "
+                        "the section on accept) — not comments about the current text."
+                    ),
                 },
-                "rationale": {"type": "string", "maxLength": 10000, "description": "Why — what the reviewer should know."},
+                "rationale": {"type": "string", "maxLength": 10000, "description": (
+                    "Why — what you changed and why, what the reviewer should check. Your critique goes here."
+                )},
                 "evidence_ids": {"type": "array", "items": {"type": "integer"}},
                 **AGENT_MODEL_PROP,
             },

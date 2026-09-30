@@ -53,6 +53,7 @@ from app.api.v1.endpoints.agent_schemas import (
     AgentToolSuggestionRequest, AgentToolSuggestionResponse,
 )
 from app.api.v1.endpoints.agent_common import (
+    PORTS_PARAM_HELP, SERVICES_PARAM_HELP,
     _apply_agent_host_filters, _batch_host_enrichment, load_agent_session,
 )
 
@@ -417,8 +418,8 @@ def get_dashboard(
 def list_hosts(
     request: Request,
     state: Optional[str] = Query(None),
-    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
-    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
+    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),

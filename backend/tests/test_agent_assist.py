@@ -102,7 +102,7 @@ def test_assist_key_can_read_context_and_hosts(client, test_project, db_session)
     # Hosts endpoint — empty for a project with no hosts, but must not 401/403.
     hosts = client.get("/api/v1/agent/assist/hosts", headers=headers)
     assert hosts.status_code == 200, hosts.text
-    assert isinstance(hosts.json(), list)
+    assert hosts.json() == {"items": [], "total": 0, "has_more": False, "limit": 500, "offset": 0}
 
 
 def test_one_session_key_reaches_plan_and_scope_reads(client, db_session, test_project, test_plan):
@@ -242,7 +242,7 @@ def test_assist_host_dto_carries_operator_follow_field(client, test_project, db_
     headers = _auth_headers(body["api_key"])
     listing = client.get("/api/v1/agent/assist/hosts", headers=headers)
     assert listing.status_code == 200, listing.text
-    rows = listing.json()
+    rows = listing.json()["items"]
     assert rows and "follow" in rows[0]  # present (null when the operator doesn't follow)
     detail = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers)
     assert detail.status_code == 200
@@ -319,14 +319,14 @@ def test_assist_hosts_q_dsl_follow_resolves_to_operator(
         "/api/v1/agent/assist/hosts?q=follow:in_review", headers=headers
     )
     assert in_review.status_code == 200, in_review.text
-    assert {h["ip_address"] for h in in_review.json()} == {"10.50.0.1"}
+    assert {h["ip_address"] for h in in_review.json()["items"]} == {"10.50.0.1"}
 
     # The operator has nothing marked reviewed → empty, not an error.
     reviewed = client.get(
         "/api/v1/agent/assist/hosts?q=follow:reviewed", headers=headers
     )
     assert reviewed.status_code == 200, reviewed.text
-    assert reviewed.json() == []
+    assert reviewed.json()["items"] == [] and reviewed.json()["total"] == 0
 
 
 def test_assist_hosts_q_dsl_malformed_is_400(client, test_project):
@@ -550,8 +550,8 @@ def test_counting_hosts_nobody_owns(client, db_session, test_project, test_user)
         params={"q": "has:critical AND assigned:none"},
         headers=headers,
     ).json()
-    assert len(listed) == body["count"]
-    assert {h["ip_address"] for h in listed} == {"10.9.0.1", "10.9.0.2"}
+    assert len(listed["items"]) == listed["total"] == body["count"]
+    assert {h["ip_address"] for h in listed["items"]} == {"10.9.0.1", "10.9.0.2"}
 
 
 def test_assigned_none_is_the_complement_of_assigned_any(

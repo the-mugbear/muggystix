@@ -284,9 +284,12 @@ const Activity: React.FC = () => {
   const openMention = useCallback((n: NotificationItem) => {
     void dismissMention(n.id);
     if (n.type === 'proposal') {
-      // v5.316.0 — one finding opens it; a review run over several opens its proposals.
+      // v5.316.0 — one finding opens it; a review run over several opens its
+      // proposals.  5.318.0 — only those on YOUR findings (scope=mine): the
+      // run's whole list put every finding in front of every author.
       navigate(n.finding_id ? `/findings/${n.finding_id}#proposals`
-        : n.source_type === 'agent_session' && n.source_id ? `/proposals?agent_session_id=${n.source_id}` : '/proposals');
+        : n.source_type === 'agent_session' && n.source_id
+          ? `/proposals?agent_session_id=${n.source_id}&scope=mine` : '/proposals?scope=mine');
     } else if (n.source_type === 'scan' && n.source_id) {
       navigate(`/hosts?scan_ids=${n.source_id}`);
     } else if (n.source_type === 'report_job' && n.source_id) {

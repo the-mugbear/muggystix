@@ -45,6 +45,36 @@ beforeEach(() => {
   rejectProposal.mockReset();
 });
 
+describe('Proposals page — whose findings (5.318.0)', () => {
+  const summary = (admin: boolean) => ({
+    pending: 120, by_kind: { endpoint_status: 120 }, pending_mine: 3, by_kind_mine: { endpoint_status: 3 },
+    viewer_is_project_admin: admin,
+  });
+
+  it('shows an analyst the proposals on their own findings by default', async () => {
+    getProposalSummary.mockResolvedValue(summary(false));
+    listProposals.mockResolvedValue({ total: 3, items: page(1, 3), has_more: false });
+    render(<MemoryRouter><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ mine: true }));
+    expect(await screen.findByText(/to\s+your findings/)).toBeInTheDocument();
+  });
+
+  it('shows a project admin everyone’s, and the notification’s scope=mine wins', async () => {
+    getProposalSummary.mockResolvedValue(summary(true));
+    listProposals.mockResolvedValue({ total: 120, items: page(1, 50), has_more: true });
+    const { unmount } = render(<MemoryRouter><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: undefined }));
+    unmount();
+
+    listProposals.mockClear();
+    render(<MemoryRouter initialEntries={['/proposals?agent_session_id=7&scope=mine']}><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals).toHaveBeenLastCalledWith(expect.objectContaining({ mine: true, agent_session_id: 7 }));
+  });
+});
+
 describe('Proposals page', () => {
   it('re-reads every loaded row after a decision, not just the first page', async () => {
     listProposals.mockImplementation(async ({ offset, limit }: { offset: number; limit: number }) => ({

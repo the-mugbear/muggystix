@@ -18,11 +18,19 @@ const PendingProposalsButton: React.FC = () => {
   const navigate = useNavigate();
   const { currentProject } = useProject();
   const [pending, setPending] = useState(0);
+  // 5.318.0 — your own (proposals about findings you authored or own); a
+  // project admin, who may accept any report text, sees the project's.  An
+  // admin's review of every finding used to put the whole run in every
+  // member's top bar.
+  const [scope, setScope] = useState<'mine' | 'all'>('mine');
 
   const load = useCallback(async () => {
     if (!currentProject) { setPending(0); return; }
     try {
-      setPending((await getProposalSummary()).pending);
+      const s = await getProposalSummary();
+      const all = s.viewer_is_project_admin;
+      setScope(all ? 'all' : 'mine');
+      setPending(all ? s.pending : s.pending_mine);
     } catch {
       // Keep the last count; the Proposals page reports its own failures.
     }
@@ -41,12 +49,15 @@ const PendingProposalsButton: React.FC = () => {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <Button variant="outline" size="sm" onClick={() => navigate('/proposals')} aria-label={`${pending} proposals to review`}>
+        <Button variant="outline" size="sm" onClick={() => navigate(`/proposals?scope=${scope}`)} aria-label={`${pending} proposals to review`}>
           <ListChecks className="size-4" aria-hidden />
           <span className="tabular-nums">{pending > 99 ? '99+' : pending}</span>
         </Button>
       </TooltipTrigger>
-      <TooltipContent>{pending} proposed change{pending === 1 ? '' : 's'} waiting for a decision</TooltipContent>
+      <TooltipContent>
+        {pending} proposed change{pending === 1 ? '' : 's'}
+        {scope === 'mine' ? ' to your findings' : ' in this project'} waiting for a decision
+      </TooltipContent>
     </Tooltip>
   );
 };

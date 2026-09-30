@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.5.0",
+        "app_version": "2.440.0",
+        "summary": (
+            "diag 4: an agent's count of hosts exposing VNC disagreed with the Hosts page. "
+            "GET /agent/assist/hosts now returns {items, total, has_more, limit, offset} — "
+            "quote total, never a page's length. services= is the Hosts page's filter (the "
+            "service identified on an open port, any port number), no longer 'the name's "
+            "standard ports'; ports= refuses a value that is not a port number (422) instead "
+            "of ignoring it. The guide says ports= and services= answer different questions. "
+            "curl examples drop -k: the deployment's certificate comes from the operator's "
+            "root CA, and a certificate error is reported to the operator, not bypassed. "
+            "Report-text proposals are rewrites: each field's value is the section's complete "
+            "new text as the client report will print it (accepting replaces the section), "
+            "never a critique or suggestions, which go in rationale; propose only sections you "
+            "would change."
+        ),
+    },
+    {
         "version": "3.4.2",
         "app_version": "2.439.0",
         "summary": (

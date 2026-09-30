@@ -45,7 +45,7 @@ def test_host_detail_counts_exploits_as_the_list_does(client, db_session, test_p
 
     rows = client.get("/api/v1/agent/assist/hosts", headers=hdr,
                       params={"q": "has:critical_exploit"}).json()
-    rows = rows["hosts"] if isinstance(rows, dict) else rows
+    rows = rows["items"]  # {items, total, has_more} since v2.440.0
     row = next(r for r in rows if r["id"] == host.id)
     detail = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=hdr).json()
 

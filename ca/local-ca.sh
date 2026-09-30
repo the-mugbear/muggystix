@@ -362,7 +362,7 @@ env_get() {
 # script.  The script's own location used to be the only candidate, so a copy
 # of ca/ outside the deployment, or a checkout elsewhere, always failed.
 deployment_dir() {
-    local candidates=() c missing report=""
+    local candidates=() c missing report="" seen=" "
     if [[ -n "${BLUESTICK_DIR:-}" ]]; then
         candidates=("$BLUESTICK_DIR")
     else
@@ -371,10 +371,14 @@ deployment_dir() {
     for c in "${candidates[@]}"; do
         c="$(cd "$c" 2>/dev/null && pwd)" || { report+="
    $c: does not exist"; continue; }
+        # Run from the deployment's own ca/, both candidates are one folder.
+        [[ "$seen" == *" $c "* ]] && continue
+        seen+="$c "
         missing=()
+        # ssl/certs is NOT required: a fresh copy has none until a certificate
+        # is installed (install creates it; deploy.sh keeps the pair it finds).
         [[ -f "$c/docker-compose.yml" ]] || missing+=("docker-compose.yml")
         [[ -f "$c/.env" ]] || missing+=(".env")
-        [[ -d "$c/ssl/certs" ]] || missing+=("ssl/certs/")
         if (( ${#missing[@]} == 0 )); then
             echo "$c"
             return 0
@@ -382,7 +386,7 @@ deployment_dir() {
         report+="
    $c: no ${missing[*]}"
     done
-    fail "No BlueStick deployment folder found (it needs docker-compose.yml, .env and ssl/certs/):$report
+    fail "No BlueStick deployment folder found (it needs docker-compose.yml and .env):$report
    cd into the deployment folder first, or set BLUESTICK_DIR=/path/to/deployment."
 }
 
@@ -397,7 +401,14 @@ cmd_install() {
     step "Install on this BlueStick host ($root_dir)"
     local crt="$src/networkmapper.crt" key="$src/networkmapper.key" ca="$src/rootCA.crt"
     local f
-    for f in "$crt" "$key" "$ca"; do [[ -f "$f" ]] || fail "Missing $f"; done
+    for f in "$crt" "$key" "$ca"; do
+        [[ -f "$f" ]] || fail "Missing $f"
+        # server writes the key 600 (umask 077): generated with sudo and
+        # installed without it, the key could not be read and the pair check
+        # below said it "does not belong" — say what is actually wrong.
+        [[ -r "$f" ]] || fail "$f is not readable by $(id -un) (owner: $(stat -c %U "$f" 2>/dev/null || echo '?')).
+   Run install as the same user that ran 'server', or: sudo chown $(id -un) '$src'/*"
+    done
     [[ -e "$src/rootCA.key" ]] && fail "$src contains rootCA.key — the ROOT key must never be copied to the server.
    Delete it from this host (shred -u '$src/rootCA.key') and copy only out/server/."
 
@@ -420,17 +431,44 @@ cmd_install() {
    Add it to SERVER_IPS in ca.conf and re-run ./ca/local-ca.sh server."
     ok "The certificate names HOST_IP $host_ip"
 
+    # Where it will write, checked before anything changes (a dry run that
+    # passed used to fail on the real run with a bare "Permission denied").
+    local certs="$root_dir/ssl/certs" name
+    for name in networkmapper.crt networkmapper.key; do
+        # Containers started before any certificate existed: Docker created
+        # the bind-mount sources as empty, root-owned DIRECTORIES.
+        [[ -d "$certs/$name" ]] && fail "$certs/$name is a directory, not a file — Docker created it because the
+   containers were started before a certificate existed.  Stop BlueStick, remove it, and re-run:
+     (cd '$root_dir' && docker compose down) && sudo rmdir '$certs/networkmapper.crt' '$certs/networkmapper.key'
+     sudo chown -R $(id -un): '$root_dir/ssl'"
+    done
+    local writable="$certs"
+    [[ -d "$writable" ]] || writable="$root_dir/ssl"
+    [[ -d "$writable" ]] || writable="$root_dir"
+    [[ -w "$writable" ]] || fail "$writable is not writable by $(id -un) (owner: $(stat -c %U "$writable" 2>/dev/null || echo '?')).
+   Run install with sudo, or: sudo chown -R $(id -un): '$root_dir/ssl'"
+    local fresh=0; [[ -f "$certs/networkmapper.crt" ]] || fresh=1
+    if (( fresh )); then
+        ok "No certificate installed yet — $certs will be created (a fresh copy)"
+    else
+        ok "$certs is writable; the current certificate will be backed up"
+    fi
+
     if (( dry )); then
         ok "Dry run: everything checks out.  Nothing was changed."
         info "Run again without --dry-run to install and restart the web and API containers."
         return 0
     fi
 
-    local backup; backup="$root_dir/ssl/certs.backup-$(date -u +%Y%m%dT%H%M%SZ)"
-    mkdir -p "$backup"
-    cp -p "$root_dir"/ssl/certs/networkmapper.* "$backup"/ 2>/dev/null || true
-    [[ -f "$root_dir/ssl/certs/openssl.conf" ]] && cp -p "$root_dir/ssl/certs/openssl.conf" "$backup"/
-    ok "Previous certificate backed up to $backup"
+    mkdir -p "$certs"
+    local backup=""
+    if (( ! fresh )); then
+        backup="$root_dir/ssl/certs.backup-$(date -u +%Y%m%dT%H%M%SZ)"
+        mkdir -p "$backup"
+        cp -p "$certs"/networkmapper.* "$backup"/ 2>/dev/null || true
+        [[ -f "$certs/openssl.conf" ]] && cp -p "$certs/openssl.conf" "$backup"/
+        ok "Previous certificate backed up to $backup"
+    fi
 
     install -m 644 "$crt" "$root_dir/ssl/certs/networkmapper.crt"
     install -m 600 "$key" "$root_dir/ssl/certs/networkmapper.key"
@@ -439,6 +477,16 @@ cmd_install() {
     ok "Installed into $root_dir/ssl/certs"
 
     local dc="docker compose"; docker compose version >/dev/null 2>&1 || dc="docker-compose"
+    if [[ -z "$(cd "$root_dir" && $dc ps -q frontend 2>/dev/null)" ]]; then
+        # A fresh copy: nothing to restart.  deploy.sh keeps a certificate
+        # pair it finds (it only generates a self-signed one when none exists).
+        echo ""
+        info "BlueStick is not running here yet.  Start it: (cd '$root_dir' && ./scripts/deploy.sh), option 1."
+        info "It keeps this certificate.  Then check it from here: ./ca/local-ca.sh verify https://$host_ip '$ca'"
+        info "Now: shred -u '$key'   (the copy you brought over; the installed one is in ssl/certs)"
+        info "Analyst machines: ./ca/local-ca.sh trust-help rootCA.crt"
+        return 0
+    fi
     info "Restarting the web (nginx) and API containers to load it…"
     if ! (cd "$root_dir" && $dc restart frontend backend >/dev/null); then
         warn "The restart failed — the certificate is installed but not loaded yet."
@@ -460,7 +508,7 @@ cmd_install() {
     fi
     echo ""
     info "Now: shred -u '$key'   (the copy you brought over; the installed one is in ssl/certs)"
-    info "Rollback: cp -p '$backup'/* '$root_dir/ssl/certs/' && (cd '$root_dir' && $dc restart frontend backend)"
+    [[ -n "$backup" ]] && info "Rollback: cp -p '$backup'/* '$root_dir/ssl/certs/' && (cd '$root_dir' && $dc restart frontend backend)"
     info "To change address later: reissue naming both addresses first; deploy.sh option 3 keeps a"
     info "CA-issued certificate only when it names the new address (ca/README.md, 'New address')."
     info "Analyst machines: ./ca/local-ca.sh trust-help rootCA.crt"
@@ -496,7 +544,8 @@ cmd_trust_help() {
 Compare the fingerprint above with the one the administrator gave you before
 trusting it.  Then, once per analyst machine:
 
-  1. The system trust store (curl, Go and most Rust tools, browsers)
+  1. The system trust store (curl, Go and most Rust tools; Chrome/Edge on
+     Windows and macOS — NOT Chrome on Linux or Firefox, see 1b)
      Linux (Debian/Ubuntu/Kali):
        sudo cp '$path' /usr/local/share/ca-certificates/bluestick-root.crt
        sudo update-ca-certificates
@@ -507,8 +556,21 @@ trusting it.  Then, once per analyst machine:
        sudo security add-trusted-cert -d -r trustRoot -k /Library/Keychains/System.keychain '$path'
      Windows (elevated PowerShell):
        certutil -addstore -f Root rootCA.crt
-     Firefox keeps its own store: Settings > Privacy & Security > Certificates >
-     View Certificates > Authorities > Import.
+       (It must be in "Trusted Root Certification Authorities".  Double-clicking
+       the file and accepting the defaults often files it under Intermediate or
+       Personal, where it is not trusted.)
+
+  1b. Browsers with their own store — then QUIT the browser fully and reopen:
+     Chrome / Chromium on Linux (NSS; needs libnss3-tools):
+       certutil -d sql:\$HOME/.pki/nssdb -A -t "C,," -n "BlueStick root" -i '$path'
+     Firefox (any OS): Settings > Privacy & Security > Certificates >
+       View Certificates > Authorities > Import, and tick "Trust this CA to
+       identify websites".
+     Still warned?  NET::ERR_CERT_AUTHORITY_INVALID = the root is not in the
+     store that browser reads; ERR_CERT_COMMON_NAME_INVALID = browse to the
+     exact address in the certificate (https://<HOST_IP>).  The certificate's
+     "Issued by" should name your root; if it names the server itself, the
+     server is still serving a self-signed certificate.
 
   2. Agents that ignore the system store — add to your shell profile:
        export NODE_EXTRA_CA_CERTS='$path'                        # Claude Code, VS Code (Node)

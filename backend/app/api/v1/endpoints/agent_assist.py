@@ -46,6 +46,7 @@ from app.api.v1.endpoints.agent_schemas import (
     AssistNamesResponse,
     ScopeDomainBrief,
     HostBrief,
+    HostBriefPage,
     HostDetail,
     PortBrief,
     ScanBrief,
@@ -54,6 +55,8 @@ from app.api.v1.endpoints.agent_schemas import (
 )
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, severity_rank
 from app.api.v1.endpoints.agent_common import (
+    PORTS_PARAM_HELP,
+    SERVICES_PARAM_HELP,
     _apply_agent_host_filters,
     _batch_host_enrichment,
     load_agent_session,
@@ -434,8 +437,8 @@ class AssistHostCount(BaseModel):
 def count_assist_hosts(
     request: Request,
     state: Optional[str] = Query(None),
-    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
-    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
+    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
@@ -473,14 +476,14 @@ def count_assist_hosts(
 
 @router.get(
     "/assist/hosts",
-    response_model=List[HostBrief],
-    summary="List hosts — same filter shape as the host inventory page",
+    response_model=HostBriefPage,
+    summary="List hosts — same filter shape as the host inventory page; {items, total, has_more}",
 )
 def list_assist_hosts(
     request: Request,
     state: Optional[str] = Query(None),
-    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
-    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
+    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
@@ -532,6 +535,11 @@ def list_assist_hosts(
 
     No scope sub-filtering (assist sessions are project-wide), so the
     recon-only ``scoped_host_ids_subq`` path is skipped.
+
+    v2.440.0 (diag 4) — returns ``{items, total, has_more, limit, offset}``:
+    the bare list's length was read as "how many hosts", and a 500-row
+    default page answered a question about ~900 hosts with 500.  ``total`` is
+    the same COUNT as ``/assist/hosts/count``.
     """
     session = _load_assist_session(db, request)
     query = _build_assist_host_query(
@@ -540,11 +548,20 @@ def list_assist_hosts(
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         search=search, q=q,
     )
+    # Counted before sorting: the sort may join the vulnerability rollup.
+    total = query.with_entities(func.count(models.Host.id.distinct())).scalar() or 0
     # v2.429.1 (MCP acceptance run 2) — the Hosts page's own sort, so "worst
     # first" is a parameter rather than a local re-sort of every page.
     hosts = apply_host_sorting(query, sort_by, sort_order).offset(offset).limit(limit).all()
+
+    def page(items):
+        return HostBriefPage(
+            items=items, total=total, has_more=offset + len(items) < total,
+            limit=limit, offset=offset,
+        )
+
     if not hosts:
-        return []
+        return page([])
     host_ids = [h.id for h in hosts]
     port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
     follow_map = _operator_follow_map(db, host_ids, session.started_by_id)
@@ -576,7 +593,7 @@ def list_assist_hosts(
                 follow=follow_map.get(h.id),
             )
         )
-    return result
+    return page(result)
 
 
 @router.get(
@@ -587,8 +604,8 @@ def list_assist_hosts(
 def download_assist_hosts_ndjson(
     request: Request,
     state: Optional[str] = Query(None),
-    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
-    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
+    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
@@ -604,7 +621,7 @@ def download_assist_hosts_ndjson(
     of hosts: redirect it to a file and process it locally so coverage stays
     complete without the payload ever being read into the model:
 
-        curl -sk -H "X-API-Key: $KEY" .../assist/hosts.ndjson -o hosts.jsonl
+        curl -s -H "X-API-Key: $KEY" .../assist/hosts.ndjson -o hosts.jsonl
         jq -c 'select(.open_port_count > 0 and .os_family == "Windows")' hosts.jsonl
 
     Same fields, same IP ordering, and same filter vocabulary as
@@ -1347,8 +1364,8 @@ def get_assist_host_findings(
 def download_assist_report_context(
     request: Request,
     state: Optional[str] = Query(None),
-    ports: Optional[str] = Query(None, description="Comma-separated port numbers"),
-    services: Optional[str] = Query(None, description="Comma-separated service names"),
+    ports: Optional[str] = Query(None, description=PORTS_PARAM_HELP),
+    services: Optional[str] = Query(None, description=SERVICES_PARAM_HELP),
     subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks"),
     has_critical_vulns: Optional[bool] = Query(None),
     has_high_vulns: Optional[bool] = Query(None),
@@ -1370,7 +1387,7 @@ def download_assist_report_context(
     Safe on a tens-of-thousands-host project: the server hydrates only one chunk
     at a time (peak memory ~one chunk), so there is no host cap. Redirect it to
     a file and populate your report template from that file — do NOT read the
-    stream whole into context: ``curl -sk -H 'X-API-Key: <key>'
+    stream whole into context: ``curl -s -H 'X-API-Key: <key>'
     '<base>/agent/assist/report-context.ndjson' -o report-context.jsonl``.
     """
     from app.services.report_generator import ReportGenerator  # heavy stack — lazy

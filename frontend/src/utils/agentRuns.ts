@@ -133,9 +133,13 @@ export const agentInstruction = {
    *  proposals (the finding's author accepts or rejects them). */
   reviewFinding: (findingId: number, missing: string[] = []): string => {
     const gaps = missing.length > 0 ? ` Still empty: ${missing.join(', ')}.` : '';
-    return `Review finding #${findingId} in BlueStick: read its report text, hosts and evidence, then propose `
-      + `improvements and any missing sections with propose_finding_text (cite evidence you record). `
-      + `Do not change the finding directly.${gaps}`;
+    // 5.318.0 — "propose improvements" produced critiques; a proposal's text
+    // REPLACES the section on accept, so ask for the rewrite itself.
+    return `Review finding #${findingId} in BlueStick: read its report text, hosts and evidence. For each `
+      + `section that needs it, and each missing one, write the complete new section as it should read in `
+      + `the client report, and propose it with propose_finding_text; accepting replaces the section word `
+      + `for word. Put what you changed and why in rationale, not in the text. Leave sections that are fine `
+      + `alone. Cite evidence you record. Do not change the finding directly.${gaps}`;
   },
 };
 

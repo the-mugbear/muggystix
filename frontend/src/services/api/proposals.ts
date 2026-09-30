@@ -68,6 +68,8 @@ export interface ProposalQuery {
   finding_id?: number;
   host_id?: number;
   agent_session_id?: number;
+  /** Only proposals about findings you authored or own (5.318.0). */
+  mine?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -76,8 +78,14 @@ export const listProposals = async (query: ProposalQuery = {}): Promise<Proposal
   (await api.get<ProposalList>(`${p()}/proposals`, { params: query })).data;
 
 export interface ProposalSummary {
+  /** The whole project's pending proposals. */
   pending: number;
   by_kind: Partial<Record<ProposalKind, number>>;
+  /** Those about findings you authored or own — what you were notified about. */
+  pending_mine: number;
+  by_kind_mine: Partial<Record<ProposalKind, number>>;
+  /** A project admin (who may accept any report text) sees the project's by default. */
+  viewer_is_project_admin: boolean;
 }
 
 export const getProposalSummary = async (): Promise<ProposalSummary> =>

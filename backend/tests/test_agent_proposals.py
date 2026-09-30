@@ -190,7 +190,7 @@ def test_report_text_is_proposed_not_written_and_accepting_applies_it(client, db
     assert db_session.get(Finding, finding["id"]).description in (None, "")  # nothing written yet
 
     summary = client.get(f"{_base(test_project)}/proposals/summary").json()
-    assert summary == {"pending": 2, "by_kind": {"finding_text": 2}}
+    assert (summary["pending"], summary["by_kind"]) == (2, {"finding_text": 2})
 
     desc = next(p for p in rows if p["field"] == "description")
     acc = client.post(f"{_base(test_project)}/proposals/{desc['id']}/accept", json={})
@@ -681,3 +681,54 @@ def test_a_report_text_request_notifies_once_not_once_per_field(client, db_sessi
         event.remove(db_session.bind, "before_cursor_execute", listener)
     assert r.status_code == 201, r.text
     assert sum(1 for s in statements if "FROM notifications" in s) == 1
+
+
+def test_each_person_sees_the_proposals_on_their_own_findings(client, db_session, test_project):
+    """A project admin's review of every finding put the whole run in front of
+    every analyst: the notification opened the session's full list and the
+    top-bar count was the project's.  ``mine`` narrows the list and the
+    summary to findings the caller authored or owns (and observation proposals
+    on the scanner rows that evidence them); a project admin still sees all
+    by default (``viewer_is_project_admin``)."""
+    from app.db.models_findings import FindingVulnerability
+    key, _ = _start(client, test_project)  # the admin's review run
+    host = _host(db_session, test_project)
+    alice = _member(db_session, test_project, 441, "mine-alice")
+    bob = _member(db_session, test_project, 442, "mine-bob")
+    carol = _member(db_session, test_project, 443, "mine-carol")
+    f_alice = Finding(project_id=test_project.id, title="Alice's", severity="low", status="open",
+                      source="manual", created_by_id=alice.id)
+    f_bob = Finding(project_id=test_project.id, title="Bob owns", severity="low", status="open",
+                    source="manual", created_by_id=carol.id, owner_id=bob.id)
+    f_carol = Finding(project_id=test_project.id, title="Carol's", severity="low", status="open",
+                      source="manual", created_by_id=carol.id)
+    db_session.add_all([f_alice, f_bob, f_carol])
+    db_session.flush()
+    vuln = _vuln(db_session, test_project, host)
+    db_session.add(FindingVulnerability(finding_id=f_alice.id, vuln_id=vuln.id))
+    db_session.commit()
+
+    for f in (f_alice, f_bob, f_carol):
+        client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+            "finding_id": f.id, "fields": {"impact": "Rewritten impact."}})
+    client.post("/api/v1/agent/proposals/observation", headers=key, json={
+        "vulnerability_id": vuln.id, "action": "dismiss", "scope": "host"})
+
+    base = _base(test_project)
+    as_admin = app.dependency_overrides.get(get_current_user)  # the client fixture's login
+    try:
+        app.dependency_overrides[get_current_user] = lambda: alice
+        summary = client.get(f"{base}/proposals/summary").json()
+        assert (summary["pending"], summary["pending_mine"], summary["viewer_is_project_admin"]) == (4, 2, False)
+        mine = client.get(f"{base}/proposals", params={"mine": True}).json()
+        assert {p["target"]["finding_title"] or p["kind"] for p in mine["items"]} == {"Alice's", "observation_dismiss"}
+
+        app.dependency_overrides[get_current_user] = lambda: bob  # owner, not author
+        assert client.get(f"{base}/proposals/summary").json()["pending_mine"] == 1
+        assert [p["target"]["finding_title"] for p in
+                client.get(f"{base}/proposals", params={"mine": True}).json()["items"]] == ["Bob owns"]
+    finally:
+        app.dependency_overrides[get_current_user] = as_admin
+    # The project admin who ran the review: everyone's by default.
+    admin = client.get(f"{base}/proposals/summary").json()
+    assert admin["viewer_is_project_admin"] is True and admin["pending"] == 4

@@ -166,7 +166,13 @@ shred -u /tmp/bluestick-cert/networkmapper.key            # the copy you brought
 2. the current directory;
 3. the folder above the script.
 
-A folder counts only if it has `docker-compose.yml`, `.env` and `ssl/certs/`. So a copy of `ca/` kept elsewhere works when you run it from the deployment folder, or with
+A folder counts only if it has `docker-compose.yml` and `.env` (`HOST_IP` is read from it). `ssl/certs/` is not required: on a copy that has never been deployed, `install` creates it, and tells you to start BlueStick with `./scripts/deploy.sh` (option 1), which keeps the certificate it finds.
+
+**Upgrading by file copy (`upgrade-instance.sh`)?** Either order works:
+- Upgrade first (the old certificate is carried across and deployed), then run `install` on the running deployment.
+- Or install into the new folder first: copy `.env` from the old instance folder with `cp -p` (the upgrade then finds it identical), run `install`, then `upgrade-instance.sh`. The upgrade keeps a CA-issued certificate already in the new folder instead of carrying the old self-signed one.
+
+Before anything changes, `install` (and `--dry-run`) also checks that it can read your certificate files, can write `ssl/certs`, and that Docker hasn't left empty `networkmapper.crt` / `.key` directories there. Docker creates those if the containers started before any certificate existed. Each problem is reported with its fix. So a copy of `ca/` kept elsewhere works when you run it from the deployment folder, or with
 `BLUESTICK_DIR=/srv/bluestick`. If no folder qualifies, the error names each place it looked and what was missing there.
 
 Before touching anything, `install` checks:

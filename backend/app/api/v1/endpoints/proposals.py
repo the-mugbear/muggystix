@@ -21,6 +21,7 @@ from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
 from app.services import agent_evidence_service as evidence
 from app.services import proposal_service as proposals
+from app.services.finding_actions import finding_actor
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
@@ -35,25 +36,39 @@ def list_proposals(
     finding_id: Optional[int] = Query(None, gt=0),
     host_id: Optional[int] = Query(None, gt=0),
     agent_session_id: Optional[int] = Query(None, gt=0),
+    mine: bool = Query(False, description="Only proposals about findings you authored or own — the ones you are notified about."),
     limit: int = Query(100, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
 ):
     rows, total = proposals.list_proposals(
         db, project.id, status=status, kind=kind, finding_id=finding_id, host_id=host_id,
-        agent_session_id=agent_session_id, limit=limit, offset=offset,
+        agent_session_id=agent_session_id, mine_user_id=user.id if mine else None,
+        limit=limit, offset=offset,
     )
-    return {"total": total, "items": proposals.serialize_many(db,rows), "has_more": offset + len(rows) < total}
+    return {"total": total, "items": proposals.serialize_many(db, rows), "has_more": offset + len(rows) < total}
 
 
 @router.get("/proposals/summary", summary="Pending proposals per kind (the top-bar count)")
 def proposals_summary(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
+    user: User = Depends(get_current_user),
 ):
+    """The project's pending proposals, and the caller's own (about findings
+    they authored or own).  v2.440.0: an admin's review of every finding put
+    the whole run in every member's top bar; the badge shows a person their
+    own, and a project admin (who may accept any report text) the project's —
+    ``viewer_is_project_admin`` says which view is theirs by default."""
     counts = proposals.pending_counts(db, project.id)
-    return {"pending": sum(counts.values()), "by_kind": counts}
+    mine = proposals.pending_counts(db, project.id, mine_user_id=user.id)
+    return {
+        "pending": sum(counts.values()), "by_kind": counts,
+        "pending_mine": sum(mine.values()), "by_kind_mine": mine,
+        "viewer_is_project_admin": finding_actor(db, project.id, user).is_project_admin,
+    }
 
 
 class DecideBody(BaseModel):

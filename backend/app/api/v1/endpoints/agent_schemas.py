@@ -83,6 +83,18 @@ class HostBrief(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class HostBriefPage(BaseModel):
+    """One page of ``GET /agent/assist/hosts`` (v2.440.0).  It was a bare
+    list, and an agent asked "how many hosts expose VNC?" counted the rows of
+    a 500-row page (diag 4).  ``total`` is every matching host, so the length
+    of ``items`` is never mistaken for the answer."""
+    items: List[HostBrief]
+    total: int = Field(..., description="Every host matching the filters — the answer to 'how many'.")
+    has_more: bool = Field(..., description="True when hosts remain past this page (raise offset by limit).")
+    limit: int
+    offset: int
+
+
 class HostDetail(HostBrief):
     ports: List[PortBrief] = Field(default_factory=list)
     # v2.323.0 — every name observed at this address (current A/AAAA, HTTP,

@@ -19,9 +19,6 @@ from app.services.test_plan_service import TestPlanService
 
 from app.api.v1.endpoints.agent_schemas import PlanResponse
 
-# Reuse canonical service-port mappings from the hosts endpoint
-from app.api.v1.endpoints.hosts import SERVICE_PORT_MAPPINGS as _SERVICE_PORT_MAP
-
 
 def load_agent_session(db: Session, request: Request) -> AgentSession:
     """The unified ``AgentSession`` the caller's key belongs to.
@@ -47,6 +44,47 @@ def load_agent_session(db: Session, request: Request) -> AgentSession:
 
 # Scope membership (host ids in a scope) is
 # ``scope_targets_service.scope_host_ids`` since v2.433.1.
+
+
+#: The discrete host filters' meaning, shown to agents in every route that
+#: takes them (OpenAPI and the MCP schemas carry it).
+PORTS_PARAM_HELP = (
+    "Comma-separated port numbers; a host matches with any of them OPEN. "
+    "No ranges or names (a value that is not a number is a 422)."
+)
+SERVICES_PARAM_HELP = (
+    "Comma-separated service names, matched on the service the scanner "
+    "identified on an OPEN port, on any port number — the Hosts page's "
+    "services filter and the DSL's service:. A port found open without a "
+    "service name (masscan) does not match; ask ports= for standard ports."
+)
+
+
+def parse_port_list(ports: str) -> List[int]:
+    """``"22,80,443"`` → ``[22, 80, 443]``.  A value that is not a port
+    number (a range, ``445/tcp``, a name) is a 422 naming it — skipping it
+    silently dropped the whole filter when nothing else was left."""
+    out: List[int] = []
+    bad: List[str] = []
+    for raw in ports.split(","):
+        value = raw.strip()
+        if not value:
+            continue
+        if value.isdigit() and int(value) <= 65535:  # the DSL's port: range, 0-65535
+            out.append(int(value))
+        else:
+            bad.append(value)
+    if bad:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"ports must be comma-separated port numbers (0-65535); not understood: {bad}. "
+                "There are no ranges: list each port (ports=5900,5901,5902). For a port in "
+                "another state use q= (q=port:445@any); for a service by name use services= "
+                "(matched on the service the scanner identified, on any port)."
+            ),
+        )
+    return out
 
 def _apply_agent_host_filters(
     q, db: Session, *,
@@ -74,12 +112,19 @@ def _apply_agent_host_filters(
     project-wide in the host_query refactor; the agent path had the same
     unscoped subqueries until this unification).
 
-    The port/service dimensions keep the agent's "must be an *open* port"
-    semantics (since v2.403.0 the DSL ``port:`` leaf and the Hosts-page
-    filters are open-by-default too, ``@state`` / ``port_states`` for others); services still
-    expand through ``_SERVICE_PORT_MAP`` to port numbers rather than
-    matching ``service_name`` text, which is the agent's intended model
-    ("give me web hosts" = standard web ports).
+    The port/service dimensions match an *open* port, as the Hosts page and
+    the DSL do (``port:`` / ``service:`` are open-by-default since v2.403.0).
+
+    v2.440.0 (diag 4: an agent's VNC count disagreed with the Hosts page) —
+    ``services`` is the PAGE'S definition: a service name matched on an open
+    port (``port_match_subquery(services=…)``, the same predicate as the
+    Hosts page's ``services=`` and the DSL's ``service:``).  It used to
+    expand names to standard port numbers, so ``services=vnc`` meant "5900–5905
+    open, whatever runs there" — counting masscan-only ports and missing VNC
+    elsewhere — and a name missing from that map dropped the filter, returning
+    every host.  Standard-port questions use ``ports``.  And a ``ports`` value
+    that is not a port number is refused (422), never silently ignored: an
+    ignored filter answers "how many?" with the whole project.
     """
     from app.services import host_query_predicates as P
 
@@ -87,19 +132,17 @@ def _apply_agent_host_filters(
         q = q.filter(P.state_predicate([state]))
 
     if ports:
-        port_nums = [int(p.strip()) for p in ports.split(",") if p.strip().isdigit()]
+        port_nums = parse_port_list(ports)
         if port_nums:
             q = q.filter(models.Host.id.in_(
                 P.port_match_subquery(db, ports=port_nums, require_open=True)
             ))
 
     if services:
-        svc_ports = set()
-        for svc in services.split(","):
-            svc_ports.update(_SERVICE_PORT_MAP.get(svc.strip().lower(), []))
-        if svc_ports:
+        names = [s.strip() for s in services.split(",") if s.strip()]
+        if names:
             q = q.filter(models.Host.id.in_(
-                P.port_match_subquery(db, ports=list(svc_ports), require_open=True)
+                P.port_match_subquery(db, services=names, require_open=True)
             ))
 
     if subnets:

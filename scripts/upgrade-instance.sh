@@ -217,9 +217,20 @@ section "Carrying local state across"
 carry_file ".env" || fail ".env vanished mid-run?"
 
 certs_found=0
-for f in ssl/certs/networkmapper.crt ssl/certs/networkmapper.key ssl/certs/openssl.conf; do
-    if carry_file "$f"; then certs_found=1; fi
-done
+new_crt="$PROJECT_ROOT/ssl/certs/networkmapper.crt"
+if [[ -f "$new_crt" && -f "$PROJECT_ROOT/ssl/certs/networkmapper.key" ]] \
+    && [[ "$(openssl x509 -in "$new_crt" -noout -issuer_hash 2>/dev/null)" != "$(openssl x509 -in "$new_crt" -noout -subject_hash 2>/dev/null)" ]]; then
+    # A CA-issued certificate was installed into the new folder BEFORE this
+    # run (ca/local-ca.sh install on a fresh copy): that is the operator's
+    # deliberate choice, so it wins over the old instance's (typically
+    # self-signed) one instead of tripping carry_file's "DIFFERS" refusal.
+    ok "ssl/certs holds a CA-issued certificate installed in the new folder — keeping it, not carrying the old one"
+    certs_found=1
+else
+    for f in ssl/certs/networkmapper.crt ssl/certs/networkmapper.key ssl/certs/openssl.conf; do
+        if carry_file "$f"; then certs_found=1; fi
+    done
+fi
 if [[ $certs_found -eq 0 ]]; then
     warn "No TLS certificate in $OLD/ssl/certs — deploy.sh will generate a new one."
     warn "A new self-signed certificate is not trusted by any client: issue one from the local root CA (ca/local-ca.sh)."

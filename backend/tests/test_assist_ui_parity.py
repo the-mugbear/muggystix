@@ -5,6 +5,7 @@ Each read below is compared against the JWT route the page itself calls
 wherever the two overlap, so the agent and the page cannot state different
 facts about the same host or finding.
 """
+import json
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -462,7 +463,7 @@ def test_an_exploitable_critical_is_one_vulnerability_not_two(client, db_session
     def ips(q, **params):
         r = client.get("/api/v1/agent/assist/hosts", params={"q": q, **params}, headers=headers)
         assert r.status_code == 200, r.text
-        return r.json()
+        return r.json()["items"]
 
     assert [h["ip_address"] for h in ips("has:critical_exploit")] == ["10.61.0.1"]
     both = ips("has:critical AND has:exploit")
@@ -510,3 +511,74 @@ def test_scans_narrow_to_one_tool(client, db_session, test_project):
     headers = _assist(client, test_project.id)
     rows = client.get("/api/v1/agent/assist/scans", params={"tool": "nmap"}, headers=headers).json()
     assert sorted(r["filename"] for r in rows) == ["a.xml", "c.xml"]
+
+
+# ---------------------------------------------------------------------------
+# diag 4 (2026-09-30): "how many hosts expose VNC?" disagreed with the page
+# ---------------------------------------------------------------------------
+
+def _vnc_hosts(db_session, project):
+    """Five hosts the two old definitions of "vnc" disagreed about."""
+    rows = {
+        "10.70.0.1": (5900, "open", "vnc"),        # both: standard port, identified
+        "10.70.0.2": (5900, "open", None),         # masscan-only: open, no service name
+        "10.70.0.3": (5800, "open", "vnc-http"),   # VNC off the standard ports
+        "10.70.0.4": (5901, "closed", "vnc"),      # not open
+        "10.70.0.5": (22, "open", "ssh"),          # nothing to do with it
+    }
+    for ip, (port, state, name) in rows.items():
+        host = models.Host(project_id=project.id, ip_address=ip, state="up")
+        db_session.add(host)
+        db_session.flush()
+        db_session.add(models.Port(host_id=host.id, port_number=port, protocol="tcp",
+                                   state=state, service_name=name))
+    db_session.commit()
+
+
+def test_an_agents_service_filter_counts_what_the_hosts_page_counts(client, db_session, test_project):
+    """services=vnc on the agent surface expanded to "5900-5905 open", so it
+    counted the masscan-only port and missed VNC on 5800 — the Hosts page
+    matches the identified service on an open port.  One definition now: the
+    list, the count, the stream and the page agree."""
+    _vnc_hosts(db_session, test_project)
+    headers = _assist(client, test_project.id)
+    page = client.get(f"/api/v1/projects/{test_project.id}/hosts/", params={"services": "vnc"}).json()
+    page_ips = {h["ip_address"] for h in page["items"]}
+    assert page_ips == {"10.70.0.1", "10.70.0.3"}
+
+    listed = client.get("/api/v1/agent/assist/hosts", params={"services": "vnc"}, headers=headers).json()
+    assert {h["ip_address"] for h in listed["items"]} == page_ips
+    count = client.get("/api/v1/agent/assist/hosts/count", params={"services": "vnc"}, headers=headers).json()
+    dsl = client.get("/api/v1/agent/assist/hosts/count", params={"q": "service:vnc"}, headers=headers).json()
+    assert count["count"] == dsl["count"] == listed["total"] == len(page_ips)
+    stream = client.get("/api/v1/agent/assist/hosts.ndjson", params={"services": "vnc"}, headers=headers)
+    assert {json.loads(line)["ip_address"] for line in stream.text.splitlines() if line} == page_ips
+
+    # A name no port map knows is a real query with a true (empty) answer —
+    # it used to drop the filter and count every host.
+    assert client.get("/api/v1/agent/assist/hosts/count", params={"services": "rfb"},
+                      headers=headers).json()["count"] == 0
+
+
+def test_a_ports_value_that_is_not_a_port_is_refused_not_ignored(client, db_session, test_project):
+    """ports=5900-5905 was skipped as non-numeric, which dropped the filter:
+    "how many hosts have 5900-5905 open?" answered with every host."""
+    _vnc_hosts(db_session, test_project)
+    headers = _assist(client, test_project.id)
+    for bad in ("5900-5905", "445/tcp", "vnc", "70000"):
+        r = client.get("/api/v1/agent/assist/hosts/count", params={"ports": bad}, headers=headers)
+        assert r.status_code == 422, (bad, r.text)
+        assert "not understood" in r.text
+    ok = client.get("/api/v1/agent/assist/hosts/count", params={"ports": "5900,5901"}, headers=headers)
+    assert ok.json()["count"] == 2  # 10.70.0.1 and the masscan-only 10.70.0.2 (5901 is closed)
+
+
+def test_a_host_page_carries_its_total_so_a_page_is_not_read_as_the_answer(client, db_session, test_project):
+    """The list was a bare 500-row page; "how many?" was answered with its
+    length.  It now says how many match and whether more remain."""
+    _vnc_hosts(db_session, test_project)
+    headers = _assist(client, test_project.id)
+    first = client.get("/api/v1/agent/assist/hosts", params={"limit": 2}, headers=headers).json()
+    assert (len(first["items"]), first["total"], first["has_more"]) == (2, 5, True)
+    last = client.get("/api/v1/agent/assist/hosts", params={"limit": 2, "offset": 4}, headers=headers).json()
+    assert (len(last["items"]), last["total"], last["has_more"], last["offset"]) == (1, 5, False, 4)

@@ -117,9 +117,12 @@ what is deliberately *not* a tool, and what is still queued — is in
 Two things an assist agent is routinely asked for, and how each is served:
 
 * **"How many hosts …?"** — `assist_count_hosts` takes the same `q=` DSL and
-  returns a total. Counting a page of `assist_list_hosts` is the wrong answer to
-  a counting question: a page is not a total, and an agent that stops at the
-  first one reports a confident wrong number. `assigned:` accepts
+  returns a total. `assist_list_hosts` returns `{items, total, has_more}`
+  (2.440.0): quote `total`, never the length of `items` — a page is not a
+  total, and an agent that counted the first one reported a confident wrong
+  number. `services=` matches the service identified on an open port (the
+  Hosts page's rule); `ports=` is port numbers, and a value that is not one is
+  refused. `assigned:` accepts
   `me` / `any` / `none` / a username, so *"critical findings nobody owns"* is
   `has:critical AND assigned:none`.
 * **"Fill in this report template."** — the template is a file **on the
