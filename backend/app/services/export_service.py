@@ -312,7 +312,6 @@ class ExportService:
                 'status': plan.status,
                 'project_id': plan.project_id,
                 'created_at': plan.created_at.isoformat() if plan.created_at else None,
-                'approved_at': plan.approved_at.isoformat() if plan.approved_at else None,
                 'completed_at': plan.completed_at.isoformat() if plan.completed_at else None,
             },
             'session': {

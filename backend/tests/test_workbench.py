@@ -401,25 +401,25 @@ def test_my_activity_filters(client, db_session, test_project, test_user):
 def test_my_activity_includes_agent_runs(client, db_session, test_project, test_user):
     """§27 — recon/execution/plan-generation runs the caller started appear as
     'session' events with a deep-link; they're excluded from a text search."""
-    from app.db import models
-    from app.db.models_agent import AgentSession
+    from app.db.models_agent import (
+        AgentSession, ExecutionSession, ExecutionSessionStatus, TestPlan, TestPlanStatus,
+    )
 
-    from app.db.models_agent import ReconSession, TestPlan
-
-    scope = models.Scope(project_id=test_project.id, name="ext")
-    db_session.add(scope)
+    plan = TestPlan(project_id=test_project.id, version=1, title="p",
+                    status=TestPlanStatus.IN_PROGRESS.value)
+    db_session.add(plan)
     db_session.flush()
     s = AgentSession(
-        workflow="recon", project_id=test_project.id,
+        workflow="execution", project_id=test_project.id,
         started_by_id=test_user.id, status="completed",
     )
     db_session.add(s)
     db_session.flush()
-    # v2.340.1 — the deep link must carry the RUN id (what /recon/runs/{id}
+    # v2.340.1 — the deep link must carry the RUN id (what /executions/{id}
     # takes), not the session id; the two only coincide by accident.
-    run = ReconSession(
-        project_id=test_project.id, scope_id=scope.id, agent_session_id=s.id,
-        started_by_id=test_user.id, status="completed",
+    run = ExecutionSession(
+        test_plan_id=plan.id, agent_session_id=s.id,
+        started_by_id=test_user.id, status=ExecutionSessionStatus.COMPLETED.value,
     )
     db_session.add(run)
     db_session.commit()
@@ -427,7 +427,7 @@ def test_my_activity_includes_agent_runs(client, db_session, test_project, test_
     base = _url(test_project.id, "/my-activity")
     sessions = [e for e in client.get(base).json()["items"] if e["kind"] == "session"]
     assert len(sessions) == 1
-    assert sessions[0]["link"] == f"/recon/runs/{run.id}"
+    assert sessions[0]["link"] == f"/executions/{run.id}"
 
     # kinds filter isolates them; a text search excludes them (no title).
     assert all(e["kind"] == "session" for e in client.get(f"{base}?kinds=session").json()["items"])

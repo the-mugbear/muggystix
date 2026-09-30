@@ -91,21 +91,21 @@ const catalog = (): McpCatalog => ({
       },
     },
     {
-      name: 'plan_submit',
-      description: 'Submit the draft for human approval.',
+      name: 'plan_add_entries',
+      description: 'Add entries to a test plan.',
       kind: 'write',
       method: 'POST',
-      path: '/api/v1/agent/test-plans/{plan_id}/submit',
+      path: '/api/v1/agent/test-plans/{plan_id}/entries',
       workflows: ['plan_generation'],
       input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
       name: 'suggest_tool',
-      description: "Ask for a tool that isn't approved yet.",
+      description: "Suggest a tool the catalogue lacks.",
       kind: 'write',
       method: 'POST',
       path: '/api/v1/agent/tool-suggestions',
-      workflows: ['assist', 'plan_generation', 'execution', 'recon'],
+      workflows: ['assist', 'plan_generation', 'execution', 'scope'],
       input_schema: {
         type: 'object',
         properties: { name: { type: 'string' }, rationale: { type: 'string' } },
@@ -146,21 +146,26 @@ describe('McpReference', () => {
     expect(screen.getByTitle('q')).toBeInTheDocument();
   });
 
-  it('groups tools by the workflow whose key gets them', async () => {
+  // 5.313.0 — one session key reaches every tool (the key is the operator's
+  // project role), so the groups are by capability, and the page never claims
+  // a per-workflow key, an approval pipeline or a fixed order.
+  it('groups tools by capability, not by a per-workflow key', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
 
-    // A session only ever sees its own workflow's tools, so the page has to
-    // answer "will my agent get this one?" — a flat read/write split can't.
-    expect(screen.getByRole('heading', { name: 'Assist' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Plan generation' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Every workflow' })).toBeInTheDocument();
-    // Workflows with no tools in this catalog aren't advertised as empty.
-    expect(screen.queryByRole('heading', { name: 'Reconnaissance' })).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Read the inventory and write notes' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Write test plans' })).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Session and catalogue' })).toBeInTheDocument();
+    // Capabilities with no tools in this catalog aren't advertised as empty.
+    expect(screen.queryByRole('heading', { name: 'Read a scope, upload scans' })).not.toBeInTheDocument();
 
-    // The cross-workflow tool is filed once, under "Every workflow" — not
-    // repeated into each of the four groups it belongs to.
+    // The cross-cutting tool is filed once — not repeated into each group.
     expect(screen.getAllByText('suggest_tool')).toHaveLength(1);
+
+    expect(screen.getByRole('heading', { name: 'One session, one key' })).toBeInTheDocument();
+    expect(screen.queryByText(/belongs to one workflow/)).toBeNull();
+    expect(screen.queryByRole('img', { name: /pipeline/ })).toBeNull();
+    expect(screen.queryByText(/approved plan|for approval|human approval/)).toBeNull();
   });
 
   it('shows the transport facts the server reported', async () => {

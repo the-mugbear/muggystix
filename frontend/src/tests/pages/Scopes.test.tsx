@@ -25,9 +25,13 @@ vi.mock('../../services/api', () => ({
 const toastMock = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, vi.fn()] }));
-vi.mock('../../hooks/useReconPlan', () => ({ useReconPlan: () => ({ openFor: vi.fn() }) }));
+// The scan action opens the Start Agent Session dialog, which reads the
+// operator's live sessions.
+const mySessions = vi.hoisted(() => ({ sessions: [] as unknown[] }));
+vi.mock('../../hooks/useMyAssistSessions', () => ({
+  useMyAssistSessions: () => ({ sessions: mySessions.sessions, loading: false, failed: false, refresh: vi.fn() }),
+}));
 // Dialogs that are closed on load; not under test here.
-vi.mock('../../components/StartReconDialog', () => ({ default: () => null }));
 vi.mock('../../components/ScopeExport', () => ({ default: () => null }));
 vi.mock('../../components/OutOfScopeExport', () => ({ default: () => null }));
 vi.mock('../../components/SiteManagerDialog', () => ({ default: () => null }));
@@ -236,11 +240,35 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     expect(916 - fixedPx - (916 * pct) / 100).toBeGreaterThanOrEqual(200);
   });
 
-  it('names the recon action as Operations names its session action', async () => {
+  // 5.313.0 — no per-scope key: the action hands the operator's one agent
+  // session a task naming this scope. 5.313.1 — a scan uploaded to the
+  // session, not a recon run.
+  it('hands scanning this scope to your agent session', async () => {
+    mySessions.sessions = [];
     renderPage();
     await screen.findByText('10.77.1.0/24');
-    expect(screen.getByRole('button', { name: /Start recon session/ })).toBeInTheDocument();
-    expect(screen.queryByText(/Agentic Recon/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /Scan with your agent/ }));
+    expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
+    expect(
+      screen.getByText('Read scope 1 in BlueStick, run your scanners on what is in scope, and upload the output to this session.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Start a session, connect your agent, then give it this/)).toBeInTheDocument();
+  });
+
+  it('points to a live agent session instead of starting another', async () => {
+    mySessions.sessions = [{
+      id: 3, agent_session_id: 72, project_id: 1, purpose: null, status: 'active',
+      started_by_id: 1, started_by_username: 'me', started_at: '2026-09-29T10:00:00Z', ended_at: null,
+      last_activity_at: null, environment_probed: true,
+      key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
+      call_count: 4, note_count: 0, connection: 'mcp', first_call_at: null,
+    }];
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.click(screen.getByRole('button', { name: /Scan with your agent/ }));
+    expect(await screen.findByText(/is live — paste this to its agent/)).toBeInTheDocument();
+    expect(screen.getAllByRole('link', { name: '#72' })[0]).toHaveAttribute('href', '/agent-sessions/72');
+    mySessions.sessions = [];
   });
 });
 

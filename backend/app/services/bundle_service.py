@@ -1,7 +1,7 @@
 """
 Test Plan Export Bundle Service
 
-Packages an approved test plan into a portable ZIP bundle that a remote
+Packages a test plan into a portable ZIP bundle that a remote
 agent can execute offline.  The bundle freezes a snapshot of the plan +
 host context at export time; results come back via the import-results
 endpoint and are correlated to the original execution session by
@@ -191,15 +191,13 @@ def _build_offline_instructions(
         f"Each entry has a stable `entry_id` and a zero-based `test_index` into "
         f"`proposed_tests` — use those two fields to correlate results.\n\n"
         f"### Step 2 — For each host (in priority order)\n\n"
-        f"#### 2a. Sanity check (record in `sanity_checks[]`)\n"
-        f"Verify the target before testing:\n"
-        f"- Report your source IP, gateway, and DNS resolver.\n"
-        f"- `dig -x {{ip}}` and compare to expected hostname.\n"
-        f"- Banner-grab a known-open port from context.\n"
-        f"- If any check fails, STOP and ask the operator.\n\n"
-        f"#### 2b. Execute tests (one at a time, with approval; record in `results[]`)\n"
+        f"#### 2a. Target check (optional evidence; record in `sanity_checks[]`)\n"
+        f"When you verify you are reaching the intended host — `dig -x {{ip}}`, "
+        f"a banner from a known-open port, your source address — record it. "
+        f"If a check says you are not, tell the operator before testing further.\n\n"
+        f"#### 2b. Execute tests (record in `results[]`)\n"
         f"For each test in the entry's `proposed_tests`:\n"
-        f"1. Present the command, wait for user approval.\n"
+        f"1. Show the operator the command.\n"
         f"2. Run it (or ask the user to run it and paste output).\n"
         f"3. Append to `results[]` with `entry_id`, `test_index`, `status`, "
         f"   `command_run`, `raw_output`, `findings_summary`, `severity`, `is_finding`.\n\n"
@@ -246,9 +244,9 @@ def build_export_bundle(
 
     Raises ``ValueError`` if the plan is empty or in the wrong state.
     """
-    if plan.status not in ("approved", "in_progress"):
+    if plan.status not in ("draft", "in_progress"):
         raise ValueError(
-            f"Cannot export a plan in {plan.status} status — approve it first."
+            f"Cannot export a plan that is {plan.status}."
         )
 
     entries = (
@@ -283,7 +281,7 @@ def build_export_bundle(
     db.add(session)
     db.flush()  # need session.id for the manifest
 
-    if plan.status == "approved":
+    if plan.status == "draft":
         plan.status = "in_progress"
 
     # --- Build plan.json: frozen snapshot of plan + per-host context ---
@@ -305,7 +303,7 @@ def build_export_bundle(
         # v2.324.0 — the named target rides along, and {ip}/{fqdn} are
         # resolved with the SAME rule the online execution context uses, so
         # the offline executor never sees a literal placeholder and can tell
-        # the approved vhost from the host's display name.
+        # the planned vhost from the host's display name.
         target_fqdn = e.target_name.fqdn if e.target_name is not None else None
         tests = []
         for t in (e.proposed_tests or []):

@@ -44,7 +44,7 @@ const buttonVariants = cva(
         // Severity variants — eliminate hand-rolled
         // `border-warning/40 text-warning hover:bg-warning/10` soup
         // that previously appeared on Abandon/danger Buttons across
-        // ExecutionDetail, ReconRunDetail, ForceChangePassword.
+        // ExecutionDetail, ForceChangePassword.
         warning: 'bg-warning text-warning-foreground hover:bg-warning/90',
         'warning-outline':
           'border border-warning/40 bg-transparent text-warning hover:bg-warning/10',

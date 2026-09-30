@@ -53,7 +53,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     Annotation, FollowStatus, Host, HostFollow, Port, Scan, Scope,
 )
-from app.db.models_agent import TestPlan, TestPlanEntry
+from app.db.models_agent import TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
 from app.db.models_auth import User
 from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
@@ -429,8 +429,10 @@ def contribution_events(project_ids: List[int]):
     """Every authored action on the given projects as ``(user_id, project_id,
     at)`` rows — a UNION ALL over records that already carry an author:
     scans uploaded, notes (whatever they are attached to), findings recorded,
-    finding status changes, plans approved or rejected, host reviews
-    concluded.  Page views and polling are never contributions.  ``user_id``
+    finding status changes, plans created, host reviews concluded.  An
+    agent's work counts for the operator who started its session, as its
+    uploads and notes always have (v2.433.0: plans too, replacing the
+    approve/reject events).  Page views and polling are never contributions.  ``user_id``
     is NULL when no author is recorded — a deleted account (SET NULL), or a
     row written without one (seeds, older records) — which is the
     "unattributed" bucket, never guessed at.  A deleted user's host reviews
@@ -458,8 +460,7 @@ def contribution_events(project_ids: List[int]):
         ev(Finding.created_by_id, Finding.project_id, Finding.created_at),
         ev(FindingStatusHistory.changed_by_id, Finding.project_id, FindingStatusHistory.created_at,
            lambda q: q.join(Finding, Finding.id == FindingStatusHistory.finding_id)),
-        ev(TestPlan.approved_by_id, TestPlan.project_id, TestPlan.approved_at),
-        ev(TestPlan.rejected_by_id, TestPlan.project_id, TestPlan.rejected_at),
+        ev(TestPlan.created_by_user_id, TestPlan.project_id, TestPlan.created_at),
         ev(HostFollow.user_id, Host.project_id, HostFollow.reviewed_at,
            lambda q: q.join(Host, Host.id == HostFollow.host_id)),
     ]
@@ -741,8 +742,8 @@ def tester_rows(db: Session, project_ids: Iterable[int], window: Window) -> List
         .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)
         .filter(
             TestPlan.project_id.in_(ids),
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
+            TestPlanEntry.status.in_(("proposed", "in_progress")),
             TestPlanEntry.assigned_to_id.in_(user_ids),
         )
         .group_by(TestPlanEntry.assigned_to_id).all()

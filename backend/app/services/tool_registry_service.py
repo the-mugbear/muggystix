@@ -8,8 +8,8 @@ deploy cadence.  The curated seed still lives in version control
 is what an admin edits afterwards.
 
 Seeding is **additive and non-destructive**.  A re-seed inserts tools that are
-missing and leaves existing rows alone — an operator's approval decision, or an
-edited description, must survive a redeploy.  That means a change to the seed
+missing and leaves existing rows alone — a curator's decision, or an edited
+description, must survive a redeploy.  That means a change to the seed
 file updates nothing for existing deployments; changing a shipped tool's
 metadata after the fact is deliberately an admin action, not a silent overwrite.
 """
@@ -22,11 +22,7 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.db.models_tools import (
-    TOOL_APPROVED,
-    TOOL_SUGGESTED,
-    ToolRegistryEntry,
-)
+from app.db.models_tools import TOOL_SUGGESTED, ToolRegistryEntry
 
 logger = logging.getLogger(__name__)
 
@@ -72,16 +68,6 @@ def list_tools(
     return q.order_by(ToolRegistryEntry.category, ToolRegistryEntry.name).all()
 
 
-def approved_tool_names(db: Session) -> set:
-    """The set an auto-approval rule keys off — nothing else may run unprompted."""
-    return {
-        name
-        for (name,) in db.query(ToolRegistryEntry.name)
-        .filter(ToolRegistryEntry.status == TOOL_APPROVED)
-        .all()
-    }
-
-
 def record_suggestion(
     db: Session,
     *,
@@ -92,12 +78,12 @@ def record_suggestion(
     description: Optional[str] = None,
     category: Optional[str] = None,
 ) -> ToolRegistryEntry:
-    """Record an agent asking for a tool the registry doesn't approve.
+    """Record an agent proposing a tool the catalogue doesn't have.
 
     A suggestion is a **row in the same table**, not a note in a separate store:
     vetting is then a status change rather than a copy between systems, and the
-    suggested tool shows up on the reference page next to the vetted ones,
-    visibly unapproved. Re-suggesting a known tool appends the new rationale
+    suggested tool shows up on the reference page next to the catalogued ones,
+    visibly a suggestion. Re-suggesting a known tool appends the new rationale
     instead of creating a duplicate — the second ask is evidence of demand, not
     a new tool.
     """

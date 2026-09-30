@@ -10,7 +10,9 @@ import {
 } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
-import { stashPlanSelection } from '../../utils/planSelection';
+import { agentInstruction } from '../../utils/agentRuns';
+import AgentTaskButton from '../agent-sessions/AgentTaskButton';
+import { useCanStartAgentSession } from '../../hooks/useCanStartAgentSession';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -36,14 +38,18 @@ import {
  * membership can change; this list cannot, which is what makes the plan's
  * provenance reviewable.  Before anything is written, a dry run shows the
  * operator what will happen: how many entries, how many already in the
- * target draft, how many already carried by an approved or completed plan.
+ * target draft, how many already carried by a running or completed plan.
  *
  * Three ways out: a new draft the analyst authors by hand, an existing
- * draft, or the AI-assisted generate flow on /test-plans, which receives
- * the same fixed list.
+ * draft, or the operator's agent (5.313.0): the one agent session is handed
+ * a task naming exactly these host ids (AgentTaskButton) and drafts the plan
+ * itself. The per-plan "Generate with AI" key is gone.
  */
 
-type Mode = 'new' | 'existing' | 'ai';
+type Mode = 'new' | 'existing' | 'agent';
+
+/** The most host ids an agent task may name (see `tooManyForAgent`). */
+export const AGENT_TASK_MAX_HOSTS = 200;
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low', 'info'] as const;
 const PHASES = ['reconnaissance', 'enumeration', 'exploitation', 'post_exploitation', 'reporting'] as const;
@@ -70,6 +76,7 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
   const navigate = useNavigate();
 
   const [mode, setMode] = useState<Mode>('new');
+  const canUseAgent = useCanStartAgentSession();
   const [title, setTitle] = useState('');
   const [rationale, setRationale] = useState('');
   const [priority, setPriority] = useState<(typeof PRIORITIES)[number]>('medium');
@@ -78,7 +85,6 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
   const [drafts, setDrafts] = useState<TestPlanSummary[]>([]);
 
   const [ids, setIds] = useState<number[] | null>(null);
-  const [resolvedAt, setResolvedAt] = useState<string | null>(null);
   const [preview, setPreview] = useState<PlanFromHostsResponse | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [resolving, setResolving] = useState(false);
@@ -98,7 +104,6 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
       .then((resolved) => {
         if (cancelled) return;
         setIds(resolved);
-        setResolvedAt(new Date().toISOString());
       })
       .catch((err) => {
         if (!cancelled) setPreviewError(formatApiError(err, 'Could not resolve the selection.'));
@@ -121,7 +126,7 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
   // Dry run against the chosen target so the numbers shown are the numbers
   // that will apply.  Re-runs when the target draft changes.
   useEffect(() => {
-    if (!open || !ids || ids.length === 0 || mode === 'ai') return;
+    if (!open || !ids || ids.length === 0 || mode === 'agent') return;
     if (mode === 'existing' && draftId == null) {
       setPreview(null);
       return;
@@ -149,6 +154,10 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
   }, [open, ids, mode, draftId]);
 
   const count = ids?.length ?? 0;
+  // The agent's task is pasted text naming every id; past this it is a wall
+  // of numbers (10,000 ids ≈ 60 KB), so a larger selection goes through a
+  // draft plan instead.
+  const tooManyForAgent = count > AGENT_TASK_MAX_HOSTS;
   const canSubmit =
     !resolving &&
     !submitting &&
@@ -157,23 +166,8 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
     (mode === 'new' ? title.trim().length > 0 : mode === 'existing' ? draftId != null : true);
 
   const submit = async () => {
-    if (!ids || !canSubmit) return;
+    if (!ids || !canSubmit || mode === 'agent') return;
     setError(null);
-    if (mode === 'ai') {
-      const ok = stashPlanSelection({
-        host_ids: ids,
-        rationale: rationale.trim(),
-        summary: selectionSummary,
-        taken_at: resolvedAt ?? new Date().toISOString(),
-      });
-      if (!ok) {
-        setError('Could not hand the selection to the generate dialog (browser storage unavailable).');
-        return;
-      }
-      onOpenChange(false);
-      navigate('/test-plans?generate=1&source=selection');
-      return;
-    }
     setSubmitting(true);
     try {
       const res = await createPlanFromHosts({
@@ -255,7 +249,7 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
                 )}
                 {preview.planned_elsewhere > 0 && (
                   <li className="text-warning">
-                    {preview.planned_elsewhere.toLocaleString()} already carried by an approved, running or completed
+                    {preview.planned_elsewhere.toLocaleString()} already carried by a running or completed
                     plan — check before duplicating that work.
                   </li>
                 )}
@@ -283,15 +277,19 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
                 </span>
               </span>
             </label>
-            <label className="flex items-start gap-xs text-metadata">
-              <RadioGroupItem value="ai" id="pfs-ai" className="mt-px" />
-              <span>
-                <span className="font-semibold">Generate with AI from these hosts</span>
-                <span className="block text-caption text-muted-foreground">
-                  Opens the generate dialog with the agent restricted to this list.
+            {canUseAgent && (
+              <label className="flex items-start gap-xs text-metadata">
+                <RadioGroupItem value="agent" id="pfs-agent" className="mt-px" disabled={tooManyForAgent} />
+                <span>
+                  <span className="font-semibold">Have your agent draft it</span>
+                  <span className="block text-caption text-muted-foreground">
+                    {tooManyForAgent
+                      ? `The task names every host id, so it takes at most ${AGENT_TASK_MAX_HOSTS.toLocaleString()} hosts. Create a draft here, then have your agent work it from the plan's page.`
+                      : 'Hands your agent session a task naming exactly these hosts; the agent writes the plan.'}
+                  </span>
                 </span>
-              </span>
-            </label>
+              </label>
+            )}
           </RadioGroup>
 
           {mode === 'new' && (
@@ -338,7 +336,7 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
             />
           </div>
 
-          {mode !== 'ai' && (
+          {mode !== 'agent' && (
             <div className="grid grid-cols-2 gap-sm">
               <div>
                 <Label htmlFor="pfs-priority">Entry priority</Label>
@@ -379,10 +377,21 @@ const PlanFromSelectionDialog: React.FC<PlanFromSelectionDialogProps> = ({
           <Button variant="outline" onClick={() => onOpenChange(false)} disabled={submitting}>
             Cancel
           </Button>
-          <Button onClick={() => void submit()} disabled={!canSubmit}>
-            {submitting && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
-            {mode === 'ai' ? 'Continue to generate' : mode === 'existing' ? 'Add to draft' : 'Create draft plan'}
-          </Button>
+          {mode === 'agent' ? (
+            <AgentTaskButton
+              variant="default"
+              size="md"
+              label="Hand to your agent"
+              instruction={agentInstruction.draftPlan(ids ?? [], rationale)}
+              title={`Draft a test plan for these ${count.toLocaleString()} hosts`}
+              disabled={resolving || count === 0 || tooManyForAgent}
+            />
+          ) : (
+            <Button onClick={() => void submit()} disabled={!canSubmit}>
+              {submitting && <Loader2 className="size-3.5 animate-spin" aria-hidden />}
+              {mode === 'existing' ? 'Add to draft' : 'Create draft plan'}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

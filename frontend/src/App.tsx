@@ -44,8 +44,8 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   { pattern: '/scans/compare', kind: 'cards' },
   { pattern: '/scans/:id', kind: 'detail' },
   { pattern: '/test-plans/:id/*', kind: 'detail' },
-  { pattern: '/recon/runs/:id', kind: 'detail' },
   { pattern: '/executions/:id', kind: 'detail' },
+  { pattern: '/agent-sessions/:id', kind: 'detail' },
   { pattern: '/findings/:id', kind: 'detail' },
   { pattern: '/profile', kind: 'detail' },
   { pattern: '/force-change-password', kind: 'detail' },
@@ -129,6 +129,7 @@ const SbomReference = lazy(() => import('./pages/SbomReference'));
 const ToolCoverage = lazy(() => import('./pages/ToolCoverage'));
 const McpReference = lazy(() => import('./pages/McpReference'));
 const AssistSessions = lazy(() => import('./pages/AssistSessions'));
+const AgentSessionDetail = lazy(() => import('./pages/AgentSessionDetail'));
 const Feedback = lazy(() => import('./pages/Feedback'));
 const LLMSettings = lazy(() => import('./pages/LLMSettings'));
 const IntegrationSettings = lazy(() => import('./pages/IntegrationSettings'));
@@ -146,9 +147,6 @@ const Findings = lazy(() => import('./pages/Findings'));
 const FindingDetail = lazy(() => import('./pages/FindingDetail'));
 const Reports = lazy(() => import('./pages/Reports'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
-const ReconRunDetail = lazy(() => import('./pages/ReconRunDetail'));
-const ReconRunsList = lazy(() => import('./pages/ReconRunsList'));
-const ReconCompare = lazy(() => import('./pages/ReconCompare'));
 const ExecutionDetail = lazy(() => import('./pages/ExecutionDetail'));
 const ExecutionsList = lazy(() => import('./pages/ExecutionsList'));
 const PlanCompare = lazy(() => import('./pages/PlanCompare'));
@@ -305,30 +303,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v3 alpha.12 — Recon Runs list.  Project-wide
-                          with multi-select compare.  Static path
-                          registered before /recon/runs/:sessionId so
-                          React Router ranks it first. */}
-                      <Route
-                        path="/recon/runs"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <ReconRunsList />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v3 alpha.6 — Recon Run Detail.  Per-session
-                          deep-dive: metadata + uploads + hosts +
-                          plans-generated-from.  Linked from Operations
-                          and from agent-activity for recon rows. */}
-                      <Route
-                        path="/recon/runs/:sessionId"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <ReconRunDetail />
-                          </ProtectedRoute>
-                        }
-                      />
                       {/* v3 alpha.12 — Executions list.  Static path
                           registered before /executions/:sessionId. */}
                       <Route
@@ -348,16 +322,6 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <ExecutionDetail />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v3 alpha.8 — Recon vs recon comparison.
-                          Reads ?a=<recon_id>&b=<recon_id>. */}
-                      <Route
-                        path="/recon/compare"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <ReconCompare />
                           </ProtectedRoute>
                         }
                       />
@@ -444,15 +408,14 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v5.173.0 — AI Assist review. Two paths, one page:
-                          the list, and the per-session detail its rows open.
-                          v5.294.0 — the list is Agent Runs' "By session"
-                          view; the bare path goes there. */}
+                      {/* v5.173.0 — AI Assist review, keyed by the detail
+                          row's id. v5.312.0 — both paths redirect: the list
+                          to Agent Sessions, a session to its page below. */}
                       <Route
                         path="/assist-sessions"
                         element={
                           <ProtectedRoute requiredRole="viewer">
-                            <Navigate to="/agent-activity?view=sessions" replace />
+                            <Navigate to="/agent-activity" replace />
                           </ProtectedRoute>
                         }
                       />
@@ -464,7 +427,18 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v3 — Project Activity (unified agent timeline). */}
+                      {/* v5.312.0 — one agent session: its state, controls,
+                          the work it opened, notes and calls. */}
+                      <Route
+                        path="/agent-sessions/:sessionId"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <AgentSessionDetail />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* v3 — Project Activity (unified agent timeline);
+                          v5.312.0 — Agent Sessions. */}
                       <Route
                         path="/agent-activity"
                         element={

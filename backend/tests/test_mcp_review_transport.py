@@ -7,7 +7,6 @@ registry edit cannot quietly reopen it.
    BEFORE URL construction, and path segments are rendered so they can never
    carry ``/``, ``?`` or ``#`` — a mistyped path argument is -32602, not a
    call to a different endpoint.
-5. Every recon tool accepts and forwards ``recon_session_id``.
 6. ``POST /agent/session/end`` is a session-metadata write (any member).
 8. ``idempotentHint`` is false for every tool whose retry creates a row.
 """
@@ -97,20 +96,6 @@ def test_every_path_param_in_the_registry_is_typed():
 
 
 # ---------------------------------------------------------------------------
-# Finding 5 — the recon-run selector
-# ---------------------------------------------------------------------------
-
-def test_every_recon_tool_accepts_and_forwards_the_run_selector():
-    recon_tools = [n for n, s in TOOLS.items() if s["path"].startswith("/api/v1/agent/recon/") and n != "start_recon"]
-    assert recon_tools, "registry has no recon tools?"
-    for name in recon_tools:
-        spec = TOOLS[name]
-        assert "recon_session_id" in spec["input_schema"]["properties"], name
-        assert "recon_session_id" in spec.get("query_params", ()), name
-        assert "recon_session_id" not in spec["input_schema"].get("required", []), name
-
-
-# ---------------------------------------------------------------------------
 # Finding 6 — ending one's own session is session bookkeeping
 # ---------------------------------------------------------------------------
 
@@ -126,14 +111,14 @@ def test_session_end_is_on_the_metadata_write_allowlist():
 #: Tools whose retry creates a second row.  Every additive tool is here by
 #: construction; the creators are the ones the inference used to get wrong.
 _CREATES_A_ROW = {
-    "create_test_plan", "start_recon", "start_execution",
+    "create_test_plan", "start_execution",
     "submit_feedback", "suggest_tool", "assist_add_note", "plan_add_entries",
     "execution_record_sanity_check", "execution_record_test_result",
 }
 #: Writes that converge on retry.
 _CONVERGES = {
-    "record_environment", "session_renew", "end_session", "recon_complete",
-    "execution_complete_session", "execution_complete_entry", "plan_submit",
+    "record_environment", "session_renew", "end_session",
+    "execution_complete_session", "execution_complete_entry",
     "assist_set_follow", "assist_patch_host", "plan_update", "plan_update_entry",
 }
 
@@ -164,6 +149,6 @@ def test_destructive_hint_unchanged_for_the_creators():
     """The creators keep asking for approval: fixing idempotentHint must not
     have flipped the flag clients gate auto-approval on."""
     tools = {t["name"]: t["annotations"] for t in tool_list_payload()}
-    for name in ("create_test_plan", "start_recon", "start_execution"):
+    for name in ("create_test_plan", "start_execution"):
         assert tools[name]["destructiveHint"] is True, name
         assert tools[name]["readOnlyHint"] is False, name

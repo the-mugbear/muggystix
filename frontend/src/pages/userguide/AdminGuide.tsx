@@ -21,7 +21,7 @@ import {
 
 const ROLES: { role: string; desc: string }[] = [
   { role: 'Admin', desc: 'Full access. Manage users, projects, system settings. Can manage any agent.' },
-  { role: 'Analyst', desc: 'Upload scans, manage scopes, approve test plans, create notes, review hosts, start agent sessions.' },
+  { role: 'Analyst', desc: 'Upload scans, manage scopes, write and work test plans, create notes, review hosts, start agent sessions.' },
   { role: 'Auditor', desc: 'Read-only access with audit-log visibility.' },
   { role: 'Viewer', desc: 'Read-only access to scans, hosts, and dashboards.' },
 ];
@@ -99,8 +99,8 @@ const sections: GuideSection[] = [
           <li><strong>HTTPS</strong> — enforced in production with auto-generated SSL certificates.</li>
         </UnorderedList>
         <Para>
-          Agent API keys are a separate, narrower surface — project-scoped, time-limited, and unable
-          to reach user or admin endpoints (see Agentic Workflows).
+          Agent API keys are a separate, narrower surface — project-scoped, time-limited, carrying
+          the operator's own project role, and unable to reach user or admin endpoints (see Agents).
         </Para>
       </div>
     ),

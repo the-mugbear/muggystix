@@ -1,8 +1,9 @@
 /**
  * Tests for the v3 alpha.9 HostLineagePanel component.
  *
- * Pins the three-section contract (recons / plans / executions),
- * cross-page navigation, and empty-state handling.
+ * Pins the two-section contract (plans / executions; the recon-run
+ * section went with recon runs in 5.313.1), cross-page navigation, and
+ * empty-state handling.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -41,23 +42,13 @@ function renderPanel() {
 const fullLineage = {
   host_id: 500,
   ip_address: '10.0.0.5',
-  recon_sessions: [
-    {
-      session_id: 42, scope_id: 7, scope_name: 'Internal /24',
-      status: 'completed', started_at: '2026-05-15T10:00:00Z',
-      completed_at: '2026-05-15T11:00:00Z',
-      generated_by_model: 'claude-opus-4-7',
-      generated_by_tool: 'claude-code',
-      started_by_username: 'alice',
-    },
-  ],
   plan_entries: [
     {
       plan_id: 11, title: 'Pen-test plan', status: 'proposed',
       version: 1, entry_id: 200, entry_status: 'proposed',
       created_at: '2026-05-15T12:00:00Z',
       generated_by_model: 'claude-opus-4-7',
-      source_kind: 'recon_session',
+      source_kind: 'manual_hosts',
     },
   ],
   execution_sessions: [
@@ -80,18 +71,16 @@ beforeEach(() => {
 });
 
 describe('HostLineagePanel', () => {
-  it('renders three sections from the lineage response', async () => {
+  it('renders both sections from the lineage response', async () => {
     mockedApi.getHostLineage.mockResolvedValue(fullLineage);
     renderPanel();
     await waitFor(() => {
       expect(screen.getByText('Workflow lineage')).toBeInTheDocument();
     });
-    expect(screen.getByText('Recon sessions')).toBeInTheDocument();
     expect(screen.getByText('Plan entries')).toBeInTheDocument();
-    expect(screen.getByText('Execution sessions')).toBeInTheDocument();
+    expect(screen.getByText('Execution runs')).toBeInTheDocument();
+    expect(screen.queryByText('Recon runs')).not.toBeInTheDocument();
 
-    // Recon row surfaces scope name.
-    expect(screen.getByText(/Internal \/24/)).toBeInTheDocument();
     // Plan row surfaces the plan title.
     expect(screen.getByText(/Pen-test plan/)).toBeInTheDocument();
     // Execution row surfaces the per-host test/finding counts.
@@ -103,45 +92,40 @@ describe('HostLineagePanel', () => {
     mockedApi.getHostLineage.mockResolvedValue(fullLineage);
     renderPanel();
     await waitFor(() => {
-      expect(screen.getByText(/Internal \/24/)).toBeInTheDocument();
+      expect(screen.getByText(/Pen-test plan/)).toBeInTheDocument();
     });
     const openButtons = screen.getAllByRole('button', { name: /Open/i });
-    // Three rows, three Open buttons.  Order: recon row, plan row, execution row.
+    // Two rows, two Open buttons.  Order: plan row, execution row.
     fireEvent.click(openButtons[0]);
-    expect(navigateSpy).toHaveBeenCalledWith('/recon/runs/42');
-    fireEvent.click(openButtons[1]);
     expect(navigateSpy).toHaveBeenCalledWith('/test-plans/11');
-    fireEvent.click(openButtons[2]);
+    fireEvent.click(openButtons[1]);
     expect(navigateSpy).toHaveBeenCalledWith('/executions/77');
   });
 
   // v5.241.0 — the common case on a scanned-but-untouched host. It used to be
-  // three headings each saying "none".
+  // headings each saying "none".
   it('says it once when nothing at all is recorded', async () => {
     mockedApi.getHostLineage.mockResolvedValue({
       host_id: 500,
       ip_address: '10.0.0.5',
-      recon_sessions: [],
       plan_entries: [],
       execution_sessions: [],
     });
     renderPanel();
-    expect(await screen.findByText(/No agent workflow has touched this host/)).toBeInTheDocument();
-    expect(screen.queryByText('Recon sessions')).not.toBeInTheDocument();
+    expect(await screen.findByText(/No agent has touched this host/)).toBeInTheDocument();
     expect(screen.queryByText('Plan entries')).not.toBeInTheDocument();
+    expect(screen.queryByText('Execution runs')).not.toBeInTheDocument();
   });
 
   it('keeps the explicit per-section empty state when only some are empty', async () => {
     mockedApi.getHostLineage.mockResolvedValue({
       ...fullLineage,
-      plan_entries: [],
       execution_sessions: [],
     });
     renderPanel();
-    expect(await screen.findByText('Recon sessions')).toBeInTheDocument();
-    expect(screen.getByText(/No plan includes this host/)).toBeInTheDocument();
+    expect(await screen.findByText('Plan entries')).toBeInTheDocument();
     expect(
-      screen.getByText(/No execution session has tested this host/),
+      screen.getByText(/No execution run has tested this host/),
     ).toBeInTheDocument();
   });
 

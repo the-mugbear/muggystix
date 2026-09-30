@@ -1,26 +1,28 @@
-"""The tool registry — one source of truth for the tools BlueStick knows about.
+"""The tool registry — one catalogue of the tools BlueStick knows about.
 
 Before this there were two lists that could not see each other: 61 curated
 entries hardcoded in the frontend reference page, and 11 tools in the backend
-recon catalogue — the only one that could gate anything. They had already
-drifted (`testssl` was agent-usable with no human entry), and any auto-approval
-rule built on the backend list would have rejected tools the app itself
-recommends.
+recon catalogue.  They had already drifted (`testssl` was agent-usable with no
+human entry).
 
-These tests pin the properties that make the registry usable as a policy input:
-it covers everything the recon catalogue hands agents, approval and
-ingestibility stay independent, and seeding never clobbers an operator's
-decisions.
+v2.433.0 — the registry is a catalogue, not agent policy: the `approved`
+status (the allowlist an agent could run without asking) is gone with the rest
+of the "agent on rails" model.  These tests pin that the registry covers what
+the recon catalogue suggests, that ingestibility is independent of being
+catalogued, that fresh and upgraded installs hold the same states, and that
+seeding never clobbers a curator's decisions.
 """
 from __future__ import annotations
 
 from app.db.models_tools import (
-    TOOL_APPROVED,
     TOOL_REFERENCE,
+    TOOL_REJECTED,
     TOOL_SUGGESTED,
     ToolRegistryEntry,
 )
 from app.services import tool_registry_service as registry
+
+CATALOGUE_STATES = {TOOL_REFERENCE, TOOL_SUGGESTED, TOOL_REJECTED}
 
 
 def _seed(db):
@@ -28,82 +30,50 @@ def _seed(db):
 
 
 def test_registry_covers_every_tool_the_recon_catalogue_offers(db_session):
-    """The catalogue is what an agent is told it may run. A tool missing from
-    the registry is a tool no approval rule can reason about — which is exactly
-    how `testssl` ended up agent-usable and undocumented."""
+    """A tool the recon catalogue suggests but the registry lacks is a tool the
+    reference page cannot explain — how `testssl` ended up undocumented."""
     from app.services.recon_planning_service import build_tool_catalog
 
     _seed(db_session)
-    known = {t.name for t in registry.list_tools(db_session)}
+    catalogued = {t.name for t in registry.list_tools(db_session, status=TOOL_REFERENCE)}
     offered = {entry["tool"] for entry in build_tool_catalog(["10.0.0.0/24"])}
-
-    assert offered <= known, f"recon offers tools absent from the registry: {offered - known}"
-    # And every one of them is approved — the catalogue must not offer a tool
-    # the policy layer would refuse.
-    approved = registry.approved_tool_names(db_session)
-    assert offered <= approved, f"recon offers unapproved tools: {offered - approved}"
+    assert offered <= catalogued, f"recon suggests tools absent from the catalogue: {offered - catalogued}"
 
 
-def test_testssl_now_has_human_knowledge(db_session):
-    """The one real divergence between the two lists: agents could be told to
-    run it, humans had nowhere to read what it was."""
+def test_a_fresh_seed_holds_only_catalogue_states(db_session):
+    """Code review (v2.433.0): the checked-in seed still carried `approved`,
+    so a FRESH install re-created the retired status after the migration had
+    converted nothing — `list_tools(status=reference)` then left out nmap."""
+    _seed(db_session)
+    tools = registry.list_tools(db_session)
+    assert {t.status for t in tools} <= CATALOGUE_STATES
+    reference = {t.name for t in registry.list_tools(db_session, status=TOOL_REFERENCE)}
+    assert {"nmap", "testssl"} <= reference
+
+
+def test_testssl_has_human_knowledge(db_session):
     _seed(db_session)
     testssl = db_session.query(ToolRegistryEntry).filter_by(name="testssl").one()
-    assert testssl.status == TOOL_APPROVED
+    assert testssl.status == TOOL_REFERENCE
     assert testssl.description and testssl.install and testssl.url
     assert testssl.category
 
 
-def test_approval_and_ingestibility_are_independent(db_session):
-    """A policy fact and an engineering fact. Fusing them would mean either no
-    tool can be approved until someone writes a parser — stalling the vetting
-    loop — or approving tools whose upload then fails."""
+def test_catalogue_and_ingestibility_are_independent(db_session):
+    """Whether BlueStick parses a tool's output is an engineering fact, not a
+    statement about whether it belongs in the catalogue."""
     _seed(db_session)
     tools = registry.list_tools(db_session)
-
-    ingestible = {t.name for t in tools if t.ingestible}
-    approved = {t.name for t in tools if t.status == TOOL_APPROVED}
-
-    # Parsers exist for tools agents aren't offered — so ingestible does not
-    # imply approved.
-    assert ingestible - approved, "expected tools with parsers that agents aren't offered"
-
-    # And the converse: a tool can be approved with no parser at all. Asserted
-    # by building one rather than by finding one, because today's seed happens
-    # to have a parser for every approved tool — that coincidence must not be
-    # allowed to become a constraint, since execution records evidence text and
-    # never ingests scanner output.
-    db_session.add(
-        ToolRegistryEntry(
-            name="some-approved-tool-with-no-parser",
-            description="Approved to run; BlueStick cannot parse its output.",
-            category="General Purpose",
-            status=TOOL_APPROVED,
-            ingestible=False,
-        )
-    )
-    db_session.commit()
-    assert "some-approved-tool-with-no-parser" in registry.approved_tool_names(db_session)
-
-
-def test_documented_tools_are_not_silently_approved(db_session):
-    """The reference page is a knowledge repo — being documented must not imply
-    an agent may run it. Most of the catalogue is reference-only by design."""
-    _seed(db_session)
-    tools = registry.list_tools(db_session)
-    reference_only = [t for t in tools if t.status == TOOL_REFERENCE]
-
-    assert len(reference_only) > len([t for t in tools if t.status == TOOL_APPROVED])
-    # A reference-only tool carries no agent policy metadata to be misread.
-    assert all(not (t.phases or []) for t in reference_only)
+    assert any(t.ingestible for t in tools)
+    assert any(not t.ingestible and t.status == TOOL_REFERENCE for t in tools)
 
 
 def test_seeding_is_additive_and_never_overwrites_a_decision(db_session):
-    """An operator's approval, or an edited description, has to survive a
-    redeploy — otherwise every release silently reverts their vetting."""
+    """A curator's decision, or an edited description, has to survive a
+    redeploy — otherwise every release silently reverts it."""
     _seed(db_session)
     entry = db_session.query(ToolRegistryEntry).filter_by(name="gobuster").one()
-    entry.status = TOOL_APPROVED
+    entry.status = TOOL_REJECTED
     entry.description = "Locally edited description."
     db_session.commit()
 
@@ -111,27 +81,24 @@ def test_seeding_is_additive_and_never_overwrites_a_decision(db_session):
     assert added == 0
 
     db_session.refresh(entry)
-    assert entry.status == TOOL_APPROVED
+    assert entry.status == TOOL_REJECTED
     assert entry.description == "Locally edited description."
 
 
-def test_suggestion_lands_in_the_same_table_pending_vetting(db_session):
-    """Suggestions are rows, not notes in a separate store — so vetting is a
-    status change rather than a copy between systems, and the suggested tool
-    shows up beside the vetted ones, visibly unapproved."""
+def test_suggestion_lands_in_the_same_table_pending_curation(db_session):
+    """Suggestions are rows, not notes in a separate store — so curating one is
+    a status change, and the suggestion shows beside the catalogued tools."""
     _seed(db_session)
     entry = registry.record_suggestion(
         db_session,
         name="crackmapexec-ng",
-        rationale="Needed for SMB signing checks the approved set doesn't cover.",
+        rationale="Used it for SMB signing checks.",
         agent_id=7,
         project_id=3,
     )
 
     assert entry.status == TOOL_SUGGESTED
-    assert entry.name not in registry.approved_tool_names(db_session)
     assert "SMB signing" in entry.suggested_rationale
-    # It is visible to the same listing the reference page reads.
     assert "crackmapexec-ng" in {t.name for t in registry.list_tools(db_session)}
 
 
@@ -146,13 +113,12 @@ def test_resuggesting_appends_demand_rather_than_duplicating(db_session):
     assert "Second ask" in rows[0].suggested_rationale
 
 
-def test_suggesting_an_approved_tool_does_not_downgrade_it(db_session):
-    """An agent asking for something it already has must not knock the tool out
-    of the approved set."""
+def test_suggesting_a_catalogued_tool_does_not_downgrade_it(db_session, client):
+    """An agent suggesting a tool the catalogue already has must not knock it
+    out of the catalogue — and the agent is told it is already there."""
     _seed(db_session)
     entry = registry.record_suggestion(db_session, name="nmap", rationale="please add nmap")
-    assert entry.status == TOOL_APPROVED
-    assert "nmap" in registry.approved_tool_names(db_session)
+    assert entry.status == TOOL_REFERENCE
 
 
 def test_reference_page_no_longer_carries_its_own_catalogue(db_session):
@@ -190,15 +156,14 @@ def test_vetting_a_suggestion_is_a_status_change(client, db_session):
     as not capturing them."""
     _seed(db_session)
     registry.record_suggestion(
-        db_session, name="ligolo-ng", rationale="Pivoting the approved set can't do."
+        db_session, name="ligolo-ng", rationale="Needed for pivoting."
     )
-    assert "ligolo-ng" not in registry.approved_tool_names(db_session)
 
     resp = client.patch(
         "/api/v1/references/tools/ligolo-ng",
         json={
-            "status": TOOL_APPROVED,
-            # Approving usually means writing real prose: the suggested row's
+            "status": TOOL_REFERENCE,
+            # Cataloguing usually means writing real prose: the suggested row's
             # description is the agent's rationale, which reads badly as
             # documentation on a page humans use to learn about tools.
             "description": "Reverse tunneling / pivoting tool for reaching segmented networks.",
@@ -207,10 +172,9 @@ def test_vetting_a_suggestion_is_a_status_change(client, db_session):
         },
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == TOOL_APPROVED
+    assert resp.json()["status"] == TOOL_REFERENCE
 
     db_session.expire_all()
-    assert "ligolo-ng" in registry.approved_tool_names(db_session)
     row = db_session.query(ToolRegistryEntry).filter_by(name="ligolo-ng").one()
     assert row.description.startswith("Reverse tunneling")
     assert row.category == "Remote Access"
@@ -229,7 +193,6 @@ def test_declining_keeps_the_row(client, db_session):
     db_session.expire_all()
     row = db_session.query(ToolRegistryEntry).filter_by(name="metasploit").one()
     assert row.status == "rejected"
-    assert "metasploit" not in registry.approved_tool_names(db_session)
     # Still listed — the page shows it as declined rather than pretending the
     # ask never happened.
     assert "metasploit" in {t.name for t in registry.list_tools(db_session)}
@@ -246,13 +209,12 @@ def test_suggested_is_not_a_status_an_operator_can_set(client, db_session):
 
 def test_vetting_an_unknown_tool_is_a_404(client, db_session):
     _seed(db_session)
-    resp = client.patch("/api/v1/references/tools/not-a-tool", json={"status": "approved"})
+    resp = client.patch("/api/v1/references/tools/not-a-tool", json={"status": "reference"})
     assert resp.status_code == 404
 
 
 def test_vetting_is_gated_on_the_admin_role():
-    """Approving a tool decides what an agent may run against the network, on
-    every project in the deployment.
+    """The catalogue is one deployment-wide list, curated by global admins.
 
     Asserted structurally because the ``client`` fixture authenticates as an
     admin, so an HTTP call can only ever show the allowed path.
@@ -274,8 +236,7 @@ def test_vetting_is_gated_on_the_admin_role():
     ]
     assert UserRole.ADMIN in enforced, "the vetting route must require the admin role"
 
-    # And the read path stays open — it is documentation, and an agent checks
-    # the approved set against it without a user token.
+    # And the read path stays open — it is documentation.
     listing = next(
         r for r in references.router.routes
         if getattr(r, "path", None) == "/references/tools"
@@ -298,14 +259,14 @@ def test_ingestibility_is_not_operator_editable(client, db_session):
 
     resp = client.patch(
         f"/api/v1/references/tools/{target}",
-        json={"ingestible": True, "status": "approved"},
+        json={"ingestible": True, "status": "rejected"},
     )
     # Unknown fields are ignored by the schema rather than rejected, so assert
     # on the effect: the status change lands, the flag does not.
     assert resp.status_code == 200
     db_session.expire_all()
     row = db_session.query(ToolRegistryEntry).filter_by(name=target).one()
-    assert row.status == TOOL_APPROVED
+    assert row.status == TOOL_REJECTED
     assert row.ingestible is False
 
 
@@ -316,9 +277,8 @@ def test_endpoint_serves_the_registry_and_filters_by_status(client, db_session):
     names = {t["name"] for t in body["tools"]}
     assert {"nmap", "testssl", "sqlcmd"} <= names
 
-    approved = client.get("/api/v1/references/tools?status=approved").json()
-    assert 0 < approved["count"] < body["count"]
-    assert all(t["status"] == "approved" for t in approved["tools"])
-    # The agent-facing fields ride along for the approved subset.
-    nmap = next(t for t in approved["tools"] if t["name"] == "nmap")
+    reference = client.get("/api/v1/references/tools?status=reference").json()
+    assert 0 < reference["count"] <= body["count"]
+    assert all(t["status"] == "reference" for t in reference["tools"])
+    nmap = next(t for t in reference["tools"] if t["name"] == "nmap")
     assert nmap["phases"] and nmap["intrusive"] is not None

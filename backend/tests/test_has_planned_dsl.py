@@ -47,7 +47,7 @@ def coverage_hosts(db_session, test_project, test_agent, test_user):
 
     plan = TestPlan(
         project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="coverage plan", status=TestPlanStatus.APPROVED.value,
+        title="coverage plan", status=TestPlanStatus.DRAFT.value,
     )
     db_session.add(plan)
     db_session.commit()

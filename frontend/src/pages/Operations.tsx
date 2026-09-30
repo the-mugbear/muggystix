@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Link, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Rocket, Sparkles } from 'lucide-react';
+import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   AgentSessionRow,
@@ -8,21 +8,21 @@ import {
   OperationsBlockers,
   ProjectCoverageResponse,
   SinceLastVisit,
-  TestPlanSummary,
   WorkbenchResponse,
   InvestigationQueueResponse,
   getDashboardStats,
   getProjectCoverage,
-  getTestPlans,
   getWorkbench,
   getInvestigationQueue,
   listAgentSessions,
   markWorkbenchSeen,
 } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
-import { useReconPlan } from '../hooks/useReconPlan';
+import { useProject } from '../contexts/ProjectContext';
+import { projectRoleAtLeast } from '../utils/projectRole';
+import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
 import { formatApiError } from '../utils/apiErrors';
-import StartReconDialog from '../components/StartReconDialog';
+import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import MyWorkCard, { personalWorkCounts } from '../components/MyWorkCard';
 import MyActivityCard from '../components/MyActivityCard';
 import AddressTerrainSection from '../components/operations/AddressTerrainSection';
@@ -40,7 +40,7 @@ import SeverityBar from '../components/ui/SeverityBar';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
-import { isStalledRun } from '../utils/agentRuns';
+import { agentInstruction, isStalledRun, sessionRowPath } from '../utils/agentRuns';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
@@ -52,7 +52,7 @@ const olderOf = (a?: Date, b?: Date): Date | null =>
   (a && b ? (a.getTime() <= b.getTime() ? a : b) : null);
 
 /** The page's independently fetched sources, each with its own load time. */
-type LoadedSource = 'workbench' | 'coverage' | 'pending' | 'stats';
+type LoadedSource = 'workbench' | 'coverage' | 'stats';
 /** The oldest load on the page; null until something has loaded. */
 const oldestLoad = (loaded: Partial<Record<LoadedSource, Date>>): Date | null => {
   const times = Object.values(loaded).filter((d): d is Date => d instanceof Date);
@@ -289,11 +289,6 @@ const GapLine: React.FC<{ text: string; to?: string }> = ({ text, to }) => (to ?
 // The scope's size, summed over its subnets — never a "% discovered" (v4.18.0:
 // a /24 with every live host found read "22 / 256 — 8.59%", a success shown
 // as failure).  Scope names are not shown (5.304.0): they are a relic.
-/** The recon dialog's title only.  ``__default__`` is the scope every project
- *  is created with; its underscores never reach the screen. */
-const displayScopeName = (rawName: string | null | undefined): string =>
-  !rawName ? '—' : rawName === '__default__' ? 'Project default scope' : rawName;
-
 const scopedSubnets = (c: ProjectCoverageResponse) => c.scopes.reduce((n, s) => n + s.subnet_count, 0);
 const scopedAddresses = (c: ProjectCoverageResponse) => c.scopes.reduce((n, s) => n + s.total_scoped_ips, 0);
 
@@ -306,99 +301,6 @@ const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string
     </Link>
   ) : (
     <span className="text-muted-foreground"><span className="tabular-nums">0</span> {label}</span>
-  );
-};
-
-// ---------------------------------------------------------------------------
-// Needs-attention section
-// ---------------------------------------------------------------------------
-
-const NeedsAttentionSection: React.FC<{
-  pendingPlans: TestPlanSummary[] | null;
-  loading: boolean;
-  // Approving a plan needs analyst+; for viewers/auditors this is passive
-  // project context, not personal work (§27 role-aware approvals).
-  canApprove: boolean;
-  updated?: React.ReactNode;
-  /** The fetch failed and there is nothing cached: the queue is UNKNOWN. */
-  unavailable?: boolean;
-}> = ({ pendingPlans, loading, canApprove, updated, unavailable = false }) => {
-  const navigate = useNavigate();
-
-  if (loading && !pendingPlans) {
-    return (
-      <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" aria-hidden /> Loading approvals…
-      </p>
-    );
-  }
-
-  const hasAny = (pendingPlans?.length ?? 0) > 0;
-  const heading = <span>{canApprove ? 'Needs your approval' : 'Pending approvals'}</span>;
-
-  // v5.244.0 (code review D6) — a failed load is "unknown", never "nothing":
-  // this rendered "Nothing needs your approval right now" directly under the
-  // error saying approvals could not be loaded. Same rule as every other
-  // section on this page: unavailable is said, not shown as empty.
-  // v5.294.0 (UX review) — every state is the same section heading as the
-  // page's other sections; the empty ones used to be an inline bold label.
-  if (unavailable && !hasAny) {
-    return (
-      <PostureSection title={heading}>
-        <p role="status" className="text-caption text-muted-foreground">
-          Could not be checked — this is not a confirmation that nothing is waiting.
-        </p>
-      </PostureSection>
-    );
-  }
-
-  // Nothing waiting: nothing to show (5.304.0).  A heading over "Nothing needs
-  // your approval right now" took a section of the page to say so; the lead
-  // sentence names approvals whenever there are some.
-  if (!hasAny) return null;
-
-  return (
-    <PostureSection
-      title={heading}
-      description={canApprove
-        ? 'Agent-drafted test plans awaiting your approve/reject decision. Project-wide.'
-        : 'Agent-drafted test plans awaiting an analyst’s approve/reject decision. Shown for visibility — approving needs the analyst role.'}
-      actions={updated}
-    >
-      {pendingPlans && pendingPlans.length > 0 && (
-        <div>
-          <p className="mb-xs text-metadata font-semibold text-warning">
-            {pendingPlans.length} pending review
-          </p>
-          <ul className="divide-y divide-border/60">
-            {pendingPlans.slice(0, 5).map((plan) => (
-              <li key={plan.id} className="flex flex-wrap items-center gap-xs py-xxs">
-                <p className="min-w-0 flex-1 truncate text-metadata">
-                  <strong>#{plan.id}</strong> v{plan.version} · {plan.title || '—'}{' '}
-                  <span className="text-caption text-muted-foreground">
-                    · {plan.entry_count} entr{plan.entry_count === 1 ? 'y' : 'ies'}
-                    {plan.generated_by_model && ` · by ${plan.generated_by_model}`}
-                  </span>
-                </p>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 text-info"
-                  onClick={() => navigate(`/test-plans/${plan.id}`)}
-                >
-                  {canApprove ? 'Review' : 'View'}
-                </Button>
-              </li>
-            ))}
-          </ul>
-          {pendingPlans.length > 5 && (
-            <p className="mt-xs text-caption text-muted-foreground">
-              + {pendingPlans.length - 5} more — see <Link to="/test-plans" className="text-info hover:underline">Test Plans</Link>.
-            </p>
-          )}
-        </div>
-      )}
-    </PostureSection>
   );
 };
 
@@ -454,11 +356,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
   // resolved (deleted scope, or a deployment mid-upgrade).
   const subject =
     session.target_label
-    || (session.kind === 'recon'
-      ? session.scope_id
-        ? `Scope #${session.scope_id}`
-        : '—'
-      : session.kind === 'plan_generation' || session.kind === 'execution'
+    || (session.kind === 'plan_generation' || session.kind === 'execution'
       ? session.test_plan_id
         ? `Plan #${session.test_plan_id}`
         : '—'
@@ -466,22 +364,17 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
       // the point of the workflow rather than missing data.
       : session.kind === 'assist'
       ? 'Project-wide'
+      // A unified session: what the operator said it was for.
+      : session.kind === 'project'
+      ? session.purpose || 'Project session'
       : '—');
 
-  const handleOpen = () => {
-    if (session.kind === 'recon') {
-      navigate(`/recon/runs/${session.id}`);
-    } else if (session.kind === 'execution') {
-      navigate(`/executions/${session.id}`);
-    } else if (session.kind === 'plan_generation' && session.test_plan_id) {
-      navigate(`/test-plans/${session.test_plan_id}`);
-    } else if (session.kind === 'assist') {
-      navigate(`/assist-sessions/${session.id}`);
-    }
-  };
+  // One rule for where a row opens (utils/agentRuns); a legacy row with no
+  // page offers no Open.
+  const openPath = sessionRowPath(session);
 
   // 5.304.0 — "active" on a run no agent session can act on (a run from 17
-  // days ago read ACTIVE) is stalled: Agent Runs' rule, not an age.
+  // days ago read ACTIVE) is stalled: Agent Sessions' rule, not an age.
   const stalled = isStalledRun(session);
 
   return (
@@ -492,7 +385,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
         variant={stalled ? 'warning' : session.status === 'active' ? 'success' : 'muted'}
         className="normal-case tracking-normal"
         title={stalled
-          ? 'Still open, but no agent session can act on it — it will not move on its own. Open it to resume or close it.'
+          ? 'Still open, but no agent session can act on it — it will not move on its own. Open it to abandon it (its results are kept).'
           : undefined}
       >
         {stalled ? 'Stalled' : session.status.replace('_', ' ')}
@@ -505,9 +398,11 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
           {session.started_at && ` · ${fmtRelative(session.started_at)}`}
         </span>
       </p>
-      <Button size="sm" variant="ghost" className="h-7 text-info" onClick={handleOpen}>
-        Open
-      </Button>
+      {openPath && (
+        <Button size="sm" variant="ghost" className="h-7 text-info" onClick={() => navigate(openPath)}>
+          Open
+        </Button>
+      )}
     </div>
   );
 };
@@ -580,12 +475,12 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   return (
     <PostureSection
       title={<span>Runs</span>}
-      description="Agent sessions on this project — recon, plan generation, execution and assist."
+      description="Agent sessions on this project and the execution runs they opened."
       actions={<>
           {/* A failed refetch keeps the previous rows under its error. */}
           <UpdatedAt at={runsLoadedAt} stale={!!error} hideWhenFresh />
           <Button size="sm" variant="ghost" className="h-7 text-info" onClick={() => navigate('/agent-activity')}>
-            Open Agent Runs
+            Open Agent Sessions
           </Button>
       </>}
     >
@@ -808,12 +703,12 @@ const BlockersStrip: React.FC<{
               className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
               title={run.plan_title ?? undefined}
             >
-              {safeFallback(run.plan_title, `plan #${run.test_plan_id}`)} — the plan is locked to this
-              run until it is resumed or abandoned
+              {safeFallback(run.plan_title, `plan #${run.test_plan_id}`)} — open it to see where it
+              stopped; any agent session can run the plan again
             </span>
             <Button size="sm" variant="ghost" className="h-7 shrink-0 text-info"
               onClick={() => navigate(`/executions/${run.session_id}`)}>
-              Resume execution
+              Open run
             </Button>
           </div>
         ))}
@@ -832,29 +727,26 @@ const BlockersStrip: React.FC<{
 
 const Operations: React.FC = () => {
   const navigate = useNavigate();
-  const { hasPermission } = useAuth();
-  const canApprovePlans = hasPermission('analyst');
-  // 5.204.3 — the "scope registered, no hosts" setup card's Start Agentic
-  // Recon button used to navigate('/scopes') and leave the operator to find
-  // the real button there; it now opens the shared recon dialog in place.
-  // Recon needs analyst+, same gate as the scan-freshness rows below.
-  const canStartRecon = hasPermission('analyst');
-  const recon = useReconPlan();
+  const { currentProject } = useProject();
+  // The "scope registered, no hosts" setup card hands the operator's agent a
+  // scan task (5.313.0: through the one agent session — no per-scope key).
+  // Scanning uploads scans, so PROJECT analyst+ (5.313.1: it read the global
+  // role, which is binary — every member passed).  A project whose role has
+  // not loaded leaves the decision to the server, as canStartAgentSession does.
+  const canStartScan = currentProject?.my_role === undefined
+    || projectRoleAtLeast(currentProject.my_role, 'analyst');
 
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
-  const [pendingPlans, setPendingPlans] = useState<TestPlanSummary[] | null>(null);
-  const [pendingLoading, setPendingLoading] = useState(true);
   const [stats, setStats] = useState<DashboardStats | null>(null);
   const [statsLoading, setStatsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   // Per-section errors for the non-structural fetches.  Pre-fix a failed
-  // stats/pending request silently degraded to an empty card,
+  // stats request silently degraded to an empty card,
   // which reads as "nothing needs attention" — falsely implying a clean
   // project.  Track each so we can show "unavailable" (with Retry) instead
   // of a deceptively-empty section.  (UX review #8.)
   const [statsError, setStatsError] = useState<string | null>(null);
-  const [pendingError, setPendingError] = useState<string | null>(null);
   // P2 — Operations owns ONE /workbench fetch covering the personal cards
   // (My Queue / My Tasks) + the since-last-visit diff, and prop-drives them.
   // The page-level Refresh re-runs this in lockstep with the coverage/stats
@@ -935,7 +827,6 @@ const Operations: React.FC = () => {
     const isStale = () => gen !== reloadGenRef.current;
     setError(null);
     setCoverageLoading(true);
-    setPendingLoading(true);
     setStatsLoading(true);
     setWorkbenchLoading(true);
     setWorkbenchError(null);
@@ -972,15 +863,14 @@ const Operations: React.FC = () => {
       });
 
     // RV-10b — settle the core fetches independently. Pre-fix a single
-    // Promise.all rejection (e.g. /dashboard/stats) blanked coverage AND
-    // pending-plans too. Only coverage is structural (it gates the whole
-    // page), so only its failure raises the page-level error; the other
-    // sections degrade to their own empty/absent state.
+    // Promise.all rejection (e.g. /dashboard/stats) blanked coverage too.
+    // Only coverage is structural (it gates the whole page), so only its
+    // failure raises the page-level error; stats degrade on their own.
     // (No scan-freshness fetch since 5.255.2: a project is one assessment
-    // window, so the age of a scan is not something Operations chases.)
-    const [coverageR, pendingR, statsR] = await Promise.allSettled([
+    // window, so the age of a scan is not something Operations chases.
+    // No pending-plans fetch since 5.313.0: plans are not approved.)
+    const [coverageR, statsR] = await Promise.allSettled([
       getProjectCoverage(),
-      getTestPlans({ status: 'proposed' }),
       getDashboardStats(),
     ]);
 
@@ -997,13 +887,6 @@ const Operations: React.FC = () => {
     // Distinguish "successfully empty" from "unavailable": set each
     // section's error on rejection (and clear it on success) so the render
     // can warn + offer Retry instead of showing a deceptively-empty card.
-    if (pendingR.status === 'fulfilled') {
-      setPendingPlans(pendingR.value);
-      setPendingError(null);
-      markLoaded('pending');
-    } else {
-      setPendingError(formatApiError(pendingR.reason, 'Could not load pending plans.'));
-    }
     if (statsR.status === 'fulfilled') {
       setStats(statsR.value);
       setStatsError(null);
@@ -1013,7 +896,6 @@ const Operations: React.FC = () => {
     }
 
     setCoverageLoading(false);
-    setPendingLoading(false);
     setStatsLoading(false);
   }, [loadInvestigate]);
 
@@ -1053,23 +935,14 @@ const Operations: React.FC = () => {
   const isBrandNewProject =
     !!coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0;
 
-  // Single-scope projects (the setup-card case, since a project has one
-  // conceptual scope) open the dialog directly; anything else goes to the
-  // recon runs list, which owns the scope picker.
-  const handleStartRecon = useCallback(() => {
-    const scopes = coverage?.scopes ?? [];
-    if (scopes.length === 1) {
-      recon.openFor(scopes[0].scope_id, displayScopeName(scopes[0].scope_name));
-      return;
-    }
-    navigate('/recon/runs');
-  }, [coverage, recon, navigate]);
-
-  // v4.29.0 — assist-session entry.  Lives on Operations because
-  // it's the project-level coordination hub; recon-start lives on
-  // Scopes (it's scope-level) and on the setup card above, plan-generate
-  // on Test Plans.
+  // v4.29.0 — the agent-session entry.  Lives on Operations because it's the
+  // project-level coordination hub.  Since 5.313.0 it is the ONLY way an agent
+  // starts: the per-object buttons (a scope's scan, a plan's work) open the
+  // same dialog with a task for the agent (AgentTaskButton).
   const [assistDialogOpen, setAssistDialogOpen] = useState(false);
+  // `POST /assist/start` needs project auditor — a viewer is offered no entry
+  // (nor the `?start=` deep link, which then just drops its param).
+  const canStartAgent = useCanStartAgentSession();
   // `?start=agent-session` opens the dialog on arrival — the Agent Sessions
   // page links here as "where a session is started". The param is dropped
   // once read so a refresh or Back does not reopen it.
@@ -1112,31 +985,6 @@ const Operations: React.FC = () => {
     onChanged: refreshWorkbenchQuietly,
   };
 
-  // Approvals: one block, placed by whether anything is waiting (see the
-  // ordering note in the layout below).
-  const approvalsWaiting = (pendingPlans?.length ?? 0) > 0;
-  const approvalsBlock = (
-    <>
-      {pendingError && (
-        <Alert variant="warning" className="mb-md">
-          <AlertDescription className="flex items-center justify-between gap-md">
-            <span>{pendingError}</span>
-            <Button variant="outline" size="sm" onClick={reload}>
-              <RefreshCw className="size-4" aria-hidden /> Retry
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-      <NeedsAttentionSection
-        pendingPlans={pendingPlans}
-        loading={pendingLoading}
-        canApprove={canApprovePlans}
-        updated={<UpdatedAt at={loadedAt.pending ?? null} stale={!!pendingError} hideWhenFresh />}
-        unavailable={!!pendingError}
-      />
-    </>
-  );
-
   return (
     <div className="p-md md:p-lg">
       <div className="mb-md flex flex-wrap items-center gap-sm">
@@ -1150,31 +998,33 @@ const Operations: React.FC = () => {
         </div>
         {!isBrandNewProject && (
           <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setAssistDialogOpen(true)}
-              aria-label={
-                myAssistSessions.length > 0
-                  ? `Start Agent Session — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
-                  : 'Start Agent Session'
-              }
-            >
-              <MessageCircleQuestion className="size-4" aria-hidden />
-              Start Agent Session
-              {myAssistSessions.length > 0 && (
-                <Badge variant="warning" className="ml-xxs">
-                  {myAssistSessions.length}
-                </Badge>
-              )}
-            </Button>
+            {canStartAgent && (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setAssistDialogOpen(true)}
+                aria-label={
+                  myAssistSessions.length > 0
+                    ? `Start Agent Session — you have ${myAssistSessions.length} active session${myAssistSessions.length === 1 ? '' : 's'}`
+                    : 'Start Agent Session'
+                }
+              >
+                <MessageCircleQuestion className="size-4" aria-hidden />
+                Start Agent Session
+                {myAssistSessions.length > 0 && (
+                  <Badge variant="warning" className="ml-xxs">
+                    {myAssistSessions.length}
+                  </Badge>
+                )}
+              </Button>
+            )}
             {/* One freshness control for the page (v5.294.0): the OLDEST
                 load on it, and one refresh that reaches every section. */}
             <LastUpdated
               compact
               lastFetched={oldestLoad(loadedAt)}
               onRefresh={refreshAll}
-              isLoading={coverageLoading || pendingLoading}
+              isLoading={coverageLoading}
               label="Operations"
             />
           </>
@@ -1182,7 +1032,7 @@ const Operations: React.FC = () => {
       </div>
 
       <StartAssistDialog
-        open={assistDialogOpen}
+        open={canStartAgent && assistDialogOpen}
         onOpenChange={setAssistDialogOpen}
         mySessions={myAssistSessions}
         onSessionsChanged={refreshAssistSessions}
@@ -1197,8 +1047,8 @@ const Operations: React.FC = () => {
       {coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0 && (
         <SetupBlock title="Welcome — let's set up this project">
           This project has no scopes or scans yet. Start by registering the network ranges
-          you're authorized to assess — everything else (coverage, triage, plans, agentic
-          recon) lights up once a scope exists.
+          you're authorized to assess — everything else (coverage, triage, plans, agent
+          scanning) lights up once a scope exists.
           <div className="mt-sm flex flex-wrap gap-sm">
             <Button size="sm" onClick={() => navigate('/scopes')}>Register Your First Scope</Button>
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
@@ -1210,13 +1060,18 @@ const Operations: React.FC = () => {
 
       {coverage && coverage.total_scopes > 0 && coverage.total_hosts === 0 && (
         <SetupBlock title="Scope is registered — time to discover hosts">
-          No hosts have been discovered yet. The fastest way to get started is a{' '}
-          <strong className="text-foreground">recon session</strong> against your registered scope.
+          No hosts have been discovered yet. The fastest way to get started is to have your
+          agent <strong className="text-foreground">scan</strong> your registered scope and
+          upload the output, or to upload a scan you already have.
           <div className="mt-sm flex flex-wrap gap-sm">
-            {canStartRecon && (
-              <Button size="sm" onClick={handleStartRecon}>
-                <Rocket className="size-4" aria-hidden /> Start recon session
-              </Button>
+            {canStartScan && (
+              <AgentTaskButton
+                variant="default"
+                label="Scan with your agent"
+                instruction={agentInstruction.scanScope(
+                  coverage.scopes.length === 1 ? coverage.scopes[0].scope_id : undefined,
+                )}
+              />
             )}
             <Button size="sm" variant="outline" onClick={() => navigate('/scans')}>
               Upload an Existing Scan
@@ -1224,8 +1079,6 @@ const Operations: React.FC = () => {
           </div>
         </SetupBlock>
       )}
-      {/* Opens when recon.scopeId becomes non-null via handleStartRecon. */}
-      <StartReconDialog recon={recon} />
 
       {coverage && coverage.total_hosts > 0 && (
         // v5.267.0 — one column read top to bottom (UI_STYLE_GUIDE §7): a
@@ -1236,7 +1089,6 @@ const Operations: React.FC = () => {
             <OperationsLead
               workbench={workbench}
               worthALook={investigateUnavailable ? 0 : (investigate?.queue_total ?? 0)}
-              pendingApprovals={canApprovePlans && !pendingError ? (pendingPlans?.length ?? 0) : 0}
             />
           )}
           {/* Since your last visit — what changed in this project while
@@ -1251,15 +1103,11 @@ const Operations: React.FC = () => {
             />
           )}
           {/* v5.241.0 — order follows what the page is FOR: what changed →
-              what is blocked on me → my work → runs → the project's state.
-              A waiting approval is a blocker and leads; with nothing waiting
-              the same block keeps its one-line empty state further down
-              instead of pushing My work off the top. */}
+              what is blocked → my work → runs → the project's state. */}
           <BlockersStrip
             blockers={workbench?.blockers ?? null}
             unavailable={workbench?.blockers_unavailable ?? false}
           />
-          {approvalsWaiting && approvalsBlock}
           {/* Personal surface: the action queue (what needs doing) beside the
               recent-activity feed (what I was just doing). My work, Needs
               another look and Worth a look are personal/engagement queues
@@ -1287,7 +1135,6 @@ const Operations: React.FC = () => {
           <AddressTerrainSection refreshKey={refreshKey} />
           {/* Exposure + neglect analytics live on the Posture pages —
               reachable from the nav, not duplicated here. */}
-          {!approvalsWaiting && approvalsBlock}
           <RunsSection refreshKey={refreshKey} />
           {statsError && (
             <Alert variant="warning">
@@ -1335,8 +1182,8 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
  * the sentence and the sections cannot disagree.  Blocked work and overdue
  * notes colour it; a queue alone does not (work is the page's normal state).
  */
-const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: number; pendingApprovals: number }> = ({
-  workbench, worthALook, pendingApprovals,
+const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: number }> = ({
+  workbench, worthALook,
 }) => {
   const { total, overdue } = personalWorkCounts(
     workbench.my_queue, workbench.my_tasks, workbench.my_notes, workbench.my_findings,
@@ -1360,7 +1207,6 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: numbe
   // two and needed a second line to explain which was which.
   const mine = [
     total > 0 ? `${s(total, 'item', 'items')} in your queue${overdue > 0 ? ` (${n(overdue)} overdue)` : ''}` : null,
-    pendingApprovals > 0 ? `${s(pendingApprovals, 'plan', 'plans')} to approve` : null,
   ].filter((p): p is string => !!p);
   const team = [
     failed > 0 ? `${s(failed, 'import', 'imports')} failed` : null,
@@ -1373,7 +1219,7 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: numbe
   const list = (parts: string[]) => (parts.length <= 1
     ? parts.join('')
     : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
-  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : pendingApprovals > 0 ? 'warning' : mine.length || team.length ? 'neutral' : 'clear';
+  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : mine.length || team.length ? 'neutral' : 'clear';
 
   return (
     <PostureLead

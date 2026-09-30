@@ -29,7 +29,7 @@ resources/prompts surfaces are ever needed.
 
 **Every tool call loops back into the app's own `/api/v1/*` endpoint
 in-process** (all but `read_agent_guide` → `/agents-guide` and
-`list_approved_tools` → `/references/tools` are under `/agent/*`) (ASGI transport, no socket), forwarding the caller's `X-API-Key`.
+`list_tools` → `/references/tools` are under `/agent/*`) (ASGI transport, no socket), forwarding the caller's `X-API-Key`.
 So authentication, the operator-role gate, the agent-API audit log, and
 the streaming caps all run **unchanged**. The MCP layer makes no security
 decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
@@ -42,15 +42,16 @@ decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
 `tools/list` returns the **whole** tool catalogue: a key binds to one
 project-scoped `AgentSession` that does every kind of work, so there is no
 per-workflow filtering any more (it was always presentation — the endpoint
-behind each tool is the decider). The kinds of work, and the tool that opens
-each phase:
+behind each tool is the decider). The kinds of work are not a sequence
+(v2.433.0): the operator drives the agent, and the agent registers and executes
+its own plans — there is no approval step, approved-tool list or required order.
 
 | Work | Opened by | Tools |
 |---|---|---|
 | Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Reconnaissance | `start_recon {scope_id}` | scope context, subnets, in-scope domains (`recon_list_domains`), upload-job polling, summary, completion — each takes an optional `recon_session_id` for a session with more than one open run (v2.343.2) |
-| Plan generation | `create_test_plan {title}` | entry drafting, validation, submit-for-approval |
-| Execution | `start_execution {plan_id}` (plan must be approved) | execution context, sanity checks, test results, completion |
+| Scope reads, scanning and uploads | (default — no phase) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
+| Test plan | `create_test_plan {title}` | entry drafting, validation (advice, not a gate) |
+| Execution | `start_execution {plan_id}` (a draft or in-progress plan) | execution context, optional target checks (evidence), test results, completion |
 
 Every session starts by probing its environment once (`record_environment` →
 `POST /agent/session/environment`); the probe rides into every run it opens.
@@ -129,27 +130,36 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (67 tools, about 62 KB / ~15k tokens as
-`tools/list` returns it) — nothing is filtered by workflow since v2.337.0.
-Eight of those belong to the session rather than to any phase:
+Every session sees the WHOLE catalogue (66 tools at v2.433.0, about 60 KB /
+~15k tokens as `tools/list` returns it) — nothing is filtered by workflow since
+v2.337.0. Nine of those belong to the session rather than to any phase:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
 **`session_renew`** (same key, later deadline), **`end_session`** (only when
 the operator says they are finished — it revokes the key),
 **`record_environment`** (the one probe), **`read_agent_guide`**,
-**`list_approved_tools`**, **`suggest_tool`** (record a request for a tool the
-approved set doesn't cover) and **`submit_feedback`**.
+**`list_tools`** (the tool catalogue — a reference, not a permission list; it was
+`list_approved_tools` before v2.433.0), **`suggest_tool`** (propose a tool the
+catalogue lacks, for a curator — it grants nothing), **`get_upload_job`** (poll
+an upload's parse) and **`submit_feedback`**.
+
+Each tool also carries a `workflows` grouping tag — `assist`, `plan_generation`,
+`execution` or `scope` (scope reads and uploads; it was `recon` until the recon
+runs were removed) — which the tool reference page groups by. It is
+presentation, never a filter.
 
 **The MCP layer makes no authorisation decision.** A `tools/call` loops back
 into the real `/agent/*` route forwarding the caller's key; that endpoint
-decides, checked against the operator's project role and the phase state.
+decides, checked against the operator's project role and the run state.
 v2.337.0 removed the per-workflow `tools/list` filter entirely — one project
 session does everything, so the whole catalogue is listed and whether a given
-call succeeds is settled at the endpoint (a plan you have not opened for
-execution, a write your role does not allow).
+call succeeds is settled at the endpoint (a plan you have not opened an
+execution run on, a write your role does not allow).
 
 **Bulk data is deliberately not a tool.** `report-context.ndjson`,
-`recon/hosts.ndjson`, `recon/live-hosts.txt`, `recon/web-targets.txt`,
-`assist/attachments/{id}` and `POST recon/upload` are file-shaped: they belong
+`scopes/{scope_id}/hosts.ndjson`, `scopes/{scope_id}/live-hosts.txt`,
+`scopes/{scope_id}/web-targets.txt` (auditor role or above),
+`assist/attachments/{id}` and `POST uploads` (`/agent/uploads`, no run needed)
+are file-shaped: they belong
 on disk, not materialised into a model's context. A 40k-host target list read
 through a tool call is the same data, minus the ability to pipe it into the next
 scanner, plus the token bill. Images are the exception since v2.428.0: to look
@@ -157,8 +167,9 @@ at one, `assist_get_image` returns it as MCP image content (opt-in, one per call
 2 MB cap, through the same download routes); to put one in a report, the
 `download_path` references from `assist_get_finding` / `assist_get_host` save
 the file beside it.
-The server `instructions` point at the NDJSON and target lists and the upload
-with `curl`; attachment paths come back in `assist_get_finding`'s
+The server `instructions` point at the NDJSON, the scope target files
+(`/agent/scopes/{scope_id}/live-hosts.txt`, `web-targets.txt`, `hosts.ndjson`)
+and the upload with `curl`; attachment paths come back in `assist_get_finding`'s
 `download_path`.
 
 ---
@@ -173,8 +184,9 @@ authenticate. Three clients have a recipe — VS Code Copilot, Claude Code and
 Codex. Cursor's was removed in v2.275.0 because its config shape was never
 verified against a real install.
 
-The Start dialogs (assist, recon, plan generation, execution) emit ready-to-paste
-config per client, built by `app/services/mcp_client_setup_service.py`. The
+The Start Agent Session dialog (v2.433.0 — the per-object recon / plan
+generation / execution mints are gone; a page's "with your agent" button opens
+the same dialog) emits ready-to-paste config per client, built by `app/services/mcp_client_setup_service.py`. The
 reference page shows the same recipes with `<your-session-key>` in place of a
 key — served from that same builder, because the page previously kept its own
 copy and the two drifted twice.
@@ -297,7 +309,7 @@ false only for genuinely additive writes (a note, a test result), true for ones
 that replace stored values. `idempotentHint` answers "is a retry safe?": true
 for writes that converge (set follow, patch a host, complete a run, re-probe the
 environment), false for anything that creates a row per call — every additive
-tool, and the creators `create_test_plan`, `start_recon`, `start_execution` and
+tool, and the creators `create_test_plan`, `start_execution` and
 `submit_feedback`, which say so explicitly with `"idempotent": False`
 (v2.343.2; the inferred value had advertised them as safe to retry).
 
@@ -308,42 +320,57 @@ argument is a JSON-RPC `-32602`, never a call to a different route (v2.343.2 —
 a string `host_id` on `assist_add_note` used to be interpolated into the path
 as-is).
 
-### The approved-tool set
+### The tool catalogue
 
 Separate from the MCP registry, `tool_registry` is the table of **tools BlueStick
 knows about** — seeded from `app/data/tool_registry_seed.json` (63 entries at
 v2.370; the number moves, the file is the source), rendered for
-humans at `/tool-reference` and filtered to the `approved` subset for agents at
-`GET /api/v1/references/tools?status=approved`.
+humans at `/tool-reference` and served to agents, unfiltered, by `list_tools`
+(`GET /api/v1/references/tools`).
 
-* **`status`** is a *policy* fact: may an agent run it.
+**It is a catalogue, not a permission list (v2.433.0).** It used to carry an
+`approved` status that agents were told was the only set they could run without
+asking; that allowlist went with the rest of the "agent on rails" model (and the
+server never enforced it). Migration `c7d2e9f4a1b6` turned every `approved` row
+into `reference`. What an agent runs is between it and its operator.
+
+* **`status`** says only where a row stands in the catalogue: `reference` (in
+  it), `suggested` (an agent proposed it; awaiting a curator), `rejected` (a
+  declined suggestion).
 * **`ingestible`** is an *engineering* fact: does a parser exist for its output.
+  A tool can be worth running without BlueStick parsing a word of its output.
 
-They are deliberately independent — fusing them would either block approval
-until someone writes a parser, or approve tools whose upload then fails.
+Seeding is **additive**: a curator's decision or edited description survives a
+redeploy. A correction to a shipped seed row therefore needs a migration, not a
+seed edit (see `c9a4e70b5d18`).
 
-Seeding is **additive**: an operator's approval decision or edited description
-survives a redeploy. A correction to a shipped seed row therefore needs a
-migration, not a seed edit (see `c9a4e70b5d18`).
-
-An agent that needs something outside the set calls `suggest_tool`; the row lands
-as `suggested` (which no rule reads) and an admin vets it from the Tool Reference
-page. Declining keeps the row, so the next agent that asks gets the same answer.
+An agent that used or needed a tool the catalogue lacks calls `suggest_tool`;
+the row lands as `suggested` and an admin curates it from the Tool Reference
+page (`PATCH /references/tools/{name}` → `reference` or `rejected`). Declining
+keeps the row, so the next agent that proposes it gets the same answer.
 
 ---
 
 ## 6. Guardrails, and what the server can't do
 
-An agent may run a command **without waiting for approval** when three things
-hold: the tool is approved, the target is a host already in the inventory, and
-every file it writes lands in the session's working directory. Everything else
-stops and asks. The command is shown either way.
+The operator drives the agent (v2.433.0; `safety_properties.command_approval:
+"operator_driven"` on `/.well-known/networkmapper.json`, which no longer
+publishes `plan_execution_requires_human_approval`). The agent's rules
+(`agent_policy.SAFETY_RULES`): show the operator every command before running
+it; propose next steps rather than taking them unasked; stay inside the
+project's declared scope — a target outside it needs the operator's explicit
+go-ahead, and a name in scope does not put the address it resolves to in scope;
+write output into the working directory — reading or writing outside it,
+installing software or changing settings or credentials needs explicit
+go-ahead; record every command and its outcome verbatim and upload scanner
+output. There is no approved-tool allowlist, no plan approval, no mandatory
+per-host sanity check and no required order — those were the retired "rails".
 
 **BlueStick cannot enforce any of this.** The commands run on the operator's
 machine and the server sees only what the agent reports. The real boundary is
 the client's sandbox — `codex --sandbox workspace-write --ask-for-approval
-on-request`, or Claude Code's default prompting — and every connect recipe the session dialogs
-emit carries those flags (any session can open a recon or execution run).
+on-request`, or Claude Code's default prompting — and every connect recipe the
+session dialog emits carries those flags.
 
 What the server contributes is the record, and one requirement: **every
 workflow's prompt opens with a mandatory read-back**, where the agent states the
@@ -355,11 +382,16 @@ makes the agent's own words part of the audit trail.
 
 ## 7. Reviewing what happened
 
-* **Agent Runs → By session** (`/agent-activity?view=sessions`;
-  `/assist-sessions/{id}` opens one) — every agent session in the project, what it was
-  allowed to do, and what it produced (notes first — they are the durable
-  output; the API feed is the read trail).
-* **Agent API activity** — per plan, recon session, and assist session.
+* **Workflows → Agent Sessions** (`/agent-activity`) — what is live (with the
+  plans and execution runs each session opened, and Resume / End) and every
+  session in the project. Ending a session — End here, the agent's
+  `end_session`, or the hourly lapse sweep — marks its open execution runs
+  (active or paused) `abandoned` with their results kept, so nothing is "left
+  open" behind an ended session. **A session's page**
+  (`/agent-sessions/{id}`, by the session id; the older `/assist-sessions/{id}`
+  links redirect there) has its controls, its work, the notes it wrote (the
+  durable output) and its API-call feed (the read trail).
+* **Agent API activity** — per plan and per session.
 * **`GET /api/v1/mcp-telemetry/summary`** (admin) — per-tool call counts,
   outcomes, and `unknown_tools_called`, which is how a client calling a tool
   this deployment doesn't serve becomes visible.
@@ -377,8 +409,9 @@ makes the agent's own words part of the audit trail.
 | `GET /api/v1/references/mcp-tools` | none | live tool catalog + connect recipes + certificate info |
 | `GET /api/v1/references/trust-cert-script` | none | the certificate-trust installer |
 | `GET /api/v1/references/tls-certificate` | none | the deployment certificate (PEM) |
-| `GET /api/v1/references/tools` | none | the tool registry (`?status=approved`) |
-| `PATCH /api/v1/references/tools/{name}` | admin | vet a suggested tool |
+| `GET /api/v1/references/tools` | none | the tool catalogue (`?status=reference\|suggested\|rejected`) |
+| `PATCH /api/v1/references/tools/{name}` | admin | curate a suggested tool (`reference` / `rejected`) |
 | `GET /api/v1/agent/identity` | agent key | what this key is |
-| `POST /api/v1/agent/tool-suggestions` | agent key | record a tool request |
+| `POST /api/v1/agent/uploads` · `GET /api/v1/agent/uploads/{job_id}` | agent key | upload scanner output (curl, multipart) · poll its parse (`get_upload_job`) |
+| `POST /api/v1/agent/tool-suggestions` | agent key | propose a tool for the catalogue |
 | `GET /api/v1/agents-guide?workflow=…` | none | the agent guide, sliced |

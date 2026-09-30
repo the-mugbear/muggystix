@@ -18,7 +18,7 @@ These pin:
 """
 from datetime import datetime, timedelta, timezone
 
-from app.db.models_agent import AgentSession, AssistSession, ReconSession
+from app.db.models_agent import AgentSession, AssistSession, ExecutionSession
 from app.db.models_auth import APIKey, User
 
 
@@ -48,6 +48,27 @@ def _agent_session_id(db, assist_session_id):
 
 def _hdr(key):
     return {"X-API-Key": key}
+
+
+def _open_execution_run(client, db, project, key):
+    """Create a draft plan with one entry and open an execution run on it via
+    the agent surface — the surviving command-running run (recon runs gone)."""
+    from app.db import models
+    from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
+    host = models.Host(project_id=project.id, ip_address="10.0.0.5", state="up")
+    db.add(host)
+    db.flush()
+    plan = TestPlan(project_id=project.id, version=1, title="p", status=TestPlanStatus.DRAFT.value)
+    db.add(plan)
+    db.flush()
+    db.add(TestPlanEntry(
+        test_plan_id=plan.id, host_id=host.id, priority="high",
+        test_phase="enumeration", proposed_tests=[], rationale="x",
+    ))
+    db.commit()
+    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    assert r.status_code == 201, r.text
+    return plan.id, r.json()["session_id"]
 
 
 # ---------------------------------------------------------------------------
@@ -81,28 +102,24 @@ def test_agent_ends_its_own_session_and_the_key_dies_with_it(client, test_projec
 def test_agent_end_is_refused_while_a_phase_is_open(client, test_project, db_session):
     key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post("/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id})
-    assert r.status_code == 201, r.text
-    recon_id = r.json()["recon_session_id"]
+    plan_id, run_id = _open_execution_run(client, db_session, test_project, key)
 
     r = client.post("/api/v1/agent/session/end", headers=_hdr(key), json={})
     assert r.status_code == 409, r.text
     detail = r.json()["detail"]
-    assert detail["active_recon_session_ids"] == [recon_id]
-    assert detail["active_execution_session_ids"] == []
-    assert "/agent/recon/complete" in detail["message"]
+    assert detail["active_execution_session_ids"] == [run_id]
+    assert "execution" in detail["message"].lower()
 
     # Refusal changed nothing: the session is still active, the key still works,
-    # the recon run is still active (not abandoned by an end underneath it).
+    # the run is still active (not paused by an end underneath it).
     row = db_session.query(AgentSession).filter(AgentSession.id == sid).first()
     assert row.status == "active"
-    run = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
+    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == run_id).first()
     assert run.status == "active"
     assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 200
 
-    # Complete the phase, then the end goes through.
-    r = client.post("/api/v1/agent/recon/complete", headers=_hdr(key), json={"notes": "done"})
+    # Complete the run, then the end goes through.
+    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
     assert r.status_code == 200, r.text
     r = client.post("/api/v1/agent/session/end", headers=_hdr(key), json={})
     assert r.status_code == 200, r.text
@@ -123,10 +140,7 @@ def test_end_session_is_an_mcp_tool():
 def test_resume_rotates_the_key_on_the_same_session(client, test_project, db_session):
     old_key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post("/api/v1/agent/recon/start", headers=_hdr(old_key), json={"scope_id": scope.id})
-    assert r.status_code == 201, r.text
-    recon_id = r.json()["recon_session_id"]
+    plan_id, run_id = _open_execution_run(client, db_session, test_project, old_key)
 
     r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/resume")
     assert r.status_code == 200, r.text
@@ -139,15 +153,14 @@ def test_resume_rotates_the_key_on_the_same_session(client, test_project, db_ses
     assert new_key in body["instructions"]
     assert body["mcp_clients"], "the resume must hand back the MCP setup like start does"
     assert body["mcp_url"].endswith("/mcp")
-    assert body["active_recon_session_ids"] == [recon_id]
+    assert body["active_execution_session_ids"] == [run_id]
     assert body["key_expires_at"] and body["renewable_until"]
 
-    # Same session, same open phase: the recon run still belongs to it and is
+    # Same session, same open run: the execution run still belongs to it and is
     # reachable with the new key; the old key is dead.
-    run = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
+    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == run_id).first()
     assert run.agent_session_id == sid and run.status == "active"
-    r = client.get("/api/v1/agent/recon/context", headers=_hdr(new_key))
-    assert r.status_code == 200 and r.json()["recon_session_id"] == recon_id
+    assert client.get("/api/v1/agent/identity", headers=_hdr(new_key)).status_code == 200
     assert client.get("/api/v1/agent/identity", headers=_hdr(old_key)).status_code == 401
 
     # Exactly one live key on the session, and the session record says why.

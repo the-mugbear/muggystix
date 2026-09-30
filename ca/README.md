@@ -66,7 +66,11 @@ remains. It also refuses:
 - documentation-only addresses (`192.0.2.x`, `198.51.100.x`, `203.0.113.x`);
 - networks broader than `/8`;
 - lifetimes out of range;
-- server names or addresses outside the ranges the root allows.
+- server names or addresses outside the ranges the root allows. A server
+  name counts as inside a domain when it IS the domain or ends in `.domain`
+  (`bluestick.lab.internal` is inside `lab.internal`, not inside
+  `bluestick.internal`); the message names the permitted domains and
+  suggests a name that fits, or the domain that would cover yours.
 
 The root values cannot be changed once the root is issued, so choose them
 deliberately:

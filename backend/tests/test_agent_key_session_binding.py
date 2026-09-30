@@ -44,58 +44,6 @@ def test_assist_key_is_bound_to_an_agent_session(client, db_session, test_projec
     )
 
 
-def test_recon_resume_backfills_a_missing_agent_session(
-    client, db_session, test_project, test_user
-):
-    """A recon session predating the backfill must not resume into a key with
-    a NULL agent_session_id — the exact hole that blocks the contract phase."""
-    from app.db.models import Scope
-    from app.db.models_agent import Agent, ReconSession, ReconSessionStatus
-
-    scope = Scope(project_id=test_project.id, name="resume-binding-scope")
-    db_session.add(scope)
-    db_session.commit()
-    db_session.refresh(scope)
-
-    agent = Agent(
-        name=f"{test_user.username}-agent",
-        project_id=test_project.id,
-        owner_id=test_user.id,
-    )
-    db_session.add(agent)
-    db_session.commit()
-    db_session.refresh(agent)
-
-    # A pre-backfill session: no unified base row.
-    legacy = ReconSession(
-        project_id=test_project.id,
-        scope_id=scope.id,
-        agent_id=agent.id,
-        started_by_id=test_user.id,
-        status=ReconSessionStatus.ACTIVE.value,
-        agent_session_id=None,
-    )
-    db_session.add(legacy)
-    db_session.commit()
-    db_session.refresh(legacy)
-    assert legacy.agent_session_id is None
-
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}"
-        f"/recon/sessions/{legacy.id}/resume",
-    )
-    if resp.status_code == 404:
-        pytest.skip("recon resume route not mounted in this configuration")
-    assert resp.status_code in (200, 201), resp.text
-
-    db_session.refresh(legacy)
-    assert legacy.agent_session_id is not None, "resume must backfill the base row"
-
-    key = _key_for(db_session, agent_session_id=legacy.agent_session_id)
-    assert key is not None
-    assert key.agent_session_id == legacy.agent_session_id
-
-
 def test_no_route_mints_an_unscoped_key(client, db_session, test_project):
     """v2.295.0 — there is no longer an endpoint that produces an unbound key.
 

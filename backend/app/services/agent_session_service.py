@@ -38,12 +38,13 @@ from app.db.models_agent import (
     AssistSession,
     ExecutionSession,
     ExecutionSessionStatus,
-    ReconSession,
-    ReconSessionStatus,
     TestPlan,
+    TestPlanHistory,
 )
 from app.db.models_auth import APIKey, User
+from app.db.models_project import ProjectMembership
 from app.services.agent_key_ttl import resolve_expires_at, session_renewal_deadline
+from app.services.assist_session_service import operator_role
 
 logger = logging.getLogger(__name__)
 
@@ -51,11 +52,11 @@ logger = logging.getLogger(__name__)
 # v2.337.0 — ``project`` is the consolidated kind every new session gets; the
 # four legacy kinds remain so sessions started before the consolidation keep
 # showing up (they are sourced from their detail tables, keyed by those ids).
-SessionKind = Literal["project", "recon", "plan_generation", "execution", "assist"]
+SessionKind = Literal["project", "plan_generation", "execution", "assist"]
 
 #: The default kind set. Named once so the call sites can't drift — assist
 #: was once missing from three of five copies of this list.
-ALL_SESSION_KINDS = {"project", "recon", "plan_generation", "execution", "assist"}
+ALL_SESSION_KINDS = {"project", "plan_generation", "execution", "assist"}
 
 #: Session statuses.  ``active`` is the only one a key works under.
 SESSION_ACTIVE = "active"
@@ -81,7 +82,7 @@ def create_agent_session(
     ``workflow`` defaults to ``project``; the legacy values are accepted only
     so tests and backfills can construct historical shapes.  A session carries
     no single target — the recon/execution phase rows do
-    (``ReconSession.scope_id`` / ``ExecutionSession.test_plan_id``).
+(``ExecutionSession.test_plan_id``).
     """
     base = AgentSession(
         workflow=workflow,
@@ -184,18 +185,6 @@ def revoke_session_keys(db: Session, session_id: int) -> int:
     )
 
 
-def active_recon_phases(db: Session, session_id: int) -> List[ReconSession]:
-    return (
-        db.query(ReconSession)
-        .filter(
-            ReconSession.agent_session_id == session_id,
-            ReconSession.status == ReconSessionStatus.ACTIVE.value,
-        )
-        .order_by(ReconSession.id)
-        .all()
-    )
-
-
 def active_execution_phases(db: Session, session_id: int) -> List[ExecutionSession]:
     return (
         db.query(ExecutionSession)
@@ -208,66 +197,6 @@ def active_execution_phases(db: Session, session_id: int) -> List[ExecutionSessi
     )
 
 
-def resolve_recon_phase(
-    db: Session,
-    session_id: int,
-    recon_session_id: Optional[int] = None,
-) -> ReconSession:
-    """The recon run a call is about.
-
-    An explicit ``recon_session_id`` must belong to this session — a run
-    opened by another session is not the caller's to write into (that is the
-    record-integrity boundary the per-key scope used to carry).  Without
-    one, the session's single active run is meant; none open is a 409 that
-    names the start call, and more than one is a 400 that lists them.
-    """
-    if recon_session_id is not None:
-        row = (
-            db.query(ReconSession)
-            .filter(
-                ReconSession.id == recon_session_id,
-                ReconSession.agent_session_id == session_id,
-            )
-            .first()
-        )
-        if row is None:
-            raise HTTPException(
-                status_code=404,
-                detail=(
-                    f"Recon run #{recon_session_id} was not opened by this session. "
-                    "Pass a recon_session_id from POST /agent/recon/start, or "
-                    "omit it to use this session's single active run."
-                ),
-            )
-        return row
-    active = active_recon_phases(db, session_id)
-    if len(active) == 1:
-        return active[0]
-    if not active:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "error": "no_active_recon_run",
-                "message": (
-                    "This session has no active reconnaissance run. Open one "
-                    "with POST /agent/recon/start {\"scope_id\": ...} (the "
-                    "scopes are at GET /agent/scopes), then retry."
-                ),
-            },
-        )
-    raise HTTPException(
-        status_code=400,
-        detail={
-            "error": "ambiguous_recon_run",
-            "message": (
-                "This session has more than one active reconnaissance run; "
-                "say which with recon_session_id."
-            ),
-            "recon_session_ids": [r.id for r in active],
-        },
-    )
-
-
 def resolve_execution_phase(
     db: Session,
     session_id: int,
@@ -276,7 +205,7 @@ def resolve_execution_phase(
     plan_id: Optional[int] = None,
 ) -> ExecutionSession:
     """The execution run a call is about — by id, by plan, or the single
-    active one.  Same ownership rule as :func:`resolve_recon_phase`."""
+    active one."""
     q = db.query(ExecutionSession).filter(
         ExecutionSession.agent_session_id == session_id
     )
@@ -308,7 +237,7 @@ def resolve_execution_phase(
                     "message": (
                         f"This session has no active execution run on plan #{plan_id}. "
                         "Open one with POST /agent/execution-sessions/start "
-                        "{\"plan_id\": " + str(plan_id) + "} — the plan must be approved."
+                        "{\"plan_id\": " + str(plan_id) + "}."
                     ),
                 },
             )
@@ -337,47 +266,6 @@ def resolve_execution_phase(
     )
 
 
-def open_recon_phase(
-    db: Session,
-    *,
-    session: AgentSession,
-    scope,
-    notes: Optional[str] = None,
-) -> ReconSession:
-    """Open a reconnaissance run on ``scope`` within ``session``.
-
-    One active run per scope per session — a second start on the same scope
-    returns the run already open rather than fragmenting its counters.  The
-    session's environment probe is snapshotted onto the run so
-    ``/recon/context`` can shape its recommended sequence to this operator's
-    machine.
-    """
-    existing = (
-        db.query(ReconSession)
-        .filter(
-            ReconSession.agent_session_id == session.id,
-            ReconSession.scope_id == scope.id,
-            ReconSession.status == ReconSessionStatus.ACTIVE.value,
-        )
-        .first()
-    )
-    if existing is not None:
-        return existing
-    run = ReconSession(
-        project_id=session.project_id,
-        scope_id=scope.id,
-        agent_id=session.agent_id,
-        started_by_id=session.started_by_id,
-        status=ReconSessionStatus.ACTIVE.value,
-        notes=(notes or "").strip() or None,
-        agent_session_id=session.id,
-    )
-    _copy_probe(session, run)
-    db.add(run)
-    db.flush()
-    return run
-
-
 def open_execution_phase(
     db: Session,
     *,
@@ -386,9 +274,10 @@ def open_execution_phase(
 ) -> ExecutionSession:
     """Open (or resume) an execution run on ``plan`` within ``session``.
 
-    The plan must be approved (or already in progress) and non-empty — the
-    human approval gate is the one control this consolidation keeps intact.
-    At most one run per plan is active at a time: a run this session
+    The plan must be a draft or already in progress, and non-empty.  There is
+    no approval step (v2.433.0): the operator drives their agent, and a plan
+    is the record of what it set out to test.  The first run moves a draft to
+    in_progress.  At most one run per plan is active at a time: a run this session
     already has open on the plan is reused; any other session's active run
     is paused, as ``/execute`` always did.  Raises HTTPException.
     """
@@ -399,15 +288,15 @@ def open_execution_phase(
     # rather than a bare locking query: the caller loaded ``plan`` before the
     # lock, and a query that returns an already-loaded object leaves its
     # attributes untouched, so the status checked below would be the
-    # pre-lock value and a reject that committed while we waited would be
+    # pre-lock value and an archive that committed while we waited would be
     # invisible.  Refreshing under the lock reads the state the lock protects.
     db.refresh(plan, with_for_update=True)
-    if plan.status not in ("approved", "in_progress"):
+    if plan.status not in ("draft", "in_progress"):
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Plan #{plan.id} is {plan.status}; execution requires an approved "
-                "plan. Submit it and ask the operator to approve it first."
+                f"Plan #{plan.id} is {plan.status}; only a draft or in-progress "
+                "plan can be executed."
             ),
         )
     from app.db.models_agent import TestPlanEntry
@@ -418,6 +307,29 @@ def open_execution_phase(
     ) or 0
     if entry_count == 0:
         raise HTTPException(status_code=409, detail="Cannot execute an empty test plan.")
+    # A draft still being written belongs to the session writing it
+    # (v2.433.1).  Starting a run freezes its tests, so another session may
+    # start it only once its drafting session has ended.  Ownership, not
+    # approval: the drafting session itself starts it whenever it likes.
+    if (
+        plan.status == "draft"
+        and plan.agent_session_id is not None
+        and plan.agent_session_id != session.id
+    ):
+        drafter_active = (
+            db.query(AgentSession.id)
+            .filter(AgentSession.id == plan.agent_session_id, AgentSession.status == SESSION_ACTIVE)
+            .first()
+        )
+        if drafter_active is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    f"Plan #{plan.id} is a draft still open in agent session "
+                    f"#{plan.agent_session_id}, and starting a run freezes its tests. "
+                    "Start it from that session, or once that session has ended."
+                ),
+            )
 
     own = (
         db.query(ExecutionSession)
@@ -451,8 +363,25 @@ def open_execution_phase(
         )
         _copy_probe(session, run)
         db.add(run)
-    if plan.status == "approved":
+    if plan.status == "draft":
         plan.status = "in_progress"
+        # The only lifecycle step between drafting and completion now that
+        # there is no approval, so the plan's history records it.
+        actor = (
+            ("agent", session.agent_id) if session.agent_id is not None
+            else ("user", session.started_by_id)
+        )
+        if actor[1] is not None:
+            db.add(TestPlanHistory(
+                test_plan_id=plan.id,
+                entry_id=None,
+                actor_type=actor[0],
+                actor_id=actor[1],
+                action="status_changed",
+                field_changed="status",
+                old_value="draft",
+                new_value="in_progress",
+            ))
     try:
         db.flush()
     except IntegrityError as exc:
@@ -482,8 +411,6 @@ def _copy_probe(session: AgentSession, run) -> None:
 
 def propagate_probe(db: Session, session: AgentSession) -> None:
     """After a (re-)probe on the session, refresh every open phase's copy."""
-    for run in active_recon_phases(db, session.id):
-        _copy_probe(session, run)
     for run in db.query(ExecutionSession).filter(
         ExecutionSession.agent_session_id == session.id,
         ExecutionSession.status.in_([
@@ -496,7 +423,6 @@ def propagate_probe(db: Session, session: AgentSession) -> None:
 def session_phase_summary(db: Session, session: AgentSession) -> dict:
     """The phases a session has open or produced — what ``/agent/identity``
     reports and what the MCP layer fills tool arguments from."""
-    recon = active_recon_phases(db, session.id)
     execs = active_execution_phases(db, session.id)
     drafted = [
         pid for (pid,) in db.query(TestPlan.id)
@@ -512,8 +438,6 @@ def session_phase_summary(db: Session, session: AgentSession) -> dict:
     elif drafted:
         plan_id = drafted[-1]
     return {
-        "recon_session_id": recon[0].id if len(recon) == 1 else None,
-        "active_recon_session_ids": [r.id for r in recon],
         "execution_session_id": execs[0].id if len(execs) == 1 else None,
         "active_execution_session_ids": [e.id for e in execs],
         "plan_id": plan_id,
@@ -538,10 +462,13 @@ def end_agent_session(
 ) -> None:
     """End a session: revoke its keys and close what it left open.
 
-    Active recon runs are marked abandoned (nothing can upload into them
-    again) and active execution runs are paused (a later session may open
-    a fresh run on the same plan and continue from the recorded results).
-    Draft plans stay drafts — they are project data, not session state.
+    Its open execution runs (active, or paused because another session took
+    the plan over) are abandoned, with their results kept: only the session
+    that opened a run can continue it, so once the session is gone the run
+    can never move again.  Pausing them (before v2.433.1) left them "left
+    open" and "blocked" for good.  A later session opens a fresh run on the
+    same plan and continues from the recorded results.  Draft plans stay
+    drafts — they are project data, not session state.
 
     ``end_reason`` is the typed classification (``END_REASON_*``); when it is
     not given, a caller that names a person is an operator end and anything
@@ -552,12 +479,19 @@ def end_agent_session(
     line = f"[{now.isoformat()}] Session ended by {who}" + (f": {reason}" if reason else "")
 
     revoke_session_keys(db, session.id)
-    for run in active_recon_phases(db, session.id):
-        run.status = ReconSessionStatus.ABANDONED.value
+    open_runs = (
+        db.query(ExecutionSession)
+        .filter(
+            ExecutionSession.agent_session_id == session.id,
+            ExecutionSession.status.in_((
+                ExecutionSessionStatus.ACTIVE.value, ExecutionSessionStatus.PAUSED.value,
+            )),
+        )
+        .all()
+    )
+    for run in open_runs:
+        run.status = ExecutionSessionStatus.ABANDONED.value
         run.completed_at = now
-        run.notes = (f"{run.notes}\n{line}" if run.notes else line)[-8192:]
-    for run in active_execution_phases(db, session.id):
-        run.status = ExecutionSessionStatus.PAUSED.value
         run.notes = (f"{run.notes}\n{line}" if run.notes else line)[-8192:]
     session.status = SESSION_ENDED
     session.completed_at = now
@@ -578,6 +512,46 @@ def feedback_counts_for_agent_sessions(db: Session, session_ids: List[int]) -> d
         .all()
     )
     return {sid: int(n) for sid, n in rows}
+
+
+def _assist_ids_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
+    """``{agent_session_id: assist_sessions.id}`` — each consolidated session's
+    detail row (notes and the API-call feed are keyed by it), one query."""
+    if not session_ids:
+        return {}
+    return dict(
+        db.query(AssistSession.agent_session_id, func.min(AssistSession.id))
+        .filter(AssistSession.agent_session_id.in_(session_ids))
+        .group_by(AssistSession.agent_session_id)
+        .all()
+    )
+
+
+def _operator_roles(db: Session, project_id: int, user_ids: set) -> dict:
+    """``{user_id: operator role}`` for the operators on a page, one query."""
+    ids = [u for u in user_ids if u is not None]
+    if not ids:
+        return {}
+    rows = (
+        db.query(User.id, User.role, ProjectMembership.role)
+        .outerjoin(
+            ProjectMembership,
+            (ProjectMembership.user_id == User.id)
+            & (ProjectMembership.project_id == project_id),
+        )
+        .filter(User.id.in_(ids))
+        .all()
+    )
+    return {uid: operator_role(global_role, member_role) for uid, global_role, member_role in rows}
+
+
+def get_agent_session_row(
+    db: Session, project_id: int, session_id: int,
+) -> Optional[AgentSessionRow]:
+    """One consolidated session as the list shows it (phases, key state,
+    feedback, operator role), or None when it is not this project's."""
+    rows = list_agent_sessions(db, project_id, kinds=["project"], session_id=session_id, limit=1)
+    return rows[0] if rows else None
 
 
 def feedback_checkpoint(db: Session, agent_session_id: Optional[int]) -> Tuple[Optional[bool], Optional[str]]:
@@ -602,44 +576,6 @@ def feedback_checkpoint(db: Session, agent_session_id: Optional[int]) -> Tuple[O
         "guessed, or worked around something, with the exact error or missing "
         "field. One line each is enough; 'the API was fine' is not."
     )
-
-
-def supersede_agent_session(
-    db: Session,
-    old_session_id: Optional[int],
-    *,
-    successor: AgentSession,
-    ended_by: Optional[User] = None,
-) -> Optional[AgentSession]:
-    """End the session a resume/rotate is replacing, AFTER its work has been
-    re-pointed at ``successor``.
-
-    v2.338.0.  A resume mints a fresh session and key on the assumption that
-    the previous agent is dead; if the previous key stays live, the operator
-    now holds two credentials for the same run and the "crashed" agent can
-    keep writing beside the new one.  Ending the old session revokes its keys
-    and closes whatever it still had open.  Call this only once the resumed
-    run / plan carries ``successor.id`` — ``end_agent_session`` abandons the
-    old session's active recon runs, and the one being resumed must no longer
-    be among them.  Returns the ended session, or None when there was nothing
-    to end (a run that predates the unified session row).
-    """
-    if old_session_id is None or old_session_id == successor.id:
-        return None
-    old = db.query(AgentSession).filter(AgentSession.id == old_session_id).first()
-    if old is None:
-        return None
-    if old.status == SESSION_ACTIVE:
-        end_agent_session(
-            db, old, ended_by=ended_by,
-            reason=f"superseded by session #{successor.id}",
-        )
-    else:
-        # Already ended (lapsed by the sweep, or ended by hand) — its keys were
-        # revoked on the way out, but revoke again so a row hand-edited back to
-        # active can't slip through.
-        revoke_session_keys(db, old.id)
-    return old
 
 
 def key_expiry_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
@@ -688,9 +624,7 @@ def resume_agent_session(
     replacement on the **same** session: ``mint_session_key`` revokes the
     previous key first, so the dead client cannot keep writing beside the new
     one, and the open recon / execution phases stay attached because their
-    ``agent_session_id`` never changes.  Contrast the per-phase resume routes,
-    which mint a *new* session and supersede the old one — those exist for
-    legacy phase rows that have no project session to reconnect to.
+    ``agent_session_id`` never changes.  It is the only resume (v2.433.0).
 
     Refuses (409) a session that is not active or is past its renewal deadline:
     past the cap nothing can be renewed, so the honest answer is "start a new
@@ -728,26 +662,23 @@ def close_agent_session_from_agent(
     v2.340.0.  Until now only the operator (End on Agent Activity) or the
     hourly sweep — after the key had expired *and* the session had passed its
     lifetime cap, a week by default — could end a project session.  Recon and
-    execution phases had a ``/complete``; the session itself had nothing, so
+    execution runs had a ``/complete``; the session itself had nothing, so
     even an agent that finished cleanly left an active row behind.
 
-    Refuses (409) while a recon or execution phase is still open, naming the
-    phase ids: the phase's own ``/complete`` is what records a truthful
-    outcome, and ending underneath it would mark the recon abandoned and the
-    execution paused — the crashed-agent semantics, which this is not.
+    Refuses (409) while an execution run is still open, naming the ids: the
+    run's own ``/complete`` records a truthful outcome, and ending underneath
+    it would pause the run — the crashed-agent semantics, which this is not.
     """
-    open_recon = [r.id for r in active_recon_phases(db, session.id)]
     open_exec = [e.id for e in active_execution_phases(db, session.id)]
-    if open_recon or open_exec:
+    if open_exec:
         raise HTTPException(
             status_code=409,
             detail={
                 "message": (
-                    "Close your open phases first — POST /agent/recon/complete for each "
-                    "reconnaissance run and POST /agent/execution-sessions/{id}/complete "
-                    "for each execution run — then end the session."
+                    "Close your open execution runs first — POST "
+                    "/agent/execution-sessions/{id}/complete for each — then end "
+                    "the session."
                 ),
-                "active_recon_session_ids": open_recon,
                 "active_execution_session_ids": open_exec,
             },
         )
@@ -832,9 +763,8 @@ class AgentSessionRow:
     """One row in the unified agent-session timeline.
 
     The three workflows have different native shapes; this is the
-    least-common-denominator the v3 UI consumes.  ``scope_id`` is
-    populated for recon kind only; ``test_plan_id`` is populated
-    for plan_generation + execution.  ``status`` is each session's
+    least-common-denominator the v3 UI consumes.  ``test_plan_id`` is
+    populated for plan_generation + execution.  ``status`` is each session's
     native status field (no normalisation — the v3 UI can map them
     to a presentation palette).
     """
@@ -849,7 +779,6 @@ class AgentSessionRow:
     generated_by_model: Optional[str]
     generated_by_tool: Optional[str]
     prompt_version: Optional[str]
-    scope_id: Optional[int]
     test_plan_id: Optional[int]
     # Denormalised display labels — populated by joining agents/users
     # at the service layer so the UI doesn't have to round-trip.
@@ -888,6 +817,18 @@ class AgentSessionRow:
     # not in progress).  Workflow state, not evidence freshness.
     agent_session_id: Optional[int] = None
     session_live: Optional[bool] = None
+    # v2.432.0 — project sessions only.  ``phases`` is the work the session
+    # opened (recon runs, plans drafted, execution runs), each with its own
+    # status: the timeline excludes those rows (``_not_a_project_child``), so
+    # without this a session's runs were reachable only from /executions and
+    # /recon/runs.  ``assist_session_id`` is the session's detail row, whose id
+    # the notes and the API-call feed are keyed by; ``last_activity_at`` is its
+    # most recent authenticated call; ``operator_role`` the authority it acts
+    # with (``assist_session_service.operator_role``).
+    phases: Optional[List[dict]] = None
+    assist_session_id: Optional[int] = None
+    last_activity_at: Optional[datetime] = None
+    operator_role: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
@@ -902,7 +843,6 @@ class AgentSessionRow:
             "generated_by_model": self.generated_by_model,
             "generated_by_tool": self.generated_by_tool,
             "prompt_version": self.prompt_version,
-            "scope_id": self.scope_id,
             "test_plan_id": self.test_plan_id,
             "agent_name": self.agent_name,
             "user_username": self.user_username,
@@ -915,6 +855,10 @@ class AgentSessionRow:
             "user_full_name": self.user_full_name,
             "agent_session_id": self.agent_session_id,
             "session_live": self.session_live,
+            "phases": self.phases or [],
+            "assist_session_id": self.assist_session_id,
+            "last_activity_at": self.last_activity_at,
+            "operator_role": self.operator_role,
         }
 
 
@@ -932,7 +876,7 @@ def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None
     """
     runs = [
         r for r in rows
-        if r.kind in ("recon", "execution", "assist") and (r.status or "").lower() in _RUN_IN_PROGRESS
+        if r.kind in ("execution", "assist") and (r.status or "").lower() in _RUN_IN_PROGRESS
     ]
     if not runs:
         return
@@ -1012,20 +956,6 @@ def _not_a_project_child(detail_agent_session_col):
     )
 
 
-def _apply_recon_filters(q, *, agent_id, model, tool, user_id, status):
-    if agent_id is not None:
-        q = q.filter(ReconSession.agent_id == agent_id)
-    if model is not None:
-        q = q.filter(ReconSession.generated_by_model == model)
-    if tool is not None:
-        q = q.filter(ReconSession.generated_by_tool == tool)
-    if user_id is not None:
-        q = q.filter(ReconSession.started_by_id == user_id)
-    if status is not None:
-        q = q.filter(ReconSession.status == status)
-    return q.filter(_not_a_project_child(ReconSession.agent_session_id))
-
-
 def _apply_plan_filters(q, *, agent_id, model, tool, user_id, status):
     if agent_id is not None:
         q = q.filter(TestPlan.agent_id == agent_id)
@@ -1041,38 +971,17 @@ def _apply_plan_filters(q, *, agent_id, model, tool, user_id, status):
 
 
 def _plan_generation_status(plan_status: str) -> str:
-    """Collapse TestPlan.status to the agent-generation lifecycle.
+    """Collapse TestPlan.status to the legacy plan-generation row's lifecycle.
 
-    v2.45.2 — agent_session_service used to pass TestPlan.status
-    through verbatim, which conflated the GENERATION lifecycle
-    (DRAFT → PROPOSED) with the EXECUTION lifecycle (APPROVED →
-    IN_PROGRESS → COMPLETED).  A plan that the agent submitted
-    successfully and the user then approved + executed would show
-    in the plan_generation timeline as "in_progress", even though
-    the generation agent's work concluded at /submit time.
-
-    Mapping:
-      DRAFT     → "in_progress"   (agent is filling in entries)
-      PROPOSED  → "submitted"      (agent done; awaiting human review)
-      APPROVED, IN_PROGRESS, COMPLETED  → "completed"
-        (generation conclusively done — downstream is execution,
-        tracked via the execution-session row not this one)
-      REJECTED  → "rejected"       (terminal — human declined)
-      ARCHIVED  → "archived"       (terminal — long-tail)
-      anything else (unknown enum value): passed through unchanged,
-        so future TestPlanStatus additions don't silently become
-        "in_progress".
+    A draft is still being written ("in_progress"); once execution starts or
+    the plan completes, generation is done ("completed"); archived stays
+    archived.  Unknown values pass through so a future status never silently
+    reads as in progress.
     """
     if plan_status == "draft":
         return "in_progress"
-    if plan_status == "proposed":
-        return "submitted"
-    if plan_status in ("approved", "in_progress", "completed"):
+    if plan_status in ("in_progress", "completed"):
         return "completed"
-    if plan_status == "rejected":
-        return "rejected"
-    if plan_status == "archived":
-        return "archived"
     return plan_status
 
 
@@ -1159,13 +1068,6 @@ def count_agent_sessions(
         q = _apply_project_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
         total += q.scalar() or 0
 
-    if "recon" in want:
-        q = db.query(_func.count(ReconSession.id)).filter(
-            ReconSession.project_id == project_id
-        )
-        q = _apply_recon_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        total += q.scalar() or 0
-
     if "plan_generation" in want:
         q = db.query(_func.count(TestPlan.id)).filter(TestPlan.project_id == project_id)
         q = _apply_plan_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
@@ -1190,38 +1092,14 @@ def count_agent_sessions(
     return total
 
 
-#: CIDRs listed in a target label before it truncates. A scope with 40 subnets
-#: should identify itself, not fill the row.
-_TARGET_CIDR_CAP = 3
+def _status_value(status) -> str:
+    """A status column as its string (some are enum columns, some strings)."""
+    return status.value if hasattr(status, "value") else str(status)
 
 
-def _scope_cidr_labels(db: Session, scope_ids: set) -> dict:
-    """``{scope_id: "10.0.0.0/24, 10.0.1.0/24 +3 more"}`` in one query.
-
-    CIDRs only — the ranges are what tell a second analyst a network is
-    already being worked; a scope's name is a relic that the rest of the UI
-    no longer surfaces (v2.334.0) and the label follows suit (v2.338.0).
-    A scope with no subnets labels as ``scope #N`` so the row is never blank.
-    """
-    from app.db import models
-
-    cidrs: dict[int, List[str]] = {}
-    if scope_ids:
-        for sid, cidr in (
-            db.query(models.Subnet.scope_id, models.Subnet.cidr)
-            .filter(models.Subnet.scope_id.in_(scope_ids))
-            .order_by(models.Subnet.cidr)
-            .all()
-        ):
-            cidrs.setdefault(sid, []).append(cidr)
-    labels: dict[int, str] = {}
-    for sid in scope_ids:
-        ranges = cidrs.get(sid, [])
-        shown = ", ".join(ranges[:_TARGET_CIDR_CAP])
-        if len(ranges) > _TARGET_CIDR_CAP:
-            shown += f" +{len(ranges) - _TARGET_CIDR_CAP} more"
-        labels[sid] = shown or f"scope #{sid}"
-    return labels
+def _aware_utc(t: Optional[datetime]) -> Optional[datetime]:
+    """Read a tz-naive timestamp as UTC so mixed columns sort together."""
+    return t if t is None or t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
 
 
 def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
@@ -1232,41 +1110,55 @@ def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
     field.  Legacy rows carry one target (a scope or a plan); a consolidated
     session declares its targets per phase, so its label is one line naming
     the scopes it scanned, the plans it drafted, the plans it executed.
+
+    v2.432.0 — the same three queries also give each consolidated session its
+    ``phases``: one entry per run or plan, in the order it was opened, with its
+    own status and label, so the page can list and link a session's work.
     """
     project_ids = [r.id for r in rows if r.kind == "project"]
 
     # Per-phase targets of the consolidated sessions on this page.
-    recon_by: dict[int, List[int]] = {}
     drafted_by: dict[int, List[str]] = {}
     executed_by: dict[int, List[str]] = {}
+    # (sid, opened_at, phase)
+    phases: List[tuple] = []
     if project_ids:
-        for sid, scope_id in (
-            db.query(ReconSession.agent_session_id, ReconSession.scope_id)
-            .filter(ReconSession.agent_session_id.in_(project_ids))
-            .order_by(ReconSession.id)
-            .all()
-        ):
-            recon_by.setdefault(sid, []).append(scope_id)
-        for sid, title in (
-            db.query(TestPlan.agent_session_id, TestPlan.title)
+        for sid, pid, title, status, opened in (
+            db.query(
+                TestPlan.agent_session_id, TestPlan.id, TestPlan.title,
+                TestPlan.status, TestPlan.created_at,
+            )
             .filter(TestPlan.agent_session_id.in_(project_ids))
             .order_by(TestPlan.id)
             .all()
         ):
             drafted_by.setdefault(sid, []).append(title)
-        for sid, title in (
-            db.query(ExecutionSession.agent_session_id, TestPlan.title)
+            phases.append((sid, opened, {
+                "kind": "plan", "id": pid, "status": _status_value(status),
+                "label": title, "test_plan_id": pid, "started_at": opened,
+            }))
+        for sid, eid, plan_id, title, status, opened in (
+            db.query(
+                ExecutionSession.agent_session_id, ExecutionSession.id,
+                ExecutionSession.test_plan_id, TestPlan.title,
+                ExecutionSession.status, ExecutionSession.started_at,
+            )
             .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
             .filter(ExecutionSession.agent_session_id.in_(project_ids))
             .order_by(ExecutionSession.id)
             .all()
         ):
             executed_by.setdefault(sid, []).append(title)
+            phases.append((sid, opened, {
+                "kind": "execution", "id": eid, "status": _status_value(status),
+                "label": title, "test_plan_id": plan_id, "started_at": opened,
+            }))
 
-    # One CIDR lookup for every scope any row on the page refers to.
-    scope_ids = {r.scope_id for r in rows if r.scope_id is not None}
-    scope_ids.update(s for ids in recon_by.values() for s in ids)
-    scope_labels = _scope_cidr_labels(db, scope_ids)
+    phases_by: dict[int, List[dict]] = {}
+    for sid, opened, phase in sorted(
+        phases, key=lambda p: (p[1] is None, _aware_utc(p[1]) or datetime.min.replace(tzinfo=timezone.utc)),
+    ):
+        phases_by.setdefault(sid, []).append(phase)
 
     plan_ids = {r.test_plan_id for r in rows if r.test_plan_id is not None}
     plan_labels: dict[int, str] = {}
@@ -1279,15 +1171,12 @@ def _attach_target_labels(db: Session, rows: "List[AgentSessionRow]") -> None:
     for r in rows:
         if r.kind == "project":
             parts: List[str] = []
-            if r.id in recon_by:
-                parts.append("recon " + "; ".join(scope_labels[s] for s in recon_by[r.id]))
             if r.id in drafted_by:
                 parts.append("drafted " + "; ".join(drafted_by[r.id]))
             if r.id in executed_by:
                 parts.append("executed " + "; ".join(executed_by[r.id]))
             r.target_label = " · ".join(parts) or None
-        elif r.scope_id is not None:
-            r.target_label = scope_labels.get(r.scope_id) or None
+            r.phases = phases_by.get(r.id, [])
         elif r.test_plan_id is not None:
             r.target_label = plan_labels.get(r.test_plan_id) or None
         # assist: project-wide by design — no target, and saying so is the UI's
@@ -1306,17 +1195,21 @@ def list_agent_sessions(
     status: Optional[str] = None,
     limit: int = 200,
     offset: int = 0,
+    session_id: Optional[int] = None,
 ) -> List[AgentSessionRow]:
     """Return the unified agent-session list for a project.
+
+    ``session_id`` narrows the project kind to that one session — the detail
+    page's read (``get_agent_session_row``), so it is built by this path and
+    cannot drift from the list row.
 
     Filters are AND'd.  Ordering is started_at DESC (most recent first)
     with ``id`` + ``kind`` as deterministic tiebreakers.
 
     ``status`` matches each kind's native status column (recon +
     execution use 'active' / 'paused' / 'completed' / 'failed' /
-    'abandoned'; plan_generation uses TestPlan.status —
-    'draft' / 'pending_review' / 'approved' / 'in_progress' /
-    'completed' / 'rejected').  Pass 'active' for the in-flight
+    'abandoned'; plan_generation uses the collapsed plan status —
+    'in_progress' / 'completed' / 'archived').  Pass 'active' for the in-flight
     banner; pass 'completed' for a "last week's runs" view.
 
     The query strategy is three separate per-kind queries, each
@@ -1342,6 +1235,8 @@ def list_agent_sessions(
     if "project" in want:
         q = db.query(AgentSession).filter(AgentSession.project_id == project_id)
         q = _apply_project_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
+        if session_id is not None:
+            q = q.filter(AgentSession.id == session_id)
         for s in q.order_by(AgentSession.started_at.desc()).limit(per_kind_cap).all():
             rows.append(AgentSessionRow(
                 kind="project",
@@ -1355,7 +1250,6 @@ def list_agent_sessions(
                 generated_by_model=s.generated_by_model,
                 generated_by_tool=s.generated_by_tool,
                 prompt_version=s.prompt_version,
-                scope_id=None,
                 test_plan_id=None,
                 agent_name=s.agent.name if s.agent else None,
                 user_username=s.started_by.username if s.started_by else None,
@@ -1363,6 +1257,7 @@ def list_agent_sessions(
                 purpose=s.purpose,
                 renewable_until=session_renewal_deadline(s),
                 end_reason=s.end_reason,
+                last_activity_at=s.last_activity_at,
             ))
         # v2.340.0 — one grouped query for the live key's expiry on every
         # project row on the page, so the UI can tell "active, agent alive"
@@ -1372,6 +1267,10 @@ def list_agent_sessions(
         # v2.343.0 — and one for feedback submissions, so the page can show
         # which sessions said anything on the way out.
         feedback = feedback_counts_for_agent_sessions(db, project_ids)
+        # v2.432.0 — and one each for the detail row's id and the operator's
+        # authority (the role the key is checked against on every call).
+        assist_ids = _assist_ids_for_agent_sessions(db, project_ids)
+        roles = _operator_roles(db, project_id, {r.user_id for r in rows if r.kind == "project"})
         for r in rows:
             if r.kind == "project":
                 exp = expiry.get(r.id)
@@ -1379,30 +1278,8 @@ def list_agent_sessions(
                     exp = exp.replace(tzinfo=timezone.utc)
                 r.key_expires_at = exp
                 r.feedback_count = feedback.get(r.id, 0)
-
-    if "recon" in want:
-        q = db.query(ReconSession).filter(ReconSession.project_id == project_id)
-        q = _apply_recon_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        for s in q.order_by(ReconSession.started_at.desc()).limit(per_kind_cap).all():
-            rows.append(AgentSessionRow(
-                kind="recon",
-                id=s.id,
-                project_id=s.project_id,
-                agent_id=s.agent_id,
-                user_id=s.started_by_id,
-                status=s.status,
-                started_at=s.started_at,
-                completed_at=s.completed_at,
-                generated_by_model=s.generated_by_model,
-                generated_by_tool=s.generated_by_tool,
-                prompt_version=s.prompt_version,
-                scope_id=s.scope_id,
-                test_plan_id=None,
-                agent_name=s.agent.name if s.agent else None,
-                user_username=s.started_by.username if s.started_by else None,
-                user_full_name=(s.started_by.full_name or None) if s.started_by else None,
-                agent_session_id=s.agent_session_id,
-            ))
+                r.assist_session_id = assist_ids.get(r.id)
+                r.operator_role = roles.get(r.user_id)
 
     if "plan_generation" in want:
         # Plan creation is the closest analogue to a "session" for the
@@ -1410,17 +1287,9 @@ def list_agent_sessions(
         # creation event; the timeline uses ``created_at`` as the
         # started_at.
         #
-        # v2.45.2 — the displayed status is GENERATION-BOUNDED, not
-        # the plan's full lifecycle.  Pre-fix the row passed
-        # ``p.status`` through unchanged, so a plan that had been
-        # submitted, approved, AND moved to execution would show
-        # the agent's plan-generation session as "in_progress" —
-        # conflating execution state with generation work that
-        # actually finished at /submit time.  The mapping below
-        # collapses every post-PROPOSED state to "completed"
-        # because the agent's job ends when the plan moves out of
-        # DRAFT; downstream lifecycle is the user's concern via
-        # the execution surface (which has its own session rows).
+        # The displayed status is GENERATION-BOUNDED, not the plan's
+        # full lifecycle (_plan_generation_status): execution has its
+        # own run rows.
         q = db.query(TestPlan).filter(TestPlan.project_id == project_id)
         q = _apply_plan_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
         for p in q.order_by(TestPlan.created_at.desc()).limit(per_kind_cap).all():
@@ -1442,7 +1311,6 @@ def list_agent_sessions(
                 generated_by_model=p.generated_by_model,
                 generated_by_tool=p.generated_by_tool,
                 prompt_version=p.prompt_version,
-                scope_id=None,
                 test_plan_id=p.id,
                 agent_name=p.agent.name if p.agent else None,
                 user_username=p.created_by_user.username if p.created_by_user else None,
@@ -1472,7 +1340,6 @@ def list_agent_sessions(
                 generated_by_model=e.generated_by_model,
                 generated_by_tool=e.generated_by_tool,
                 prompt_version=e.prompt_version,
-                scope_id=None,
                 test_plan_id=e.test_plan_id,
                 agent_name=e.agent.name if e.agent else None,
                 user_username=e.started_by.username if e.started_by else None,
@@ -1504,7 +1371,6 @@ def list_agent_sessions(
                 generated_by_model=a.generated_by_model,
                 generated_by_tool=a.generated_by_tool,
                 prompt_version=a.prompt_version,
-                scope_id=None,
                 test_plan_id=None,
                 agent_name=a.agent.name if a.agent else None,
                 user_username=a.started_by.username if a.started_by else None,
@@ -1559,7 +1425,6 @@ def summarise_by_model_tool(
             "generated_by_model": model,
             "generated_by_tool": tool,
             "project": 0,
-            "recon": 0,
             "plan_generation": 0,
             "execution": 0,
             "assist": 0,
@@ -1583,19 +1448,6 @@ def summarise_by_model_tool(
     )
     for model, tool, n in project_rows:
         _bucket(model, tool, "project", n)
-
-    recon_rows = (
-        db.query(
-            ReconSession.generated_by_model,
-            ReconSession.generated_by_tool,
-            _func.count(ReconSession.id),
-        )
-        .filter(ReconSession.project_id == project_id)
-        .group_by(ReconSession.generated_by_model, ReconSession.generated_by_tool)
-        .all()
-    )
-    for model, tool, n in recon_rows:
-        _bucket(model, tool, "recon", n)
 
     plan_rows = (
         db.query(

@@ -60,7 +60,7 @@ def test_execution_context_without_an_active_run_409s(
     key, _sid, _run = exec_ctx
     other = TestPlan(
         project_id=test_project.id, agent_id=test_agent.id, version=99,
-        title="no-run", status=TestPlanStatus.APPROVED.value,
+        title="no-run", status=TestPlanStatus.DRAFT.value,
     )
     db_session.add(other)
     db_session.commit()
@@ -118,16 +118,12 @@ def test_a_different_session_cannot_complete_this_run(
     assert run.status != ExecutionSessionStatus.COMPLETED.value
 
 
-def test_one_session_key_also_reaches_assist_and_recon_reads(client, exec_ctx):
+def test_one_session_key_also_reaches_assist_reads(client, exec_ctx):
     """v2.337.0 — the cross-workflow block is gone: the session that opened an
     execution run is one project session, so its key also reads the assist
-    inventory. (Recon reads need an open recon run; that is a phase state, not
-    a key-type rejection.)"""
+    inventory."""
     key, _sid, _run = exec_ctx
     assert client.get("/api/v1/agent/assist/context", headers={"X-API-Key": key}).status_code == 200
-    # No open recon run → 409 (no active recon run), not a 403 by key type.
-    r = client.get("/api/v1/agent/recon/context", headers={"X-API-Key": key})
-    assert r.status_code == 409, r.text
 
 
 def test_expired_key_rejected(client, db_session, exec_ctx, test_agent):

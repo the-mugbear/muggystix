@@ -68,7 +68,7 @@ const basePlan = (id: number, model: string, entries: any[]) => ({
   project_id: 1,
   version: 1,
   title: `Plan ${id}`,
-  status: 'proposed',
+  status: 'draft',
   entry_count: entries.length,
   completion_pct: 0,
   generated_by_model: model,

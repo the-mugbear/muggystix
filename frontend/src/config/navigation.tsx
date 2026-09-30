@@ -18,13 +18,11 @@ import React from 'react';
 import {
   BookOpen,
   Bot,
-  Compass,
   FileText,
   Folder,
   Gauge,
   Globe,
   KeyRound,
-  MessageCircleQuestion,
   MessageSquareHeart,
   Plug,
   Settings as SettingsIcon,
@@ -132,12 +130,12 @@ export const HUB_DEFS: HubDef[] = [
   // Posture is a real landing page (/posture) like Operations — its hub path
   // renders the roll-up directly, with Insights + Systemic as drill-down tabs.
   { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
-  // Every agent surface lives here (v5.294.0): the per-artifact run views and
-  // the old Agent Sessions list (now a view of Agent Runs) are owned paths, so
-  // the sidebar still says where you are when you drill into one.
+  // Every agent surface lives here (v5.294.0): a session's page and its run
+  // pages (execution; v5.312.0 /agent-sessions) are owned paths, so the
+  // sidebar still says where you are when you drill into one.
   {
     id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
-    defaultChildPath: '/test-plans', ownedPaths: ['/assist-sessions', '/recon', '/executions'],
+    defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions', '/assist-sessions', '/executions'],
   },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon, placement: 'utility' },
@@ -240,37 +238,33 @@ export const NAV_PAGES: NavPage[] = [
   },
 
   // Workflows hub — v2.337.0: agents run one project session that does every
-  // kind of work, so the hub's primary views are Agent Runs (the unified
-  // session timeline, one row per session) and Test Plans (the approval
-  // surface a human owns). Recon Runs and Executions are now per-artifact
-  // detail views subsumed by the session timeline — kept as routes and
-  // reachable from the command palette and by drilling into a run on Agent
-  // Runs, but off the hub strip so it stops presenting the old four-workflow
-  // split. (Remove the `hub` field = palette-only, like the MCP reference.)
-  // v5.294.0 — Test Plans first (the surface a human owns, and the hub's
-  // default); every agent surface is in this hub, Tool Activity and Agent
-  // Feedback included (they sat under Collaboration).
+  // kind of work. 5.313.0 — the operator drives their agent and the agent
+  // executes its own plans (no approval), so Agent Sessions leads the hub and
+  // is its default; Test Plans is the record of intent and results a person or
+  // an agent writes. Executions are per-artifact views of a session's work —
+  // kept as routes, in the command palette and linked from every session that
+  // opened them (v5.312.0), but off the hub strip so it does not present a
+  // workflow split. (No `hub` field = palette-only.) Recon runs are gone
+  // (5.313.1): an agent reads a scope and uploads to its session.
+  // Every agent surface is in this hub, Tool Activity included.
+  {
+    // v5.312.0 — "Agent Sessions" (was Agent Runs): the session is what an
+    // operator starts and manages; its runs are listed under it. The
+    // /assist-sessions palette entry that also said "Agent Sessions" is gone —
+    // one page, one entry.
+    id: 'agent-activity', path: '/agent-activity', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
+    palette: {
+      Icon: Bot,
+      keywords: ['agent', 'sessions', 'runs', 'llm', 'execution', 'assist', 'end', 'resume', 'key'],
+      order: 5,
+    },
+  },
   {
     id: 'test-plans', path: '/test-plans', label: 'Test Plans', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: ShieldCheck, order: 8 },
   },
   {
-    id: 'agent-activity', path: '/agent-activity', label: 'Agent Runs', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: Bot, keywords: ['agent', 'sessions', 'llm', 'recon', 'execution'], order: 5 },
-  },
-  {
-    // v5.294.0 — no longer a tab: the list is the "By session" view of Agent
-    // Runs (/agent-activity?view=sessions), where this path redirects. Kept in
-    // the palette, and /assist-sessions/:id still opens one session.
-    id: 'assist-sessions', path: '/assist-sessions', label: 'Agent Sessions', requiredRole: 'viewer',
-    palette: { Icon: MessageCircleQuestion, keywords: ['assist', 'ask', 'agent', 'session', 'chat', 'review'], order: 9 },
-  },
-  {
     id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'workflows',
-  },
-  {
-    id: 'recon-runs', path: '/recon/runs', label: 'Recon Runs', requiredRole: 'viewer',
-    palette: { Icon: Compass, keywords: ['discovery', 'recon', 'runs'], order: 7 },
   },
   {
     id: 'executions', path: '/executions', label: 'Executions', requiredRole: 'viewer',
@@ -400,7 +394,7 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
  * so a 404, the personal pages (/profile, /llm-settings) and the cross-project
  * pages all lit "Operations" as where you were.  Every project detail route is
  * covered by a child prefix (/hosts/12, /findings/37, /test-plans/4/runs) or an
- * owned path (/recon/…, /executions/…, /assist-sessions/…).
+ * owned path (/executions/…, /assist-sessions/…).
  */
 export function resolveActiveHub(pathname: string): Hub | null {
   for (const hub of HUBS) {
@@ -444,10 +438,9 @@ const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
   { pattern: /^\/test-plans\/compare$/, title: 'Compare plans' },
   { pattern: /^\/test-plans\/[^/]+\/compare$/, title: 'Compare runs' },
   { pattern: /^\/test-plans\/[^/]+(\/.*)?$/, title: 'Test plan' },
-  { pattern: /^\/recon\/runs\/[^/]+$/, title: 'Recon run' },
-  { pattern: /^\/recon\/compare$/, title: 'Compare recon runs' },
   { pattern: /^\/executions\/[^/]+$/, title: 'Execution' },
   { pattern: /^\/assist-sessions\/[^/]+$/, title: 'Agent session' },
+  { pattern: /^\/agent-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },
   { pattern: /^\/reference\/sbom$/, title: 'Software bill of materials' },
   { pattern: /^\/reference\/tool-coverage$/, title: 'What BlueStick reads' },

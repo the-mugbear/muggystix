@@ -55,14 +55,13 @@ export interface OversightProjectRow {
    *  non-false-positive finding endpoint at that severity. */
   defect_rate: OversightSeverityRate;
   last_scan_at: string | null;
-  pending_plan_reviews: number;
   blocked_sessions: number;
   // Selected period
   targets_added: number;
   reviews_concluded: number;
   imports: number;
   contributors: number;
-  /** critical | high | pending_review | blocked_session | no_admin | quiet | no_data */
+  /** critical | high | blocked_session | no_admin | quiet | no_data */
   attention_reasons: string[];
 }
 
@@ -125,7 +124,6 @@ export interface OversightSummary {
 
 export interface OversightAttention {
   critical_projects: number;
-  pending_approval_plans: number;
   blocked_runs: number;
   no_admin_projects: number;
   quiet_projects: number;

@@ -44,26 +44,18 @@ import { safeHttpHref } from '../utils/safeHref';
 //
 // v5.167.0 — served by the backend tool registry rather than hardcoded here.
 // This page and the agent catalogue used to be separate lists in separate
-// languages, and only the backend one could gate anything; they had already
-// drifted. One registry, two views: this page renders everything, the agent
-// catalogue is the `approved` subset. Approval status now shows per row, so
-// "may an agent run this?" is answerable where operators already read about
-// tools — and that is where vetted-in suggestions surface too.
+// languages; they had already drifted. One registry, read by people here and
+// by agents through the API. 5.313.0 — a catalogue, not agent policy: the
+// `approved` status was merged into `reference`, and no status says what an
+// agent may run (the operator driving it decides). Vetted-in suggestions
+// surface here.
 // ---------------------------------------------------------------------------
 
 type ToolEntry = ToolRegistryEntry;
 
+// Only the rows that are not (yet) plain catalogue entries carry a badge; a
+// `reference` row is the normal case and says nothing extra.
 const STATUS_BADGE: Record<string, { tone: CategoryTone; label: string; title: string }> = {
-  approved: {
-    tone: 'success',
-    label: 'Agent-approved',
-    title: 'An agent may run this tool against inventory hosts.',
-  },
-  reference: {
-    tone: 'outline',
-    label: 'Reference only',
-    title: 'Documented for operators; not offered to agents.',
-  },
   suggested: {
     tone: 'warning',
     label: 'Suggested',
@@ -89,7 +81,7 @@ const STATUS_BADGE: Record<string, { tone: CategoryTone; label: string; title: s
  *   backend/app/services/tool_output_contract.py
  * A backend test (backend/tests/test_tool_command_consistency.py) fails if any
  * run command here writes an extension that tool's parser can't ingest — so
- * this map, the backend recon catalog, and the two docs can't silently drift.
+ * this map, the backend tool catalog, and the two docs can't silently drift.
  */
 interface RunCommand {
   run: string;
@@ -306,9 +298,9 @@ const HostReadinessPanel: React.FC<{ documentedNames: Set<string> }> = ({
         {data && !data.has_probe && (
           <Alert variant="info">
             <AlertDescription>
-              No environment probe recorded yet. Start an agentic <strong>recon</strong> or{' '}
-              <strong>execution</strong> workflow — the agent probes your host at startup, and
-              this panel will then show which catalog tools are installed and which are missing.
+              No environment probe recorded yet. Start an <strong>agent session</strong> — the
+              agent probes your host at startup, and this panel will then show which catalog tools
+              are installed and which are missing.
             </AlertDescription>
           </Alert>
         )}
@@ -400,10 +392,9 @@ const HostReadinessPanel: React.FC<{ documentedNames: Set<string> }> = ({
                                 <TooltipContent className="max-w-sm">
                                   Generates active scanning traffic or runs
                                   potentially-impactful checks (vulnerability
-                                  scans, exploit templates, brute force). The
-                                  agent requests per-command approval before
-                                  running these — they do not batch under
-                                  plan-level approval.
+                                  scans, exploit templates, brute force). Keep
+                                  it to the declared scope, and confirm each
+                                  run in your agent client.
                                 </TooltipContent>
                               </Tooltip>
                             )}
@@ -492,8 +483,8 @@ const ToolReference: React.FC = () => {
 
   const documentedNames = useMemo(() => new Set(tools.map((t) => t.name)), [tools]);
 
-  // Vetting is admin-only and deployment-wide (approving a tool approves it on
-  // every project), so the affordance only exists for admins — the read view is
+  // Vetting is admin-only and deployment-wide (the catalogue is shared by every
+  // project), so the affordance only exists for admins — the read view is
   // unchanged for everyone else.
   const isAdmin = hasRole('admin');
   const pending = useMemo(() => tools.filter((t) => t.status === 'suggested'), [tools]);
@@ -567,12 +558,10 @@ const ToolReference: React.FC = () => {
         lists, for each of those, what is kept, where it is shown and what is dropped.
       </p>
       <p className="mb-md text-metadata text-muted-foreground">
-        The badge under each tool name is its agent policy:{' '}
-        <span className="font-medium text-foreground">Agent-approved</span> tools may be run by an
-        agent against hosts in your inventory,{' '}
-        <span className="font-medium text-foreground">Reference only</span> tools are documented for
-        you to run yourself, and <span className="font-medium text-foreground">Suggested</span> tools
-        were proposed by an agent and are waiting on review.
+        This is a catalogue, read by you and by agents alike — it does not decide what an agent
+        may run; you do, from the agent you drive.{' '}
+        <span className="font-medium text-foreground">Suggested</span> tools were proposed by an
+        agent and wait for an admin to add them to the catalogue or decline them.
       </p>
 
       {isAdmin && pending.length > 0 ? (
@@ -581,9 +570,9 @@ const ToolReference: React.FC = () => {
             <span className="font-medium">
               {pending.length} tool{pending.length === 1 ? '' : 's'} awaiting review
             </span>{' '}
-            — an agent asked for {pending.map((t) => t.name).join(', ')}. Until one is
-            approved, agents are told not to run it. Use{' '}
-            <span className="font-medium">Review</span> on the row to decide.
+            — an agent asked for {pending.map((t) => t.name).join(', ')}. Use{' '}
+            <span className="font-medium">Review</span> on the row to add it to the catalogue or
+            decline it.
           </AlertDescription>
         </Alert>
       ) : null}

@@ -419,7 +419,7 @@ def identify_agent_if_present(
     """Attribute an agent's call on an endpoint that does not *require* an agent.
 
     v2.312.0.  Two MCP tools dispatch to public endpoints — ``read_agent_guide``
-    to ``/agents-guide`` and ``list_approved_tools`` to ``/references/tools`` —
+    to ``/agents-guide`` and ``list_tools`` to ``/references/tools`` —
     and the agent sends its key on both.  Neither endpoint looked at it, so
     ``request.state`` carried no attribution and the audit middleware dropped
     the row: a four-call assist session showed two entries, which reads as a
@@ -598,9 +598,9 @@ AGENT_READ_ROLE_OVERRIDES = {
     # Bulk inventory + target lists — the same data an export would hand over,
     # in a shape built for piping into another tool.
     ("GET", "/assist/hosts.ndjson"): ProjectRole.AUDITOR,
-    ("GET", "/recon/hosts.ndjson"): ProjectRole.AUDITOR,
-    ("GET", "/recon/live-hosts.txt"): ProjectRole.AUDITOR,
-    ("GET", "/recon/web-targets.txt"): ProjectRole.AUDITOR,
+    ("GET", "/scopes/{scope_id}/hosts.ndjson"): ProjectRole.AUDITOR,
+    ("GET", "/scopes/{scope_id}/live-hosts.txt"): ProjectRole.AUDITOR,
+    ("GET", "/scopes/{scope_id}/web-targets.txt"): ProjectRole.AUDITOR,
     # v2.428.0 — evidence files (note attachments, EyeWitness screenshots) are
     # NOT here any more: the UI serves both to a viewer
     # (GET /hosts/notes/attachments/{id}, GET /hosts/web-interfaces/{id}/
@@ -758,9 +758,9 @@ def enforce_agent_operator_access(
 # also doing — binding a call to its plan / scope / session — now happens in
 # the handlers, which resolve the PHASE the call is about (the recon run,
 # the plan, the execution run) from the session the key belongs to, and the
-# object-level gates (plan must be approved to execute, an execution run
-# belongs to one session, a recon run is opened against a scope in the
-# project) are what keep the record trustworthy.
+# object-level gates (an execution run belongs to one session, a recon run is
+# opened against a scope in the project) are what keep the record
+# trustworthy.
 
 
 # v2.295.0 — ``deny_scoped_keys`` is gone with the unscoped global key.  It

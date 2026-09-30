@@ -30,7 +30,7 @@ ANCHOR = datetime(2026, 5, 26, 14, 32, 15, tzinfo=timezone.utc)
 @pytest.fixture
 def attribution_dataset(db_session):
     """One project (the admin test user sees everything): two hosts, a scan
-    that observed one of them, a recon run whose scope contains it, and an
+    that observed one of them, and an
     execution run with one command + one probe against it."""
     project = Project(name="attrib", slug="attrib")
     db_session.add(project)
@@ -58,12 +58,6 @@ def attribution_dataset(db_session):
     db_session.add(scope)
     db_session.flush()
     db_session.add(models.Subnet(scope_id=scope.id, cidr="10.20.0.0/24"))
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-    db_session.add(ReconSession(
-        project_id=project.id, scope_id=scope.id, status=ReconSessionStatus.COMPLETED.value,
-        started_at=ANCHOR - timedelta(minutes=5), completed_at=ANCHOR + timedelta(minutes=5),
-    ))
-
     plan = TestPlan(project_id=project.id, version=1, title="attrib plan",
                     status=TestPlanStatus.IN_PROGRESS.value)
     db_session.add(plan)
@@ -101,7 +95,7 @@ def _at(client, **params):
 
 def test_all_kinds_appear_including_the_per_command_record(client, attribution_dataset):
     kinds = {i["kind"] for i in _at(client)}
-    assert kinds == {"scan", "recon_session", "execution_session", "test_result", "sanity_check"}
+    assert kinds == {"scan", "execution_session", "test_result", "sanity_check"}
     cmd = next(i for i in _at(client) if i["kind"] == "test_result")
     assert cmd["label"] == "nikto"
     assert cmd["target"] == "10.20.0.5"
@@ -130,9 +124,9 @@ def test_target_filter_keeps_only_rows_that_touched_the_address(client, attribut
         by_kind.setdefault(i["kind"], []).append(i)
     # The scan that observed the host — not the one that observed another.
     assert [s["ref_id"] for s in by_kind["scan"]] == [attribution_dataset["scan"].id]
-    # The recon run whose scope contains it, the execution run whose plan
+    # The execution run whose plan
     # lists it, the command and the probe against it.
-    assert set(by_kind) == {"scan", "recon_session", "execution_session", "test_result", "sanity_check"}
+    assert set(by_kind) == {"scan", "execution_session", "test_result", "sanity_check"}
 
     # An address nothing touched: nothing, across every kind.
     assert _at(client, target="192.0.2.1") == []
@@ -239,7 +233,7 @@ def test_target_filter_matches_the_address_a_command_actually_hit(
 def test_blank_tool_is_no_filter(client, attribution_dataset):
     """H3: whitespace used to match everything while hiding the run kinds."""
     kinds = {i["kind"] for i in _at(client, tool="   ")}
-    assert kinds == {"scan", "recon_session", "execution_session", "test_result", "sanity_check"}
+    assert kinds == {"scan", "execution_session", "test_result", "sanity_check"}
 
 
 def test_tool_like_metacharacters_are_literal(client, attribution_dataset):
@@ -257,7 +251,7 @@ def test_tool_label_skips_command_wrappers(client, attribution_dataset, db_sessi
 
 def test_tool_with_only_run_kinds_is_a_400(client, attribution_dataset):
     r = client.get("/api/v1/activity/scans-at", params={
-        "ts": ANCHOR.isoformat(), "tool": "nmap", "kinds": "recon_session,execution_session",
+        "ts": ANCHOR.isoformat(), "tool": "nmap", "kinds": "execution_session",
     })
     assert r.status_code == 400, r.text
     # Mixed kinds still work — the runs are dropped, the rest answer.

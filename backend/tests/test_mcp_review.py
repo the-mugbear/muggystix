@@ -16,7 +16,7 @@ reviewer's numbering:
 8. ``create_test_plan`` (and other appends) advertised ``idempotentHint: true``.
 """
 from app.db.models import Scope, Subnet
-from app.db.models_agent import AgentSession, ReconSession
+from app.db.models_agent import AgentSession
 from app.db.models_auth import UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
 
@@ -51,59 +51,6 @@ def test_auditor_can_end_own_session(client, db_session, test_project, test_user
     key = start(client, test_project)
     response = call(client, key, "end_session", notes="done")
     assert not response.get("result", {}).get("isError"), response
-
-
-def test_two_recon_runs_can_be_selected_and_completed(client, db_session, test_project):
-    """Rewritten from the reviewer's reproduction, which asserted the BROKEN
-    state (the explicit selector answered -32602 as an unknown argument, and
-    neither run could be completed or the session ended).  This asserts the
-    intended behaviour: with two runs open, an unselected call says which runs
-    it could mean, the selector is accepted on every recon tool, each run can
-    be completed by id, and the session can then end."""
-    key = start(client, test_project)
-    run_ids = []
-    for n in (1, 2):
-        scope = Scope(name=f"review-{n}", project_id=test_project.id)
-        db_session.add(scope)
-        db_session.flush()
-        db_session.add(Subnet(scope_id=scope.id, cidr=f"10.98.{n}.0/24"))
-        db_session.commit()
-        response = call(client, key, "start_recon", scope_id=scope.id)
-        assert not response.get("result", {}).get("isError"), response
-        run_ids.append(response["result"]["structuredContent"]["recon_session_id"])
-    assert len(set(run_ids)) == 2
-
-    # No selector, two runs: a tool error that names both candidates — not a
-    # protocol error, and not a silent pick.
-    ambiguous = call(client, key, "recon_get_context")
-    assert ambiguous["result"]["isError"] is True, ambiguous
-    text = str(ambiguous["result"])
-    assert "ambiguous_recon_run" in text and all(str(r) in text for r in run_ids), ambiguous
-
-    # The selector is accepted and picks the run.
-    for run_id in run_ids:
-        explicit = call(client, key, "recon_get_context", recon_session_id=run_id)
-        assert "error" not in explicit, explicit
-        assert explicit["result"].get("isError") is not True, explicit
-        assert explicit["result"]["structuredContent"]["recon_session_id"] == run_id
-        summary = call(client, key, "recon_get_summary", recon_session_id=run_id)
-        assert summary["result"]["structuredContent"]["recon_session_id"] == run_id
-
-    # A selector for a run this session did not open is refused, not honoured.
-    foreign = call(client, key, "recon_get_context", recon_session_id=max(run_ids) + 1000)
-    assert foreign["result"]["isError"] is True
-
-    # Each run completes by id (the selector rides the POST as a query param),
-    # then the session can end because nothing is left open.
-    assert call(client, key, "recon_complete", recon_session_id=run_ids[0], notes="one")["result"].get("isError") is not True
-    # One run left: no selector needed any more.
-    last = call(client, key, "recon_complete", notes="two")
-    assert last["result"].get("isError") is not True, last
-    assert last["result"]["structuredContent"]["recon_session_id"] == run_ids[1]
-    ended = call(client, key, "end_session", notes="done")
-    assert ended["result"].get("isError") is not True, ended
-    db_session.expire_all()
-    assert {s.status for s in db_session.query(ReconSession).filter(ReconSession.id.in_(run_ids))} == {"completed"}
 
 
 def test_create_plan_is_not_advertised_idempotent(client, test_project):

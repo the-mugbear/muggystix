@@ -25,18 +25,28 @@ from app.db.session import Base
 # ---------------------------------------------------------------------------
 
 class TestPlanStatus(str, enum.Enum):
+    # v2.433.0 — no approval states.  A plan is the record of what an agent
+    # (or a person) set out to test and what it found; nothing waits on a
+    # human approving it.  draft → in_progress (first execution run) →
+    # completed, or archived at any point.
     DRAFT = "draft"
-    PROPOSED = "proposed"
-    APPROVED = "approved"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
-    REJECTED = "rejected"
     ARCHIVED = "archived"
 
 
+# A host is "planned" when an entry for it sits in a plan in one of these
+# states — every plan except an archived one.  The one definition for the
+# host page, the DSL's has:planned, the workbench and the engagement counts.
+PLANNED_PLAN_STATUSES = (
+    TestPlanStatus.DRAFT.value,
+    TestPlanStatus.IN_PROGRESS.value,
+    TestPlanStatus.COMPLETED.value,
+)
+
+
 class TestEntryStatus(str, enum.Enum):
-    PROPOSED = "proposed"
-    APPROVED = "approved"
+    PROPOSED = "proposed"  # not tested yet
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
     REJECTED = "rejected"  # terminal "not tested" — replaces former "skipped"
@@ -74,7 +84,6 @@ class TestPlanSourceKind(str, enum.Enum):
     ``c7e3f491a5d2`` migration and to any plan created without an
     explicit source — the UI renders it as "(provenance not recorded)".
     """
-    RECON_SESSION = "recon_session"
     MANUAL_HOSTS = "manual_hosts"
     FILTER_SET = "filter_set"
     INHERITED = "inherited"
@@ -177,12 +186,8 @@ class TestPlan(Base):
         default=TestPlanStatus.DRAFT.value,
     )
 
-    # Approval workflow
-    approved_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    approved_at = Column(DateTime(timezone=True))
-    rejected_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    rejected_at = Column(DateTime(timezone=True))
-    rejection_reason = Column(Text)
+    # Why the plan was archived (who/when/from-status is in plan history).
+    archive_reason = Column(Text)
     filter_criteria = Column(JSON, nullable=True)
 
     # Generation provenance (v2.19.0).  Stamped by the agent during the
@@ -196,7 +201,7 @@ class TestPlan(Base):
     prompt_version = Column(String(20), nullable=True)
 
     # Source provenance (v3 alpha.3).  Tells the UI what the plan was
-    # scoped against — a recon run, a hand-picked host set, a filter
+    # scoped against — a hand-picked host set, a filter
     # expression, or an earlier plan.  ``source_kind`` discriminates
     # which of the payload columns is populated.  See
     # ``TestPlanSourceKind`` for the enumerated values and the
@@ -208,11 +213,6 @@ class TestPlan(Base):
         default=TestPlanSourceKind.UNSPECIFIED.value,
         server_default=TestPlanSourceKind.UNSPECIFIED.value,
     )
-    source_recon_session_id = Column(
-        Integer,
-        ForeignKey("recon_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-    )  # indexed via idx_test_plan_source_recon (see __table_args__)
     # JSON rather than postgresql.ARRAY(Integer) so SQLite test runs
     # work transparently and the column is portable.  Postgres ARRAY
     # gives no extra integrity (FKs aren't enforced on array elements
@@ -237,11 +237,6 @@ class TestPlan(Base):
         foreign_keys=[agent_session_id],
     )
     created_by_user = relationship("User", foreign_keys=[created_by_user_id])
-    approved_by = relationship("User", foreign_keys=[approved_by_id])
-    rejected_by = relationship("User", foreign_keys=[rejected_by_id])
-    source_recon_session = relationship(
-        "ReconSession", foreign_keys=[source_recon_session_id]
-    )
     # ``remote_side`` makes the self-FK unambiguous: source_plan_id
     # points at the parent's id, not its own row.
     source_plan = relationship(
@@ -256,10 +251,6 @@ class TestPlan(Base):
 
     __table_args__ = (
         Index("idx_test_plan_project_status", "project_id", "status"),
-        # source_recon_session_id's single-column index lives under a legacy
-        # name in the DB; declared here (not via `index=True`) so metadata
-        # matches that exact name rather than proposing ix_test_plans_*.
-        Index("idx_test_plan_source_recon", "source_recon_session_id"),
         # Per-project version is monotonic and unique.  TestPlanService
         # .create_plan() retries on the unique violation if two callers
         # race to compute max(version)+1.
@@ -390,16 +381,15 @@ class TestPlanHistory(Base):
 # Execution Sessions + Per-Test Results + Sanity Checks
 # ---------------------------------------------------------------------------
 #
-# These three tables support the agent-driven test execution workflow.
-# An execution session is created when a user clicks "Execute with AI"
-# on an approved plan — it mints an API key + instructions block just
-# like plan generation, then the agent works through the entries host
-# by host, recording a sanity check per host and a result per test.
+# These three tables record agent-driven test execution.  An agent opens
+# an execution run on a plan from its session (POST
+# /agent/execution-sessions/start), then records a result per test and,
+# when it has one, a target check per host (evidence, not a gate).
 #
-# Design decision (confirmed 2026-04-10): the approval gate lives at
-# the user's terminal (Claude Code / Codex tool approval, or the user
-# manually running commands).  BlueStick's role is providing the
-# instructions template + recording the audit trail.
+# Design decision (confirmed 2026-04-10): control over what runs lives at
+# the operator's terminal (Claude Code / Codex tool approval, or the user
+# manually running commands).  BlueStick's role is the instructions
+# template + recording the audit trail.
 #
 # Results from abandoned / interrupted sessions are KEPT and annotated
 # with the session's terminal status so consumers know the data came
@@ -475,17 +465,15 @@ class AgentSessionWorkflow(str, enum.Enum):
     """What kind of session a row is.
 
     v2.337.0 — ``PROJECT`` is the only kind new sessions get.  One
-    project-scoped session lets the same key query the inventory, run
-    reconnaissance against any scope, draft plans, and execute approved ones;
-    the phases it opens are the ``ReconSession`` / ``ExecutionSession`` /
-    ``TestPlan`` rows linked back to it.  The four legacy values remain as
+    project-scoped session lets the same key query the inventory, upload
+    scanner output, register plans and execute them; the plans and execution
+    runs it opens link back to it (v2.433.0 removed recon runs).  The legacy values remain as
     LABELS on rows minted before the consolidation so history still reads
     correctly — nothing gates on them any more (see ``deps.get_current_agent``).
     """
     PROJECT = "project"
     PLAN_GENERATION = "plan_generation"
     EXECUTION = "execution"
-    RECON = "recon"
     ASSIST = "assist"
 
 
@@ -516,7 +504,7 @@ class AgentSession(Base):
 
     What the agent is *working on* is recorded per phase, not per key:
 
-    * a reconnaissance run is a :class:`ReconSession` (bound to a scope),
+    * an upload is an ``IngestionJob`` (``ingestion_jobs.agent_session_id``),
     * a drafted plan is a :class:`TestPlan` (``test_plans.agent_session_id``),
     * an execution run is an :class:`ExecutionSession` (bound to a plan),
 
@@ -599,10 +587,6 @@ class AgentSession(Base):
     )
     # The phases this session opened.  Ordered oldest-first so "what did this
     # session do" reads as a timeline.
-    recon_sessions = relationship(
-        "ReconSession", back_populates="agent_session",
-        order_by="ReconSession.id", foreign_keys="ReconSession.agent_session_id",
-    )
     execution_sessions = relationship(
         "ExecutionSession", back_populates="agent_session",
         order_by="ExecutionSession.id", foreign_keys="ExecutionSession.agent_session_id",
@@ -619,11 +603,11 @@ class AgentSession(Base):
 
 
 class ExecutionSession(Base):
-    """One run of test execution against an approved plan.
+    """One run of test execution against a plan.
 
-    Created by the "Execute with AI" button, which also mints a
-    time-limited API key for the agent.  At most one session per plan
-    may be `active` at a time — creating a new one pauses the old.
+    Opened by an agent session (``POST /agent/execution-sessions/start``)
+    or by an offline bundle export.  At most one run per plan may be
+    `active` at a time — opening a new one pauses the old.
     """
     __tablename__ = "execution_sessions"
 
@@ -697,7 +681,7 @@ class ExecutionSession(Base):
 
     # Free-form notes — written by the operator-driven Abandon endpoint
     # (v4 beta.7) so the audit line "[Abandoned by <user> on <ts>]: ..."
-    # lives with the row.  Mirrors the same field on ReconSession.
+    # lives with the row.
     notes = Column(Text, nullable=True)
 
     # Relationships
@@ -774,14 +758,8 @@ class TestExecutionResult(Base):
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
-    # v2.91.0 (code review #2, Option B) — when a result is recorded
-    # against an entry that has no passing HostSanityCheck on file,
-    # the agent must supply an override_reason at result-record time.
-    # The reason is persisted here so the audit trail shows WHICH
-    # results were captured without a verified target.  Indexed for
-    # the "show me every result that bypassed sanity" query.  Empty
-    # for the common case where sanity was verified first.
-    sanity_override_reason = Column(String(500), nullable=True, index=True)
+    # ``sanity_override_reason`` (v2.91.0) is gone (v2.433.1): target checks
+    # are evidence, not a gate, so there is nothing to override.
 
     # v2.323.0 — the address the command actually hit, as the agent observed
     # it when the test ran.  Execution EVIDENCE references the particular
@@ -963,20 +941,8 @@ class AgentFeedback(Base):
         ForeignKey("execution_sessions.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # v2.85.0 — recon / assist linkage.  Pre-v2.85.0 the recon prompt
-    # passed ``recon_session_id`` to /agent/feedback but the schema
-    # silently dropped it (Pydantic ignored unknown keys), so feedback
-    # from the recon and assist workflows could not be filtered by
-    # session.  Both columns are nullable — plan-generation feedback
-    # uses test_plan_id, execution uses execution_session_id, recon uses
-    # recon_session_id, assist uses assist_session_id; the four are
-    # mutually exclusive by workflow but the schema enforces nothing.
-    recon_session_id = Column(
-        Integer,
-        ForeignKey("recon_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    # v2.85.0 — assist linkage.  Nullable — plan feedback uses test_plan_id,
+    # execution uses execution_session_id, assist uses assist_session_id.
     assist_session_id = Column(
         Integer,
         ForeignKey("assist_sessions.id", ondelete="SET NULL"),
@@ -1017,7 +983,6 @@ class AgentFeedback(Base):
     agent = relationship("Agent", foreign_keys=[agent_id])
     test_plan = relationship("TestPlan", foreign_keys=[test_plan_id])
     execution_session = relationship("ExecutionSession", foreign_keys=[execution_session_id])
-    recon_session = relationship("ReconSession", foreign_keys=[recon_session_id])
     assist_session = relationship("AssistSession", foreign_keys=[assist_session_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
@@ -1026,153 +991,6 @@ class AgentFeedback(Base):
         Index("idx_agent_feedback_status", "status"),
         Index("idx_agent_feedback_source", "source"),
         Index("idx_agent_feedback_created_desc", "created_at"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Reconnaissance sessions
-# ---------------------------------------------------------------------------
-# Added in v2.11.0 to decouple recon from test plan generation.  Before
-# this release, clicking "Start Agentic Recon" on the Scopes page created
-# a TestPlan and told the agent to fill it with entries — but recon's job
-# is to populate *host data*, not a list of things-to-test.  Test plans
-# come after recon, once the DB actually knows what's in scope.
-#
-# A ReconSession tracks one recon run against a scope:
-#   - mints a scope-bound agent API key (scope_id on api_keys)
-#   - the agent uploads raw scanner output (nmap XML, masscan, gnmap,
-#     nessus, eyewitness, etc.) via POST /agent/recon/upload, which
-#     wraps the regular ingestion pipeline
-#   - the session counts uploads + distinct hosts landed in the scope
-#   - the session terminates via POST /agent/recon/complete (optional
-#     chain into plan generation)
-#
-# ReconSession is intentionally separate from ExecutionSession even
-# though both represent "an agent is running a workflow and producing
-# results over time".  ExecutionSession is tied to test plan entries
-# and per-test results; recon has neither.  Forcing them into one
-# table would add nullable FKs in both directions and obscure the
-# semantics.
-
-class ReconSessionStatus(str, enum.Enum):
-    ACTIVE = "active"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    ABANDONED = "abandoned"
-
-
-class ReconSession(Base):
-    """One agentic reconnaissance run against a registered scope.
-
-    Created by POST /projects/{id}/scopes/{scope_id}/recon/start, which
-    also mints a scope-bound agent API key.  The agent uses the key to
-    call /agent/recon/* endpoints — context (what to scan), upload
-    (submit tool output), summary (what's been found), complete
-    (terminal).
-    """
-    __tablename__ = "recon_sessions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(
-        Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    scope_id = Column(
-        Integer,
-        ForeignKey("scopes.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    agent_id = Column(
-        Integer,
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    started_by_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    status = Column(
-        String(20),
-        nullable=False,
-        default=ReconSessionStatus.ACTIVE.value,
-    )
-
-    # The operator session this run belongs to — many-to-one since v2.337.0
-    # (a session may recon several scopes in turn).  Nullable only for rows
-    # that predate the unified session row.
-    agent_session_id = Column(
-        Integer,
-        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-
-    # Counters updated as uploads succeed.  Not authoritative — the
-    # authoritative source is the scan_history rows tagged with this
-    # session.  These exist for cheap summary queries.
-    uploads_submitted = Column(Integer, default=0, nullable=False)
-    scans_ingested = Column(Integer, default=0, nullable=False)
-    hosts_discovered = Column(Integer, default=0, nullable=False)
-    ports_discovered = Column(Integer, default=0, nullable=False)
-
-    # Free-form notes from the agent at completion time (summary of
-    # what it ran, what it found, any manual interventions).  Capped
-    # by the API schema; no max_length here because other text fields
-    # in this table also omit it and rely on API-layer caps.
-    notes = Column(Text, nullable=True)
-
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
-    completed_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Environment probe (v2.23.0).  Same shape and intent as
-    # ExecutionSession.environment — filled by the agent on first
-    # contact via POST /agent/recon/sessions/{id}/environment so
-    # /context can echo it and the agent picks scan flavour from what
-    # is actually available.  Recon and execution probes live on their
-    # own session rows because the operator may run them from
-    # different machines (e.g. recon from Kali, execution from
-    # Windows).
-    environment = Column(JSON, nullable=True)
-    environment_probed_at = Column(DateTime(timezone=True), nullable=True)
-    environment_probed_by_user_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    environment_probed_from_ip = Column(String(45), nullable=True)
-
-    # Executing-agent attribution (v2.30.0).  Mirrors v2.28.0's
-    # addition to ExecutionSession so cross-workflow comparison
-    # ("everything claude-opus-4-7 did on this project") sees
-    # symmetric data across recon and execution.  Stamped by the
-    # agent on the same call that records the environment probe.
-    # Nullable because pre-2.30 sessions and any agent that doesn't
-    # report attribution leave them empty.
-    generated_by_model = Column(String(100), nullable=True)
-    generated_by_tool = Column(String(100), nullable=True)
-    prompt_version = Column(String(20), nullable=True)
-
-    # Relationships
-    project = relationship("Project", foreign_keys=[project_id])
-    agent = relationship("Agent", foreign_keys=[agent_id])
-    started_by = relationship("User", foreign_keys=[started_by_id])
-    environment_probed_by = relationship(
-        "User", foreign_keys=[environment_probed_by_user_id]
-    )
-    agent_session = relationship(
-        "AgentSession", back_populates="recon_sessions",
-        foreign_keys=[agent_session_id],
-    )
-
-    __table_args__ = (
-        Index("idx_recon_session_scope", "scope_id"),
-        Index("idx_recon_session_project", "project_id"),
-        Index("idx_recon_session_status", "status"),
     )
 
 
@@ -1257,7 +1075,7 @@ class AssistSession(Base):
     # without scanning agent_api_calls.
     last_activity_at = Column(DateTime(timezone=True), nullable=True)
 
-    # Environment probe — same shape as ReconSession.environment.
+    # Environment probe — same shape as AgentSession.environment.
     # Optional: the assist agent's commands are read-only API calls,
     # not shell invocations, so probe matters less than for execution
     # or recon.  Kept for symmetry with the other workflows and
@@ -1272,7 +1090,7 @@ class AssistSession(Base):
     )
     environment_probed_from_ip = Column(String(45), nullable=True)
 
-    # Executing-agent attribution — parallel to ReconSession.
+    # Executing-agent attribution.
     generated_by_model = Column(String(100), nullable=True)
     generated_by_tool = Column(String(100), nullable=True)
     prompt_version = Column(String(20), nullable=True)
@@ -1315,7 +1133,7 @@ class AgentApiCall(Base):
     """One inbound agent API request, captured for audit + debug review.
 
     Indexed by (agent_id, created_at), (test_plan_id, created_at), and
-    (recon_session_id, created_at) for fast per-workflow timelines.
+    (execution_session_id, created_at) for fast per-workflow timelines.
     """
     __tablename__ = "agent_api_calls"
 
@@ -1374,12 +1192,6 @@ class AgentApiCall(Base):
         Integer,
         ForeignKey("scopes.id", ondelete="SET NULL"),
         nullable=True,
-    )
-    recon_session_id = Column(
-        Integer,
-        ForeignKey("recon_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
     )
     # v2.64.0 — assist-session attribution.  Parallel to the columns
     # above; populated by the audit middleware from
@@ -1441,7 +1253,6 @@ class AgentApiCall(Base):
     __table_args__ = (
         Index("idx_agent_api_call_agent_created", "agent_id", "created_at"),
         Index("idx_agent_api_call_plan_created", "test_plan_id", "created_at"),
-        Index("idx_agent_api_call_recon_created", "recon_session_id", "created_at"),
         Index("idx_agent_api_call_exec_created", "execution_session_id", "created_at"),
         Index("idx_agent_api_call_project_created", "project_id", "created_at"),
         # assist_session_id folds into this composite (it's the leading column),

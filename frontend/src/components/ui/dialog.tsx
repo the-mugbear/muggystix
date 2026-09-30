@@ -71,8 +71,8 @@ export interface DialogContentProps
   /**
    * Whether to render the top-right X close button.  Defaults to true.
    *
-   * Pass `false` for acknowledgement-gated flows (StartReconDialog and
-   * any future "you must check the box before closing" surface).  The
+   * Pass `false` for acknowledgement-gated flows (any "you must check
+   * the box before closing" surface).  The
    * previous unconditional X created a deceptive affordance: the dialog
    * advertised "dismissible" but the parent's onOpenChange vetoed the
    * close, so click/Esc/backdrop all silently did nothing.  Set false

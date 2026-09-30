@@ -43,7 +43,7 @@ const tool = (over: Partial<ToolRegistryEntry> = {}): ToolRegistryEntry => ({
   install: 'apt install nmap',
   url: 'https://nmap.org/',
   kali: true,
-  status: 'approved',
+  status: 'reference',
   phases: ['discovery'],
   intrusive: false,
   requires_privileges: true,
@@ -90,19 +90,23 @@ describe('ToolReference', () => {
     expect(screen.getByText('testssl')).toBeInTheDocument();
   });
 
-  it('shows each tool’s agent policy, so documented does not read as runnable', async () => {
+  // 5.313.0 — a catalogue, not agent policy: no row says an agent may (or may
+  // not) run it; only a pending suggestion or a declined one is marked.
+  it('is a catalogue: no agent-permission badge, only suggested and declined rows are marked', async () => {
     getToolRegistry.mockResolvedValue({
       count: 2,
-      tools: [tool(), tool({ name: 'socat', status: 'reference', category: 'Port Scanning' })],
+      tools: [tool(), tool({ name: 'socat', status: 'rejected', category: 'Port Scanning' })],
     });
     renderPage();
 
     await waitFor(() => expect(screen.getByText('nmap')).toBeInTheDocument());
-    const approvedRow = document.getElementById('tool-row-nmap')!;
-    const referenceRow = document.getElementById('tool-row-socat')!;
+    const catalogued = document.getElementById('tool-row-nmap')!;
+    const declined = document.getElementById('tool-row-socat')!;
 
-    expect(within(approvedRow).getByText('Agent-approved')).toBeInTheDocument();
-    expect(within(referenceRow).getByText('Reference only')).toBeInTheDocument();
+    expect(within(declined).getByText('Declined')).toBeInTheDocument();
+    expect(within(catalogued).queryByText(/Agent-approved|Reference only|Declined|Suggested/)).toBeNull();
+    expect(screen.queryByText(/Agent-approved/)).toBeNull();
+    expect(screen.getByText(/does not decide what an agent\s+may run/)).toBeInTheDocument();
   });
 
   it('links a tool BlueStick imports to what it reads from it (v5.296.0)', async () => {
@@ -127,7 +131,7 @@ describe('ToolReference', () => {
           name: 'ligolo-ng',
           category: 'Uncategorised',
           status: 'suggested',
-          suggested_rationale: 'Needed for pivoting the approved set does not cover.',
+          suggested_rationale: 'Needed for pivoting nothing in the catalogue covers.',
           install: null,
           url: null,
           ports: null,
@@ -152,14 +156,14 @@ describe('ToolReference', () => {
     const suggestion = tool({
       name: 'ligolo-ng',
       status: 'suggested',
-      suggested_rationale: 'Pivoting the approved set cannot do.',
+      suggested_rationale: 'Pivoting nothing in the catalogue can do.',
     });
     getToolRegistry.mockResolvedValue({ count: 2, tools: [tool(), suggestion] });
 
     const { unmount } = renderPage();
     await waitFor(() => expect(screen.getByText('nmap')).toBeInTheDocument());
-    // A non-admin sees the suggestion, but no way to act on it — approving a
-    // tool decides what agents may run on every project in the deployment.
+    // A non-admin sees the suggestion, but no way to act on it — the
+    // catalogue is shared by every project in the deployment.
     expect(screen.getByText('ligolo-ng')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
     expect(screen.queryByText(/awaiting review/)).not.toBeInTheDocument();

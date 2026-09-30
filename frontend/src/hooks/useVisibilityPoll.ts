@@ -19,7 +19,7 @@ import { useEffect, useRef } from 'react';
  * Pass `enabled = false` (or null intervalMs) to suspend polling.
  *
  * Use cases: notification badge poll, agent activity rail, active
- * recon/execution session refresh.
+ * execution session refresh.
  */
 export function useVisibilityPoll(
   callback: () => void | Promise<void>,

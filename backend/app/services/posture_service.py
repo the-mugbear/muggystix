@@ -339,13 +339,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         or 0
     )
 
-    # Decisions awaiting a human.
-    pending_approvals = (
-        db.query(func.count(TestPlan.id))
-        .filter(TestPlan.project_id == project_id, TestPlan.status == TestPlanStatus.PROPOSED.value)
-        .scalar()
-        or 0
-    )
     # Blocked runs — only the LATEST execution session per plan, in a blocked
     # state (paused / failed; NOT abandoned, which is deliberately closed).
     # Shared helper so Posture and Portfolio agree on the invariant.
@@ -448,7 +441,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         },
         "priorities": [s["priority"] | {"score": s["score"], "tier": s["tier"]} for s in signals[:8]],
         "decisions": {
-            "pending_approvals": int(pending_approvals),
             "blocked_sessions": int(blocked_sessions),
         },
         "sites": {"adopted": site_att.get("adopted", False), "items": site_att.get("sites", [])},

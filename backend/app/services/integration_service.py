@@ -176,3 +176,16 @@ def decrypt_integration(row: IntegrationCredential) -> Dict[str, Any]:
         "extra_config": extra,
         "is_active": bool(row.is_active),
     }
+
+
+def active_integrations_for_prompt(db, *, user_id: int, project_id: int) -> List[Dict[str, Any]]:
+    """The operator's active scanner-integration credentials for this project,
+    decrypted for the agent session prompt (credentialed scanners — Nessus,
+    OpenVAS, Nuclei, Burp).  Plaintext inlining is authorized by the user who
+    created the integration; only their own integrations are returned.
+    """
+    return [
+        decrypt_integration(r)
+        for r in IntegrationService(db).list_for_user(user_id, project_id=project_id)
+        if r.is_active
+    ]

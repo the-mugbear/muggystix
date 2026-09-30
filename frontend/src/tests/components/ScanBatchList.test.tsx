@@ -15,7 +15,6 @@ import { formatInstant } from '../../utils/scanTime';
 const batch: ScanBatchSummary = {
   id: 7,
   label: 'nmap-tcp-top1000',
-  recon_session_id: 3,
   created_by: null,
   files: 312,
   tools: ['nmap'],
@@ -59,7 +58,7 @@ describe('ScanBatchRow', () => {
     renderRow({});
     expect(screen.getByText('nmap-tcp-top1000')).toBeInTheDocument();
     // Says what kind of row it is: it sits among single files now.
-    expect(screen.getByText('Upload batch · Recon session #3')).toBeInTheDocument();
+    expect(screen.getByText('Upload batch')).toBeInTheDocument();
     expect(screen.getByText(/312 files imported/)).toBeInTheDocument();
     expect(screen.getByText('+850')).toBeInTheDocument();
     expect(screen.getByText('4 processing')).toBeInTheDocument();
@@ -91,7 +90,7 @@ describe('ScanBatchRow', () => {
   // files imported · incl. 1 re-processed" read as a contradiction.
   it('counts a re-processed file beside the batch\'s own files, so the title and the count agree', () => {
     const { container } = renderRow({}, vi.fn(), {
-      ...batch, recon_session_id: null, label: '31 files · x', files: 32, total_files: 32, reprocessed_files: 1,
+      ...batch, label: '31 files · x', files: 32, total_files: 32, reprocessed_files: 1,
     });
     expect(screen.getByText('Upload batch · 31 files')).toBeInTheDocument();
     const contributed = cells(container)[3];
@@ -101,7 +100,7 @@ describe('ScanBatchRow', () => {
 
   it('a batch with nothing imported says why', () => {
     const empty = {
-      ...batch, label: '31 files · y', recon_session_id: null, files: 0, total_files: 0, hosts: 0, new_hosts: 0,
+      ...batch, label: '31 files · y', files: 0, total_files: 0, hosts: 0, new_hosts: 0,
       open_ports: 0, tools: [], pending_files: 0, processing_files: 0, failed_files: 0, expired_files: 31,
     };
     const { container } = renderRow({}, vi.fn(), empty);
@@ -125,7 +124,7 @@ describe('ScanBatchRow', () => {
   });
 
   it("names the uploader by full name, falling back to the username", () => {
-    const op = { ...batch, recon_session_id: null, created_by: 'admin' };
+    const op = { ...batch, created_by: 'admin' };
     const { unmount } = renderRow({}, vi.fn(), { ...op, created_by_name: 'Ada Admin' });
     expect(screen.getByText('Upload batch · Uploaded by Ada Admin')).toBeInTheDocument();
     unmount();
@@ -252,7 +251,7 @@ describe('ScanBatchRow', () => {
   });
 
   it('shows a generated label as "Upload batch · N files", and a name as written', () => {
-    const op = { ...batch, recon_session_id: null, created_by: 'admin', created_by_name: 'Administrator Account' };
+    const op = { ...batch, created_by: 'admin', created_by_name: 'Administrator Account' };
     const { unmount } = renderRow({}, vi.fn(), { ...op, label: '31 files · 9/18/2026, 10:20:37 PM' });
     expect(screen.getByText('Upload batch · 31 files')).toBeInTheDocument();
     // The subtitle wraps (never an ellipsis over the uploader's name) and does
@@ -284,7 +283,7 @@ describe('ScanBatchRow', () => {
   // (duplicates), which creates no job; every file must be accounted for.
   it('accounts for every dropped file, including the ones refused at upload', () => {
     const { container } = renderRow({}, vi.fn(), {
-      ...batch, recon_session_id: null, label: '46 files · 9/22/2026, 10:37:38 PM',
+      ...batch, label: '46 files · 9/22/2026, 10:37:38 PM',
       files: 17, total_files: 17, pending_files: 0, processing_files: 0, failed_files: 4, uploaded_files: 21,
     });
     const contributed = cells(container)[3];

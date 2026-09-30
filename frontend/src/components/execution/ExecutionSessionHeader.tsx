@@ -12,8 +12,8 @@ const STALE_MS = SESSION_STALE_MINUTES * 60 * 1000;
 /**
  * An `active` session with no agent API activity for {@link SESSION_STALE_MINUTES}+
  * minutes is most likely interrupted (the operator's host crashed) rather
- * than still running.  Heuristic — shared by the header badge and the
- * Resume confirmation so both judge "interrupted" the same way.
+ * than still running.  Heuristic — shared by every surface that shows the
+ * "Possibly interrupted" badge so they judge "interrupted" the same way.
  *
  * Prefers the server's ``is_stale`` boolean when present: the server
  * computes elapsed against its own clock, so client/server clock skew
@@ -45,7 +45,7 @@ export const ExecutionSessionHeader: React.FC<ExecutionSessionHeaderProps> = ({
   title,
 }) => {
   const hasMultiple = totalSessionCount > 1;
-  const resolvedTitle = title ?? (hasMultiple ? 'Execution sessions' : 'Execution session');
+  const resolvedTitle = title ?? (hasMultiple ? 'Execution runs' : 'Execution run');
   const hasAttribution =
     Boolean(session.generated_by_model) || Boolean(session.generated_by_tool);
 
@@ -69,7 +69,7 @@ export const ExecutionSessionHeader: React.FC<ExecutionSessionHeaderProps> = ({
                 </TooltipTrigger>
                 <TooltipContent>
                   No agent API activity for {SESSION_STALE_MINUTES}+ minutes — this run
-                  may have been interrupted. Use Resume to re-issue a key and continue.
+                  may have been interrupted. Resume its agent session to continue.
                 </TooltipContent>
               </Tooltip>
             )}
@@ -101,8 +101,7 @@ export const ExecutionSessionHeader: React.FC<ExecutionSessionHeaderProps> = ({
             </p>
           )}
           {/* Operator-environment probe — full snapshot (tools, python, arch)
-              when available, parity with the recon run-detail panel; falls
-              back to the flat os_family/shell for pre-snapshot sessions. */}
+              when available; falls back to the flat os_family/shell for pre-snapshot sessions. */}
           {(() => {
             const env = session.environment;
             if (!env && !session.environment_os_family) return null;

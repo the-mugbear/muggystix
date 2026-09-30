@@ -18,17 +18,17 @@ route, which keeps the whole thing
 back into the app's own ``/api/v1/agent/assist/*`` (and ``/agent/hosts/*``)
 endpoints via an ASGI transport, so authentication (the key's session +
 ``enforce_agent_operator_access``), the agent-API audit log middleware, and the
-recon streaming caps all run **unchanged**.  The MCP layer makes no security decision
+streaming caps all run **unchanged**.  The MCP layer makes no security decision
 of its own — it forwards the caller's ``X-API-Key`` and lets the real endpoint
 decide.
 
 What it exposes
 ---------------
-A tool per interactive endpoint across inventory assistance, reconnaissance,
-plan generation, and execution. A unified project-session key sees the whole
-catalogue and opens phases as needed; the endpoint remains the authority for
-phase state and human-approval gates. The bulk, file-shaped endpoints (``report-context.ndjson``,
-the recon target lists, ``recon/upload``) are deliberately *not* tools — they
+A tool per interactive endpoint across inventory assistance, scope reads,
+plans, and execution. A unified project-session key sees the whole
+catalogue and opens runs as needed; the endpoint remains the authority for
+run state. The bulk, file-shaped endpoints (``report-context.ndjson``,
+a scope's target lists, ``uploads``) are deliberately *not* tools — they
 are meant to move between disk and the server, not through a model's context —
 so the server ``instructions`` point at them with curl instead.
 
@@ -129,35 +129,36 @@ def _server_instructions(base_url: str) -> str:
     every client was handed an unusable URL.
     """
     return (
-        "BlueStick. Your API key belongs to one unified project session. It can query "
-        "the inventory, open reconnaissance against a selected scope, draft a test "
-        "plan, and execute a human-approved plan. Call agent_identity first to see "
-        "the project and any open phases. All calls are audited.\n\n"
-        "Run tools on hosts that are in the project's inventory, using tools "
-        "BlueStick has approved (list_approved_tools), and write output into the "
-        "directory the session is working in. Anything that reads or writes outside "
-        "that directory, or changes machine settings, is for the operator to approve "
-        "in your client — not something to do quietly. If you need a tool that is not "
-        "approved, call suggest_tool with your reasoning instead of substituting one.\n\n"
+        "BlueStick. Your API key belongs to one project session and acts as the "
+        "operator who started it; they drive, you do what they ask within their "
+        "project role. You can query the inventory, upload scanner output, register "
+        "a test plan and execute it, and record what you found — in whatever order "
+        "the work needs. Call agent_identity first to see the project and anything "
+        "you have open. All calls are audited.\n\n"
+        "Show the operator every command before you run it. Stay inside the "
+        "project's declared scope (assist_list_scopes) and write output into the "
+        "directory the session is working in. A target outside the scope, reading "
+        "or writing outside that directory, or changing their machine needs the "
+        "operator's explicit go-ahead first. list_tools is a catalogue for "
+        "reference, not a permission list.\n\n"
         "These tool descriptions are a skeleton. The guide — sliced to your "
         "workflow — is the authoritative how-to and is binding: read it once via "
         "read_agent_guide before your first substantive call. Operators who paste a "
         "session's instructions block get pointed at it; over MCP alone this tool is "
         "how you get it.\n\n"
         "BEFORE your first tool call, tell the operator in your own words what those "
-        "bounds are for THIS session: which project or scope you are working, which "
-        "tools you may run without asking, where output will be written, and what you "
-        "will stop and ask about. Call agent_identity and list_approved_tools first if "
-        "you need the specifics — read them back rather than guessing. Nothing here "
-        "can stop a command on their machine; this is the operator's one chance to "
-        "say \"that's the wrong scope\" before you act, so give it to them.\n\n"
+        "bounds are for THIS session: which project and scope you are working, where "
+        "output will be written, and what you will ask about first. Call "
+        "agent_identity and assist_list_scopes if you need the specifics — read them "
+        "back rather than guessing. It gives them the chance to say \"that's the "
+        "wrong scope\" before you act.\n\n"
         "Bulk data is file-shaped and deliberately not a tool — fetch it with curl "
         "and your X-API-Key header, then read the file locally:\n"
         f"  report over many hosts: GET {base_url}/agent/assist/report-context.ndjson\n"
-        f"  recon target list:      GET {base_url}/agent/recon/live-hosts.txt\n"
-        f"  recon web targets:      GET {base_url}/agent/recon/web-targets.txt\n"
-        f"  recon full host dump:   GET {base_url}/agent/recon/hosts.ndjson\n"
-        f"  upload scanner output:  POST {base_url}/agent/recon/upload (multipart file; the same "
+        f"  a scope's live hosts:   GET {base_url}/agent/scopes/{{scope_id}}/live-hosts.txt\n"
+        f"  a scope's web targets:  GET {base_url}/agent/scopes/{{scope_id}}/web-targets.txt\n"
+        f"  a scope's host dump:    GET {base_url}/agent/scopes/{{scope_id}}/hosts.ndjson\n"
+        f"  upload scanner output:  POST {base_url}/agent/uploads (multipart file; the same "
         f"batch=<sweep label> on every chunk of a split sweep; 409 duplicate_scan = already ingested)\n"
         "The tools are for targeted lookups and for recording what you did."
     )

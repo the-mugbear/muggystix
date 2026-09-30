@@ -116,7 +116,7 @@ const IntegrationSettings: React.FC = () => {
   const [saving, setSaving] = useState(false);
   // Nessus-only: operator-supplied license cap (hosts per registered
   // Nessus scan).  Stored on save in `extra_config.max_hosts_per_scan`
-  // so the recon prompt's Nessus block can steer the agent to chunk
+  // so the agent prompt's Nessus block can steer the agent to chunk
   // large scopes into multiple license-sized scans.
   const [maxHostsPerScan, setMaxHostsPerScan] = useState<string>('');
   // OpenVAS/Greenbone-only: where gvmd listens for GMP. The Base URL is GSA
@@ -164,7 +164,7 @@ const IntegrationSettings: React.FC = () => {
   ]);
 
   /** Per-type extras the backend stores in `extra_config`: the Nessus license
-   *  cap (drives the recon prompt's chunking guidance) and the GVM GMP port
+   *  cap (drives the agent prompt's chunking guidance) and the GVM GMP port
    *  (the port the connection test authenticates against). */
   const buildExtraConfig = (): Record<string, unknown> | undefined => {
     if (form.integration_type === 'nessus' && maxHostsPerScan.trim()) {
@@ -295,7 +295,7 @@ const IntegrationSettings: React.FC = () => {
           <h1 className="text-page-title">Scanner Integrations</h1>
           <p className="mt-xxs text-metadata text-muted-foreground">
             Credentials for external scanning tools (Nessus, OpenVAS, Nuclei, Burp, etc). Secrets
-            are encrypted at rest and surfaced to agents via the recon prompt when relevant.
+            are encrypted at rest and surfaced to agents via the session prompt when relevant.
           </p>
         </div>
         <Button onClick={openNew}>
@@ -317,7 +317,7 @@ const IntegrationSettings: React.FC = () => {
             <KeyRound className="size-12 text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">No integrations configured yet.</p>
             <p className="text-caption text-muted-foreground">
-              Add one to make its credentials available to the agentic recon prompt.
+              Add one to make its credentials available to your agent when it scans.
             </p>
             <Button onClick={openNew}>
               <Plus className="size-4" aria-hidden /> Add Your First Integration
@@ -496,7 +496,7 @@ const IntegrationSettings: React.FC = () => {
               </div>
             )}
             {/* Nessus-only license cap (v2.49.4).  Lives in
-                extra_config.max_hosts_per_scan so the recon prompt
+                extra_config.max_hosts_per_scan so the agent prompt
                 can steer the agent to chunk large scopes into
                 multiple license-sized scans instead of one oversize
                 scan Nessus rejects or truncates. */}
@@ -516,8 +516,8 @@ const IntegrationSettings: React.FC = () => {
                 />
                 <p className="text-caption text-muted-foreground">
                   Your Nessus license's per-scan host limit (typical Pro tiers:
-                  256 / 512 / 1024).  When set, the recon prompt instructs the
-                  agent to split scopes larger than this into multiple
+                  256 / 512 / 1024).  When set, the agent's prompt instructs it
+                  to split scopes larger than this into multiple
                   sequential Nessus scans.  Leave blank if unknown.
                 </p>
               </div>

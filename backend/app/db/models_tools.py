@@ -12,19 +12,19 @@ an agent could be told to run a tool the reference page never mentioned.  More
 importantly, any "is this an approved tool?" rule built on the backend list
 would have rejected tools the app itself recommends.
 
-One row per tool now, with two views over it: the reference page renders all of
-them, and the agent catalog is the ``approved`` subset.
+One row per tool now; the reference page renders all of them.
 
-Two properties that look alike and must not be merged
------------------------------------------------------
-``status`` is a **policy** fact — may an agent run this?  ``ingestible`` is an
-**engineering** fact — does BlueStick have a parser for its output?  They are
-independent: 22 tools have parsers while 11 are agent-approved, and a tool can
-be perfectly safe to run without BlueStick understanding a word of its output
-(execution records evidence text; it does not ingest scanner files).  Fusing
-them would mean either no tool can be approved until someone writes a parser —
-stalling the vetting loop this table exists to enable — or approving tools whose
-upload then fails.
+v2.433.0 — the registry is a CATALOGUE, not agent policy.  It used to carry an
+``approved`` status that agents were told was the only set they could run
+without asking; that allowlist was part of the retired "agent on rails" model
+(the operator drives their agent now, and the server never enforced it
+anyway).  ``status`` now says only whether a row is in the catalogue, an
+agent's suggestion awaiting a curator, or a suggestion declined.
+
+``ingestible`` is an **engineering** fact — does BlueStick have a parser for its
+output?  It is independent of whether the tool is catalogued: a tool can be
+worth running without BlueStick understanding a word of its output (execution
+records evidence text; it does not ingest scanner files).
 """
 from __future__ import annotations
 
@@ -44,16 +44,14 @@ from sqlalchemy import (
 from app.db.session import Base
 
 
-# Policy states.  Deliberately one field rather than a status *and* an
-# `approved` boolean, which could contradict each other.
-TOOL_APPROVED = "approved"      # agents may run it
-TOOL_REFERENCE = "reference"    # documented for humans, not offered to agents
-TOOL_SUGGESTED = "suggested"    # an agent asked for it; awaiting vetting
-TOOL_REJECTED = "rejected"      # vetted and declined — kept so it isn't re-proposed forever
+# Catalogue states — none of them is a permission.
+TOOL_REFERENCE = "reference"    # in the catalogue
+TOOL_SUGGESTED = "suggested"    # an agent proposed adding it; awaiting a curator
+TOOL_REJECTED = "rejected"      # suggestion declined — kept so it isn't re-proposed forever
 
 
 class ToolRegistryEntry(Base):
-    """One tool: what it is (for humans) and whether an agent may run it."""
+    """One tool: what it is, what it is for, and whether BlueStick parses it."""
 
     __tablename__ = "tool_registry"
 
@@ -69,13 +67,13 @@ class ToolRegistryEntry(Base):
     url = Column(String(500), nullable=True)
     kali = Column(Boolean, nullable=False, server_default="false")
 
-    # --- policy ---
+    # --- catalogue state ---
     status = Column(String(16), nullable=False, server_default=TOOL_REFERENCE, index=True)
     # Recon phases this tool belongs to (discovery/service_probe/web/dns/smb/
     # credentialed).  Empty for tools with no agent role.
     phases = Column(JSON, nullable=True)
-    # `intrusive=False` means safe enough to run without per-command approval
-    # escalation — the discriminator the auto-approve rules key off.
+    # Whether running it can disturb a target (exploit checks, brute force,
+    # heavy crawling) — advice an operator reads, not a gate.
     intrusive = Column(Boolean, nullable=True)
     requires_privileges = Column(Boolean, nullable=True)
     output_format = Column(String(16), nullable=True)

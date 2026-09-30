@@ -93,7 +93,7 @@ def test_add_to_existing_draft_skips_hosts_already_in_it(client, db_session, tes
 
 def test_only_a_draft_accepts_a_selection(client, db_session, test_project, test_plan):
     a = _host(db_session, test_project.id, "10.9.2.1")
-    test_plan.status = TestPlanStatus.APPROVED.value
+    test_plan.status = TestPlanStatus.IN_PROGRESS.value
     db_session.commit()
     r = client.post(_url(test_project.id), json={
         "host_ids": [a.id], "plan_id": test_plan.id, "rationale": "x",
@@ -137,11 +137,11 @@ def test_dry_run_reports_without_writing(client, db_session, test_project):
     a = _host(db_session, test_project.id, "10.9.5.1")
     b = _host(db_session, test_project.id, "10.9.5.2")
     db_session.commit()
-    # b is already in an approved plan → planned_elsewhere.
-    approved = client.post(_url(test_project.id), json={
-        "host_ids": [b.id], "title": "approved", "rationale": "x",
-    }).json()["plan"]["id"]
-    db_session.get(TestPlan, approved).status = TestPlanStatus.APPROVED.value
+    # b is already in another (non-archived) plan → planned_elsewhere; a draft
+    # counts since v2.433.0 (no approval step).
+    client.post(_url(test_project.id), json={
+        "host_ids": [b.id], "title": "elsewhere", "rationale": "x",
+    })
     db_session.commit()
     plans_before = db_session.query(TestPlan).count()
     entries_before = db_session.query(TestPlanEntry).count()

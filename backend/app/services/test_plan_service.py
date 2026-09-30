@@ -44,14 +44,13 @@ class TestPlanService:
         commit_after: bool = True,
         # v3 alpha.3: typed source-provenance.  Optional and mutually
         # exclusive — the API layer validates and passes exactly one
-        # of (source_recon_session_id, source_host_ids, source_plan_id)
+        # of (source_host_ids, source_plan_id)
         # along with the matching ``source_kind``.  Callers that don't
         # set ``source_kind`` leave the plan as ``UNSPECIFIED`` (the
         # column default) and a ``filter_criteria``-only plan becomes
         # an implicit ``filter_set`` only when the caller explicitly
         # passes that kind.
         source_kind: Optional[str] = None,
-        source_recon_session_id: Optional[int] = None,
         source_host_ids: Optional[List[int]] = None,
         source_plan_id: Optional[int] = None,
     ) -> TestPlan:
@@ -108,7 +107,6 @@ class TestPlanService:
                     if source_kind is not None
                     else {}
                 ),
-                source_recon_session_id=source_recon_session_id,
                 source_host_ids=source_host_ids,
                 source_plan_id=source_plan_id,
             )
@@ -182,13 +180,11 @@ class TestPlanService:
         title: Optional[str] = None,
         description: Optional[str] = None,
         status: Optional[str] = None,
-        # Status changes are gated: only the dedicated lifecycle methods
-        # (submit/approve/reject/archive — which enforce the allowed
+        # Status changes are gated: only the dedicated lifecycle paths
+        # (archive, execution start/completion — which enforce the allowed
         # transitions) may set status, and they pass _allow_status_change=True.
         # Without this, update_plan was an unguarded backdoor that could jump a
-        # plan to any state (e.g. a completed plan back to draft, or straight
-        # to approved skipping review). No external caller passes status today;
-        # this keeps it that way.
+        # plan to any state (e.g. a completed plan back to draft).
         _allow_status_change: bool = False,
         # v2.19.0: agent self-reported generation provenance.  Set once by
         # the agent during the plan-generation PATCH step; the service does
@@ -210,8 +206,8 @@ class TestPlanService:
             if not _allow_status_change:
                 raise ValueError(
                     "update_plan must not change status: use the dedicated "
-                    "lifecycle methods (submit/approve/reject/archive), which "
-                    "enforce the allowed state transitions."
+                    "lifecycle paths (archive, execution), which enforce the "
+                    "allowed state transitions."
                 )
             self._record_history(
                 plan.id, None, actor_type, actor_id, "status_changed",
@@ -233,71 +229,17 @@ class TestPlanService:
         self.db.refresh(plan)
         return plan
 
-    def submit_plan(
-        self, plan: TestPlan, actor_type: str, actor_id: int,
-    ) -> TestPlan:
-        if plan.status != TestPlanStatus.DRAFT.value:
-            raise ValueError("Only draft plans can be submitted for approval")
-        entry_count = (
-            self.db.query(TestPlanEntry)
-            .filter(TestPlanEntry.test_plan_id == plan.id)
-            .count()
-        )
-        if entry_count == 0:
-            raise ValueError("Cannot submit an empty test plan — add entries first")
-        return self.update_plan(
-            plan, actor_type, actor_id,
-            status=TestPlanStatus.PROPOSED.value, _allow_status_change=True,
-        )
-
-    def approve_plan(self, plan: TestPlan, user_id: int) -> TestPlan:
-        if plan.status not in (TestPlanStatus.PROPOSED.value, TestPlanStatus.REJECTED.value):
-            raise ValueError("Only proposed or rejected plans can be approved")
-        plan.approved_by_id = user_id
-        plan.approved_at = datetime.now(timezone.utc)
-        plan.rejected_by_id = None
-        plan.rejected_at = None
-        plan.rejection_reason = None
-        self._record_history(
-            plan.id, None, "user", user_id, "approved",
-            "status", plan.status, TestPlanStatus.APPROVED.value,
-        )
-        plan.status = TestPlanStatus.APPROVED.value
-        self.db.commit()
-        self.db.refresh(plan)
-        return plan
-
-    def reject_plan(
-        self, plan: TestPlan, user_id: int, reason: Optional[str] = None,
-    ) -> TestPlan:
-        if plan.status != TestPlanStatus.PROPOSED.value:
-            raise ValueError("Only proposed plans can be rejected")
-        plan.rejected_by_id = user_id
-        plan.rejected_at = datetime.now(timezone.utc)
-        plan.rejection_reason = reason
-        self._record_history(
-            plan.id, None, "user", user_id, "rejected",
-            "status", plan.status, TestPlanStatus.REJECTED.value,
-        )
-        plan.status = TestPlanStatus.REJECTED.value
-        self.db.commit()
-        self.db.refresh(plan)
-        return plan
-
     def archive_plan(
         self, plan: TestPlan, user_id: int, reason: Optional[str] = None,
     ) -> TestPlan:
         """Abandon a plan — move any non-terminal plan to ARCHIVED.
 
-        The recon-abandon analog: unlike ``reject`` (proposed-only,
-        pre-approval), this works on approved/in-progress plans the
-        operator no longer wants, without the destructive ``DELETE``.
-        Who/when/from-status is captured in plan history; ``rejection_reason``
-        is reused as the generic terminal reason.
+        The recon-abandon analog: a plan nobody means to work any more,
+        kept rather than destroyed by ``DELETE``.  Who/when/from-status is
+        captured in plan history; the reason is ``archive_reason``.
         """
         terminal = (
             TestPlanStatus.COMPLETED.value,
-            TestPlanStatus.REJECTED.value,
             TestPlanStatus.ARCHIVED.value,
         )
         if plan.status in terminal:
@@ -306,7 +248,7 @@ class TestPlanService:
             )
         old_status = plan.status
         if reason:
-            plan.rejection_reason = reason
+            plan.archive_reason = reason
         self._record_history(
             plan.id, None, "user", user_id, "archived",
             "status", old_status, TestPlanStatus.ARCHIVED.value,
@@ -393,8 +335,6 @@ class TestPlanService:
         """
         if plan.status not in (
             TestPlanStatus.DRAFT.value,
-            TestPlanStatus.PROPOSED.value,
-            TestPlanStatus.APPROVED.value,
             TestPlanStatus.IN_PROGRESS.value,
         ):
             raise ValueError(f"Cannot add entries to a {plan.status} plan")
@@ -488,10 +428,9 @@ class TestPlanService:
             self.db.refresh(e)
         return created
 
-    # Plan states past drafting — execution may start at any time, so the
-    # test_index positions must be stable from here on.
+    # Plan states once execution has begun — the test_index positions must
+    # be stable from here on.
     _PROPOSED_TESTS_LOCKED_PLAN_STATES = (
-        TestPlanStatus.APPROVED.value,
         TestPlanStatus.IN_PROGRESS.value,
         TestPlanStatus.COMPLETED.value,
     )
@@ -502,13 +441,11 @@ class TestPlanService:
 
         proposed_tests defines the ``test_index`` positions that
         ``TestExecutionResult`` rows reference.  Reordering/replacing the array
-        once the plan can be (or is being) executed re-attributes recorded or
-        in-flight evidence.  So it freezes as soon as the plan leaves drafting:
-        the plan is approved/in_progress/completed (execution may start at any
-        moment, and a snapshot — live context fetch or offline bundle — may
-        already be in an agent's hands), an execution session exists, or a
-        result has been recorded.  draft/proposed/rejected plans stay editable
-        so plan-gen can revise freely.
+        once the plan is being executed re-attributes recorded or in-flight
+        evidence.  So it freezes once execution begins: the plan is
+        in_progress/completed, an execution session exists (a snapshot — live
+        context fetch or offline bundle — may already be in an agent's hands),
+        or a result has been recorded.  A draft stays editable.
         """
         plan_status = (
             self.db.query(TestPlan.status)
@@ -628,9 +565,7 @@ class TestPlanService:
             return {}
 
         # An entry is "done" once it reaches a terminal state — either it
-        # was tested (completed) or the human decided not to test it
-        # (rejected).  "approved" is mid-workflow ("queued for testing")
-        # and intentionally does NOT advance completion.
+        # was tested (completed) or someone decided not to test it (rejected).
         done_statuses = (TestEntryStatus.COMPLETED.value, TestEntryStatus.REJECTED.value)
 
         # Status counts per plan

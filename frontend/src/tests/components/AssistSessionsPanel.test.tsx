@@ -1,13 +1,15 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
 import AssistSessionsPanel from '../../components/AssistSessionsPanel';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import type { AssistSessionRow } from '../../services/api';
 
-const endAssistSession = vi.fn();
+// End goes through useAgentSessionControls — the SESSION id's end route.
+const endAgentSession = vi.fn();
 vi.mock('../../services/api', () => ({
-  endAssistSession: (...args: unknown[]) => endAssistSession(...args),
+  endAgentSession: (...args: unknown[]) => endAgentSession(...args),
 }));
 
 const success = vi.fn();
@@ -17,7 +19,8 @@ vi.mock('../../contexts/ToastContext', () => ({
 }));
 
 const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
-  id: 12,
+  id: over.id ?? 12,
+  agent_session_id: over.id ?? 12,
   project_id: 1,
   purpose: 'Looking for FTP exposure',
   status: 'active',
@@ -35,15 +38,17 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   ...over,
 });
 
-const renderPanel = (sessions: AssistSessionRow[], onChanged = vi.fn()) =>
+const renderPanel = (sessions: AssistSessionRow[], onChanged = vi.fn(), onNavigate = vi.fn()) =>
   render(
-    <TooltipProvider>
-      <AssistSessionsPanel sessions={sessions} onChanged={onChanged} />
-    </TooltipProvider>,
+    <MemoryRouter>
+      <TooltipProvider>
+        <AssistSessionsPanel sessions={sessions} onChanged={onChanged} onNavigate={onNavigate} />
+      </TooltipProvider>
+    </MemoryRouter>,
   );
 
 beforeEach(() => {
-  endAssistSession.mockReset().mockResolvedValue(undefined);
+  endAgentSession.mockReset().mockResolvedValue(undefined);
   success.mockReset();
   error.mockReset();
 });
@@ -57,7 +62,7 @@ describe('AssistSessionsPanel', () => {
 
   it('names the live key and how long it has been idle', () => {
     renderPanel([session()]);
-    expect(screen.getByText(/1 active assist session/i)).toBeInTheDocument();
+    expect(screen.getByText(/1 active agent session/i)).toBeInTheDocument();
     expect(screen.getByText('#12')).toBeInTheDocument();
     expect(screen.getByText(/Started 40 minutes ago/)).toBeInTheDocument();
     expect(screen.getByText(/last used 5 minutes ago/)).toBeInTheDocument();
@@ -103,28 +108,28 @@ describe('AssistSessionsPanel', () => {
     const onChanged = vi.fn();
     renderPanel([session()], onChanged);
 
-    fireEvent.click(screen.getByRole('button', { name: /end assist session 12/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     // Revoking a key mid-conversation is disruptive enough to confirm.
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
-    await waitFor(() => expect(endAssistSession).toHaveBeenCalledWith(12));
+    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(12));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(success).toHaveBeenCalled();
   });
 
   it('does not end the session when the confirmation is dismissed', async () => {
     renderPanel([session()]);
-    fireEvent.click(screen.getByRole('button', { name: /end assist session 12/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     fireEvent.click(await screen.findByRole('button', { name: /cancel/i }));
-    await waitFor(() => expect(endAssistSession).not.toHaveBeenCalled());
+    await waitFor(() => expect(endAgentSession).not.toHaveBeenCalled());
   });
 
   it('surfaces a failure instead of silently appearing to succeed', async () => {
-    endAssistSession.mockRejectedValue(new Error('boom'));
+    endAgentSession.mockRejectedValue(new Error('boom'));
     const onChanged = vi.fn();
     renderPanel([session()], onChanged);
 
-    fireEvent.click(screen.getByRole('button', { name: /end assist session 12/i }));
+    fireEvent.click(screen.getByRole('button', { name: /end agent session 12/i }));
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
 
     await waitFor(() => expect(error).toHaveBeenCalled());
@@ -134,7 +139,7 @@ describe('AssistSessionsPanel', () => {
 
   it('lists every active session, not just the first', () => {
     renderPanel([session({ id: 12 }), session({ id: 13, purpose: null })]);
-    expect(screen.getByText(/2 active assist sessions/i)).toBeInTheDocument();
+    expect(screen.getByText(/2 active agent sessions/i)).toBeInTheDocument();
     expect(screen.getByText('#12')).toBeInTheDocument();
     expect(screen.getByText('#13')).toBeInTheDocument();
   });
@@ -160,6 +165,38 @@ describe('AssistSessionsPanel', () => {
     renderPanel([session({ key_expires_at: null })]);
     expect(screen.getByText('No live key')).toBeInTheDocument();
     expect(screen.queryByText(/expires in/)).toBeNull();
+  });
+
+  // 5.312.1 — a session shown here is one click from its controls, and is
+  // numbered like everywhere else (the SESSION id, not its detail row's).
+  it('opens each session on its page and links to the full list, closing the dialog', () => {
+    const onNavigate = vi.fn();
+    renderPanel([session({ id: 52, agent_session_id: 72 })], vi.fn(), onNavigate);
+    expect(screen.getByText('#72')).toBeInTheDocument();
+    expect(screen.queryByText('#52')).not.toBeInTheDocument();
+    const open = screen.getByRole('link', { name: 'Open agent session 72' });
+    expect(open).toHaveAttribute('href', '/agent-sessions/72');
+    expect(screen.getByRole('button', { name: /end agent session 72/i })).toBeInTheDocument();
+    const all = screen.getByRole('link', { name: /All agent sessions/ });
+    expect(all).toHaveAttribute('href', '/agent-activity');
+    fireEvent.click(open);
+    expect(onNavigate).toHaveBeenCalled();
+  });
+
+  // R3 — the panel's End is the one End path (useAgentSessionControls): the
+  // SESSION id, not the detail row's, and the wrap-up prompt while connected.
+  it('ends by the session id, offering the wrap-up prompt while the key is live', async () => {
+    renderPanel([session({ id: 52, agent_session_id: 72 })]);
+    fireEvent.click(screen.getByRole('button', { name: /end agent session 72/i }));
+    expect(await screen.findByText(/Paste this to it first/)).toBeInTheDocument();
+    fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
+    await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(72));
+  });
+
+  it('offers no End for a detail row without a session id', () => {
+    renderPanel([session({ id: 52, agent_session_id: null })]);
+    expect(screen.getByText('#52')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /end agent session/i })).toBeNull();
   });
 
   it('marks an already-expired key rather than showing negative time', () => {

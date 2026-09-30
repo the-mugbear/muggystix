@@ -188,7 +188,7 @@ Always set `table-fixed` (`<Table className="table-fixed">`) when column behavio
 
 A badge is a chromatic emphasis budget.  Every additional chip in a row drains attention from the others, so reserve them for signals that genuinely justify the visual weight.  Spend them on:
 
-- **Categorical state**: `active` / `paused` / `failed` / `approved` / `completed`.
+- **Categorical state**: `active` / `paused` / `failed` / `archived` / `completed`.
 - **Active alerts**: `N critical` (when N > 0), `Possibly interrupted`, `In review`.
 - **Interactive controls** that look like chips because they are: status pickers, follow toggles.
 

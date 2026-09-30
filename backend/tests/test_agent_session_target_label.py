@@ -20,8 +20,8 @@ from app.db.models_agent import (
     AgentSessionWorkflow,
     AssistSession,
     AssistSessionStatus,
-    ReconSession,
-    ReconSessionStatus,
+    TestPlan,
+    TestPlanStatus,
 )
 
 
@@ -36,46 +36,24 @@ def scope_with_ranges(db_session, test_project):
     return scope
 
 
-def _recon(db, project, agent, user, scope):
-    session = ReconSession(
+def _plan(db, project, agent, user):
+    """A plan drafted by an agent session — a row on the timeline whose target
+    is the plan title."""
+    base = AgentSession(
+        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
         project_id=project.id, agent_id=agent.id, started_by_id=user.id,
-        scope_id=scope.id, status=ReconSessionStatus.ACTIVE,
-        started_at=datetime.now(timezone.utc),
+        status="active",
     )
-    db.add(session)
+    db.add(base)
+    db.flush()
+    plan = TestPlan(
+        project_id=project.id, version=db.query(TestPlan).count() + 1,
+        title="range work", status=TestPlanStatus.DRAFT.value,
+        agent_id=agent.id, agent_session_id=base.id,
+    )
+    db.add(plan)
     db.commit()
-    return session
-
-
-def test_a_recon_session_names_the_ranges_it_is_working(
-    client, db_session, test_project, test_agent, test_user, scope_with_ranges
-):
-    _recon(db_session, test_project, test_agent, test_user, scope_with_ranges)
-
-    body = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
-    row = next(r for r in body["sessions"] if r["kind"] == "recon")
-    assert row["target_label"], "a recon session with a scope showed no target"
-    # The CIDRs are the part a colleague needs to avoid duplicating the work.
-    assert "10.20.0.0/24" in row["target_label"]
-    assert "10.20.1.0/24" in row["target_label"]
-    # v2.338.0 — the scope's name is a relic the UI no longer surfaces; the
-    # label is the ranges alone.
-    assert "External perimeter" not in row["target_label"]
-
-
-def test_a_large_scope_truncates_rather_than_filling_the_row(
-    client, db_session, test_project, test_agent, test_user, scope_with_ranges
-):
-    """A scope with many subnets must still identify itself at a glance."""
-    for i in range(2, 9):
-        db_session.add(models.Subnet(scope_id=scope_with_ranges.id, cidr=f"10.20.{i}.0/24"))
-    db_session.commit()
-    _recon(db_session, test_project, test_agent, test_user, scope_with_ranges)
-
-    body = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
-    label = next(r for r in body["sessions"] if r["kind"] == "recon")["target_label"]
-    assert "more" in label, "a 9-subnet scope listed every range instead of truncating"
-    assert label.count("/24") == 3
+    return plan
 
 
 def test_plan_work_names_the_plan(
@@ -114,7 +92,7 @@ def test_assist_has_no_target_and_does_not_invent_one(
     body = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
     row = next(r for r in body["sessions"] if r["kind"] == "assist")
     assert row["target_label"] is None
-    assert row["scope_id"] is None and row["test_plan_id"] is None
+    assert row["test_plan_id"] is None and "scope_id" not in row
 
 
 def test_labels_do_not_add_a_query_per_row(
@@ -148,15 +126,15 @@ def test_labels_do_not_add_a_query_per_row(
             event.remove(engine, "before_cursor_execute", _count)
         return counter["n"]
 
-    _recon(db_session, test_project, test_agent, test_user, scope_with_ranges)
+    _plan(db_session, test_project, test_agent, test_user)
     one = _measure()
 
     # Five more sessions, same agent, same operator, same scope.
     for _ in range(5):
-        _recon(db_session, test_project, test_agent, test_user, scope_with_ranges)
+        _plan(db_session, test_project, test_agent, test_user)
     six = _measure()
 
     assert six == one, (
-        f"{one} queries for one recon session but {six} for six — something is "
+        f"{one} queries for one session but {six} for six — something is "
         "being resolved per row"
     )

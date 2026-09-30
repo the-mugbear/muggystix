@@ -58,7 +58,7 @@ export default function ToolReadyOutput({
   const [selectedFormat, setSelectedFormat] = useState('ip-list');
   const [includePorts, setIncludePorts] = useState(false);
   // Default in-scope: a declared domain must cover a name before it becomes
-  // a target — the same rule the recon agent guardrail applies.
+  // a target — the same rule the agent's scope guardrail applies.
   const [inScopeNamesOnly, setInScopeNamesOnly] = useState(true);
   const [result, setResult] = useState<ToolReadyResult | null>(null);
   const [loading, setLoading] = useState(false);

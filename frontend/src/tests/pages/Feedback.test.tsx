@@ -41,7 +41,6 @@ const entry = (over: Partial<AgentFeedbackEntry> = {}): AgentFeedbackEntry => ({
   agent_id: 11,
   test_plan_id: null,
   execution_session_id: null,
-  recon_session_id: null,
   assist_session_id: null,
   agent_session_id: 57,
   session_page_id: 37,

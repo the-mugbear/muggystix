@@ -1,7 +1,7 @@
 """MCP across the three agentic workflows (v2.278.0).
 
 Before this, MCP covered the assist surface only: an operator running recon or
-working an approved plan had an MCP client connected to a server that offered
+working a plan had an MCP client connected to a server that offered
 them nothing they could use, and every tool it *did* list 403'd on their key.
 
 What these tests pin is the part that makes three entry points work over one
@@ -9,8 +9,7 @@ endpoint — the caller's key decides which workflow's tools exist, and the
 arguments that key already answers (which plan, which session) are filled in
 server-side rather than guessed by a model. Plus the two properties that keep
 the split honest: hiding a tool is presentation, not authorisation (the
-endpoint still decides), and an agent that wants an unapproved tool has a way to
-say so that grants it nothing.
+endpoint still decides).
 """
 from __future__ import annotations
 
@@ -59,21 +58,21 @@ def _call(client, headers, name, arguments=None):
 
 
 def _plan_key(client, test_project, title="MCP plan"):
+    """v2.433.0 — one agent session, and the AGENT registers the plan in it
+    (the operator-side "Generate with AI" mint is gone)."""
+    session = _assist_key(client, test_project)
     resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={"title": title},
+        "/api/v1/agent/test-plans", json={"title": title},
+        headers={"X-API-Key": session["api_key"]},
     )
     assert resp.status_code == 201, resp.text
-    return resp.json()
+    return {**session, "plan_id": resp.json()["id"]}
 
 
 def _recon_key(client, test_project, scope):
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/recon/start",
-        json={"notes": "mcp recon"},
-    )
-    assert resp.status_code == 201, resp.text
-    return resp.json()
+    """v2.433.0 — recon runs are gone; this is just a project session. Kept
+    under the old name so the multi-session tests below still read clearly."""
+    return _assist_key(client, test_project)
 
 
 def _assist_key(client, test_project):
@@ -111,8 +110,6 @@ def test_identity_classifies_each_workflow_key(client, test_project, scope_with_
 
     recon_id = identity(recon["api_key"])
     assert recon_id["workflow"] == "project"
-    assert recon_id["open_phases"]["recon_session_id"] == recon["recon_session_id"]
-    assert recon_id["recon_session_id"] == recon["recon_session_id"]
     assert recon_id["execution_session_id"] is None
 
     assist_id = identity(assist["api_key"])
@@ -143,9 +140,10 @@ def test_each_key_sees_only_its_own_workflows_tools(
     # endpoint — the list is presentation.
     for body in (plan, recon, assist):
         tools = _tool_names(client, {"X-API-Key": body["api_key"]})
-        assert {"plan_add_entries", "plan_submit", "recon_get_context",
-                "assist_list_hosts", "start_recon", "start_execution",
+        assert {"plan_add_entries", "plan_validate", "scope_list_subnets",
+                "assist_list_hosts", "start_execution",
                 "create_test_plan", "agent_identity", "suggest_tool"} <= tools
+        assert "start_recon" not in tools
 
 
 def test_unauthenticated_list_is_the_documentation_view(client):
@@ -153,8 +151,9 @@ def test_unauthenticated_list_is_the_documentation_view(client):
     degrading to an empty list would make the server look broken to a client
     that hasn't been given a key yet."""
     tools = _tool_names(client)
-    assert {"assist_list_hosts", "plan_submit", "recon_get_context",
-            "execution_get_progress"} <= tools
+    assert {"assist_list_hosts", "plan_add_entries", "scope_list_subnets",
+            "execution_get_progress", "get_upload_job"} <= tools
+    assert "plan_submit" not in tools  # v2.433.0 — no approval step
 
 
 def test_hiding_a_tool_is_presentation_not_authorisation(
@@ -166,9 +165,9 @@ def test_hiding_a_tool_is_presentation_not_authorisation(
     recon = _recon_key(client, test_project, scope_with_subnets)
     headers = {"X-API-Key": recon["api_key"]}
 
-    # Every tool is listed now; the endpoint is still the decider. Submitting a
+    # Every tool is listed now; the endpoint is still the decider. Reading a
     # plan that does not exist reaches the real route and fails there.
-    result = _call(client, headers, "plan_submit", {"plan_id": 999999})
+    result = _call(client, headers, "plan_get", {"plan_id": 999999})
     assert result["isError"] is True
 
 
@@ -202,29 +201,23 @@ def test_an_explicit_argument_beats_the_auto_filled_one(client, test_project):
     assert result["structuredContent"]["id"] == second["plan_id"]
 
 
-def test_recon_probe_resolves_its_own_session_id(
+def test_probe_records_on_the_session(
     client, test_project, scope_with_subnets, db_session
 ):
-    """The probe is the mandated first step, and the id it posts to belongs to a
-    table the agent has not read yet. Resolving it from the key is what keeps
-    'first step' actually first."""
+    """The probe is the mandated first step; it records on the agent session."""
     recon = _recon_key(client, test_project, scope_with_subnets)
     headers = {"X-API-Key": recon["api_key"]}
 
     result = _call(
-        client,
-        headers,
-        "record_environment",
+        client, headers, "record_environment",
         {"os_family": "linux", "shell": "bash"},
     )
     assert result["isError"] is False, result
     assert result["structuredContent"]["session_type"] == "session"
 
-    from app.db.models_agent import ReconSession
-
+    from app.db.models_agent import AgentSession
     db_session.expire_all()
-    # The session probe propagates onto the open recon run.
-    session = db_session.get(ReconSession, recon["recon_session_id"])
+    session = db_session.get(AgentSession, recon["agent_session_id"])
     assert session.environment_probed_at is not None
     assert session.environment["os_family"] == "linux"
 
@@ -234,8 +227,9 @@ def test_recon_probe_resolves_its_own_session_id(
 # ---------------------------------------------------------------------------
 
 def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
-    """The stage-2 loop an agent actually runs: read context, propose tests,
-    validate, submit for human approval — every step a tool call, no curl."""
+    """The loop an agent actually runs: read context, propose tests, validate,
+    then work its own plan — every step a tool call, no curl, and nothing
+    waits on approval (v2.433.0)."""
     from app.db.models import Host
 
     host = Host(ip_address="10.77.1.10", project_id=test_project.id, state="up")
@@ -287,15 +281,15 @@ def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
     validated = _call(client, headers, "plan_validate")
     assert validated["isError"] is False, validated
 
-    submitted = _call(client, headers, "plan_submit")
-    assert submitted["isError"] is False, submitted
+    started = _call(client, headers, "start_execution", {"plan_id": plan["plan_id"]})
+    assert started["isError"] is False, started
 
     from app.db.models_agent import TestPlan
 
     db_session.expire_all()
     stored = db_session.get(TestPlan, plan["plan_id"])
-    # Submitted, not approved: the human gate is the point of stage 2 ending here.
-    assert stored.status != "approved"
+    # The agent's own draft went straight to work.
+    assert stored.status == "in_progress"
     assert stored.entries and stored.entries[0].host_id == host.id
 
 
@@ -316,41 +310,36 @@ def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
     plan_text = plan_guide["content"][0]["text"]
 
     # v2.337.0 — a project session does every kind of work, so it gets the WHOLE
-    # guide (both the plan and the recon workflow sections), not one slice.
+    # guide, not one slice.
     for text in (recon_text, plan_text):
-        assert "Workflow C — Populate Host Data" in text
         assert "Workflow A — Build a Test Plan" in text
         assert "Say the rules back before you start" in text
 
 
-def test_the_approved_set_is_readable_from_every_workflow(
+def test_the_tool_catalogue_is_readable_over_mcp(
     client, test_project, scope_with_subnets, db_session
 ):
-    """The agent is asked to tell the operator which tools it may run before it
-    starts. Without a tool for it, that half of the read-back is recalled rather
-    than read — and the set changes when an admin vets a suggestion."""
+    """v2.433.0 — list_tools is a catalogue, not a permission list: unfiltered
+    by default, every status one of the catalogue states."""
     from app.services import tool_registry_service as registry
 
     registry.seed_registry(db_session)
     recon = _recon_key(client, test_project, scope_with_subnets)
     headers = {"X-API-Key": recon["api_key"]}
 
-    assert "list_approved_tools" in _tool_names(client, headers)
+    names = _tool_names(client, headers)
+    assert "list_tools" in names and "list_approved_tools" not in names
 
-    result = _call(client, headers, "list_approved_tools")
+    result = _call(client, headers, "list_tools")
     assert result["isError"] is False, result
     body = result["structuredContent"]
     assert body["count"] > 0
-    # Defaulted to the approved set: handing a model 60 rows of
-    # human-documentation and letting it infer which it may run is the confusion
-    # the status column exists to prevent.
-    assert {t["status"] for t in body["tools"]} == {"approved"}
+    assert {t["status"] for t in body["tools"]} <= {"reference", "suggested", "rejected"}
     assert "nmap" in {t["name"] for t in body["tools"]}
 
-    # The other statuses are reachable, so an agent can check whether the tool
-    # it wants was already declined before suggesting it again.
-    declined = _call(client, headers, "list_approved_tools", {"status": "reference"})
-    assert {t["status"] for t in declined["structuredContent"]["tools"]} == {"reference"}
+    reference = _call(client, headers, "list_tools", {"status": "reference"})
+    assert {t["status"] for t in reference["structuredContent"]["tools"]} == {"reference"}
+    assert "nmap" in {t["name"] for t in reference["structuredContent"]["tools"]}
 
 
 # ---------------------------------------------------------------------------
@@ -490,26 +479,26 @@ def test_suggest_tool_records_the_ask_and_grants_nothing(
         "suggest_tool",
         {
             "name": "ligolo-ng",
-            "rationale": "Needed to reach the segmented VLAN the approved set can't.",
+            "rationale": "Used it to reach the segmented VLAN.",
         },
     )
     assert result["isError"] is False, result
     body = result["structuredContent"]
     assert body["status"] == "suggested"
-    assert body["already_approved"] is False
-    assert "not approved" in body["message"].lower()
+    assert body["already_catalogued"] is False
+    assert "suggestion" in body["message"].lower()
 
     db_session.expire_all()
     row = db_session.query(ToolRegistryEntry).filter_by(name="ligolo-ng").one()
     assert "segmented VLAN" in row.suggested_rationale
     assert row.suggested_by_agent_id is not None
-    # And it is emphatically not runnable.
-    assert "ligolo-ng" not in registry.approved_tool_names(db_session)
+    # A suggestion awaits a curator; it is not in the catalogue yet.
+    assert row.status == "suggested"
 
 
-def test_suggesting_an_approved_tool_says_so(client, test_project, db_session):
-    """A bare 201 would read as 'wait for a human' about a tool already sitting
-    in the agent's own approved set."""
+def test_suggesting_a_catalogued_tool_says_so(client, test_project, db_session):
+    """A bare 201 would read as 'awaiting a curator' about a tool the catalogue
+    already has."""
     from app.services import tool_registry_service as registry
 
     registry.seed_registry(db_session)
@@ -523,8 +512,8 @@ def test_suggesting_an_approved_tool_says_so(client, test_project, db_session):
         {"name": "nmap", "rationale": "Need a port scanner."},
     )
     body = result["structuredContent"]
-    assert body["already_approved"] is True
-    assert body["status"] == "approved"
+    assert body["already_catalogued"] is True
+    assert body["status"] == "reference"
 
 
 def test_a_registry_entry_can_omit_the_params_it_has_none_of(client, test_project):

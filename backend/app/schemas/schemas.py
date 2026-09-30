@@ -1231,3 +1231,22 @@ class ProposedTest(BaseModel):
 
 
 ProposedTestItem = Union[str, ProposedTest]
+
+
+class StoredProposedTest(ProposedTest):
+    """A proposed test as READ back from storage.
+
+    Writes validate against ``ProposedTest``; a response must not.  Rows
+    written before a field became required, by a seed, or by an import carry
+    whatever shape they were stored in, and one strict row used to 500 the
+    whole plan (agent feedback #23: ``plan_get`` on a plan whose tests had no
+    ``description``).  Every field is optional here and unknown keys pass
+    through.
+    """
+    model_config = ConfigDict(extra="allow")
+
+    tool: Optional[str] = None
+    description: Optional[str] = None
+
+
+StoredProposedTestItem = Union[str, StoredProposedTest]

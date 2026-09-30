@@ -115,9 +115,18 @@ describe('ExecutionsList page', () => {
     await waitFor(() => {
       expect(within(screen.getByRole('table')).getByText('#100')).toBeInTheDocument();
     });
-    // Same NavigableTableRow / <Link> pattern as ReconRunsList — assert
-    // on the link's href instead of relying on the useNavigate spy.
+    // NavigableTableRow / <Link> pattern — assert on the link's href instead of relying on the useNavigate spy.
     const link = screen.getByRole('link', { name: /Open execution 100|open execution session 100|execution #100/i });
     expect(link).toHaveAttribute('href', '/executions/100');
+  });
+
+  // 5.313.0 — no approval gates a run: the empty state points at working a
+  // plan with your agent, not at approving one.
+  it('explains an empty list without an approval step', async () => {
+    mockedApi.listExecutionSessionsProjectWide.mockResolvedValue({ items: [], total: 0 });
+    renderPage();
+    expect(await screen.findByText('No execution runs yet')).toBeInTheDocument();
+    expect(screen.getByText(/Work with your agent/)).toBeInTheDocument();
+    expect(screen.queryByText(/approv/i)).toBeNull();
   });
 });

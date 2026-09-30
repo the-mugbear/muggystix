@@ -1,4 +1,4 @@
-"""Agent safety policy parity (rewritten for the v2.337.0 unified session).
+"""Agent safety policy parity (v2.337.0 unified session; no rails since v2.433.0).
 
 The mandatory safety rules are authored once in ``app.services.agent_policy``
 and rendered into the session prompt and the offline bundle instructions; the
@@ -53,9 +53,9 @@ def test_agents_md_still_covers_each_safety_theme():
         import pytest
         pytest.skip("the agent guide is not mounted in this environment")
     text = text.lower()
-    assert "approval" in text
-    assert "sanity check" in text
-    assert "stop" in text and "ask the user" in text
+    assert "scope" in text
+    assert "working directory" in text
+    assert "go-ahead" in text
     assert "audit trail" in text or "recorded" in text
 
 
@@ -70,47 +70,52 @@ def test_session_prompt_demands_the_session_read_back():
     assert "mandatory" in prompt.lower()
 
 
-def test_session_read_back_states_authority_not_a_working_directory():
-    """The session read-back is about project/authority; a working directory
-    is a phase fact, stated when a command-running phase opens, not at start."""
+def test_session_read_back_states_project_scope_and_directory():
+    """v2.433.0 — the agent may run commands without opening a phase, so the
+    session read-back itself names the scope and the working directory."""
     block = render_read_back("project")
     assert "project" in block
-    assert "run nothing against any host" in block
-    # It does not ask the agent to recite a working directory path — that is a
-    # phase fact. (It may still name "written outside the working directory" as
-    # a stop-condition; that is a rule, not a path recital.)
-    assert "run every tool from" not in block
+    assert "scope" in block
+    assert "working directory" in block
+    # No rails: nothing about opening a run first, approved tools or approval.
+    for retired in ("run nothing against any host", "unapproved", "approve"):
+        assert retired not in block
 
 
-def test_command_running_phases_carry_a_working_directory_read_back():
-    for phase in ("recon", "execution"):
-        block = render_read_back(phase)
+def test_safety_rules_carry_no_rails():
+    """v2.433.0 — the approved-tool allowlist, the sanity-check gate and the
+    required order are gone; the scope, directory and record rules stay."""
+    text = " ".join(SAFETY_RULES).lower()
+    for retired in ("approved set", "sanity check", "unapproved", "suggest_tool"):
+        assert retired not in text
+    assert "every command" in text
+    assert "declared scope" in text
+    assert "working directory" in text
+
+
+def test_command_running_read_backs_carry_a_working_directory():
+    for workflow in ("project", "execution"):
+        block = render_read_back(workflow)
         assert "working directory" in block
-        assert "without asking" in block
+        assert "outside" in block
 
 
 def test_phase_read_back_names_the_concrete_bounds():
-    """render_phase_read_back lists the phase's actual facts so the agent
+    """render_phase_read_back lists the run's actual facts so the agent
     restates THESE, not a template."""
-    recon = render_phase_read_back("recon", facts=[
-        "the CIDRs you will scan: 10.0.0.0/24",
-        "in-scope domains: portal.example.com",
-    ])
-    assert "10.0.0.0/24" in recon
-    assert "portal.example.com" in recon
-    assert render_read_back("recon") in recon  # the generic items ride along
-
     execution = render_phase_read_back("execution", facts=[
-        "the 3 host(s) this approved plan covers — by IP: 10.0.0.5",
+        "the 3 host(s) this plan covers — by IP: 10.0.0.5",
     ])
     assert "10.0.0.5" in execution
+    assert render_read_back("execution") in execution  # the generic items ride along
 
 
-def test_recon_phase_read_back_covers_scope_and_domains():
-    recon = render_read_back("recon")
-    assert "CIDR" in recon or "scope" in recon
-    assert "in-scope domains" in recon
-    assert "does not put the address it resolves to in subnet scope" in recon
+def test_session_read_back_covers_scope_and_domains():
+    """Was the recon-run read-back's; any session may scan now (v2.433.1)."""
+    block = render_read_back("project")
+    assert "CIDRs" in block
+    assert "in-scope domains" in block
+    assert "does not put the address it resolves to in subnet scope" in block
 
 
 def test_execution_phase_read_back_names_the_plan_hosts():
@@ -124,7 +129,7 @@ def test_an_unregistered_phase_gets_the_least_privileged_wording():
 
 
 def test_read_back_asks_for_restatement_not_recital():
-    block = render_read_back("recon")
+    block = render_read_back("project")
     assert "in your own words" in block
     assert "not a recital" in block
 

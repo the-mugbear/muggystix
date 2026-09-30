@@ -42,7 +42,7 @@ const scan = (id: number, filename: string) => ({
   total_hosts: 3, up_hosts: 3, new_hosts: 1, updated_hosts: 2, total_ports: 4, open_ports: 4,
 });
 const batch = (id: number, label: string) => ({
-  id, label, recon_session_id: null, created_by: 'me', files: 12, tools: ['nmap'], hosts: 40,
+  id, label, created_by: 'me', files: 12, tools: ['nmap'], hosts: 40,
   new_hosts: 5, open_ports: 90, first_uploaded: '2026-09-19T09:00:00Z', last_uploaded: '2026-09-19T09:30:00Z',
   pending_files: 0, failed_files: 0,
 });

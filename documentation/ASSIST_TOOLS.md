@@ -37,7 +37,7 @@ Every tool is text in the model's context on every session.
 written a session saw only its own workflow's tools (27 for assist, ~22 KB of a
 48-tool catalogue). The per-workflow filter was removed with the per-workflow
 keys: one session does every kind of work, so every session now pays for every
-tool. A tool added for assist is context spent by a recon run too.
+tool. A tool added for assist is context spent by a session that only scans too.
 
 That is affordable now and it grows linearly with the tool count. So the test
 for a new tool is **"is this a distinct question shape?"** — not "is this a
@@ -151,7 +151,7 @@ Largely done. This is the stage the surface was originally built for.
 | One host in detail | `assist_get_host` | **have** |
 | Scanner observations on a host / findings across the project | `assist_get_host_vulnerabilities` (raw scanner rows, not triaged findings — named `assist_get_host_findings` until the vocabulary was fixed), `assist_list_findings` | **have** |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
-| What the team tested, and what it showed | `assist_get_host_testing` | **have** |
+| What the team tested, and what it showed | `assist_get_host_testing` (entries of every plan but an archived one, never `rejected` entries — since v2.433.0 there is no plan approval to filter on) | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |
 | Named assets (FQDNs), whether they are in scope, and what they resolve to | `assist_list_names` | **have** |
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
@@ -312,8 +312,20 @@ labels, certificates, NSE output, conflicts); notes their threads, assignee,
 attachments and targets; a finding its report text and status history. Read
 roles now equal the page's.
 
+**Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
+— fields, not tools: a finding comment in `assist_get_finding` carries
+`parent_id` / `thread_root_id`, as host notes already did, so its thread can be
+rebuilt; an attachment carries
+`include_in_report` (the operator's opt-in for report images); a web interface
+(`assist_get_host`, `assist_list_host_web_interfaces`) carries `source` (the tool
+that observed it), `scan_id`, `observed_at` with `observed_at_basis` (`scan` =
+the scan's own time, `import` = the import time), `imported_at` and `is_latest`
+(false = an earlier scan's row of the same URL by the same tool — history, not
+current state). Reading a plan whose stored tests lack a description (an older
+or hand-made entry) no longer 500s — the stored-test schema accepts it.
+
 The read surface is **33 `assist_*` reads** (36 `assist_*` tools with the
-three writes) inside a 67-tool catalogue. Two of
+three writes) inside a 66-tool catalogue (v2.433.0 removed `plan_submit`). Two of
 the three P2 items turned out not to be tools at all: one folded into an
 existing endpoint, one is a payload field plus a download. With the
 per-workflow filter gone there is no longer an "assist budget" to stay under —

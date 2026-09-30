@@ -15,6 +15,7 @@
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { MemoryRouter } from 'react-router-dom';
 
 import { StartAssistDialog } from '../../components/StartAssistDialog';
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -23,7 +24,7 @@ import type { StartAssistResponse } from '../../services/api';
 const startAssistSession = vi.fn();
 vi.mock('../../services/api', () => ({
   startAssistSession: (...args: unknown[]) => startAssistSession(...args),
-  endAssistSession: vi.fn(),
+  endAgentSession: vi.fn(),
   getMcpTools: vi.fn(() => new Promise(() => {})),
 }));
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: vi.fn(() => Promise.resolve(true)) }));
@@ -38,6 +39,7 @@ const entry = { 'bluestick-assist': { type: 'http', url: URL, headers: { 'X-API-
 
 const result = (): StartAssistResponse => ({
   assist_session_id: 3,
+  agent_session_id: 21,
   project_id: 1,
   project_name: 'engagement',
   agent_id: 9,
@@ -79,9 +81,11 @@ const result = (): StartAssistResponse => ({
 const onOpenChange = vi.fn();
 const openAndStart = async () => {
   render(
-    <TooltipProvider>
-      <StartAssistDialog open onOpenChange={onOpenChange} />
-    </TooltipProvider>,
+    <MemoryRouter>
+      <TooltipProvider>
+        <StartAssistDialog open onOpenChange={onOpenChange} />
+      </TooltipProvider>
+    </MemoryRouter>,
   );
   await act(async () => {
     await userEvent.click(screen.getByRole('button', { name: /start session/i }));
@@ -103,11 +107,64 @@ describe('StartAssistDialog', () => {
     window.localStorage.clear();
   });
 
+  // 5.312.1 — the dialog is where operators look for their sessions; it must
+  // lead to where they are managed, and name the new one by its SESSION id.
+  it('points to Agent Sessions for resuming, and titles the new session by its session id', async () => {
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    const link = screen.getByRole('link', { name: 'Resume it from Agent Sessions' });
+    expect(link).toHaveAttribute('href', '/agent-activity');
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: /start session/i }));
+    });
+    expect(await screen.findByText('Connect your agent — session #21')).toBeInTheDocument();
+    expect(screen.getByText(/Workflows → Agent Sessions/)).toBeInTheDocument();
+  });
+
+  // 5.313.0 — no plan approval: the dialog never says a plan waits on you.
+  it('promises show-every-command, never an approval step', () => {
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(/shows you every command it runs/)).toBeInTheDocument();
+    expect(screen.queryByText(/approv/i)).toBeNull();
+  });
+
+  // 5.313.0 — the per-object entry points hand a task to the one session.
+  it('shows a task to copy before and after starting', async () => {
+    const task = 'Work test plan #12 in BlueStick.';
+    render(
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} instruction={task} />
+        </TooltipProvider>
+      </MemoryRouter>,
+    );
+    expect(screen.getByText(task)).toBeInTheDocument();
+    expect(screen.getByText(/Start a session, connect your agent, then give it this/)).toBeInTheDocument();
+    await act(async () => {
+      await userEvent.click(screen.getByRole('button', { name: /start session/i }));
+    });
+    expect(await screen.findByText('Once it is connected, give your agent this:')).toBeInTheDocument();
+    expect(screen.getByText(task)).toBeInTheDocument();
+  });
+
   it('starts from one sentence and one field — no promised TTL before the server says', () => {
     render(
-      <TooltipProvider>
-        <StartAssistDialog open onOpenChange={onOpenChange} />
-      </TooltipProvider>,
+      <MemoryRouter>
+        <TooltipProvider>
+          <StartAssistDialog open onOpenChange={onOpenChange} />
+        </TooltipProvider>
+      </MemoryRouter>,
     );
     expect(screen.getByText(/Connect Claude Code, Codex or VS Code Copilot to this project/)).toBeInTheDocument();
     expect(screen.getByLabelText(/What is it for\?/)).toBeInTheDocument();

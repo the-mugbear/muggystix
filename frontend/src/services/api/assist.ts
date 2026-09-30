@@ -1,8 +1,10 @@
 /**
- * Assist session API — operator-side calls for the v2.64.0
- * interactive assist workflow.  The agent-side (X-API-Key) surface
- * lives at /agent/assist/* and is consumed by the agent directly,
- * not by this client.
+ * Agent session start + the operator's session rows — operator-side calls.
+ * The endpoints keep their v2.64.0 `/assist` names, but since v2.337.0 a
+ * session started here is THE agent session: one project key that reads the
+ * inventory, uploads scans, and opens plans and execution runs, within the
+ * operator's project role. The agent-side (X-API-Key) surface lives at
+ * /agent/* and is consumed by the agent directly, not by this client.
  */
 import { api, p } from './client';
 
@@ -26,6 +28,9 @@ export interface McpClientSetup {
 
 export interface StartAssistResponse {
   assist_session_id: number;
+  /** v5.312.1 — the SESSION id (the one the agent reports, Agent Sessions lists
+   *  and `/agent-sessions/:id` opens); `assist_session_id` is its detail row. */
+  agent_session_id?: number;
   project_id: number;
   project_name: string;
   agent_id: number;
@@ -54,6 +59,9 @@ export interface StartAssistRequest {
 export interface AssistSessionRow {
   id: number;
   project_id: number;
+  /** v5.312.0 — the unified session this detail row belongs to (the id Agent
+   *  Sessions, End and Resume use); `/assist-sessions/:id` redirects through it. */
+  agent_session_id?: number | null;
   purpose: string | null;
   status: string;
   started_by_id: number | null;
@@ -131,10 +139,6 @@ export const startAssistSession = async (
     body,
   );
   return res.data;
-};
-
-export const endAssistSession = async (sessionId: number): Promise<void> => {
-  await api.post(`${p()}/assist/sessions/${sessionId}/end`);
 };
 
 export const listAssistSessions = async (

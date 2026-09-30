@@ -134,7 +134,6 @@ function diffPlans(planA: TestPlanDetail, planB: TestPlanDetail): EntryDiffRow[]
 }
 
 const PlanCard: React.FC<{ label: string; plan: TestPlanDetail }> = ({ label, plan }) => {
-  const navigate = useNavigate();
   return (
     <Card>
       <CardContent className="flex flex-col gap-xs p-md">
@@ -149,20 +148,6 @@ const PlanCard: React.FC<{ label: string; plan: TestPlanDetail }> = ({ label, pl
             By <strong>{plan.generated_by_model ?? plan.agent_name}</strong>
             {plan.generated_by_tool && ` via ${plan.generated_by_tool}`}
             {plan.created_by_username && ` · ${plan.created_by_username}`}
-          </p>
-        )}
-        {plan.source_kind === 'recon_session' && plan.source_recon_session_id && (
-          <p className="text-caption text-muted-foreground">
-            Source:{' '}
-            <button
-              type="button"
-              onClick={() => navigate(`/recon/runs/${plan.source_recon_session_id}`)}
-              className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <Badge variant="secondary" className="cursor-pointer">
-                recon #{plan.source_recon_session_id}
-              </Badge>
-            </button>
           </p>
         )}
         <Separator />

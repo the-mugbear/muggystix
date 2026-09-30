@@ -1,15 +1,15 @@
 /**
  * Test plans, entries, execution sessions, execution results,
- * activity log, agent attribution, bundle export/import, and
- * the recon-start API.  All the user-facing agent surface that
- * lives under the TestPlans + TestPlanDetail pages.
+ * activity log, agent attribution and bundle export/import — what the
+ * TestPlans + TestPlanDetail pages read. Agents are started only through
+ * the project agent session (services/api/agent-sessions + assist); the
+ * per-plan / per-scope key-minting calls were removed with plan approval.
  *
  * v2.29.0 — extracted from services/api.ts.  api.ts re-exports
  * everything from here so consumers can keep importing from
  * ``../services/api`` unchanged.
  */
 import { api, p } from './client';
-import type { McpClientSetup } from '../../components/McpConnectPanel';
 
 
 // ---------------------------------------------------------------------------
@@ -67,11 +67,8 @@ export interface TestPlanSummary {
    *  numerator of completion_pct. Optional so older fixtures type-check. */
   entries_done?: number;
   completion_pct: number;
-  approved_by_id?: number;
-  approved_at?: string;
-  rejected_by_id?: number;
-  rejected_at?: string;
-  rejection_reason?: string;
+  /** Why the plan was archived, when it was (the old rejection_reason). */
+  archive_reason?: string | null;
   // Generation provenance (v2.19.0).  Stamped by the agent during the
   // plan-generation PATCH step; null on plans created before the feature
   // or where the agent skipped the PATCH.
@@ -79,21 +76,24 @@ export interface TestPlanSummary {
   generated_by_tool?: string;
   prompt_version?: string;
   // Source provenance (v3 alpha.3).  Tells the UI what the plan was
-  // scoped against — a recon run, a manual host set, a filter
-  // expression, or an earlier plan.  ``source_kind='unspecified'`` for
-  // pre-alpha.3 plans; UI renders "(provenance not recorded)".  Only
-  // one of the payload columns is populated, discriminated by kind.
+  // scoped against — a manual host set, a filter expression, or an
+  // earlier plan.  ``source_kind='unspecified'`` for pre-alpha.3 plans;
+  // UI renders "(provenance not recorded)".  Only one of the payload
+  // columns is populated, discriminated by kind.
   source_kind?: string;
-  source_recon_session_id?: number | null;
   source_host_ids?: number[] | null;
   source_plan_id?: number | null;
+  /** 5.313.0 — the agent session that drafted the plan, where its agent is
+   *  resumed or ended. Null for a plan written by hand; optional until every
+   *  response carries it. */
+  agent_session_id?: number | null;
   created_at: string;
   updated_at: string;
   completed_at?: string;
   /** Timestamp of the most recent plan-generation agent call against
    *  this plan (audit log filtered to `execution_session_id IS NULL`),
    *  or null if the agent never called in.  Mirrors the same field on
-   *  ExecutionSessionSummary and ReconSessionRow. */
+   *  ExecutionSessionSummary. */
   last_activity_at?: string | null;
   /** Server-side "looks interrupted" judgment for plan generation —
    *  true only when status is `draft` AND silent past the 15-minute
@@ -118,23 +118,11 @@ export interface PlanFilterCriteria {
   search?: string;
 }
 
-/** Per-plan agent API-key status surfaced on TestPlanDetail.
- *  Drives the TTL chip and the "Regenerate key" button on the plan detail page. */
-export interface ApiKeyStatus {
-  has_key: boolean;
-  is_active: boolean;
-  expires_at?: string;
-  /** Seconds until expiry; negative once expired.  Computed server-side. */
-  expires_in_seconds?: number;
-  key_prefix?: string;
-}
-
 /** ExecutionSession metadata surfaced on TestPlanDetail + the session
  *  picker (v2.28.0).  A plan can be executed multiple times so the
  *  attribution fields (started_by_username, agent_name, generated_by_model)
  *  are what lets the UI distinguish runs. */
-/** Operator-environment probe captured at execution-session start — parity
- *  with recon's ReconEnvironmentSnapshot. */
+/** Operator-environment probe captured at execution-session start. */
 export interface ExecutionEnvironmentSnapshot {
   probed_at?: string | null;
   probed_from_ip?: string | null;
@@ -151,6 +139,10 @@ export interface ExecutionEnvironmentSnapshot {
 export interface ExecutionSessionSummary {
   id: number;
   status: string;
+  /** 5.313.0 — the agent session that opened this run, where it is resumed
+   *  or ended. Null for pre-consolidation runs; optional until every
+   *  response carries it. */
+  agent_session_id?: number | null;
   mode?: string | null;
   started_at?: string | null;
   completed_at?: string | null;
@@ -163,7 +155,7 @@ export interface ExecutionSessionSummary {
   environment_shell?: string | null;
   environment_probed_at?: string | null;
   /** Full operator-environment probe (tools on PATH, python real-vs-stub,
-   *  arch, notes) — parity with recon. Null when no probe arrived. */
+   *  arch, notes). Null when no probe arrived. */
   environment?: ExecutionEnvironmentSnapshot | null;
   /** Timestamp of the most recent agent API call against this session
    *  (from the agent_api_calls audit log), or null if the agent never
@@ -206,8 +198,6 @@ export interface TestPlanDetail extends TestPlanSummary {
   /** Filters the user applied at plan-generation time.  Null on manual
    *  plans and plans created before the column existed. */
   filter_criteria?: PlanFilterCriteria;
-  /** Per-plan agent API-key status.  ``has_key === false`` for manual plans. */
-  api_key: ApiKeyStatus;
   /** Snapshot of the latest execution session — null when the plan has
    *  never been ``/execute``-d.  v2.28.0. */
   latest_execution_session?: ExecutionSessionSummary | null;
@@ -279,21 +269,8 @@ export const getTestPlan = async (
   return response.data;
 };
 
-export const approveTestPlan = async (planId: number): Promise<TestPlanSummary> => {
-  const response = await api.post(`${p()}/test-plans/${planId}/approve`);
-  return response.data;
-};
-
-export const rejectTestPlan = async (
-  planId: number,
-  reason?: string,
-): Promise<TestPlanSummary> => {
-  const response = await api.post(`${p()}/test-plans/${planId}/reject`, { reason });
-  return response.data;
-};
-
 // Abandon (archive) a non-terminal plan — the non-destructive terminal
-// action for approved/in-progress plans (v2.76.0).
+// action for draft/in-progress plans (v2.76.0).
 export const archiveTestPlan = async (
   planId: number,
   reason?: string,
@@ -401,6 +378,9 @@ export interface AllEntryResultsResponse {
   plan_id: number;
   execution_session_id: number;
   execution_session_status: string;
+  /** 5.313.0 — the agent session that opened this run (optional until every
+   *  response carries it). */
+  agent_session_id?: number | null;
   started_at?: string | null;
   completed_at?: string | null;
   started_by_username?: string | null;
@@ -467,7 +447,6 @@ export interface AgentApiCallRow {
   duration_ms: number;
   test_plan_id?: number | null;
   execution_session_id?: number | null;
-  recon_session_id?: number | null;
   scope_id?: number | null;
   referenced_host_ids?: number[] | null;
   referenced_entry_ids?: number[] | null;
@@ -502,17 +481,6 @@ export const getPlanApiActivity = async (
   return response.data;
 };
 
-export const getReconSessionApiActivity = async (
-  reconSessionId: number,
-  filters: AgentActivityFilters = {},
-): Promise<AgentApiCallListResponse> => {
-  const response = await api.get<AgentApiCallListResponse>(
-    `${p()}/recon-sessions/${reconSessionId}/api-activity`,
-    { params: filters },
-  );
-  return response.data;
-};
-
 /** The audit feed for one assist session (v5.173.0). Assist was the only
  *  workflow without one, so the interactive workflow — the one that can write
  *  notes under the operator's own name — was the one nobody could review. */
@@ -530,37 +498,6 @@ export const getAssistSessionApiActivity = async (
 export const deleteTestPlan = async (planId: number): Promise<void> => {
   await api.delete(`${p()}/test-plans/${planId}`);
 };
-
-export interface RotateKeyResponse {
-  plan_id: number;
-  /** Plaintext key — shown ONCE.  Paste into your agent session. */
-  api_key: string;
-  expires_at: string;
-}
-
-export const rotateTestPlanKey = async (planId: number): Promise<RotateKeyResponse> => {
-  const response = await api.post<RotateKeyResponse>(
-    `${p()}/test-plans/${planId}/rotate-key`,
-  );
-  return response.data;
-};
-
-export interface GeneratePlanRequest {
-  title: string;
-  description?: string;
-  filter_criteria?: PlanFilterCriteria;
-  // Provenance — records WHERE the plan's candidate hosts came from so the
-  // audit lineage survives.  When the plan is generated from a specific
-  // recon run, send source_kind='recon_session' + source_recon_session_id.
-  // Omitting both lets the backend infer 'filter_set' (non-null
-  // filter_criteria) or 'unspecified'.  The source_* payloads are mutually
-  // exclusive; only recon_session is wired from the UI today.
-  source_kind?: 'recon_session' | 'manual_hosts' | 'filter_set' | 'inherited' | 'unspecified';
-  source_recon_session_id?: number;
-  // v5.221.0 — a fixed host list from the Hosts page (source_kind
-  // 'manual_hosts').  The agent's candidate hosts are restricted to it.
-  source_host_ids?: number[];
-}
 
 /** POST /test-plans/from-hosts (v5.221.0) — the Hosts bulk bar's "Test plan"
  *  action.  Either a new plan (title) or an existing draft (plan_id). */
@@ -595,41 +532,6 @@ export const createPlanFromHosts = async (
   return response.data;
 };
 
-export interface GeneratePlanResponse {
-  plan_id: number;
-  plan_title: string;
-  plan_status: string;
-  agent_id: number;
-  api_key: string;
-  instructions: string;  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
-  // renders. The workflow's tools have existed since backend 2.278.0; without
-  // this the dialog could only offer the curl recipe.
-  mcp_clients?: McpClientSetup[];
-  mcp_url?: string;
-}
-
-export const generateTestPlan = async (
-  data: GeneratePlanRequest,
-): Promise<GeneratePlanResponse> => {
-  const response = await api.post(`${p()}/test-plans/generate`, data);
-  return response.data;
-};
-
-/** Resume an interrupted plan-generation session.  Re-mints a fresh
- *  agent key (revoking any prior active key for the plan) and rebuilds
- *  the plan-generation instructions block.  The plan must be in
- *  `draft` status; any other status returns 409.  Existing entries
- *  are preserved — the resumed agent continues via /context with the
- *  `not_in_plan_id` cursor. */
-export const resumePlanGeneration = async (
-  planId: number,
-): Promise<GeneratePlanResponse> => {
-  const response = await api.post<GeneratePlanResponse>(
-    `${p()}/test-plans/${planId}/resume-generation`,
-  );
-  return response.data;
-};
-
 export interface HostTestPlanEntry {
   id: number;
   test_plan_id: number;
@@ -650,42 +552,6 @@ export interface HostTestPlanEntry {
 
 export const getHostTestPlanEntries = async (hostId: number): Promise<HostTestPlanEntry[]> => {
   const response = await api.get(`${p()}/test-plans/hosts/${hostId}/entries`);
-  return response.data;
-};
-
-// ---------------------------------------------------------------------------
-// Test Execution — start execution session (mirrors generateTestPlan)
-// ---------------------------------------------------------------------------
-
-export interface ExecuteResponse {
-  execution_session_id: number;
-  plan_id: number;
-  plan_title: string;
-  agent_id: number;
-  api_key: string;
-  instructions: string;  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
-  // renders. The workflow's tools have existed since backend 2.278.0; without
-  // this the dialog could only offer the curl recipe.
-  mcp_clients?: McpClientSetup[];
-  mcp_url?: string;
-}
-
-export const executeTestPlan = async (planId: number): Promise<ExecuteResponse> => {
-  const response = await api.post(`${p()}/test-plans/${planId}/execute`);
-  return response.data;
-};
-
-/** Resume an interrupted execution session.  Re-mints a fresh agent API
- *  key for the SAME session (prior per-test results preserved) and
- *  returns the same shape as executeTestPlan, so the caller can reuse
- *  the agent-instructions dialog. */
-export const resumeExecutionSession = async (
-  planId: number,
-  sessionId: number,
-): Promise<ExecuteResponse> => {
-  const response = await api.post(
-    `${p()}/test-plans/${planId}/execution-sessions/${sessionId}/resume`,
-  );
   return response.data;
 };
 
@@ -712,61 +578,6 @@ export const downloadTestPlanBundle = async (planId: number): Promise<{ bundleId
     bundleId: (response.headers['x-bundle-id'] || '') as string,
     sessionId: Number(response.headers['x-execution-session-id'] || 0),
   };
-};
-
-export interface StartReconRequest {
-  notes?: string;
-}
-
-export interface StartReconResponse {
-  recon_session_id: number;
-  scope_id: number;
-  scope_name: string;
-  subnets: string[];
-  agent_id: number;
-  api_key: string;      // plaintext, shown exactly once
-  instructions: string;
-  // v2.65.0 — resolved at mint time so the dialog can show the
-  // actual key expiry without hardcoding a value that drifts when
-  // AGENT_KEY_TTL_HOURS is overridden in .env.
-  key_ttl_hours: number;
-  // v5.169.0 — per-client MCP setup, the same payload the assist dialog
-  // renders. The workflow's tools have existed since backend 2.278.0; without
-  // this the dialog could only offer the curl recipe.
-  mcp_clients?: McpClientSetup[];
-  mcp_url?: string;
-}
-
-/**
- * v2.11.0 — replaces generateReconPlan().  Recon is now an ingest
- * workflow: a ReconSession is created and the agent's key is bound
- * to the scope (not a test plan).  The agent uses /agent/recon/*
- * endpoints to upload raw scanner output instead of creating test
- * plan entries against discovered hosts.
- */
-export const startReconSession = async (
-  scopeId: number,
-  body: StartReconRequest = {},
-): Promise<StartReconResponse> => {
-  const response = await api.post<StartReconResponse>(
-    `${p()}/scopes/${scopeId}/recon/start`,
-    body,
-  );
-  return response.data;
-};
-
-/** Resume an interrupted recon session.  Re-mints a session-pinned
- *  agent API key for the SAME session (prior uploads preserved; the
- *  old key is revoked).  Mirrors the execution-session resume client
- *  and returns the same StartReconResponse shape as /recon/start. */
-export const resumeReconSession = async (
-  scopeId: number,
-  sessionId: number,
-): Promise<StartReconResponse> => {
-  const response = await api.post<StartReconResponse>(
-    `${p()}/scopes/${scopeId}/recon/sessions/${sessionId}/resume`,
-  );
-  return response.data;
 };
 
 export interface ImportResultsResponse {

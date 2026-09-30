@@ -52,7 +52,6 @@ export * from './api/parse-errors';
 export * from './api/portfolio';
 export * from './api/posture';
 export * from './api/projects';
-export * from './api/recon-sessions';
 export * from './api/references';
 export * from './api/scans';
 export * from './api/scopes';
@@ -364,9 +363,9 @@ export const getAuditStats = async (): Promise<AuditStats> => {
 };
 
 // ---------------------------------------------------------------------------
-// Host workflow lineage (v3 alpha.9) — recon sessions that discovered
-// this host + plan entries referencing it + execution sessions that
-// have run results against any of those entries.  One round trip;
+// Host workflow lineage (v3 alpha.9) — plan entries referencing this
+// host + execution sessions that have run results against any of
+// those entries.  One round trip;
 // drives the HostDetail "Workflow lineage" panel.
 // ---------------------------------------------------------------------------
 

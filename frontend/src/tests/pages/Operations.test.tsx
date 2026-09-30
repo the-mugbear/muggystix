@@ -3,8 +3,7 @@
  *
  * Pins the coverage-first surface contract: each section renders
  * with realistic backend data, the Mine/All toggle propagates to
- * the agent-sessions calls, and Needs Attention surfaces pending
- * plans independently of the toggle.
+ * the agent-sessions calls, and nothing waits on a plan approval.
  */
 import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
@@ -212,58 +211,28 @@ describe('Operations page', () => {
     expect(screen.queryByText('Internal /24')).not.toBeInTheDocument();
   });
 
-  it('surfaces a pending-review plan in the Pending approvals queue', async () => {
+  // 5.313.0 — plans are not approved: there is no approvals queue, and the
+  // page never asks for plans waiting on one.
+  it('has no approvals queue and never fetches plans awaiting approval', async () => {
     renderPage();
-    await waitFor(() => {
-      // §27 role-aware: the test user has the analyst role (mocked
-      // hasPermission → true), so the heading is the actionable
-      // "Needs your approval" rather than the passive "Pending approvals".
-      expect(screen.getByRole('heading', { name: 'Needs your approval' })).toBeInTheDocument();
-    });
-    expect(screen.getByText('1 pending review')).toBeInTheDocument();
-    expect(screen.getByText(/Pending plan/)).toBeInTheDocument();
-    // v4.59.0 (NEW I) — pre-fix used /Review/i which now also matches
-    // the "All In Review" filter chip; tighten to an exact name.
-    fireEvent.click(screen.getByRole('button', { name: /^Review$/ }));
-    expect(navigateSpy).toHaveBeenCalledWith('/test-plans/5');
+    await screen.findByText('My work');
+    expect(mockedApi.getTestPlans).not.toHaveBeenCalled();
+    expect(screen.queryByRole('heading', { name: /Needs your approval|Pending approvals/ })).toBeNull();
+    expect(screen.queryByText(/approv/i)).toBeNull();
   });
 
   // v5.241.0 — the page is ordered by what it is for: blockers, my work, runs,
   // then the project's state. Project state used to lead.
-  describe('section order', () => {
-    const before = (a: HTMLElement, b: HTMLElement) =>
+  it('section order: My work, then Runs, then Project state', async () => {
+    const before = (x: HTMLElement, y: HTMLElement) =>
       // eslint-disable-next-line no-bitwise
-      !!(a.compareDocumentPosition(b) & Node.DOCUMENT_POSITION_FOLLOWING);
-
-    it('a waiting approval leads, then My work, then Runs, then Project state', async () => {
-      renderPage();
-      const approvals = await screen.findByRole('heading', { name: 'Needs your approval' });
-      const myWork = await screen.findByText('My work');
-      const runs = await screen.findByRole('heading', { name: 'Runs' });
-      const state = await screen.findByText('Project state');
-      expect(before(approvals, myWork)).toBe(true);
-      expect(before(myWork, runs)).toBe(true);
-      expect(before(runs, state)).toBe(true);
-    });
-
-    // 5.304.0 — with nothing waiting there is no approvals section at all: a
-    // heading over "Nothing needs your approval right now" said nothing.
-    it('with nothing waiting, there is no approvals section', async () => {
-      mockedApi.getTestPlans.mockResolvedValue([]);
-      renderPage();
-      await screen.findByText('My work');
-      expect(screen.queryByRole('heading', { name: 'Needs your approval' })).toBeNull();
-      expect(screen.queryByText(/Nothing needs your approval/)).toBeNull();
-    });
-  });
-
-  // Code review D6: this rendered "Nothing needs your approval right now"
-  // directly under the error saying approvals could not be loaded.
-  it('a failed approvals load reads as unknown, never as nothing waiting', async () => {
-    mockedApi.getTestPlans.mockRejectedValue(new Error('boom'));
+      !!(x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
     renderPage();
-    expect(await screen.findByText(/Could not be checked — this is not a confirmation/)).toBeInTheDocument();
-    expect(screen.queryByText(/Nothing needs your approval/)).not.toBeInTheDocument();
+    const myWork = await screen.findByText('My work');
+    const runs = await screen.findByRole('heading', { name: 'Runs' });
+    const state = await screen.findByText('Project state');
+    expect(before(myWork, runs)).toBe(true);
+    expect(before(runs, state)).toBe(true);
   });
 
   it('renders the consolidated Runs section from /agent-sessions', async () => {
@@ -334,12 +303,11 @@ describe('Operations page', () => {
     expect(screen.queryByText('Failed to load Operations data.')).not.toBeInTheDocument();
   });
 
-  // 5.204.3 — the setup card's recon button used to navigate('/scopes')
-  // (a dead end: the operator had to find the real button there). It now opens
-  // the shared recon dialog for the registered scope, in place.
-  // v5.294.0 — one name everywhere: "Start recon session" (was "Start Agentic
-  // Recon" here and on Scope, "Start Agent Session" beside it).
-  it('setup card: Start recon session opens the recon dialog for the single scope', async () => {
+  // 5.204.3 — the setup card's scan button used to navigate('/scopes') (a
+  // dead end). 5.313.0 — no per-scope key: it hands the operator's one agent
+  // session a task naming the registered scope, in place. 5.313.1 — the task
+  // is a scan uploaded to the session, not a recon run.
+  it('setup card: Scan with your agent hands the task for the single scope to the agent session', async () => {
     mockedApi.getProjectCoverage.mockResolvedValue({
       ...baseCoverage,
       total_hosts: 0,
@@ -350,16 +318,17 @@ describe('Operations page', () => {
       hosts_outside_scope: 0,
     });
     renderPage();
-    const button = await screen.findByRole('button', { name: /Start recon session/ });
-    fireEvent.click(button);
+    fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
+    expect(await screen.findByRole('dialog', { name: /Start Agent Session/ })).toBeInTheDocument();
     expect(
-      await screen.findByText('Start recon session — Internal /24'),
+      screen.getByText(
+        `Read scope ${baseCoverage.scopes[0].scope_id} in BlueStick, run your scanners on what is in scope, and upload the output to this session.`,
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Agentic Recon/)).not.toBeInTheDocument();
-    expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
+    expect(navigateSpy).not.toHaveBeenCalled();
   });
 
-  it('setup card: with several scopes, Start recon session goes to the recon runs picker', async () => {
+  it('setup card: with several scopes, the task names none and lets the agent choose', async () => {
     mockedApi.getProjectCoverage.mockResolvedValue({
       ...baseCoverage,
       total_hosts: 0,
@@ -375,9 +344,13 @@ describe('Operations page', () => {
       ],
     });
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: /Start recon session/ }));
-    expect(navigateSpy).toHaveBeenCalledWith('/recon/runs');
-    expect(navigateSpy).not.toHaveBeenCalledWith('/scopes');
+    fireEvent.click(await screen.findByRole('button', { name: /Scan with your agent/ }));
+    expect(
+      await screen.findByText(
+        'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
+      ),
+    ).toBeInTheDocument();
+    expect(navigateSpy).not.toHaveBeenCalled();
   });
 
   describe('since your last visit', () => {
@@ -458,7 +431,7 @@ describe('Operations page', () => {
         expect(navigateSpy).toHaveBeenCalledWith('/parse-errors?status=needs_attention');
 
         expect(screen.getByText('Run #31 lost its agent session')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('button', { name: 'Resume execution' }));
+        fireEvent.click(screen.getByRole('button', { name: 'Open run' }));
         expect(navigateSpy).toHaveBeenCalledWith('/executions/31');
       });
 
@@ -497,12 +470,11 @@ describe('Operations page', () => {
       mockedApi.getInvestigationQueue.mockResolvedValueOnce({ items: [], queue_total: 4, untouched_total: 9, tiers: [] });
       renderPage();
       expect(await screen.findByText(
-        'You have 6 items in your queue (1 overdue) and 1 plan to approve. Across the team: 4 unreviewed hosts are worth a look.',
+        'You have 6 items in your queue (1 overdue). Across the team: 4 unreviewed hosts are worth a look.',
       )).toBeInTheDocument();
     });
 
     it('says nothing is waiting when nothing is, and never counts an unavailable queue', async () => {
-      mockedApi.getTestPlans.mockResolvedValue([]);
       mockedApi.getWorkbench.mockResolvedValue(wb({
         my_queue: { items: [], in_review_count: 0, watching_count: 0 },
         my_notes: { items: [], total_open: 0, overdue_count: 0 },

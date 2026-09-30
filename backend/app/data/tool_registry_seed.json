@@ -217,7 +217,7 @@
     "install": "apt install eyewitness",
     "url": "https://github.com/RedSiege/EyeWitness",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "web"
     ],
@@ -294,7 +294,7 @@
     "install": "go install github.com/projectdiscovery/httpx/cmd/httpx@latest  # or prebuilt binary from the releases page",
     "url": "https://github.com/projectdiscovery/httpx",
     "kali": false,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "web"
     ],
@@ -401,7 +401,7 @@
     "install": "apt install masscan",
     "url": "https://github.com/robertdavidgraham/masscan",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "discovery"
     ],
@@ -478,7 +478,7 @@
     "install": "pip install netexec  # or  apt install netexec",
     "url": "https://github.com/Pennyw0rth/NetExec",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "smb"
     ],
@@ -495,7 +495,7 @@
     "install": "apt install nikto",
     "url": "https://github.com/sullo/nikto",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "web"
     ],
@@ -512,7 +512,7 @@
     "install": "apt install nmap",
     "url": "https://nmap.org/",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "discovery",
       "service_probe"
@@ -530,7 +530,7 @@
     "install": "apt install nuclei  # or  go install github.com/projectdiscovery/nuclei/v3/cmd/nuclei@latest",
     "url": "https://github.com/projectdiscovery/nuclei",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "credentialed"
     ],
@@ -622,7 +622,7 @@
     "install": "cargo install rustscan  # or download from GitHub releases",
     "url": "https://github.com/RustScan/RustScan",
     "kali": false,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "discovery"
     ],
@@ -789,7 +789,7 @@
     "install": "go install github.com/projectdiscovery/subfinder/v2/cmd/subfinder@latest",
     "url": "https://github.com/projectdiscovery/subfinder",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "dns"
     ],
@@ -821,7 +821,7 @@
     "install": "apt install testssl.sh",
     "url": "https://testssl.sh/",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "web"
     ],
@@ -913,7 +913,7 @@
     "install": "apt install whatweb",
     "url": "https://github.com/urbanadventurer/WhatWeb",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "web"
     ],
@@ -945,7 +945,7 @@
     "install": "pipx install gvm-tools  # or apt install gvm-tools",
     "url": "https://github.com/greenbone/gvm-tools",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "credentialed"
     ],
@@ -962,7 +962,7 @@
     "install": "pipx install gvm-tools",
     "url": "https://greenbone.github.io/gvm-tools/",
     "kali": true,
-    "status": "approved",
+    "status": "reference",
     "phases": [
       "credentialed"
     ],

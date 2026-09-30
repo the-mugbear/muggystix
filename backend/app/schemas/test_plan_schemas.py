@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.schemas.schemas import ProposedTestItem
+from app.schemas.schemas import ProposedTestItem, StoredProposedTestItem
 from app.db.models_agent import TestEntryPriority, TestPhase, TestEntryStatus
 
 
@@ -27,7 +27,7 @@ class TestPlanEntryResponse(BaseModel):
     target_fqdn: Optional[str] = None
     priority: str
     test_phase: str
-    proposed_tests: List[ProposedTestItem]
+    proposed_tests: List[StoredProposedTestItem]
     rationale: str
     status: str
     findings: Optional[str] = None
@@ -60,11 +60,7 @@ class TestPlanSummary(BaseModel):
     # instead of a bare "0%".
     entries_done: int = 0
     completion_pct: float = 0.0
-    approved_by_id: Optional[int] = None
-    approved_at: Optional[datetime] = None
-    rejected_by_id: Optional[int] = None
-    rejected_at: Optional[datetime] = None
-    rejection_reason: Optional[str] = None
+    archive_reason: Optional[str] = None
     # Generation provenance (v2.19.0).  Stamped by the agent during plan
     # generation; null on plans created before the feature or where the
     # agent skipped the PATCH step.
@@ -77,7 +73,6 @@ class TestPlanSummary(BaseModel):
     # "(provenance not recorded)".  Only one of the *_id / *_ids fields
     # is populated, discriminated by source_kind.
     source_kind: str = "unspecified"
-    source_recon_session_id: Optional[int] = None
     source_host_ids: Optional[List[int]] = None
     source_plan_id: Optional[int] = None
     created_at: datetime
@@ -89,28 +84,15 @@ class TestPlanSummary(BaseModel):
     # this reflects generation activity specifically.  Mirrors the
     # execution + recon session fields of the same name.
     last_activity_at: Optional[datetime] = None
-    # Server-side "looks interrupted" judgment for plan generation —
-    # true when status is ``draft`` AND the agent has been silent for
-    # the 15-minute threshold.  Plans in any post-draft status (the
-    # human's turn, or execution has begun) never report stale.
+    # Server-side "looks interrupted" judgment for plan drafting — true
+    # only for a ``draft`` with NO entries whose agent has been silent for
+    # the 15-minute threshold.  A draft with entries is a finished plan
+    # waiting to run (v2.433.1: nothing moves it out of ``draft`` before
+    # its first run any more), so it never reports stale.
     is_stale: bool = False
-
-
-class ApiKeyStatus(BaseModel):
-    """Per-plan API-key status surfaced on TestPlanDetail.
-
-    Lets the UI show the user whether the agent key is still alive and
-    how long it has left, and gate a "Regenerate key" affordance behind
-    expiry.  ``has_key`` is false on plans that were created without an
-    agent (manual plans) or whose key rows were never persisted.
-    """
-    has_key: bool = False
-    is_active: bool = False
-    expires_at: Optional[datetime] = None
-    # Seconds until expiry; negative once expired.  Easier for the UI
-    # than re-deriving it from `expires_at` + current time.
-    expires_in_seconds: Optional[int] = None
-    key_prefix: Optional[str] = None  # first 14 chars; not the secret
+    # The agent session that drafted it (links to /agent-sessions/{id});
+    # None for a plan a person created.
+    agent_session_id: Optional[int] = None
 
 
 class ExecutionEnvironmentSnapshot(BaseModel):
@@ -181,6 +163,8 @@ class ExecutionSessionSummary(BaseModel):
     # subject to operator clock skew, which could push the threshold
     # crossing minutes off the real elapsed time (in either direction).
     is_stale: bool = False
+    # The agent session that opened this run (links to /agent-sessions/{id}).
+    agent_session_id: Optional[int] = None
 
 
 class ExecutionSessionList(BaseModel):
@@ -209,9 +193,6 @@ class TestPlanDetail(TestPlanSummary):
     # reviewer can see how the candidate host set was narrowed.  Null on
     # manual plans (no filters) and plans created before the column existed.
     filter_criteria: Optional[Dict[str, Any]] = None
-    # Per-plan agent-key status.  Driven by the most-recent APIKey row
-    # bound to this plan; used by the UI to show TTL and offer a rotate.
-    api_key: ApiKeyStatus = Field(default_factory=ApiKeyStatus)
     # v2.28.0 — latest execution session metadata so TestPlanDetail can
     # show "your agent ran from a Kali host 2 hours ago" without a
     # follow-up fetch.  None when the plan has never been /execute'd.
@@ -256,10 +237,6 @@ class UserPlanCreate(BaseModel):
 class PlanMetadataUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=200)
     description: Optional[str] = Field(None, max_length=4096)
-
-
-class RejectRequest(BaseModel):
-    reason: Optional[str] = Field(None, max_length=2048)
 
 
 class ArchiveRequest(BaseModel):

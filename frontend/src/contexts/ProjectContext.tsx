@@ -22,21 +22,18 @@ const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
   /^\/scans\/[^/]+/,
   /^\/hosts\/[^/]+/,
   /^\/scopes\/[^/]+/,
-  /^\/recon\/runs\/[^/]+/,
   /^\/executions\/[^/]+/,
   /^\/findings\/[^/]+/,
   /^\/reports\/[^/]+/,
   /^\/assist-sessions\/[^/]+/,
+  /^\/agent-sessions\/[^/]+/,
 ];
 
 function isProjectScopedResourceRoute(pathname: string): boolean {
-  // Treat `/test-plans/compare`, `/recon/compare`, `/test-plans/:id/compare`
-  // as project-scoped too — comparison reads concrete resource ids from
+  // Treat `/test-plans/compare`, `/test-plans/:id/compare` as
+  // project-scoped too — comparison reads concrete resource ids from
   // the query string.
-  if (
-    pathname === '/test-plans/compare' ||
-    pathname === '/recon/compare'
-  ) {
+  if (pathname === '/test-plans/compare') {
     return true;
   }
   return PROJECT_SCOPED_RESOURCE_ROUTES.some((re) => re.test(pathname));

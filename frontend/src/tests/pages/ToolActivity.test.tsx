@@ -108,7 +108,7 @@ describe('ToolActivity', () => {
     expect(kinds).toEqual(['scan', 'execution_session']);
     // Each row is named and counted; absent kinds are said to be absent.
     expect(chart).toHaveTextContent('Scan uploads 60');
-    expect(screen.getByText(/None in this window: recon runs, commands run, target probes/)).toBeInTheDocument();
+    expect(screen.getByText(/None in this window: commands run, target probes/)).toBeInTheDocument();
     // The Correlate window (now ± 5 min) is inside the week: its band shows.
     expect(chart.querySelector('.activity-focus-band')).not.toBeNull();
   });

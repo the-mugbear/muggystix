@@ -11,7 +11,7 @@ JWT-authenticated, project-scoped.  Agents cannot read this surface
 """
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
@@ -19,16 +19,19 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
+from app.core.security import check_permissions
 from app.api.v1.endpoints.auth import get_current_user
 from app.db.models_agent import AgentSession, AgentSessionWorkflow
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
+from app.services.integration_service import active_integrations_for_prompt
 from app.services.agent_key_ttl import resolve_ttl_hours, session_renewal_deadline
 from app.services.agent_session_service import (
     SESSION_ACTIVE,
     count_agent_sessions,
     end_agent_session,
+    get_agent_session_row,
     key_expiry_for_agent_sessions,
     list_agent_sessions,
     resolve_project_agent,
@@ -43,7 +46,7 @@ router = APIRouter()
 # v2.303.0 — assist was missing here, so the surface that calls itself the
 # unified agent-session timeline omitted a whole workflow: an operator could
 # have a live assist key and see nothing on Agent Runs.
-SessionKindLiteral = Literal["project", "recon", "plan_generation", "execution", "assist"]
+SessionKindLiteral = Literal["project", "plan_generation", "execution", "assist"]
 
 
 class AgentSessionRowResponse(BaseModel):
@@ -65,7 +68,6 @@ class AgentSessionRowResponse(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
     prompt_version: Optional[str] = None
-    scope_id: Optional[int] = None
     test_plan_id: Optional[int] = None
     # v2.306.0 — the session's declared target in words (scope name + CIDRs, or
     # the plan title). "Scope #3" cannot tell a second analyst that a range is
@@ -95,6 +97,31 @@ class AgentSessionRowResponse(BaseModel):
     # move it until someone resumes or closes it.  None when not computed.
     agent_session_id: Optional[int] = None
     session_live: Optional[bool] = None
+    # v2.432.0 — project sessions only: the work the session opened, its detail
+    # row's id (notes, API-call feed), its last authenticated call, and the
+    # authority it acts with.  ``can_end`` / ``can_resume`` are the CALLER's
+    # rights on an active session — owner or project admin may end, only the
+    # owner may resume (the routes below enforce the same rules).
+    phases: List["SessionPhase"] = []
+    assist_session_id: Optional[int] = None
+    last_activity_at: Optional[datetime] = None
+    operator_role: Optional[str] = None
+    can_end: bool = False
+    can_resume: bool = False
+
+
+class SessionPhase(BaseModel):
+    """One piece of work a project session opened (v2.432.0)."""
+    kind: Literal["plan", "execution"]
+    id: int
+    status: str
+    # The plan's title.
+    label: Optional[str] = None
+    test_plan_id: Optional[int] = None
+    started_at: Optional[datetime] = None
+
+
+AgentSessionRowResponse.model_rebuild()
 
 
 class ResumeAgentSessionRequest(BaseModel):
@@ -118,7 +145,6 @@ class ResumeAgentSessionResponse(BaseModel):
     key_ttl_hours: int
     key_expires_at: datetime
     renewable_until: Optional[datetime] = None
-    active_recon_session_ids: List[int] = []
     active_execution_session_ids: List[int] = []
 
 
@@ -135,7 +161,6 @@ class ModelToolSummaryRow(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
     project: int = 0
-    recon: int = 0
     plan_generation: int = 0
     execution: int = 0
     assist: int = 0
@@ -157,8 +182,8 @@ def get_agent_sessions(
     kind: Optional[SessionKindLiteral] = Query(
         None,
         description=(
-            "Narrow to one workflow kind.  Omit to get all four "
-            "(recon, plan_generation, execution, assist)."
+            "Narrow to one kind: project (every session since v2.337.0), or a "
+            "legacy plan_generation, execution or assist row.  Omit for all."
         ),
     ),
     agent_id: Optional[int] = Query(None, description="Filter by agent."),
@@ -179,9 +204,8 @@ def get_agent_sessions(
         description=(
             "Filter by native status of each kind.  Recon + execution use "
             "'active' / 'paused' / 'completed' / 'failed' / 'abandoned'; "
-            "plan_generation uses TestPlan.status — 'draft' / "
-            "'pending_review' / 'approved' / 'in_progress' / 'completed' / "
-            "'rejected'; assist uses 'active' / 'ended' / 'expired'.  Pass "
+            "plan_generation uses the collapsed plan status — 'in_progress' / "
+            "'completed' / 'archived'; assist uses 'active' / 'ended' / 'expired'.  Pass "
             "'active' for the in-flight-runs banner — it is the one value "
             "every kind shares."
         ),
@@ -192,7 +216,8 @@ def get_agent_sessions(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Return every agent session (recon + plan generation + execution + assist)
+    """Return every agent session (project sessions, plus legacy plan generation,
+    execution and assist rows)
     for this project, ordered newest-started first.
 
     Filterable by kind, agent, model, tool, user, status.  Drives the
@@ -226,23 +251,55 @@ def get_agent_sessions(
     )
     return AgentSessionListResponse(
         project_id=project.id,
-        sessions=[AgentSessionRowResponse(**r.to_dict()) for r in page],
+        sessions=_with_caller_rights(db, page, user=_user, project_id=project.id),
         total=total,
     )
 
 
-def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
+def _with_caller_rights(
+    db: Session, rows: list, *, user: User, project_id: int,
+) -> List[AgentSessionRowResponse]:
+    """Wire rows, with what THIS caller may do to each active project session.
+
+    The same rules the End and Resume routes enforce, said up front so the page
+    offers only the buttons that will work (it used to guess from the global
+    role, so a project admin was never offered End).  Both routes need project
+    auditor (an owner demoted to viewer is refused), and Resume is refused past
+    the session's lifetime (v2.433.1: the flags ignored both)."""
+    role: Optional[str] = None
+    looked_up = False
+    now = datetime.now(timezone.utc)
+    out = []
+    for r in rows:
+        row = AgentSessionRowResponse(**r.to_dict())
+        if row.kind == "project" and row.status == SESSION_ACTIVE:
+            if not looked_up:
+                role, looked_up = _caller_project_role(db, user=user, project_id=project_id), True
+            may_act = role is not None and check_permissions(role, ProjectRole.AUDITOR.value)
+            owner = row.user_id == user.id
+            renewable = row.renewable_until is None or _aware(row.renewable_until) > now
+            row.can_end = may_act and (owner or role == ProjectRole.ADMIN.value)
+            row.can_resume = may_act and owner and renewable
+        out.append(row)
+    return out
+
+
+def _aware(t: datetime) -> datetime:
+    return t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
+
+
+def _caller_project_role(db: Session, *, user: User, project_id: int) -> Optional[str]:
+    """The caller's project role; a global admin counts as project admin."""
     if user.role == UserRole.ADMIN:
-        return True
-    membership = (
-        db.query(ProjectMembership)
+        return ProjectRole.ADMIN.value
+    return (
+        db.query(ProjectMembership.role)
         .filter(
             ProjectMembership.project_id == project_id,
             ProjectMembership.user_id == user.id,
         )
-        .first()
+        .scalar()
     )
-    return membership is not None and membership.role == ProjectRole.ADMIN.value
 
 
 @router.post(
@@ -266,7 +323,7 @@ def end_project_agent_session(
     (through ``/assist/sessions/{id}/end``, keyed by that dialog's detail
     row); a session minted from Scopes, Test Plans or Execute had no way to
     be stopped short of its key's TTL.  This ends any ``project`` session:
-    keys revoked, open recon runs abandoned, open execution runs paused,
+    keys revoked, open execution runs abandoned (results kept),
     draft plans left as they are.  Idempotent-safe: an already-ended session
     returns 409 so the caller knows nothing changed.
 
@@ -281,9 +338,9 @@ def end_project_agent_session(
     )
     if session is None:
         raise HTTPException(status_code=404, detail="Agent session not found in this project")
-    if session.started_by_id != current_user.id and not _is_project_admin(
+    if session.started_by_id != current_user.id and _caller_project_role(
         db, user=current_user, project_id=project.id
-    ):
+    ) != ProjectRole.ADMIN.value:
         raise HTTPException(
             status_code=403,
             detail=(
@@ -325,10 +382,9 @@ def resume_project_agent_session(
     the existing ``AgentSession`` (the prior key is revoked in the same
     statement), and the response carries what the start dialog carried — the
     replacement key, the prompt with the resumed notice, and the MCP client
-    setup — so the operator can hand the session back to an agent.  The
-    per-phase resume routes on Scopes / Test Plans mint a *new* session and
-    supersede the old one; they remain for legacy phase rows that have no
-    project session.
+    setup — so the operator can hand the session back to an agent.  It is the
+    only resume (v2.433.0 removed the per-run and per-plan resume routes,
+    which minted a NEW session and ended the old one with all its work).
 
     Owner only — no admin override, unlike End.  The key acts as the operator
     who started the session, so handing it to anyone else would let them act
@@ -350,8 +406,8 @@ def resume_project_agent_session(
         raise HTTPException(
             status_code=409,
             detail=(
-                f"This is a legacy '{session.workflow}' session; resume it from its own "
-                "page (the scope's recon run or the plan's execution run)."
+                f"This is a legacy '{session.workflow}' session, which cannot be "
+                "resumed. End it and start a new agent session."
             ),
         )
     if session.started_by_id != current_user.id:
@@ -378,6 +434,9 @@ def resume_project_agent_session(
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
+        integrations=active_integrations_for_prompt(
+            db, user_id=current_user.id, project_id=project.id,
+        ),
         resumed=True,
     )
     db.commit()
@@ -399,7 +458,6 @@ def resume_project_agent_session(
         key_ttl_hours=resolve_ttl_hours(ttl_hours),
         key_expires_at=expires_at,
         renewable_until=session_renewal_deadline(session),
-        active_recon_session_ids=phases["active_recon_session_ids"],
         active_execution_session_ids=phases["active_execution_session_ids"],
     )
 
@@ -423,3 +481,26 @@ def get_agent_session_summary(
         project_id=project.id,
         summary=[ModelToolSummaryRow(**row) for row in summary],
     )
+
+
+# Registered after ``/agent-sessions/by-model-tool``: a static segment declared
+# later would otherwise be read as a session id (and refused as a non-integer).
+@router.get(
+    "/agent-sessions/{session_id}",
+    response_model=AgentSessionRowResponse,
+    summary="One agent session: key state, the work it opened, the caller's rights (v2.432.0)",
+)
+def get_agent_session(
+    project_id: int = Path(..., gt=0),
+    session_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _user: User = Depends(get_current_user),
+):
+    """The session detail page's read — the list's row for one consolidated
+    session, built by the same path.  Legacy per-workflow rows have their own
+    pages (plan, execution run) and are not served here."""
+    row = get_agent_session_row(db, project.id, session_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Agent session not found in this project")
+    return _with_caller_rights(db, [row], user=_user, project_id=project.id)[0]

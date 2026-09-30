@@ -100,6 +100,5 @@ export const PRIORITY_KIND: Record<string, { label: string; severity: Severity }
   blocked: { label: 'Blocked run', severity: 'high' },
   coverage: { label: 'Coverage', severity: 'medium' },
   triage: { label: 'Triage', severity: 'medium' },
-  approval: { label: 'Approval', severity: 'low' },
   onboard: { label: 'Onboard', severity: 'medium' },
 };

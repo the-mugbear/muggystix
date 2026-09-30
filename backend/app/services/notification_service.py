@@ -503,8 +503,8 @@ class NotificationService:
         return notification
 
     def _plan_steward_ids(self, project_id: int) -> List[int]:
-        """User ids of project members who can approve/close plans (admin or
-        analyst role) — the recipients for plan-lifecycle nudges."""
+        """User ids of project members who can close plans (admin or analyst
+        role) — the recipients for plan-lifecycle nudges."""
         return [
             m.user_id for m in self.db.query(ProjectMembership)
             .filter(
@@ -564,21 +564,6 @@ class NotificationService:
             self.db.add(notification)
             notifications.append(notification)
         return notifications
-
-    def notify_plan_proposed(self, plan, project_id: int) -> List[Notification]:
-        """Notify plan stewards (admin/analyst) that an agent submitted a
-        TestPlan for review.
-
-        Plan submission is the one human gate in the agent loop and previously
-        had no nudge — approvers had to poll the Test Plans page to notice work
-        waiting for them.  Best-effort: callers wrap this so a notification
-        failure never blocks the submission itself.
-        """
-        return self._notify_plan_stewards(
-            plan, project_id, "plan_proposed",
-            f"Test plan \"{plan.title}\" awaiting approval",
-            "An agent submitted a test plan for your review.",
-        )
 
     def notify_plan_ready_to_close(self, plan, project_id: int) -> List[Notification]:
         """Notify plan stewards that every entry on a plan has been executed —

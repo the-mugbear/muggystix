@@ -20,7 +20,9 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_agent import ExecutionSession, ReconSession, TestPlan, TestPlanEntry
+from app.db.models_agent import (
+    PLANNED_PLAN_STATUSES, AgentSession, TestPlan, TestPlanEntry,
+)
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectMembership
 from app.services.agent_session_metrics import blocked_exec_session_counts
@@ -37,7 +39,6 @@ class ProjectSignals:
     last_scan_at: Optional[datetime] = None
     days_since_last_scan: Optional[int] = None
     is_quiet: bool = False
-    pending_plan_reviews: int = 0
     open_tasks: int = 0
     active_sessions: int = 0
     blocked_sessions: int = 0
@@ -74,32 +75,24 @@ def project_signals(
         out[pid].scan_count = n
         out[pid].last_scan_at = last
 
-    pending = _grouped(
-        db.query(TestPlan.project_id, func.count(TestPlan.id))
-        .filter(TestPlan.project_id.in_(ids), TestPlan.status == "proposed")
-        .group_by(TestPlan.project_id)
-    )
-    # Open tasks: non-terminal entries on accepted plans.
+    # Open tasks: non-terminal entries on plans that are not archived.
     open_tasks = _grouped(
         db.query(TestPlan.project_id, func.count(TestPlanEntry.id))
         .join(TestPlanEntry, TestPlanEntry.test_plan_id == TestPlan.id)
         .filter(
             TestPlan.project_id.in_(ids),
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
+            TestPlanEntry.status.in_(("proposed", "in_progress")),
         )
         .group_by(TestPlan.project_id)
     )
-    active_exec = _grouped(
-        db.query(TestPlan.project_id, func.count(ExecutionSession.id))
-        .join(ExecutionSession, ExecutionSession.test_plan_id == TestPlan.id)
-        .filter(TestPlan.project_id.in_(ids), ExecutionSession.status == "active")
-        .group_by(TestPlan.project_id)
-    )
-    active_recon = _grouped(
-        db.query(ReconSession.project_id, func.count(ReconSession.id))
-        .filter(ReconSession.project_id.in_(ids), ReconSession.status == "active")
-        .group_by(ReconSession.project_id)
+    # Agent sessions still open (v2.433.1): the session is what an operator
+    # starts, and it does the uploads, plans and runs.  Counting execution
+    # runs missed an agent that was only scanning and uploading.
+    active_agent_sessions = _grouped(
+        db.query(AgentSession.project_id, func.count(AgentSession.id))
+        .filter(AgentSession.project_id.in_(ids), AgentSession.status == "active")
+        .group_by(AgentSession.project_id)
     )
     # Only the LATEST execution session per plan counts as blocked — shared
     # with Security Posture (agent_session_metrics).
@@ -122,9 +115,8 @@ def project_signals(
     now_naive = now.replace(tzinfo=None)
     for p in plist:
         s = out[p.id]
-        s.pending_plan_reviews = pending.get(p.id, 0)
         s.open_tasks = open_tasks.get(p.id, 0)
-        s.active_sessions = active_exec.get(p.id, 0) + active_recon.get(p.id, 0)
+        s.active_sessions = active_agent_sessions.get(p.id, 0)
         s.blocked_sessions = blocked.get(p.id, 0)
         s.member_count = members.get(p.id, 0)
         if s.last_scan_at is not None:

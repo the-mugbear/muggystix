@@ -115,6 +115,27 @@ load_conf() {
     validate_conf
 }
 
+# A server name outside the root's name constraint: say which domains are
+# permitted and what would work, both ways round — a name inside them, or the
+# domain that would cover this name (its parent, or the name itself when the
+# parent is a bare TLD such as "home"). A guess-and-retry loop otherwise.
+outside_domains_message() {
+    local name=$1 first=${PERMITTED_DNS_DOMAINS%% *} parent=${1#*.}
+    local cover=$name
+    [[ "$parent" == *.* ]] && cover=$parent
+    local msg="SERVER_DNS_NAMES: '$name' is outside PERMITTED_DNS_DOMAINS (${PERMITTED_DNS_DOMAINS:-none}) — clients would reject the certificate."
+    if [[ -n "$first" && "$first" != *CHANGE_ME* ]]; then
+        msg+=$'\n'"       Either name the server inside it: '$first'"
+        local host=${name%%.*}
+        [[ "$host" != "${first%%.*}" ]] && msg+=" or '$host.$first'"
+        msg+=","
+    else
+        msg+=$'\n'"       Either"
+    fi
+    msg+=$'\n'"       or keep '$name' and set PERMITTED_DNS_DOMAINS=\"$cover\" (the constraint is in the root: changing it after \`root\` means a new root)."
+    printf '%s' "$msg"
+}
+
 validate_conf() {
     local problems=() v
     local required=(ROOT_COMMON_NAME ROOT_ORGANIZATION ROOT_VALIDITY_DAYS PERMITTED_IPV4_CIDRS
@@ -179,7 +200,7 @@ validate_conf() {
         for domain in ${PERMITTED_DNS_DOMAINS:-}; do
             [[ "$name" == "$domain" || "$name" == *".$domain" ]] && matched=1
         done
-        (( matched )) || problems+=("SERVER_DNS_NAMES: '$name' is outside PERMITTED_DNS_DOMAINS — clients would reject the certificate")
+        (( matched )) || problems+=("$(outside_domains_message "$name")")
     done
 
     local ip
@@ -191,7 +212,8 @@ validate_conf() {
         for cidr in ${PERMITTED_IPV4_CIDRS:-}; do
             [[ "$cidr" == */* ]] && valid_ipv4 "${cidr%/*}" && ip_in_cidr "$ip" "$cidr" && matched=1
         done
-        (( matched )) || problems+=("SERVER_IPS: '$ip' is outside PERMITTED_IPV4_CIDRS — clients would reject the certificate")
+        (( matched )) || problems+=("SERVER_IPS: '$ip' is outside PERMITTED_IPV4_CIDRS (${PERMITTED_IPV4_CIDRS:-none}) — clients would reject the certificate.
+       Use an address inside those networks, or add a network that contains $ip to PERMITTED_IPV4_CIDRS.")
     done
 
     if (( ${#problems[@]} )); then

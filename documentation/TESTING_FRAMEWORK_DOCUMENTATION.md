@@ -35,7 +35,7 @@ Key behavior of the current backend harness:
   The Postgres path lets Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run; the SQLite fallback skips those tests cleanly via `USING_POSTGRES`.
 - **Transactional isolation.** `conftest.py::db_session` uses the SQLAlchemy join-to-outer-transaction + nested-savepoint pattern so services that commit internally (integration credentials, LLM providers, the agent API log middleware) still leave the test in a clean state. The v2.24.0 middleware writes via its own `SessionLocal()`; the fixture rebinds that to the test connection so middleware-written rows roll back at teardown — no cross-test leakage.
 - **Auth.** `get_current_user` is overridden with a persisted admin row so protected JWT routes accept the test client without a real login flow.
-- **Coverage.** Covers parsers (every supported scanner), services (deduplication, subnet correlation, SBOM cache, posture, finding correlation, environment probe), the agent surface (browse, plan generation, execution + sanity-check enforcement, recon, **assist incl. the query-DSL**, API audit log), upload flow, bundle import, prompt sanitisation, URL validation, and cross-user isolation invariants.
+- **Coverage.** Covers parsers (every supported scanner), services (deduplication, subnet correlation, SBOM cache, posture, finding correlation, environment probe), the agent surface (browse, plan registration, execution, scope reads and uploads, **assist incl. the query-DSL**, API audit log), upload flow, bundle import, prompt sanitisation, URL validation, and cross-user isolation invariants.
 
 Run locally after installing backend dependencies:
 
@@ -97,7 +97,7 @@ Strict-mode TypeScript is enforced; every PR should typecheck clean before merge
 
 ## Regression-pin file
 
-`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~89 tests covering: recon-session FK race, sanity-check uniqueness widening, cross-project plan visibility, brief-mode policy parity, multibyte byte-cap truncation, SBOM cache invalidation on app-version change, sanity-check enforcement on `/complete` (with override-reason audit), environment probe round-trip (recon + execution), cross-user environment isolation, and the v2.24.0 agent API call log helpers + middleware + retention. Add to this file when fixing a regression so it can't silently come back.
+`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~89 tests covering: recon-session FK race, sanity-check uniqueness widening, cross-project plan visibility, brief-mode policy parity, multibyte byte-cap truncation, SBOM cache invalidation on app-version change, the `/complete` coverage gate (with `no_tests_run_reason` audit; the sanity-check gate it once pinned was retired in v2.433.0), environment probe round-trip (recon + execution), cross-user environment isolation, and the v2.24.0 agent API call log helpers + middleware + retention. Add to this file when fixing a regression so it can't silently come back.
 
 ## Docs-vs-code contract tests
 

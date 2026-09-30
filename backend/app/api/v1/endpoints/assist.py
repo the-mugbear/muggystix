@@ -35,17 +35,20 @@ from app.db.models_agent import (
     Agent,
     AgentApiCall,
     AgentFeedback,
+    AgentSessionWorkflow,
     AssistSession,
     AssistSessionStatus,
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
+from app.services.integration_service import active_integrations_for_prompt
 from app.services.agent_key_ttl import resolve_ttl_hours
 from app.services.assist_session_service import (
     effective_status,
     has_live_key,
     key_expiry_for_sessions,
+    operator_role as _operator_role,
 )
 from app.services.agent_prompt_service import resolve_base_url
 from app.services.mcp_client_setup_service import build_mcp_clients
@@ -190,6 +193,10 @@ def _build_mcp_clients(
 
 class StartAssistResponse(BaseModel):
     assist_session_id: int
+    # v2.432.1 — the SESSION id: the one the agent reports, Agent Sessions lists
+    # and ``/agent-sessions/{id}`` opens.  ``assist_session_id`` is its detail
+    # row, a different sequence; the dialog titled the session by it.
+    agent_session_id: int
     project_id: int
     project_name: str
     agent_id: int
@@ -212,6 +219,10 @@ class StartAssistResponse(BaseModel):
 class AssistSessionRow(BaseModel):
     id: int
     project_id: int
+    # v2.432.0 — the unified session this detail row belongs to: the id Agent
+    # Sessions, End and Resume use.  ``/assist-sessions/{id}`` links (notes,
+    # feedback) resolve through it to ``/agent-sessions/{agent_session_id}``.
+    agent_session_id: Optional[int] = None
     purpose: Optional[str]
     status: str
     started_by_id: Optional[int]
@@ -312,20 +323,6 @@ def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
     return membership is not None and membership.role == ProjectRole.ADMIN.value
 
 
-def _operator_role(global_role, membership_role: Optional[str]) -> Optional[str]:
-    """The authority a session's operator carries in this project (v2.402.0).
-
-    Mirrors ``enforce_agent_operator_access``: a global admin passes whatever
-    their membership says, so unless that membership already reads admin the
-    honest label is ``global_admin``; otherwise the membership role; otherwise
-    None (not a member — the key's next call is refused).
-    """
-    is_global_admin = global_role in (UserRole.ADMIN, UserRole.ADMIN.value)
-    if is_global_admin and membership_role != ProjectRole.ADMIN.value:
-        return "global_admin"
-    return membership_role or None
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -334,7 +331,7 @@ def _operator_role(global_role, membership_role: Optional[str]) -> Optional[str]
     "/start",
     response_model=StartAssistResponse,
     status_code=201,
-    summary="Start an interactive assist session (mints a read-only agent key)",
+    summary="Start an agent session (mints its key)",
 )
 def start_assist_session(
     body: StartAssistRequest,
@@ -349,21 +346,17 @@ def start_assist_session(
     # (see enforce_agent_operator_access), so it cannot write project data or
     # pull a bulk export it would be refused in the UI.
     #
-    # Recon / plan / execution stay at ANALYST: they exist to change project
-    # state, which is exactly what an auditor may not do.
+    # Writes (uploads, plans, results, notes) are ANALYST at each endpoint.
     current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
 ):
-    """Create an AssistSession and mint a project-scoped, read-only
-    agent API key.  The key grants access to ``/agent/assist/*`` only;
-    test plan, recon, and execution endpoints all reject assist keys
-    with 403.  The plaintext key is shown exactly once — copy it to
-    the agent prompt the response contains.
+    """Start the operator's project agent session and mint its key — the one
+    way an agent is started (v2.433.0).  The key acts with the starting
+    operator's own project permissions on every call, re-checked per request:
+    an auditor's agent can read but not write, because the auditor cannot.
+    The plaintext key is shown exactly once, in the instructions block.
 
-    Role gate: AUDITOR (v2.308.0).  The key acts with the starting operator's
-    own project permissions on every call, so an auditor's assist agent is
-    read-only because the auditor is — there is no separate grant to get wrong.
-    Recon, plan generation and execution remain ANALYST: they exist to change
-    project state.
+    Role gate: AUDITOR (v2.308.0) to start; writes (uploads, plans, results,
+    notes) need ANALYST at the endpoint.
     """
     # v2.337.0 — "AI Assist" mints the same unified PROJECT session as every
     # other entry point; there is no separate assist key any more. The session
@@ -411,6 +404,9 @@ def start_assist_session(
         raw_api_key=raw_key,
         user_label=current_user.full_name or current_user.username,
         user_id=current_user.id,
+        integrations=active_integrations_for_prompt(
+            db, user_id=current_user.id, project_id=project.id,
+        ),
     )
     db.commit()
     db.refresh(assist_session)
@@ -423,6 +419,7 @@ def start_assist_session(
     )
     return StartAssistResponse(
         assist_session_id=assist_session.id,
+        agent_session_id=base_session.id,
         project_id=project.id,
         project_name=project.name,
         agent_id=agent.id,
@@ -678,6 +675,14 @@ def _session_row(
     return AssistSessionRow(
         id=session.id,
         project_id=session.project_id,
+        # Only a project session has a page; a pre-consolidation assist
+        # session's base row does not (v2.433.1), so links resolve to "no
+        # session page" rather than a 404.
+        agent_session_id=(
+            session.agent_session_id
+            if base is not None and base.workflow == AgentSessionWorkflow.PROJECT.value
+            else None
+        ),
         purpose=(base.purpose if base is not None and base.purpose else session.purpose),
         status=effective_status(stored_status, key_expires_at, now),
         started_by_id=session.started_by_id,

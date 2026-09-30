@@ -1,52 +1,62 @@
 /**
- * Project Activity — unified timeline of every agent session
- * (recon + plan generation + execution) for the active project.
+ * Agent Sessions — where an operator manages the agents working on this
+ * project (route `/agent-activity`, kept so links and the palette still work).
  *
- * v3.0.0 — the one surface that aggregates the three workflows in time
- * order with model/tool/user attribution.
+ * v3.0.0 — the unified timeline of every agent session (plan generation +
+ * execution) with model/tool/user attribution.
+ * v5.267.0 — the Posture layout (UI_STYLE_GUIDE §7).
+ * v5.294.0 — Agent Sessions (the list) became this page's "Sessions" view.
  *
- * v5.267.0 — the Posture layout (UI_STYLE_GUIDE §7): a lead sentence, one
- * strip of session-hygiene measures, then sections over thin rules. The five
- * hygiene boxes, the call tiles and the card around every block are gone; the
- * call chart renders only when there were calls, and the model breakdown only
- * when an agent reported its model or tool.
- *
- * v5.294.0 (UX review) — one page for runs AND sessions. Agent Sessions listed
- * the same sessions in another format with other controls; it is now this
- * page's "Sessions" view (`?view=sessions`, components/agent-sessions). The
- * title stays "Agent Runs", the name the nav and the palette use.
+ * v5.312.0 — session-first. Since v2.337.0 an operator hands an agent ONE
+ * session that does every kind of work, but the page still led with analytics
+ * and split the list into two views that disagreed: the Sessions view numbered
+ * sessions by their detail row's id and looked up End / Resume by it (so the
+ * buttons never showed), and read a resumable session as ended. A session's own
+ * execution runs appeared nowhere — the timeline excludes them — so an
+ * execution was reachable only from /executions. Now: what is live (with its
+ * work and its controls) first, then the history — one row per session, its work under it, each opening the session
+ * page (`/agent-sessions/:id`) — and the analytics last.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
-import { RefreshCw, Search, ChevronRight, Loader2, RotateCcw, Square } from 'lucide-react';
-import { useAuth } from '../contexts/AuthContext';
-import { useToast } from '../contexts/ToastContext';
-import { useConfirm } from '../hooks/useConfirm';
-import ResumeAgentSessionDialog from '../components/ResumeAgentSessionDialog';
+import { Link, useNavigate } from 'react-router-dom';
+import { Bot, ChevronRight, Loader2, Play, RefreshCw, Search } from 'lucide-react';
 import {
   AgentSessionKind,
   AgentSessionRow,
   AgentActivitySummary,
   listAgentSessions,
-  endAgentSession,
   getAgentSessionSummary,
   getAgentActivitySummary,
   ModelToolSummaryRow,
 } from '../services/api';
+import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
+import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { safeFallback } from '../utils/uiStyles';
 import { formatApiError } from '../utils/apiErrors';
 import PostureLead, { LeadTone } from '../components/posture/PostureLead';
 import PostureMeasure from '../components/posture/PostureMeasure';
-import PostureSection from '../components/posture/PostureSection';
-import AgentSessionsList from '../components/agent-sessions/AgentSessionsList';
+import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import PostureEmpty from '../components/posture/PostureEmpty';
+import {
+  AuthorityBadge,
+  PhaseLinks,
+  START_SESSION_PATH,
+  SessionActions,
+  SessionStateBadge,
+  StateLineText,
+  rowOperatorName,
+  sessionStateLine,
+} from '../components/agent-sessions/SessionParts';
 import LastUpdated from '../components/LastUpdated';
 import ListFilterBar, { FILTER_TRIGGER_CLASS } from '../components/ListFilterBar';
-import RunKindBadge from '../components/RunKindBadge';
+import { NavigableTableCell, NavigableTableRow } from '../components/NavigableTableRow';
+import RunKindBadge, { runKindLabel } from '../components/RunKindBadge';
 import TimeAgo from '../components/TimeAgo';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { Alert, AlertDescription } from '../components/ui/alert';
-import { CodeBlock } from '../components/ui/code-block';
 import {
   Select,
   SelectContent,
@@ -68,20 +78,21 @@ import {
   TooltipTrigger,
 } from '../components/ui/tooltip';
 import { cn } from '../utils/cn';
-import { formatTimestamp } from '../utils/relativeTime';
-import { isStalledRun } from '../utils/agentRuns';
+import {
+  agentSessionPath,
+  isStalledRun,
+  keyState,
+  sessionRowPath,
+} from '../utils/agentRuns';
 
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
-  { value: '', label: 'All workflows' },
-  // v2.337.0 — one project session does every kind of work; the four below are
-  // legacy per-workflow rows from before the consolidation.
-  { value: 'project', label: 'Session' },
-  { value: 'recon', label: 'Recon' },
-  { value: 'plan_generation', label: 'Plan generation' },
-  { value: 'execution', label: 'Execution' },
-  // v5.185.0 — the fourth workflow. Its absence here meant "All workflows"
-  // was not all of them.
-  { value: 'assist', label: 'Assist' },
+  { value: '', label: 'All sessions' },
+  { value: 'project', label: 'Sessions' },
+  // The three below are rows from before the v2.337.0 consolidation, when
+  // each kind of work had its own key; they keep their own pages.
+  { value: 'plan_generation', label: 'Legacy plan generation' },
+  { value: 'execution', label: 'Legacy execution' },
+  { value: 'assist', label: 'Legacy assist' },
 ];
 
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline' | 'muted';
@@ -89,20 +100,18 @@ type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warni
 function statusBadgeVariant(status: string): BadgeVariant {
   const s = status.toLowerCase();
   if (s === 'active' || s === 'in_progress') return 'success';
-  if (s === 'completed' || s === 'approved') return 'info';
-  if (s === 'failed' || s === 'rejected') return 'destructive';
-  if (s === 'paused' || s === 'pending_review' || s === 'draft') return 'warning';
+  if (s === 'completed') return 'info';
+  if (s === 'failed') return 'destructive';
+  if (s === 'paused' || s === 'draft') return 'warning';
   return 'muted';
 }
-
-const fmtTime = (iso?: string | null): string => formatTimestamp(iso);
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+
 /** v5.267.0 — the per-(model, tool) breakdown, as a section and only when an
- *  agent actually reported its model or tool: a table whose every row read
- *  "(not reported)" compared nothing. */
+ *  agent actually reported its model or tool. */
 const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ rows }) => {
   if (!rows || rows.length === 0) return null;
   const reported = rows.some((r) => r.generated_by_model || r.generated_by_tool);
@@ -117,7 +126,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
   return (
     <PostureSection
       title="Activity by agent / model"
-      description="Sessions per agent identity — unified project sessions, plus the legacy recon / plan-generation / execution / assist rows from before the consolidation. Compares models running against the same project."
+      description="Sessions per agent identity — unified project sessions, plus the legacy plan-generation / execution / assist rows from before the consolidation. Compares models running against the same project."
     >
       <div className="overflow-x-auto">
         <Table className="min-w-[600px]">
@@ -126,7 +135,6 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
               <TableHead>Model</TableHead>
               <TableHead>Tool / harness</TableHead>
               <TableHead className="w-20 text-right">Sessions</TableHead>
-              <TableHead className="w-16 text-right">Recon</TableHead>
               <TableHead className="w-20 text-right">Plan-gen</TableHead>
               <TableHead className="w-20 text-right">Execution</TableHead>
               <TableHead className="w-16 text-right">Assist</TableHead>
@@ -147,7 +155,6 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
                   {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{r.project ?? 0}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.recon}</TableCell>
                 <TableCell className="text-right tabular-nums">{r.plan_generation}</TableCell>
                 <TableCell className="text-right tabular-nums">{r.execution}</TableCell>
                 <TableCell className="text-right tabular-nums">{r.assist}</TableCell>
@@ -161,110 +168,64 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
   );
 };
 
-/** v5.219.0 — what the operator pastes to a still-connected agent before
- *  ending from the UI. Mirrors the contract's ending steps so the agent does
- *  the clean exit itself: feedback (if none filed), phases closed, session end. */
-const WRAP_UP_PROMPT =
-  'We are done with this BlueStick session. Wrap up now: (1) if you have filed no '
-  + 'feedback in this session yet, call submit_feedback (POST /agent/feedback) with the '
-  + 'friction you hit — one line per endpoint or tool where you retried, guessed, or worked '
-  + 'around something; (2) close any open phase — recon_complete / '
-  + 'execution_complete_session; (3) call end_session (POST /agent/session/end) with a '
-  + 'one-line note of what this session did. Confirm each step’s response to me.';
-
-/** v5.219.0 — one line under the status badge on an ended project row: how
- *  it ended and whether it said anything on the way out. 'agent' is the clean
- *  exit; the other two mean the agent never called end. */
-const endedState = (row: AgentSessionRow): { text: string; tone: 'ok' | 'warn' | 'muted' } | null => {
-  if (row.kind !== 'project' || row.status === 'active') return null;
-  const fb = row.feedback_count ?? 0;
-  const fbText = fb > 0 ? `${fb} feedback` : 'no feedback';
-  switch (row.end_reason) {
-    case 'agent':
-      return { text: `ended by agent · ${fbText}`, tone: fb > 0 ? 'ok' : 'warn' };
-    case 'operator':
-      return { text: `ended by operator · ${fbText}`, tone: 'warn' };
-    case 'lapsed':
-      return { text: `lapsed (never ended) · ${fbText}`, tone: 'warn' };
-    default:
-      return fb > 0 ? { text: fbText, tone: 'muted' } : null;
-  }
-};
-
 type Hygiene = NonNullable<AgentActivitySummary['session_hygiene']>;
 
-/** v5.267.0 — the lead sentence: the facts about sessions, from the hygiene
- *  counts when the backend sent them (sessions STARTED in the window), else
- *  from the model rollup's total — unfiltered, unlike the timeline's. */
-const RunsLead: React.FC<{
+/** The lead sentence: what is live, what waits on someone.  (There is no
+ *  "left open" count since 5.313.1: ending a session abandons its runs, so an
+ *  ended session never leaves one open.) */
+const SessionsLead: React.FC<{
+  live: AgentSessionRow[] | null;
   hygiene: Hygiene | null;
   windowDays: number | null;
-  total: number | null;
-  /** In-progress runs on the loaded page whose session can no longer act. */
-  stalledRuns: number;
-}> = ({ hygiene, windowDays, total: recorded, stalledRuns }) => {
-  if (recorded == null && !hygiene) return null;
-  const total = recorded ?? 0;
+}> = ({ live, hygiene, windowDays }) => {
+  if (live == null) return null;
+  const connected = live.filter((r) => keyState(r)?.tone === 'ok').length;
+  const resumable = live.filter((r) => keyState(r)?.tone === 'warn').length;
   let tone: LeadTone = 'neutral';
-  let sentence: string;
-  if (hygiene && hygiene.sessions_started > 0) {
-    sentence = `${plural(hygiene.sessions_started, 'session')} started in the last ${windowDays ?? 14} days; `
-      + `${hygiene.sessions_active.toLocaleString()} still active; `
-      + `${hygiene.lapsed.toLocaleString()} lapsed without ending.`;
-    if (hygiene.lapsed > 0) tone = 'warning';
-  } else if (total > 0) {
-    sentence = hygiene
-      ? `No agent sessions started in the last ${windowDays ?? 14} days; ${plural(total, 'session')} on record.`
-      : `${plural(total, 'agent session')} on record for this project.`;
+  const parts: string[] = [];
+  if (live.length === 0) {
+    parts.push('No agent session is live on this project.');
   } else {
-    sentence = 'No agent has run against this project yet.';
+    parts.push(`${plural(connected, 'session')} live now`);
+    if (resumable > 0) {
+      parts[0] += `; ${plural(resumable, 'more')} waiting to be resumed (the key ran out, the session did not)`;
+      tone = 'warning';
+    }
+    parts[0] += '.';
   }
-  // v5.288.0 — the lead counts SESSIONS; the table below also lists RUNS,
-  // which keep their own status after the session that drove them ends. Said
-  // here so "0 still active" above an "active" run is not a contradiction.
-  if (stalledRuns > 0) {
-    sentence += ` ${plural(stalledRuns, 'run')} below ${stalledRuns === 1 ? 'is' : 'are'} still open after ${stalledRuns === 1 ? 'its' : 'their'} session ended — nothing is driving ${stalledRuns === 1 ? 'it' : 'them'}.`;
-    tone = 'warning';
+  if (hygiene && hygiene.lapsed > 0) {
+    parts.push(`${plural(hygiene.lapsed, 'session')} in the last ${windowDays ?? 14} days lapsed without ending.`);
   }
   return (
     <PostureLead
       tone={tone}
-      restsOn="Counts are of sessions started in the window. Runs (recon, plan, execution) are listed in the table and can outlive the session that opened them: a run keeps its own status until an agent or operator closes it. A session that lapsed never called end, so it filed no wrap-up and its key simply ran out."
+      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, same open work, a new key. Ending a session revokes its key, pauses open executions and keeps draft plans."
     >
-      {sentence}
+      {parts.join(' ')}
     </PostureLead>
   );
 };
 
-
-/** Below this many sessions a percentage says more than the sample does. */
-const MIN_SAMPLE_FOR_PERCENT = 5;
-
-/** "n · p%" over a real sample, "n of d" over a small one. */
-const ratio = (n: number, d: number): string =>
-  d >= MIN_SAMPLE_FOR_PERCENT
-    ? `${n.toLocaleString()} · ${Math.round((n / d) * 100)}%`
-    : `${n.toLocaleString()} of ${d.toLocaleString()}`;
-
 /** v5.219.0 — session hygiene: are sessions exiting cleanly, and are they
  *  telling us anything on the way out? Counted over sessions STARTED in the
- *  window, independent of call volume — a session whose agent never connected
- *  made no calls and is exactly what this shows. v5.267.0 — one strip of four
- *  measures (ended-by-operator folds into the first); the percentage
- *  explanations live on each (i). Renders nothing without the field or with
- *  no sessions in the window. */
+ *  window. */
 const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
   if (!hygiene || hygiene.sessions_started === 0) return null;
   const h = hygiene;
   const warn = (on: boolean, text: string) => (
     <span className={on ? 'text-warning' : undefined}>{text}</span>
   );
+  const MIN_SAMPLE_FOR_PERCENT = 5;
+  const ratio = (n: number, d: number): string =>
+    d >= MIN_SAMPLE_FOR_PERCENT
+      ? `${n.toLocaleString()} · ${Math.round((n / d) * 100)}%`
+      : `${n.toLocaleString()} of ${d.toLocaleString()}`;
   return (
     <PostureSection title="Session hygiene">
       <div className="grid gap-y-md divide-border sm:grid-cols-2 lg:grid-cols-4 lg:divide-x">
         <PostureMeasure
           label="Sessions started"
-          info="Agent sessions started in the window, whatever they did afterwards — including ones whose agent never connected and made no calls."
+          info="Agent sessions started in the window, whatever they did afterwards — including ones whose agent never connected and made no calls. Legacy sessions from before one session did all the work count too."
           value={h.sessions_started.toLocaleString()}
         >
           {h.sessions_active.toLocaleString()} active · {h.sessions_ended.toLocaleString()} ended
@@ -289,7 +250,7 @@ const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
         </PostureMeasure>
         <PostureMeasure
           label="Filed feedback"
-          info="Sessions that filed at least one feedback item, out of sessions STARTED — a percentage once there are at least five. The feedback loop depends on agents saying where they retried, guessed or worked around something."
+          info="Sessions that filed at least one feedback item, out of sessions STARTED — a percentage once there are at least five."
           value={warn(
             h.sessions_with_feedback < h.sessions_started,
             ratio(h.sessions_with_feedback, h.sessions_started),
@@ -302,9 +263,29 @@ const HygieneStrip: React.FC<{ hygiene: Hygiene | null }> = ({ hygiene }) => {
   );
 };
 
-/** API-call analytics from the per-call audit log. v5.267.0 — a section only
- *  when there were calls; an empty 14-day chart is one caption line. Loading
- *  and failure are plain lines (the failure keeps its Retry). */
+/** Every day of the window, oldest first, with the days that had no calls as
+ *  zeros. v5.312.0 — the chart drew only the days that had calls, each a
+ *  flex-1 bar, so a single busy day filled the whole width as one block. */
+export const fillCallDays = (
+  daily: AgentActivitySummary['daily'],
+  windowDays: number,
+  today: Date = new Date(),
+): AgentActivitySummary['daily'] => {
+  const byDay = new Map(daily.map((d) => [d.day, d]));
+  // Ends at today (UTC, the backend's day) or the newest day with calls, if a
+  // skewed clock puts that later — a day of data is never dropped.
+  const newest = daily.reduce((m, d) => (d.day > m ? d.day : m), today.toISOString().slice(0, 10));
+  const end = new Date(`${newest}T00:00:00Z`);
+  const out: AgentActivitySummary['daily'] = [];
+  for (let i = Math.max(1, windowDays) - 1; i >= 0; i -= 1) {
+    const d = new Date(Date.UTC(end.getUTCFullYear(), end.getUTCMonth(), end.getUTCDate() - i));
+    const day = d.toISOString().slice(0, 10);
+    out.push(byDay.get(day) ?? { day, calls: 0, errors: 0 });
+  }
+  return out;
+};
+
+/** API-call analytics from the per-call audit log. */
 const ApiCallSection: React.FC<{
   summary: AgentActivitySummary | null;
   error?: boolean;
@@ -312,9 +293,6 @@ const ApiCallSection: React.FC<{
 }> = ({ summary, error, onRetry }) => {
   const navigate = useNavigate();
   if (error) {
-    // Distinct from loading: a failed fetch used to render the spinner
-    // forever (the error was swallowed to null), indistinguishable from a
-    // slow load and with no way to retry.
     return (
       <div className="flex flex-wrap items-center gap-xs">
         <p className="text-caption text-muted-foreground">API-call analytics are currently unavailable.</p>
@@ -342,12 +320,13 @@ const ApiCallSection: React.FC<{
     );
   }
 
-  const maxDay = Math.max(1, ...summary.daily.map((d) => d.calls));
+  const days = fillCallDays(summary.daily, summary.window_days);
+  const maxDay = Math.max(1, ...days.map((d) => d.calls));
   const sb = summary.status_breakdown;
   const openSession = (s: { workflow: string; session_id: number }) => {
-    if (s.workflow === 'recon') navigate(`/recon/runs/${s.session_id}`);
-    else if (s.workflow === 'execution') navigate(`/executions/${s.session_id}`);
+    if (s.workflow === 'execution') navigate(`/executions/${s.session_id}`);
     else if (s.workflow === 'plan') navigate(`/test-plans/${s.session_id}`);
+    else if (s.workflow === 'session') navigate(agentSessionPath(s.session_id));
   };
 
   return (
@@ -368,71 +347,58 @@ const ApiCallSection: React.FC<{
         <span className={sb.server_error > 0 ? 'text-destructive' : 'text-muted-foreground'}>
           {sb.server_error.toLocaleString()} 5xx
         </span>
-        {summary.by_workflow.length > 0 && (
-          <span className="text-caption text-muted-foreground">
-            {' '}— by workflow: {summary.by_workflow.map((w) => `${w.workflow} ${w.calls.toLocaleString()}`).join(' · ')}
-          </span>
-        )}
       </p>
 
-      {summary.daily.length > 0 && (
-        <div className="mt-sm">
-          <p className="mb-xxs text-caption text-muted-foreground">Calls per day</p>
-          <div className="flex h-16 items-end gap-[2px]">
-            {summary.daily.map((d) => (
-              <Tooltip key={d.day}>
-                <TooltipTrigger asChild>
-                  {/* Focusable button (not a bare div) so keyboard + screen
-                      readers can reach the daily value via aria-label; the
-                      tooltip also opens on focus. */}
-                  <button
-                    type="button"
-                    aria-label={`${d.day}: ${d.calls.toLocaleString()} call${d.calls === 1 ? '' : 's'}${d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}`}
-                    className={cn(
-                      'min-w-[3px] flex-1 rounded-sm border-0 p-0',
-                      'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      d.errors > 0 ? 'bg-destructive' : 'bg-info',
-                    )}
-                    style={{ height: `${Math.max(4, (d.calls / maxDay) * 100)}%` }}
-                  />
-                </TooltipTrigger>
-                <TooltipContent>
-                  {d.day}: {d.calls.toLocaleString()} call{d.calls === 1 ? '' : 's'}
-                  {d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}
-                </TooltipContent>
-              </Tooltip>
-            ))}
-          </div>
+      <div className="mt-sm">
+        <p className="mb-xxs text-caption text-muted-foreground">Calls per day</p>
+        <div className="flex h-16 items-end gap-[2px]" data-testid="calls-per-day">
+          {days.map((d) => (
+            <Tooltip key={d.day}>
+              <TooltipTrigger asChild>
+                <button
+                  type="button"
+                  aria-label={`${d.day}: ${d.calls.toLocaleString()} call${d.calls === 1 ? '' : 's'}${d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}`}
+                  className={cn(
+                    'min-w-[3px] flex-1 rounded-sm border-0 p-0',
+                    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                    d.calls === 0 ? 'bg-border' : d.errors > 0 ? 'bg-warning' : 'bg-info',
+                  )}
+                  style={{ height: d.calls === 0 ? '2px' : `${Math.max(4, (d.calls / maxDay) * 100)}%` }}
+                />
+              </TooltipTrigger>
+              <TooltipContent>
+                {d.day}: {d.calls.toLocaleString()} call{d.calls === 1 ? '' : 's'}
+                {d.errors > 0 ? `, ${d.errors.toLocaleString()} error${d.errors === 1 ? '' : 's'}` : ''}
+              </TooltipContent>
+            </Tooltip>
+          ))}
         </div>
-      )}
+      </div>
 
       {summary.busiest_sessions.length > 0 && (
         <div className="mt-sm">
           <p className="mb-xxs text-caption text-muted-foreground">Busiest sessions</p>
           <ul className="flex flex-col">
-            {summary.busiest_sessions.slice(0, 5).map((s) => {
-              const linkable = s.workflow === 'recon' || s.workflow === 'execution' || s.workflow === 'plan';
-              return (
-                <li key={`${s.workflow}-${s.session_id}`} className="flex min-w-0 items-center gap-xs text-metadata">
-                  <span className="min-w-0 truncate">
-                    <span className="text-muted-foreground">{s.workflow}</span> #{s.session_id} ·{' '}
-                    <strong>{s.calls.toLocaleString()}</strong> call{s.calls === 1 ? '' : 's'}
-                  </span>
-                  {linkable && (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      className="h-6 px-xs"
-                      onClick={() => openSession(s)}
-                      aria-label={`Open ${s.workflow} #${s.session_id}`}
-                    >
-                      Open
-                      <ChevronRight className="ml-xxs size-3" aria-hidden />
-                    </Button>
-                  )}
-                </li>
-              );
-            })}
+            {summary.busiest_sessions.slice(0, 5).map((s) => (
+              <li key={`${s.workflow}-${s.session_id}`} className="flex min-w-0 items-center gap-xs text-metadata">
+                <span className="min-w-0 truncate">
+                  <span className="text-muted-foreground">{s.workflow}</span> #{s.session_id} ·{' '}
+                  <strong>{s.calls.toLocaleString()}</strong> call{s.calls === 1 ? '' : 's'}
+                </span>
+                {['execution', 'plan', 'session'].includes(s.workflow) && (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-6 px-xs"
+                    onClick={() => openSession(s)}
+                    aria-label={`Open ${s.workflow} #${s.session_id}`}
+                  >
+                    Open
+                    <ChevronRight className="ml-xxs size-3" aria-hidden />
+                  </Button>
+                )}
+              </li>
+            ))}
           </ul>
         </div>
       )}
@@ -440,39 +406,32 @@ const ApiCallSection: React.FC<{
   );
 };
 
-type PageView = 'runs' | 'sessions';
+const StartSessionButton: React.FC = () => (
+  <Button size="sm" variant="outline" asChild>
+    <Link to={START_SESSION_PATH}>
+      <Play className="size-3.5" aria-hidden /> Start agent session
+    </Link>
+  </Button>
+);
 
 const ProjectActivity: React.FC = () => {
-  const navigate = useNavigate();
-  const [searchParams, setSearchParams] = useSearchParams();
-  const view: PageView = searchParams.get('view') === 'sessions' ? 'sessions' : 'runs';
-  const setView = (next: PageView) => {
-    const params = new URLSearchParams(searchParams);
-    if (next === 'sessions') params.set('view', 'sessions');
-    else params.delete('view');
-    setSearchParams(params, { replace: true });
-  };
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  // The Sessions view's Resume / End need the session as Agent Runs knows it
-  // (key expiry, renewal deadline); loaded while that view is open.
-  const [projectSessions, setProjectSessions] = useState<Map<number, AgentSessionRow>>(new Map());
+  const [live, setLive] = useState<AgentSessionRow[] | null>(null);
+  const [liveError, setLiveError] = useState<string | null>(null);
   const [rows, setRows] = useState<AgentSessionRow[]>([]);
   const [total, setTotal] = useState(0);
   const [summary, setSummary] = useState<ModelToolSummaryRow[] | null>(null);
   const [apiSummary, setApiSummary] = useState<AgentActivitySummary | null>(null);
   const [apiSummaryError, setApiSummaryError] = useState(false);
-  // Grows on "Load older runs" so the unified timeline isn't silently capped.
+  // Grows on "Load older sessions" so the history isn't silently capped.
   const [limit, setLimit] = useState(200);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
+  const controls = useAgentSessionControls(refresh);
+  const canStartAgent = useCanStartAgentSession();
 
-  const { user } = useAuth();
-  const toast = useToast();
-  const [confirmEl, confirm] = useConfirm();
-  const [endingId, setEndingId] = useState<number | null>(null);
-  // v5.214.0 — the row a Resume click is about; null keeps the dialog closed.
-  const [resumeRow, setResumeRow] = useState<AgentSessionRow | null>(null);
   const [kindFilter, setKindFilter] = useState<'' | AgentSessionKind>('');
   const [modelFilter, setModelFilter] = useState('');
   const [toolFilter, setToolFilter] = useState('');
@@ -490,249 +449,94 @@ const ProjectActivity: React.FC = () => {
     return Array.from(set).sort();
   }, [summary]);
 
+  // The live sessions: every active project session, whatever the history's
+  // filters say — this section answers "what is running right now".
+  const loadLive = useCallback(async () => {
+    try {
+      const list = await listAgentSessions({ kind: 'project', status: 'active', limit: 100 });
+      setLive(list.sessions);
+      setLiveError(null);
+    } catch (e: unknown) {
+      setLiveError(formatApiError(e, 'Could not load the live sessions.'));
+    }
+  }, []);
+
+  // Only the latest fetch may set state: a slow response for an older filter
+  // would otherwise land after the newer one and show the wrong history.
+  const runLatest = useLatestRequest();
   const fetchAll = useCallback(async () => {
     setLoading(true);
     setError(null);
     setApiSummaryError(false);
-    try {
-      const filters: Record<string, string | number> = { limit };
-      if (kindFilter) filters.kind = kindFilter;
-      if (modelFilter) filters.model = modelFilter;
-      if (toolFilter) filters.tool = toolFilter;
-      // API-call analytics is best-effort — its failure must not blank
-      // the session timeline; record the error so the section shows an
-      // "unavailable + Retry" line instead of an endless spinner.
-      const [list, sum, apiSum] = await Promise.all([
-        listAgentSessions(filters),
-        getAgentSessionSummary(),
-        getAgentActivitySummary().catch(() => { setApiSummaryError(true); return null; }),
-      ]);
+    const filters: Record<string, string | number> = { limit };
+    if (kindFilter) filters.kind = kindFilter;
+    if (modelFilter) filters.model = modelFilter;
+    if (toolFilter) filters.tool = toolFilter;
+    // API-call analytics is best-effort — its failure must not blank the
+    // history; the section shows "unavailable + Retry" instead.
+    let apiSumFailed = false;
+    const r = await runLatest(() => Promise.all([
+      listAgentSessions(filters),
+      getAgentSessionSummary(),
+      getAgentActivitySummary().catch(() => { apiSumFailed = true; return null; }),
+      loadLive(),
+    ]));
+    if (r.stale) return;
+    if (r.ok) {
+      const [list, sum, apiSum] = r.value;
       setRows(list.sessions);
       setTotal(list.total);
       setSummary(sum.summary);
       setApiSummary(apiSum);
+      setApiSummaryError(apiSumFailed);
       setLastFetched(new Date());
-    } catch (e: unknown) {
-      setError(formatApiError(e, 'Failed to load project activity.'));
-    } finally {
-      setLoading(false);
+    } else {
+      setError(formatApiError(r.error, 'Failed to load agent sessions.'));
     }
-  }, [kindFilter, modelFilter, toolFilter, limit]);
+    setLoading(false);
+  }, [kindFilter, modelFilter, toolFilter, limit, loadLive, runLatest]);
 
   useEffect(() => {
-    fetchAll();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    void fetchAll();
   }, [fetchAll, refreshNonce]);
 
-  useEffect(() => {
-    if (view !== 'sessions') return;
-    let cancelled = false;
-    listAgentSessions({ kind: 'project', limit: 200 })
-      .then((list) => {
-        if (!cancelled) setProjectSessions(new Map(list.sessions.map((s) => [s.id, s])));
-      })
-      .catch(() => { /* no Resume / End buttons; the list itself still loads */ });
-    return () => { cancelled = true; };
-  }, [view, refreshNonce]);
+  // Key state and last calls move while the page is open; the live list is
+  // re-read each minute (not in a hidden tab).
+  useVisibilityPoll(loadLive, 60_000);
 
-  // A filter whose every option is "all" filters nothing: offered once an
-  // agent has reported a model (or a tool), or while one is chosen.
   const showModelFilter = knownModels.length > 0 || modelFilter !== '';
   const showToolFilter = knownTools.length > 0 || toolFilter !== '';
-
-  // v5.212.0 — the operator's kill switch for a unified project session. The
-  // per-workflow rows have their own detail pages; a project session had none,
-  // so its row on the hub page went nowhere and — worse — a session started from
-  // Scopes / Test Plans / Execute could not be stopped short of its key's TTL.
-  // Owner or project admin only; the backend enforces that and answers 403.
-  const canEnd = (row: AgentSessionRow) =>
-    row.kind === 'project'
-    && row.status === 'active'
-    && (row.user_id === user?.id || user?.role === 'admin');
-
-  // v5.214.0 — the other button. An active project session whose agent died
-  // mid-tool is resumable by the operator who started it (the key acts under
-  // their name, so no admin override — the backend answers 403 otherwise).
-  const canResume = (row: AgentSessionRow) =>
-    row.kind === 'project'
-    && row.status === 'active'
-    && row.user_id === user?.id;
-
-  /** One line under the status badge on a project row: whether the key is
-   *  live, lapsed-but-renewable, or gone. Reads the two dates the row carries;
-   *  says nothing when it has neither (a legacy row). */
-  const keyState = (row: AgentSessionRow): { text: string; tone: 'ok' | 'warn' | 'muted' } | null => {
-    if (row.kind !== 'project' || row.status !== 'active') return null;
-    const now = Date.now();
-    const exp = row.key_expires_at ? new Date(row.key_expires_at).getTime() : null;
-    const cap = row.renewable_until ? new Date(row.renewable_until).getTime() : null;
-    if (exp != null && exp > now) {
-      return { text: `key valid until ${fmtTime(row.key_expires_at)}`, tone: 'ok' };
-    }
-    if (cap != null && cap > now) {
-      return {
-        text: exp == null
-          ? `key revoked · resumable until ${fmtTime(row.renewable_until)}`
-          : `key expired · renewable until ${fmtTime(row.renewable_until)}`,
-        tone: 'warn',
-      };
-    }
-    if (exp != null || cap != null) return { text: 'key expired · past lifetime', tone: 'muted' };
-    return null;
-  };
-
-  const handleEnd = async (row: AgentSessionRow) => {
-    // v5.219.0 — the wrap-up handoff. Sessions end because the human stops
-    // typing, and nobody tells the agent it is done, so the feedback and the
-    // clean exit never happen. If the agent is still reachable, the operator
-    // can paste this first; End underneath remains the fallback.
-    const agentAlive = keyState(row)?.tone === 'ok';
-    const ok = await confirm({
-      title: `End agent session #${row.id}?`,
-      severity: 'warning',
-      confirmLabel: 'End session',
-      body: (
-        <div className="flex flex-col gap-sm">
-          <p>
-            The agent’s API key is revoked immediately; any agent still running against it
-            gets 401s from its next call. Open reconnaissance runs are marked abandoned, open
-            execution runs are paused (resumable), and draft plans are kept. The session
-            record stays for the audit trail.
-          </p>
-          {agentAlive && (
-            <div>
-              <p className="mb-xxs text-metadata font-semibold">
-                Agent still connected? Paste this to it first
-              </p>
-              <p className="mb-xxs text-caption text-muted-foreground">
-                It files the feedback we ask every session for and ends the session cleanly
-                (
-                <span className="font-mono">end_reason: agent</span>
-                ). Ending from here is the fallback for an agent that is gone.
-              </p>
-              <CodeBlock
-                text={WRAP_UP_PROMPT}
-                label="wrap-up prompt"
-                className="max-h-40 whitespace-pre-wrap break-words"
-              />
-            </div>
-          )}
-        </div>
-      ),
-    });
-    if (!ok) return;
-    setEndingId(row.id);
-    try {
-      await endAgentSession(row.id);
-      toast.success(`Agent session #${row.id} ended — its key is revoked.`);
-      setRefreshNonce((n) => n + 1);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not end the agent session.'));
-    } finally {
-      setEndingId(null);
-    }
-  };
-
-  const drillInto = (row: AgentSessionRow) => {
-    if (row.kind === 'execution') {
-      navigate(`/executions/${row.id}`);
-    } else if (row.kind === 'plan_generation' && row.test_plan_id != null) {
-      navigate(`/test-plans/${row.test_plan_id}`);
-    } else if (row.kind === 'recon') {
-      navigate(`/recon/runs/${row.id}`);
-    } else if (row.kind === 'assist') {
-      navigate(`/assist-sessions/${row.id}`);
-    }
-  };
-
-  /** Resume + End for a project session — the same two buttons in both views. */
-  const sessionActions = (r: AgentSessionRow) => (
-    <div className="flex items-center gap-xxs">
-      {canResume(r) && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => setResumeRow(r)}
-              aria-label={`Resume agent session ${r.id}`}
-            >
-              <RotateCcw className="size-4 text-primary" aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Resume (reconnect an agent to this session)</TooltipContent>
-        </Tooltip>
-      )}
-      {canEnd(r) && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => handleEnd(r)}
-              disabled={endingId === r.id}
-              aria-label={`End agent session ${r.id}`}
-            >
-              {endingId === r.id ? (
-                <Loader2 className="size-4 animate-spin" aria-hidden />
-              ) : (
-                <Square className="size-4 text-warning" aria-hidden />
-              )}
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>End session (revokes its key)</TooltipContent>
-        </Tooltip>
-      )}
-    </div>
-  );
-
   const hygiene = apiSummary?.session_hygiene ?? null;
-  const stalledRuns = rows.filter(isStalledRun).length;
-  // v5.288.0 — the Model · Tool column only when some row on screen carries
-  // one; the rollup section already says when no agent has reported.
-  const showModel = rows.some((r) => r.generated_by_model || r.generated_by_tool);
+  const filtered = Boolean(kindFilter || modelFilter || toolFilter);
 
   return (
     <div className="flex flex-col gap-lg p-md md:p-lg">
-      {confirmEl}
-      <ResumeAgentSessionDialog
-        session={resumeRow}
-        onOpenChange={(next) => { if (!next) setResumeRow(null); }}
-        onResumed={() => setRefreshNonce((n) => n + 1)}
-      />
+      {controls.dialogs}
       <div className="flex items-start justify-between gap-sm">
         <div className="min-w-0 flex-1">
-          <h1 className="text-page-title">Agent Runs</h1>
-          {/* Wraps rather than truncating: it is the page's job line. */}
+          <h1 className="text-page-title">Agent Sessions</h1>
           <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
-            Everything agents have done on this project. <strong className="font-medium text-foreground">Runs</strong>{' '}
-            lists every session and every recon, plan or execution run in time order, each with its
-            own status; <strong className="font-medium text-foreground">Sessions</strong> lists the keys
-            operators handed agents — what each was for, the role it acts with, what it produced.
+            Every session an operator has handed an agent on this project: what is live, the plans
+            and executions each one opened, and the controls to resume or end it. Open a
+            session for its notes and every call it made.
           </p>
         </div>
-        <LastUpdated
-          compact
-          lastFetched={lastFetched}
-          onRefresh={() => setRefreshNonce((n) => n + 1)}
-          isLoading={loading}
-          label="agent runs"
-        />
+        <div className="flex shrink-0 items-center gap-xs">
+          {canStartAgent && <StartSessionButton />}
+          <LastUpdated
+            compact
+            lastFetched={lastFetched}
+            onRefresh={refresh}
+            isLoading={loading}
+            label="agent sessions"
+          />
+        </div>
       </div>
 
-      <RunsLead
+      <SessionsLead
+        live={live}
         hygiene={hygiene}
         windowDays={apiSummary?.window_days ?? null}
-        total={summary ? summary.reduce((n, r) => n + r.total, 0) : null}
-        stalledRuns={stalledRuns}
-      />
-
-      <HygieneStrip hygiene={hygiene} />
-
-      <ApiCallSection
-        summary={apiSummary}
-        error={apiSummaryError}
-        onRetry={() => setRefreshNonce((n) => n + 1)}
       />
 
       {error && (
@@ -741,53 +545,84 @@ const ProjectActivity: React.FC = () => {
         </Alert>
       )}
 
-      {/* v5.294.0 — the two views of one page (Agent Sessions was a page of
-          its own listing the same sessions). */}
-      <div
-        className="inline-flex self-start overflow-hidden rounded-control border border-border"
-        role="group"
-        aria-label="What the page lists"
-      >
-        {([
-          { value: 'runs', label: 'Runs' },
-          { value: 'sessions', label: 'Sessions' },
-        ] as const).map((opt) => (
-          <button
-            key={opt.value}
-            type="button"
-            aria-pressed={view === opt.value}
-            onClick={() => setView(opt.value)}
-            className={cn(
-              'h-8 px-sm text-metadata transition-colors',
-              view === opt.value
-                ? 'bg-primary text-primary-foreground'
-                : 'bg-background text-foreground hover:bg-accent',
-            )}
-          >
-            {opt.label}
-          </button>
-        ))}
-      </div>
-
-      {view === 'sessions' ? (
-        <PostureSection title="Sessions">
-          <AgentSessionsList
-            refreshNonce={refreshNonce}
-            renderActions={(s) => {
-              const run = projectSessions.get(s.id);
-              return run ? sessionActions(run) : null;
-            }}
-          />
-        </PostureSection>
-      ) : (
       <PostureSection
-        title="Runs"
+        title={<>Live now {live && live.length > 0 && <SectionCount>{live.length}</SectionCount>}</>}
+        description="Active sessions — ones an agent can use now, and ones whose key ran out that their operator can resume."
+      >
+        {liveError && (
+          <div className="flex flex-wrap items-center gap-xs">
+            <p className="text-caption text-destructive">{liveError}</p>
+            <Button size="sm" variant="outline" onClick={() => void loadLive()}>
+              <RefreshCw className="size-3.5" aria-hidden /> Retry
+            </Button>
+          </div>
+        )}
+        {live == null && !liveError && (
+          <p className="flex items-center gap-xs text-caption text-muted-foreground" role="status">
+            <Loader2 className="size-3.5 animate-spin" aria-hidden /> Loading live sessions…
+          </p>
+        )}
+        {live != null && live.length === 0 && (
+          <PostureEmpty
+            Icon={Bot}
+            title="No agent session is live"
+            action={canStartAgent ? { to: START_SESSION_PATH, label: 'Start agent session' } : undefined}
+          >
+            A session lets an agent query this project, upload scans, and open plan or execution
+            work, with your permissions. It shows here while it runs, with its work and the controls
+            to resume or end it.
+          </PostureEmpty>
+        )}
+        {live != null && live.length > 0 && (
+          <ul className="flex flex-col divide-y divide-border" data-testid="live-sessions">
+            {live.map((row) => {
+              const operator = rowOperatorName(row);
+              return (
+                <li key={row.id} className="flex min-w-0 flex-col gap-xs py-sm md:flex-row md:items-start" data-testid="live-session">
+                  <div className="flex min-w-0 flex-1 flex-col gap-xxs">
+                    <div className="flex min-w-0 flex-wrap items-center gap-xs">
+                      <SessionStateBadge row={row} />
+                      <Link
+                        to={agentSessionPath(row.id)}
+                        className="min-w-0 truncate font-medium text-foreground underline-offset-4 hover:underline"
+                        title={row.purpose ?? undefined}
+                      >
+                        #{row.id} · {safeFallback(row.purpose, 'No stated purpose')}
+                      </Link>
+                      <AuthorityBadge role={row.operator_role} operator={operator} />
+                    </div>
+                    <p className="flex min-w-0 flex-wrap items-center gap-x-xs text-caption text-muted-foreground">
+                      <span className="truncate">{safeFallback(operator, 'unknown operator')}</span>
+                      <span aria-hidden>·</span>
+                      <span>started <TimeAgo value={row.started_at} /></span>
+                      <span aria-hidden>·</span>
+                      {row.last_activity_at ? (
+                        <span>last call <TimeAgo value={row.last_activity_at} /></span>
+                      ) : (
+                        <span className="text-warning">no call yet — the agent has not connected</span>
+                      )}
+                      <span aria-hidden>·</span>
+                      <StateLineText line={keyState(row)} />
+                    </p>
+                    <PhaseLinks row={row} />
+                  </div>
+                  <SessionActions row={row} controls={controls} labelled showOpen />
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </PostureSection>
+
+      <PostureSection
+        title="History"
+        description="One row per session, newest first, with the work it opened. Older rows, from before one session did all the work, open their own pages."
         actions={(
           <>
             {loading && <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
             {rows.length < total && !loading && (
               <Button size="sm" variant="outline" onClick={() => setLimit((l) => l + 200)}>
-                Load older runs
+                Load older sessions
               </Button>
             )}
           </>
@@ -797,11 +632,9 @@ const ProjectActivity: React.FC = () => {
           <div data-testid="runs-filters" className="contents">
             <Select
               value={kindFilter || 'all'}
-              onValueChange={(v) =>
-                setKindFilter(v === 'all' ? '' : (v as AgentSessionKind))
-              }
+              onValueChange={(v) => setKindFilter(v === 'all' ? '' : (v as AgentSessionKind))}
             >
-              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter runs by workflow">
+              <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter sessions by kind">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
@@ -813,11 +646,8 @@ const ProjectActivity: React.FC = () => {
               </SelectContent>
             </Select>
             {showModelFilter && (
-              <Select
-                value={modelFilter || 'all'}
-                onValueChange={(v) => setModelFilter(v === 'all' ? '' : v)}
-              >
-                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter runs by model">
+              <Select value={modelFilter || 'all'} onValueChange={(v) => setModelFilter(v === 'all' ? '' : v)}>
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-52`} aria-label="Filter sessions by model">
                   <SelectValue placeholder="All models" />
                 </SelectTrigger>
                 <SelectContent>
@@ -829,11 +659,8 @@ const ProjectActivity: React.FC = () => {
               </Select>
             )}
             {showToolFilter && (
-              <Select
-                value={toolFilter || 'all'}
-                onValueChange={(v) => setToolFilter(v === 'all' ? '' : v)}
-              >
-                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter runs by tool">
+              <Select value={toolFilter || 'all'} onValueChange={(v) => setToolFilter(v === 'all' ? '' : v)}>
+                <SelectTrigger className={`${FILTER_TRIGGER_CLASS} w-44`} aria-label="Filter sessions by tool">
                   <SelectValue placeholder="All tools" />
                 </SelectTrigger>
                 <SelectContent>
@@ -847,203 +674,128 @@ const ProjectActivity: React.FC = () => {
           </div>
         </ListFilterBar>
 
-        {/* v5.294.0 — the column budget fits the content width (it used to
-            set a 1000px minimum and scroll sideways); Subject takes the rest. */}
-        <Table data-testid="runs-table">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-32">Workflow</TableHead>
-                {/* Status carries the key / ended line under its chip. */}
-                <TableHead className="w-44">Status</TableHead>
-                <TableHead className="w-20">Started</TableHead>
-                {showModel && <TableHead className="w-40">Model · Tool</TableHead>}
-                <TableHead className="w-40">User · Agent</TableHead>
-                <TableHead>Subject</TableHead>
-                {/* v5.214.0 — two icon buttons (Resume + End) on a project row. */}
-                <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => {
-                const stalled = isStalledRun(r);
-                // v5.294.0 — one honest state. The badge read "active · session
-                // ended", which says two opposite things; the run is stalled,
-                // and the line under it says why.
-                const ks = stalled
-                  ? {
-                      text: `still ${r.status.toLowerCase().replace('_', ' ')} but its session ended — resume or close the run`,
-                      tone: 'warn' as const,
-                    }
-                  : keyState(r) ?? endedState(r);
-                const userName = r.user_full_name?.trim() || r.user_username || null;
-                return (
-                  <TableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
-                    <TableCell className="overflow-hidden">
-                      <RunKindBadge kind={r.kind} className="max-w-full" />
-                    </TableCell>
-                    <TableCell className="overflow-hidden">
-                      {/* whitespace-nowrap prevents the badge from
-                          wrapping mid-status (e.g. "in" + "_progress") */}
-                      <Badge
-                        variant={stalled ? 'warning' : statusBadgeVariant(r.status)}
-                        className="whitespace-nowrap"
+        <Table data-testid="runs-table" style={{ tableLayout: 'fixed' }}>
+          <TableHeader>
+            <TableRow>
+              <TableHead className="w-16">#</TableHead>
+              <TableHead>Session</TableHead>
+              <TableHead className="w-48">Status</TableHead>
+              <TableHead className="w-24">Started</TableHead>
+              <TableHead className="w-40">Operator · agent</TableHead>
+              <TableHead className="w-[30%]">Work</TableHead>
+              <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((r) => {
+              const path = sessionRowPath(r);
+              const stalled = isStalledRun(r);
+              const operator = rowOperatorName(r);
+              const label = r.kind === 'project'
+                ? `Open agent session ${r.id}`
+                : `Open ${runKindLabel(r.kind)} ${r.id}`;
+              return (
+                <NavigableTableRow key={`${r.kind}-${r.id}`} data-testid="run-row">
+                  <NavigableTableCell to={path} ariaLabel={label} className="tabular-nums text-muted-foreground">
+                    {r.id}
+                  </NavigableTableCell>
+                  <NavigableTableCell to={path} ariaLabel={label}>
+                    <div className="flex min-w-0 items-center gap-xs">
+                      {r.kind !== 'project' && <RunKindBadge kind={r.kind} className="shrink-0" />}
+                      <span className="min-w-0 truncate" title={r.purpose ?? r.target_label ?? undefined}>
+                        {r.kind === 'project'
+                          ? safeFallback(r.purpose, 'No stated purpose')
+                          : safeFallback(r.target_label, r.kind === 'assist' ? 'Project-wide' : '—')}
+                      </span>
+                    </div>
+                    {(r.generated_by_model || r.generated_by_tool) && (
+                      <p
+                        className="truncate text-caption text-muted-foreground"
+                        title={[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
                       >
-                        {stalled ? 'Stalled' : r.status}
-                      </Badge>
-                      {/* v5.214.0 — "active" alone cannot tell a live agent
-                          from one that died a day ago; the key's state can. */}
-                      {ks && (
-                        <p
-                          className={cn(
-                            'mt-xxs max-w-full truncate text-caption',
-                            ks.tone === 'warn' ? 'text-warning' : 'text-muted-foreground',
-                          )}
-                          title={ks.text}
-                        >
-                          {ks.text}
-                        </p>
-                      )}
-                    </TableCell>
-                    <TableCell className="truncate">
-                      <TimeAgo value={r.started_at} className="text-caption text-muted-foreground" />
-                    </TableCell>
-                    {showModel && (
-                      <TableCell>
-                        {r.generated_by_model || r.generated_by_tool ? (
-                          <p
-                            className="truncate text-caption"
-                            title={[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
-                          >
-                            {r.generated_by_model && (
-                              <code className="font-mono">{r.generated_by_model}</code>
-                            )}
-                            {r.generated_by_tool && (
-                              <span className="text-muted-foreground">
-                                {r.generated_by_model ? ' · ' : ''}
-                                {r.generated_by_tool}
-                              </span>
-                            )}
-                          </p>
-                        ) : (
-                          <span className="text-caption text-muted-foreground">(not reported)</span>
-                        )}
-                      </TableCell>
+                        {[r.generated_by_model, r.generated_by_tool].filter(Boolean).join(' · ')}
+                      </p>
                     )}
-                    <TableCell>
-                      {/* v5.288.0 — the person's full name (username as the
-                          fallback and in the tooltip) on its own line, the
-                          agent's name under it; both wrap instead of cutting
-                          off mid-word. */}
-                      <div
-                        className="min-w-0 text-caption"
-                        title={[
-                          userName && r.user_username && userName !== r.user_username
-                            ? `${userName} (${r.user_username})`
-                            : userName,
-                          r.agent_name,
-                        ].filter(Boolean).join(' · ') || undefined}
-                      >
-                        <p className="line-clamp-2 break-words text-foreground">
-                          {safeFallback(userName, '—')}
-                        </p>
-                        {r.agent_name && (
-                          <p className="line-clamp-2 break-words text-muted-foreground">
-                            {r.agent_name}
-                          </p>
+                  </NavigableTableCell>
+                  <TableCell className="overflow-hidden">
+                    {r.kind === 'project' ? (
+                      <div className="flex min-w-0 flex-col items-start gap-xxs">
+                        <SessionStateBadge row={r} />
+                        <StateLineText line={sessionStateLine(r)} className="block max-w-full" />
+                      </div>
+                    ) : (
+                      <div className="flex min-w-0 flex-col items-start gap-xxs">
+                        <Badge variant={stalled ? 'warning' : statusBadgeVariant(r.status)} className="whitespace-nowrap">
+                          {stalled ? 'Stalled' : r.status.replace(/_/g, ' ')}
+                        </Badge>
+                        {stalled && (
+                          <span className="block max-w-full truncate text-caption text-warning">
+                            its session can no longer act
+                          </span>
                         )}
                       </div>
-                    </TableCell>
-                    <TableCell>
-                      {/* v5.187.0 — the declared target in words where we have
-                          it; ids are the fallback. A colleague scanning this
-                          list needs the ranges, not "Scope #3". v5.267.0 — the
-                          purpose follows on the same truncated line. */}
-                      <p
-                        className="truncate"
-                        title={[r.target_label, r.kind === 'project' ? r.purpose : null].filter(Boolean).join(' · ') || undefined}
-                      >
-                        {r.target_label ? (
-                          <span>{r.target_label}</span>
-                        ) : (
-                          <>
-                            {r.kind === 'recon' && r.scope_id != null && <span>Scope #{r.scope_id}</span>}
-                            {(r.kind === 'plan_generation' || r.kind === 'execution') &&
-                              r.test_plan_id != null && <span>Plan #{r.test_plan_id}</span>}
-                            {(r.kind === 'assist' || r.kind === 'project') && (
-                              <span className="text-caption text-muted-foreground">
-                                Project session
-                              </span>
-                            )}
-                          </>
-                        )}
-                        {r.kind === 'project' && r.purpose && (
-                          <span className="text-caption text-muted-foreground"> · {r.purpose}</span>
-                        )}
-                      </p>
-                    </TableCell>
-                    <TableCell>
-                      {r.kind === 'project' ? (
-                        sessionActions(r)
-                      ) : (
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => drillInto(r)}
-                              aria-label={`Open ${r.kind === 'plan_generation' ? 'plan' : r.kind} run ${r.id}`}
-                              disabled={
-                                // Assist has its own detail page and no target
-                                // id — keyed off the session id alone. Without
-                                // this branch the row's Open button was disabled
-                                // because test_plan_id is (correctly) null.
-                                r.kind === 'assist'
-                                  ? false
-                                  : r.kind === 'recon'
-                                  ? r.scope_id == null
-                                  : r.test_plan_id == null
-                              }
-                            >
-                              {/* Navigates in place — a chevron, not the
-                                  new-tab icon it used to carry. */}
-                              <ChevronRight className="size-4" aria-hidden />
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>Open</TooltipContent>
-                        </Tooltip>
-                      )}
-                    </TableCell>
-                  </TableRow>
-                );
-              })}
-              {!loading && rows.length === 0 && (
-                <TableRow>
-                  <TableCell colSpan={showModel ? 7 : 6} className="py-xl text-center">
-                    <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />
-                    <p className="text-metadata text-muted-foreground">
-                      No agent sessions match the current filters.
-                    </p>
-                    {(kindFilter || modelFilter || toolFilter) && (
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => {
-                          setKindFilter('');
-                          setModelFilter('');
-                          setToolFilter('');
-                        }}
-                        className="mt-xs"
-                      >
-                        Clear filters
-                      </Button>
                     )}
                   </TableCell>
-                </TableRow>
-              )}
-            </TableBody>
-          </Table>
+                  <TableCell className="truncate">
+                    <TimeAgo value={r.started_at} className="text-caption text-muted-foreground" />
+                  </TableCell>
+                  <TableCell>
+                    <div
+                      className="min-w-0 text-caption"
+                      title={[operator, r.agent_name].filter(Boolean).join(' · ') || undefined}
+                    >
+                      <p className="truncate text-foreground">{safeFallback(operator, '—')}</p>
+                      {r.agent_name && <p className="truncate text-muted-foreground">{r.agent_name}</p>}
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    {r.kind === 'project' ? (
+                      <PhaseLinks row={r} limit={3} />
+                    ) : (
+                      <span className="text-caption text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {r.kind === 'project' && <SessionActions row={r} controls={controls} />}
+                  </TableCell>
+                </NavigableTableRow>
+              );
+            })}
+            {!loading && rows.length === 0 && (
+              <TableRow>
+                <TableCell colSpan={7} className="py-xl text-center">
+                  <Search className="mx-auto mb-xs size-9 text-muted-foreground/50" aria-hidden />
+                  <p className="text-metadata text-muted-foreground">
+                    {filtered ? 'No agent sessions match the current filters.' : 'No agent has run against this project yet.'}
+                  </p>
+                  {filtered && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={() => {
+                        setKindFilter('');
+                        setModelFilter('');
+                        setToolFilter('');
+                      }}
+                      className="mt-xs"
+                    >
+                      Clear filters
+                    </Button>
+                  )}
+                </TableCell>
+              </TableRow>
+            )}
+          </TableBody>
+        </Table>
       </PostureSection>
-      )}
+
+      <HygieneStrip hygiene={hygiene} />
+
+      <ApiCallSection
+        summary={apiSummary}
+        error={apiSummaryError}
+        onRetry={refresh}
+      />
 
       <ModelRollupSection rows={summary} />
     </div>

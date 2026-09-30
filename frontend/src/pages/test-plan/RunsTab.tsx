@@ -1,17 +1,18 @@
 /**
- * /test-plans/:planId/runs — execution session header + picker +
- * compare-links.  Empty state when no sessions exist yet.
+ * /test-plans/:planId/runs — execution run header + picker +
+ * compare-links.  Empty state when no runs exist yet.
+ *
+ * 5.313.0 — no per-run Resume: a run's agent is resumed from its agent
+ * session (OwningSessionLink), and no approval gates the first run.
  */
 import React from 'react';
 import { useNavigate } from 'react-router-dom';
-import { ClipboardCheck, ExternalLink, RotateCcw } from 'lucide-react';
+import { ClipboardCheck, ExternalLink } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import {
-  ExecutionSessionHeader,
-  isExecutionSessionStale,
-} from '../../components/execution/ExecutionSessionHeader';
+import { ExecutionSessionHeader } from '../../components/execution/ExecutionSessionHeader';
 import { ExecutionSessionPicker } from '../../components/execution/ExecutionSessionPicker';
 import { ExecutionCompareLinks } from '../../components/execution/ExecutionCompareLinks';
+import OwningSessionLink from '../../components/agent-sessions/OwningSessionLink';
 import { Alert, AlertDescription } from '../../components/ui/alert';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
@@ -28,8 +29,6 @@ const RunsTab: React.FC = () => {
     selectedSessionId,
     setSelectedSessionId,
     openReportDialog,
-    canManage,
-    handleResume,
   } = useTestPlanContext();
 
   if (!plan.latest_execution_session) {
@@ -42,12 +41,15 @@ const RunsTab: React.FC = () => {
         )}
         <Card>
           <CardContent className="p-md text-metadata text-muted-foreground">
-            No execution sessions yet.{' '}
-            {plan.status === 'approved' || plan.status === 'in_progress' ? (
-              <span>Use <strong>Execute with AI</strong> on the action bar above to start one.</span>
-            ) : (
-              <span>Once the plan is approved you can start an execution session.</span>
-            )}
+            No execution runs yet.{' '}
+            {plan.entry_count > 0 && (plan.status === 'draft' || plan.status === 'in_progress') ? (
+              <span>
+                Use <strong>Work with your agent</strong> on the action bar above — your agent
+                opens a run when it starts testing — or export a bundle for an offline run.
+              </span>
+            ) : plan.entry_count === 0 ? (
+              <span>Add entries to the plan first; a run works through them.</span>
+            ) : null}
           </CardContent>
         </Card>
       </div>
@@ -73,22 +75,9 @@ const RunsTab: React.FC = () => {
         totalSessionCount={totalSessionCount}
         actions={
           <>
-            {canManage &&
-              (activeSession.status === 'active' || activeSession.status === 'paused') && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() =>
-                    handleResume(
-                      activeSession.id,
-                      isExecutionSessionStale(activeSession) ||
-                        activeSession.status === 'paused',
-                    )
-                  }
-                >
-                  <RotateCcw className="size-4" aria-hidden /> Resume
-                </Button>
-              )}
+            {(activeSession.status === 'active' || activeSession.status === 'paused') && (
+              <OwningSessionLink agentSessionId={activeSession.agent_session_id} />
+            )}
             <Button
               size="sm"
               variant="outline"

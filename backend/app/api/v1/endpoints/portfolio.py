@@ -19,7 +19,7 @@ from app.db import models
 from app.db.models import HostFollow, FollowStatus
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
-from app.db.models_agent import TestPlan, TestPlanEntry
+from app.db.models_agent import TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
 from app.services.engagement_metrics_service import project_engagement
 from app.services.project_signals_service import project_signals
 from app.api.v1.endpoints.auth import get_current_user
@@ -73,9 +73,8 @@ class ProjectCard(BaseModel):
     # cross-project table can answer "what needs attention, and what can
     # I do next?" without opening each project.
     attention_reasons: List[str] = []  # stable codes; frontend maps to labels
-    pending_plan_reviews: int = 0
     open_tasks: int = 0
-    active_sessions: int = 0          # recon + execution sessions in "active"
+    active_sessions: int = 0          # agent sessions still open
     blocked_sessions: int = 0         # execution sessions paused/failed
     member_count: int = 0
     user_role: Optional[str] = None   # caller's project role (None if global-admin non-member)
@@ -102,7 +101,6 @@ class PortfolioSummary(BaseModel):
     projects_with_critical: int = 0
     stale_projects: int = 0
     projects_no_data: int = 0
-    pending_approvals_total: int = 0
     blocked_sessions_total: int = 0
 
 
@@ -215,7 +213,6 @@ def get_portfolio_dashboard(
     projects_with_critical = 0
     stale_projects = 0
     projects_no_data = 0
-    pending_approvals_total = 0
     blocked_sessions_total = 0
 
     for p in projects:
@@ -258,7 +255,6 @@ def get_portfolio_dashboard(
         if p.status == "active":
             active_projects += 1
 
-        pending_reviews = s.pending_plan_reviews
         blocked_sessions = s.blocked_sessions
         # Global admins may have no per-project membership row; surface
         # their global role so the table never shows a blank for them.
@@ -277,8 +273,6 @@ def get_portfolio_dashboard(
             reasons.append("critical_unjudged")
         if unjudged.high > 0:
             reasons.append("high_unjudged")
-        if pending_reviews > 0:
-            reasons.append("pending_review")
         if blocked_sessions > 0:
             reasons.append("blocked_session")
         if is_stale:
@@ -303,7 +297,6 @@ def get_portfolio_dashboard(
             stale_projects += 1
         if hc == 0:
             projects_no_data += 1
-        pending_approvals_total += pending_reviews
         blocked_sessions_total += blocked_sessions
 
         cards.append(ProjectCard(
@@ -328,7 +321,6 @@ def get_portfolio_dashboard(
             unjudged_observations=unjudged,
             health=health,
             attention_reasons=reasons,
-            pending_plan_reviews=pending_reviews,
             open_tasks=s.open_tasks,
             active_sessions=s.active_sessions,
             blocked_sessions=blocked_sessions,
@@ -352,7 +344,6 @@ def get_portfolio_dashboard(
             projects_with_critical=projects_with_critical,
             stale_projects=stale_projects,
             projects_no_data=projects_no_data,
-            pending_approvals_total=pending_approvals_total,
             blocked_sessions_total=blocked_sessions_total,
         ),
         projects=cards,
@@ -432,8 +423,8 @@ def get_portfolio_team(
         .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
         .filter(
             TestPlan.project_id.in_(project_ids),
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
-            TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
+            TestPlanEntry.status.in_(("proposed", "in_progress")),
             TestPlanEntry.assigned_to_id.isnot(None),
         )
         .group_by(TestPlanEntry.assigned_to_id)

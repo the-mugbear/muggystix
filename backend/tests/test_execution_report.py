@@ -199,7 +199,7 @@ class TestExecutionReportRejection:
             agent_id=test_agent.id,
             version=2,
             title="other",
-            status=TestPlanStatus.APPROVED.value,
+            status=TestPlanStatus.DRAFT.value,
         )
         db_session.add(other_plan)
         db_session.commit()

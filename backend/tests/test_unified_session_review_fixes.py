@@ -27,7 +27,6 @@ from app.db.models_agent import (
     AssistSession,
     ExecutionSession,
     ExecutionSessionStatus,
-    ReconSession,
     TestExecutionResult,
     TestPlan,
     TestPlanEntry,
@@ -65,14 +64,14 @@ def _scope_with_subnet(db, project, cidr="10.0.0.0/24"):
     return scope
 
 
-def _approved_plan(db, project, ip="10.0.0.5"):
+def _executable_plan(db, project, ip="10.0.0.5"):
     from app.db import models
     host = models.Host(project_id=project.id, ip_address=ip, state="up")
     db.add(host)
     db.flush()
     plan = TestPlan(
-        project_id=project.id, version=1, title="approved",
-        description="scope + method", status=TestPlanStatus.APPROVED.value,
+        project_id=project.id, version=1, title="executable",
+        description="scope + method", status=TestPlanStatus.DRAFT.value,
     )
     db.add(plan)
     db.flush()
@@ -112,7 +111,7 @@ def test_a_different_session_cannot_write_results_into_this_run(
 ):
     body = _start_session(client, test_project)
     key = body["api_key"]
-    plan, entry, host = _approved_plan(db_session, test_project)
+    plan, entry, host = _executable_plan(db_session, test_project)
     r = client.post(
         "/api/v1/agent/execution-sessions/start", headers=_hdr(key),
         json={"plan_id": plan.id},
@@ -165,7 +164,7 @@ def test_a_second_start_does_not_redirect_the_first_sessions_results(
     result must NOT land on B's run (the plan-scoped lookup did exactly
     that); A is told it has no active run and can re-open one."""
     key_a = _start_session(client, test_project, "A")["api_key"]
-    plan, entry, _host = _approved_plan(db_session, test_project)
+    plan, entry, _host = _executable_plan(db_session, test_project)
     run_a = client.post(
         "/api/v1/agent/execution-sessions/start", headers=_hdr(key_a),
         json={"plan_id": plan.id},
@@ -191,134 +190,26 @@ def test_a_second_start_does_not_redirect_the_first_sessions_results(
     ).count() == 0
 
 
-# ---------------------------------------------------------------------------
-# H2 — resume / rotate end the session they replace
-# ---------------------------------------------------------------------------
-
-def test_resume_recon_ends_the_previous_session_and_revokes_its_key(
-    client, test_project, test_agent, db_session,
-):
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/recon/start", json={},
-    )
-    assert r.status_code == 201, r.text
-    old_key = r.json()["api_key"]
-    recon_id = r.json()["recon_session_id"]
-    old_session_id = db_session.query(ReconSession.agent_session_id).filter(
-        ReconSession.id == recon_id
-    ).scalar()
-    assert client.get("/api/v1/agent/recon/context", headers=_hdr(old_key)).status_code == 200
-
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/recon/sessions/{recon_id}/resume",
-    )
-    assert r.status_code == 201, r.text
-    new_key = r.json()["api_key"]
-    db_session.expire_all()
-
-    # The run moved to the new session; the new key drives it.
-    run = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
-    assert run.agent_session_id != old_session_id
-    assert run.status == "active"
-    ctx = client.get("/api/v1/agent/recon/context", headers=_hdr(new_key))
-    assert ctx.status_code == 200 and ctx.json()["recon_session_id"] == recon_id
-
-    # The old session is ended and its key is dead — one live key overall.
-    old = db_session.query(AgentSession).filter(AgentSession.id == old_session_id).first()
-    assert old.status == "ended"
-    assert "superseded" in (old.notes or "")
-    assert client.get("/api/v1/agent/identity", headers=_hdr(old_key)).status_code == 401
-    live = _live_keys(db_session, test_agent.id) or _live_keys(db_session, run.agent_id)
-    assert len(live) == 1
-
-
-def test_resume_execution_ends_the_previous_session_and_revokes_its_key(
-    client, test_project, db_session,
-):
-    plan, entry, _host = _approved_plan(db_session, test_project)
-    r = client.post(f"/api/v1/projects/{test_project.id}/test-plans/{plan.id}/execute")
-    assert r.status_code == 201, r.text
-    old_key = r.json()["api_key"]
-    run_id = r.json()["execution_session_id"]
-    old_session_id = db_session.query(ExecutionSession.agent_session_id).filter(
-        ExecutionSession.id == run_id
-    ).scalar()
-
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan.id}"
-        f"/execution-sessions/{run_id}/resume",
-    )
-    assert r.status_code == 201, r.text
-    new_key = r.json()["api_key"]
-    db_session.expire_all()
-
-    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == run_id).first()
-    assert run.agent_session_id != old_session_id
-    assert run.status == ExecutionSessionStatus.ACTIVE.value
-    # The dead agent's key cannot write into the resumed run.
-    r = client.post(
-        f"/api/v1/agent/test-plans/{plan.id}/entries/{entry.id}/test-results",
-        headers=_hdr(old_key), json={"test_index": 0, "status": "skipped"},
-    )
-    assert r.status_code == 401, r.text
-    # The new one can.
-    r = client.post(
-        f"/api/v1/agent/test-plans/{plan.id}/entries/{entry.id}/test-results",
-        headers=_hdr(new_key), json={"test_index": 0, "status": "skipped"},
-    )
-    assert r.status_code == 201, r.text
-    assert len(_live_keys(db_session, run.agent_id)) == 1
-
-
-def test_rotate_key_ends_the_previous_session(client, test_project, db_session):
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={"title": "draft", "description": "d"},
-    )
-    assert r.status_code == 201, r.text
-    old_key = r.json()["api_key"]
-    plan_id = r.json()["plan_id"]
-    old_session_id = db_session.query(TestPlan.agent_session_id).filter(
-        TestPlan.id == plan_id
-    ).scalar()
-    assert old_session_id is not None
-
-    r = client.post(f"/api/v1/projects/{test_project.id}/test-plans/{plan_id}/rotate-key")
-    assert r.status_code == 201, r.text
-    new_key = r.json()["api_key"]
-    db_session.expire_all()
-
-    plan = db_session.query(TestPlan).filter(TestPlan.id == plan_id).first()
-    assert plan.agent_session_id != old_session_id
-    old = db_session.query(AgentSession).filter(AgentSession.id == old_session_id).first()
-    assert old.status == "ended"
-    assert client.get("/api/v1/agent/identity", headers=_hdr(old_key)).status_code == 401
-    ident = client.get("/api/v1/agent/identity", headers=_hdr(new_key))
-    assert ident.status_code == 200 and ident.json()["plan_id"] == plan_id
-    assert len(_live_keys(db_session, plan.agent_id)) == 1
+# H2 (per-run resume / per-plan rotate ending the session they replaced) is
+# gone with those routes in v2.433.0: resuming is session-level only
+# (POST /agent-sessions/{id}/resume), covered in test_agent_session_resume_and_end.
 
 
 # ---------------------------------------------------------------------------
-# H3 — identity keeps recon and execution ids apart; MCP fills the right one
+# H3 — identity reports the execution run id; MCP fills the right one
 # ---------------------------------------------------------------------------
 
-def test_identity_reports_run_ids_in_separate_fields_and_mcp_completes_the_right_run(
+def test_identity_reports_the_execution_run_and_mcp_completes_it(
     client, test_project, db_session,
 ):
     key = _start_session(client, test_project)["api_key"]
-    scope = _scope_with_subnet(db_session, test_project)
-    recon_id = client.post(
-        "/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id},
-    ).json()["recon_session_id"]
-    plan, _entry, _host = _approved_plan(db_session, test_project)
+    plan, _entry, _host = _executable_plan(db_session, test_project)
     exec_id = client.post(
         "/api/v1/agent/execution-sessions/start", headers=_hdr(key),
         json={"plan_id": plan.id},
     ).json()["session_id"]
 
     ident = client.get("/api/v1/agent/identity", headers=_hdr(key)).json()
-    assert ident["recon_session_id"] == recon_id
     assert ident["execution_session_id"] == exec_id
     assert ident["plan_id"] == plan.id
     assert "workflow_session_id" not in ident
@@ -340,8 +231,6 @@ def test_identity_reports_run_ids_in_separate_fields_and_mcp_completes_the_right
     db_session.expire_all()
     run = db_session.query(ExecutionSession).filter(ExecutionSession.id == exec_id).first()
     assert run.status == ExecutionSessionStatus.COMPLETED.value
-    recon = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
-    assert recon.status == "active"
 
 
 # ---------------------------------------------------------------------------
@@ -372,17 +261,16 @@ def test_assist_sessions_page_reflects_probe_and_activity(client, test_project, 
 # H6 — any project session can be ended by its operator
 # ---------------------------------------------------------------------------
 
-def test_operator_can_end_a_session_started_from_scopes(
+def test_operator_can_end_a_session_with_an_open_execution_run(
     client, test_project, db_session,
 ):
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/scopes/{scope.id}/recon/start", json={},
-    )
-    key = r.json()["api_key"]
-    recon_id = r.json()["recon_session_id"]
-    session_id = db_session.query(ReconSession.agent_session_id).filter(
-        ReconSession.id == recon_id
+    key = _start_session(client, test_project)["api_key"]
+    plan, _entry, _host = _executable_plan(db_session, test_project)
+    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    assert r.status_code == 201, r.text
+    exec_id = r.json()["session_id"]
+    session_id = db_session.query(ExecutionSession.agent_session_id).filter(
+        ExecutionSession.id == exec_id
     ).scalar()
 
     listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
@@ -393,8 +281,10 @@ def test_operator_can_end_a_session_started_from_scopes(
     assert r.status_code == 204, r.text
     db_session.expire_all()
     assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 401
-    run = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
-    assert run.status == "abandoned"
+    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == exec_id).first()
+    # v2.433.1 — abandoned, not paused: nothing can continue a run whose
+    # session has ended, and a paused one stayed "blocked" for good.
+    assert run.status == "abandoned" and run.completed_at is not None
     # Idempotent-safe: a second end reports that nothing changed.
     r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{session_id}/end")
     assert r.status_code == 409
@@ -427,7 +317,7 @@ def test_last_activity_is_not_rewritten_on_every_call(client, test_project, db_s
 
 
 # ---------------------------------------------------------------------------
-# H5 — the approval check reads the plan's status under the lock
+# H5 — the executable check reads the plan's status under the lock
 # ---------------------------------------------------------------------------
 
 def test_open_execution_phase_sees_a_status_change_that_landed_before_the_lock(
@@ -436,13 +326,13 @@ def test_open_execution_phase_sees_a_status_change_that_landed_before_the_lock(
     from fastapi import HTTPException
     from app.services.agent_session_service import open_execution_phase
 
-    plan, _entry, _host = _approved_plan(db_session, test_project)
+    plan, _entry, _host = _executable_plan(db_session, test_project)
     session = create_agent_session(
         db_session, project_id=test_project.id, agent_id=test_agent.id, started_by_id=None,
     )
     db_session.commit()
-    assert plan.status == "approved"  # loaded, and now stale on purpose:
-    # A reject lands underneath the loaded object.  A Core UPDATE against the
+    assert plan.status == "draft"  # loaded, and now stale on purpose:
+    # An archive lands underneath the loaded object.  A Core UPDATE against the
     # TABLE (an ORM-enabled ``update(TestPlan)`` would synchronise the identity
     # map and defeat the point) leaves the in-memory object stale, exactly
     # like another worker's committed transaction would; not committed here
@@ -450,14 +340,14 @@ def test_open_execution_phase_sees_a_status_change_that_landed_before_the_lock(
     # object we want to keep stale.
     tbl = TestPlan.__table__
     db_session.execute(
-        update(tbl).where(tbl.c.id == plan.id).values(status="rejected")
+        update(tbl).where(tbl.c.id == plan.id).values(status="archived")
     )
-    assert plan.status == "approved"  # still the pre-lock value in memory
+    assert plan.status == "draft"  # still the pre-lock value in memory
 
     with pytest.raises(HTTPException) as exc:
         open_execution_phase(db_session, session=session, plan=plan)
     assert exc.value.status_code == 409
-    assert "rejected" in str(exc.value.detail)
+    assert "archived" in str(exc.value.detail)
     assert db_session.query(ExecutionSession).filter(
         ExecutionSession.test_plan_id == plan.id
     ).count() == 0

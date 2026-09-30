@@ -16,7 +16,6 @@ export const BIN_CANDIDATES_MS = [1, 2, 3, 6, 12, 24].map((h) => h * HOUR_MS);
 /** Every kind, in the chart's row order. */
 export const ACTIVITY_KINDS: ActivityKind[] = [
   'scan',
-  'recon_session',
   'execution_session',
   'test_result',
   'sanity_check',
@@ -24,7 +23,6 @@ export const ACTIVITY_KINDS: ActivityKind[] = [
 
 export const KIND_PLURAL: Record<ActivityKind, [string, string]> = {
   scan: ['scan upload', 'scan uploads'],
-  recon_session: ['recon run', 'recon runs'],
   execution_session: ['execution run', 'execution runs'],
   test_result: ['command run', 'commands run'],
   sanity_check: ['target probe', 'target probes'],
@@ -57,7 +55,6 @@ export interface ActivityBin {
 
 const emptyCounts = (): Record<ActivityKind, number> => ({
   scan: 0,
-  recon_session: 0,
   execution_session: 0,
   test_result: 0,
   sanity_check: 0,

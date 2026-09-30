@@ -105,11 +105,17 @@ def test_assist_key_can_read_context_and_hosts(client, test_project, db_session)
     assert isinstance(hosts.json(), list)
 
 
-def test_one_session_key_reaches_plan_reads_and_needs_a_recon_run(client, test_project, test_plan):
-    """v2.337.0 — the assist/plan/recon key boundary is gone: an assist-started
-    session is one project session, so its key reads test plans too. Recon
-    reads need an open recon run (a phase state), which returns 409, not a
-    403-by-key-type."""
+def test_one_session_key_reaches_plan_and_scope_reads(client, db_session, test_project, test_plan):
+    """v2.337.0 — the assist/plan/scope key boundary is gone: an assist-started
+    session is one project session, so its key reads test plans and scopes
+    too."""
+    from app.db import models
+    scope = models.Scope(project_id=test_project.id, name="s", description="")
+    db_session.add(scope)
+    db_session.flush()
+    db_session.add(models.Subnet(scope_id=scope.id, cidr="10.0.0.0/24"))
+    db_session.commit()
+
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])
 
@@ -118,8 +124,8 @@ def test_one_session_key_reaches_plan_reads_and_needs_a_recon_run(client, test_p
     )
     assert plan.status_code == 200, plan.text
 
-    recon = client.get("/api/v1/agent/recon/context", headers=headers)
-    assert recon.status_code == 409, recon.text
+    subnets = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=headers)
+    assert subnets.status_code == 200, subnets.text
 
 
 def test_an_assist_key_writes_exactly_what_its_operator_may(
@@ -831,22 +837,22 @@ def test_testing_history_distinguishes_a_scanner_claim_from_a_confirmed_one(
     db_session.refresh(agent_row)
 
     plan = TestPlan(
-        project_id=test_project.id, title="Approved plan", status="approved",
+        project_id=test_project.id, title="Worked plan", status="in_progress",
         agent_id=agent_row.id, created_by_user_id=test_user.id,
     )
     hidden = TestPlan(
         # version 2: (project_id, version) is unique, and a second plan in the
         # same project is exactly the case that constraint governs.
-        project_id=test_project.id, title="Still a draft", status="draft",
+        project_id=test_project.id, title="Archived plan", status="archived",
         version=2, agent_id=agent_row.id, created_by_user_id=test_user.id,
     )
     # A third plan: (test_plan_id, host_id) is unique, so the rejected entry
     # cannot share a plan with the completed one — it needs its own, and it is
-    # approved, so exclusion has to come from the ENTRY status rather than the
-    # plan's.
+    # a live draft, so exclusion has to come from the ENTRY status rather than
+    # the plan's.
     rejected_plan = TestPlan(
-        project_id=test_project.id, title="Approved, entry rejected",
-        status="approved", version=3, agent_id=agent_row.id,
+        project_id=test_project.id, title="Draft, entry rejected",
+        status="draft", version=3, agent_id=agent_row.id,
         created_by_user_id=test_user.id,
     )
     db_session.add_all([plan, hidden, rejected_plan])
@@ -866,7 +872,7 @@ def test_testing_history_distinguishes_a_scanner_claim_from_a_confirmed_one(
     draft_entry = TestPlanEntry(
         test_plan_id=hidden.id, host_id=host.id, priority="low",
         test_phase="enumeration", status="proposed",
-        rationale="not approved yet", proposed_tests=[],
+        rationale="plan archived", proposed_tests=[],
     )
     db_session.add_all([entry, rejected, draft_entry])
     db_session.commit()
@@ -892,12 +898,12 @@ def test_testing_history_distinguishes_a_scanner_claim_from_a_confirmed_one(
         f"/api/v1/agent/assist/hosts/{host.id}/testing", headers=headers
     ).json()
 
-    # The approved, non-rejected entry only: a draft plan's entries never leak,
-    # and a rejected entry is an explicit "do not test this" that an agent must
-    # not re-litigate as outstanding work.
+    # The non-rejected entry of a live plan only: an archived plan's entries
+    # never leak, and a rejected entry is an explicit "do not test this" that
+    # an agent must not re-litigate as outstanding work.
     assert len(body) == 1
     e = body[0]
-    assert e["status"] == "completed" and e["plan_title"] == "Approved plan"
+    assert e["status"] == "completed" and e["plan_title"] == "Worked plan"
     assert e["proposed_tests"][0]["tool"] == "nmap"
     # The part that makes a claim citable: what was actually run, and what it showed.
     assert e["results"][0]["command_run"] == "nmap -p21 -sV 10.8.3.1"
@@ -1518,14 +1524,3 @@ def test_assist_names_filters_and_paging(client, test_project, db_session):
     assert client.get("/api/v1/agent/assist/names?kind=wildcard", headers=headers).json()["total"] == 1
     page = client.get("/api/v1/agent/assist/names?limit=2&offset=2", headers=headers).json()
     assert page["returned"] == 2 and page["offset"] == 2 and page["has_more"] is True
-
-
-def test_assist_names_readable_by_any_session_key(client, test_project, test_plan):
-    """v2.337.0 — a plan-generation start now mints a unified project session,
-    so its key reads /agent/assist/names like any other read."""
-    resp = client.post(f"/api/v1/projects/{test_project.id}/test-plans/generate", json={"title": "unified"})
-    assert resp.status_code == 201, resp.text
-    headers = _auth_headers(resp.json()["api_key"])
-    ok = client.get("/api/v1/agent/assist/names", headers=headers)
-    assert ok.status_code == 200, ok.text
-

@@ -316,16 +316,13 @@ def test_an_operator_upload_can_be_named_an_agents_batch_cannot(client, db_sessi
     assert client.patch(f"{url}/{created['id']}", json={"label": "   "}).status_code == 422
     assert client.patch(f"{url}/999999", json={"label": "x"}).status_code == 404
 
-    # An agent's batch is keyed by (recon session, label): a rename would send
+    # An agent's batch is keyed by (agent session, label): a rename would send
     # the sweep's next chunk into a new batch.
-    scope = models.Scope(project_id=test_project.id, name="s", description="")
-    db_session.add(scope)
-    db_session.flush()
-    from app.db.models_agent import ReconSession
-    session = ReconSession(project_id=test_project.id, scope_id=scope.id, status="active")
+    from app.db.models_agent import AgentSession
+    session = AgentSession(project_id=test_project.id, workflow="project", status="active")
     db_session.add(session)
     db_session.flush()
-    agent_batch = models.ScanBatch(project_id=test_project.id, label="nmap-tcp-top1000", recon_session_id=session.id)
+    agent_batch = models.ScanBatch(project_id=test_project.id, label="nmap-tcp-top1000", agent_session_id=session.id)
     db_session.add(agent_batch)
     db_session.commit()
     assert client.patch(f"{url}/{agent_batch.id}", json={"label": "renamed"}).status_code == 409

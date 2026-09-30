@@ -17,14 +17,13 @@ import { api } from './client';
  *  signature against this host at this time ours?". */
 export type ActivityKind =
   | 'scan'
-  | 'recon_session'
   | 'execution_session'
   | 'test_result'
   | 'sanity_check';
 
 export interface ActivityItem {
   kind: ActivityKind;
-  /** scan_id for scans, session_id for recon/execution sessions. */
+  /** scan_id for scans, session_id for execution sessions. */
   ref_id: number;
   project_id: number;
   project_name: string;
@@ -36,7 +35,7 @@ export interface ActivityItem {
   end_time: string | null;
   /**
    * v2.60.0 — `Scan.created_at` for scans only (the row's ingestion
-   * time).  Always populated for scans; null for recon / execution
+   * time).  Always populated for scans; null for execution
    * sessions (which don't carry a separate ingestion timestamp —
    * `start_time` already is the row-creation moment for those).
    */
@@ -55,9 +54,9 @@ export interface ActivityItem {
    * single-instant event at start_time.
    */
   has_end_time: boolean;
-  /** Host count for scan + recon_session; null for execution_session. */
+  /** Host count for scans; null for execution_session. */
   host_count: number | null;
-  /** Status string for recon/execution sessions; null for scans. */
+  /** Status string for execution sessions; null for scans. */
   status: string | null;
   /** v5.213.0 — the IP this row acted on when it is one (test_result,
    *  sanity_check); null for scans and runs, which cover many. */

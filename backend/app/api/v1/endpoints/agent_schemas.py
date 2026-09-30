@@ -18,7 +18,7 @@ from app.db.models_agent import (
     TestExecutionStatus,
     TestPhase,
 )
-from app.schemas.schemas import ProposedTestItem
+from app.schemas.schemas import ProposedTestItem, StoredProposedTestItem
 
 # Use ORM enums directly — Pydantic accepts enum values in JSON and validates membership
 PriorityValue = TestEntryPriority
@@ -359,7 +359,6 @@ class AgentIdentity(BaseModel):
     # field, so a session with both open handed the recon id to
     # ``execution_complete``.)  ``open_phases`` carries the full lists.
     plan_id: Optional[int] = None
-    recon_session_id: Optional[int] = None
     execution_session_id: Optional[int] = None
     # Keys: recon_session_id, active_recon_session_ids, plan_id,
     # execution_session_id, active_execution_session_ids, drafted_plan_ids.
@@ -400,7 +399,7 @@ class AgentToolSuggestionRequest(BaseModel):
         ...,
         min_length=1,
         max_length=2000,
-        description="What you needed it for and why the approved set doesn't cover it.",
+        description="What you used or needed it for, and why it belongs in the catalogue.",
     )
     category: Optional[str] = Field(None, max_length=100)
     description: Optional[str] = Field(None, max_length=2000)
@@ -409,10 +408,8 @@ class AgentToolSuggestionRequest(BaseModel):
 class AgentToolSuggestionResponse(BaseModel):
     name: str
     status: str
-    # True when the "suggestion" turns out to name a tool the agent already has.
-    # Saying so beats returning a bare 201 the agent reads as "wait for a human"
-    # while the tool sits in its own approved list.
-    already_approved: bool = False
+    # True when the "suggestion" names a tool already in the catalogue.
+    already_catalogued: bool = False
     message: str
 
 
@@ -541,7 +538,7 @@ class EntryResponse(BaseModel):
     target_fqdn: Optional[str] = None
     priority: str
     test_phase: str
-    proposed_tests: List[ProposedTestItem]
+    proposed_tests: List[StoredProposedTestItem]
     rationale: str
     status: str
     findings: Optional[str] = None
@@ -649,8 +646,8 @@ class CoverageInfo(BaseModel):
     note: Optional[str] = None
 
 
-class PreSubmitReport(BaseModel):
-    """Dry-run validation report returned before actual submission."""
+class PlanValidationReport(BaseModel):
+    """A plan's gaps and coverage — advice, not a gate."""
     plan_id: int
     ready: bool
     total_entries: int
@@ -683,7 +680,7 @@ class ExecutionHostContext(BaseModel):
 
 class ExecutionStartRequest(BaseModel):
     """Body for POST /agent/execution-sessions/start — open an execution run."""
-    plan_id: int = Field(..., gt=0, description="The APPROVED plan to execute.")
+    plan_id: int = Field(..., gt=0, description="The plan to execute (a draft or one in progress).")
 
 
 class ExecutionContextResponse(BaseModel):
@@ -732,14 +729,6 @@ class TestResultRequest(BaseModel):
     findings_summary: Optional[str] = None
     severity: Optional[str] = None
     is_finding: bool = False
-    # v2.91.0 (code review #2) — required when there's no passing
-    # HostSanityCheck on file for this entry.  Mirrors the
-    # CompleteEntryRequest.override_reason shape (≤500 chars, free
-    # text) so the audit invariant is symmetric across "record this
-    # result" and "complete this entry."  Operators get to preserve
-    # the result data (Option B over reject-outright) while the
-    # reason carries the audit context for who bypassed sanity.
-    sanity_override_reason: Optional[str] = Field(None, max_length=500)
     # v2.323.0 — the address the command actually hit, as you observed it
     # (e.g. from the tool's output or a resolver check at run time).  Execution
     # evidence references the binding; the finding anchors to the entry's
@@ -762,17 +751,10 @@ class CompleteEntryRequest(BaseModel):
 
     findings_summary: Optional[str] = None
     overall_status: TestEntryStatus = TestEntryStatus.COMPLETED
-    # v2.22.0: an entry can only complete with a *passing* sanity check
-    # on file, OR an explicit override_reason explaining why one wasn't
-    # possible (target down, scope change mid-run, etc.).  Audit-visible
-    # so a human reviewer can flag overrides.  Free-form text; ≤500 chars
-    # to keep audit rows scannable.
-    override_reason: Optional[str] = Field(None, max_length=500)
     # v2.25.0 — completion also refuses when the entry has zero recorded
     # TestExecutionResult rows AND zero proposed_tests, OR when the
     # caller passes an explicit no_tests_run_reason to acknowledge that
-    # they're closing without evidence.  The audit-trail invariant is
-    # symmetric with override_reason: every "no result row" completion
+    # they're closing without evidence: every "no result row" completion
     # carries a human-readable justification.
     no_tests_run_reason: Optional[str] = Field(None, max_length=500)
 
@@ -1052,83 +1034,11 @@ class EnvironmentProbeResponse(BaseModel):
 # Schemas — agentic reconnaissance
 # ---------------------------------------------------------------------------
 
-class KnownHostsProbeHelper(BaseModel):
-    """Ready-to-use command + target list for deepening on already-known hosts.
-
-    Populated in ``/agent/recon/context`` whenever the scope already has
-    hosts with open ports.  The ``recommended_sequence`` always leads
-    with *comprehensive* discovery (v2.13.2 default flip — see feedback
-    #5); this helper exists so an agent that the user explicitly asks
-    to narrow to the already-known set has a pre-built command instead
-    of having to query ``/agent/hosts`` and build ``live-hosts.txt``
-    itself.
-    """
-    live_hosts: List[str] = Field(default_factory=list)  # IP literals
-    live_hosts_file_content: str = ""  # newline-joined, ready to redirect to a file
-    command: str = ""
-    note: str = ""
-
-
-class ReconStartRequest(BaseModel):
-    """Body for POST /agent/recon/start — open a recon run on a scope."""
-    scope_id: int = Field(..., gt=0, description="The scope to reconnoitre (see GET /agent/scopes).")
-    notes: Optional[str] = Field(None, max_length=2000)
-
-
-class ReconContextResponse(BaseModel):
-    recon_session_id: int
-    scope_id: int
-    scope_name: str
-    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
-    # v2.337.0 — present only on POST /agent/recon/start: the phase read-back
-    # the agent must state (the CIDRs, in-scope domains, working directory)
-    # before it scans. Null on GET /agent/recon/context.
-    read_back: Optional[str] = None
-    # v2.45.4 — `scope_cidrs` is now a BOUNDED sample, not necessarily
-    # the full list.  A scope with thousands of CIDRs would otherwise
-    # bloat every /recon/context response (and the agent's context
-    # window).  When `subnets_truncated` is true, `scope_cidrs` holds
-    # only the first `len(scope_cidrs)` entries and the authoritative
-    # complete list must be paged from GET /agent/recon/subnets.
-    # `scope_cidrs_total` is always the true count.
-    scope_cidrs: List[str]
-    scope_cidrs_total: int = 0
-    subnets_truncated: bool = False
-    # v2.328.0 — name scope.  Each entry is {domain, include_subdomains};
-    # an include_subdomains entry covers every descendant, an exact entry
-    # only that one name.  Bounded like scope_cidrs: when domains_truncated
-    # is true, page the full list from GET /agent/recon/domains.  A name in
-    # scope does NOT put the address it resolves to in subnet scope.
-    scope_domains: List[Dict[str, Any]] = Field(default_factory=list)
-    scope_domains_total: int = 0
-    domains_truncated: bool = False
-    known_host_summary: Dict[str, Any]
-    tool_catalog: List[Dict[str, Any]]
-    session_status: str
-    started_at: Optional[datetime] = None
-    # v2.13.0 — scale awareness.  Agents previously picked the first
-    # discovery entry from the catalog (nmap -sn) without doing address
-    # math against the CIDR list, so a /16 scope could burn hours on a
-    # sequential ICMP sweep.  These fields do the math server-side and
-    # hand the agent a pre-computed recommendation.
-    scope_size: Optional[Dict[str, Any]] = None
-    recommended_sequence: Optional[List[Dict[str, Any]]] = None
-    # v2.13.2 — helper for the "user narrows to known hosts" path.
-    # None when the scope has no hosts with open ports yet.
-    known_hosts_probe: Optional[KnownHostsProbeHelper] = None
-    # v2.23.0 — echo back the recon environment probe so the agent's
-    # next scan-flavour choice reflects this session's operator host.
-    # None means no probe has been recorded yet; the agent should
-    # POST /agent/recon/sessions/{id}/environment before scanning.
-    environment: Optional["EnvironmentSummary"] = None
-
-
 class ReconUploadResponse(BaseModel):
     job_id: int
     filename: str
     status: str
     message: str
-    recon_session_id: int
     # v2.335.0 — the batch this file joined (the upload's `batch` label).
     batch_id: Optional[int] = None
     batch: Optional[str] = None
@@ -1142,7 +1052,6 @@ class ReconJobStatus(BaseModel):
     scan_id: Optional[int] = None
     tool_name: Optional[str] = None
     parse_error_id: Optional[int] = None
-    recon_session_id: Optional[int] = None
     last_error: Optional[str] = None
     # Derived timing so the agent can see where an upload spent its time
     # without polling repeatedly.  Both are None until the relevant
@@ -1153,126 +1062,5 @@ class ReconJobStatus(BaseModel):
     parse_s: Optional[float] = None
 
 
-class ReconPortBrief(BaseModel):
-    """One open port on a host, in the per-session breakdown.
-
-    v2.13.2 — added after feedback #5 flagged that the per-host summary
-    only carried service names, not port numbers, so agents had to hit
-    ``/agent/hosts`` or parse raw XML to build a web-target list.
-    """
-    port: int
-    protocol: str = "tcp"
-    state: str = "open"
-    service: Optional[str] = None
-    product: Optional[str] = None
-    version: Optional[str] = None
-    #: v2.314.0 — nmap's `tunnel` attribute, "ssl" when the service runs inside
-    #: TLS. `service` alone cannot say so: nmap's XML reports `ssl/http` as
-    #: name="http" tunnel="ssl", so an agent reading only `service` would call
-    #: an HTTPS service on a non-standard port plain HTTP, as the derived web
-    #: targets did.
-    tunnel: Optional[str] = None
-
-
-class ReconHostBrief(BaseModel):
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    open_port_count: int = 0
-    services: List[str] = Field(default_factory=list)
-    # v2.13.2 — per-port detail so agents don't have to cross-reference
-    # /agent/hosts or parse uploaded XML to build follow-up target lists.
-    open_ports: List[ReconPortBrief] = Field(default_factory=list)
-
-
-class WebTarget(BaseModel):
-    """Pre-computed web-fingerprint target, derived from open HTTP/HTTPS ports.
-
-    v2.13.2 — feedback #5: agents were manually building web-target
-    lists by walking ``hosts[].services`` looking for "http"/"https".
-    This helper encodes the port→scheme mapping server-side and hands
-    the agent a ready-to-use URL list for httpx / eyewitness.
-    """
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    port: int
-    protocol: str  # "http" | "https"
-    url: str
-
-
-class ReconDownload(BaseModel):
-    """One streamable artifact an agent should fetch to disk, not to context."""
-    url: str = Field(description="Path to GET, relative to the API root.")
-    media_type: str
-    description: str
-    curl: str = Field(
-        description="Ready-to-run command that writes the artifact to a file.",
-    )
-
-
-class ReconDownloads(BaseModel):
-    """Bulk artifacts for this recon session.
-
-    Every one of these is unbounded and streamed.  They exist so the agent
-    never has to choose between "complete data" and "a usable context
-    window" — download, then parse locally with jq/grep/awk.
-    """
-    hosts_ndjson: ReconDownload
-    live_hosts: ReconDownload
-    web_targets: ReconDownload
-
-
-class ReconSummaryResponse(BaseModel):
-    recon_session_id: int
-    scope_id: int
-    status: str
-    uploads_submitted: int
-    scans_ingested: int
-    hosts_discovered: int
-    ports_discovered: int
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    # v2.343.0 — set by /recon/complete only (the polled /summary stays
-    # quiet): whether this session has filed any feedback yet, and what to do
-    # if not.  Advisory; see ExecutionSessionCompleteResponse.
-    feedback_recorded: Optional[bool] = None
-    feedback_hint: Optional[str] = None
-    # Per-host breakdown of what's been found in this recon session.
-    # v2.11.1 — the prompt had always promised this but the response
-    # was only returning totals.  Populated from the same scan-history
-    # joins that produce the aggregate counts, so it's consistent.
-    # v2.241.0 — CAPPED at _SUMMARY_HOST_CAP.  See `downloads` below and
-    # `hosts_truncated` for the full set.
-    hosts: List[ReconHostBrief] = Field(default_factory=list)
-    # Total in-scope hosts this session discovered, independent of the cap
-    # applied to `hosts` — this is the number to report as progress.
-    hosts_total: int = 0
-    hosts_truncated: bool = False
-    # v2.13.2 — pre-computed web-fingerprint target list derived from
-    # hosts[].open_ports.  Saves agents a round trip.  v2.241.0 — derived
-    # from the capped `hosts` above, so it is a sample too whenever
-    # `hosts_truncated` is set; the authoritative list is the download.
-    web_targets: List[WebTarget] = Field(default_factory=list)
-    web_targets_truncated: bool = False
-    # Newline-joined IP list of every host discovered SO FAR in this
-    # session, ready to redirect to a file and pipe into the next tool
-    # (e.g. `nmap -iL session-hosts.txt`).  Mirrors
-    # KnownHostsProbeHelper.live_hosts_file_content, but for this session's
-    # own discoveries rather than prior-recon known hosts — so an agent
-    # chaining discovery → port scan → web doesn't have to rebuild the
-    # target file from `hosts[]` itself.  Empty string until the first
-    # host lands.
-    live_hosts_file_content: str = ""
-    # v2.241.0 — set when the session grew past _INLINE_FILE_HOST_CAP and
-    # `live_hosts_file_content` was therefore left EMPTY rather than
-    # shortened.  Truncating it silently would be the dangerous option: an
-    # agent would scan a subset with `-iL` and report full coverage.  An
-    # empty file makes the next tool fail loudly instead, and
-    # `downloads.live_hosts` has the complete list.
-    live_hosts_file_truncated: bool = False
-    downloads: Optional[ReconDownloads] = None
-
-
-class ReconCompleteRequest(BaseModel):
-    notes: Optional[str] = None
+# The scope target shapes (host / port briefs, web targets) moved to
+# ``app.services.scope_targets_service`` in v2.433.1: their only user.

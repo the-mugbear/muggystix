@@ -7,7 +7,6 @@ import {
   Loader2,
   Pencil,
   Plus,
-  Rocket,
   Save,
   Search,
   Tags as TagsIcon,
@@ -32,9 +31,9 @@ import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import ScopeExport from '../components/ScopeExport';
 import OutOfScopeExport from '../components/OutOfScopeExport';
-import StartReconDialog from '../components/StartReconDialog';
+import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
+import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
-import { useReconPlan } from '../hooks/useReconPlan';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -132,7 +131,6 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
 const Scopes: React.FC = () => {
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
-  const recon = useReconPlan();
 
   const [scope, setScope] = useState<Scope | null>(null);
   const [loading, setLoading] = useState(true);
@@ -555,16 +553,16 @@ const Scopes: React.FC = () => {
             <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
           </Button>
           {scope != null && (
-            <Button
-              size="sm"
+            // 5.313.0 — one way to start an agent: the operator's session,
+            // handed the task. The per-scope key is gone; 5.313.1 — so is the
+            // recon run: the agent reads the scope and uploads to its session.
+            <AgentTaskButton
+              variant="default"
+              label="Scan with your agent"
+              instruction={agentInstruction.scanScope(scope.id)}
               disabled={scope.subnets.length === 0}
-              onClick={() => recon.openFor(scope.id, 'Project scope')}
-              title={scope.subnets.length === 0 ? 'Add a subnet first — recon runs against declared subnets.' : 'Start an agent recon session against this scope'}
-            >
-              {/* UX review 2026-09-24 — "Start Agentic Recon" beside
-                  Operations' "Start Agent Session": one verb, one noun. */}
-              <Rocket className="size-4" aria-hidden /> Start recon session
-            </Button>
+              title={scope.subnets.length === 0 ? 'Add a subnet first — the agent scans the declared subnets.' : undefined}
+            />
           )}
         </div>
       </div>
@@ -640,7 +638,7 @@ const Scopes: React.FC = () => {
         ) : (
           <PostureSection
             title={<span>Subnets and addresses</span>}
-            description="Label entries (e.g. “UK DMZ”) and assign sites so the recon prompt and Posture can reason about zones."
+            description="Label entries (e.g. “UK DMZ”) and assign sites so your agent and Posture can reason about zones."
             actions={<>
               <span className="tabular-nums text-muted-foreground">
                 {subnetCount.toLocaleString()} entr{subnetCount === 1 ? 'y' : 'ies'}
@@ -1222,10 +1220,6 @@ const Scopes: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-
-      {/* Extracted dialog markup — same UI is now reused by
-          ReconRunsList's "Start Recon" affordance. */}
-      <StartReconDialog recon={recon} />
 
       <SubnetLabelManagerDialog
         open={labelManagerOpen}

@@ -5,9 +5,8 @@ import { cn } from '../utils/cn';
 
 /**
  * NextStepBanner — terminal-state guidance for workflows that "succeed"
- * silently.  The recurring antipattern surfaced by the UX audit: recon
- * completes → page goes quiet; plan submitted → no hint of what's next;
- * password changed → user stranded.
+ * silently.  The recurring antipattern surfaced by the UX audit: a run
+ * completes → page goes quiet; password changed → user stranded.
  *
  * Use this at the top of any page that can land on a terminal state
  * the user needs to act on.  Pair `title` with a short body that names
@@ -20,7 +19,7 @@ import { cn } from '../utils/cn';
  *  - `warning` — terminal state but with caveats the user should know
  *
  * `dismissible` defaults to true.  Pass `false` for handoffs the user
- * shouldn't be able to bury (e.g. a stuck recon session needing
+ * shouldn't be able to bury (e.g. a stuck execution session needing
  * Abandon).
  */
 type Tone = 'success' | 'info' | 'warning';
@@ -38,6 +37,8 @@ export interface NextStepBannerProps {
   primaryCta?: { label: string; onClick?: () => void; href?: string };
   /** Secondary action (less emphasis). */
   secondaryCta?: { label: string; onClick?: () => void; href?: string };
+  /** A ready-made control shown before the CTAs (e.g. an AgentTaskButton). */
+  actions?: React.ReactNode;
   tone?: Tone;
   /** Optional icon to lead with. */
   icon?: React.ReactNode;
@@ -52,6 +53,7 @@ export const NextStepBanner: React.FC<NextStepBannerProps> = ({
   body,
   primaryCta,
   secondaryCta,
+  actions,
   tone = 'success',
   icon,
   dismissible = true,
@@ -93,8 +95,9 @@ export const NextStepBanner: React.FC<NextStepBannerProps> = ({
       <div className="min-w-0 flex-1">
         <p className="text-subheading font-semibold leading-tight">{title}</p>
         {body && <div className="mt-xxs text-metadata text-foreground/85">{body}</div>}
-        {(primaryCta || secondaryCta) && (
+        {(actions || primaryCta || secondaryCta) && (
           <div className="mt-sm flex flex-wrap gap-xs">
+            {actions}
             {primaryCta && renderCta(primaryCta, 'default')}
             {secondaryCta && renderCta(secondaryCta, 'outline')}
           </div>

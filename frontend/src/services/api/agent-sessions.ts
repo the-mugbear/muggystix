@@ -12,7 +12,8 @@ import type { McpClientSetup } from './assist';
 // v5.185.0 — assist joined the timeline. The backend model always described
 // four workflows; the service and this type both enumerated three, so assist
 // sessions were invisible on Agent Runs.
-export type AgentSessionKind = 'project' | 'recon' | 'plan_generation' | 'execution' | 'assist';
+// 5.313.1 — recon runs are gone, and their legacy rows with them.
+export type AgentSessionKind = 'project' | 'plan_generation' | 'execution' | 'assist';
 
 export interface AgentSessionRow {
   kind: AgentSessionKind;
@@ -30,7 +31,7 @@ export interface AgentSessionRow {
   prompt_version?: string | null;
   scope_id?: number | null;
   /** v5.187.0 — what this session declared it is working on: scope name +
-   *  CIDRs for recon, the plan title for plan work. Null for assist, which is
+   *  CIDRs for scope work, the plan title for plan work. Null for assist, which is
    *  project-wide by design. An id alone can't tell a colleague that a range is
    *  already being scanned, which is the reason a session declares a target. */
   target_label?: string | null;
@@ -50,13 +51,44 @@ export interface AgentSessionRow {
   feedback_count?: number;
   /** v5.288.0 — the operator's display name; shown before the username. */
   user_full_name?: string | null;
-  /** v5.288.0 — run rows (recon / execution / assist) only: the agent session
+  /** v5.288.0 — run rows (execution / assist) only: the agent session
    *  the run belongs to, and whether it can still act. `false` on an in-progress
    *  run means the run outlived its session — nothing will move it until
-   *  someone resumes or closes it. Null/absent when not computed. */
+   *  someone abandons it. Null/absent when not computed. */
   agent_session_id?: number | null;
   session_live?: boolean | null;
+  /** v5.312.0 — project sessions only: the work the session opened (its runs
+   *  are left off the timeline — this row represents them), its detail row's
+   *  id (notes and the API-call feed are keyed by it — NOT the session id),
+   *  its last authenticated call, and the authority it acts with. */
+  phases?: SessionPhase[];
+  assist_session_id?: number | null;
+  last_activity_at?: string | null;
+  operator_role?: string | null;
+  /** v5.312.0 — what the CALLER may do to this active session: owner or
+   *  project admin may end it, only the owner may resume it. */
+  can_end?: boolean;
+  can_resume?: boolean;
 }
+
+/** One piece of work a project session opened. */
+export interface SessionPhase {
+  kind: 'plan' | 'execution';
+  id: number;
+  status: string;
+  /** The plan's title. */
+  label?: string | null;
+  scope_id?: number | null;
+  test_plan_id?: number | null;
+  started_at?: string | null;
+}
+
+/** v5.312.0 — one project session as the list shows it; 404 for a legacy
+ *  per-workflow row (those have their own pages). */
+export const getAgentSession = async (sessionId: number): Promise<AgentSessionRow> => {
+  const response = await api.get<AgentSessionRow>(`${p()}/agent-sessions/${sessionId}`);
+  return response.data;
+};
 
 /** v5.214.0 — what a resume hands back: the same shape the start dialog
  *  renders (replacement key, prompt with the resumed notice, MCP setup), on
@@ -73,7 +105,6 @@ export interface ResumeAgentSessionResponse {
   key_ttl_hours: number;
   key_expires_at: string;
   renewable_until?: string | null;
-  active_recon_session_ids: number[];
   active_execution_session_ids: number[];
 }
 
@@ -131,7 +162,6 @@ export interface ModelToolSummaryRow {
   generated_by_model: string | null;
   generated_by_tool: string | null;
   project: number;
-  recon: number;
   plan_generation: number;
   assist: number;
   execution: number;

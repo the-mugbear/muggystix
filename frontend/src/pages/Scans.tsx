@@ -1601,8 +1601,8 @@ export default function Scans() {
 
       {/* Scan Timeline moved to /tool-activity in v2.59.0 — that page
           plots scans by their actual scan_start (SOC-correlation
-          intent) across ALL projects, and adds recon + execution
-          sessions to the same axis.  Per-project scan inventory still
+          intent) across ALL projects, and adds execution sessions
+          to the same axis.  Per-project scan inventory still
           lives here in tabular form below. */}
 
       {historyError && (

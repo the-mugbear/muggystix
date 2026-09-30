@@ -244,7 +244,7 @@ const ProjectSettings: React.FC = () => {
         <>
           <p>
             This deletes the project and <strong>all</strong> data in it: scans, hosts, scopes, findings, reports,
-            test plans, execution sessions and recon runs. This cannot be undone.
+            test plans, agent sessions and execution runs. This cannot be undone.
           </p>
           <p className="mt-xs">Type the project name exactly to confirm.</p>
         </>

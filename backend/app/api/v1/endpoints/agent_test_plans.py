@@ -2,7 +2,7 @@
 Agent API — test plan endpoints (agent-facing).
 
 Create / list / read / update test plans and their entries, plus the
-planning context and pre-submit validation.  Split out of agent_api.py.
+planning context and plan validation.  Split out of agent_api.py.
 """
 
 from typing import Any, Dict, List, Literal, Optional
@@ -22,7 +22,7 @@ from app.api.v1.endpoints.agent_schemas import (
     VulnCounts, VulnBrief, PortTuple, CandidateHost, PlanningContext,
     PlanUpdate, EntryBatch, EntryCreate, AgentEntryUpdate, PlanCreate,
     PlanResponse, EntryResponse, PlanDetailResponse,
-    EntryBatchResponse, CoverageInfo, PreSubmitReport,
+    EntryBatchResponse, CoverageInfo, PlanValidationReport,
 )
 from app.api.v1.endpoints.agent_common import (
     _apply_agent_host_filters, _batch_host_enrichment, _plan_response,
@@ -262,7 +262,8 @@ def create_test_plan(
 
     Replaces the operator-side "Generate with AI" mint: the session already
     carries the operator's authority, so drafting a plan is a phase of it.
-    The agent then fills it in via PATCH / entries and submits for approval.
+    The agent then fills it in via PATCH / entries and works it with an
+    execution run when ready — nothing waits on approval (v2.433.0).
     """
     session = load_agent_session(db, request)
     source_host_ids = _resolve_plan_selection(db, session, body)
@@ -680,10 +681,6 @@ def update_entry(
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
 
-    # Agents cannot approve entries — only set proposed/in_progress/completed/rejected
-    if body.status and body.status == "approved":
-        raise HTTPException(status_code=403, detail="Agents cannot approve entries")
-
     updates = body.model_dump(exclude_none=True, exclude={"expected_updated_at"})
     if not updates:
         return _entry_response(entry)
@@ -701,8 +698,8 @@ def update_entry(
 
 @router.get(
     "/test-plans/{plan_id}/validate",
-    response_model=PreSubmitReport,
-    summary="Dry-run validation before submit",
+    response_model=PlanValidationReport,
+    summary="Check a plan for gaps",
 )
 def validate_test_plan(
     plan_id: int = Path(..., gt=0),
@@ -711,8 +708,8 @@ def validate_test_plan(
 ):
     """Return summary stats and warnings without changing state.
 
-    Call this before ``/submit`` to catch common issues: empty plans,
-    missing description, low-quality entries, etc.
+    Advice, not a gate: empty plans, a missing description, low-quality
+    entries, and the plan's candidate-host coverage.
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
@@ -723,11 +720,11 @@ def validate_test_plan(
     warnings: List[str] = []
 
     if progress["total_entries"] == 0:
-        warnings.append("Plan has no entries — add entries before submitting.")
+        warnings.append("Plan has no entries.")
     if not plan.description:
         warnings.append(
             "Plan has no description. PATCH the plan with a description "
-            "summarizing scope and prioritization before submitting."
+            "summarizing scope and prioritization — it is what a reader sees first."
         )
     # Check for entries with very short rationale
     short_rationales = (
@@ -760,7 +757,7 @@ def validate_test_plan(
     if remaining_host_rows:
         remaining_ids = [h.id for h in remaining_host_rows]
         # We need port numbers for the high-value-port check, so pass
-        # include_ports=True.  This is the pre-submit path, not a
+        # include_ports=True.  This is the validation path, not a
         # hot loop — the extra query is acceptable.
         r_port_counts, r_vuln_map, r_svc_map, r_port_details, _ = _batch_host_enrichment(
             db, remaining_ids, include_ports=True,
@@ -804,7 +801,7 @@ def validate_test_plan(
             f"crit/high vulns, no qualifying medium) — correctly skipped."
         )
 
-    return PreSubmitReport(
+    return PlanValidationReport(
         plan_id=plan.id,
         # Coverage is informational — it doesn't block readiness.
         # Only real warnings (empty plan, missing description, short

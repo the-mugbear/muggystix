@@ -153,14 +153,11 @@ export const ScanBatchRow: React.FC<ScanBatchRowProps> = ({
 
   const name = batchDisplayName(b.label);
   const uploader = b.created_by_name || b.created_by;
-  const source =
-    b.recon_session_id != null
-      ? `Recon session #${b.recon_session_id}`
-      : uploader
-        ? `Uploaded by ${uploader}`
-        : 'Upload';
+  const source = uploader ? `Uploaded by ${uploader}` : null;
   // A generated title already says "Upload batch"; a name does not.
-  const subtitle = name.generated ? source : `Upload batch · ${source}`;
+  const subtitle = name.generated
+    ? source ?? 'Upload'
+    : source ? `Upload batch · ${source}` : 'Upload batch';
   const total = b.total_files ?? b.files;
   const processing = b.processing_files ?? b.pending_files;
   // Staged = uploaded, waiting for the format review; neither processing nor

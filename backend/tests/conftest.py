@@ -300,7 +300,7 @@ def test_plan(db_session, test_project, test_agent):
         version=1,
         title="contract test plan",
         description="fixture",
-        status=TestPlanStatus.APPROVED.value,
+        status=TestPlanStatus.DRAFT.value,
     )
     db_session.add(plan)
     db_session.commit()

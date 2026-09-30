@@ -3,7 +3,7 @@
  *
  * Operations and Agent Runs each had their own: "PLAN GEN" as an outline chip
  * on one, a filled blue "PLAN-GEN" on the other, and different colours for
- * recon and assist.
+ * assist.
  */
 import React from 'react';
 
@@ -14,7 +14,6 @@ type Variant = React.ComponentProps<typeof Badge>['variant'];
 
 const KINDS: Record<string, { label: string; variant: Variant }> = {
   project: { label: 'Session', variant: 'default' },
-  recon: { label: 'Recon', variant: 'secondary' },
   plan_generation: { label: 'Plan generation', variant: 'info' },
   execution: { label: 'Execution', variant: 'success' },
   assist: { label: 'Assist', variant: 'warning' },

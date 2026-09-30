@@ -27,7 +27,23 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.db.models_agent import AssistSession, AssistSessionStatus
-from app.db.models_auth import APIKey
+from app.db.models_auth import APIKey, UserRole
+from app.db.models_project import ProjectRole
+
+
+def operator_role(global_role, membership_role: Optional[str]) -> Optional[str]:
+    """The authority a session's operator carries in this project (v2.402.0).
+
+    Mirrors ``enforce_agent_operator_access``: a global admin passes whatever
+    their membership says, so unless that membership already reads admin the
+    honest label is ``global_admin``; otherwise the membership role; otherwise
+    None (not a member — the key's next call is refused).  One definition for
+    the assist review rows and the Agent Sessions rows (v2.432.0).
+    """
+    is_global_admin = global_role in (UserRole.ADMIN, UserRole.ADMIN.value)
+    if is_global_admin and membership_role != ProjectRole.ADMIN.value:
+        return "global_admin"
+    return membership_role or None
 
 
 def effective_status(

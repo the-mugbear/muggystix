@@ -1,8 +1,9 @@
 """
 Agent API — test execution endpoints.
 
-Agent records results as it works through an approved plan with
-per-test human approval.  Split out of agent_api.py.
+An agent records what it ran against a plan's hosts and what it found.
+A plan is the record of the agent's own intent — nothing waits on a human
+approving it (v2.433.0); the operator drives the agent.
 """
 
 import logging
@@ -35,11 +36,11 @@ from app.services.agent_session_service import (
 from app.api.v1.endpoints.agent_schemas import (
     ExecutionHostContext, ExecutionContextResponse,
     SanityCheckRequest, TestResultRequest, CompleteEntryRequest,
-    ExecutionProgressResponse, PlanResponse, ExecutionStartRequest,
+    ExecutionProgressResponse, ExecutionStartRequest,
     ExecutionSessionCompleteRequest, ExecutionSessionCompleteResponse,
     EnvironmentSummary,
 )
-from app.api.v1.endpoints.agent_common import _plan_response, load_agent_session
+from app.api.v1.endpoints.agent_common import load_agent_session
 
 logger = logging.getLogger(__name__)
 
@@ -97,10 +98,9 @@ def _truncate_to_byte_cap(text: str, cap: int) -> str:
 # Plan statuses an agent may still write execution data to.  Mirrors the
 # read-side guard in get_execution_context.  Without this, the write
 # endpoints (sanity check / result / entry completion) would keep
-# accepting data onto a plan the operator archived or rejected mid-run,
-# as long as a stale ACTIVE ExecutionSession and an in-TTL per-plan key
-# still existed — the read path blocked but the writes didn't.
-_EXECUTABLE_PLAN_STATUSES = ("approved", "in_progress")
+# accepting data onto a plan the operator archived or completed mid-run,
+# as long as a stale ACTIVE ExecutionSession still existed.
+_EXECUTABLE_PLAN_STATUSES = ("draft", "in_progress")
 
 
 def _own_active_run(db: Session, request: Request, plan) -> ExecutionSession:
@@ -124,64 +124,22 @@ def _require_executable_plan(plan) -> None:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"Plan is in {plan.status} status — execution requires it to be "
-                "approved or in_progress."
+                f"Plan is {plan.status} — only a draft or in-progress plan "
+                "takes execution results."
             ),
         )
 
 
-@router.post(
-    "/test-plans/{plan_id}/submit",
-    response_model=PlanResponse,
-    summary="Submit a draft plan for approval",
-)
-def submit_test_plan(
-    plan_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, agent.project_id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-
-    if not plan.description:
-        raise HTTPException(
-            status_code=400,
-            detail="Plan description is required before submission. "
-            "PATCH /agent/test-plans/{plan_id} with a description summarizing "
-            "scope, prioritization, and methodology.",
-        )
-
-    try:
-        plan = svc.submit_plan(plan, "agent", agent.id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    # Nudge the human approvers — submission is the one human gate in the agent
-    # loop. Best-effort: a notification failure must never fail the submission.
-    try:
-        NotificationService(db).notify_plan_proposed(plan, agent.project_id)
-        db.commit()
-    except Exception:
-        db.rollback()
-        logger.warning("Failed to notify approvers for proposed plan %s", plan.id, exc_info=True)
-
-    return _plan_response(plan, db)
-
-
 # --- Open an execution run (v2.337.0) ---
 #
-# Replaces the operator-side "Execute with AI" mint.  The session already holds
-# the operator's authority and environment probe; this picks the plan to
-# execute.  The plan MUST be human-approved — that gate is the one control the
-# session consolidation keeps intact.
+# The session already holds the operator's authority and environment probe;
+# this picks the plan to execute — any draft or in-progress plan with entries.
 
 @router.post(
     "/execution-sessions/start",
     response_model=ExecutionContextResponse,
     status_code=201,
-    summary="Open an execution run on an approved plan in this session",
+    summary="Open an execution run on a plan in this session",
 )
 def start_execution_phase(
     body: ExecutionStartRequest,
@@ -204,7 +162,7 @@ def start_execution_phase(
 @router.get(
     "/test-plans/{plan_id}/execution-context",
     response_model=ExecutionContextResponse,
-    summary="Get execution context for running approved tests",
+    summary="Get execution context for a plan's tests",
 )
 def get_execution_context(
     plan_id: int = Path(..., gt=0),
@@ -215,8 +173,8 @@ def get_execution_context(
     ready for the agent to work through host-by-host.
 
     Commands in `proposed_tests` have the `{ip}` placeholder resolved
-    to the actual host IP so the agent can present concrete commands
-    to the user for approval.
+    to the actual host IP so the agent can show the operator the concrete
+    command it runs.
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
@@ -380,7 +338,7 @@ def _execution_context_payload(db, plan, session, agent_name, *, include_read_ba
         more = len(result_hosts) - len(ips)
         host_line = ", ".join(ips) + (f" (+{more} more)" if more > 0 else "")
         read_back = render_phase_read_back("execution", facts=[
-            f"the {len(result_hosts)} host(s) this approved plan covers — by IP: {host_line}",
+            f"the {len(result_hosts)} host(s) this plan covers — by IP: {host_line}",
             "the working directory every command will run from and write into",
         ])
 
@@ -404,7 +362,7 @@ def _execution_context_payload(db, plan, session, agent_name, *, include_read_ba
 @router.post(
     "/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
     status_code=201,
-    summary="Record per-host target verification before testing",
+    summary="Record a target check (evidence that the host is the one intended)",
 )
 def record_sanity_check(
     body: SanityCheckRequest,
@@ -414,11 +372,11 @@ def record_sanity_check(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Record a sanity check result for a host before test execution.
+    """Record a target check the agent ran against a host (reverse DNS,
+    a banner, the source address).
 
-    The agent should perform this BEFORE running any tests on a host.
-    If `passed` is false, the agent should stop and ask the user for
-    guidance.
+    Evidence, not a gate (v2.433.0): nothing is refused for lacking one.  A
+    failed check is worth telling the operator about before testing further.
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, agent.project_id)
@@ -537,69 +495,9 @@ def record_test_result(
             detail=f"test_index {body.test_index} out of range (entry has {test_count} tests).",
         )
 
-    # v2.91.0 (code review #2, Option B) — sanity-check gate at
-    # result-record time.  Pre-fix the gate only ran at completion
-    # (see complete_entry_execution below), which meant raw results
-    # could be recorded against an unverified target and the audit
-    # trail had no record of WHICH result rows fell into the gap.
-    # Option B preserves data (operators frequently have long agentic
-    # runs that don't reach completion but produce valuable partials)
-    # while requiring a written reason: either there's a passing
-    # HostSanityCheck on file, or the agent supplies
-    # sanity_override_reason inline and we audit-log the bypass.
-    # The reason is persisted on the row so a "show me every result
-    # that bypassed sanity" audit query is a one-line WHERE clause.
-    sanity_override_reason = (body.sanity_override_reason or "").strip() or None
-    # Gate on "does this result assert something about the target" — that
-    # is an EXECUTED status OR any finding-bearing result, regardless of
-    # status.  Pre-fix the gate only fired for EXECUTED, so an agent could
-    # record status="failed"/"skipped" with is_finding=true (and a
-    # severity) against an unverified host and the finding would land with
-    # sanity_override_reason NULL — invisible to the "show me every
-    # bypassed result" audit query.
-    requires_sanity = (
-        body.status == TestExecutionStatus.EXECUTED.value or bool(body.is_finding)
-    )
-    if requires_sanity:
-        sanity_passed_count = (
-            db.query(func.count(HostSanityCheck.id))
-            .filter(
-                HostSanityCheck.execution_session_id == session.id,
-                HostSanityCheck.entry_id == entry.id,
-                HostSanityCheck.passed.is_(True),
-            )
-            .scalar()
-            or 0
-        )
-        if sanity_passed_count == 0 and not sanity_override_reason:
-            raise HTTPException(
-                status_code=409,
-                detail=(
-                    "Cannot record an executed result or a finding — no "
-                    "passing HostSanityCheck on file for this entry.  Either "
-                    "POST a sanity check that returns passed=true first, "
-                    "or include `sanity_override_reason` in this request "
-                    "explaining why verification wasn't possible (target "
-                    "offline, scope change mid-run, etc.).  The override "
-                    "is persisted and audit-logged."
-                ),
-            )
-        if sanity_override_reason and sanity_passed_count == 0:
-            log_audit_event(
-                db,
-                user_id=None,  # agent-authenticated, no JWT user
-                action="test_result_sanity_override",
-                resource_type="test_execution_result",
-                resource_id=None,  # row doesn't exist yet
-                details={
-                    "agent_id": agent.id,
-                    "plan_id": plan.id,
-                    "entry_id": entry.id,
-                    "session_id": session.id,
-                    "test_index": body.test_index,
-                    "reason": sanity_override_reason[:200],
-                },
-            )
+    # No sanity-check gate (v2.433.0).  A target check the agent ran is
+    # recorded as evidence (POST .../sanity-check) when it has one; a result
+    # is never refused for lacking it.
 
     # Truncate raw output to configured byte cap.  See _truncate_to_byte_cap
     # at module top for why we slice on bytes, not chars.
@@ -623,7 +521,6 @@ def record_test_result(
         findings_summary=body.findings_summary,
         severity=body.severity,
         is_finding=body.is_finding,
-        sanity_override_reason=sanity_override_reason,
         observed_ip=observed_ip,
         # v2.43.3 (AUD-O2): executed_at is DateTime(timezone=True); the
         # pre-fix naive `datetime.now()` silently stripped the tz on write
@@ -662,12 +559,6 @@ def record_test_result(
             existing.severity = body.severity
             existing.is_finding = body.is_finding
             existing.observed_ip = observed_ip
-            # v2.91.0 (#2) — also propagate the override on the
-            # re-record path so an operator who re-submits a result
-            # AFTER running sanity can clear the bypass marker (by
-            # omitting the reason), and one who's re-recording the
-            # same bypass keeps it on the row.
-            existing.sanity_override_reason = sanity_override_reason
             # v2.43.3 (AUD-O2): also clear executed_at when the row
             # transitions OUT of EXECUTED.  Pre-fix a row that started
             # as 'executed' (got an executed_at timestamp) and was then
@@ -730,40 +621,25 @@ def complete_entry_execution(
         .all()
     )
 
-    # Sanity-check enforcement (v2.22.0).  Completion requires a passing
-    # HostSanityCheck for this entry, OR an explicit ``override_reason``
-    # explaining why one wasn't recorded (target down, scope change
-    # mid-run, etc.).  Visibility-only mode (which only annotated the
-    # gap after the fact) didn't enforce the audit trail's core safety
-    # claim that target verification happens before testing is closed.
-    sanity_checks = (
-        db.query(HostSanityCheck)
-        .filter(
-            HostSanityCheck.execution_session_id == session.id,
-            HostSanityCheck.entry_id == entry.id,
-        )
-        .all()
-    )
-    sanity_passed = sum(1 for c in sanity_checks if c.passed)
-    override_reason = (body.override_reason or "").strip() or None
-    if sanity_passed == 0 and not override_reason:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Cannot complete this entry — no passing HostSanityCheck on file. "
-                "Either record a sanity check (POST .../sanity-check) that returns "
-                "passed=true, or provide an explicit `override_reason` explaining "
-                "why verification wasn't possible (e.g. target offline)."
-            ),
-        )
-
     # v2.43.3 (AUD-C2 + AUD-C3): tightened the completion gate.  The
     # v2.25.0 check only rejected the all-or-nothing zero-results case;
     # it let partial-coverage and non-terminal-result completions slide,
     # and the empty-entry case (proposed=0, results=0) bypassed every
     # check.  Every "complete without full evidence" path must now be
-    # justified via no_tests_run_reason — symmetric with the sanity-
-    # check override_reason invariant above.
+    # justified via no_tests_run_reason.
+    # Target checks are evidence, not a gate (v2.433.0): counted into the
+    # entry's results_data so a reader sees whether the agent verified it.
+    sanity_passed = (
+        db.query(func.count(HostSanityCheck.id))
+        .filter(
+            HostSanityCheck.execution_session_id == session.id,
+            HostSanityCheck.entry_id == entry.id,
+            HostSanityCheck.passed.is_(True),
+        )
+        .scalar()
+        or 0
+    )
+
     proposed_tests = entry.proposed_tests or []
     proposed_count = len(proposed_tests)
     no_tests_reason = (body.no_tests_run_reason or "").strip() or None
@@ -855,10 +731,7 @@ def complete_entry_execution(
         "total_executed": sum(1 for r in test_results if r.status == TestExecutionStatus.EXECUTED.value),
         "total_skipped": sum(1 for r in test_results if r.status == TestExecutionStatus.SKIPPED.value),
         "total_findings": sum(1 for r in test_results if r.is_finding),
-        "sanity_checks_total": len(sanity_checks),
         "sanity_checks_passed": sanity_passed,
-        "sanity_check_missing": sanity_passed == 0,
-        "override_reason": override_reason,
         "no_tests_run_reason": no_tests_reason,
     }
 
@@ -882,14 +755,10 @@ def complete_entry_execution(
         updates=updates,
     )
 
-    # v2.316.0 — completion-time overrides are audit-logged, not merely stored
-    # in results_data JSON.  Record-time sanity overrides already emit an audit
-    # event (test_result_sanity_override above); completion is where an entry is
-    # closed WITHOUT full evidence, so its two overrides — the sanity bypass and
-    # the coverage/no-tests bypass — are exactly what a reviewer needs to find,
-    # and the tool description promises they are "audit-visible".  A query on a
-    # results_data JSON column is not that.
-    if override_reason or no_tests_reason:
+    # v2.316.0 — closing an entry WITHOUT full evidence (no_tests_run_reason)
+    # is audit-logged, not merely stored in results_data JSON: it is exactly
+    # what a reviewer needs to find.
+    if no_tests_reason:
         log_audit_event(
             db,
             user_id=None,  # agent-authenticated, no JWT user
@@ -901,9 +770,7 @@ def complete_entry_execution(
                 "plan_id": plan.id,
                 "entry_id": entry.id,
                 "session_id": session.id,
-                "sanity_override_reason": (override_reason or "")[:200] or None,
-                "no_tests_run_reason": (no_tests_reason or "")[:200] or None,
-                "sanity_checks_passed": sanity_passed,
+                "no_tests_run_reason": no_tests_reason[:200],
                 "proposed_test_count": proposed_count,
                 "result_row_count": len(test_results),
             },
@@ -916,8 +783,6 @@ def complete_entry_execution(
         "tests_skipped": results_data["total_skipped"],
         "findings_count": results_data["total_findings"],
         "sanity_checks_passed": sanity_passed,
-        "sanity_check_missing": sanity_passed == 0,
-        "override_reason": override_reason,
         "no_tests_run_reason": no_tests_reason,
     }
 
@@ -1244,7 +1109,7 @@ def complete_execution_session(
         session.status == ExecutionSessionStatus.COMPLETED.value
         and entries_remaining == 0
         and entries_total > 0
-        and plan.status in ("approved", "in_progress")
+        and plan.status == "in_progress"
     ):
         try:
             NotificationService(db).notify_plan_ready_to_close(plan, agent.project_id)

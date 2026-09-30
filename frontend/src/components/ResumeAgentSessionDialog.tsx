@@ -213,19 +213,11 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
                   Key rotated on agent session <strong>#{result.session_id}</strong> for
                   project <strong>{result.project_name}</strong>. The previous key is
                   revoked.
-                  {(result.active_recon_session_ids.length > 0
-                    || result.active_execution_session_ids.length > 0) && (
+                  {result.active_execution_session_ids.length > 0 && (
                     <>
-                      {' '}Still open:
-                      {result.active_recon_session_ids.length > 0 && (
-                        <> recon run{result.active_recon_session_ids.length > 1 ? 's' : ''}{' '}
-                        {result.active_recon_session_ids.map((id) => `#${id}`).join(', ')}</>
-                      )}
-                      {result.active_execution_session_ids.length > 0 && (
-                        <>{result.active_recon_session_ids.length > 0 ? ';' : ''} execution run
-                        {result.active_execution_session_ids.length > 1 ? 's' : ''}{' '}
-                        {result.active_execution_session_ids.map((id) => `#${id}`).join(', ')}</>
-                      )}
+                      {' '}Still open: execution run
+                      {result.active_execution_session_ids.length > 1 ? 's' : ''}{' '}
+                      {result.active_execution_session_ids.map((id) => `#${id}`).join(', ')}
                       . The prompt tells the agent to read their progress first.
                     </>
                   )}

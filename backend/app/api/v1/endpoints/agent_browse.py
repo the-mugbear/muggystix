@@ -4,20 +4,11 @@ Agent API — data-read, notes & follow endpoints.
 Read-only project/host/scan/scope browsing plus host notes and follow
 status.  Split out of agent_api.py.
 
-v2.65.0 — the GET endpoints here serve unscoped global agent keys
-and recon-scoped keys; both predate the four-workflow split.  The
-read surface has since been duplicated for assist sessions
-(/agent/assist/*) and the recon-specific data lives behind
-/agent/recon/*.  An unscoped key calling /agent/dashboard /
-/agent/hosts / etc. is "legacy" — usually a direct curl from an
-operator's terminal, or a CI integration that predates the split.
-
-A debug-level log fires on every unscoped hit so we can see who's
-actually using these endpoints before deleting them.  Recon-scoped
-calls (scoped_scope_id set) and assist-scoped calls don't fire the
-log — they have a defined home elsewhere; this surface is
-intentionally a fallback for those, and the deprecation is only
-about the truly-unscoped callers.
+Every read is bounded by the key's project.  Keys were once bound to a scope
+as well (recon runs, removed in v2.433.0); nothing narrows a read to a scope
+now, and a scope's own hosts are read through /agent/scopes/{scope_id}/….
+The read surface is duplicated for assist sessions (/agent/assist/*), which
+is where agents mostly read.
 """
 import logging
 from datetime import datetime
@@ -25,7 +16,6 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from pydantic import BaseModel, Field
-from sqlalchemy import func
 from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
@@ -45,7 +35,7 @@ from app.api.deps import (
     session_renewal_deadline,
 )
 from app.core.security import check_permissions
-from app.db.models_tools import TOOL_APPROVED
+from app.db.models_tools import TOOL_REFERENCE
 from app.services import dns_name_service
 from app.services.host_follow_service import HostFollowService
 from app.services.host_serialization import exploit_count_maps
@@ -65,7 +55,6 @@ from app.api.v1.endpoints.agent_schemas import (
     EnvironmentProbeRequest, EnvironmentProbeResponse, EnvironmentSummary,
 )
 from app.api.v1.endpoints.agent_common import (
-    _scoped_host_ids_subq, _scoped_scan_ids_subq,
     _apply_agent_host_filters, _batch_host_enrichment, load_agent_session,
 )
 
@@ -89,7 +78,7 @@ renewal_router = APIRouter()
 # all, to answer "is the unscoped global key still being used?".  That key can
 # no longer authenticate, so the probe could never fire again — and a silent
 # probe reads as "nothing uses these endpoints", which is the opposite of what
-# it would mean.  The browse routes below stay: scoped keys reach them.
+# it would mean.  The browse routes below stay: every session key reaches them.
 
 
 def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
@@ -308,7 +297,6 @@ def get_agent_identity(
         # Each id in its own space; a single active run resolves cleanly,
         # several open return None and the agent names the one it means.
         plan_id=phases.get("plan_id"),
-        recon_session_id=phases.get("recon_session_id"),
         execution_session_id=phases.get("execution_session_id"),
         open_phases=phases,
         project_id=agent.project_id,
@@ -376,7 +364,7 @@ def record_session_environment(
     "/tool-suggestions",
     response_model=AgentToolSuggestionResponse,
     status_code=201,
-    summary="Suggest a tool BlueStick doesn't approve yet",
+    summary="Suggest a tool for BlueStick's catalogue",
 )
 def suggest_tool(
     body: AgentToolSuggestionRequest,
@@ -384,17 +372,11 @@ def suggest_tool(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Record an agent asking for a tool outside the approved set.
+    """Record an agent proposing a tool the catalogue doesn't have.
 
-    Open to every workflow and gated by no capability, deliberately: the whole
-    value is that an agent which hits the edge of the approved set *says so*
-    rather than silently substituting something, and a capability gate would
-    mean the sessions most likely to hit that edge are the ones that can't
-    report it.  It grants nothing — the row lands as ``suggested``, which no
-    approval rule reads, and a human decides.
-
-    Recording it is the point: without this, the only trace of "the approved
-    set was missing something" is a test that didn't happen.
+    Catalogue intake, not permission: whether a tool may be run is the
+    operator's call in their own client (v2.433.0).  The row lands as
+    ``suggested`` and a curator adds it to the catalogue or declines it.
     """
     entry = record_suggestion(
         db,
@@ -405,18 +387,15 @@ def suggest_tool(
         description=body.description,
         category=body.category,
     )
-    already_approved = entry.status == TOOL_APPROVED
+    already_catalogued = entry.status == TOOL_REFERENCE
     return AgentToolSuggestionResponse(
         name=entry.name,
         status=entry.status,
-        already_approved=already_approved,
+        already_catalogued=already_catalogued,
         message=(
-            f"{entry.name} is already approved — you may use it."
-            if already_approved
-            else (
-                f"Recorded. {entry.name} is NOT approved yet: do not run it. "
-                "A human reviews suggestions; use an approved tool for now."
-            )
+            f"{entry.name} is already in the catalogue."
+            if already_catalogued
+            else f"Recorded {entry.name} as a catalogue suggestion for a curator."
         ),
     )
 
@@ -447,16 +426,8 @@ def get_dashboard(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """Project stats summary, scoped to the key's binding.
-
-    Recon-scoped keys see only hosts/ports in their scope (via
-    HostSubnetMapping) and scans produced by any ReconSession under the
-    scope.  Unscoped keys see the full project.  Prevents cross-scope
-    leakage and matches what /agent/recon/summary reports for the same
-    recon session.
-    """
+    """Project stats summary for the key's project."""
     pid = agent.project_id
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
 
     host_q = db.query(models.Host).filter(models.Host.project_id == pid)
     port_q = (
@@ -470,14 +441,6 @@ def get_dashboard(
         .filter(models.Scan.project_id == pid)
         .order_by(models.Scan.created_at.desc())
     )
-
-    if scoped_scope is not None:
-        host_subq = _scoped_host_ids_subq(db, scoped_scope)
-        scan_subq = _scoped_scan_ids_subq(db, scoped_scope)
-        host_q = host_q.filter(models.Host.id.in_(host_subq))
-        port_q = port_q.filter(models.Host.id.in_(host_subq))
-        scan_q = scan_q.filter(models.Scan.id.in_(scan_subq))
-        last_scan_q = last_scan_q.filter(models.Scan.id.in_(scan_subq))
 
     host_count = host_q.count()
     up_host_count = host_q.filter(models.Host.state == "up").count()
@@ -522,14 +485,6 @@ def list_hosts(
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
-    # Recon-scoped keys only see hosts correlated into their scope via
-    # HostSubnetMapping.  Pre-v2.13.0 this endpoint returned project-wide
-    # hosts to any caller, which misled recon agents into thinking their
-    # ingests had failed (empty list early) or into reading hosts from
-    # other scopes (after their own ingest landed).
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     q = _apply_agent_host_filters(
         q, db, project_id=agent.project_id,
         state=state, ports=ports, services=services, subnets=subnets,
@@ -553,9 +508,6 @@ def get_host(
         .options(joinedload(models.Host.ports))
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
     )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -624,12 +576,6 @@ def list_scans(
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Scan).filter(models.Scan.project_id == agent.project_id)
-    # Recon-scoped keys only see scans that came from IngestionJobs under
-    # their scope's ReconSessions.  Matches the host-list scoping and
-    # prevents cross-scope scan enumeration.
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Scan.id.in_(_scoped_scan_ids_subq(db, scoped_scope)))
     # v2.85.0 — same filter surface as the user-side /scans endpoint, so
     # an agent that already understands the page can replicate its
     # narrowing without an extra query/round-trip.  ``created_after``
@@ -712,9 +658,6 @@ def create_agent_note(
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
     )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -762,9 +705,6 @@ def list_agent_notes(
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
     )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -806,9 +746,6 @@ def set_agent_follow(
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
     )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
@@ -854,9 +791,6 @@ def update_agent_host(
         db.query(models.Host)
         .filter(models.Host.id == host_id, models.Host.project_id == agent.project_id)
     )
-    scoped_scope = getattr(request.state, "scoped_scope_id", None)
-    if scoped_scope is not None:
-        q = q.filter(models.Host.id.in_(_scoped_host_ids_subq(db, scoped_scope)))
     host = q.first()
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")

@@ -30,8 +30,8 @@ Each entry:
 a tool from a key that cannot use it stops the model from trying a call whose
 403 it would read as its own bug.  It decides nothing: every dispatch still
 loops back through the real endpoint, where the router-level
-``enforce_agent_operator_access`` and the object-level gates (approved plan,
-a run belongs to the session that opened it) make the actual decision.  The MCP layer
+``enforce_agent_operator_access`` and the object-level gates (a run belongs
+to the session that opened it) make the actual decision.  The MCP layer
 makes no security decision anywhere, and this file must not become the place it
 starts.
 
@@ -41,16 +41,16 @@ is listed for every session of its workflow, and whether it succeeds is the
 operator's project role, checked per request.  An agent that wants the answer
 before trying reads ``can_write_project_data`` from ``agent_identity``.
 
-**Three entry points, deliberately.**  Recon, plan generation, and execution are
-separate sessions with separate keys because the operator starts each one
-knowingly — that is the control the workflow is designed around.  A single
-"do everything" key would collapse that, and no tool list here should imply one
-exists.
+**One session, every tool (v2.337.0).**  The operator starts one agent
+session; the agent opens whatever work it needs within it.  Plans and
+execution runs are optional groupings, not a sequence (v2.433.0); there are
+no recon runs — the agent reads a scope and uploads what its scanners found.
 
 What is deliberately NOT a tool
 -------------------------------
-The bulk, file-shaped endpoints: ``report-context.ndjson``, ``recon/hosts.ndjson``,
-``recon/live-hosts.txt``, ``recon/web-targets.txt``, and ``POST recon/upload``.
+The bulk, file-shaped endpoints: ``report-context.ndjson``, a scope's
+``hosts.ndjson`` / ``live-hosts.txt`` / ``web-targets.txt``
+(``/agent/scopes/{scope_id}/…``), and ``POST uploads``.
 They are meant to stream to (or from) a file on the operator's disk, not to be
 materialised into a model's context — a 40k-host target list read through a tool
 call is the same data, minus the ability to pipe it into the next scanner, plus
@@ -67,16 +67,18 @@ from typing import Any, Dict, List
 WORKFLOW_ASSIST = "assist"
 WORKFLOW_PLAN_GENERATION = "plan_generation"
 WORKFLOW_EXECUTION = "execution"
-WORKFLOW_RECON = "recon"
+# Reading a scope (its subnets, domains, target lists) and uploading scan
+# output.  Was "recon" until v2.433.1, when recon runs were removed.
+WORKFLOW_SCOPE = "scope"
 
 ALL_WORKFLOWS = frozenset(
-    {WORKFLOW_ASSIST, WORKFLOW_PLAN_GENERATION, WORKFLOW_EXECUTION, WORKFLOW_RECON}
+    {WORKFLOW_ASSIST, WORKFLOW_PLAN_GENERATION, WORKFLOW_EXECUTION, WORKFLOW_SCOPE}
 )
 
 _ASSIST = frozenset({WORKFLOW_ASSIST})
 _PLAN = frozenset({WORKFLOW_PLAN_GENERATION})
 _EXEC = frozenset({WORKFLOW_EXECUTION})
-_RECON = frozenset({WORKFLOW_RECON})
+_SCOPE = frozenset({WORKFLOW_SCOPE})
 
 HOST_ID_PROP = {
     "host_id": {
@@ -86,20 +88,12 @@ HOST_ID_PROP = {
     }
 }
 
-# v2.343.2 — the recon-run selector.  A session may hold several open
-# reconnaissance runs; every recon tool resolves "which run" from the session
-# and needs this when there is more than one (the endpoint answers
-# ambiguous_recon_run with the candidate ids otherwise).  Optional: a session
-# with exactly one open run needs nothing.
-RECON_RUN_PROP = {
-    "recon_session_id": {
+# The scope a read is about.  Every scope read takes it as a path parameter.
+SCOPE_ID_PROP = {
+    "scope_id": {
         "type": "integer",
         "minimum": 1,
-        "description": (
-            "Which reconnaissance run this call is about (the recon_session_id "
-            "start_recon returned). Required only when the session has more than "
-            "one open run."
-        ),
+        "description": "Scope to read (from assist_list_scopes).",
     }
 }
 
@@ -182,7 +176,7 @@ _PROBE_PROPERTIES = {
         "description": (
             "Per-tool preflight result, posted after running the preflight "
             "check. Richer than tools_available and takes precedence over it: "
-            "re-post the probe with this populated so recon_get_context can "
+            "re-post the probe with this populated so the scope reads can "
             "adapt the recommended sequence."
         ),
     },
@@ -198,25 +192,22 @@ _PROBE_PROPERTIES = {
 _PROBE_BODY_PARAMS = list(_PROBE_PROPERTIES)
 
 # A proposed test, as the plan entries carry it.  Mirrors ProposedTest in
-# app/schemas/schemas.py — `tool` is the field the tool registry is checked
-# against, which is why the free-string form is discouraged in the description.
+# app/schemas/schemas.py.
 _PROPOSED_TEST_ITEM = {
     "type": "object",
     "properties": {
         "tool": {
             "type": "string",
             "description": (
-                "Tool name as BlueStick registers it (e.g. nmap, testssl, netexec). "
-                "Use suggest_tool if what you need isn't in the approved set."
+                "Tool name as invoked (e.g. nmap, testssl, netexec)."
             ),
         },
         "description": {"type": "string", "description": "What this test establishes."},
         "command": {
             "type": "string",
             "description": (
-                "Exact command the operator would run. Write output into the "
-                "working directory the session runs in — a command that writes "
-                "elsewhere needs the operator's explicit approval."
+                "Exact command to run. Write output into the working directory "
+                "the session runs in."
             ),
         },
         "expected_result": {"type": "string"},
@@ -235,8 +226,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "What your API key is: its unified project session, open phases, bound "
             "project, write capabilities, the operator you act for, and when the key "
-            "expires. Call this first to see whether recon, planning, or execution "
-            "is already open; one key can open and use every phase."
+            "expires. Call this first to see which plans and execution runs your "
+            "session already has open; one key can open and use every kind of work."
         ),
         "method": "GET",
         "path": "/api/v1/agent/identity",
@@ -264,8 +255,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "file any feedback you have not filed yet first; the key dies with this call. It "
             "revokes your key and marks the session ended so the operator's Agent "
             "Activity page stops showing it as running. Refused (409, naming the ids) "
-            "while a reconnaissance or execution phase is still open: complete those "
-            "first (recon_complete / execution_complete_session). Optional `notes`: one or two "
+            "while an execution run is still open: complete it "
+            "first (execution_complete_session). Optional `notes`: one or two "
             "lines on what the session did (v2.340.0)."
         ),
         "method": "POST",
@@ -286,9 +277,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "read_agent_guide": {
         "description": (
-            "The agent guide — the authoritative guide for how to work with BlueStick: the "
-            "approval and sanity-check protocol, the working-directory rules, endpoint "
-            "body shapes, upload formats, exit criteria. A unified project session "
+            "The agent guide — the authoritative guide for how to work with BlueStick: "
+            "the scope and working-directory rules, endpoint body shapes, upload "
+            "formats, exit criteria. A unified project session "
             "gets the full guide; optionally request a phase slice. READ THIS FIRST, "
             "once, before your first "
             "substantive call. The tool descriptions here are a skeleton; the guide is "
@@ -312,31 +303,25 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    "list_approved_tools": {
+    "list_tools": {
         "description": (
-            "The tools BlueStick approves for agents to run, with the ports, install "
-            "command and phase metadata for each. This is the list the approval "
-            "guardrail keys off — read it before telling the operator what you may run "
-            "unprompted, and before assuming a tool you know is available here. Pass "
-            "status to see the documented-but-not-approved set instead."
+            "BlueStick's tool catalogue — what each tool is for, its ports, install "
+            "command, phases, whether it is intrusive, and whether BlueStick parses its "
+            "output (ingestible). A reference, not a permission list: what you run is "
+            "between you and the operator."
         ),
         "method": "GET",
         "path": "/api/v1/references/tools",
         "query_params": ["status", "category"],
-        # Always send a status: the unfiltered listing is 60+ tools, most of them
-        # documentation for humans, and an agent reading that as "what I may run"
-        # is the exact confusion the status column exists to prevent.
-        "defaults": {"status": "approved"},
         "input_schema": {
             "type": "object",
             "properties": {
                 "status": {
                     "type": "string",
-                    "enum": ["approved", "reference", "suggested", "rejected"],
+                    "enum": ["reference", "suggested", "rejected"],
                     "description": (
-                        "approved = you may run it. reference = documented for the "
-                        "operator, not for you. suggested = someone asked, nobody has "
-                        "vetted it yet."
+                        "reference = in the catalogue. suggested = proposed by an "
+                        "agent, not yet curated. rejected = a declined suggestion."
                     ),
                 },
                 "category": {"type": "string", "description": "Filter to one category."},
@@ -346,10 +331,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "suggest_tool": {
         "description": (
-            "Ask for a tool that isn't in BlueStick's approved set. Records the request "
-            "with your rationale for a human to vet; it does NOT grant permission to "
-            "run anything. Use this instead of silently substituting an unapproved "
-            "tool — a recorded ask is how the approved set grows."
+            "Propose a tool for BlueStick's catalogue — one you used or needed that "
+            "list_tools doesn't have. Records your rationale for a curator. It is "
+            "catalogue intake only; it neither grants nor withholds anything."
         ),
         "method": "POST",
         "path": "/api/v1/agent/tool-suggestions",
@@ -368,8 +352,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "minLength": 1,
                     "maxLength": 2000,
                     "description": (
-                        "What you needed it for and why the approved set doesn't cover "
-                        "it. This is what a human reads when vetting — be specific."
+                        "What you used or needed it for — this is what a curator "
+                        "reads. Be specific."
                     ),
                 },
                 "category": {"type": "string", "maxLength": 100},
@@ -385,15 +369,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "you retry a call, guess a field, work around a tool, or re-read the "
             "guide to make something work — not from memory at the end. Several "
             "one-line submissions during a session are the norm; a session that "
-            "reaches recon_complete / execution_complete_session / end_session "
+            "reaches execution_complete_session / end_session "
             "with none filed is told so in the response. It is read by a coding "
             "agent working on BlueStick itself, so write for that reader: name the "
             "tool or endpoint, expected vs actual, the exact error text or missing "
             "field, and what would have let you finish faster. `source` names the "
             "kind of work: assist (queries/notes only), reconnaissance, "
             "plan_generation, or in_session_execution; add the matching "
-            "recon_session_id / test_plan_id / execution_session_id when you have "
-            "one — the session itself is attributed from your key. One row is "
+            "test_plan_id / execution_session_id when you have one — the session "
+            "itself is attributed from your key. One row is "
             "about ONE kind of work: source=assist takes no phase ids, so a "
             "session that also drafted a plan files that part as its own "
             "plan_generation row with test_plan_id. tool_suggestions "
@@ -407,7 +391,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         # (v2.343.2).
         "idempotent": False,
         "body_params": [
-            "source", "prompt_version", "recon_session_id", "test_plan_id",
+            "source", "prompt_version", "test_plan_id",
             "execution_session_id", "assist_session_id", "overall_rating",
             "api_critiques", "tool_suggestions", "friction_notes", "agent_metrics",
         ],
@@ -420,7 +404,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "description": "The kind of work this feedback is about.",
                 },
                 "prompt_version": {"type": "string", "description": "The prompt_version from your instructions block."},
-                "recon_session_id": {"type": "integer", "minimum": 1},
                 "test_plan_id": {"type": "integer", "minimum": 1},
                 "execution_session_id": {"type": "integer", "minimum": 1},
                 "assist_session_id": {
@@ -790,11 +773,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_get_host_testing": {
         "description": (
             "What has been PLANNED or RUN against this host by the team: "
-            "approved plan entries, the tests proposed for each, and the "
-            "recorded results (command, outcome, findings, severity). This is "
-            "how you tell a scanner's claim from something a human confirmed — "
-            "say which it is when you report a finding. Only entries from "
-            "approved plans, never rejected ones."
+            "plan entries, the tests proposed for each, and the recorded "
+            "results (command, outcome, findings, severity). This is how you "
+            "tell a scanner's claim from something someone tested — say which "
+            "it is when you report a finding. Archived plans and rejected "
+            "entries are left out."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/testing",
@@ -1266,33 +1249,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/session",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
-    "start_recon": {
-        "description": (
-            "Open a reconnaissance run against a scope in your session. Returns the "
-            "scope's CIDRs, in-scope domains, the recommended tool sequence, and a "
-            "`read_back` you MUST state to the operator before scanning. List scopes "
-            "with assist_list_scopes. A run already open on the scope is reused."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/recon/start",
-        # A retry opens a second run on the scope (v2.343.2).
-        "idempotent": False,
-        "body_params": ["scope_id", "notes"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "scope_id": {"type": "integer", "minimum": 1, "description": "Scope to reconnoitre."},
-                "notes": {"type": "string", "description": "Optional free-text note."},
-            },
-            "required": ["scope_id"],
-            "additionalProperties": False,
-        },
-    },
     "start_execution": {
         "description": (
-            "Open an execution run on an APPROVED test plan in your session. Returns "
-            "the plan's hosts and a per-host `read_back` to state before testing. The "
-            "plan must be human-approved (submit it first if it is a draft)."
+            "Open an execution run on a test plan (a draft or one in progress) in your "
+            "session, so you can record results against its entries. Returns the "
+            "plan's hosts and a `read_back` to state before testing."
         ),
         "method": "POST",
         "path": "/api/v1/agent/execution-sessions/start",
@@ -1303,7 +1264,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "The approved plan to execute."},
+                "plan_id": {"type": "integer", "minimum": 1, "description": "The plan to execute."},
             },
             "required": ["plan_id"],
             "additionalProperties": False,
@@ -1311,8 +1272,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "create_test_plan": {
         "description": (
-            "Open a DRAFT test plan in your session. Fill it in with plan_add_entries, "
-            "then plan_submit for human approval — you cannot approve it yourself. "
+            "Register a test plan — the record of what you set out to test and, once "
+            "executed, what you found. Fill it in with plan_add_entries, then "
+            "start_execution when you are ready to work it; nothing waits on approval. "
             "To plan an EXACT set of hosts, pass host_ids, or q (a host query such as "
             "'follow:in_review OR assigned:me', resolved to its matching hosts now); "
             "plan_get_context then offers only those hosts."
@@ -1361,7 +1323,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Record the operator's environment (OS family, shell, tools on PATH) "
             "on your session. REQUIRED FIRST STEP — BlueStick's command guidance, "
-            "and every recon/execution run you open, is shaped to the machine you "
+            "and every execution run you open, is shaped to the machine you "
             "report here. The session is resolved from your key. Re-post it any "
             "time the environment changes."
         ),
@@ -1468,8 +1430,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     # -----------------------------------------------------------------------
-    # Stage 2 — plan generation.  Reads what recon found, proposes tests, and
-    # hands the draft to a human.  Nothing here executes anything.
+    # Plans — the record of what an agent sets out to test.  Nothing here
+    # executes anything.
     # -----------------------------------------------------------------------
     "plan_get_context": {
         "description": (
@@ -1540,8 +1502,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "plan_get": {
         "description": (
-            "The plan with its entries — what you have proposed so far, each entry's "
-            "status, and the approval state. plan_id is resolved from your key."
+            "The plan with its entries — what you have proposed so far and each "
+            "entry's status. plan_id is resolved from your key."
         ),
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}",
@@ -1555,13 +1517,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    # Opening a draft is `create_test_plan` (above, with the other phase
-    # openers); the tools from here on fill in and submit an open plan.
+    # Opening a plan is `create_test_plan` (above, with the other phase
+    # openers); the tools from here on fill it in.
     "plan_update": {
         "description": (
             "Set the plan's title/description and record which model and harness "
-            "drafted it. A description summarising scope, prioritisation and "
-            "methodology is REQUIRED before plan_submit will accept the plan."
+            "drafted it. Describe the scope, prioritisation and methodology — it is "
+            "what a reader of the plan sees first."
         ),
         "method": "PATCH",
         "path": "/api/v1/agent/test-plans/{plan_id}",
@@ -1590,11 +1552,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "plan_add_entries": {
         "description": (
             "Add proposed tests to the plan, one entry per host. Each entry carries a "
-            "rationale a human reviewer will read — say what the evidence is and what "
-            "the test would establish, not just what you would run. Prefer the "
-            "structured proposed_tests form (tool + description + command) over free "
-            "strings: only the structured form can be checked against the approved "
-            "tool set. Batch related hosts in one call."
+            "rationale a reader of the plan will see — say what the evidence is and what "
+            "the test would establish, not just what you would run. Use the structured "
+            "proposed_tests form (tool + description + command). Batch related hosts in "
+            "one call."
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries",
@@ -1696,10 +1657,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "plan_validate": {
         "description": (
-            "Dry-run the checks plan_submit will apply — an empty plan, a missing "
-            "description, a too-short rationale — and report the plan's candidate-host "
-            "coverage. Costs nothing and reports every problem at once, unlike submit, "
-            "which stops at the first."
+            "Check the plan for gaps — no entries, a missing description, a too-short "
+            "rationale — and report its candidate-host coverage. Advice, not a gate."
         ),
         "method": "GET",
         "path": "/api/v1/agent/test-plans/{plan_id}/validate",
@@ -1713,33 +1672,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
-    "plan_submit": {
-        "description": (
-            "Submit the draft for human approval. This ENDS your part of stage 2 — "
-            "nothing in the plan runs until a human approves it; once they have, "
-            "start_execution opens a run on it in this same session. Run "
-            "plan_validate first."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans/{plan_id}/submit",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-            },
-            "additionalProperties": False,
-        },
-    },
     # -----------------------------------------------------------------------
-    # Stage 3 — execution.  Works an APPROVED plan on the operator's machine.
-    # BlueStick records; the commands run on their host, under their client's
-    # sandbox, and the operator approves them there.
+    # Execution — records what the agent ran against a plan's hosts.  The
+    # commands run on the operator's machine, under their client's sandbox;
+    # BlueStick records.
     # -----------------------------------------------------------------------
     "execution_get_context": {
         "description": (
-            "The approved plan to work through: every entry with its host, proposed tests, "
+            "The plan to work through: every entry with its host, proposed tests, "
             "priority and current status, plus the environment probe echoed back. "
             "Work entries in the order given. plan_id is resolved from your key."
         ),
@@ -1757,10 +1697,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "execution_record_sanity_check": {
         "description": (
-            "Record that you verified you are pointed at the right host before testing "
-            "it — resolved IP, banner, or whatever the method was. An entry cannot be "
-            "completed without a PASSING check on file unless you give "
-            "execution_complete_entry an override_reason. Do this per host, per entry."
+            "Record a target check — evidence that you reached the host you meant to "
+            "(resolved IP, banner, source address). Optional; worth recording when the "
+            "target could be ambiguous (a name behind a load balancer, a reassigned "
+            "address). A failed check is worth raising with the operator."
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
@@ -1778,7 +1718,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "entry_id": {"type": "integer", "minimum": 1},
                 "method": {
                     "type": "string",
-                    "description": "How you verified the target (see the guide's sanity-check methods).",
+                    "description": "How you checked the target (see the guide's target-check methods).",
                 },
                 "target_ip": {"type": "string", "description": "The IP you actually reached."},
                 "port_checked": {"type": "integer", "minimum": 1, "maximum": 65535},
@@ -1806,7 +1746,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "auto_params": {"plan_id": "plan_id"},
         "body_params": [
             "test_index", "status", "command_run", "raw_output", "findings_summary",
-            "severity", "is_finding", "sanity_override_reason", "observed_ip",
+            "severity", "is_finding", "observed_ip",
         ],
         "additive": True,
         "input_schema": {
@@ -1834,7 +1774,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "findings_summary": {"type": "string"},
                 "severity": {"type": "string"},
                 "is_finding": {"type": "boolean", "default": False},
-                "sanity_override_reason": {"type": "string", "maxLength": 500},
                 "observed_ip": {
                     "type": "string",
                     "maxLength": 45,
@@ -1851,16 +1790,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "execution_complete_entry": {
         "description": (
-            "Close out an entry once its tests are recorded. Refused unless a passing "
-            "sanity check exists, or you supply override_reason explaining why one was "
-            "not possible — that override is audit-visible and a human will read it."
+            "Close out an entry once its tests are recorded. Closing one with proposed "
+            "tests that have no result needs no_tests_run_reason, which is audit-logged."
         ),
         "method": "POST",
         "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/complete",
         "path_params": ["plan_id", "entry_id"],
         "auto_params": {"plan_id": "plan_id"},
         "body_params": [
-            "findings_summary", "overall_status", "override_reason", "no_tests_run_reason",
+            "findings_summary", "overall_status", "no_tests_run_reason",
         ],
         "input_schema": {
             "type": "object",
@@ -1872,11 +1810,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "enum": ["completed", "rejected"],
                     "default": "completed",
-                },
-                "override_reason": {
-                    "type": "string",
-                    "maxLength": 500,
-                    "description": "Why no passing sanity check exists (target down, scope changed…).",
                 },
                 "no_tests_run_reason": {
                     "type": "string",
@@ -1941,81 +1874,62 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         },
     },
     # -----------------------------------------------------------------------
-    # Stage 1 — reconnaissance.  Populates host data from scanner output run on
-    # the operator's machine.  The bulk paths (upload, target-file downloads)
-    # stay curl — see the module docstring.
+    # Scope reads — the agent reads a scope, runs its own tools, and uploads
+    # the output.  The bulk host downloads stay curl (see the module docstring).
     # -----------------------------------------------------------------------
-    "recon_get_context": {
+    "scope_list_subnets": {
         "description": (
-            "The scope to work: its CIDRs, what is already known about it, the tool "
-            "catalogue you may use, and a recommended scan sequence. Call this first. "
-            "For big scopes the CIDR list is capped — recon_list_subnets is "
-            "authoritative, and the target files are downloads, not tools. "
-            "When the session has more than one open reconnaissance run, pass "
-            "recon_session_id (from start_recon) to say which."
+            "The paginated CIDR list for a scope. Page until `subnets` comes back "
+            "empty. The full host download is a curl, not a tool."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/recon/context",
-        "query_params": ["recon_session_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {**RECON_RUN_PROP},
-            "additionalProperties": False,
-        },
-    },
-    "recon_list_subnets": {
-        "description": (
-            "The authoritative, paginated subnet list for this recon scope — use it "
-            "when recon_get_context reports the CIDRs were truncated. Pass "
-            "recon_session_id when the session has more than one open run."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/recon/subnets",
-        "query_params": ["limit", "offset", "recon_session_id"],
+        "path": "/api/v1/agent/scopes/{scope_id}/subnets",
+        "path_params": ["scope_id"],
+        "query_params": ["limit", "offset"],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
-                **RECON_RUN_PROP,
+                **SCOPE_ID_PROP,
             },
+            "required": ["scope_id"],
             "additionalProperties": False,
         },
     },
-    "recon_list_domains": {
+    "scope_list_domains": {
         "description": (
-            "The authoritative, paginated list of domains declared in scope for this "
-            "recon scope ({domain, include_subdomains}) — the names you may resolve or "
-            "probe without asking. Use it when recon_get_context reports "
-            "domains_truncated. A name in scope does not put the address it resolves "
-            "to in subnet scope."
+            "The paginated list of domains declared in scope ({domain, "
+            "include_subdomains}) — the names you may resolve or probe without "
+            "asking. A name in scope does not put the address it resolves to in "
+            "subnet scope."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/recon/domains",
-        "query_params": ["limit", "offset", "recon_session_id"],
+        "path": "/api/v1/agent/scopes/{scope_id}/domains",
+        "path_params": ["scope_id"],
+        "query_params": ["limit", "offset"],
         "defaults": {"limit": 100},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 2000, "default": 100},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
-                **RECON_RUN_PROP,
+                **SCOPE_ID_PROP,
             },
+            "required": ["scope_id"],
             "additionalProperties": False,
         },
     },
-    "recon_get_job": {
+    "get_upload_job": {
         "description": (
             "Poll an upload's parse status. Upload itself is a file POST you run with "
-            "curl (see the server instructions); this is how you find out whether it "
-            "parsed, and what it produced. Pass recon_session_id when the session "
-            "has more than one open run."
+            "curl (POST /agent/uploads, see the server instructions); this is how you "
+            "find out whether it parsed, and what it produced."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/recon/jobs/{job_id}",
+        "path": "/api/v1/agent/uploads/{job_id}",
         "path_params": ["job_id"],
-        "query_params": ["recon_session_id"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -2024,48 +1938,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "minimum": 1,
                     "description": "Job id returned by the upload.",
                 },
-                **RECON_RUN_PROP,
             },
             "required": ["job_id"],
-            "additionalProperties": False,
-        },
-    },
-    "recon_get_summary": {
-        "description": (
-            "What this recon session has discovered so far: hosts, ports, per-host "
-            "detail (capped) and derived web targets. Use it to decide the next scan "
-            "and to report progress. For the complete lists, use the downloads it "
-            "points at rather than paging through here. Pass recon_session_id when "
-            "the session has more than one open run."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/recon/summary",
-        "query_params": ["recon_session_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {**RECON_RUN_PROP},
-            "additionalProperties": False,
-        },
-    },
-    "recon_complete": {
-        "description": (
-            "Close the recon session with a closing note — coverage achieved, ranges "
-            "you could not reach, anything the planning stage should know. This is the "
-            "handoff to stage 2, so write it for the next reader. The response carries "
-            "feedback_recorded: when false, submit_feedback with this run's friction "
-            "before you go on (v2.343.0)."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/recon/complete",
-        "body_params": ["notes"],
-        # The selector rides as a query parameter on the POST, which is how
-        # _load_recon_session reads it (v2.343.2 — external review, finding 5:
-        # two open runs left every recon tool answering ambiguous_recon_run
-        # and asking for an argument the tools did not accept).
-        "query_params": ["recon_session_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": {"notes": {"type": "string"}, **RECON_RUN_PROP},
             "additionalProperties": False,
         },
     },
@@ -2077,12 +1951,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 # reference page (which kind of work a tool belongs to), and v2.338.0 derives
 # it from the tool's name in this one function instead of carrying a
 # ``workflows`` field on every entry that a loop then rewrote.  Universal tools
-# (identity, the guide/approved-set readers, the session probe, the phase
+# (identity, the guide/catalogue readers, the session probe, the phase
 # openers any session calls) report every kind and the page shows them as
 # shared.
 _KIND_BY_PREFIX = (
     ("assist_", _ASSIST),
-    ("recon_", _RECON),
+    ("scope_", _SCOPE),
     ("plan_", _PLAN),
     ("execution_", _EXEC),
 )
@@ -2148,8 +2022,8 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     metadata_write = bool(spec.get("metadata_write"))
     # idempotentHint answers one question: is a RETRY safe?  The inference
     # below ("a non-additive write converges") is right for updates and for
-    # completions, and wrong for anything that CREATES — create_test_plan,
-    # start_recon, start_execution each mint a new row per call, and feedback
+    # completions, and wrong for anything that CREATES — create_test_plan and
+    # start_execution each mint a new row per call, and feedback
     # is an append even though it is session bookkeeping.  v2.343.2 (external
     # review, finding 8): a spec says so explicitly with ``"idempotent": False``
     # and the builder honours it; destructiveHint is untouched, because that is

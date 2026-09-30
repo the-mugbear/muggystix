@@ -31,9 +31,9 @@ from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as 
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import (
+    PLANNED_PLAN_STATUSES,
     Agent,
     AgentSession,
-    ReconSession,
 )
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User
@@ -153,15 +153,6 @@ def get_assist_context(
         db.query(models.Scan)
         .filter(models.Scan.project_id == project.id)
         .order_by(models.Scan.created_at.desc())
-        .limit(5)
-        .all()
-    )
-
-    # Recent recon sessions (5)
-    recent_recon = (
-        db.query(ReconSession)
-        .filter(ReconSession.project_id == project.id)
-        .order_by(ReconSession.started_at.desc())
         .limit(5)
         .all()
     )
@@ -291,17 +282,6 @@ def get_assist_context(
                 "created_at": s.created_at.isoformat() if s.created_at else None,
             }
             for s in recent_scans
-        ],
-        "recent_recon_sessions": [
-            {
-                "id": r.id,
-                "scope_id": r.scope_id,
-                "status": r.status,
-                "started_at": r.started_at.isoformat() if r.started_at else None,
-                "completed_at": r.completed_at.isoformat() if r.completed_at else None,
-                "hosts_discovered": r.hosts_discovered,
-            }
-            for r in recent_recon
         ],
     }
 
@@ -696,6 +676,21 @@ class AssistWebInterface(BaseModel):
     cert_subject_cn: Optional[str] = None
     cert_sans: List[str] = Field(default_factory=list, description="Subject alternative names (first 20)")
     cert_san_total: int = 0
+    # v2.433.0 (agent feedback #24) — which observation this is.  The table
+    # keeps one row per scan, so a re-scanned URL appears once per scan; the
+    # inspector shows the latest per (tool, URL) and so must a write-up.
+    source: Optional[str] = Field(None, description="The tool that observed it (eyewitness, httpx, nikto…)")
+    scan_id: Optional[int] = None
+    observed_at: Optional[datetime] = Field(None, description=(
+        "When it was observed: the scan's own time when the tool recorded one "
+        "(observed_at_basis 'scan'), else the import time ('import')."
+    ))
+    observed_at_basis: str = "import"
+    imported_at: Optional[datetime] = None
+    is_latest: bool = Field(True, description=(
+        "True for the newest observation of this URL by this tool; false for an "
+        "earlier scan's row — history, not current state."
+    ))
 
 
 class AssistScript(BaseModel):
@@ -830,9 +825,11 @@ def _tls_str(tls: dict, *keys: str) -> Optional[str]:
     return None
 
 
-def _serialize_web_interface(w) -> AssistWebInterface:
+def _serialize_web_interface(w, observed=None, latest: Optional[set] = None) -> AssistWebInterface:
     """One web interface as assist reports it — shared by the capped list on
-    host detail and the paged list below, so the two never disagree."""
+    host detail and the paged list below, so the two never disagree.
+    ``observed`` / ``latest`` come from services/web_interface_observation."""
+    obs = observed.get(w.id) if observed else None
     tls = w.tls_info if isinstance(w.tls_info, dict) else {}
     sans = tls.get("subject_an") or tls.get("subject_alt_names")
     sans = [str(s) for s in sans] if isinstance(sans, list) else []
@@ -860,6 +857,12 @@ def _serialize_web_interface(w) -> AssistWebInterface:
         cert_subject_org=w.cert_subject_org,
         cert_issuer_org=w.cert_issuer_org,
         tls_weak_protocol=w.tls_weak_protocol,
+        source=w.source,
+        scan_id=w.scan_id,
+        observed_at=obs.observed_at if obs else w.first_seen,
+        observed_at_basis=obs.basis if obs else "import",
+        imported_at=w.first_seen,
+        is_latest=(w.id in latest) if latest is not None else True,
     )
 
 
@@ -917,8 +920,10 @@ def list_assist_host_web_interfaces(
         .limit(limit)
         .all()
     )
+    from app.services.web_interface_observation import latest_ids_for, observations
+    observed, latest = observations(db, rows), latest_ids_for(db, host.id, rows)
     return AssistWebInterfacesPage(
-        items=[_serialize_web_interface(w) for w in rows],
+        items=[_serialize_web_interface(w, observed, latest) for w in rows],
         total=int(total),
         has_more=offset + len(rows) < total,
         limit=limit,
@@ -1154,7 +1159,9 @@ def get_assist_host(
         )
         .scalar()
     ) or 0
-    web_interfaces = [_serialize_web_interface(w) for w in web_rows]
+    from app.services.web_interface_observation import latest_ids_for, observations
+    web_observed, web_latest = observations(db, web_rows), latest_ids_for(db, host.id, web_rows)
+    web_interfaces = [_serialize_web_interface(w, web_observed, web_latest) for w in web_rows]
 
     # v2.428.0 — the inspector's facts, from the code GET /hosts/{id} uses.
     base = serialize_host_base(host, None, note_count=0)
@@ -1540,6 +1547,8 @@ class AssistAttachment(BaseModel):
     download_path: str
     uploaded_by: Optional[str] = None
     created_at: Optional[datetime] = None
+    # Whether the image is marked to appear in the client report (opt-in).
+    include_in_report: bool = False
 
 
 def _assist_attachment(a, uploader_names: Dict[int, str]) -> AssistAttachment:
@@ -1552,6 +1561,7 @@ def _assist_attachment(a, uploader_names: Dict[int, str]) -> AssistAttachment:
         download_path=f"/api/v1/agent/assist/attachments/{a.id}",
         uploaded_by=uploader_names.get(a.uploaded_by_id),
         created_at=a.created_at,
+        include_in_report=bool(getattr(a, "include_in_report", False)),
     )
 
 
@@ -1824,11 +1834,10 @@ def list_assist_host_testing(
     from one a tester confirmed by hand, and every answer implicitly claimed the
     former. That distinction is most of what an analyst wants from a colleague.
 
-    Mirrors the human host page: only entries from plans a human approved
-    (`approved` / `in_progress` / `completed`), and never `rejected` entries —
-    a reviewer flipping an entry to rejected is an explicit "do not test this",
-    and an agent reporting it as outstanding work would be re-litigating a
-    decision that has already been made.
+    Mirrors the human host page: entries of every plan but an archived one
+    (PLANNED_PLAN_STATUSES), and never `rejected` entries — a tester flipping
+    an entry to rejected is an explicit "do not test this", and an agent
+    reporting it as outstanding work would re-litigate that decision.
     """
     session = _load_assist_session(db, request)
     from app.db.models_agent import (
@@ -1851,7 +1860,7 @@ def list_assist_host_testing(
         .filter(
             TestPlanEntry.host_id == host_id,
             TestPlan.project_id == session.project_id,
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
+            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
             TestPlanEntry.status != "rejected",
         )
         .order_by(TestPlanEntry.id.desc())
@@ -2825,6 +2834,11 @@ class AssistFindingNote(BaseModel):
     # earlier agent did, which a write-up citing it has to say.
     actor_type: Optional[str] = None
     created_at: Optional[datetime] = None
+    # Threads, as on host notes: a reply names its parent and its thread root;
+    # a root has parent_id null (agent feedback #23 — without these a finding's
+    # comment thread read as a flat list).
+    parent_id: Optional[int] = None
+    thread_root_id: Optional[int] = None
     attachments: List[AssistAttachment] = []
 
 
@@ -2894,6 +2908,8 @@ def _serialize_finding_note(note, attachments_by_note, uploaders=None) -> "Assis
         author=note.author.username if note.author else None,
         actor_type=note.actor_type,
         created_at=note.created_at,
+        parent_id=note.parent_id,
+        thread_root_id=note.thread_root_id,
         attachments=[
             _assist_attachment(a, uploaders or {})
             for a in attachments_by_note.get(note.id, [])

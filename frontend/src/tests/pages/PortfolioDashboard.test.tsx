@@ -31,7 +31,7 @@ const card = (over: Partial<ProjectCard>): ProjectCard => ({
   open_port_count: 0, scan_count: 1, days_since_last_scan: 1, is_stale: false,
   unreviewed_hosts: 7, hosts_tested: 5, hosts_in_review: 2, hosts_reviewed: 3,
   findings: sev(), unjudged_observations: sev(), health: 'healthy', attention_reasons: [],
-  pending_plan_reviews: 0, open_tasks: 0, active_sessions: 0, blocked_sessions: 0,
+  open_tasks: 0, active_sessions: 0, blocked_sessions: 0,
   member_count: 1, user_role: 'admin', last_scan_at: '2026-09-20T10:00:00Z',
   ...over,
 });
@@ -40,8 +40,8 @@ const projects = [
   card({ id: 3, name: 'All judged' }),
   card({ id: 2, name: 'Untriaged critical', unjudged_observations: sev(3, 0, 5), health: 'critical',
     attention_reasons: ['critical_unjudged'] }),
-  card({ id: 1, name: LONG, findings: sev(1, 2), health: 'critical', pending_plan_reviews: 1,
-    attention_reasons: ['critical_findings', 'pending_review'] }),
+  card({ id: 1, name: LONG, findings: sev(1, 2), health: 'critical', blocked_sessions: 1,
+    attention_reasons: ['critical_findings', 'blocked_session'] }),
 ];
 
 const summary = {
@@ -49,7 +49,7 @@ const summary = {
   total_reviewed: 9, total_in_review: 6,
   findings: sev(1, 2), unjudged_observations: sev(3, 0, 5),
   stale_projects: 0,
-  pending_approvals_total: 1, blocked_sessions_total: 0,
+  blocked_sessions_total: 1,
 };
 
 const renderPage = async () => {
@@ -86,7 +86,9 @@ describe('Portfolio', () => {
     expect(within(table).getByText('3 findings: 1 critical · 2 high')).toBeInTheDocument();
     expect(within(table).getAllByText('3 of 10 reviewed')).toHaveLength(3);
     expect(within(table).getAllByText('2 in review · 5 not started')).toHaveLength(3);
-    expect(within(table).getByText('1 plan to approve')).toBeInTheDocument();
+    expect(within(table).getByText('1 blocked run')).toBeInTheDocument();
+    // 5.313.0 — plans are not approved: nothing counts them as waiting.
+    expect(within(table).queryByText(/to approve/)).toBeNull();
     // A long name truncates with its full value available.
     expect(within(table).getByTitle(`Open ${LONG}`)).toHaveClass('truncate');
   });
@@ -121,7 +123,7 @@ describe('Portfolio', () => {
 
   it('a measure filters the table to the projects it counts; Reset shows them all', async () => {
     await renderPage();
-    fireEvent.click(screen.getByRole('button', { name: /1 plan to approve/ }));
+    fireEvent.click(screen.getByRole('button', { name: /show 1 blocked run/ }));
     let table = screen.getByRole('table', { name: /worst first/ });
     expect(within(table).getAllByRole('row')).toHaveLength(2); // header + the one project
     // Reset, then the "With critical" option via the URL-backed filter.
@@ -162,12 +164,12 @@ describe('Portfolio', () => {
   it('every waiting item is the same outlined chip, open tasks included', async () => {
     dashboardMock.mockReset().mockResolvedValue({
       summary,
-      projects: [card({ id: 5, name: 'Busy', pending_plan_reviews: 1, blocked_sessions: 1, active_sessions: 1, open_tasks: 1 })],
+      projects: [card({ id: 5, name: 'Busy', blocked_sessions: 1, active_sessions: 1, open_tasks: 1 })],
     });
     render(<MemoryRouter><PortfolioDashboard /></MemoryRouter>);
     await screen.findByText('Busy');
     const chips = within(screen.getByTestId('waiting-chips')).getAllByText(/./);
-    expect(chips.map((c) => c.textContent)).toEqual(['1 plan to approve', '1 blocked run', '1 active run', '1 open task']);
+    expect(chips.map((c) => c.textContent)).toEqual(['1 blocked run', '1 open agent session','1 open task']);
     for (const chip of chips) {
       expect(chip.className).toMatch(/\bborder-(warning|destructive|info|border)\b/);
       expect(chip.className).not.toMatch(/\bbg-/);

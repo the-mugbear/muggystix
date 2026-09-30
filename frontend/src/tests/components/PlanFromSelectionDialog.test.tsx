@@ -3,8 +3,8 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import PlanFromSelectionDialog from '../../components/hosts/PlanFromSelectionDialog';
-import { describeSelection, stashPlanSelection, takePlanSelection } from '../../utils/planSelection';
+import PlanFromSelectionDialog, { AGENT_TASK_MAX_HOSTS } from '../../components/hosts/PlanFromSelectionDialog';
+import { describeSelection } from '../../utils/planSelection';
 
 const navigate = vi.fn();
 vi.mock('react-router-dom', async () => {
@@ -17,6 +17,12 @@ const api = vi.hoisted(() => ({
   getTestPlans: vi.fn(),
 }));
 vi.mock('../../services/api', () => api);
+
+// The agent path opens the Start Agent Session dialog, which reads the
+// operator's live sessions.
+vi.mock('../../hooks/useMyAssistSessions', () => ({
+  useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
+}));
 
 const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), warning: vi.fn(), info: vi.fn() }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
@@ -52,7 +58,7 @@ describe('PlanFromSelectionDialog', () => {
     expect(screen.getByText(/3 hosts checked on the Hosts page/)).toBeInTheDocument();
     expect(screen.getByText(/10\.0\.0\.1, 10\.0\.0\.2, 10\.0\.0\.3/)).toBeInTheDocument();
     await waitFor(() => expect(screen.getByText(/entries will be added/)).toBeInTheDocument());
-    expect(screen.getByText(/already carried by an approved, running or completed plan/)).toBeInTheDocument();
+    expect(screen.getByText(/already carried by a running or completed plan/)).toBeInTheDocument();
     // The preview was a dry run, nothing else has been sent.
     expect(api.createPlanFromHosts).toHaveBeenCalledTimes(1);
     expect(api.createPlanFromHosts.mock.calls[0][0]).toMatchObject({ dry_run: true, host_ids: [1, 2, 3] });
@@ -82,18 +88,31 @@ describe('PlanFromSelectionDialog', () => {
     expect(toast.success).toHaveBeenCalledWith(expect.stringContaining('Created “DMZ” with 3 hosts'), expect.anything());
   });
 
-  it('hands the same fixed list to the generate dialog for the AI path', async () => {
+  // 5.313.0 — no "Generate with AI" key: the operator's one agent session is
+  // handed a task naming exactly these hosts.
+  it('hands the same fixed list to your agent session as a task', async () => {
     renderDialog();
     await waitFor(() => expect(screen.getByText(/entries will be added/)).toBeInTheDocument());
-    fireEvent.click(screen.getByLabelText(/Generate with AI from these hosts/));
+    fireEvent.click(screen.getByLabelText(/Have your agent draft it/));
     fireEvent.change(screen.getByLabelText('Why these hosts'), { target: { value: 'because' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Continue to generate' }));
+    fireEvent.click(screen.getByRole('button', { name: /Hand to your agent/ }));
 
-    expect(navigate).toHaveBeenCalledWith('/test-plans?generate=1&source=selection');
-    const sel = takePlanSelection();
-    expect(sel).toMatchObject({ host_ids: [1, 2, 3], rationale: 'because', summary: '3 hosts checked on the Hosts page' });
-    // Taken once: a second read finds nothing.
-    expect(takePlanSelection()).toBeNull();
+    expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
+    expect(
+      screen.getByText('Draft a test plan in BlueStick for these hosts only (host ids): 1, 2, 3. Why these hosts: because'),
+    ).toBeInTheDocument();
+    // Nothing was written and nothing navigated: the agent writes the plan.
+    expect(api.createPlanFromHosts.mock.calls.filter(([b]) => !b.dry_run)).toHaveLength(0);
+    expect(navigate).not.toHaveBeenCalled();
+  });
+
+  // 5.313.1 — the task names every id; 5,000 of them was a ~30 KB paste.
+  it('does not hand a selection larger than the cap to the agent as a list of ids', async () => {
+    const many = Array.from({ length: AGENT_TASK_MAX_HOSTS + 1 }, (_, i) => i + 1);
+    renderDialog({ resolveIds: () => Promise.resolve(many) });
+    await waitFor(() => expect(screen.getByText(/entries will be added/)).toBeInTheDocument());
+    expect(screen.getByRole('radio', { name: /Have your agent draft it/ })).toBeDisabled();
+    expect(screen.getByText(/takes at most 200 hosts/)).toBeInTheDocument();
   });
 });
 
@@ -104,12 +123,5 @@ describe('describeSelection', () => {
       'all 41 hosts matching subnet=10.1.0.0/16 q=has:weak_tls, resolved to a fixed list',
     );
     expect(describeSelection(9, true, {})).toBe('all 9 hosts in the project, resolved to a fixed list');
-  });
-
-  it('round-trips a stashed selection and rejects a malformed one', () => {
-    expect(stashPlanSelection({ host_ids: [5], rationale: 'r', summary: 's', taken_at: 't' })).toBe(true);
-    expect(takePlanSelection()).toEqual({ host_ids: [5], rationale: 'r', summary: 's', taken_at: 't' });
-    sessionStorage.setItem('bluestick.plan_selection', JSON.stringify({ host_ids: [] }));
-    expect(takePlanSelection()).toBeNull();
   });
 });

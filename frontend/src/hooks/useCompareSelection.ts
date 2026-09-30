@@ -5,8 +5,8 @@ import { useToast } from '../contexts/ToastContext';
 /**
  * Two-item selection helper for "compare these two rows" surfaces.
  *
- * v2.44.1 (UX review #7): extracted because ExecutionsList and
- * ReconRunsList had divergent rules — one blocked the 3rd selection
+ * v2.44.1 (UX review #7): extracted because ExecutionsList and the
+ * (since removed) recon-runs list had divergent rules — one blocked the 3rd selection
  * with a toast, the other silently ejected the oldest selected row.
  * Same interaction class, different rules → "creates distrust in
  * selection state."  The hook standardizes on the strict-block rule

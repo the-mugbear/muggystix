@@ -49,10 +49,10 @@ def test_proposed_tests_editable_while_drafting(db_session, test_project):
     assert updated.proposed_tests[1]["description"] == "b2"
 
 
-def test_proposed_tests_frozen_once_approved(db_session, test_project):
-    """CR5-C1 — approval freezes the array even before any session/result,
-    because a snapshot (live context or offline bundle) may already be out."""
-    plan, entry = _entry(db_session, test_project.id, status=TestPlanStatus.APPROVED.value)
+def test_proposed_tests_frozen_once_in_progress(db_session, test_project):
+    """CR5-C1 — a plan in progress freezes the array even before any
+    session/result row, because a snapshot may already be out."""
+    plan, entry = _entry(db_session, test_project.id, status=TestPlanStatus.IN_PROGRESS.value)
     svc = TestPlanService(db_session)
     with pytest.raises(ValueError, match="proposed_tests"):
         svc.update_entry(

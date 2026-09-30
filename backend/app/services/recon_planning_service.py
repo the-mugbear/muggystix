@@ -76,9 +76,8 @@ def analyze_scope_size(subnet_cidrs: List[str]) -> Dict[str, Any]:
         bucket = "large"  # /20 or bigger
 
     # Rough duration estimates per discovery path at defaults.  Used
-    # so the agent can report an expected wall-clock to the user
-    # during the approval step instead of "running a scan, unknown
-    # duration".  Numbers are order-of-magnitude — network latency,
+    # so the agent can tell the operator an expected wall-clock
+    # instead of "running a scan, unknown duration".  Numbers are order-of-magnitude — network latency,
     # IDS dampening, and firewall behavior dominate real runs.
     if bucket == "small":
         estimates = {
@@ -134,9 +133,9 @@ def build_tool_catalog(
 
     Each entry is ``{phase, tool, command, rationale, intrusive,
     output_format, estimated_duration?}``.  Phase groups: discovery,
-    service_probe, web, dns, smb, credentialed.  ``intrusive=False``
-    means safe enough to run without per-command approval escalation
-    (the per-run approval still stands).
+    service_probe, web, dns, smb, credentialed.  ``intrusive`` flags a
+    tool that can disturb a target — worth mentioning to the operator.
+    A suggested sequence, not a constraint.
 
     v2.13.0 — the discovery section is now reordered by ``scope_size``:
     whichever tool has the best speed/accuracy trade-off for this
@@ -701,23 +700,23 @@ def _manual_action_step(
     the bad command and reporting back a failure.
 
     v2.44.5 — when the rule declares ``acceptable_fallbacks_when_blocked``,
-    those entries ride along so the agent has a concrete user-approval
-    request ready instead of dead-ending.  The fallbacks are NOT
-    auto-executed; they require explicit per-command approval since
-    they involve different tools / lower coverage / both.
+    those entries ride along so the agent has a concrete proposal for
+    the operator instead of dead-ending.  They involve different tools,
+    lower coverage or both, so the agent offers them rather than
+    switching silently.
     """
     note = (
         f"BLOCKED: neither {original_tool} ({original_reason}) nor the "
         f"documented fallback {fallback_tool} ({fallback_reason}) is usable "
         f"in this environment.  Install one before continuing — see the "
         f"`install_hints` block on the catalog entry for either tool, or "
-        f"ask the user to install via their package manager.  Do NOT "
-        f"improvise an alternate tool without per-command approval."
+        f"ask the user to install via their package manager, or agree an "
+        f"alternative with them."
     )
     if acceptable_fallbacks:
         labels = ", ".join(f.get("tool", "?") for f in acceptable_fallbacks)
         note += (
-            f"  Pre-vetted alternatives requiring explicit user approval: "
+            f"  Alternatives to offer the operator: "
             f"{labels}.  See `acceptable_fallbacks` on this step."
         )
     return {
@@ -840,8 +839,8 @@ class SwapRule:
     swap: Callable[[Dict[str, Any], str], Dict[str, Any]]   # (step, reason) -> new step
     reshape: Optional[Callable[[List[Dict[str, Any]]], None]] = None
     # v2.44.5 — when both original and fallback are unusable, the rule
-    # may declare pre-vetted alternatives that require *explicit* user
-    # approval before the agent can attempt them.  Surfaces on the
+    # may declare alternatives the agent offers the operator rather than
+    # switching to silently.  Surfaces on the
     # `manual_action_required` placeholder so the agent has a concrete
     # proposal to put in front of the user instead of dead-ending the
     # conversation.  Each entry: {tool, command, rationale,
@@ -1263,8 +1262,8 @@ def build_recommended_sequence(
         # the documented "httpx culls dead targets, eyewitness
         # screenshots the survivors" two-stage flow, made explicit.
         # It feeds the WebInterface.screenshot_path the eyewitness
-        # parser already populates.  Optional + approval-gated: the
-        # agent runs it only if the operator wants visual triage.
+        # parser already populates.  Optional: the agent runs it only
+        # if the operator wants visual triage.
         sequence.append({
             "step": 4,
             "phase": "web_screenshot",

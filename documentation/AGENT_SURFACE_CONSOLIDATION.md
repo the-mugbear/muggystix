@@ -12,8 +12,15 @@
 > allows; every session sees the whole tool catalogue. Statements below such as
 > "today a key is scoped to one of four workflows", "61 endpoints", "48 tools /
 > 27 for a scoped set", "keep the guards" and the capability snippets describe
-> the past. For the current surface read `MCP.md` and `AGENTS.md` (the
-> contract agents are served). Kept because the reasoning — especially what
+> the past. **v2.433.0 went further still:** it retired the one object-level
+> gate this record treats as kept — a human-approved plan before execution —
+> along with the approved-tool allowlist (approve-by-exception) and the
+> mandatory per-host sanity check; the operator drives the agent and the agent
+> executes its own plans. Recon runs (`ReconSession`, `recon_sessions`,
+> `/agent/recon/*`, `recon_session_id`) were then removed altogether — an agent
+> reads a scope through `/agent/scopes/{scope_id}/…` and uploads to its session
+> — so every recon-run statement below is history too. For the current surface read `MCP.md` and
+> `documentation/AGENT_GUIDE.md` (the contract agents are served). Kept because the reasoning — especially what
 > each guard turned out to be load-bearing for — is still the best account of
 > why the surface looks the way it does.
 

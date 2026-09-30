@@ -90,11 +90,11 @@ X-API-Key: nm_agent_abc123...
 ```
 
 Keys are minted by an operator UI action and bind to one **unified project
-session**. The same key can query inventory, open reconnaissance for a selected
-scope, draft a test plan, and execute a human-approved plan. Default TTL is
-24h (`AGENT_KEY_TTL_HOURS`). The surface is intentionally narrow — it cannot
-manage users or other projects; scope, phase state, and approval gates are
-enforced by the relevant endpoint. See the agent guide (`GET /api/v1/agents-guide`) for the full integration contract.
+session**, acting as the operator who started it. The same key can query the
+inventory, upload scanner output, register and execute test plans, and record
+findings. Default TTL is 24h (`AGENT_KEY_TTL_HOURS`). The surface is
+intentionally narrow — it cannot manage users or other projects; the
+operator's project role is enforced by every endpoint. See the agent guide (`GET /api/v1/agents-guide`) for the full integration contract.
 
 ## Role hierarchy
 
@@ -139,47 +139,23 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
    counts scans uploaded since your last visit (the frontend tracks the cursor in
    localStorage).
 
-### AI agent workflows (API key)
+### AI agent sessions (API key)
 
-The `/agent/*` surface supports **four** workflows, each with its own
-scope-bound key and its own tag below:
+An operator starts ONE agent session per project (`POST /projects/{id}/assist/start`
+returns an `X-API-Key` and a copy-pasteable instructions block). The key acts as
+that operator, re-checked on every call; the operator drives the agent, and the
+agent does its own work in whatever order it needs (v2.433.0 — there is no
+approval step, approved-tool list or required sequence):
 
-#### Plan generation — tag `agent-plan-generation`
-
-1. **Operator generates a plan** via the UI — `POST /projects/{id}/test-plans/generate`
-   returns a plan id, an `X-API-Key` value, and a copy-pasteable instructions block.
-2. **Agent fetches candidate hosts** — `GET /agent/test-plans/{plan_id}/context`
-   returns the post-policy-filtered candidates plus a selection rubric.
-3. **Agent sets the plan description** — `PATCH /agent/test-plans/{plan_id}` (with the
-   `🤖 **Agent-generated** — {agent_name}` attribution prefix).
-4. **Agent posts entries** — `POST /agent/test-plans/{plan_id}/entries` with structured
-   `proposed_tests` (tool, command, expected_result).
-5. **Validate + submit** — `GET .../validate` for a dry-run check, then
-   `POST .../submit` moves the plan from `draft` to `proposed` for human review.
-
-#### Plan execution — tag `agent-execution`
-
-1. **Operator approves and starts execution** from the UI — backend mints a
-   fresh execution-scoped key bound to that plan.
-2. **Agent fetches the execution context** — `GET /agent/test-plans/{plan_id}/execution-context`.
-3. **Per host, agent records a sanity check then each test result** —
-   `POST .../sanity-check`, `POST .../test-results`. `target_ip` is validated against
-   the entry's host; results are upserted by `test_index`.
-4. **Agent completes each entry** — `POST .../complete`, which also surfaces a
-   `sanity_check_missing` flag if no passing verification was recorded.
-5. **Progress is visible live to humans** — `GET .../execution-progress`.
-
-#### Reconnaissance — tag `agent-recon`
-
-1. **Operator starts a recon session against a scope** — backend mints a
-   scope-bound key (a plan key cannot touch recon endpoints and vice-versa).
-2. **Agent reads scope context + suggested tool catalog** —
-   `GET /agent/recon/context`.
-3. **Agent runs scanners locally and uploads output** — `POST /agent/recon/upload`
-   feeds the existing ingestion pipeline; the upload is attributed to the recon
-   session in the same transaction that makes it visible.
-4. **Agent polls and reads progress** — `GET .../jobs/{id}`, `GET .../summary`.
-5. **Agent closes the session** — `POST .../complete`.
+- **Read a scope and upload scanner output** — `GET /agent/scopes/{id}/subnets`,
+  `/domains` and the target files (`hosts.ndjson`, `live-hosts.txt`,
+  `web-targets.txt`); `POST /agent/uploads` (multipart), poll
+  `GET /agent/uploads/{job_id}` (tag `agent-scope`).
+- **Register and work a test plan** — `POST /agent/test-plans`, `.../entries`
+  (tag `agent-plan-generation`), then `POST /agent/execution-sessions/start` and
+  record each test's command, output and finding (tag `agent-execution`).
+  Target checks (`POST .../sanity-check`) are optional evidence.
+- **Query and annotate the inventory** — tag `agent-assist`, below.
 
 #### Inventory assist — tag `agent-assist`
 
@@ -195,8 +171,7 @@ the **operator's own project permissions**, re-checked on every call.
    (`POST .../follow`), and hostname/OS corrections (`PATCH /agent/hosts/{id}`).
    A write by an operator whose role can't write returns 403; `GET
    /agent/identity` reports `can_write_project_data` so the agent can check
-   first. These reads generate no target traffic; scanning, drafting and
-   execution are the phases above, opened with the same key.
+   first. These reads generate no target traffic.
 
 Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`)
 and bound to **one** session; the phases a session opens link back to it, and
@@ -292,7 +267,7 @@ _OPENAPI_TAGS = [
     # endpoint, and every key is bound to one session.
     {
         "name": "test-plans",
-        "description": "Human-facing test plan management — list, view, approve, reject, generate (with AI), edit entries, delete. The agent-facing flip side of this surface is documented under `agent-api`. See the workflow explainer on the Test Plans page or the agent guide for the five-phase lifecycle (draft → proposed → approved → in_progress → completed).",
+        "description": "Human-facing test plan management — list, view, create, edit entries, archive, delete. The agent-facing side is documented under `agent-plan-generation` and `agent-execution`. Lifecycle: draft → in_progress (first execution run) → completed, or archived.",
     },
     {
         "name": "agent-browse",
@@ -300,15 +275,15 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "agent-plan-generation",
-        "description": "Agent-driven test plan population.  **Sequence:** `GET /agent/test-plans/{id}/context` → `PATCH /agent/test-plans/{id}` (set description) → `POST /agent/test-plans/{id}/entries` → `GET /agent/test-plans/{id}/validate` → `POST /agent/test-plans/{id}/submit`. The key is bound to one plan; calls to recon endpoints return 403.",
+        "description": "An agent registers a test plan — the record of what it sets out to test: `POST /agent/test-plans` → `GET /agent/test-plans/{id}/context` → `PATCH /agent/test-plans/{id}` (description) → `POST /agent/test-plans/{id}/entries` → optionally `GET .../validate` (advice). Nothing waits on approval.",
     },
     {
         "name": "agent-execution",
-        "description": "Agent-driven execution of an approved plan.  **Sequence per host:** `GET /agent/test-plans/{id}/execution-context` → `POST .../sanity-check` (target_ip must match the entry's host) → `POST .../test-results` (upserts by `test_index`) → `POST .../complete` (returns `sanity_check_missing` if no passing check was recorded). Humans can watch progress via `GET .../execution-progress`.",
+        "description": "An agent works a plan (draft or in progress) and records what it ran.  `POST /agent/execution-sessions/start` → `GET /agent/test-plans/{id}/execution-context` → per test `POST .../test-results` (upserts by `test_index`) → `POST .../complete` per entry. `POST .../sanity-check` records an optional target check as evidence. Humans watch progress via `GET .../execution-progress`.",
     },
     {
-        "name": "agent-recon",
-        "description": "Agent-driven reconnaissance against a scope: read context, upload scanner output, poll the parse job, read the rolling summary, then complete the session.  **Sequence:** `GET /agent/recon/context` → `POST /agent/recon/upload` → `GET .../jobs/{id}` → `GET .../summary` → `POST .../complete`. The key is bound to one scope; calls to plan endpoints return 403.",
+        "name": "agent-scope",
+        "description": "Scope reads and uploads.  `GET /agent/scopes/{scope_id}/subnets` and `/domains` say what is in scope; `hosts.ndjson`, `live-hosts.txt` and `web-targets.txt` are target files to save and feed to a scanner (project auditor or higher).  `POST /agent/uploads` (multipart) → `GET /agent/uploads/{job_id}`.",
     },
     {
         "name": "agent-assist",
@@ -622,7 +597,7 @@ def _warn_if_pool_undersized() -> None:
 def _seed_tool_registry() -> None:
     """Populate the tool registry on boot from the checked-in seed (v2.277.0).
 
-    Additive only — an operator's approval decision or edited description must
+    Additive only — a curator's decision or edited description must
     survive a redeploy, so existing rows are never overwritten.  Failure is
     logged and swallowed: a missing tool catalogue degrades the reference page,
     it does not justify refusing to serve the app.
@@ -704,20 +679,22 @@ async def well_known_identity():
         # design when approve-by-exception shipped (v2.279.0, after testing and
         # evaluation), and the third described the per-plan/per-scope keys that
         # v2.337.0 replaced. A safety document that overstates is worse than
-        # none — an agent or an auditor reads it as fact.
+        # none — an agent or an auditor reads it as fact. v2.433.0 retired
+        # ``plan_execution_requires_human_approval`` with the approval step.
         'safety_properties': {
             # What BlueStick itself does and enforces.
             'server_executes_commands': False,          # a coordinator: every command runs on the operator's machine
-            'plan_execution_requires_human_approval': True,   # enforced: an execution phase opens only on an approved plan
             'agent_authority': 'operator_project_role',  # enforced per request; never more than the operator may do
-            'agent_key_binding': 'project_session',      # one session + one operator; each phase binds to one scope or plan
+            'agent_key_binding': 'project_session',      # one session + one operator
             'agent_keys_time_limited': True,
             'agent_keys_renewable': True,                # by the agent, within the session's lifetime cap; ending the session revokes
             'audit_trail_persistent': True,              # every /agent/* request is recorded and shown to the operator
-            # How commands are approved — the AGENT'S contract, which the server
-            # cannot observe. The boundary that actually holds is the client's
-            # sandbox; the server contributes the record and the read-back.
-            'command_approval': 'by_exception',          # approved tool + host already in inventory + output in the working dir may run without asking; anything else stops and asks
+            # How commands are controlled — the AGENT'S contract, which the
+            # server cannot observe. The boundary that actually holds is the
+            # client's sandbox; the server contributes the record and the
+            # read-back. v2.433.0: no approved-tool allowlist and no plan
+            # approval — the operator drives the agent.
+            'command_approval': 'operator_driven',       # every command shown; a target outside the declared scope, anything outside the working dir, or a change to the operator's machine waits for their go-ahead
             'command_approval_enforced_by': 'agent_and_client_sandbox',
         },
     }

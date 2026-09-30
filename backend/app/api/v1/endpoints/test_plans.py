@@ -1,57 +1,45 @@
 """
 Test Plan Endpoints (User-Facing)
 
-Allows analysts and admins to view, approve, reject, and edit test plans
-that were created by AI agents (or manually).  Also provides the
-"Execute with AI" entry point that mints an execution session + API key
-so an agent can drive test execution with per-test human approval.
+View, create, edit and archive test plans — the record of what an agent
+(or a person) set out to test and what it found.  There is no approval step
+and no per-plan agent key (v2.433.0): the operator starts one agent session
+and the agent opens its own planning and execution work within it.
 """
 
-import hashlib
 import logging
-import secrets
-from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Literal, Optional
+from datetime import datetime, timezone
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
-from fastapi import APIRouter, Depends, File, HTTPException, Path, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, HTTPException, Path, Query
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, joinedload, selectinload
 
 from app.db.session import get_db
 from app.db.models import Host
-from app.db.models_auth import User, UserRole, APIKey
+from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_agent import (
-    Agent, AgentSession, AgentSessionWorkflow, TestPlan, TestPlanEntry,
-    TestPlanHistory, TestPlanStatus,
-    TestEntryPriority, TestPhase, TestEntryStatus,
-    ExecutionSession, ExecutionSessionStatus, ExecutionSessionMode,
+    TestPlan, TestPlanEntry,
+    TestPlanHistory, TestPlanStatus, PLANNED_PLAN_STATUSES,
+    TestEntryPriority, TestPhase,
+    ExecutionSession, ExecutionSessionStatus,
     TestExecutionResult, HostSanityCheck, AgentApiCall,
 )
-from app.services.agent_session_service import create_agent_session
 from app.api.deps import get_current_project, require_project_role
 from app.api.v1.endpoints.auth import get_current_user
-from app.core.config import settings as _settings
-from app.services.agent_key_ttl import resolve_expires_at
 from app.services.test_plan_service import TestPlanService
-from app.services.agent_prompt_service import (
-    build_session_instructions,
-    resolve_base_url,
-)
-from app.services.mcp_client_setup_service import build_mcp_clients
-from app.schemas.schemas import ProposedTest, ProposedTestItem
+from app.schemas.schemas import StoredProposedTestItem
 # Shared test-plan schemas live in app/schemas/test_plan_schemas.py (CLAUDE.md
 # file-size policy).  Single-use response models stay inline below, next to
 # the one endpoint that returns them.
 from app.schemas.test_plan_schemas import (
     TestPlanEntryResponse,
     TestPlanSummary,
-    ApiKeyStatus,
     ExecutionSessionSummary,
     ExecutionEnvironmentSnapshot,
     ExecutionSessionList,
@@ -60,9 +48,7 @@ from app.schemas.test_plan_schemas import (
     TestPlanHistoryItem,
     UserPlanCreate,
     PlanMetadataUpdate,
-    RejectRequest,
     ArchiveRequest,
-    EntryCreate,
     EntryBatch,
     EntryUpdate,
 )
@@ -74,16 +60,17 @@ router = APIRouter()
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _plan_is_stale(plan: TestPlan, last_activity_at: Optional[datetime]) -> bool:
-    """Plan-generation staleness, parallel of ``_compute_is_stale`` for
-    execution and ``_recon_is_stale`` for recon.  An interrupted
-    plan-generation looks like a ``draft`` plan that hasn't seen agent
-    activity for ``_STALE_THRESHOLD_SECONDS``.  Once the plan moves out
-    of ``draft`` (the agent submitted entries, or the human approved /
-    rejected / archived), the work is no longer the agent's so we don't
-    flag stale.
+def _plan_is_stale(
+    plan: TestPlan, last_activity_at: Optional[datetime], entry_count: int,
+) -> bool:
+    """Plan-drafting staleness, parallel of ``_compute_is_stale`` for
+    execution.  An interrupted drafting looks like a ``draft`` with no
+    entries that hasn't seen agent activity for ``_STALE_THRESHOLD_SECONDS``.
+    A draft WITH entries is a finished plan waiting for its first run —
+    since v2.433.0 nothing moves a plan out of ``draft`` before that — so
+    it is never stale.
     """
-    if plan.status != TestPlanStatus.DRAFT.value:
+    if plan.status != TestPlanStatus.DRAFT.value or entry_count > 0:
         return False
     ref = last_activity_at or plan.created_at
     if ref is None:
@@ -115,23 +102,19 @@ def _plan_to_summary(
         entry_count=progress["total_entries"],
         entries_done=progress["hosts_tested"],
         completion_pct=progress["completion_pct"],
-        approved_by_id=plan.approved_by_id,
-        approved_at=plan.approved_at,
-        rejected_by_id=plan.rejected_by_id,
-        rejected_at=plan.rejected_at,
-        rejection_reason=plan.rejection_reason,
+        archive_reason=plan.archive_reason,
         generated_by_model=plan.generated_by_model,
         generated_by_tool=plan.generated_by_tool,
         prompt_version=plan.prompt_version,
         source_kind=plan.source_kind or "unspecified",
-        source_recon_session_id=plan.source_recon_session_id,
         source_host_ids=plan.source_host_ids,
         source_plan_id=plan.source_plan_id,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         completed_at=plan.completed_at,
         last_activity_at=last_activity_at,
-        is_stale=_plan_is_stale(plan, last_activity_at),
+        is_stale=_plan_is_stale(plan, last_activity_at, progress["total_entries"]),
+        agent_session_id=plan.agent_session_id,
     )
 
 
@@ -226,9 +209,9 @@ class PlanFromHostsResponse(BaseModel):
     # Exclusions, so the operator is told rather than left to count.
     already_in_plan: int
     not_in_project: int
-    # Selected hosts that already carry an entry in another approved,
-    # in-progress or completed plan on this project — "already tested or
-    # queued elsewhere", worth a look before duplicating the work.
+    # Selected hosts that already carry an entry in another (non-archived)
+    # plan on this project — "already tested or queued elsewhere", worth a
+    # look before duplicating the work.
     planned_elsewhere: int
     dry_run: bool
 
@@ -284,11 +267,7 @@ def create_test_plan_from_hosts(
             .filter(
                 TestPlanEntry.host_id.in_(eligible),
                 TestPlan.project_id == project.id,
-                TestPlan.status.in_([
-                    TestPlanStatus.APPROVED.value,
-                    TestPlanStatus.IN_PROGRESS.value,
-                    TestPlanStatus.COMPLETED.value,
-                ]),
+                TestPlan.status.in_(PLANNED_PLAN_STATUSES),
             )
         )
         if plan is not None:
@@ -360,246 +339,6 @@ def create_test_plan_from_hosts(
         dry_run=False,
         **counts,
     )
-
-
-# ---------------------------------------------------------------------------
-# Generate with AI — creates plan + provisions agent key
-# ---------------------------------------------------------------------------
-
-class FilterCriteria(BaseModel):
-    subnets: Optional[str] = None
-    ports: Optional[str] = None
-    services: Optional[str] = None
-    # v2.21.0 — preferred severity filter.  ``min_severity="high"`` matches
-    # hosts with at least one vulnerability of severity high *or* critical,
-    # which is the mental model most users have.  Replaces the older
-    # has_critical_vulns + has_high_vulns checkbox pair below (which AND'd
-    # — picking both meant "host with a critical AND a separate high"
-    # rather than "any high or above").  The legacy fields are kept for
-    # backward compatibility with plans stored before this change.
-    min_severity: Optional[Literal["critical", "high", "medium", "low"]] = None
-    has_critical_vulns: Optional[bool] = None
-    has_high_vulns: Optional[bool] = None
-    search: Optional[str] = None
-
-
-class GeneratePlanRequest(BaseModel):
-    title: str = Field(..., max_length=200, min_length=1)
-    description: Optional[str] = None
-    filter_criteria: Optional[FilterCriteria] = None
-    # v3 alpha.3 — typed source-provenance.  Optional: pre-existing
-    # clients that don't send these keep working and the plan lands as
-    # ``source_kind='unspecified'`` (or ``'filter_set'`` if the API
-    # layer infers it from a non-null ``filter_criteria``; see below).
-    # Exactly one of the three payload fields should be set when
-    # source_kind is supplied — the endpoint validates this and 422s
-    # on conflict.
-    source_kind: Optional[
-        Literal["recon_session", "manual_hosts", "filter_set", "inherited", "unspecified"]
-    ] = None
-    source_recon_session_id: Optional[int] = Field(None, gt=0)
-    source_host_ids: Optional[List[int]] = Field(None, max_length=10_000)
-    source_plan_id: Optional[int] = Field(None, gt=0)
-    # v2.58.0 — per-plan-key TTL.  Defaults to the deployment's
-    # AGENT_KEY_TTL_HOURS; capped at AGENT_KEY_MAX_TTL_HOURS.  Use this
-    # when you know the engagement will run longer than a day so the
-    # agent doesn't hit a mid-flight expiry.
-    ttl_hours: Optional[int] = Field(None, ge=1)
-
-
-class GeneratePlanResponse(BaseModel):
-    plan_id: int
-    plan_title: str
-    plan_status: str
-    agent_id: int
-    api_key: str
-    instructions: str
-    # v2.279.0 — per-client MCP setup, same shape assist emits. Plan generation
-    # got MCP tools in 2.278.0; without this the operator was handed a curl
-    # recipe and left to work out the client config themselves.
-    mcp_clients: List[dict] = []
-    mcp_url: str = ""
-
-
-@router.post(
-    "/generate",
-    response_model=GeneratePlanResponse,
-    status_code=201,
-    summary="Create a test plan and provision an agent key",
-)
-def generate_test_plan(
-    body: GeneratePlanRequest,
-    request: Request,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    """Create a test plan and return an agent API key + instructions.
-
-    The user's project agent is reused if one exists; a fresh API key is
-    minted for this plan and **scoped to that plan alone** via the
-    ``api_keys.test_plan_id`` column.  Concurrent agents working on
-    different plans therefore get fully independent keys — a rotation or
-    revocation targeting one plan's key never touches the other.  If no
-    agent exists, one is created automatically.  The returned
-    instructions block can be copied directly to an AI agent.
-    """
-    # --- Find or create the user's agent for this project ---
-    agent = (
-        db.query(Agent)
-        .filter(Agent.project_id == project.id, Agent.owner_id == current_user.id)
-        .first()
-    )
-
-    if agent and not agent.is_active:
-        agent.is_active = True
-
-    if not agent:
-        agent = Agent(
-            name=f"{current_user.username}-agent",
-            project_id=project.id,
-            owner_id=current_user.id,
-            description="Auto-provisioned for test plan generation",
-        )
-        db.add(agent)
-        db.flush()
-
-    # --- Create the test plan FIRST so we can scope the key to it ---
-    # create_plan runs its insert inside a SAVEPOINT and does not commit
-    # (commit_after=False), so a version-collision retry cannot roll back
-    # the api_key row we add immediately below.  Both rows commit together.
-    fc = body.filter_criteria.model_dump(exclude_none=True) if body.filter_criteria else None
-
-    # v3 alpha.3 — source-provenance validation.  The four payload columns
-    # are mutually exclusive; the endpoint enforces it (the DB does not).
-    # Inference rule: if the client omits ``source_kind`` but supplied
-    # filter_criteria, treat it as ``filter_set`` so existing UI flows get
-    # provenance without changing their request body.  If everything is
-    # omitted, fall through to ``unspecified`` (the column default).
-    source_kind = body.source_kind
-    if source_kind is None and fc:
-        source_kind = "filter_set"
-
-    if source_kind == "recon_session":
-        if body.source_recon_session_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='recon_session' requires source_recon_session_id",
-            )
-        if (
-            body.source_host_ids is not None
-            or body.source_plan_id is not None
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='recon_session' is mutually exclusive with other source_* payloads",
-            )
-    elif source_kind == "manual_hosts":
-        if not body.source_host_ids:
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='manual_hosts' requires a non-empty source_host_ids list",
-            )
-        if (
-            body.source_recon_session_id is not None
-            or body.source_plan_id is not None
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='manual_hosts' is mutually exclusive with other source_* payloads",
-            )
-    elif source_kind == "inherited":
-        if body.source_plan_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='inherited' requires source_plan_id",
-            )
-        if (
-            body.source_recon_session_id is not None
-            or body.source_host_ids is not None
-        ):
-            raise HTTPException(
-                status_code=422,
-                detail="source_kind='inherited' is mutually exclusive with other source_* payloads",
-            )
-    # filter_set + unspecified: any further payload fields are silently
-    # ignored — the contract says the payload is only meaningful for
-    # the three kinds above.
-
-    svc = TestPlanService(db)
-    plan = svc.create_plan(
-        project_id=project.id,
-        agent_id=agent.id,
-        title=body.title,
-        description=body.description,
-        actor_type="user",
-        actor_id=current_user.id,
-        created_by_user_id=current_user.id,
-        filter_criteria=fc if fc else None,
-        commit_after=False,
-        source_kind=source_kind,
-        source_recon_session_id=(
-            body.source_recon_session_id
-            if source_kind == "recon_session" else None
-        ),
-        source_host_ids=(
-            body.source_host_ids if source_kind == "manual_hosts" else None
-        ),
-        source_plan_id=(
-            body.source_plan_id if source_kind == "inherited" else None
-        ),
-    )
-
-    # --- v2.337.0: mint a unified PROJECT session, link the draft plan to it ---
-    from app.services.agent_session_service import (
-        create_agent_session, mint_session_key,
-    )
-    from app.services.agent_prompt_service import build_session_instructions
-
-    base_session = create_agent_session(
-        db,
-        project_id=project.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        purpose=f"Draft plan “{plan.title}”",
-    )
-    plan.agent_session_id = base_session.id
-    raw_key = mint_session_key(
-        db, agent=agent, session=base_session, ttl_hours=body.ttl_hours,
-    )
-    instructions = build_session_instructions(
-        request=request,
-        session_id=base_session.id,
-        project_id=project.id,
-        project_name=project.name,
-        purpose=f"Draft plan “{plan.title}”",
-        raw_api_key=raw_key,
-        user_label=current_user.full_name or current_user.username,
-        user_id=current_user.id,
-    )
-
-    db.commit()
-    db.refresh(plan)
-
-    # NOTE: raw_key is returned once for user display and must never appear
-    # in server logs.  Do not add response-body logging middleware without
-    # redacting the api_key field from this endpoint's output.
-    mcp_url = f"{resolve_base_url(request)}/mcp"
-    return GeneratePlanResponse(
-        plan_id=plan.id,
-        plan_title=plan.title,
-        plan_status=plan.status,
-        agent_id=agent.id,
-        api_key=raw_key,
-        instructions=instructions,
-        mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(
-            mcp_url, raw_key,
-            expected={"project_name": project.name, "session_label": f"agent session #{base_session.id}"},
-        ),
-    )
-
-
 @router.post(
     "/{plan_id}/entries",
     response_model=List[TestPlanEntryResponse],
@@ -634,7 +373,9 @@ def add_test_plan_entries(
 
 @router.get("/", response_model=List[TestPlanSummary], summary="List test plans")
 def list_test_plans(
-    status: Optional[str] = Query(None),
+    # v2.433.1 — typed, so a retired status (?status=approved) is a 422 that
+    # says so, not an empty list that reads as "no plans".
+    status: Optional[TestPlanStatus] = Query(None),
     search: Optional[str] = Query(
         None, description="Case-insensitive substring match on plan title.", max_length=200,
     ),
@@ -651,7 +392,9 @@ def list_test_plans(
     _user: User = Depends(get_current_user),
 ):
     svc = TestPlanService(db)
-    plans = svc.list_plans(project.id, status_filter=status, search=search, limit=limit)
+    plans = svc.list_plans(
+        project.id, status_filter=status.value if status else None, search=search, limit=limit,
+    )
     progress_map = svc.get_progress_batch([p.id for p in plans])
     # Batched plan-generation activity lookup so a stale ``draft`` plan
     # gets the "Possibly interrupted" badge in the list view too — one
@@ -749,35 +492,6 @@ def get_test_plan(
     new_hosts = svc.count_new_hosts_since_plan(plan)
     last_activity_at = _plan_last_activity(db, plan.id)
 
-    # Build the API-key status from the most-recent plan-bound key.
-    # has_key=False on manual plans (agent_id null, no key minted).
-    api_key_status = ApiKeyStatus()
-    key_row = (
-        _plan_api_keys(db, plan.id)
-        .order_by(APIKey.created_at.desc())
-        .first()
-    )
-    if key_row is not None:
-        # Some Postgres drivers return a tz-naive datetime even for a
-        # DateTime(timezone=True) column; normalise before arithmetic.
-        expires_at = key_row.expires_at
-        if expires_at is not None and expires_at.tzinfo is None:
-            expires_at = expires_at.replace(tzinfo=timezone.utc)
-        expires_in = (
-            int((expires_at - datetime.now(timezone.utc)).total_seconds())
-            if expires_at is not None
-            else None
-        )
-        api_key_status = ApiKeyStatus(
-            has_key=True,
-            is_active=bool(
-                key_row.is_active and expires_in is not None and expires_in > 0
-            ),
-            expires_at=expires_at,
-            expires_in_seconds=expires_in,
-            key_prefix=key_row.key_prefix,
-        )
-
     # v2.85.0 — eager-load the entries page WITH each entry's host in
     # a single round-trip.  Pre-v2.85.0 the code reached for ``plan.entries``
     # (lazy fetch -> 1 query) and then ``entry.host`` per row (1 query per
@@ -820,30 +534,25 @@ def get_test_plan(
         entry_count=progress["total_entries"],
         entries_done=progress["hosts_tested"],
         completion_pct=progress["completion_pct"],
-        approved_by_id=plan.approved_by_id,
-        approved_at=plan.approved_at,
-        rejected_by_id=plan.rejected_by_id,
-        rejected_at=plan.rejected_at,
-        rejection_reason=plan.rejection_reason,
+        archive_reason=plan.archive_reason,
         generated_by_model=plan.generated_by_model,
         generated_by_tool=plan.generated_by_tool,
         prompt_version=plan.prompt_version,
         source_kind=plan.source_kind or "unspecified",
-        source_recon_session_id=plan.source_recon_session_id,
         source_host_ids=plan.source_host_ids,
         source_plan_id=plan.source_plan_id,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         completed_at=plan.completed_at,
         last_activity_at=last_activity_at,
-        is_stale=_plan_is_stale(plan, last_activity_at),
+        is_stale=_plan_is_stale(plan, last_activity_at, progress["total_entries"]),
+        agent_session_id=plan.agent_session_id,
         entries=[_entry_to_response(e) for e in entries_rows],
         entries_total=entries_total,
         entries_skip=entries_skip if entries_limit is not None else None,
         entries_limit=entries_limit,
         new_hosts_since_creation=new_hosts,
         filter_criteria=plan.filter_criteria,
-        api_key=api_key_status,
         latest_execution_session=_latest_session_summary(db, plan.id),
         execution_session_count=(
             db.query(func.count(ExecutionSession.id))
@@ -942,6 +651,7 @@ def _session_summary(
         environment=env_snapshot,
         last_activity_at=last_activity_at,
         is_stale=_compute_is_stale(session, last_activity_at),
+        agent_session_id=session.agent_session_id,
     )
 
 
@@ -996,47 +706,6 @@ def _latest_session_summary(db: Session, plan_id: int) -> Optional[ExecutionSess
     return _session_summary(session, _session_last_activity(db, session.id))
 
 
-@router.post("/{plan_id}/approve", response_model=TestPlanSummary, summary="Approve a test plan")
-def approve_test_plan(
-    plan_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-
-    try:
-        plan = svc.approve_plan(plan, current_user.id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    return _plan_to_summary(plan, svc.get_progress(plan.id))
-
-
-@router.post("/{plan_id}/reject", response_model=TestPlanSummary, summary="Reject a test plan")
-def reject_test_plan(
-    body: RejectRequest,
-    plan_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-
-    try:
-        plan = svc.reject_plan(plan, current_user.id, body.reason)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
-
-    return _plan_to_summary(plan, svc.get_progress(plan.id))
-
-
 @router.post("/{plan_id}/archive", response_model=TestPlanSummary, summary="Abandon (archive) a test plan")
 def archive_test_plan(
     body: ArchiveRequest,
@@ -1048,8 +717,8 @@ def archive_test_plan(
     """Abandon a plan — move any non-terminal plan to ARCHIVED.
 
     The recon-abandon analog for test plans: a non-destructive terminal
-    state for approved/in-progress plans that are no longer relevant
-    (``reject`` only applies pre-approval; ``DELETE`` is destructive).
+    state for a plan nobody means to work any more (``DELETE`` is
+    destructive).
     """
     svc = TestPlanService(db)
     plan = svc.get_plan(plan_id, project.id)
@@ -1062,164 +731,6 @@ def archive_test_plan(
         raise HTTPException(status_code=400, detail=str(exc))
 
     return _plan_to_summary(plan, svc.get_progress(plan.id))
-
-
-class RotateKeyResponse(BaseModel):
-    plan_id: int
-    api_key: str = Field(..., description='Plaintext key — shown ONCE, paste into your agent session.')
-    expires_at: datetime
-
-
-@router.post(
-    "/{plan_id}/rotate-key",
-    response_model=RotateKeyResponse,
-    status_code=201,
-    summary="Mint a fresh agent API key for an existing test plan",
-)
-def rotate_test_plan_key(
-    plan_id: int = Path(..., gt=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    """Issue a new plaintext API key for ``plan_id``; the session it replaces
-    is ended and its key revoked.
-
-    Use when the original /generate key has expired (default 24h TTL) but
-    the user wants to continue agent work on the same plan rather than
-    starting a fresh plan from scratch.  Existing entries are untouched.
-    v2.337.0 — the key belongs to a fresh project session that becomes the
-    plan's session; the previous session (if any) is superseded.
-
-    Returns the plaintext key exactly once; the server stores only the
-    sha256 hash.
-    """
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-    if not plan.agent_id:
-        raise HTTPException(
-            status_code=400,
-            detail="This plan has no associated agent; rotating a key would create an unbound credential.",
-        )
-
-    # Revoke-then-mint through the shared helper so a concurrent rotate (or
-    # rotate racing /execute) translates the uq_api_key_plan_active conflict
-    # to 409 instead of a bare 500.  A failed rotation leaves the old key
-    # intact (transaction rolls back); a successful one leaves exactly one
-    # active key (the new one).  /rotate-key uses the deployment-default TTL;
-    # for a non-default TTL, callers should use /renew-key instead.
-    raw_key = _mint_continuation_session_key(
-        db, agent=plan.agent, plan=plan, user=current_user,
-        purpose=f"Continue work on plan “{plan.title}”",
-    )
-    new_key = (
-        _plan_api_keys(db, plan.id)
-        .filter(APIKey.is_active.is_(True))
-        .order_by(APIKey.id.desc())
-        .first()
-    )
-    db.commit()
-    db.refresh(new_key)
-
-    logger.info(
-        "Plan %d agent key rotated by user %s — new key expires %s",
-        plan.id, current_user.username, new_key.expires_at,
-    )
-
-    return RotateKeyResponse(
-        plan_id=plan.id,
-        api_key=raw_key,
-        expires_at=new_key.expires_at,
-    )
-
-
-@router.post(
-    "/{plan_id}/resume-generation",
-    response_model=GeneratePlanResponse,
-    status_code=201,
-    summary="Resume an interrupted plan-generation session (v2.48.7)",
-)
-def resume_plan_generation(
-    plan_id: int = Path(..., gt=0),
-    request: Request = None,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    """Re-mint a fresh agent key and rebuild the plan-generation
-    instructions block for a draft plan whose agent went quiet.
-
-    Mirrors the execution and recon resume endpoints — the third leg of
-    the agentic-workflow Resume affordance.  Valid only for a plan in
-    ``draft`` status (the state in which the agent is meant to be
-    populating entries); any other status is the human's turn or
-    execution territory and returns 409.
-
-    Existing entries are preserved; the resumed agent continues via
-    ``GET /agent/test-plans/{plan_id}/context`` with the
-    ``not_in_plan_id`` cursor (see the agent guide § Resuming plan
-    creation).  ``_mint_continuation_session_key`` ends the plan's
-    previous session, which revokes the dead agent's key — load-bearing
-    so it can't be used to interleave writes.
-    """
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-    if plan.status != TestPlanStatus.DRAFT.value:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Cannot resume plan generation while the plan is in "
-                f"'{plan.status}' status — resume applies only to a "
-                "draft plan where the agent is supposed to be "
-                "populating entries."
-            ),
-        )
-
-    # Reuse the plan's original agent; fall back to find/create only
-    # if that row is gone.
-    agent = _resolve_execution_agent(
-        db, project=project, user=current_user, prefer_agent_id=plan.agent_id
-    )
-    plan.agent_id = agent.id
-    from app.services.agent_prompt_service import build_session_instructions
-    raw_key = _mint_continuation_session_key(
-        db, agent=agent, plan=plan, user=current_user,
-        purpose=f"Resume drafting plan “{plan.title}”",
-    )
-    session_id = plan.agent_session_id
-    instructions = build_session_instructions(
-        request=request,
-        session_id=session_id,
-        project_id=project.id,
-        project_name=project.name,
-        purpose=f"Resume drafting plan “{plan.title}”",
-        raw_api_key=raw_key,
-        user_label=current_user.full_name or current_user.username,
-        user_id=current_user.id,
-        resumed=True,
-    )
-
-    db.commit()
-    db.refresh(plan)
-
-    mcp_url = f"{resolve_base_url(request)}/mcp"
-    return GeneratePlanResponse(
-        plan_id=plan.id,
-        plan_title=plan.title,
-        plan_status=plan.status,
-        agent_id=agent.id,
-        api_key=raw_key,
-        instructions=instructions,
-        mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(
-            mcp_url, raw_key,
-            expected={"project_name": project.name, "session_label": f"agent session #{session_id}"},
-        ),
-    )
 
 
 @router.patch(
@@ -1547,6 +1058,8 @@ class AllEntryResultsResponse(BaseModel):
     plan_id: int
     execution_session_id: int
     execution_session_status: str
+    # The agent session that opened this run (links to /agent-sessions/{id}).
+    agent_session_id: Optional[int] = None
     # Session attribution surfaced inline so the comparison UI can
     # render the column header ("claude-opus-4-7 · alice · 2h ago")
     # without a separate session-detail fetch.
@@ -1678,6 +1191,7 @@ def get_all_entry_results(
         plan_id=plan.id,
         execution_session_id=session.id,
         execution_session_status=session.status,
+        agent_session_id=session.agent_session_id,
         started_at=session.started_at,
         completed_at=session.completed_at,
         started_by_username=(
@@ -1756,7 +1270,7 @@ class HostTestPlanEntryResponse(BaseModel):
     host_id: int
     priority: str
     test_phase: str
-    proposed_tests: List[ProposedTestItem]
+    proposed_tests: List[StoredProposedTestItem]
     rationale: str
     status: str
     findings: Optional[str] = None
@@ -1778,29 +1292,11 @@ def get_host_test_plan_entries(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Return test plan entries for a host from accepted plans.
+    """Return a host's test plan entries.
 
-    Workflow context (the "approve first, triage during execution" model):
-
-    Once a human has approved the parent plan as a whole, every entry in
-    that plan is implicitly part of the agreed work — `proposed` no
-    longer means "untriaged", it means "queued for execution".  Testers
-    then walk entries through `proposed → in_progress → completed`, or
-    flip them to `rejected` if they decide on closer inspection that an
-    entry isn't worth running.
-
-    Two filters apply:
-
-    1. **Plan-level**: only `approved` / `in_progress` / `completed`
-       plans surface.  Draft/proposed/rejected/archived plans never
-       leak entries onto host pages.
-
-    2. **Entry-level**: exclude `rejected` entries.  A reviewer (or
-       tester) flipping an entry to `rejected` is an explicit "do not
-       test this", and the host page should respect that.  All other
-       statuses (`proposed`, `approved`, `in_progress`, `completed`)
-       surface, since they all represent work the team has agreed to
-       or done.
+    Entries of an archived plan never surface, nor do entries flipped to
+    `rejected` — an explicit "do not test this".  Every other entry is
+    planned or done work (PLANNED_PLAN_STATUSES).
     """
     entries = (
         db.query(TestPlanEntry)
@@ -1813,7 +1309,7 @@ def get_host_test_plan_entries(
             TestPlanEntry.host_id == host_id,
             TestPlan.project_id == project.id,
             Host.project_id == project.id,
-            TestPlan.status.in_(("approved", "in_progress", "completed")),
+            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
             TestPlanEntry.status != "rejected",
         )
         .order_by(TestPlanEntry.created_at.desc())
@@ -1851,9 +1347,9 @@ def delete_test_plan(
 ):
     """Delete a test plan and cascade-delete its entries and history.
 
-    Permission is analyst — same as plan creation, approval, and entry
-    edits.  The intended use case is purging a failed/empty plan or one
-    where the agent went off-topic; the frontend warns when dispositioned
+    Permission is analyst — same as plan creation and entry edits.  The
+    intended use case is purging a failed/empty plan or one where the agent
+    went off-topic; the frontend warns when dispositioned
     entries exist so a misclick on a partially-reviewed plan is hard to
     make accidentally.
     """
@@ -1863,400 +1359,6 @@ def delete_test_plan(
         raise HTTPException(status_code=404, detail="Test plan not found")
 
     svc.delete_plan(plan)
-
-
-# ---------------------------------------------------------------------------
-# Execute with AI — creates an execution session + provisions agent key
-# ---------------------------------------------------------------------------
-
-class ExecuteResponse(BaseModel):
-    execution_session_id: int
-    plan_id: int
-    plan_title: str
-    agent_id: int
-    api_key: str
-    instructions: str
-    # v2.279.0 — per-client MCP setup. The hints carry the client sandbox flags
-    # for this one: execution runs the plan's commands on the operator's own
-    # machine, and the working-directory boundary is enforced there, not here.
-    mcp_clients: List[dict] = []
-    mcp_url: str = ""
-
-
-# ---------------------------------------------------------------------------
-# Execution-session lifecycle helpers — shared by execute + resume so the
-# agent-resolution and key-minting plumbing lives in one place.
-# ---------------------------------------------------------------------------
-
-def _resolve_execution_agent(
-    db: Session,
-    *,
-    project: Project,
-    user: User,
-    prefer_agent_id: Optional[int] = None,
-) -> Agent:
-    """Resolve the agent that owns an execution session.
-
-    Prefers ``prefer_agent_id`` (the session's original agent, on resume),
-    then the user's existing project agent, auto-provisioning one if
-    neither exists.  Reactivates a deactivated agent.
-    """
-    agent: Optional[Agent] = None
-    if prefer_agent_id is not None:
-        agent = db.query(Agent).filter(Agent.id == prefer_agent_id).first()
-    if agent is None:
-        agent = (
-            db.query(Agent)
-            .filter(Agent.project_id == project.id, Agent.owner_id == user.id)
-            .first()
-        )
-    if agent is not None:
-        if not agent.is_active:
-            agent.is_active = True
-        return agent
-    agent = Agent(
-        name=f"{user.username}-agent",
-        project_id=project.id,
-        owner_id=user.id,
-        description="Auto-provisioned for test plan execution",
-    )
-    db.add(agent)
-    db.flush()
-    return agent
-
-
-def _plan_agent_session_ids(db: Session, plan_id: int):
-    """AgentSession ids connected to this plan (v2.337.0).
-
-    A plan links to the session that drafted it (test_plans.agent_session_id)
-    and to any session that opened an execution run on it
-    (execution_sessions.agent_session_id). Used to find the plan's live key
-    for the detail page key-status card.
-    """
-    drafted = db.query(TestPlan.agent_session_id).filter(
-        TestPlan.id == plan_id, TestPlan.agent_session_id.isnot(None)
-    )
-    executed = db.query(ExecutionSession.agent_session_id).filter(
-        ExecutionSession.test_plan_id == plan_id,
-        ExecutionSession.agent_session_id.isnot(None),
-    )
-    return drafted.union(executed)
-
-
-def _plan_api_keys(db: Session, plan_id: int):
-    """APIKey query for keys on any session connected to this plan."""
-    return db.query(APIKey).filter(
-        APIKey.agent_session_id.in_(_plan_agent_session_ids(db, plan_id))
-    )
-
-
-def _mint_continuation_session_key(
-    db: Session, *, agent: Agent, plan: TestPlan, user, purpose: str,
-) -> str:
-    """Mint a fresh PROJECT session + key for continued work on ``plan`` (v2.337.0).
-
-    Used by rotate-key / resume-generation: the operator wants a usable key to
-    keep working the plan after the last one expired.  A new session is the
-    unit now, so create one, make it the plan's session (so the continuing
-    agent's identity / MCP auto-fill resolve this plan), and end the session
-    it replaces — v2.338.0: that ending is what revokes the previous key.
-    Minting on the new session never touched the old one, so "rotate" used to
-    leave two live credentials.  The old session row stays as provenance.
-    """
-    from app.services.agent_session_service import (
-        create_agent_session, mint_session_key, supersede_agent_session,
-    )
-    session = create_agent_session(
-        db, project_id=plan.project_id, agent_id=agent.id,
-        started_by_id=getattr(user, "id", None), purpose=purpose,
-    )
-    previous_session_id = plan.agent_session_id
-    plan.agent_session_id = session.id
-    db.flush()
-    supersede_agent_session(db, previous_session_id, successor=session, ended_by=user)
-    return mint_session_key(db, agent=agent, session=session)
-
-
-@router.post(
-    "/{plan_id}/execute",
-    response_model=ExecuteResponse,
-    status_code=201,
-    summary="Start a test execution session with an AI agent",
-)
-def execute_test_plan(
-    plan_id: int = Path(..., gt=0),
-    request: Request = None,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    """Create an execution session and return an agent API key + instructions.
-
-    Mirrors the `/generate` endpoint pattern: provisions an agent,
-    mints a time-limited API key, and builds an instructions block
-    the user copies to their AI agent.  The instructions guide the
-    agent through the safety protocol: per-host sanity check, per-test
-    human approval, and result recording.
-
-    The plan must be in `approved` or `in_progress` status.  If the
-    plan is `approved`, this transitions it to `in_progress`.  At most
-    one execution session per plan may be `active` at a time — creating
-    a new one pauses the previous.
-    """
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-
-    # v2.91.3 (code review #2) — serialize concurrent /execute calls
-    # against the same plan by locking the plan row.  Pre-fix two
-    # double-clicked /execute requests could both pass the
-    # one-active-session check, both mint live keys, and both insert
-    # ACTIVE execution_sessions rows; the agent's /execution-context
-    # resolution then picked an arbitrary one of the two and the
-    # audit trail split between them.  The plan row is the natural
-    # serialization point (every per-plan write derives from it),
-    # and Postgres FOR UPDATE blocks until the prior tx commits.
-    # SQLite (tests) treats with_for_update as a no-op — the partial-
-    # unique index added in the same revision is the SQLite backstop.
-    db.query(TestPlan).filter(TestPlan.id == plan.id).with_for_update().first()
-
-    if plan.status not in ("approved", "in_progress"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"Cannot execute a plan in {plan.status} status — approve it first.",
-        )
-
-    entry_count = (
-        db.query(TestPlanEntry)
-        .filter(TestPlanEntry.test_plan_id == plan.id)
-        .count()
-    )
-    if entry_count == 0:
-        raise HTTPException(status_code=400, detail="Cannot execute an empty test plan.")
-
-    # v2.337.0 — "Execute with AI" mints a unified PROJECT session and opens an
-    # execution run on this plan. open_execution_phase pauses any other active
-    # run on the plan (the one-active-per-plan invariant) and re-checks the
-    # approval gate.
-    from app.services.agent_session_service import (
-        create_agent_session, resolve_project_agent, mint_session_key,
-        open_execution_phase,
-    )
-    from app.services.agent_prompt_service import build_session_instructions
-
-    agent = resolve_project_agent(db, project_id=project.id, user=current_user)
-    base_session = create_agent_session(
-        db, project_id=plan.project_id, agent_id=agent.id,
-        started_by_id=current_user.id, purpose=f"Execute plan “{plan.title}”",
-    )
-    session = open_execution_phase(db, session=base_session, plan=plan)
-    raw_key = mint_session_key(db, agent=agent, session=base_session)
-
-    instructions = build_session_instructions(
-        request=request,
-        session_id=base_session.id,
-        project_id=project.id,
-        project_name=project.name,
-        purpose=f"Execute plan “{plan.title}”",
-        raw_api_key=raw_key,
-        user_label=current_user.full_name or current_user.username,
-        user_id=current_user.id,
-    )
-
-    db.commit()
-
-    mcp_url = f"{resolve_base_url(request)}/mcp"
-    return ExecuteResponse(
-        execution_session_id=session.id,
-        plan_id=plan.id,
-        plan_title=plan.title,
-        agent_id=agent.id,
-        api_key=raw_key,
-        instructions=instructions,
-        mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(
-            mcp_url, raw_key,
-            expected={
-                "project_name": project.name,
-                "session_label": f"agent session #{base_session.id}",
-            },
-        ),
-    )
-
-
-@router.post(
-    "/{plan_id}/execution-sessions/{session_id}/resume",
-    response_model=ExecuteResponse,
-    status_code=201,
-    summary="Resume an interrupted execution session (v2.47.0)",
-)
-def resume_execution_session(
-    plan_id: int = Path(..., gt=0),
-    session_id: int = Path(..., gt=0),
-    request: Request = None,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
-):
-    """Re-mint an agent API key for an existing, non-terminal execution session.
-
-    When an operator's host crashes mid-execution the session row stays
-    ``active`` but the agent process — and its API key — are gone.  The
-    only prior path forward was ``/execute``, which *creates a new
-    session*.  This endpoint resumes the SAME session: every per-test
-    result (``TestExecutionResult``) and per-host sanity check
-    (``HostSanityCheck``) is preserved, so the agent continues from where
-    it stopped via ``/agent/test-plans/{plan_id}/execution-context``
-    rather than starting fresh.
-
-    Valid only for a session in ``active`` or ``paused`` status — calling
-    it on a terminal session (``completed`` / ``failed`` / ``abandoned``)
-    returns 409.  Honors the one-active-session-per-plan invariant: any
-    *other* active session for the plan is paused.  A resume checkpoint
-    is appended to the session notes for the human-review trail.
-    """
-    svc = TestPlanService(db)
-    plan = svc.get_plan(plan_id, project.id)
-    if not plan:
-        raise HTTPException(status_code=404, detail="Test plan not found")
-
-    # v2.91.3 (code review #2) — same plan-row lock as /execute.
-    # Resume + execute compete for the same one-active-session
-    # invariant; the lock serializes them so a concurrent /execute
-    # can't slip an ACTIVE row in between this resume's pause-others
-    # update and the session.status flip.
-    db.query(TestPlan).filter(TestPlan.id == plan.id).with_for_update().first()
-
-    session = (
-        db.query(ExecutionSession)
-        .filter(
-            ExecutionSession.id == session_id,
-            ExecutionSession.test_plan_id == plan.id,
-        )
-        .first()
-    )
-    if not session:
-        raise HTTPException(
-            status_code=404, detail="Execution session not found for this plan"
-        )
-
-    resumable = {
-        ExecutionSessionStatus.ACTIVE.value,
-        ExecutionSessionStatus.PAUSED.value,
-    }
-    if session.status not in resumable:
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Cannot resume a session in '{session.status}' status — "
-                "resume applies only to an interrupted active/paused session."
-            ),
-        )
-    if plan.status not in ("approved", "in_progress"):
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                f"Cannot resume execution while the plan is in "
-                f"'{plan.status}' status."
-            ),
-        )
-
-    entry_count = (
-        db.query(TestPlanEntry)
-        .filter(TestPlanEntry.test_plan_id == plan.id)
-        .count()
-    )
-
-    # v2.337.0 — resume mints a fresh PROJECT session and re-opens THIS run
-    # under it (open_execution_phase reuses a session's own paused run on the
-    # plan; here the run belonged to an old session, so re-point it).
-    # v2.338.0 — then the OLD session is ended, which is what actually revokes
-    # the crashed agent's key; minting on the new session never touched it.
-    from app.services.agent_session_service import (
-        create_agent_session, resolve_project_agent, mint_session_key,
-        supersede_agent_session,
-    )
-    from app.services.agent_prompt_service import build_session_instructions
-
-    agent = resolve_project_agent(
-        db, project_id=project.id, user=current_user, prefer_agent_id=session.agent_id
-    )
-    new_session = create_agent_session(
-        db, project_id=project.id, agent_id=agent.id, started_by_id=current_user.id,
-        purpose=f"Resume execution of plan “{plan.title}”",
-    )
-    previous_session_id = session.agent_session_id
-    session.agent_id = agent.id
-    session.agent_session_id = new_session.id
-    db.flush()
-    supersede_agent_session(
-        db, previous_session_id, successor=new_session, ended_by=current_user,
-    )
-
-    # One-active-run-per-plan: pause any OTHER active run, then flip this ACTIVE.
-    db.query(ExecutionSession).filter(
-        ExecutionSession.test_plan_id == plan.id,
-        ExecutionSession.id != session.id,
-        ExecutionSession.status == ExecutionSessionStatus.ACTIVE.value,
-    ).update({"status": ExecutionSessionStatus.PAUSED.value}, synchronize_session=False)
-    db.flush()
-    session.status = ExecutionSessionStatus.ACTIVE.value
-    if plan.status == "approved":
-        plan.status = "in_progress"
-    try:
-        db.flush()
-    except IntegrityError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=409,
-            detail=(
-                "Another execution run became active for this plan "
-                "concurrently. Refresh the plan and try again."
-            ),
-        ) from exc
-    raw_key = mint_session_key(db, agent=agent, session=new_session)
-
-    resume_note = (
-        f"[{datetime.now(timezone.utc).isoformat()}] Run resumed by "
-        f"{current_user.full_name or current_user.username} "
-        f"— fresh session #{new_session.id} + key; prior progress preserved."
-    )
-    session.notes = (
-        f"{session.notes}\n{resume_note}" if session.notes else resume_note
-    )[-8192:]
-
-    instructions = build_session_instructions(
-        request=request,
-        session_id=new_session.id,
-        project_id=project.id,
-        project_name=project.name,
-        purpose=f"Resume execution of plan “{plan.title}”",
-        raw_api_key=raw_key,
-        user_label=current_user.full_name or current_user.username,
-        user_id=current_user.id,
-        resumed=True,
-    )
-
-    db.commit()
-
-    mcp_url = f"{resolve_base_url(request)}/mcp"
-    return ExecuteResponse(
-        execution_session_id=session.id,
-        plan_id=plan.id,
-        plan_title=plan.title,
-        agent_id=agent.id,
-        api_key=raw_key,
-        instructions=instructions,
-        mcp_url=mcp_url,
-        mcp_clients=build_mcp_clients(
-            mcp_url, raw_key,
-            expected={
-                "project_name": project.name,
-                "session_label": f"agent session #{new_session.id}",
-            },
-        ),
-    )
 
 
 # ---------------------------------------------------------------------------

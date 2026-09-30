@@ -16,11 +16,10 @@ import { Textarea } from './textarea';
 
 /**
  * ConfirmDialog — the single confirmation-modal primitive for the
- * agent-workflow surfaces (recon / execution / test plans).
+ * agent-workflow surfaces (execution / test plans).
  *
  * Before this existed, every "are you sure?" modal was hand-rolled:
- * the recon and execution Abandon dialogs were byte-for-byte
- * duplicates, the test-plan Abandon/Reject dialogs were near-copies
+ * the run Abandon dialogs were byte-for-byte duplicates, the test-plan Abandon/Reject dialogs were near-copies
  * with drifting copy, button labels, and icon placement.  ConfirmDialog
  * collapses them into one component so the three workflows operate and
  * read identically.
@@ -29,7 +28,7 @@ import { Textarea } from './textarea';
  *     open={open}
  *     onOpenChange={setOpen}
  *     titleIcon={<CircleSlash className="size-5 text-destructive" />}
- *     title="Abandon recon session #42?"
+ *     title="Abandon execution session #42?"
  *     description="Use this when the agent never closed the session…"
  *     reason={{ value: reason, onChange: setReason,
  *               placeholder: 'e.g. agent process died after 3 hosts',

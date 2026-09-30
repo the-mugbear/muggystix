@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import AgentSession, ReconSession, TestPlan, TestPlanEntry
+from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry
 from app.services.test_plan_service import TestPlanService
 
 from app.api.v1.endpoints.agent_schemas import PlanResponse
@@ -45,49 +45,8 @@ def load_agent_session(db: Session, request: Request) -> AgentSession:
 # Shared helpers for host filtering and enrichment
 # ---------------------------------------------------------------------------
 
-def _scoped_host_ids_subq(db: Session, scope_id: int):
-    """Host IDs mapped into the given scope via subnet correlation.
-
-    A host is in a scope iff any of its HostSubnetMapping rows point at
-    a subnet that belongs to the scope.  Used to isolate data reads by
-    recon-scoped API keys so the agent can't see hosts from other scopes
-    in the same project.
-
-    v2.68.0 — returns a SQLAlchemy 2.0 ``Select`` rather than the legacy
-    ``Subquery``.  The previous form raised
-    ``SAWarning: Coercing Subquery object into a select() for use in
-    IN()`` on every call.  Callers don't change: ``Column.in_(...)``
-    accepts a ``Select`` directly.  Function name kept (``_subq``
-    suffix) because renaming across ~12 callers is churn without
-    semantic gain — they all still use it the same way.
-    """
-    return (
-        select(models.HostSubnetMapping.host_id)
-        .join(models.Subnet, models.Subnet.id == models.HostSubnetMapping.subnet_id)
-        .where(models.Subnet.scope_id == scope_id)
-        .distinct()
-    )
-
-
-def _scoped_scan_ids_subq(db: Session, scope_id: int):
-    """Scan IDs produced by IngestionJobs under any ReconSession of the scope.
-
-    Lets recon-scoped API keys see only the scans they actually
-    produced, not other scopes' scans in the same project.
-
-    v2.68.0 — same Select-vs-Subquery refactor as
-    ``_scoped_host_ids_subq``.
-    """
-    return (
-        select(models.IngestionJob.scan_id)
-        .join(ReconSession, ReconSession.id == models.IngestionJob.recon_session_id)
-        .where(
-            ReconSession.scope_id == scope_id,
-            models.IngestionJob.scan_id.isnot(None),
-        )
-        .distinct()
-    )
-
+# Scope membership (host ids in a scope) is
+# ``scope_targets_service.scope_host_ids`` since v2.433.1.
 
 def _apply_agent_host_filters(
     q, db: Session, *,

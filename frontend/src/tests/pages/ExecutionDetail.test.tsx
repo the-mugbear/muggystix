@@ -112,7 +112,7 @@ describe('ExecutionDetail page', () => {
   it('renders the session header from the bundle attribution', async () => {
     renderPage();
     await waitFor(() => {
-      expect(screen.getByText(/Execution session #42/)).toBeInTheDocument();
+      expect(screen.getByText(/Execution run #42/)).toBeInTheDocument();
     });
     // "completed" appears in the header chip and on each entry's
     // status chip — assert presence rather than uniqueness.

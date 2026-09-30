@@ -368,7 +368,7 @@ def reprocess_job(
         options=options,
         submitted_by_id=submitted_by_id,
         project_id=job.project_id,
-        recon_session_id=job.recon_session_id,
+        agent_session_id=job.agent_session_id,
         batch_id=job.batch_id,
         content_sha256=job.content_sha256,
         format_override=format_override,

@@ -430,20 +430,23 @@ const EntryResultsPanel: React.FC<Props> = ({
 
         {noSession ? (
           <p className="text-metadata text-muted-foreground">
-            No execution session yet. Use <strong>Execute with AI</strong> on this plan to mint an
-            agent API key and start recording results.
+            No execution run yet. Use <strong>Work with your agent</strong> on this plan — your
+            agent opens a run and records results as it tests.
           </p>
         ) : noResults ? (
           <p className="text-metadata text-muted-foreground">
-            The execution session is open but the agent hasn&apos;t recorded any results for this
+            The execution run is open but the agent hasn&apos;t recorded any results for this
             entry yet.
           </p>
         ) : (
           <div className="flex flex-col gap-md">
             {data.sanity_checks.length > 0 && (
               <div>
+                {/* 5.313.0 — evidence the agent recorded about the target,
+                    not a gate anything waited on. */}
                 <p className="mb-xs text-metadata font-semibold">
-                  Sanity checks ({data.sanity_checks.length})
+                  Sanity checks ({data.sanity_checks.length}){' '}
+                  <span className="font-normal text-muted-foreground">— recorded as evidence</span>
                 </p>
                 <div className="overflow-x-auto">
                   <Table>

@@ -51,7 +51,7 @@ interface AiDraftReportDialogProps {
 
 /**
  * Elapsed-seconds counter isolated so its 1s tick doesn't re-render the
- * surrounding form / draft viewer (mirrors InAppAgentPanel's ElapsedSeconds).
+ * surrounding form / draft viewer.
  */
 const ElapsedSeconds: React.FC<{ startedAt: number }> = ({ startedAt }) => {
   const [now, setNow] = useState(Date.now());

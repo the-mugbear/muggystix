@@ -19,7 +19,7 @@
  * page-level overflow; every state (loading / error / empty) renders a fallback.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import { Loader2, RefreshCw, ShieldAlert } from 'lucide-react';
 
 import {
@@ -31,7 +31,8 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { copyToClipboard } from '../utils/clipboard';
-import { stashPlanSelection } from '../utils/planSelection';
+import { agentInstruction } from '../utils/agentRuns';
+import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { formatApiError } from '../utils/apiErrors';
 import { useProject } from '../contexts/ProjectContext';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
@@ -89,11 +90,10 @@ const gapCellStyle = (eligible: number, assessed: number): React.CSSProperties =
  * The selected gap as a list the operator can act on (v5.224.0; design review
  * item 4): the affected endpoints, the open ports that made them eligible, and
  * the step that closes the gap — copy the IPs for a scoped collection run, or
- * hand the hosts to the generate dialog as a fixed selection.
+ * hand exactly these hosts to the operator's agent to draft a plan.
  */
 const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ selection, onClose }) => {
   const toast = useToast();
-  const navigate = useNavigate();
   const [gaps, setGaps] = useState<EvidenceGapsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,24 +117,11 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
     else toast.error('Could not copy to clipboard.');
   };
 
-  const planThese = () => {
-    if (!gaps) return;
-    const ok = stashPlanSelection({
-      host_ids: gaps.items.map((h) => h.host_id),
-      // The scope caution travels with the hosts: the plan's rationale is what
-      // the planner (human or agent) reads (2.374.4 review H7).
-      rationale: `${gaps.label}: ${gaps.action.text}${gaps.scope_caution ? ` ${gaps.scope_caution}` : ''}`,
-      summary: `${gaps.items.length} hosts in ${where} with no ${gaps.label.toLowerCase()} evidence (Evidence page)`,
-      taken_at: new Date().toISOString(),
-    });
-    // Navigating without the selection opened an UNRESTRICTED generate
-    // dialog — a plan over the whole project instead of these hosts.
-    if (!ok) {
-      toast.error('Could not hand these hosts to the plan dialog (browser storage unavailable).');
-      return;
-    }
-    navigate('/test-plans?generate=1&source=selection');
-  };
+  // The scope caution travels with the hosts: the plan's rationale is what
+  // the planner (human or agent) reads (2.374.4 review H7).
+  const planRationale = gaps
+    ? `${gaps.label} evidence missing in ${where}: ${gaps.action.text}${gaps.scope_caution ? ` ${gaps.scope_caution}` : ''}`
+    : '';
 
   return (
     // A bordered panel on purpose: it is the page's one selected-detail surface.
@@ -195,10 +182,14 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
             <Button size="sm" variant="outline" onClick={() => void copyIps()} title="Copy the IPs as a target list for the collection step">
               Copy IPs
             </Button>
-            <Button size="sm" variant={gaps.action.kind === 'plan' ? 'default' : 'outline'} onClick={planThese}
-              title="Hand these hosts to the generate dialog as a fixed selection">
-              Plan these
-            </Button>
+            {/* 5.313.0 — handed to the operator's agent session as a task
+                naming exactly these hosts (was: the generate dialog). */}
+            <AgentTaskButton
+              variant={gaps.action.kind === 'plan' ? 'default' : 'outline'}
+              label="Plan these"
+              title="Hand these hosts to your agent to draft a test plan"
+              instruction={agentInstruction.draftPlan(gaps.items.map((h) => h.host_id), planRationale)}
+            />
           </div>
         </>
       )}
@@ -437,7 +428,7 @@ const Evidence: React.FC = () => {
       ) : data ? (
         data.total_hosts === 0 ? (
           <PostureEmpty Icon={ShieldAlert} title="No hosts yet" action={{ to: '/scans', label: 'Upload a scan' }}>
-            Evidence coverage is measured against the hosts in this project. Upload a scan or run recon, then come back.
+            Evidence coverage is measured against the hosts in this project. Upload a scan or have your agent scan the scope, then come back.
           </PostureEmpty>
         ) : (
           <div className="space-y-lg">

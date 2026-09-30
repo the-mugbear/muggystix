@@ -3,7 +3,7 @@
  * a key.
  *
  * v5.169.0 — extracted from StartAssistDialog, because MCP stopped being
- * assist-only: recon, plan generation and execution sessions emit the same
+ * assist-only: plan generation and execution sessions emit the same
  * `mcp_clients` payload and had no way to show it. Each client wants a
  * different shape (VS Code writes a file, the other two run a command), which
  * is why the server sends the payload and this only renders it — the shapes

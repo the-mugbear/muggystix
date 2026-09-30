@@ -701,7 +701,7 @@ describe('Hosts — streamlined table', () => {
   it('names the test-workflow state instead of colouring the row border', async () => {
     const { container } = renderHosts();
     await screen.findByText('10.9.0.41');
-    expect(screen.getByText('Planned')).toHaveAttribute('title', '2 tests approved but not yet executed');
+    expect(screen.getByText('Planned')).toHaveAttribute('title', '2 tests planned but not yet executed');
     expect(screen.getByText('Tested')).toBeInTheDocument();
     expect(container.querySelector('tr.border-l-warning, tr.border-l-info')).toBeNull();
   });

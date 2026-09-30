@@ -11,15 +11,17 @@ from datetime import datetime, timedelta, timezone
 from app.db import models
 from app.db.models_agent import (
     AgentSession,
-    ReconSession,
-    ReconSessionStatus,
+    ExecutionSession,
+    ExecutionSessionStatus,
+    TestPlan,
+    TestPlanStatus,
 )
 from app.db.models_auth import APIKey
 
 
 def _legacy_session(db, project, agent, user, *, status):
     s = AgentSession(
-        workflow="recon",
+        workflow="execution",
         project_id=project.id,
         agent_id=agent.id,
         started_by_id=user.id,
@@ -32,15 +34,17 @@ def _legacy_session(db, project, agent, user, *, status):
 
 
 def _run(db, project, agent, user, session):
-    scope = models.Scope(project_id=project.id, name="perimeter")
-    db.add(scope)
+    plan = TestPlan(
+        project_id=project.id, version=1, title="p",
+        status=TestPlanStatus.IN_PROGRESS.value,
+    )
+    db.add(plan)
     db.commit()
-    run = ReconSession(
-        project_id=project.id,
-        scope_id=scope.id,
+    run = ExecutionSession(
+        test_plan_id=plan.id,
         agent_id=agent.id,
         started_by_id=user.id,
-        status=ReconSessionStatus.ACTIVE,
+        status=ExecutionSessionStatus.ACTIVE.value,
         started_at=datetime.now(timezone.utc) - timedelta(days=15),
         agent_session_id=session.id if session is not None else None,
     )
@@ -51,7 +55,7 @@ def _run(db, project, agent, user, session):
 
 def _row(client, project, run_id):
     body = client.get(f"/api/v1/projects/{project.id}/agent-sessions").json()
-    return next(r for r in body["sessions"] if r["kind"] == "recon" and r["id"] == run_id)
+    return next(r for r in body["sessions"] if r["kind"] == "execution" and r["id"] == run_id)
 
 
 def test_an_active_run_whose_session_ended_says_so(

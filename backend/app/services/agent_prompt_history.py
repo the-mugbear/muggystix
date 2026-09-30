@@ -21,6 +21,44 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.1.0",
+        "app_version": "2.433.1",
+        "summary": (
+            "Recon runs are gone from the prompt, the MCP server instructions "
+            "and the tool descriptions: the agent reads a scope "
+            "(GET /agent/scopes/{id}/subnets|domains and the target files "
+            "live-hosts.txt, web-targets.txt, hosts.ndjson) and uploads to its "
+            "session. The prompt no longer names /agent/recon/start|summary|"
+            "complete or recon_session_id, and the MCP instructions point at "
+            "the /agent/scopes/{scope_id}/ target files (the /agent/recon/ "
+            "ones returned 404). Ending a session abandons its open execution "
+            "runs (results kept). A draft that another live session is still "
+            "writing cannot be started by a different session (409)."
+        ),
+    },
+    {
+        "version": "3.0.0",
+        "app_version": "2.433.0",
+        "summary": (
+            "No rails. The operator drives the agent and the agent executes its "
+            "own plans: the approved-tool allowlist, the recon -> plan -> human "
+            "approval -> execution order and the mandatory per-host sanity check "
+            "are gone. Rules kept: show every command; stay in the declared scope; "
+            "write into the working directory; ask before changing the operator's "
+            "machine; record every command. Uploads are session-level "
+            "(POST /agent/uploads, GET /agent/uploads/{id}; a recon run is an "
+            "optional grouping and needs no subnets). A plan is registered and "
+            "executed without approval (plan_submit removed; drafts are "
+            "executable); target checks are optional evidence (override reasons "
+            "removed). list_approved_tools is list_tools (a catalogue); "
+            "recon_get_job is get_upload_job. Also from acceptance feedback "
+            "#23/#24: finding comments carry parent_id / thread_root_id, "
+            "attachments carry include_in_report, web interfaces carry source, "
+            "scan_id, observed_at(_basis), imported_at and is_latest, and a plan "
+            "whose stored tests lack a description no longer 500s."
+        ),
+    },
+    {
         "version": "2.13.1",
         "app_version": "2.430.0",
         "summary": (

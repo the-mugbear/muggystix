@@ -78,8 +78,9 @@ def test_assist_sessions_appear_on_the_timeline(
     assert row["status"] == "active"
     assert row["generated_by_model"] == "claude-opus-5"
     assert row["prompt_version"] == "1.56.0"
-    # Assist is project-scoped: neither target id applies.
-    assert row["scope_id"] is None
+    # Assist is project-scoped: no target plan.  (No row carries a scope_id
+    # since recon runs went, v2.433.1.)
+    assert "scope_id" not in row
     assert row["test_plan_id"] is None
 
 
@@ -103,7 +104,7 @@ def test_excluding_assist_still_works(client, test_project, assist_session):
     """The kind filter has to keep excluding what it isn't asked for —
     otherwise adding a kind quietly widens every existing caller's results."""
     body = client.get(
-        f"/api/v1/projects/{test_project.id}/agent-sessions?kind=recon"
+        f"/api/v1/projects/{test_project.id}/agent-sessions?kind=execution"
     ).json()
     assert [r for r in body["sessions"] if r["kind"] == "assist"] == []
 

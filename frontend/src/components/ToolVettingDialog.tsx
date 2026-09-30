@@ -1,12 +1,13 @@
 /**
  * Vetting a tool — the other half of an agent's `suggest_tool` ask.
  *
- * An agent has been able to record "I needed a tool you don't approve" since
- * backend 2.278.0, and nothing could act on it: suggestions piled up in a table
- * with no path to approval short of a SQL prompt, which is the same as not
- * capturing them.
+ * An agent has been able to record "I needed a tool BlueStick doesn't list"
+ * since backend 2.278.0. Vetting adds it to the catalogue (`reference`) or
+ * declines it (`rejected`). 5.313.0 — the registry is a catalogue, not agent
+ * policy: no status grants or withholds permission to run anything (the
+ * `approved` status was merged into `reference`).
  *
- * Approving is a status change, but rarely *only* a status change — a suggested
+ * Adding is a status change, but rarely *only* a status change — a suggested
  * row's description is the agent's rationale, which reads badly as documentation
  * on a page humans use to learn about tools. So the prose fields are editable in
  * the same dialog, and prefilled for an existing tool.
@@ -49,11 +50,10 @@ interface Props {
   onSaved: (updated: ToolRegistryEntry) => void;
 }
 
-type VettedStatus = 'approved' | 'reference' | 'rejected';
+type VettedStatus = 'reference' | 'rejected';
 
 const STATUS_HELP: Record<VettedStatus, string> = {
-  approved: 'An agent may run this against hosts in the inventory without asking each time.',
-  reference: 'Documented for operators to run themselves. Agents are not offered it.',
+  reference: 'Listed in the catalogue, with its description and run command, for people and agents to read.',
   rejected: 'Declined. The row stays so the next agent that asks gets the same answer.',
 };
 
@@ -72,7 +72,7 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
     if (!tool) return;
     // `suggested` is not a status an operator can set, so a pending row opens
     // on the decision they are actually here to make.
-    setStatus(tool.status === 'suggested' ? 'approved' : (tool.status as VettedStatus));
+    setStatus(tool.status === 'suggested' ? 'reference' : (tool.status as VettedStatus));
     setDescription(tool.description ?? '');
     setCategory(tool.category ?? '');
     setInstall(tool.install ?? '');
@@ -95,7 +95,7 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
         url: url.trim(),
         ports: ports.trim(),
       });
-      toast.success(`${tool.name} is now ${status}`);
+      toast.success(status === 'reference' ? `${tool.name} is in the catalogue` : `${tool.name} was declined`);
       onSaved({ ...tool, ...updated });
       onOpenChange(false);
     } catch (e) {
@@ -111,8 +111,9 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
         <DialogHeader>
           <DialogTitle>Review {tool.name}</DialogTitle>
           <DialogDescription>
-            Approving a tool decides what an agent may run against the network, on every
-            project in this deployment.
+            Add it to the tool catalogue every project in this deployment reads, or decline
+            it. The catalogue documents tools; it does not decide what an agent may run —
+            the operator driving the agent does.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-sm">
@@ -140,8 +141,7 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="approved">Agent-approved</SelectItem>
-                <SelectItem value="reference">Reference only</SelectItem>
+                <SelectItem value="reference">In the catalogue</SelectItem>
                 <SelectItem value="rejected">Declined</SelectItem>
               </SelectContent>
             </Select>
@@ -160,7 +160,7 @@ const ToolVettingDialog: React.FC<Props> = ({ tool, open, onOpenChange, onSaved 
             {tool.status === 'suggested' ? (
               <p className="mt-xxs text-caption text-muted-foreground">
                 Prefilled with the agent&rsquo;s rationale — rewrite it as documentation
-                before approving; this is what the catalogue shows.
+                before adding it; this is what the catalogue shows.
               </p>
             ) : null}
           </div>

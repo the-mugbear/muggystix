@@ -5,7 +5,6 @@ import {
   AgentActivityFilters,
   getAssistSessionApiActivity,
   getPlanApiActivity,
-  getReconSessionApiActivity,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -34,10 +33,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
 type Source =
   | { kind: 'plan'; planId: number }
-  | { kind: 'recon'; reconSessionId: number }
   // v5.173.0 — assist sessions were the one workflow with no activity feed,
-  // so the same filter UI now serves all three rather than a third component
-  // diverging from these two.
+  // so the same filter UI serves both rather than a second component
+  // diverging from this one.
   | { kind: 'assist'; assistSessionId: number };
 
 interface AgentActivityLogProps {
@@ -60,7 +58,6 @@ interface AgentActivityLogProps {
 
 const SOURCE_LABEL: Record<Source['kind'], string> = {
   plan: 'plan',
-  recon: 'recon session',
   assist: 'assist session',
 };
 
@@ -299,9 +296,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
       const result =
         source.kind === 'plan'
           ? await getPlanApiActivity(source.planId, filters)
-          : source.kind === 'recon'
-            ? await getReconSessionApiActivity(source.reconSessionId, filters)
-            : await getAssistSessionApiActivity(source.assistSessionId, filters);
+          : await getAssistSessionApiActivity(source.assistSessionId, filters);
       setRows(result.items);
       setTotal(result.total);
     } catch (e: unknown) {

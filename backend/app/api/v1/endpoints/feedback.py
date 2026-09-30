@@ -26,7 +26,7 @@ from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
-    AssistSession, ExecutionSession, McpToolCall, ReconSession, TestPlan,
+    AssistSession, ExecutionSession, McpToolCall, TestPlan,
 )
 from app.db.models_auth import APIKey
 from app.db.models_project import Project
@@ -56,13 +56,7 @@ class AgentFeedbackCreate(BaseModel):
     prompt_version: Optional[str] = None
     test_plan_id: Optional[int] = None
     execution_session_id: Optional[int] = None
-    # v2.85.0 — recon/assist linkage.  Pre-v2.85.0 the recon prompt
-    # already passed recon_session_id/scope_id but the schema only
-    # declared the plan + execution fields, so Pydantic silently
-    # dropped them.  Feedback rows from recon and assist sessions
-    # now carry their session id forward so the triage queue can
-    # filter by workflow.
-    recon_session_id: Optional[int] = None
+    # v2.85.0 — assist linkage so the triage queue can filter by session.
     assist_session_id: Optional[int] = None
     overall_rating: Optional[int] = Field(None, ge=1, le=5)
     api_critiques: Optional[List[Dict[str, Any]]] = None
@@ -77,7 +71,6 @@ class AgentFeedbackResponse(BaseModel):
     agent_id: Optional[int]
     test_plan_id: Optional[int]
     execution_session_id: Optional[int]
-    recon_session_id: Optional[int] = None
     assist_session_id: Optional[int] = None
     # v2.428.2 — who and where, so the triage queue can check a claim against
     # the record: the unified session the feedback came from, the page that
@@ -181,44 +174,29 @@ def submit_agent_feedback(
 
     # Source ↔ ID coherence guard (v2.85.2): the body's source string and
     # the populated session IDs must agree on which workflow this feedback
-    # belongs to.  Without this, a key could write a row with
-    # source="plan_generation" *and* a recon_session_id + an
-    # assist_session_id (each individually passes its project-level FK
-    # check) — an incoherent attribution that the triage queue can't
-    # disentangle.  Plan/execution sources own test_plan_id +
-    # execution_session_id; reconnaissance owns recon_session_id;
-    # assist owns assist_session_id.
+    # belongs to.  Plan/execution sources own test_plan_id +
+    # execution_session_id; assist owns assist_session_id.
     # v2.429.1 (MCP acceptance run 2) — the refusal now says how to file it:
     # a session that did several kinds of work files one row per kind.
     _split = (
         " One row is about one kind of work: file this part with the source "
         "that owns that id (test_plan_id → plan_generation or "
-        "in_session_execution; recon_session_id → reconnaissance), and the "
-        "rest as its own row. Your session is attributed from your key either way."
+        "in_session_execution), and the rest as its own row. Your session is "
+        "attributed from your key either way."
     )
     plan_sources = {AgentFeedbackSource.PLAN_GENERATION.value,
                     AgentFeedbackSource.IN_SESSION_EXECUTION.value}
     if body.source in plan_sources:
-        if body.recon_session_id is not None or body.assist_session_id is not None:
+        if body.assist_session_id is not None:
             raise HTTPException(
                 status_code=400,
-                detail=f"source={body.source!r} cannot reference recon/assist sessions." + _split,
-            )
-    elif body.source == AgentFeedbackSource.RECONNAISSANCE.value:
-        if (body.test_plan_id is not None
-                or body.execution_session_id is not None
-                or body.assist_session_id is not None):
-            raise HTTPException(
-                status_code=400,
-                detail="source=reconnaissance cannot reference plan/execution/assist IDs." + _split,
+                detail=f"source={body.source!r} cannot reference an assist session." + _split,
             )
     elif body.source == AgentFeedbackSource.ASSIST.value:
-        if (body.test_plan_id is not None
-                or body.execution_session_id is not None
-                or body.recon_session_id is not None):
+        if body.test_plan_id is not None or body.execution_session_id is not None:
             raise HTTPException(
                 status_code=400,
-                detail="source=assist cannot reference plan/execution/recon IDs." + _split,
+                detail="source=assist cannot reference plan/execution IDs." + _split,
             )
 
     # v2.337.0 — the per-key workflow-pinning guard is gone with per-workflow
@@ -240,20 +218,6 @@ def submit_agent_feedback(
         )
         if not plan:
             raise HTTPException(status_code=404, detail="test_plan_id not found in this project")
-    if body.recon_session_id is not None:
-        recon = (
-            db.query(ReconSession)
-            .filter(
-                ReconSession.id == body.recon_session_id,
-                ReconSession.project_id == agent.project_id,
-            )
-            .first()
-        )
-        if not recon:
-            raise HTTPException(
-                status_code=404,
-                detail="recon_session_id not found in this project",
-            )
     if body.assist_session_id is not None:
         assist = (
             db.query(AssistSession)
@@ -292,7 +256,6 @@ def submit_agent_feedback(
         agent_session_id=agent_session_id,
         test_plan_id=body.test_plan_id,
         execution_session_id=body.execution_session_id,
-        recon_session_id=body.recon_session_id,
         assist_session_id=body.assist_session_id,
         source=body.source,
         prompt_version=body.prompt_version,

@@ -414,7 +414,7 @@ const SubnetTable: React.FC<{
   if (data.subnets.length === 0) {
     return (
       <p className="text-metadata text-muted-foreground">
-        No hosts are mapped to any scoped subnet yet. Upload a scan or run recon, then come back.
+        No hosts are mapped to any scoped subnet yet. Upload a scan or have your agent scan the scope, then come back.
       </p>
     );
   }

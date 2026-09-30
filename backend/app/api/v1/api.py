@@ -43,7 +43,6 @@ from app.api.v1.endpoints import (
     # systemic + finding disposition + the agent decision queue.
     posture,
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
-    recon_sessions,
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
     # ExecutionDetail page; permalink for /executions/:sessionId).
     execution_sessions,
@@ -122,7 +121,7 @@ api_router.include_router(
     dependencies=_agent_operator_access,
 )
 api_router.include_router(
-    agent_recon.router, prefix="/agent", tags=["agent-recon"],
+    agent_recon.router, prefix="/agent", tags=["agent-scope"],
     dependencies=_agent_operator_access,
 )
 # v2.428.0 — the Findings hub's scanner-observations view and the Reports
@@ -257,7 +256,6 @@ project_router.include_router(test_plan_bundles.router, prefix="/test-plans", ta
 project_router.include_router(agent_activity.router, tags=["agent-activity"])
 project_router.include_router(agent_sessions.router, tags=["agent-sessions"])
 project_router.include_router(coverage.router, prefix="/coverage", tags=["coverage"])
-project_router.include_router(recon_sessions.router, prefix="/recon-sessions", tags=["recon-sessions"])
 project_router.include_router(execution_sessions.router, prefix="/execution-sessions", tags=["execution-sessions"])
 # v2.64.0 — operator-side assist session lifecycle.  Mints the
 # X-API-Key consumed by /agent/assist/*; not to be confused with

@@ -154,10 +154,10 @@ const sections: GuideSection[] = [
         <DslFieldReference />
         <Alert className="mt-sm">
           <AlertDescription>
-            This same query language is available to an <strong>AI Assist agent</strong> — so you can
+            This same query language is available to your <strong>agent</strong> — so you can
             ask your AI of choice questions like "which hosts do I have in review?" and it answers
-            with <Mono>follow:in_review</Mono> against the live data. See <strong>Agentic
-            Workflows → AI Assist</strong>.
+            with <Mono>follow:in_review</Mono> against the live data. See <strong>Agents →
+            Asking about your project</strong>.
           </AlertDescription>
         </Alert>
       </div>
@@ -206,7 +206,7 @@ const sections: GuideSection[] = [
         </UnorderedList>
         <Para>
           For the day-to-day analyst view, <strong>Operations</strong> stays your home base (your
-          queue, pending approvals, recent notes); <strong>Portfolio</strong> rolls posture up across
+          queue, blocked work, recent notes); <strong>Portfolio</strong> rolls posture up across
           every project you belong to.
         </Para>
       </div>

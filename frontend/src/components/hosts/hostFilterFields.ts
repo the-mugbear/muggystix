@@ -325,7 +325,7 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   {
     kind: 'toggle', id: 'hasTestExecution', key: 'hasTestExecution', keys: ['hasTestExecution'], chipKey: 'hasTestExecution',
     label: 'Tested by agent', category: 'work', keywords: ['test', 'plan', 'executed', 'agent'],
-    help: 'An agentic test plan was actually executed against the host (not merely drafted). "Approved but never run" is the built-in view Planned, not tested.',
+    help: 'A test plan was actually executed against the host (not merely written). "Planned but never run" is the built-in view Planned, not tested.',
   },
   {
     kind: 'query', id: 'note', token: 'note:', keys: [], chipKey: '',

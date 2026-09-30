@@ -967,18 +967,6 @@ export const getMatchingHostIds = async (
   return response.data;
 };
 
-export interface HostLineageReconRow {
-  session_id: number;
-  scope_id: number;
-  scope_name?: string | null;
-  status: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-  generated_by_model?: string | null;
-  generated_by_tool?: string | null;
-  started_by_username?: string | null;
-}
-
 export interface HostLineagePlanRow {
   plan_id: number;
   title: string;
@@ -1007,7 +995,6 @@ export interface HostLineageExecutionRow {
 export interface HostLineageResponse {
   host_id: number;
   ip_address: string;
-  recon_sessions: HostLineageReconRow[];
   plan_entries: HostLineagePlanRow[];
   execution_sessions: HostLineageExecutionRow[];
 }

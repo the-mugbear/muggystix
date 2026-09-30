@@ -77,7 +77,7 @@ const PAGE_SIZE = 25;
 const PREVIEW_SIZE = 5;
 
 const REASON_LABEL: Record<string, string> = {
-  critical: 'Critical', high: 'High', pending_review: 'Pending approval',
+  critical: 'Critical', high: 'High',
   blocked_session: 'Blocked run', no_admin: 'No project admin', quiet: 'No import in 14 days',
   no_data: 'No inventory',
 };
@@ -647,7 +647,7 @@ const Oversight: React.FC = () => {
                 </p>
               </PostureMeasure>
               <PostureMeasure label="Contributors in the period" value={n(s.contributors)}
-                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, approved or rejected a plan, or concluded a host review — counted once across projects. Page views never count. Not the same set as Testers: a tester is anyone who currently has a host in review or reviewed, whatever the dates, so someone who only imported scans is a contributor but not a tester.">
+                info="Distinct people who, in the period, uploaded a scan, wrote a note, recorded or re-dispositioned a finding, or concluded a host review — counted once across projects. Page views never count. Not the same set as Testers: a tester is anyone who currently has a host in review or reviewed, whatever the dates, so someone who only imported scans is a contributor but not a tester.">
                 <p className="break-words">
                   {plural(s.imports, 'scan')} imported
                   {s.unattributed_events > 0 && ` · ${plural(s.unattributed_events, 'action')} with no recorded author`}
@@ -689,7 +689,6 @@ const Oversight: React.FC = () => {
                     project's activity (no import), never the age of evidence. */}
                 {[
                   { code: 'critical', value: data.attention.critical_projects, one: 'project', label: 'with a critical finding or critical scanner output not yet judged' },
-                  { code: 'pending_review', value: data.attention.pending_approval_plans, one: 'plan', label: 'awaiting approval' },
                   { code: 'blocked_session', value: data.attention.blocked_runs, one: 'run', label: 'blocked' },
                   { code: 'no_admin', value: data.attention.no_admin_projects, one: 'project', label: 'without a project admin' },
                   { code: 'quiet', value: data.attention.quiet_projects, one: 'active project', label: 'with no import in 14 days' },
@@ -789,7 +788,7 @@ const Oversight: React.FC = () => {
           <TabsContent value="testers" className="space-y-sm">
             <p className="text-caption text-muted-foreground">
               A tester is anyone who currently has a host in review or reviewed, whatever the dates. That is a different set from
-              the Overview's Contributors in the period (anyone who imported, wrote a note, triaged a finding, approved a plan or
+              the Overview's Contributors in the period (anyone who imported, wrote a note, triaged a finding or
               concluded a review in the dates), so the two counts need not match. Findings are counted through the hosts each person worked on,
               so two reviewers of one host both get credit and these rows do not add up to the project totals.
               Removing a user also removes their review records.

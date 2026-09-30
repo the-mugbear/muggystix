@@ -1,6 +1,5 @@
 /**
- * Test Plans list (v5.288.0 — screenshot review): the workflow explainer is
- * collapsed by default and remembers the viewer's choice; the list is readable
+ * Test Plans list (v5.288.0 — screenshot review): the list is readable
  * (titles and authors wrap, author by full name) and progress says what it
  * counts ("1 of 4 entries done") instead of a bare "0%".
  */
@@ -13,19 +12,17 @@ import TestPlans from '../../pages/TestPlans';
 
 vi.mock('../../services/api', () => ({
   getTestPlans: vi.fn(),
-  generateTestPlan: vi.fn(),
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
+const project = vi.hoisted(() => ({ my_role: 'analyst' as string | null }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'Demo' } }),
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: project.my_role } }),
 }));
 
 import * as api from '../../services/api';
 const mockedApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
-
-const KEY = 'testPlans.workflowExplainer.expanded';
 
 const plan = (over: Record<string, unknown> = {}) => ({
   id: 7,
@@ -33,7 +30,7 @@ const plan = (over: Record<string, unknown> = {}) => ({
   version: 1,
   title: '[named-assets seed] Named endpoint exposure across the DMZ web tier',
   description: '',
-  status: 'approved',
+  status: 'in_progress',
   agent_name: '[named-assets seed] agent',
   created_by_username: 'admin',
   created_by_full_name: 'Ada Administrator',
@@ -55,57 +52,45 @@ const renderPage = () =>
 describe('TestPlans', () => {
   beforeEach(() => {
     window.localStorage.clear();
+    project.my_role = 'analyst';
     mockedApi.getTestPlans.mockReset().mockResolvedValue([plan()]);
   });
 
-  it('keeps the workflow explainer collapsed by default and remembers opening it', async () => {
-    const user = userEvent.setup();
+  // N3 — `POST /assist/start` needs project auditor, so a viewer is not
+  // offered a dialog whose start the server refuses.
+  it('offers the agent to an auditor but not to a project viewer', async () => {
+    project.my_role = 'auditor';
     const { unmount } = renderPage();
     await screen.findByText(/Named endpoint exposure/);
-
-    const trigger = screen.getByRole('button', { name: /How the test plan workflow works/ });
-    expect(trigger).toHaveAttribute('aria-expanded', 'false');
-    // Visiting must not write a preference the viewer never chose.
-    expect(window.localStorage.getItem(KEY)).toBeNull();
-
-    await user.click(trigger);
-    expect(trigger).toHaveAttribute('aria-expanded', 'true');
-    expect(window.localStorage.getItem(KEY)).toBe('true');
-
+    expect(screen.getByRole('button', { name: /Draft with your agent/ })).toBeInTheDocument();
     unmount();
+
+    project.my_role = 'viewer';
     renderPage();
     await screen.findByText(/Named endpoint exposure/);
-    expect(
-      screen.getByRole('button', { name: /How the test plan workflow works/ }),
-    ).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.queryByRole('button', { name: /Draft with your agent/ })).toBeNull();
   });
 
-  it('still renders when storage throws', async () => {
-    const spy = vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
-      throw new Error('blocked');
-    });
+  // 5.313.0 — no approval step: a plan is a record you or your agent write
+  // and work. The page says so, offers the agent session, and filters only
+  // by the statuses a plan can have.
+  it('reads as a plan you or your agent write and work — nothing about approval', async () => {
     renderPage();
     await screen.findByText(/Named endpoint exposure/);
-    expect(
-      screen.getByRole('button', { name: /How the test plan workflow works/ }),
-    ).toHaveAttribute('aria-expanded', 'false');
-    spy.mockRestore();
+    expect(screen.getByText(/What you or your agent intend to test and what came of it/)).toBeInTheDocument();
+    expect(screen.queryByText(/approv/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /How the test plan workflow works/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Generate with AI/ })).toBeNull();
+    expect(screen.getByText('In Progress')).toBeInTheDocument();
   });
 
-  it('describes the current flow: an explicit submit, approval, no automatic close', async () => {
+  it('offers the status filter only for the statuses a plan can have', async () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText(/Named endpoint exposure/);
-    await user.click(screen.getByRole('button', { name: /How the test plan workflow works/ }));
-
-    const explainer = screen.getByTestId('workflow-explainer');
-    expect(explainer).not.toHaveTextContent(/submits automatically/);
-    expect(explainer).toHaveTextContent(/not an automatic one/);
-    expect(explainer).toHaveTextContent(/Only an approved plan can be executed/);
-    expect(explainer).toHaveTextContent(/the run does not close the plan itself/);
-    // Sections, not cards: no bordered box around it, no alert boxes inside.
-    expect(explainer.className).not.toMatch(/rounded-panel/);
-    expect(explainer.querySelector('[role="alert"]')).toBeNull();
+    await user.click(screen.getByLabelText('Filter test plans by status'));
+    const options = screen.getAllByRole('option').map((o) => o.textContent);
+    expect(options).toEqual(['All statuses', 'Draft', 'In Progress', 'Completed', 'Archived']);
   });
 
   it('shows progress as a fraction, and the author by full name', async () => {
@@ -155,7 +140,8 @@ describe('TestPlans', () => {
     renderPage();
     await screen.findByText(/Named endpoint exposure/);
     const actions = screen.getByTestId('page-actions');
-    expect(within(actions).getByRole('button', { name: /Generate with AI/ })).toBeInTheDocument();
+    // 5.313.0 — the agent session, handed the task, replaced Generate with AI.
+    expect(within(actions).getByRole('button', { name: /Draft with your agent/ })).toBeInTheDocument();
     expect(within(actions).getByRole('button', { name: /Compare/ })).toBeInTheDocument();
     // The search and the status filter are no longer in the action group.
     expect(within(actions).queryByLabelText('Search test plans')).toBeNull();

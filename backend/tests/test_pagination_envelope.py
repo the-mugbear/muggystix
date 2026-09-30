@@ -13,22 +13,6 @@ from __future__ import annotations
 from app.db import models
 
 
-def test_recon_sessions_envelope_shape(client, db_session, test_project):
-    """The /recon-sessions/ endpoint returns ``items`` + ``total`` +
-    ``skip`` + ``limit`` + ``has_more``."""
-    # No recon sessions seeded → total=0, items=[], has_more=False.
-    r = client.get(f"/api/v1/projects/{test_project.id}/recon-sessions/")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert set(body.keys()) >= {"items", "total", "skip", "limit", "has_more"}
-    assert body["items"] == []
-    assert body["total"] == 0
-    assert body["has_more"] is False
-    # Default limit is 100; the wrapper passes nothing → server default.
-    assert body["limit"] == 100
-    assert body["skip"] == 0
-
-
 def test_execution_sessions_envelope_shape(client, db_session, test_project):
     r = client.get(f"/api/v1/projects/{test_project.id}/execution-sessions/")
     assert r.status_code == 200, r.text

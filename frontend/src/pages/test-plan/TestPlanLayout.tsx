@@ -2,16 +2,22 @@
  * TestPlanLayout — parent shell for the routed test-plan sub-tabs.
  *
  * Owns: data fetch (plan + progress + sessions), header, metadata
- * panel, action buttons, dialogs (reject / delete / execute / report /
- * edit / import), tab nav.  Sub-tabs receive the shared state via
+ * panel, action buttons, dialogs (abandon / delete / report / edit /
+ * import), tab nav.  Sub-tabs receive the shared state via
  * useOutletContext from `useTestPlanContext` below.
  *
  * v3 alpha.14 IA split: /test-plans/:id/plan, /runs, /activity. Old
  * /test-plans/:id index redirects to /plan.
+ *
+ * 5.313.0 — no approval and no per-plan keys. A plan is a record of intent
+ * and results that you or your agent write and work: a draft with entries
+ * can be worked straight away (execution moves it to in progress). "Work
+ * with your agent" hands the plan to the operator's one agent session
+ * (AgentTaskButton); resuming or renewing an agent happens on its session
+ * (OwningSessionLink), never here.
  */
 import { formatTimestamp } from '../../utils/relativeTime';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { copyToClipboard } from '../../utils/clipboard';
 import {
   NavLink,
   Outlet,
@@ -23,46 +29,31 @@ import {
 } from 'react-router-dom';
 import {
   AlertTriangle,
-  Check,
-  CheckCircle2,
   CircleSlash,
   ClipboardCheck,
-  Copy,
   FileDown,
   FileUp,
   Loader2,
   Pencil,
-  Play,
-  RotateCcw,
   Trash2,
-  XCircle,
 } from 'lucide-react';
 import {
-  approveTestPlan,
   archiveTestPlan,
   deleteTestPlan,
   downloadTestPlanBundle,
-  ExecuteResponse,
-  executeTestPlan,
-  GeneratePlanResponse,
-  resumeExecutionSession,
-  resumePlanGeneration,
   ExecutionSessionSummary,
   getTestPlan,
   getTestPlanProgress,
   importTestPlanResults,
   ImportResultsResponse,
   listExecutionSessions,
-  rejectTestPlan,
-  rotateTestPlanKey,
   TestPlanDetail as TestPlanDetailType,
   TestPlanProgress,
   updateTestPlanMetadata,
 } from '../../services/api';
-import InAppAgentPanel from '../../components/InAppAgentPanel';
-import McpConnectPanel from '../../components/McpConnectPanel';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
-import { NextStepBanner } from '../../components/NextStepBanner';
+import AgentTaskButton from '../../components/agent-sessions/AgentTaskButton';
+import OwningSessionLink from '../../components/agent-sessions/OwningSessionLink';
+import { agentInstruction } from '../../utils/agentRuns';
 import { DetailSkeleton } from '../../components/PageSkeleton';
 import { useAuth } from '../../contexts/AuthContext';
 import { useToast } from '../../contexts/ToastContext';
@@ -75,7 +66,6 @@ import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
 import {
   Dialog,
-  DialogBody,
   DialogContent,
   DialogDescription,
   DialogFooter,
@@ -84,7 +74,6 @@ import {
 } from '../../components/ui/dialog';
 import { ConfirmDialog } from '../../components/ui/confirm-dialog';
 import { WorkflowDetailHeader } from '../../components/workflow/WorkflowDetailHeader';
-import { Checkbox } from '../../components/ui/checkbox';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import {
@@ -103,37 +92,15 @@ type Tone = 'default' | 'success' | 'warning' | 'destructive' | 'info' | 'muted'
 const planStatusTone = (status: string | null | undefined): Tone => {
   switch (status) {
     case 'draft':
-      return 'muted';
-    case 'proposed':
       return 'info';
-    case 'approved':
-      return 'default';
     case 'in_progress':
       return 'warning';
     case 'completed':
       return 'success';
-    case 'rejected':
-      return 'destructive';
     case 'archived':
-      return 'muted';
     default:
       return 'muted';
   }
-};
-
-const formatTimeLeft = (seconds: number | null | undefined): string => {
-  if (seconds == null) return '';
-  const abs = Math.abs(seconds);
-  if (abs < 60) return `${Math.round(abs)}s`;
-  if (abs < 3600) return `${Math.round(abs / 60)}m`;
-  if (abs < 86400) {
-    const h = Math.floor(abs / 3600);
-    const m = Math.round((abs % 3600) / 60);
-    return m > 0 ? `${h}h ${m}m` : `${h}h`;
-  }
-  const d = Math.floor(abs / 86400);
-  const h = Math.round((abs % 86400) / 3600);
-  return h > 0 ? `${d}d ${h}h` : `${d}d`;
 };
 
 const PlanMetaItem: React.FC<{
@@ -188,10 +155,6 @@ export interface TestPlanContext {
    *  can trigger it from a card-level Delete button without owning the
    *  dialog state itself. */
   openDeleteDialog: () => void;
-  /** Resume an interrupted execution session — re-mints a fresh agent
-   *  key for the SAME session and opens the agent-instructions dialog.
-   *  Used by the Resume button on RunsTab. */
-  handleResume: (sessionId: number, looksInterrupted: boolean) => void;
 }
 
 export function useTestPlanContext(): TestPlanContext {
@@ -253,17 +216,6 @@ const TestPlanLayout: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [actionLoading, setActionLoading] = useState(false);
-  const [newApiKey, setNewApiKey] = useState<string | null>(null);
-  const [newApiKeyExpiresAt, setNewApiKeyExpiresAt] = useState<string | null>(null);
-  // v4.7.5 — gate the regenerated-key banner's dismiss button on a
-  // successful clipboard write.  Without this gate operators could
-  // dismiss the only on-screen copy of a one-time secret before they
-  // had it captured anywhere — the v2.45.1-era UI showed an optimistic
-  // success toast that lied about whether the clipboard had received
-  // the value (denied permission / insecure origin / RDP hardening
-  // are all common failure modes for a security-team product).
-  const [regeneratedKeyCopied, setRegeneratedKeyCopied] = useState(false);
-  const [rotatingKey, setRotatingKey] = useState(false);
 
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
   const [allSessions, setAllSessions] = useState<ExecutionSessionSummary[] | null>(null);
@@ -272,53 +224,11 @@ const TestPlanLayout: React.FC = () => {
   // setAllSessions(null) — the picker just vanishes otherwise.
   const [sessionsError, setSessionsError] = useState<string | null>(null);
 
-  const [rejectOpen, setRejectOpen] = useState(false);
-  const [rejectReason, setRejectReason] = useState('');
   const [archiveOpen, setArchiveOpen] = useState(false);
   const [archiveReason, setArchiveReason] = useState('');
 
   const [deleteOpen, setDeleteOpen] = useState(false);
   const [deleteConfirmText, setDeleteConfirmText] = useState('');
-
-  const [executeOpen, setExecuteOpen] = useState(false);
-  const [executeResult, setExecuteResult] = useState<ExecuteResponse | null>(null);
-  const [executeLoading, setExecuteLoading] = useState(false);
-  const [executeError, setExecuteError] = useState<string | null>(null);
-  // Non-null while the execute dialog is in "resume" mode — holds the
-  // id of the interrupted session being resumed.  Drives the dialog's
-  // resume-specific title/copy; null = a fresh /execute.
-  const [resumeSessionId, setResumeSessionId] = useState<number | null>(null);
-  // True when the session being resumed looks interrupted (stale/paused)
-  // — drives reassuring vs. warning copy in the confirm dialog.
-  const [resumeLooksInterrupted, setResumeLooksInterrupted] = useState(true);
-
-  // Plan-generation resume state — parallel to the execution resume
-  // above.  The dialog opens in confirm state; the POST fires only on
-  // the operator's deliberate click; on success the dialog flips to
-  // show the new api_key + instructions block.
-  const [resumeGenOpen, setResumeGenOpen] = useState(false);
-  const [resumeGenResult, setResumeGenResult] = useState<GeneratePlanResponse | null>(null);
-  const [resumeGenLoading, setResumeGenLoading] = useState(false);
-  const [resumeGenError, setResumeGenError] = useState<string | null>(null);
-  const [resumeGenKeySaved, setResumeGenKeySaved] = useState(false);
-  useEffect(() => {
-    if (resumeGenResult?.api_key) {
-      setResumeGenKeySaved(false);
-    }
-  }, [resumeGenResult?.api_key]);
-  // Transient "Copied!" icon feedback (flips back to false after 1.5s).
-  const [copiedKey, setCopiedKey] = useState(false);
-  const [copiedInstructions, setCopiedInstructions] = useState(false);
-  // FRX·H8: sticky flag — Done is gated on the operator having copied
-  // the API key at least once during this dialog session.  The key is
-  // shown only once, so closing the dialog without saving it elsewhere
-  // is destructive.  Reset whenever a new key is shown.
-  const [apiKeySaved, setApiKeySaved] = useState(false);
-  useEffect(() => {
-    if (executeResult?.api_key) {
-      setApiKeySaved(false);
-    }
-  }, [executeResult?.api_key]);
 
   const [bundleLoading, setBundleLoading] = useState(false);
 
@@ -446,42 +356,6 @@ const TestPlanLayout: React.FC = () => {
     }
   }, [plan, isLoadingMoreEntries, id, toast]);
 
-  const handleApprove = async () => {
-    setActionLoading(true);
-    try {
-      await approveTestPlan(id);
-      await loadPlan();
-      toast.success('Plan approved.');
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to approve plan.');
-      setError(message);
-      toast.error(message);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleRotateKey = async () => {
-    setRotatingKey(true);
-    try {
-      const resp = await rotateTestPlanKey(id);
-      setNewApiKey(resp.api_key);
-      setNewApiKeyExpiresAt(resp.expires_at);
-      // v4.7.5 — reset the copy-acknowledgement gate for the new key
-      // so the dismiss button starts disabled (operator must copy
-      // this freshly-minted key before the banner can close).
-      setRegeneratedKeyCopied(false);
-      await loadPlan();
-      toast.success('New agent key issued.');
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to rotate agent key.');
-      setError(message);
-      toast.error(message);
-    } finally {
-      setRotatingKey(false);
-    }
-  };
-
   const handleArchive = async () => {
     setActionLoading(true);
     try {
@@ -492,23 +366,6 @@ const TestPlanLayout: React.FC = () => {
       toast.info('Plan abandoned.');
     } catch (err: unknown) {
       const message = formatApiError(err, 'Failed to abandon plan.');
-      setError(message);
-      toast.error(message);
-    } finally {
-      setActionLoading(false);
-    }
-  };
-
-  const handleReject = async () => {
-    setActionLoading(true);
-    try {
-      await rejectTestPlan(id, rejectReason || undefined);
-      setRejectOpen(false);
-      setRejectReason('');
-      await loadPlan();
-      toast.info('Plan rejected.');
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to reject plan.');
       setError(message);
       toast.error(message);
     } finally {
@@ -531,98 +388,11 @@ const TestPlanLayout: React.FC = () => {
     }
   };
 
-  const handleExecute = async () => {
-    setExecuteLoading(true);
-    setExecuteError(null);
-    try {
-      const result = await executeTestPlan(id);
-      setExecuteResult(result);
-      toast.success('Execution session created.');
-      await loadPlan();
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to start execution session.');
-      setExecuteError(message);
-      toast.error(message);
-    } finally {
-      setExecuteLoading(false);
-    }
-  };
-
   const openEditPlanDialog = () => {
     if (!plan) return;
     setEditPlanTitle(plan.title);
     setEditPlanDescription(plan.description || '');
     setEditPlanOpen(true);
-  };
-
-  // FRX·M9: shared between the action bar's "Execute with AI" button
-  // and the NextStepBanner rendered for approved-but-not-yet-run plans.
-  const openExecuteDialog = () => {
-    setResumeSessionId(null);
-    setExecuteResult(null);
-    setExecuteError(null);
-    setExecuteOpen(true);
-  };
-
-  // Resume opens the agent-instructions dialog in a confirm state — the
-  // API call does NOT fire here.  Resuming re-mints the agent key and
-  // REVOKES the current one, so an agent still running on the old key
-  // would be cut off; the operator confirms (handleResumeConfirm) after
-  // the dialog explains that.  `looksInterrupted` (stale/paused) selects
-  // reassuring vs. warning copy.
-  const handleResume = (sessionId: number, looksInterrupted: boolean) => {
-    setResumeSessionId(sessionId);
-    setResumeLooksInterrupted(looksInterrupted);
-    setExecuteResult(null);
-    setExecuteError(null);
-    setExecuteOpen(true);
-  };
-
-  // Fires the resume request after the operator confirms in the dialog.
-  const handleResumeConfirm = async () => {
-    if (resumeSessionId == null) return;
-    setExecuteLoading(true);
-    setExecuteError(null);
-    try {
-      const result = await resumeExecutionSession(id, resumeSessionId);
-      setExecuteResult(result);
-      toast.success(`Execution session #${resumeSessionId} resumed.`);
-      await loadPlan();
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to resume execution session.');
-      setExecuteError(message);
-      toast.error(message);
-    } finally {
-      setExecuteLoading(false);
-    }
-  };
-
-  // Plan-generation resume opens the dialog in confirm state.  Resuming
-  // re-mints the plan's agent key and revokes the prior one, so an
-  // agent still running on the dead key will be cut off — confirm
-  // before firing.
-  const openResumeGenDialog = () => {
-    setResumeGenResult(null);
-    setResumeGenError(null);
-    setResumeGenKeySaved(false);
-    setResumeGenOpen(true);
-  };
-
-  const handleResumeGenConfirm = async () => {
-    setResumeGenLoading(true);
-    setResumeGenError(null);
-    try {
-      const result = await resumePlanGeneration(id);
-      setResumeGenResult(result);
-      toast.success('Plan generation resumed — fresh agent key minted.');
-      await loadPlan();
-    } catch (err: unknown) {
-      const message = formatApiError(err, 'Failed to resume plan generation.');
-      setResumeGenError(message);
-      toast.error(message);
-    } finally {
-      setResumeGenLoading(false);
-    }
   };
 
   const handleSavePlanMetadata = async () => {
@@ -686,26 +456,6 @@ const TestPlanLayout: React.FC = () => {
     }
   };
 
-  // Returns true iff the clipboard write succeeded.  Callers that gate
-  // safety state (the Execute dialog's Done button, the regenerated-key
-  // banner) MUST await this and only advance their state on true —
-  // pre-v4.7.5 the callers fired their "saved" flag synchronously
-  // alongside this call, so a failed clipboard write (denied
-  // permission, insecure origin, remote-desktop hardening) silently
-  // unlocked the safety gate.
-  const handleCopy = async (
-    text: string,
-    setter: (v: boolean) => void,
-  ): Promise<boolean> => {
-    if (await copyToClipboard(text)) {
-      setter(true);
-      setTimeout(() => setter(false), 1500);
-      return true;
-    }
-    toast.warning('Could not copy to clipboard.');
-    return false;
-  };
-
   if (loading) {
     return <DetailSkeleton />;
   }
@@ -762,8 +512,12 @@ const TestPlanLayout: React.FC = () => {
     isLoadingMoreEntries,
     openReportDialog: report.openDialog,
     openDeleteDialog,
-    handleResume,
   };
+
+  // A plan is worked once it has entries: a draft (execution moves it to in
+  // progress) or a plan already in progress. Nothing waits on an approval.
+  const workable =
+    (plan.status === 'draft' && totalEntries > 0) || plan.status === 'in_progress';
 
   return (
     <div className="p-md md:p-lg">
@@ -791,10 +545,9 @@ const TestPlanLayout: React.FC = () => {
         badges={
           <>
             <Badge variant={planStatusTone(plan.status)}>{formatStatusLabel(plan.status)}</Badge>
-            {/* Plan-generation staleness — the third leg of the
-                agentic-workflow Resume affordance (parallel to recon and
-                execution).  Backend decides the predicate so it can't
-                drift against the browser clock. */}
+            {/* Drafting staleness — the backend decides the predicate so it
+                can't drift against the browser clock. Resuming is done on the
+                agent's session (5.313.0), not on the plan. */}
             {plan.is_stale && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -803,8 +556,8 @@ const TestPlanLayout: React.FC = () => {
                   </Badge>
                 </TooltipTrigger>
                 <TooltipContent>
-                  No plan-generation agent activity for 15+ minutes — this draft may have been
-                  interrupted. Use Resume to re-issue a key and continue.
+                  This draft has no entries and no agent activity for 15+ minutes — its agent
+                  may have stopped. Resume its agent session to continue.
                 </TooltipContent>
               </Tooltip>
             )}
@@ -818,33 +571,18 @@ const TestPlanLayout: React.FC = () => {
         actions={
           canManage ? (
             <>
-              {plan.is_stale && (
-                <Button size="sm" variant="outline" onClick={openResumeGenDialog}>
-                  <RotateCcw className="size-4" aria-hidden /> Resume
-                </Button>
+              {plan.agent_session_id != null && (
+                <OwningSessionLink agentSessionId={plan.agent_session_id} />
               )}
-              {(plan.status === 'proposed' || plan.status === 'rejected') && (
-                <Button size="sm" onClick={handleApprove} disabled={actionLoading}>
-                  <CheckCircle2 className="size-4" aria-hidden /> Approve Plan
-                </Button>
-              )}
-              {plan.status === 'proposed' && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="text-destructive hover:text-destructive"
-                  onClick={() => setRejectOpen(true)}
+              {workable && (
+                <AgentTaskButton
+                  variant="default"
+                  label="Work with your agent"
+                  instruction={agentInstruction.workPlan(plan.id)}
                   disabled={actionLoading}
-                >
-                  <XCircle className="size-4" aria-hidden /> Reject
-                </Button>
+                />
               )}
-              {(plan.status === 'approved' || plan.status === 'in_progress') && (
-                <Button size="sm" onClick={openExecuteDialog} disabled={actionLoading}>
-                  <Play className="size-4" aria-hidden /> Execute with AI
-                </Button>
-              )}
-              {(plan.status === 'approved' || plan.status === 'in_progress') && (
+              {workable && (
                 <Button
                   size="sm"
                   variant="outline"
@@ -884,14 +622,11 @@ const TestPlanLayout: React.FC = () => {
         }
         destructiveAction={
           // Abandon — non-destructive terminal exit for any NON-terminal
-          // plan (draft / proposed / approved / in_progress), matching the
-          // backend's archive_plan guard.  Pinned to the far right of the
-          // action bar; Delete lives behind the Manage tab.
+          // plan (draft / in_progress), matching the backend's archive_plan
+          // guard.  Pinned to the far right of the action bar; Delete lives
+          // behind the Manage tab.
           canManage &&
-          (plan.status === 'draft' ||
-            plan.status === 'proposed' ||
-            plan.status === 'approved' ||
-            plan.status === 'in_progress') ? (
+          (plan.status === 'draft' || plan.status === 'in_progress') ? (
             <Button
               size="sm"
               variant="warning-outline"
@@ -921,12 +656,6 @@ const TestPlanLayout: React.FC = () => {
               value={plan.prompt_version ? `v${plan.prompt_version}` : null}
               fallback="not recorded"
             />
-            {plan.approved_at && (
-              <PlanMetaItem label="Approved" value={formatTimestamp(plan.approved_at)} />
-            )}
-            {plan.rejected_at && (
-              <PlanMetaItem label="Rejected" value={formatTimestamp(plan.rejected_at)} />
-            )}
             {plan.completed_at && (
               <PlanMetaItem label="Completed" value={formatTimestamp(plan.completed_at)} />
             )}
@@ -979,23 +708,14 @@ const TestPlanLayout: React.FC = () => {
               </div>
             )}
 
-          {plan.source_kind && plan.source_kind !== 'unspecified' && (
+          {/* 5.313.1 — a plan drafted from a recon run keeps its old
+              source_kind, but runs are gone and there is nothing to show. */}
+          {plan.source_kind && plan.source_kind !== 'unspecified' && plan.source_kind !== 'recon_session' && (
             <div className="mt-sm">
               <p className="mb-xxs text-micro uppercase tracking-wider font-semibold text-muted-foreground">
                 Source provenance
               </p>
               <div className="flex flex-wrap gap-xs">
-                {plan.source_kind === 'recon_session' && plan.source_recon_session_id && (
-                  <button
-                    type="button"
-                    onClick={() => navigate(`/recon/runs/${plan.source_recon_session_id}`)}
-                    className="rounded-chip focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  >
-                    <Badge variant="secondary" className="cursor-pointer">
-                      From recon run #{plan.source_recon_session_id}
-                    </Badge>
-                  </button>
-                )}
                 {plan.source_kind === 'manual_hosts' && (
                   <Badge variant="outline">
                     {plan.source_host_ids?.length
@@ -1021,101 +741,8 @@ const TestPlanLayout: React.FC = () => {
             </div>
           )}
 
-          {plan.api_key.has_key && (
-            <div className="mt-sm">
-              <p className="mb-xxs text-micro uppercase tracking-wider font-semibold text-muted-foreground">
-                Agent API key
-              </p>
-              <div className="flex flex-wrap items-center gap-sm">
-                <Badge variant={plan.api_key.is_active ? 'success' : 'warning'}>
-                  {plan.api_key.is_active ? 'Active' : 'Expired'}
-                </Badge>
-                <span className="text-caption text-muted-foreground">
-                  {plan.api_key.is_active
-                    ? `Expires in ${formatTimeLeft(plan.api_key.expires_in_seconds)}`
-                    : `Expired ${formatTimeLeft(plan.api_key.expires_in_seconds)} ago`}
-                </span>
-                {plan.api_key.key_prefix && (
-                  <span className="font-mono text-caption text-muted-foreground">
-                    {plan.api_key.key_prefix}…
-                  </span>
-                )}
-                {canManage && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={handleRotateKey}
-                    disabled={rotatingKey}
-                    className="ml-auto"
-                  >
-                    {rotatingKey ? 'Regenerating…' : 'Regenerate key'}
-                  </Button>
-                )}
-              </div>
-            </div>
-          )}
         </CardContent>
       </Card>
-
-      {newApiKey && (
-        <Alert variant="success" className="mb-sm">
-          <AlertDescription>
-            <p className="font-semibold">New agent API key — copy now, shown only once.</p>
-            {newApiKeyExpiresAt && (
-              <p className="mt-xxs text-caption text-muted-foreground">
-                Expires {formatTimestamp(newApiKeyExpiresAt)}.
-              </p>
-            )}
-            <div className="mt-xs flex items-center gap-xs">
-              <code className="flex-1 break-all rounded-control bg-accent p-xs font-mono text-caption">
-                {newApiKey}
-              </code>
-              <Button
-                size="sm"
-                onClick={async () => {
-                  // v4.7.5 — await the clipboard write so the success
-                  // toast only fires after the write actually landed.
-                  // Pre-fix the toast fired synchronously, which lied
-                  // to operators about a denied/blocked clipboard
-                  // permission — they'd dismiss the banner thinking
-                  // the key was safe and lose it.
-                  if (await copyToClipboard(newApiKey)) {
-                    setRegeneratedKeyCopied(true);
-                    toast.success('Copied to clipboard');
-                  } else {
-                    toast.warning(
-                      'Could not copy to clipboard — copy the key manually before dismissing.',
-                    );
-                  }
-                }}
-              >
-                Copy
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                disabled={!regeneratedKeyCopied}
-                onClick={() => {
-                  // v4.7.5 — dismiss gated on a successful copy.
-                  // Mirrors the Execute dialog's apiKeySaved gate
-                  // (operator must positively acknowledge they have
-                  // the key before the only on-screen copy disappears).
-                  setNewApiKey(null);
-                  setNewApiKeyExpiresAt(null);
-                  setRegeneratedKeyCopied(false);
-                }}
-                aria-label={
-                  regeneratedKeyCopied
-                    ? 'Dismiss'
-                    : 'Copy the key before dismissing'
-                }
-              >
-                <XCircle className="size-4" aria-hidden />
-              </Button>
-            </div>
-          </AlertDescription>
-        </Alert>
-      )}
 
       {error && (
         <Alert variant="destructive" className="mb-sm">
@@ -1136,31 +763,15 @@ const TestPlanLayout: React.FC = () => {
         </Alert>
       )}
 
-      {/* FRX·M9: explicit next-step banner for the silent "approved but
-          never run" state — without this, an approved plan looks the
-          same as a completed one and the operator has to hunt for the
-          Execute action. */}
-      {canManage &&
-        plan.status === 'approved' &&
-        (plan.execution_session_count ?? 0) === 0 && (
-          <NextStepBanner
-            title="Plan approved"
-            body="Run the plan with Execute with AI to start the engagement."
-            primaryCta={{ label: 'Execute with AI', onClick: openExecuteDialog }}
-            tone="success"
-            className="mb-sm"
-          />
-        )}
+      {/* Lifecycle actions (Work with your agent / Export / Import / Report)
+          and Abandon live in the WorkflowDetailHeader action bar above.
+          Delete lives behind the Manage tab. */}
 
-      {/* Lifecycle actions (Approve / Reject / Execute / Export / Import /
-          Report) and Abandon now live in the WorkflowDetailHeader action
-          bar above.  Delete lives behind the Manage tab. */}
-
-      {plan.rejection_reason && (
-        <Alert variant="destructive" className="mb-sm">
+      {plan.archive_reason && (
+        <Alert variant="info" className="mb-sm">
           <AlertDescription>
-            <p className="font-semibold">Rejection Reason:</p>
-            <p className="break-words">{plan.rejection_reason}</p>
+            <p className="font-semibold">Archived because</p>
+            <p className="break-words">{plan.archive_reason}</p>
           </AlertDescription>
         </Alert>
       )}
@@ -1223,19 +834,6 @@ const TestPlanLayout: React.FC = () => {
       </div>
 
       <Outlet context={context} />
-
-      {/* Reject dialog */}
-      <ConfirmDialog
-        open={rejectOpen}
-        onOpenChange={setRejectOpen}
-        busy={actionLoading}
-        title="Reject Test Plan"
-        description="The plan stays in the project for revision. Optionally explain why so the author can address the concern before resubmitting."
-        reason={{ value: rejectReason, onChange: setRejectReason }}
-        confirmLabel="Reject"
-        confirmVariant="destructive"
-        onConfirm={handleReject}
-      />
 
       {/* Abandon dialog */}
       <ConfirmDialog
@@ -1336,255 +934,6 @@ const TestPlanLayout: React.FC = () => {
               )}
               Delete Plan
             </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Execute dialog */}
-      {/*
-        v4.7.5 — close affordance is GATED while a one-time API key is on
-        screen and the user hasn't yet acknowledged copying it.  Pre-fix
-        Esc / overlay click / the corner X all bypassed the Done-button
-        gate; an operator could lose a non-recoverable key with a stray
-        keystroke.  Mirrors the StartReconDialog pattern from UX2-1
-        (v2.44.4 / 4.7.0).
-      */}
-      <Dialog
-        open={executeOpen}
-        onOpenChange={(v) => {
-          if (v) return; // opening — always allow
-          if (executeLoading) return; // network in flight — block close
-          if (executeResult && !apiKeySaved) return; // key not yet saved
-          setExecuteOpen(false);
-        }}
-      >
-        <DialogContent
-          className="max-w-3xl"
-          showClose={!executeResult || apiKeySaved}
-        >
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-xs">
-              <Play className="size-5 text-primary" aria-hidden />
-              {resumeSessionId != null ? 'Resume Execution Session' : 'Execute with AI'}
-            </DialogTitle>
-            <DialogDescription>
-              {resumeSessionId != null
-                ? `Re-mint a fresh agent key (24h TTL) for execution session #${resumeSessionId}. Prior per-test results and sanity checks are preserved — the agent reads them from the execution context and continues from where it stopped.`
-                : "Mint a single-plan, single-execution agent key (24h TTL). Hand it to your terminal-side agent (Claude Code, Codex, Cursor) along with the prompt that's generated below. The agent executes one entry at a time and asks for approval per command — nothing runs autonomously."}
-            </DialogDescription>
-          </DialogHeader>
-          {/* v4.12.1 — wrap the body in DialogBody so the multi-KB
-              instructions + InAppAgentPanel scroll INSIDE the dialog
-              frame instead of pushing the footer off-screen.  Without
-              this, on shorter viewports the Done button became
-              unreachable — the "can't close the modal" symptom.
-              Mirrors StartReconDialog's pattern. */}
-          <DialogBody className="flex flex-col gap-md">
-          {!executeResult ? (
-            <>
-              {resumeSessionId != null ? (
-                resumeLooksInterrupted ? (
-                  <p className="text-metadata">
-                    Resuming session <strong>#{resumeSessionId}</strong> issues a fresh
-                    24h agent key and continues the run — all prior per-test results and
-                    sanity checks are preserved. The session's previous key is revoked.
-                  </p>
-                ) : (
-                  <Alert variant="warning">
-                    <AlertDescription>
-                      Session <strong>#{resumeSessionId}</strong> shows{' '}
-                      <strong>recent agent activity</strong> — it may still be running.
-                      Resuming issues a new key and <strong>revokes the current one</strong>:
-                      an agent still working on this session will stop. Continue only if
-                      you know the run is interrupted.
-                    </AlertDescription>
-                  </Alert>
-                )
-              ) : (
-                <p className="text-metadata">
-                  This will create an <strong>execution session</strong> and generate a time-limited
-                  API key plus an instructions block you can copy to your AI agent. The agent will
-                  guide you through each test, asking for your approval before running any commands.
-                </p>
-              )}
-              {executeError && (
-                <Alert variant="destructive">
-                  <AlertDescription>{executeError}</AlertDescription>
-                </Alert>
-              )}
-            </>
-          ) : (
-            <div className="flex flex-col gap-sm">
-              <Alert variant="success">
-                <AlertDescription>
-                  Execution session <strong>#{executeResult.execution_session_id}</strong>{' '}
-                  {resumeSessionId != null ? 'resumed' : 'created'}. Copy the API key and
-                  instructions below, then paste them to your AI agent.
-                </AlertDescription>
-              </Alert>
-
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">API Key (shown once)</p>
-                <div className="flex items-center gap-xs rounded-control bg-accent p-xs">
-                  <p className="flex-1 break-all font-mono text-caption">{executeResult.api_key}</p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleCopy(executeResult.api_key, setCopiedKey)}
-                        aria-label="Copy API key to clipboard"
-                      >
-                        {copiedKey ? (
-                          <Check className="size-4 text-success" aria-hidden />
-                        ) : (
-                          <Copy className="size-4" aria-hidden />
-                        )}
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>{copiedKey ? 'Copied!' : 'Copy API key'}</TooltipContent>
-                  </Tooltip>
-                </div>
-                {!apiKeySaved && (
-                  // FRX·H8: explicit warning while the operator hasn't
-                  // copied the key yet — Done is disabled in this state.
-                  <Alert variant="warning" className="mt-xs">
-                    <AlertDescription>
-                      This API key is shown only once. Copy it to your password manager before
-                      closing this dialog — there is no way to recover it later.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </div>
-
-              {/* Three handoff routes as tabs, not a stack (v5.191.0, mirroring
-                  StartAssistDialog): the multi-KB prompt no longer sits between
-                  the operator and the MCP config they came to copy. */}
-              {(() => {
-                const hasMcp = (executeResult.mcp_clients?.length ?? 0) > 0;
-                return (
-                  <Tabs defaultValue={hasMcp ? 'mcp' : 'prompt'}>
-                    <TabsList className="mb-xs">
-                      {hasMcp && <TabsTrigger value="mcp">Connect via MCP</TabsTrigger>}
-                      <TabsTrigger value="prompt">Paste the prompt</TabsTrigger>
-                      <TabsTrigger value="inapp">Run in-app</TabsTrigger>
-                    </TabsList>
-                    {hasMcp && (
-                      <TabsContent value="mcp">
-                        <McpConnectPanel
-                          clients={executeResult.mcp_clients ?? []}
-                          withCertTrust
-                          blurb={
-                            'The execution tools appear natively in your client instead of as curl ' +
-                            'recipes. The tests run on your machine, so launch the client from the ' +
-                            'directory the run should write into.'
-                          }
-                        />
-                      </TabsContent>
-                    )}
-                    <TabsContent value="prompt">
-                      <div className="mb-xxs flex items-center justify-between">
-                        <p className="text-metadata text-muted-foreground">
-                          Paste into a terminal agent — it drives the same session with curl.
-                        </p>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              onClick={() => handleCopy(executeResult.instructions, setCopiedInstructions)}
-                              aria-label="Copy agent instructions to clipboard"
-                            >
-                              {copiedInstructions ? (
-                                <Check className="size-4 text-success" aria-hidden />
-                              ) : (
-                                <Copy className="size-4" aria-hidden />
-                              )}
-                            </Button>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            {copiedInstructions ? 'Copied!' : 'Copy instructions'}
-                          </TooltipContent>
-                        </Tooltip>
-                      </div>
-                      <div className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                        {executeResult.instructions}
-                      </div>
-                    </TabsContent>
-                    <TabsContent value="inapp">
-                      <InAppAgentPanel
-                        prompt={executeResult.instructions}
-                        contextLabel={`execution of plan #${executeResult.plan_id}`}
-                      />
-                    </TabsContent>
-                  </Tabs>
-                );
-              })()}
-            </div>
-          )}
-          </DialogBody>
-          <DialogFooter>
-            {!executeResult ? (
-              <>
-                <Button variant="outline" onClick={() => setExecuteOpen(false)} disabled={executeLoading}>
-                  Cancel
-                </Button>
-                {resumeSessionId != null ? (
-                  <Button
-                    onClick={handleResumeConfirm}
-                    disabled={executeLoading}
-                    variant={resumeLooksInterrupted ? 'default' : 'destructive'}
-                  >
-                    {executeLoading ? (
-                      <Loader2 className="size-4 animate-spin" aria-hidden />
-                    ) : (
-                      <RotateCcw className="size-4" aria-hidden />
-                    )}
-                    {resumeLooksInterrupted ? 'Resume session' : 'Resume anyway'}
-                  </Button>
-                ) : (
-                  <Button onClick={handleExecute} disabled={executeLoading}>
-                    {executeLoading ? (
-                      <Loader2 className="size-4 animate-spin" aria-hidden />
-                    ) : (
-                      <Play className="size-4" aria-hidden />
-                    )}
-                    Start Execution Session
-                  </Button>
-                )}
-              </>
-            ) : (
-              // v4.12.1 — mirror StartReconDialog: explicit
-              // acknowledgement checkbox rather than gating Done on
-              // clipboard-write success.  Pre-fix, clipboard failure
-              // (insecure origin / denied permission / RDP hardening)
-              // silently left Done disabled AND the X hidden — the
-              // user was trapped in the dialog with a one-time key
-              // they couldn't save.  Checkbox always works regardless
-              // of clipboard availability; user can read the key off
-              // screen and tick the box.
-              <div className="flex w-full flex-col gap-xs">
-                <label className="flex items-start gap-xs text-metadata">
-                  <Checkbox
-                    checked={apiKeySaved}
-                    onCheckedChange={(v) => setApiKeySaved(v === true)}
-                    aria-label="I copied the agent API key"
-                  />
-                  <span>
-                    I copied the agent API key.  It is shown only once;
-                    no recovery path after this dialog closes.
-                  </span>
-                </label>
-                <div className="flex flex-wrap justify-end gap-xs">
-                  <Button
-                    onClick={() => setExecuteOpen(false)}
-                    disabled={!apiKeySaved}
-                  >
-                    Close
-                  </Button>
-                </div>
-              </div>
-            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -1806,159 +1155,6 @@ const TestPlanLayout: React.FC = () => {
         </DialogContent>
       </Dialog>
 
-      {/* Plan-generation Resume dialog — third leg of the agentic-
-          workflow Resume affordance.  Confirm state explains the
-          revoke-prior-key consequence; success state shows the new
-          api_key + instructions block to copy to a fresh agent. */}
-      <Dialog
-        open={resumeGenOpen}
-        onOpenChange={(v) => {
-          if (v) return;
-          if (resumeGenLoading) return;
-          if (resumeGenResult && !resumeGenKeySaved) return;
-          setResumeGenOpen(false);
-        }}
-      >
-        <DialogContent
-          className="max-w-3xl"
-          showClose={!resumeGenResult || resumeGenKeySaved}
-        >
-          <DialogHeader>
-            <DialogTitle className="flex items-center gap-xs">
-              <RotateCcw className="size-5 text-primary" aria-hidden />
-              Resume Plan Generation
-            </DialogTitle>
-            <DialogDescription>
-              Re-mints a fresh agent key (24h TTL) and rebuilds the plan-generation
-              instructions for this draft plan.  Existing entries are preserved — the
-              agent continues from <code>/context</code> with the
-              <code>not_in_plan_id</code> cursor.
-            </DialogDescription>
-          </DialogHeader>
-          {/* Wrap in DialogBody so the multi-KB instructions don't push
-              the footer off-screen on shorter viewports (same hazard
-              the Execute dialog had — see 4.12.1 fix above). */}
-          <DialogBody className="flex flex-col gap-md">
-          {!resumeGenResult ? (
-            <>
-              <Alert variant="warning">
-                <AlertDescription>
-                  Resuming issues a new key and <strong>revokes the current one</strong>.
-                  Any agent still running on the old key will be cut off the next time it
-                  calls in.  Use this when the draft has been silent because the agent
-                  process died — not while a healthy agent is still working.
-                </AlertDescription>
-              </Alert>
-              {resumeGenError && (
-                <Alert variant="destructive">
-                  <AlertDescription>{resumeGenError}</AlertDescription>
-                </Alert>
-              )}
-            </>
-          ) : (
-            <div className="flex flex-col gap-sm">
-              <Alert variant="success">
-                <AlertDescription>
-                  Plan generation resumed.  Copy the API key and instructions below, then
-                  paste them to your AI agent.
-                </AlertDescription>
-              </Alert>
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">API Key (shown once)</p>
-                <div className="flex items-center gap-xs rounded-control bg-accent p-xs">
-                  <p className="flex-1 break-all font-mono text-caption">
-                    {resumeGenResult.api_key}
-                  </p>
-                  <Tooltip>
-                    <TooltipTrigger asChild>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        onClick={() => handleCopy(resumeGenResult.api_key, () => {})}
-                        aria-label="Copy API key"
-                      >
-                        <Copy className="size-4" aria-hidden />
-                      </Button>
-                    </TooltipTrigger>
-                    <TooltipContent>Copy API key</TooltipContent>
-                  </Tooltip>
-                </div>
-                {!resumeGenKeySaved && (
-                  <Alert variant="warning" className="mt-xs">
-                    <AlertDescription>
-                      This API key is shown only once. Copy it before closing.
-                    </AlertDescription>
-                  </Alert>
-                )}
-              </div>
-              <div>
-                <p className="mb-xxs text-metadata font-semibold">Instructions</p>
-                <div className="max-h-96 overflow-auto whitespace-pre-wrap break-words rounded-control border border-border bg-accent p-sm font-mono text-caption">
-                  {resumeGenResult.instructions}
-                </div>
-              </div>
-              <McpConnectPanel
-                clients={resumeGenResult.mcp_clients ?? []}
-                blurb={
-                  'The resumed session mints a fresh key, so an MCP client configured for ' +
-                  'the previous one needs this entry to replace it.'
-                }
-              />
-            </div>
-          )}
-          </DialogBody>
-          <DialogFooter>
-            {!resumeGenResult ? (
-              <>
-                <Button
-                  variant="outline"
-                  onClick={() => setResumeGenOpen(false)}
-                  disabled={resumeGenLoading}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  variant="destructive"
-                  onClick={handleResumeGenConfirm}
-                  disabled={resumeGenLoading}
-                >
-                  {resumeGenLoading ? (
-                    <Loader2 className="size-4 animate-spin" aria-hidden />
-                  ) : (
-                    <RotateCcw className="size-4" aria-hidden />
-                  )}
-                  Resume generation
-                </Button>
-              </>
-            ) : (
-              // Explicit acknowledgement checkbox — same parity fix
-              // as the Execute dialog (and StartReconDialog) so the
-              // operator isn't trapped when clipboard is unavailable.
-              <div className="flex w-full flex-col gap-xs">
-                <label className="flex items-start gap-xs text-metadata">
-                  <Checkbox
-                    checked={resumeGenKeySaved}
-                    onCheckedChange={(v) => setResumeGenKeySaved(v === true)}
-                    aria-label="I copied the agent API key"
-                  />
-                  <span>
-                    I copied the agent API key.  It is shown only once;
-                    no recovery path after this dialog closes.
-                  </span>
-                </label>
-                <div className="flex flex-wrap justify-end gap-xs">
-                  <Button
-                    onClick={() => setResumeGenOpen(false)}
-                    disabled={!resumeGenKeySaved}
-                  >
-                    Close
-                  </Button>
-                </div>
-              </div>
-            )}
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 };

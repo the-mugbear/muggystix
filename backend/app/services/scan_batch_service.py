@@ -2,7 +2,7 @@
 
 See ``models.ScanBatch``. The Scans page creates operator batches directly
 (``POST /scans/batches``); agents name theirs with a ``batch`` label on each
-recon upload, resolved here within their recon session.
+upload (``POST /agent/uploads``), resolved here within their agent session.
 """
 from __future__ import annotations
 
@@ -17,13 +17,13 @@ BATCH_LOCK_TIMEOUT_MS = 5000
 
 
 def get_or_create_session_batch(
-    db: Session, *, project_id: int, recon_session_id: int, label: str,
+    db: Session, *, project_id: int, agent_session_id: int, label: str,
 ) -> ScanBatch:
-    """The recon session's batch named ``label``, created on first use.
+    """The agent session's batch named ``label``, created on first use.
 
     Every chunk of a sweep an agent uploads under the same label lands in one
     batch. Two chunks racing to create it are settled by the unique
-    (recon_session_id, label) index: the loser re-reads the winner's row.
+    (agent_session_id, label) index: the loser re-reads the winner's row.
 
     **A newly created batch is COMMITTED here, before returning** (v2.368.0).
     It used to ride the caller's transaction, and the caller is an ``async``
@@ -47,7 +47,7 @@ def get_or_create_session_batch(
     def _existing():
         return (
             db.query(ScanBatch)
-            .filter(ScanBatch.recon_session_id == recon_session_id, ScanBatch.label == label)
+            .filter(ScanBatch.agent_session_id == agent_session_id, ScanBatch.label == label)
             .first()
         )
 
@@ -59,7 +59,10 @@ def get_or_create_session_batch(
         db.execute(text(f"SET LOCAL lock_timeout = '{BATCH_LOCK_TIMEOUT_MS}ms'"))
     try:
         with db.begin_nested():
-            batch = ScanBatch(project_id=project_id, recon_session_id=recon_session_id, label=label)
+            batch = ScanBatch(
+                project_id=project_id, agent_session_id=agent_session_id,
+                label=label,
+            )
             db.add(batch)
     except IntegrityError:
         batch = _existing()

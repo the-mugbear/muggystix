@@ -34,8 +34,6 @@ function dotClass(kind: ActivityKind): string {
   switch (kind) {
     case 'scan':
       return 'bg-info';
-    case 'recon_session':
-      return 'bg-warning';
     case 'execution_session':
       return 'bg-success';
     case 'test_result':
@@ -287,12 +285,8 @@ export const ActivityTimeline: React.FC<ActivityTimelineProps> = ({
           Scan
         </span>
         <span className="flex items-center gap-xs">
-          <span className="inline-block size-3 rounded-full bg-warning" />
-          Recon session
-        </span>
-        <span className="flex items-center gap-xs">
           <span className="inline-block size-3 rounded-full bg-success" />
-          Execution session
+          Execution run
         </span>
       </div>
     </div>

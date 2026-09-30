@@ -274,17 +274,10 @@ def test_agent_upload_resolves_the_switch_like_the_operator_upload(client, db_se
     from app.db import models as m
     from app.db.models import IngestionJob
 
-    # A unified session with a recon phase open, so /agent/recon/upload accepts.
+    # A unified session; v2.433.0 — no recon run is needed to upload.
     r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "t"})
     assert r.status_code == 201, r.text
     key = r.json()["api_key"]
-    scope = m.Scope(project_id=test_project.id, name="s", description="")
-    db_session.add(scope)
-    db_session.flush()
-    db_session.add(m.Subnet(scope_id=scope.id, cidr="10.9.0.0/16"))
-    db_session.commit()
-    r = client.post("/api/v1/agent/recon/start", headers={"X-API-Key": key}, json={"scope_id": scope.id})
-    assert r.status_code == 201, r.text
 
     def latest_job_option():
         job = db_session.query(IngestionJob).order_by(IngestionJob.id.desc()).first()
@@ -292,7 +285,7 @@ def test_agent_upload_resolves_the_switch_like_the_operator_upload(client, db_se
 
     def agent_upload(name: str, **form):
         files = {"file": (name, NESSUS_XML.replace("batch-7", name).encode(), "application/xml")}
-        r = client.post("/api/v1/agent/recon/upload", headers={"X-API-Key": key}, files=files, data=form)
+        r = client.post("/api/v1/agent/uploads", headers={"X-API-Key": key}, files=files, data=form)
         assert r.status_code == 201, r.text
 
     # deployment default on, project undecided → True

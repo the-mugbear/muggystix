@@ -353,7 +353,7 @@ class ScanBatch(Base):
     own Scan — its provenance, run time and contribution are unchanged.
 
     Agent batches are keyed by the label the agent sends with each upload,
-    within its recon session (``nmap-tcp-top1000``); operator batches are
+    within its agent session (``nmap-tcp-top1000``).  Operator batches are
     created by the Scans page, one per multi-file upload.
     """
     __tablename__ = "scan_batches"
@@ -362,17 +362,17 @@ class ScanBatch(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     label = Column(String(200), nullable=False)
     created_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    recon_session_id = Column(Integer, ForeignKey("recon_sessions.id", ondelete="SET NULL"), nullable=True)
+    agent_session_id = Column(Integer, ForeignKey("agent_sessions.id", ondelete="SET NULL"), nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     __table_args__ = (
-        # One batch per label per recon session — every chunk of a sweep an
+        # One batch per label per agent session — every chunk of a sweep an
         # agent labels the same lands in the same batch.
         Index(
-            "uq_scan_batches_session_label", "recon_session_id", "label",
+            "uq_scan_batches_agent_session_label", "agent_session_id", "label",
             unique=True,
-            postgresql_where=text("recon_session_id IS NOT NULL"),
-            sqlite_where=text("recon_session_id IS NOT NULL"),
+            postgresql_where=text("agent_session_id IS NOT NULL"),
+            sqlite_where=text("agent_session_id IS NOT NULL"),
         ),
     )
 
@@ -873,14 +873,11 @@ class IngestionJob(Base):
     submitted_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
     parse_error_id = Column(Integer, ForeignKey("parse_errors.id", ondelete="SET NULL"), nullable=True)
-    # v2.11.0: when the upload was submitted through the agent recon
-    # workflow (POST /agent/recon/upload), this binds the job back to
-    # the ReconSession so /agent/recon/summary can count results and
-    # the UI can distinguish agent-ingested scans from human uploads.
-    # Null for normal human uploads.
-    recon_session_id = Column(
+    # An agent's upload (POST /agent/uploads) carries the agent session that
+    # sent it (v2.433.0).  Null for an operator's upload.
+    agent_session_id = Column(
         Integer,
-        ForeignKey("recon_sessions.id", ondelete="SET NULL"),
+        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
         nullable=True,
         index=True,
     )

@@ -91,7 +91,7 @@ export interface Scan {
   open_ports: number;
   command_line?: string | null;
   version?: string | null;
-  // Username of the analyst who uploaded this scan (null for agent/recon
+  // Username of the analyst who uploaded this scan (null for agent
   // ingests or deleted users) — multi-analyst attribution.
   uploaded_by?: string | null;
   /** v2.401.0 — their full name, else the username: what the page shows. */
@@ -164,7 +164,6 @@ export interface ScanBatchSummary {
   label: string;
   created_at?: string | null;
   created_by?: string | null;
-  recon_session_id?: number | null;
   files: number;
   tools: string[];
   hosts: number;
@@ -270,7 +269,7 @@ export const createScanBatch = async (
 
 /** Name an operator's upload batch (it is created with a generated label the
  *  moment files are dropped). An agent's batch is refused with 409: it is
- *  keyed by its label within the recon session. */
+ *  keyed by its label within the agent session. */
 export const renameScanBatch = async (
   batchId: number,
   label: string,

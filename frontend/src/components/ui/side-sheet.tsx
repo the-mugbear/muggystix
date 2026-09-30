@@ -9,7 +9,7 @@ import { cn } from '../../utils/cn';
  * no backdrop and outside-click does not close, so the page behind
  * stays legible and interactive.  Use this for master-detail surfaces
  * where the list should stay in view while a detail row is open
- * (Hosts / HostDetail, recon row inspector, etc).
+ * (Hosts / HostDetail, etc).
  *
  * Compose like Dialog:
  *

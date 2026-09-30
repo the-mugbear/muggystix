@@ -1,27 +1,17 @@
-"""Regression tests for v2.91.0 — code review #2 Option B.
+"""A target check is evidence, not a gate (v2.433.0).
 
-``record_test_result`` previously accepted ``status="executed"``
-without checking for a passing HostSanityCheck on the entry; the
-sanity-check gate fired only at completion time, leaving a window
-where raw results landed against an unverified target with no audit
-provenance.
-
-Option B (preserve data, audit the gap): the endpoint now requires
-either a passing HostSanityCheck for (session, entry) OR an explicit
-``sanity_override_reason`` in the request body.  The reason is
-persisted on the TestExecutionResult.sanity_override_reason column
-and the bypass is recorded in the audit log.  Operators get to keep
-the result data from runs that don't reach completion; reviewers get
-a one-line SQL query to find every result that bypassed sanity.
+From v2.91.0 ``record_test_result`` refused an executed result or a finding
+unless the entry had a passing HostSanityCheck or the request carried a
+``sanity_override_reason``.  That gate was part of the retired "agent on
+rails" model: the operator drives their agent, and an agent executing its own
+plan must be able to record what it ran and found.  A check the agent did run
+is still recorded (POST .../sanity-check) and counted at completion.
 
 These tests pin:
-  1. Passing sanity check + no override → 201.
-  2. No sanity check + no override → 409 with explanatory detail.
-  3. No sanity check + override → 201, column populated, audit logged.
-  4. Sanity check exists but ``passed=false`` is treated the same as
-     "no check" — the override path still gates.
-  5. Non-executed status (e.g. ``pending_approval``) is NOT gated —
-     the agent can record a placeholder row before sanity has run.
+  1. An executed result records with no target check on file.
+  2. A finding records with no target check on file.
+  3. A FAILED check does not block a result either.
+  4. A retired ``sanity_override_reason`` field is ignored, not stored.
 """
 from __future__ import annotations
 
@@ -104,7 +94,7 @@ def test_entry(db_session, test_project, test_plan):
         test_phase="enumeration",
         rationale="fixture for sanity-override regression tests",
         proposed_tests=[{"tool": "nmap", "command": "nmap -sV 10.99.0.99"}],
-        status="approved",
+        status="draft",
     )
     db_session.add(entry)
     db_session.commit()
@@ -135,68 +125,39 @@ def _passing_sanity_check(db_session, session, entry):
 # ---------------------------------------------------------------------------
 
 
-def test_result_with_passing_sanity_no_override_accepted(
-    client, execution_key, execution_session_row, test_plan, test_entry, db_session,
-):
-    """Happy path: sanity check passed → 201 without override."""
-    _passing_sanity_check(db_session, execution_session_row, test_entry)
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{test_entry.id}/test-results",
-        headers={"X-API-Key": execution_key},
-        json={"test_index": 0, "status": "executed", "is_finding": False},
+def _record(client, key, plan, entry, **body):
+    return client.post(
+        f"/api/v1/agent/test-plans/{plan.id}/entries/{entry.id}/test-results",
+        headers={"X-API-Key": key},
+        json={"test_index": 0, **body},
     )
-    assert resp.status_code == 201, resp.text
-    body = resp.json()
-    assert body["status"] == "executed"
 
 
-def test_result_without_sanity_no_override_409(
+def test_executed_result_needs_no_target_check(
     client, execution_key, execution_session_row, test_plan, test_entry,
 ):
-    """Reject when status='executed', no sanity check, no override."""
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{test_entry.id}/test-results",
-        headers={"X-API-Key": execution_key},
-        json={"test_index": 0, "status": "executed", "is_finding": False},
-    )
-    assert resp.status_code == 409, resp.text
-    assert "sanity" in resp.json()["detail"].lower()
-    assert "sanity_override_reason" in resp.json()["detail"]
+    resp = _record(client, execution_key, test_plan, test_entry, status="executed", is_finding=False)
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["status"] == "executed"
 
 
-def test_result_without_sanity_with_override_accepted_and_persisted(
+def test_finding_needs_no_target_check(
     client, execution_key, execution_session_row, test_plan, test_entry, db_session,
 ):
-    """Override accepted, persisted on the row, audit-logged."""
     from app.db.models_agent import TestExecutionResult
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{test_entry.id}/test-results",
-        headers={"X-API-Key": execution_key},
-        json={
-            "test_index": 0,
-            "status": "executed",
-            "is_finding": True,
-            "findings_summary": "found something",
-            "sanity_override_reason": "target offline, evidence captured during pre-flight",
-        },
+    resp = _record(
+        client, execution_key, test_plan, test_entry,
+        status="executed", is_finding=True, severity="high",
+        findings_summary="anonymous FTP login accepted",
     )
     assert resp.status_code == 201, resp.text
-    row = (
-        db_session.query(TestExecutionResult)
-        .filter(TestExecutionResult.id == resp.json()["id"])
-        .first()
-    )
-    assert row is not None
-    assert row.sanity_override_reason == (
-        "target offline, evidence captured during pre-flight"
-    )
+    row = db_session.get(TestExecutionResult, resp.json()["id"])
+    assert row.is_finding is True and row.severity == "high"
 
 
-def test_failed_sanity_treated_as_missing(
+def test_a_failed_check_does_not_block_a_result(
     client, execution_key, execution_session_row, test_plan, test_entry, db_session,
 ):
-    """A sanity check with passed=false is the same as no check at all
-    — the override gate still fires."""
     from app.db.models_agent import HostSanityCheck
     db_session.add(HostSanityCheck(
         execution_session_id=execution_session_row.id,
@@ -208,27 +169,24 @@ def test_failed_sanity_treated_as_missing(
         passed=False,
     ))
     db_session.commit()
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{test_entry.id}/test-results",
-        headers={"X-API-Key": execution_key},
-        json={"test_index": 0, "status": "executed", "is_finding": False},
-    )
-    assert resp.status_code == 409, resp.text
+    resp = _record(client, execution_key, test_plan, test_entry, status="executed", is_finding=False)
+    assert resp.status_code == 201, resp.text
 
 
-def test_non_executed_status_not_gated(
-    client, execution_key, execution_session_row, test_plan, test_entry,
+def test_the_retired_override_field_is_ignored(
+    client, execution_key, execution_session_row, test_plan, test_entry, db_session,
 ):
-    """Recording a non-executed placeholder (pending_approval, etc.)
-    doesn't require sanity verification — the agent can lay down
-    rows before the test actually runs."""
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{test_entry.id}/test-results",
-        headers={"X-API-Key": execution_key},
-        json={
-            "test_index": 0,
-            "status": "pending_approval",
-            "is_finding": False,
-        },
+    """An agent on an older prompt may still send it; it is not an error and
+    it is not stored as if a gate had been bypassed."""
+    from app.db.models_agent import TestExecutionResult
+    _passing_sanity_check(db_session, execution_session_row, test_entry)
+    resp = _record(
+        client, execution_key, test_plan, test_entry,
+        status="executed", is_finding=False,
+        sanity_override_reason="old prompt habit",
     )
     assert resp.status_code == 201, resp.text
+    row = db_session.get(TestExecutionResult, resp.json()["id"])
+    assert row is not None
+    # v2.433.1 — the column itself is gone, so nothing can store it.
+    assert not hasattr(TestExecutionResult, "sanity_override_reason")

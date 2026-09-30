@@ -5,7 +5,7 @@ plan, execute — chosen by opening a phase rather than by minting a different
 key.  This replaces the four per-workflow entry points (assist / recon /
 plan generation / execution) whose isolation these tests' predecessors pinned.
 """
-from app.db.models_agent import AgentSession, ReconSession, TestPlan
+from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry, TestPlanStatus
 
 
 def _scope_with_subnet(db, project):
@@ -30,7 +30,7 @@ def _hdr(key):
     return {"X-API-Key": key}
 
 
-def test_one_key_reaches_identity_recon_and_plan(client, test_project, db_session):
+def test_one_key_reaches_identity_scope_and_plan(client, test_project, db_session):
     key, assist_session_id = _start_session(client, test_project)
     # The start endpoint returns the AssistSession id; the unified session is
     # the AgentSession it links to.
@@ -50,7 +50,7 @@ def test_one_key_reaches_identity_recon_and_plan(client, test_project, db_sessio
     ident = r.json()
     assert ident["workflow"] == "project"
     assert ident["project_id"] == test_project.id
-    assert ident["open_phases"]["active_recon_session_ids"] == []
+    assert ident["open_phases"]["active_execution_session_ids"] == []
     assert ident["can_write_project_data"] is True  # admin operator
 
     # environment probe on the session (one, not three).
@@ -62,24 +62,11 @@ def test_one_key_reaches_identity_recon_and_plan(client, test_project, db_sessio
     assert r.status_code == 200, r.text
     assert r.json()["session_type"] == "session"
 
-    # open a recon run — same key, no new credential.
+    # read a scope — same key, no new credential.
     scope = _scope_with_subnet(db_session, test_project)
-    r = client.post("/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id})
-    assert r.status_code == 201, r.text
-    ctx = r.json()
-    assert ctx["scope_id"] == scope.id
-    assert "10.0.0.0/24" in ctx["scope_cidrs"]
-    assert ctx["read_back"] and "10.0.0.0/24" in ctx["read_back"]
-    recon_id = ctx["recon_session_id"]
-
-    # the recon run is linked to the session, and the probe rode along.
-    run = db_session.query(ReconSession).filter(ReconSession.id == recon_id).first()
-    assert run.agent_session_id == session_id
-    assert run.environment_probed_at is not None
-
-    # recon context resolves the single active run without a param.
-    r = client.get("/api/v1/agent/recon/context", headers=_hdr(key))
-    assert r.status_code == 200 and r.json()["recon_session_id"] == recon_id
+    r = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=_hdr(key))
+    assert r.status_code == 200, r.text
+    assert "10.0.0.0/24" in r.json()["subnets"]
 
     # the SAME key drafts a plan.
     r = client.post("/api/v1/agent/test-plans", headers=_hdr(key), json={"title": "p1"})
@@ -94,8 +81,11 @@ def test_mcp_guidance_describes_the_unified_session():
     from app.api.v1.endpoints.mcp_assist import _server_instructions
 
     guidance = _server_instructions("https://127.0.0.1/api/v1")
-    assert "unified project session" in guidance
+    assert "one project session" in guidance
     assert "no key that does all four" not in guidance
+    # v2.433.0 — no rails in the welcome text.
+    for retired in ("human-approved", "list_approved_tools", "approved"):
+        assert retired not in guidance
 
 
 def test_agent_guide_does_not_describe_inventory_assistance_as_a_separate_session():
@@ -111,8 +101,9 @@ def test_agent_guide_does_not_describe_inventory_assistance_as_a_separate_sessio
     assert "Scanning, plan creation, and execution are refused for every assist session" not in guide
 
 
-def test_execution_requires_an_approved_plan(client, test_project, db_session):
-    """The human approval gate is the one control the consolidation keeps."""
+def test_an_agent_executes_its_own_draft(client, test_project, db_session):
+    """v2.433.0 — no approval gate: a draft with entries opens a run straight
+    away and moves to in_progress; an archived plan does not."""
     key, _ = _start_session(client, test_project)
 
     from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
@@ -126,26 +117,39 @@ def test_execution_requires_an_approved_plan(client, test_project, db_session):
     db_session.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high", test_phase="enumeration", proposed_tests=[], rationale="x"))
     db_session.commit()
 
-    # A draft plan cannot be executed.
+    # An archived plan is not worked.
+    plan.status = TestPlanStatus.ARCHIVED.value
+    db_session.commit()
     r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
     assert r.status_code == 409, r.text
 
-    # Approve it, then the same key opens the run.
-    plan.status = TestPlanStatus.APPROVED.value
+    # A draft is.
+    plan.status = TestPlanStatus.DRAFT.value
     db_session.commit()
     r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
     assert r.status_code == 201, r.text
     body = r.json()
     assert body["read_back"] and "10.0.0.5" in body["read_back"]
+    assert body["plan"]["status"] == "in_progress"
 
 
 def test_timeline_shows_one_row_per_session_not_per_phase(client, test_project, db_session):
-    """v2.337.0 — a project session that opens a recon run must appear ONCE on
-    the unified timeline (as its own row, phases named in target_label), not
-    twice (once as 'project' and again as its 'recon' phase)."""
+    """v2.337.0 — a project session that opens an execution run must appear
+    ONCE on the unified timeline (its own row, phases named in target_label),
+    not twice (once as 'project' and again as its 'execution' phase)."""
     key, assist_session_id = _start_session(client, test_project)
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post("/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id})
+    from app.db import models
+    host = models.Host(project_id=test_project.id, ip_address="10.0.0.5", state="up")
+    db_session.add(host)
+    db_session.flush()
+    plan = TestPlan(project_id=test_project.id, version=1, title="DMZ sweep",
+                    status=TestPlanStatus.DRAFT.value)
+    db_session.add(plan)
+    db_session.flush()
+    db_session.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high",
+                                 test_phase="enumeration", proposed_tests=[], rationale="x"))
+    db_session.commit()
+    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
     assert r.status_code == 201, r.text
 
     from app.db.models_agent import AssistSession
@@ -156,11 +160,9 @@ def test_timeline_shows_one_row_per_session_not_per_phase(client, test_project, 
 
     listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
     rows = listing["sessions"]
-    # Exactly one row for this session, and it is the unified 'project' row.
     mine = [s for s in rows if s["kind"] == "project" and s["id"] == base_id]
     assert len(mine) == 1, rows
-    # The recon run it opened is NOT separately listed (it is subsumed).
-    recon_rows = [s for s in rows if s["kind"] == "recon"]
-    assert recon_rows == [], f"recon phase double-listed: {recon_rows}"
-    # And its label names the recon work.
-    assert "recon" in (mine[0]["target_label"] or "").lower()
+    # The execution run it opened is NOT separately listed (it is subsumed).
+    exec_rows = [s for s in rows if s["kind"] == "execution"]
+    assert exec_rows == [], f"execution phase double-listed: {exec_rows}"
+    assert "DMZ sweep" in (mine[0]["target_label"] or "")

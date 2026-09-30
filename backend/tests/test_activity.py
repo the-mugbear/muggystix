@@ -343,12 +343,12 @@ def test_user_with_no_projects_gets_empty_response(client, db_session, activity_
 
 
 # ---------------------------------------------------------------------------
-# v2: recon_session + execution_session kinds
+# v2: execution_session kinds
 # ---------------------------------------------------------------------------
 
 
 def test_kinds_filter_default_is_all_three(client, activity_dataset):
-    """Omitting `kinds` returns scan + recon + execution.  This dataset
+    """Omitting `kinds` returns scan + execution.  This dataset
     has only scans, so the assertion is "all items are kind=scan" and
     no 400 fires from the kinds parser."""
     resp = client.get(
@@ -362,66 +362,19 @@ def test_kinds_filter_default_is_all_three(client, activity_dataset):
 
 
 def test_kinds_filter_excludes_scan(client, db_session, activity_dataset):
-    """Asking for only recon_session kind on a dataset with no recon
-    sessions returns empty (not an error)."""
+    """Asking for only execution_session kind on a dataset with no
+    execution runs returns empty (not an error)."""
     resp = client.get(
         "/api/v1/activity/scans-at",
         params={
             "ts": ANCHOR.isoformat(),
             "tolerance_seconds": 30,
-            "kinds": "recon_session",
+            "kinds": "execution_session",
         },
     )
     assert resp.status_code == 200
     body = resp.json()
     assert body["items"] == []
-
-
-def test_recon_session_in_window_returned(client, db_session, activity_dataset):
-    """Insert a ReconSession spanning the anchor and verify it surfaces."""
-    from app.db.models import Scope
-    from app.db.models_agent import ReconSession
-
-    proj_a = activity_dataset["projects"]["alpha"]
-    scope = Scope(name="alpha-prod", project_id=proj_a.id, description="test")
-    db_session.add(scope)
-    db_session.commit()
-    db_session.refresh(scope)
-
-    session = ReconSession(
-        project_id=proj_a.id,
-        scope_id=scope.id,
-        status="active",
-        started_at=ANCHOR - timedelta(minutes=2),
-        completed_at=ANCHOR + timedelta(minutes=2),
-        uploads_submitted=3,
-        scans_ingested=2,
-        hosts_discovered=42,
-        ports_discovered=128,
-    )
-    db_session.add(session)
-    db_session.commit()
-    db_session.refresh(session)
-
-    resp = client.get(
-        "/api/v1/activity/scans-at",
-        params={
-            "ts": ANCHOR.isoformat(),
-            "tolerance_seconds": 30,
-            "kinds": "recon_session",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    items = resp.json()["items"]
-    matching = [i for i in items if i["kind"] == "recon_session" and i["ref_id"] == session.id]
-    assert len(matching) == 1
-    item = matching[0]
-    assert item["project_name"] == proj_a.name
-    assert "alpha-prod" in item["label"]
-    assert item["host_count"] == 42
-    assert item["status"] == "active"
-    assert item["has_end_time"] is True
-
 
 def test_unknown_kind_400s(client, activity_dataset):
     resp = client.get(

@@ -407,7 +407,7 @@ def _seed_body(db, project, owner, hostname_before):
     db.add(agent)
     db.flush()
     plan = TestPlan(project_id=project.id, agent_id=agent.id, created_by_user_id=owner.id, version=1,
-                    title=f"{TAG} Named endpoint evaluation", status="approved",
+                    title=f"{TAG} Named endpoint evaluation", status="draft",
                     description="Seeded plan: named targets on a shared address.")
     db.add(plan)
     db.flush()

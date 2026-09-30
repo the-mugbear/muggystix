@@ -353,7 +353,7 @@ export const testWorkState = (
   }
   const p = host.test_plan_entry_count ?? 0;
   if (p > 0) {
-    return { kind: 'planned', label: 'Planned', title: `${p} test${p === 1 ? '' : 's'} approved but not yet executed` };
+    return { kind: 'planned', label: 'Planned', title: `${p} test${p === 1 ? '' : 's'} planned but not yet executed` };
   }
   return null;
 };

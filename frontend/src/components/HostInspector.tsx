@@ -1251,9 +1251,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     { value: 'completed', label: 'Completed' },
     { value: 'rejected', label: 'Rejected' },
   ];
+  // 5.313.0 — the entry-level `approved` status is gone; `proposed` means
+  // "not tested yet".
   const STATUS_LABEL: Record<string, string> = {
     proposed: 'Proposed',
-    approved: 'Approved',
     in_progress: 'In Progress',
     completed: 'Completed',
     rejected: 'Rejected',
@@ -1274,9 +1275,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const testPlanCounts = {
     in_progress: testPlanEntries.filter((e) => e.status === 'in_progress').length,
     completed: testPlanEntries.filter((e) => e.status === 'completed').length,
-    pending: testPlanEntries.filter(
-      (e) => e.status === 'proposed' || e.status === 'approved',
-    ).length,
+    pending: testPlanEntries.filter((e) => e.status === 'proposed').length,
   };
 
   // v4.55.0 — intra-page jump helper.  Each card below carries

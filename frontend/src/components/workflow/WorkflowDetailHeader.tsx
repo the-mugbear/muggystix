@@ -6,13 +6,13 @@ import { cn } from '../../utils/cn';
 
 /**
  * WorkflowDetailHeader — the shared title/status/action bar for the
- * agent-workflow detail pages (recon run, execution session, test plan).
+ * agent-workflow detail pages (execution session, test plan).
  *
- * Before this existed, each detail page hand-rolled its own header: recon
- * used a `SummarySection` card, execution used `ExecutionSessionHeader`,
- * and test plans used a bare top bar + a separate action cluster lower
- * down the page.  The Abandon control lived in three different places.
- * This component standardizes the layout so all three read identically:
+ * Before this existed, each detail page hand-rolled its own header:
+ * execution used `ExecutionSessionHeader`, and test plans used a bare top
+ * bar + a separate action cluster lower down the page.  The Abandon
+ * control lived in different places.  This component standardizes the
+ * layout so they read identically:
  *
  *   [<- Back]  Title  [status badges]            [actions]  [Abandon]
  *              subtitle / metadata
@@ -34,7 +34,7 @@ export interface WorkflowDetailHeaderProps {
   badges?: React.ReactNode;
   /** Metadata line(s) rendered under the title. */
   subtitle?: React.ReactNode;
-  /** Non-destructive actions (Refresh, Approve, Execute, Export, …). */
+  /** Non-destructive actions (Refresh, Work with your agent, Export, …). */
   actions?: React.ReactNode;
   /** Destructive/terminal action (Abandon) — pinned to the far right. */
   destructiveAction?: React.ReactNode;

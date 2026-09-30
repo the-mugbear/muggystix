@@ -62,7 +62,7 @@ AGENT_API_PREFIX = "/api/v1/agent/"
 # v2.312.0.  The audit log decided what to record from a URL prefix, on the
 # assumption that "an agent call" and "a call under /api/v1/agent/" are the same
 # set.  Two MCP tools break that: ``read_agent_guide`` fetches
-# ``/api/v1/agents-guide`` and ``list_approved_tools`` fetches
+# ``/api/v1/agents-guide`` and ``list_tools`` fetches
 # ``/api/v1/references/tools``.  Both are things the agent did, with its own key,
 # inside a session — and neither appeared in the operator's session view.  A
 # four-call session showed two rows, which reads as a quieter agent rather than
@@ -572,9 +572,9 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
             # v2.337.0 — a key no longer binds a workflow/plan/scope. The
             # durable attribution is the session id; the per-phase FK columns
-            # are filled from what the call's PATH names (a plan_id, a
-            # recon/execution session id), which is what "show every call that
-            # touched this plan" needs.
+            # are filled from what the call's PATH names (a plan_id, an
+            # execution session id, a scope_id), which is what "show every call
+            # that touched this plan" needs.
             agent_session_id = getattr(request.state, "agent_session_id", None)
             scoped_plan_id = None
             scoped_scope_id = None
@@ -636,24 +636,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 test_plan_id = int(plan_from_path) if plan_from_path is not None else None
             except (TypeError, ValueError):
                 test_plan_id = None
-            recon_session_id = None
-            raw_recon = (query_params.get("recon_session_id")
-                         if isinstance(query_params, dict) else None)
-            if raw_recon and str(raw_recon).isdigit():
-                recon_session_id = int(raw_recon)
-            elif agent_session_id is not None and "/recon/" in request.url.path:
-                from app.db.models_agent import ReconSession, ReconSessionStatus
-                row = (
-                    db.query(ReconSession.id)
-                    .filter(
-                        ReconSession.agent_session_id == agent_session_id,
-                        ReconSession.status == ReconSessionStatus.ACTIVE.value,
-                    )
-                    .order_by(ReconSession.id.desc())
-                    .first()
-                )
-                if row:
-                    recon_session_id = row[0]
             exec_from_path = path_params.get("session_id")
             try:
                 execution_session_id = int(exec_from_path) if exec_from_path is not None else None
@@ -661,6 +643,15 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 execution_session_id = None
             if execution_session_id is None and test_plan_id is not None:
                 execution_session_id = _active_execution_session_id(db, test_plan_id)
+            # v2.433.1 — the scope reads name their scope in the path
+            # (/agent/scopes/{scope_id}/…).  Only on success: a refused id may
+            # name no scope at all, and the column is a foreign key.
+            scope_from_path = path_params.get("scope_id")
+            if scope_from_path is not None and response.status_code < 400:
+                try:
+                    scoped_scope_id = int(scope_from_path)
+                except (TypeError, ValueError):
+                    scoped_scope_id = None
 
             # Response size (Content-Length header if present; otherwise
             # we leave it null rather than buffer the streaming body).
@@ -700,7 +691,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 test_plan_id=test_plan_id,
                 execution_session_id=execution_session_id,
                 scope_id=scoped_scope_id,
-                recon_session_id=recon_session_id,
                 assist_session_id=assist_session_id,
                 method=request.method,
                 path=request.url.path,

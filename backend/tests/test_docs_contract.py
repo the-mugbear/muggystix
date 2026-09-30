@@ -38,9 +38,10 @@ WORKFLOWS = ["plan_generation", "execution", "reconnaissance", "assist"]
 WORKFLOW_ANCHORS = {
     # v2.370.2 — the headings dropped "(from `/generate`)" / "(from `/execute`)":
     # a session opens these phases itself, the operator buttons are one way in.
+    # v2.433.0 — "an Approved Plan" became "a Plan": plans are not approved.
     "plan_generation": "## Workflow A — Build a Test Plan",
-    "execution": "## Workflow B — Execute an Approved Plan",
-    "reconnaissance": "Populate Host Data via Reconnaissance",
+    "execution": "## Workflow B — Execute a Plan",
+    "reconnaissance": "Populate Host Data",
     "assist": "Inventory-assist phase (interactive query",
 }
 # A shared-section heading that must survive into EVERY slice.
@@ -159,7 +160,7 @@ def test_agent_workflow_tags_are_described():
         "agent-browse",
         "agent-plan-generation",
         "agent-execution",
-        "agent-recon",
+        "agent-scope",
         "agent-assist",
         "agent-feedback",
     }

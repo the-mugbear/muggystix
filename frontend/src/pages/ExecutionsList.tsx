@@ -70,7 +70,7 @@ const ExecutionsList: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('');
   // v2.44.1 (UX review #7): selection now uses the shared
-  // useCompareSelection hook (same on ReconRunsList).  The hand-rolled
+  // useCompareSelection hook.  The hand-rolled
   // toast + dedup logic moved into the hook.
   const compareSelection = useCompareSelection<number>({ kind: 'execution runs' });
   const selected = compareSelection.selected;
@@ -163,7 +163,7 @@ const ExecutionsList: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title font-semibold">Executions</h1>
           <p className="text-metadata text-muted-foreground">
-            Every execution session in this project. Select two from the same plan to compare them.
+            Every execution run in this project. Select two from the same plan to compare them.
           </p>
         </div>
         <Tooltip>
@@ -245,10 +245,11 @@ const ExecutionsList: React.FC = () => {
           <CardContent className="p-0">
             <div className="flex flex-col items-center gap-sm p-xxl text-center">
               <ClipboardList className="size-12 text-muted-foreground" aria-hidden />
-              <p className="text-subheading font-semibold">No execution sessions yet</p>
+              <p className="text-subheading font-semibold">No execution runs yet</p>
               <p className="max-w-md text-metadata text-muted-foreground">
-                Execution sessions are created when you click <strong>Execute</strong> on an
-                approved test plan. Approve a plan and start one to populate this list.
+                An execution run opens when an agent starts working a test plan, or when a
+                plan's bundle is exported for an offline run. Open a plan and use{' '}
+                <strong>Work with your agent</strong>.
               </p>
               <Button onClick={() => navigate('/test-plans')} size="sm">
                 Open Test Plans

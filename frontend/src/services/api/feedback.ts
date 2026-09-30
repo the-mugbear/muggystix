@@ -33,7 +33,6 @@ export interface AgentFeedbackEntry {
   created_at: string;
   /** v2.428.2 — who and where: the unified session, the page showing its
    *  API calls (`/assist-sessions/{session_page_id}`), and its call count. */
-  recon_session_id?: number | null;
   assist_session_id?: number | null;
   agent_session_id?: number | null;
   session_page_id?: number | null;

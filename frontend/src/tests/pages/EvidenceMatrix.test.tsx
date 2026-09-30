@@ -24,9 +24,10 @@ vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => navigateMock,
 }));
-const stashMock = vi.fn();
-vi.mock('../../utils/planSelection', () => ({
-  stashPlanSelection: (...a: unknown[]) => stashMock(...a),
+// "Plan these" opens the Start Agent Session dialog, which reads the
+// operator's live sessions.
+vi.mock('../../hooks/useMyAssistSessions', () => ({
+  useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
 }));
 
 import Evidence from '../../pages/Evidence';
@@ -105,24 +106,20 @@ describe('Evidence — domain × segment matrix', () => {
   // subnets → Run a vulnerability scan against these hosts" ranked second. In a
   // project with a declared scope that tells an analyst to scan hosts nobody
   // confirmed are authorized.
-  // 2.374.4 review H8: a failed hand-off navigated anyway, and the plan
-  // dialog then opened UNRESTRICTED — a plan over the whole project.
-  it('does not open the plan dialog when the hosts could not be handed over', async () => {
+  // 2.374.4 review H8: the hand-off must name exactly the listed hosts —
+  // never an unrestricted plan over the whole project. 5.313.0 — the hosts go
+  // to the operator's agent session as a task, not to a generate dialog.
+  it('hands exactly the listed hosts to your agent session', async () => {
     await renderPage();
     const matrix = screen.getByText('Where the gaps are').closest('section')!;
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS · Outside scoped subnets/ }));
     await within(matrix).findByText('192.168.9.9');
 
-    stashMock.mockReturnValueOnce(false);
     navigateMock.mockClear();
     fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
+    expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
+    expect(screen.getByText(/^Draft a test plan in BlueStick for these hosts only \(host ids\): 7\./)).toBeInTheDocument();
     expect(navigateMock).not.toHaveBeenCalled();
-    expect(toast.error).toHaveBeenCalledWith(expect.stringMatching(/browser storage unavailable/));
-
-    stashMock.mockReturnValueOnce(true);
-    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
-    expect(navigateMock).toHaveBeenCalledWith('/test-plans?generate=1&source=selection');
-    expect(stashMock.mock.calls[1][0].host_ids).toEqual([7]);
   });
 
   it('never recommends collecting against hosts outside the declared scope, and ranks them last', async () => {
@@ -163,10 +160,9 @@ describe('Evidence — domain × segment matrix', () => {
     expect(await within(matrix).findByText(caution)).toBeInTheDocument();
     expect(within(matrix).getByText(/Probe these hosts with httpx/)).toBeInTheDocument();
 
-    stashMock.mockReturnValueOnce(true);
     fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
-    const calls = stashMock.mock.calls;
-    expect(calls[calls.length - 1][0].rationale).toContain(caution);
+    const task = await screen.findByText(/^Draft a test plan in BlueStick for these hosts only/);
+    expect(task.textContent).toContain(caution);
   });
 
   // UX review 2026-09-24: the outside-scope column was tinted and hatched like

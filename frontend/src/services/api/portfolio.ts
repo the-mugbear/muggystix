@@ -48,7 +48,6 @@ export interface ProjectCard {
   health: string;
   // P4 control-plane signals.
   attention_reasons: string[];
-  pending_plan_reviews: number;
   open_tasks: number;
   active_sessions: number;
   blocked_sessions: number;
@@ -69,7 +68,6 @@ export interface PortfolioSummary {
   unjudged_observations: SeverityBrief;
   // P4 attention rollups.
   stale_projects: number;
-  pending_approvals_total: number;
   blocked_sessions_total: number;
 }
 

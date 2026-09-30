@@ -63,7 +63,7 @@ const response = {
     { kind: 'ownership', tier: 'work', title: '2 active findings unassigned (1 critical/high)', blast_radius: '2 of 7 active findings',
       action: 'Assign an analyst', severity: 'high', owner: null, link: '/findings?status=active&owner=unowned', score: 61 },
   ],
-  decisions: { pending_approvals: 2, blocked_sessions: 0 },
+  decisions: { blocked_sessions: 2 },
   sites: { adopted: true, items: [] },
   systemic: { adopted: true, estate: { hosts_in_scope: 111, subnets: 4, sites: 3, blind_spot_count: 1 }, conditions: [], blind_spots: [] },
   disposition: { by_status: { open: 4, confirmed: 3, false_positive: 2 }, by_status_severity: {}, active_total: 7, scanner_active: 4, non_scanner_active: 3 },
@@ -129,7 +129,7 @@ describe('SecurityPosture — overview', () => {
     await renderPage();
     const decisions = screen.getByText('Decisions for this review').closest('section')!;
     expect(within(decisions).getByText(/Assessment work — does not change the condition/)).toBeInTheDocument();
-    expect(within(decisions).getByRole('link', { name: /2 plans to approve in Operations/ })).toHaveAttribute('href', '/operations');
+    expect(within(decisions).getByRole('link', { name: /2 blocked runs in Operations/ })).toHaveAttribute('href', '/operations');
   });
 
   // From the first real screenshot of this page: a project with no sites put

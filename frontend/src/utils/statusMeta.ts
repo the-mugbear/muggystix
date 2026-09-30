@@ -41,27 +41,6 @@ export const getProjectStatusChipColor = (status: string | null | undefined): Ch
   }
 };
 
-export const getTestPlanStatusChipColor = (status: string | null | undefined): ChipColor => {
-  switch (status) {
-    case 'draft':
-      return 'default';
-    case 'proposed':
-      return 'info';
-    case 'approved':
-      return 'primary';
-    case 'in_progress':
-      return 'warning';
-    case 'completed':
-      return 'success';
-    case 'rejected':
-      return 'error';
-    case 'archived':
-      return 'default';
-    default:
-      return 'default';
-  }
-};
-
 export const getTestPlanPriorityChipColor = (priority: string | null | undefined): ChipColor => {
   switch (priority) {
     case 'critical':

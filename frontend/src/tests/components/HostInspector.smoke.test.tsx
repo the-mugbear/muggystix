@@ -59,7 +59,7 @@ import * as api from '../../services/api';
 describe('HostInspector — proposed tests', () => {
   it('a completed entry is one line until asked for; an open one shows its tests', async () => {
     const entry = (over: Record<string, unknown>) => ({
-      id: 1, test_plan_id: 9, plan_title: 'Plan A', plan_status: 'approved', host_id: 1,
+      id: 1, test_plan_id: 9, plan_title: 'Plan A', plan_status: 'in_progress', host_id: 1,
       priority: 'high', test_phase: 'enumeration', proposed_tests: ['nmap -sV'], rationale: '',
       status: 'proposed', created_at: '2026-06-14T00:00:00Z', updated_at: '2026-06-14T00:00:00Z', ...over,
     });

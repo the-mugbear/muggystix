@@ -60,7 +60,6 @@ class PosturePriority(_Loose):
 
 
 class PostureDecisions(_Loose):
-    pending_approvals: int
     blocked_sessions: int
 
 

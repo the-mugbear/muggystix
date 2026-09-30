@@ -240,6 +240,10 @@ review_artifacts/
 # /agents-guide, so it must stay tracked.
 CHANGELOG.md
 
+# Progress files for interruptible work (CLAUDE.md "Progress file"):
+# scratch for resuming a task, deleted when it completes, never committed.
+PROGRESS_*.md
+
 # Session scratch / shared debug bundles — operator-local, never committed.
 # Design-discussion notes, ad-hoc patches, and copied-over container log
 # dumps from the remote host.

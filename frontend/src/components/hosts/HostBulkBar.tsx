@@ -397,7 +397,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           variant="outline"
           disabled={working || effectiveCount === 0}
           onClick={() => setPlanDialogOpen(true)}
-          title="Create a test plan from these hosts, add them to a draft, or generate with AI"
+          title="Create a test plan from these hosts, add them to a draft, or have your agent draft it"
         >
           <ClipboardList className="size-3.5" aria-hidden /> Test plan
         </Button>

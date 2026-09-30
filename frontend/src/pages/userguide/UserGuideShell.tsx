@@ -29,7 +29,7 @@ export const GUIDE_TABS: { label: string; path: string }[] = [
   { label: 'Getting Started', path: '/reference/user-guide' },
   { label: 'Working with Data', path: '/reference/user-guide/data' },
   { label: 'Triage & Analysis', path: '/reference/user-guide/triage' },
-  { label: 'Agentic Workflows', path: '/reference/user-guide/agents' },
+  { label: 'Agents', path: '/reference/user-guide/agents' },
   { label: 'Administration', path: '/reference/user-guide/admin' },
 ];
 

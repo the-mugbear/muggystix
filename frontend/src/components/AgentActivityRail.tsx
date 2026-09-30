@@ -2,8 +2,8 @@
  * Floating agent-activity rail — beta.2.
  *
  * A pill-shaped trigger in the topbar opens a Popover with the
- * project's recent agent sessions (recon / plan generation /
- * execution).  Designed to be ambient awareness, not a primary
+ * project's recent agent sessions and the runs they opened.  The badge
+ * counts live sessions only.  Designed to be ambient awareness, not a primary
  * surface — the trigger is a small badge with a count; clicking
  * shows the last ~8 sessions; a "View all" link takes you to the
  * full /agent-activity timeline.
@@ -41,6 +41,7 @@ import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 import { formatRelativeTime } from '../utils/relativeTime';
+import { SESSIONS_LIST_PATH, agentConnected, sessionRowPath } from '../utils/agentRuns';
 
 // Cadence when there's something live worth watching.
 const ACTIVE_POLL_MS = 60_000;
@@ -50,20 +51,28 @@ const IDLE_POLL_MS = 5 * 60_000;
 const PEEK_LIMIT = 8;
 
 const KIND_LABEL: Record<string, string> = {
-  recon: 'Recon',
+  // 5.312.0 — the unified session, the row every new session is; it read as
+  // the raw "project #72" and opened the list, not the session.
+  project: 'Session',
   plan_generation: 'Plan generation',
   execution: 'Execution',
+  assist: 'Assist',
 };
 
-const statusIcon = (status: string) => {
-  const s = status.toLowerCase();
+const statusIcon = (row: AgentSessionRow) => {
+  // An active session whose key ran out is waiting on its operator, not
+  // working: no spinner for it.
+  if (row.kind === 'project' && row.status === 'active' && !agentConnected(row)) {
+    return <CircleDot className="size-3 text-warning" aria-hidden />;
+  }
+  const s = row.status.toLowerCase();
   if (s === 'active' || s === 'in_progress') {
     return <Loader2 className="size-3 animate-spin text-info" aria-hidden />;
   }
   if (s === 'completed' || s === 'success') {
     return <CircleCheck className="size-3 text-success" aria-hidden />;
   }
-  if (s === 'failed' || s === 'error' || s === 'rejected') {
+  if (s === 'failed' || s === 'error') {
     return <CircleAlert className="size-3 text-destructive" aria-hidden />;
   }
   return <CircleDot className="size-3 text-muted-foreground" aria-hidden />;
@@ -74,18 +83,9 @@ const statusIcon = (status: string) => {
 const fmtAgo = (iso?: string | null): string =>
   formatRelativeTime(iso, { withSeconds: true });
 
-const detailPath = (row: AgentSessionRow): string => {
-  switch (row.kind) {
-    case 'recon':
-      return `/recon/runs/${row.id}`;
-    case 'execution':
-      return `/executions/${row.id}`;
-    case 'plan_generation':
-      return row.test_plan_id ? `/test-plans/${row.test_plan_id}` : '/test-plans';
-    default:
-      return '/agent-activity';
-  }
-};
+/** A row with no page of its own (a legacy assist row) opens the list. */
+const detailPath = (row: AgentSessionRow): string =>
+  sessionRowPath(row) ?? SESSIONS_LIST_PATH;
 
 const AgentActivityRail: React.FC = () => {
   const navigate = useNavigate();
@@ -103,10 +103,12 @@ const AgentActivityRail: React.FC = () => {
     try {
       // Two cheap requests in parallel — the recent list + just the
       // active count for the badge.  Both hit the same endpoint with
-      // different filters.
+      // different filters.  5.313.0 — the badge counts agent SESSIONS
+      // (kind 'project'): a run is part of its session, so counting runs
+      // too told the operator one live agent was two or three.
       const [recent, active] = await Promise.all([
         listAgentSessions({ limit: PEEK_LIMIT } satisfies AgentSessionFilters),
-        listAgentSessions({ status: 'active', limit: 1 } satisfies AgentSessionFilters),
+        listAgentSessions({ status: 'active', kind: 'project', limit: 1 } satisfies AgentSessionFilters),
       ]);
       setSessions(recent.sessions);
       setActiveCount(active.total);
@@ -244,7 +246,7 @@ const AgentActivityRail: React.FC = () => {
                     }}
                     className="flex w-full items-start gap-sm px-sm py-xs text-left transition-colors hover:bg-accent/50 focus:outline-none focus:bg-accent/50"
                   >
-                    <span className="mt-1 shrink-0">{statusIcon(row.status)}</span>
+                    <span className="mt-1 shrink-0">{statusIcon(row)}</span>
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-xs">
                         <span className="text-metadata font-medium">
@@ -254,6 +256,11 @@ const AgentActivityRail: React.FC = () => {
                           · {row.status}
                         </span>
                       </div>
+                      {row.kind === 'project' && row.purpose && (
+                        <div className="line-clamp-1 break-words text-caption text-foreground" title={row.purpose}>
+                          {row.purpose}
+                        </div>
+                      )}
                       <div className="line-clamp-1 text-caption text-muted-foreground">
                         {row.generated_by_model && (
                           <span className="font-mono">{row.generated_by_model}</span>
@@ -284,7 +291,7 @@ const AgentActivityRail: React.FC = () => {
             }}
             className="inline-flex w-full items-center justify-center gap-xs rounded-control px-sm py-xs text-metadata text-primary hover:bg-accent focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1"
           >
-            View all agent runs
+            Manage agent sessions
             <ExternalLink className="size-3.5" aria-hidden />
           </button>
         </div>

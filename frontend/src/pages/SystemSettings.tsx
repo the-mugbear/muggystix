@@ -616,7 +616,7 @@ const SystemSettings: React.FC = () => {
                 </TableRow>
                 <TableRow>
                   <TableCell><Badge variant="warning">ANALYST</Badge></TableCell>
-                  <TableCell>Upload scans, manage scopes and subnets, create/edit notes, follow hosts, run recon, and manage parse errors.</TableCell>
+                  <TableCell>Upload scans, manage scopes and subnets, create/edit notes, follow hosts, have their agent scan a scope, and manage parse errors.</TableCell>
                   <TableCell className="text-muted-foreground">Cannot manage project membership.</TableCell>
                 </TableRow>
                 <TableRow>

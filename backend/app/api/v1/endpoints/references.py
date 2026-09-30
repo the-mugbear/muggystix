@@ -264,21 +264,17 @@ def tool_registry(
     category: Optional[str] = None,
     db: Session = Depends(get_db),
     # Public endpoint; the dependency only stamps attribution when an agent key
-    # is presented, so `list_approved_tools` lands in the session's activity
-    # log instead of vanishing (v2.312.0).
+    # is presented, so `list_tools` lands in the session's activity log
+    # instead of vanishing (v2.312.0).
     _agent=Depends(identify_agent_if_present),
 ):
     """The tool registry — every tool BlueStick knows about (v2.277.0).
 
-    One source for two views: the reference page renders all of it as a human
-    knowledge repo, and the agent catalogue is the ``approved`` subset.  Before
-    this, those were separate lists in separate languages that had already
-    drifted — ``testssl`` was agent-usable with no human entry.
-
-    ``status`` is a policy fact (may an agent run it) and ``ingestible`` an
-    engineering one (does a parser exist for its output); they are independent,
-    and a tool can be entirely safe to run without BlueStick parsing a word of
-    its output.
+    A catalogue for people and agents alike — install, usage, ports, whether
+    BlueStick parses its output (``ingestible``).  ``status`` says whether a
+    row is catalogued (``reference``), an agent's suggestion awaiting a
+    curator, or a declined suggestion; since v2.433.0 none of them is a
+    permission — the operator decides what their agent runs.
     """
     from app.services import tool_registry_service
 
@@ -333,7 +329,7 @@ class ToolRegistryUpdate(BaseModel):
 
     status: Optional[str] = Field(
         None,
-        description="approved (agents may run it) / reference / rejected.",
+        description="reference (add to the catalogue) / rejected (decline a suggestion).",
     )
     description: Optional[str] = Field(None, max_length=4000)
     category: Optional[str] = Field(None, max_length=100)
@@ -350,29 +346,18 @@ def update_tool_registry_entry(
     db: Session = Depends(get_db),
     _admin: User = Depends(require_role(UserRole.ADMIN)),
 ):
-    """Vet a tool — the other half of ``suggest_tool`` (v2.280.0).
+    """Curate a tool — the other half of ``suggest_tool`` (v2.280.0).
 
-    An agent can record "I needed a tool you don't approve" since 2.278.0, and
-    until now nothing could act on it: the suggestions accumulated in a table
-    with no way to approve one short of a SQL prompt.  Vetting is a status
-    change on the same row, which is why suggestions were stored as rows rather
-    than as notes in a separate store.
+    Taking a suggestion into the catalogue is a status change on the same row,
+    which is why suggestions are stored as rows rather than as notes in a
+    separate store.  It usually means writing real prose too — a suggested
+    row's description is the agent's rationale — so the human-facing fields
+    are editable in the same call.
 
-    Approving usually means writing real prose too — a suggested row's
-    description is the agent's rationale, which reads badly as documentation on
-    a page humans use to learn about tools — so the human-facing fields are
-    editable in the same call.
-
-    Admin-only, and global rather than project-scoped: the registry is one
-    deployment-wide list, so approving a tool in one project approves it
-    everywhere, which is exactly what an operator vetting it intends.
+    Admin-only, and global rather than project-scoped: the catalogue is one
+    deployment-wide list.  No status grants or withholds anything (v2.433.0).
     """
-    from app.db.models_tools import (
-        TOOL_APPROVED,
-        TOOL_REFERENCE,
-        TOOL_REJECTED,
-        ToolRegistryEntry,
-    )
+    from app.db.models_tools import TOOL_REFERENCE, TOOL_REJECTED, ToolRegistryEntry
 
     entry = (
         db.query(ToolRegistryEntry).filter(ToolRegistryEntry.name == name).one_or_none()
@@ -383,7 +368,7 @@ def update_tool_registry_entry(
     fields = body.model_dump(exclude_unset=True)
     status = fields.pop("status", None)
     if status is not None:
-        allowed = {TOOL_APPROVED, TOOL_REFERENCE, TOOL_REJECTED}
+        allowed = {TOOL_REFERENCE, TOOL_REJECTED}
         if status not in allowed:
             raise HTTPException(
                 status_code=422,
@@ -471,33 +456,20 @@ def tool_readiness(
     ``preferred_provider`` so the UI can generate install guidance for
     the tools still missing from this host.
     """
-    from app.db.models_agent import ExecutionSession, ReconSession
+    from app.db.models_agent import AgentSession
     from app.services.recon_planning_service import build_tool_readiness
 
-    # The probe lives per-session; pull the caller's most recent one
-    # across both workflow types.  One row per model, newest first.
-    candidates = []
-    for model in (ExecutionSession, ReconSession):
-        row = (
-            db.query(model.environment, model.environment_probed_at)
-            .filter(
-                model.environment_probed_by_user_id == current_user.id,
-                model.environment.isnot(None),
-            )
-            .order_by(model.environment_probed_at.desc())
-            .first()
+    # The probe lives per agent session; pull the caller's most recent one.
+    row = (
+        db.query(AgentSession.environment, AgentSession.environment_probed_at)
+        .filter(
+            AgentSession.environment_probed_by_user_id == current_user.id,
+            AgentSession.environment.isnot(None),
         )
-        if row and row[0] is not None:
-            candidates.append((row[1], row[0]))  # (probed_at, environment)
-
-    timed = [c for c in candidates if c[0] is not None]
-    if timed:
-        probed_at, probe = max(timed, key=lambda c: c[0])
-    elif candidates:
-        probed_at, probe = candidates[0]
-    else:
-        probed_at, probe = None, None
-
+        .order_by(AgentSession.environment_probed_at.desc())
+        .first()
+    )
+    probe, probed_at = (row[0], row[1]) if row else (None, None)
     return build_tool_readiness(probe, probed_at=probed_at)
 
 
@@ -560,10 +532,10 @@ async def references_index():
         "tools": {
             "url": "/api/v1/references/tools",
             "description": (
-                "The tool registry — every tool BlueStick knows about, with "
-                "install/usage knowledge for humans and, for the approved "
-                "subset, the phase/intrusiveness metadata agents key off. "
-                "Filter with ?status=approved|reference|suggested."
+                "The tool catalogue — every tool BlueStick knows about, with "
+                "install/usage knowledge, phases, intrusiveness and whether "
+                "BlueStick parses its output. Filter with "
+                "?status=reference|suggested|rejected."
             ),
         },
         "parser_coverage": {

@@ -8,24 +8,31 @@
  *
  * Starting a second session is still allowed (an operator may legitimately run
  * one agent per machine), so this informs rather than blocks.
+ *
+ * 5.312.1 — each session opens its page (`/agent-sessions/:id`: its work,
+ * notes, calls, Resume and End), and the panel links to Agent Sessions, which
+ * also lists the sessions this panel does not: ones whose key ran out and that
+ * wait to be resumed. Sessions are numbered by the SESSION id, the one the
+ * agent and every other page use (the panel showed the detail row's id).
  */
-import React, { useState } from 'react';
-import { KeyRound, Loader2, PowerOff } from 'lucide-react';
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { ChevronRight, KeyRound, Loader2, PowerOff } from 'lucide-react';
 
-import type { AssistSessionRow } from '../services/api';
-import { endAssistSession } from '../services/api';
+import type { AgentSessionRow, AssistSessionRow } from '../services/api';
+import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { useConfirm } from '../hooks/useConfirm';
-import { useToast } from '../contexts/ToastContext';
-import { formatApiError } from '../utils/apiErrors';
+import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
 import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface AssistSessionsPanelProps {
   sessions: AssistSessionRow[];
   /** Re-fetch after a session ends, so the list and any count agree. */
   onChanged: () => void | Promise<void>;
+  /** Called when a link leaves for a session's page, so the host dialog closes. */
+  onNavigate?: () => void;
 }
 
 /** "4 minutes ago" — the long form, and null when there is no timestamp so the
@@ -52,56 +59,45 @@ const formatRemaining = (iso: string | null): { label: string; urgent: boolean }
   };
 };
 
+/** The session row End needs, from this panel's detail row: End goes through
+ *  the one path every session surface uses (`useAgentSessionControls` — the
+ *  session id, and the wrap-up prompt while the agent is still connected). */
+const asSessionRow = (s: AssistSessionRow, sessionId: number): AgentSessionRow => ({
+  kind: 'project',
+  id: sessionId,
+  project_id: s.project_id,
+  status: s.status,
+  purpose: s.purpose,
+  key_expires_at: s.key_expires_at,
+  last_activity_at: s.last_activity_at,
+});
+
 export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
   sessions,
   onChanged,
+  onNavigate,
 }) => {
-  const toast = useToast();
-  const [confirmEl, confirm] = useConfirm();
-  const [endingId, setEndingId] = useState<number | null>(null);
+  const controls = useAgentSessionControls(() => void onChanged());
 
   if (sessions.length === 0) return null;
 
-  const handleEnd = async (session: AssistSessionRow) => {
-    const ok = await confirm({
-      title: 'End this assist session?',
-      severity: 'warning',
-      confirmLabel: 'End session',
-      // A string body (not JSX) so the shared ConfirmDialog wires it to
-      // DialogDescription — it only does that for strings, and a rich body
-      // leaves the dialog with no accessible description at all.
-      body:
-        'The agent\u2019s API key is revoked immediately. Any agent still running '
-        + 'against it will start getting 401s mid-conversation. The session '
-        + 'record is kept for the audit trail.',
-    });
-    if (!ok) return;
-    setEndingId(session.id);
-    try {
-      await endAssistSession(session.id);
-      toast.success(`Assist session #${session.id} ended — its key is revoked.`);
-      await onChanged();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not end the assist session.'));
-    } finally {
-      setEndingId(null);
-    }
-  };
+  /** The number every other page uses for this session. */
+  const sessionNumber = (s: AssistSessionRow): number => s.agent_session_id ?? s.id;
 
   return (
     <div className="flex flex-col gap-xs rounded-control border border-border p-sm">
-      {confirmEl}
+      {controls.dialogs}
       <div className="flex items-center gap-xs">
         <KeyRound className="size-4 shrink-0 text-warning" aria-hidden />
         <p className="text-metadata font-semibold">
-          You have {sessions.length} active assist{' '}
+          You have {sessions.length} active agent{' '}
           {sessions.length === 1 ? 'session' : 'sessions'}
         </p>
       </div>
       <p className="text-caption text-muted-foreground">
-        Each one is a live agent key. Ending a session revokes its key
-        immediately; one you leave drops off this list when its key expires, so
-        there is nothing here to tidy up by hand.
+        Each one is a live agent key. Open a session to see what it is doing, resume
+        it or end it. Ending revokes its key immediately; one you leave drops off
+        this list when its key expires (it can still be resumed from Agent Sessions).
       </p>
 
       <ul className="flex flex-col gap-xs">
@@ -117,7 +113,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-xs">
                   <span className="font-mono text-caption text-muted-foreground">
-                    #{s.id}
+                    #{sessionNumber(s)}
                   </span>
                   {/* v5.189.0 — was a read-only/can-write badge sourced from
                       the session's capability grant. Grants are gone: a session
@@ -178,25 +174,49 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                   {active ? ` · last used ${active}` : ' · not used yet'}
                 </p>
               </div>
-              <Button
-                variant="outline"
-                size="sm"
-                className="shrink-0"
-                disabled={endingId === s.id}
-                onClick={() => handleEnd(s)}
-                aria-label={`End assist session ${s.id}`}
-              >
-                {endingId === s.id ? (
-                  <Loader2 className="size-4 animate-spin" aria-hidden />
-                ) : (
-                  <PowerOff className="size-4" aria-hidden />
+              <div className="flex shrink-0 items-center gap-xs">
+                {/* Both need the session id; a detail row without one
+                    predates the unified session and has no live key. */}
+                {s.agent_session_id != null && (
+                  <>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link
+                        to={agentSessionPath(s.agent_session_id)}
+                        onClick={onNavigate}
+                        aria-label={`Open agent session ${s.agent_session_id}`}
+                      >
+                        Open
+                        <ChevronRight className="size-4" aria-hidden />
+                      </Link>
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={controls.isEnding(s.agent_session_id)}
+                      onClick={() => void controls.requestEnd(asSessionRow(s, s.agent_session_id!))}
+                      aria-label={`End agent session ${s.agent_session_id}`}
+                    >
+                      {controls.isEnding(s.agent_session_id) ? (
+                        <Loader2 className="size-4 animate-spin" aria-hidden />
+                      ) : (
+                        <PowerOff className="size-4" aria-hidden />
+                      )}
+                      End
+                    </Button>
+                  </>
                 )}
-                End
-              </Button>
+              </div>
             </li>
           );
         })}
       </ul>
+      <Link
+        to={SESSIONS_LIST_PATH}
+        onClick={onNavigate}
+        className="self-start text-caption text-primary underline-offset-4 hover:underline"
+      >
+        All agent sessions — including ones waiting to be resumed
+      </Link>
     </div>
   );
 };

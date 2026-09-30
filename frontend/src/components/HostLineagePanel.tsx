@@ -1,10 +1,10 @@
 /**
  * Host workflow lineage panel — v3 alpha.9 (v4 alpha.17 rewrite).
  *
- * The host-centric "what's been done to this host?" view.  Three
- * sections (recons / plans / executions) each linking to the
- * per-session detail pages.  One round trip to the alpha.9 backend
- * endpoint; self-contained so HostDetail just renders ``<HostLineagePanel
+ * The host-centric "what's been done to this host?" view.  Two
+ * sections (plans / executions) each linking to the per-session
+ * detail pages (5.313.1: the recon-run section went with recon runs).
+ * One round trip to the alpha.9 backend endpoint; self-contained so HostDetail just renders ``<HostLineagePanel
  * hostId={...} />``.
  *
  * Empty when the host has no workflow attribution — explicit
@@ -22,7 +22,6 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { InspectorSection } from './host-inspector/InspectorSection';
 import { cn } from '../utils/cn';
-import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface HostLineagePanelProps {
   hostId: number;
@@ -31,11 +30,6 @@ export interface HostLineagePanelProps {
    *  still says so. */
   hideWhenEmpty?: boolean;
 }
-
-/** Short relative age ("5m ago"). Shared with every other surface —
- *  this was one of four byte-identical copies before v5.179.0. */
-const fmtAgo = (iso?: string | null): string =>
-  formatRelativeTime(iso, { withSeconds: true });
 
 const SectionHeader: React.FC<{ title: string; count: number; hint: string }> = ({
   title,
@@ -93,7 +87,7 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId, hide
   }, [hostId]);
 
   const untouched = !!lineage
-    && lineage.recon_sessions.length + lineage.plan_entries.length + lineage.execution_sessions.length === 0;
+    && lineage.plan_entries.length + lineage.execution_sessions.length === 0;
 
   if (hideWhenEmpty && !error && (loading || untouched)) return null;
 
@@ -101,7 +95,7 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId, hide
     <InspectorSection
       id="host-detail-lineage"
       title="Workflow lineage"
-      titleHint="What agent workflows have touched this host: recon runs that discovered it, plans that include it, and execution sessions that have tested it."
+      titleHint="What agents have done with this host: plans that include it, and execution runs that have tested it."
       icon={<Workflow className="size-4 shrink-0 text-muted-foreground" aria-hidden />}
     >
       <div className="space-y-md">
@@ -118,50 +112,17 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId, hide
           </Alert>
         )}
 
-        {/* All three empty is the common case on a scanned-but-untouched host:
-            one line, not three headings each saying "none" (v5.241.0). */}
+        {/* Both empty is the common case on a scanned-but-untouched host:
+            one line, not headings each saying "none" (v5.241.0). */}
         {lineage && !error && untouched && (
           <p className="text-metadata text-muted-foreground">
-            No agent workflow has touched this host — no recon session discovered it, no plan
-            includes it, and no execution session has tested it.
+            No agent has touched this host — no plan includes it, and no execution run has
+            tested it.
           </p>
         )}
 
         {lineage && !error && !untouched && (
           <>
-            <div>
-              <SectionHeader
-                title="Recon sessions"
-                count={lineage.recon_sessions.length}
-                hint="Runs that discovered this host."
-              />
-              {lineage.recon_sessions.length === 0 ? (
-                <p className="text-metadata text-muted-foreground">
-                  No agent-attributed recon sessions discovered this host.
-                </p>
-              ) : (
-                <div className="space-y-xxs">
-                  {lineage.recon_sessions.map((r) => (
-                    <LineageRow
-                      key={r.session_id}
-                      status={r.status}
-                      statusVariant={r.status === 'active' ? 'success' : 'outline'}
-                      body={
-                        <>
-                          <strong>#{r.session_id}</strong>
-                          {r.scope_name && <> · scope {r.scope_name}</>}
-                          {r.generated_by_model && <> · by {r.generated_by_model}</>}
-                          {r.started_by_username && <> · started by {r.started_by_username}</>}
-                          {r.started_at && <> · {fmtAgo(r.started_at)}</>}
-                        </>
-                      }
-                      onOpen={() => navigate(`/recon/runs/${r.session_id}`)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
             <div>
               <SectionHeader
                 title="Plan entries"
@@ -197,13 +158,13 @@ export const HostLineagePanel: React.FC<HostLineagePanelProps> = ({ hostId, hide
 
             <div>
               <SectionHeader
-                title="Execution sessions"
+                title="Execution runs"
                 count={lineage.execution_sessions.length}
                 hint="Runs that produced per-test results against this host."
               />
               {lineage.execution_sessions.length === 0 ? (
                 <p className="text-metadata text-muted-foreground">
-                  No execution session has tested this host yet.
+                  No execution run has tested this host yet.
                 </p>
               ) : (
                 <div className="space-y-xxs">

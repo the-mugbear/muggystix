@@ -57,11 +57,10 @@ export const getSbom = async (): Promise<SbomResponse> => {
 
 
 // --- Tool registry ---
-// One source of truth for every tool BlueStick knows about. The reference page
-// renders all of it as a human knowledge repo; the agent catalogue is the
-// `approved` subset. Previously these were two lists in two languages that had
-// already drifted (`testssl` was agent-usable with no human entry), and only
-// the smaller backend one could gate anything.
+// One source of truth for every tool BlueStick knows about: a catalogue, not
+// agent policy. `reference` is the vetted catalogue, `suggested` an agent's
+// proposal waiting for an admin, `rejected` a declined suggestion. No status
+// grants or withholds permission — the operator drives their own agent.
 
 export interface ToolRegistryEntry {
   name: string;
@@ -71,14 +70,15 @@ export interface ToolRegistryEntry {
   install: string | null;
   url: string | null;
   kali: boolean;
-  /** Policy: may an agent run it. `suggested` is awaiting human vetting. */
-  status: 'approved' | 'reference' | 'suggested' | 'rejected';
+  /** Catalogue state. `suggested` waits for an admin to add it to the
+   *  catalogue (`reference`) or decline it (`rejected`). */
+  status: 'reference' | 'suggested' | 'rejected';
   phases: string[];
   intrusive: boolean | null;
   requires_privileges: boolean | null;
   output_format: string | null;
   /** Engineering: does BlueStick have a parser for its output. Independent of
-   *  `status` — a tool can be safe to run with no parser at all. */
+   *  `status` — a catalogued tool may have no parser at all. */
   ingestible: boolean;
   suggested_rationale: string | null;
 }
@@ -150,7 +150,7 @@ export const getParserCoverage = async (): Promise<ParserCoverageResponse> => {
 /** Fields an admin may change when vetting. `ingestible` is absent on purpose:
  *  it records whether a parser exists in the codebase, not an operator call. */
 export interface ToolRegistryUpdate {
-  status?: 'approved' | 'reference' | 'rejected';
+  status?: 'reference' | 'rejected';
   description?: string;
   category?: string;
   ports?: string;

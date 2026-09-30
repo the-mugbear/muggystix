@@ -1,19 +1,27 @@
 /**
  * StartAssistDialog — v4.29.0; unified session v2.337.0
  *
- * Project-level dialog for starting an agent session.  Mints one
- * project-scoped agent API key and shows the prompt + key to paste
- * into Claude Code / Codex / etc.  Since v2.337.0 the key is NOT
- * read-only or assist-only: the same session queries the inventory
- * and can open a reconnaissance, plan-generation, or execution phase,
- * all within the operator's own permissions.  (The component keeps
- * its name for now; the endpoint it calls is still /assist/start.)
+ * Project-level dialog for starting an agent session — THE way an agent
+ * starts. Mints one project-scoped agent API key and shows the prompt + key
+ * to paste into Claude Code / Codex / etc. The same session queries the
+ * inventory, uploads its scans, and opens its own plans and execution runs,
+ * all within the operator's own project role; nothing waits on an approval.
+ * (The component keeps its name; the endpoint it calls is /assist/start.)
+ *
+ * `instruction` (5.313.0) — the per-object entry points (a scope's scan, a
+ * plan's work, a host selection) open this dialog with a one-line task for
+ * the agent. It is shown to copy before and after starting, and when the
+ * operator already has a live session the dialog says to paste it there
+ * instead of starting another (AgentTaskButton).
  *
  * No scope picker — a session binds to the project and picks its
- * scope/plan when it opens a phase.  Resume lives on Agent Activity
- * (ResumeAgentSessionDialog, v5.214.0), not here: it acts on a row.
+ * scope/plan when it opens a phase.  Resume lives on Agent Sessions and each
+ * session's page (ResumeAgentSessionDialog, v5.214.0), not here: it acts on a
+ * row.  5.312.1 — the panel's sessions link to their pages, and the dialog
+ * links to Agent Sessions, so a session shown here is one click from its
+ * controls.
  *
- * Audit C1 (from recon dialog): the key is shown exactly once, so the
+ * Audit C1: the key is shown exactly once, so the
  * dialog does not close by accident while it is on screen. Since 5.309.0
  * that is the Done footer (KeyHandoffFooter) rather than an "I copied the
  * key" checkbox: copying anything that holds the key clears it; otherwise
@@ -21,6 +29,7 @@
  * scrolled to one sentence, one field, and one copy for the chosen client.
  */
 import React, { useCallback, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { Loader2, MessageCircleQuestion } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
 import { Button } from './ui/button';
@@ -39,6 +48,8 @@ import { startAssistSession, type AssistSessionRow, type StartAssistResponse } f
 import { formatApiError } from '../utils/apiErrors';
 import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
+import { CodeBlock } from './ui/code-block';
+import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
 
 export interface StartAssistDialogProps {
   open: boolean;
@@ -50,7 +61,21 @@ export interface StartAssistDialogProps {
   mySessions?: AssistSessionRow[];
   /** Re-fetch `mySessions` after this dialog starts or ends one. */
   onSessionsChanged?: () => void | Promise<void>;
+  /** A one-line task to give the agent (e.g. "Work test plan #12 in
+   *  BlueStick"), shown to copy before and after the session starts. */
+  instruction?: string;
 }
+
+/** A session whose key still works: an agent could take the instruction now. */
+const hasLiveKey = (s: AssistSessionRow, now: number): boolean =>
+  s.key_expires_at != null && new Date(s.key_expires_at).getTime() > now;
+
+const InstructionBlock: React.FC<{ text: string; lead: React.ReactNode }> = ({ text, lead }) => (
+  <div className="flex min-w-0 flex-col gap-xxs">
+    <p className="text-metadata font-semibold">{lead}</p>
+    <CodeBlock text={text} label="agent instruction" className="whitespace-pre-wrap break-words" />
+  </div>
+);
 
 export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   open,
@@ -58,7 +83,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   onSessionStarted,
   mySessions = [],
   onSessionsChanged,
+  instruction,
 }) => {
+  const liveSession = instruction ? mySessions.find((s) => hasLiveKey(s, Date.now())) : undefined;
   const [purpose, setPurpose] = useState('');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -123,7 +150,9 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-xs">
             <MessageCircleQuestion className="size-5 text-primary" aria-hidden />
-            {result ? `Connect your agent — session #${result.assist_session_id}` : 'Start Agent Session'}
+            {result
+              ? `Connect your agent — session #${result.agent_session_id ?? result.assist_session_id}`
+              : 'Start Agent Session'}
           </DialogTitle>
           <DialogDescription>
             {/* 5.309.0 — one sentence. It was said four times across the two
@@ -133,12 +162,14 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
             {result ? (
               <>
                 Copy the setup for your agent — the key is in it. It is valid for{' '}
-                {result.key_ttl_hours} hours and the agent can renew it.
+                {result.key_ttl_hours} hours and the agent can renew it. The session then
+                shows under <strong>Workflows → Agent Sessions</strong>, where you can follow,
+                resume or end it.
               </>
             ) : (
               <>
                 Connect Claude Code, Codex or VS Code Copilot to this project. The agent
-                works with your permissions, and a plan still needs your approval before it runs.
+                works with your permissions and shows you every command it runs.
               </>
             )}
           </DialogDescription>
@@ -146,10 +177,44 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
         <DialogBody className="flex flex-col gap-md">
           {!result ? (
             <>
+              {instruction && (
+                <InstructionBlock
+                  text={instruction}
+                  lead={liveSession ? (
+                    <>
+                      Your agent session{' '}
+                      <Link
+                        to={agentSessionPath(liveSession.agent_session_id ?? liveSession.id)}
+                        onClick={() => { reset(); onOpenChange(false); }}
+                        className="text-primary underline-offset-4 hover:underline"
+                      >
+                        #{liveSession.agent_session_id ?? liveSession.id}
+                      </Link>{' '}
+                      is live — paste this to its agent; there is no need to start another.
+                    </>
+                  ) : 'Start a session, connect your agent, then give it this:'}
+                />
+              )}
               <AssistSessionsPanel
                 sessions={mySessions}
                 onChanged={() => onSessionsChanged?.() ?? Promise.resolve()}
+                onNavigate={() => { reset(); onOpenChange(false); }}
               />
+              {mySessions.length === 0 && (
+                // 5.312.1 — with no live key the panel is hidden, but a session
+                // whose key ran out may still be resumable; say where it is.
+                <p className="text-caption text-muted-foreground">
+                  Continuing an earlier session?{' '}
+                  <Link
+                    to={SESSIONS_LIST_PATH}
+                    onClick={() => { reset(); onOpenChange(false); }}
+                    className="text-primary underline-offset-4 hover:underline"
+                  >
+                    Resume it from Agent Sessions
+                  </Link>{' '}
+                  instead of starting a new one.
+                </p>
+              )}
               <div className="flex flex-col gap-xxs">
                 <Label htmlFor="assist-purpose">
                   What is it for? <span className="text-muted-foreground">(optional — shown in the audit log)</span>
@@ -171,12 +236,17 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
             </>
           ) : (
             // v5.214.0 — shared with the resume dialog on Agent Activity.
-            <AgentSessionCredentials
-              apiKey={result.api_key}
-              instructions={result.instructions}
-              mcpClients={result.mcp_clients ?? []}
-              onCopied={() => setKeyCopied(true)}
-            />
+            <>
+              <AgentSessionCredentials
+                apiKey={result.api_key}
+                instructions={result.instructions}
+                mcpClients={result.mcp_clients ?? []}
+                onCopied={() => setKeyCopied(true)}
+              />
+              {instruction && (
+                <InstructionBlock text={instruction} lead="Once it is connected, give your agent this:" />
+              )}
+            </>
           )}
         </DialogBody>
         <DialogFooter>

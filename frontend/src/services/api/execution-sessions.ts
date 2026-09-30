@@ -97,8 +97,7 @@ export const getExecutionSessionById = async (
 
 /**
  * Operator-driven completion path for stuck execution sessions (v4
- * beta.7 backend).  Mirrors abandonReconSession — same semantics for
- * the test-plan execution side.  Used when the terminal-side agent
+ * beta.7 backend).  Used when the terminal-side agent
  * never reached the terminal state (agent crashed mid-plan, user
  * killed the terminal, etc.).  Requires the analyst role on the
  * project.  Returns 409 if the session is already terminal.

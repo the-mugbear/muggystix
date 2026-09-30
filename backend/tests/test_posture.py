@@ -216,7 +216,9 @@ def test_posture_response_contract(db_session, test_project):
     }
     assert "adopted" in out["headline"]["systemic"]
     assert set(out["disposition"]) >= {"scanner_active", "non_scanner_active", "by_status"}
-    assert set(out["decisions"]) >= {"pending_approvals", "blocked_sessions"}
+    assert set(out["decisions"]) >= {"blocked_sessions"}
+    # v2.433.0 — no plan approval step, so no approval queue.
+    assert "pending_approvals" not in out["decisions"]
     assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}

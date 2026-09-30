@@ -22,6 +22,7 @@ import { Button } from '../components/ui/button';
 import { Card, CardContent } from '../components/ui/card';
 import { ConfirmDialog } from '../components/ui/confirm-dialog';
 import { WorkflowDetailHeader } from '../components/workflow/WorkflowDetailHeader';
+import OwningSessionLink from '../components/agent-sessions/OwningSessionLink';
 import {
   Table,
   TableBody,
@@ -364,7 +365,7 @@ const ExecutionDetail: React.FC = () => {
           <WorkflowDetailHeader
             onBack={() => navigate(-1)}
             backLabel="Back to executions"
-            title={`Execution session #${bundle.execution_session_id}`}
+            title={`Execution run #${bundle.execution_session_id}`}
             badges={
               <Badge variant={sessionStatusTone(bundle.execution_session_status)}>
                 {bundle.execution_session_status}
@@ -392,6 +393,10 @@ const ExecutionDetail: React.FC = () => {
             }
             actions={
               <>
+                {/* 5.313.0 — a run's agent is resumed from its session. */}
+                {['active', 'paused'].includes(bundle.execution_session_status) && (
+                  <OwningSessionLink agentSessionId={bundle.agent_session_id} />
+                )}
                 <Button size="sm" variant="outline" onClick={reload}>
                   <RefreshCw className="size-4" aria-hidden /> Refresh
                 </Button>
@@ -407,7 +412,7 @@ const ExecutionDetail: React.FC = () => {
             }
             destructiveAction={
               // Abandon — operator escape hatch for sessions whose agent
-              // never reached a terminal state.  Mirrors ReconRunDetail.
+              // never reached a terminal state.
               isAbandonable && canAbandon ? (
                 <Button
                   size="sm"

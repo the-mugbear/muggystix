@@ -63,7 +63,7 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
         note_type="finding", status="open",
     ))
 
-    plan = PlanModel(project_id=test_project.id, title="Web plan", status="approved",
+    plan = PlanModel(project_id=test_project.id, title="Web plan", status="draft",
                     created_by_user_id=test_user.id)
     db_session.add(plan)
     db_session.flush()

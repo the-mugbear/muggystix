@@ -36,7 +36,7 @@ const sections: GuideSection[] = [
         <Para>
           From there, the rest of this guide follows the work: <strong>Working with Data</strong>{' '}
           (formats &amp; ingestion), <strong>Triage &amp; Analysis</strong> (hosts, search, findings,
-          posture), <strong>Agentic Workflows</strong> (recon/test/assist agents), and{' '}
+          posture), <strong>Agents</strong> (connecting the AI assistant you drive), and{' '}
           <strong>Administration</strong> (projects, users, reporting).
         </Para>
       </div>
@@ -55,10 +55,10 @@ const sections: GuideSection[] = [
           landing pages in their own right.
         </Para>
         <UnorderedList>
-          <li><strong>Operations</strong> — your analyst home base: project stats, your review queue, pending approvals, and recent team notes.</li>
+          <li><strong>Operations</strong> — your analyst home base: project stats, your review queue, blocked work, and recent team notes, and where you start your agent session.</li>
           <li><strong>Inventory</strong> — the data itself: <strong>Scans</strong>, <strong>Hosts</strong>, <strong>Findings</strong>, and <strong>Scopes</strong>.</li>
           <li><strong>Posture</strong> — the analytical roll-up: the manager-facing <strong>Posture</strong> dashboard, plus <strong>Insights</strong> (per-subnet hygiene) and <strong>Systemic</strong> (estate-wide blind spots).</li>
-          <li><strong>Workflows</strong> — agent-driven work: <strong>Recon Runs</strong>, <strong>Test Plans</strong>, <strong>Executions</strong>, and <strong>Agent Runs</strong>.</li>
+          <li><strong>Workflows</strong> — agent-driven work: <strong>Test Plans</strong>, <strong>Agent Sessions</strong> (what agents are doing now, each session's plans and executions, and the controls to resume or end one) and <strong>Tool Activity</strong>.</li>
           <li><strong>Collaboration</strong> — <strong>Activity</strong> (notes across the project), <strong>Tool Activity</strong>, and <strong>Agent Feedback</strong>.</li>
           <li><strong>Settings</strong> — <strong>Project</strong>, <strong>LLM Providers</strong>, <strong>Scanner Integrations</strong>, <strong>System</strong> (admin), <strong>Profile</strong>, <strong>Reference</strong>, and <strong>Ingestion Results</strong>.</li>
         </UnorderedList>

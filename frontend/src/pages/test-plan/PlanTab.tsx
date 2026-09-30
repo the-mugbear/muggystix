@@ -48,7 +48,8 @@ import {
 } from '../../components/ui/table';
 import { useTestPlanContext } from './TestPlanLayout';
 
-const ENTRY_STATUSES = ['proposed', 'approved', 'in_progress', 'completed', 'rejected'];
+// 5.313.0 — `approved` is gone: `proposed` is "not tested yet".
+const ENTRY_STATUSES = ['proposed', 'in_progress', 'completed', 'rejected'];
 const PRIORITY_ORDER: Record<string, number> = {
   critical: 0,
   high: 1,
@@ -108,8 +109,6 @@ const entryStatusTone = (status: string | null | undefined): Tone => {
   switch (status) {
     case 'proposed':
       return 'info';
-    case 'approved':
-      return 'default';
     case 'in_progress':
       return 'warning';
     case 'completed':

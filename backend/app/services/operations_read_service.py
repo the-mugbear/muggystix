@@ -29,7 +29,7 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import Annotation, FollowStatus, HostFollow, NoteStatus
-from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry
+from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
@@ -849,7 +849,7 @@ class MyTaskItem(BaseModel):
     host_hostname: Optional[str] = None
     priority: str
     test_phase: str
-    entry_status: str  # proposed | approved | in_progress
+    entry_status: str  # proposed | in_progress
     proposed_test_count: int
     rationale: Optional[str] = None
     updated_at: Optional[datetime] = None
@@ -878,9 +878,9 @@ def compute_my_tasks(
 ) -> MyTasksResponse:
     """Return the caller's authoritative personal task queue.
 
-    Every row is a non-terminal entry (status in proposed/approved/
-    in_progress) on an accepted plan (approved/in_progress/completed) in
-    this project, matching at least one of:
+    Every row is a non-terminal entry (proposed/in_progress) on a plan that
+    is not archived (PLANNED_PLAN_STATUSES) in this project, matching at
+    least one of:
       - assigned to the caller (`assigned_to_id`),
       - on a host the caller marked In Review,
       - unassigned and critical/high (shared triage).
@@ -916,8 +916,8 @@ def compute_my_tasks(
 
     base_filters = (
         TestPlan.project_id == project.id,
-        TestPlan.status.in_(("approved", "in_progress", "completed")),
-        TestPlanEntry.status.in_(("proposed", "approved", "in_progress")),
+        TestPlan.status.in_(PLANNED_PLAN_STATUSES),
+        TestPlanEntry.status.in_(("proposed", "in_progress")),
     )
 
     # Rank in SQL so the LIMIT keeps the TRUE top rows.  CASE order matches
@@ -1255,8 +1255,8 @@ def compute_my_findings(
 # ---------------------------------------------------------------------------
 # Blockers (v2.363.0) — work that has STOPPED and will not resume by itself.
 #
-# Operations surfaced one kind of blocker, a plan awaiting approval.  Two more
-# were recorded and shown nowhere an analyst starts their day:
+# Two kinds of stopped work were recorded and shown nowhere an analyst starts
+# their day (plan approval, once a third, no longer exists — v2.433.0):
 #
 #   * an import that FAILED (nothing from that file is in the inventory) or
 #     finished PARTIAL (some of it is, and the rest silently is not) — until
@@ -1264,7 +1264,7 @@ def compute_my_findings(
 #   * an execution run that is no longer running but never completed: paused,
 #     or still "active" though the agent session driving it has ended.  Its
 #     plan is locked to that run (one active run per plan) until someone
-#     resumes or abandons it.
+#     resumes its agent session or abandons the run.
 #
 # Project-wide, not personal: these block the engagement, and who can act is
 # governed by role at the destination.  Counts + the few newest rows only —
@@ -1435,7 +1435,7 @@ def _session_links(db: Session, sessions: list) -> Dict[int, Optional[str]]:
     project session may have several, so it links to the Agent Runs timeline
     where all of them are listed.  Three grouped queries, no per-row lookups.
     """
-    from app.db.models_agent import ExecutionSession, ReconSession
+    from app.db.models_agent import ExecutionSession
     ids_by_kind: Dict[str, List[int]] = {}
     for s in sessions:
         ids_by_kind.setdefault(s.workflow, []).append(s.id)
@@ -1443,7 +1443,6 @@ def _session_links(db: Session, sessions: list) -> Dict[int, Optional[str]]:
     for sid in ids_by_kind.get("project", []):
         links[sid] = "/agent-activity"
     lookups = (
-        ("recon", ReconSession, "/recon/runs/{}"),
         ("execution", ExecutionSession, "/executions/{}"),
         ("plan_generation", TestPlan, "/test-plans/{}"),
     )

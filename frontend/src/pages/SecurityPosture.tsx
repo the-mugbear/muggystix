@@ -206,7 +206,7 @@ const PostureConclusion: React.FC<{ data: PostureResponse }> = ({ data }) => {
       <p className="flex items-center gap-xs text-caption uppercase tracking-wide text-muted-foreground">
         <Icon className={`size-4 shrink-0 ${tone.textClass}`} aria-hidden />
         <span className={`font-semibold ${tone.textClass}`}>{tone.text}</span>
-        <InfoTip text="A deterministic label, not a score, and it follows what was OBSERVED — never who is assigned. Action required = any active critical/high finding, estate-wide weakness, or critical finding on a tier-1/2 site. Needs assessment = low review coverage, scanner observations nobody has judged, or a site below its expected host count. Insufficient evidence = no scan evidence yet, so a quiet reading can't be trusted. Otherwise No urgent signals. Unassigned findings, pending approvals and blocked runs are listed as work and do not change it." />
+        <InfoTip text="A deterministic label, not a score, and it follows what was OBSERVED — never who is assigned. Action required = any active critical/high finding, estate-wide weakness, or critical finding on a tier-1/2 site. Needs assessment = low review coverage, scanner observations nobody has judged, or a site below its expected host count. Insufficient evidence = no scan evidence yet, so a quiet reading can't be trusted. Otherwise No urgent signals. Unassigned findings and blocked runs are listed as work and do not change it." />
       </p>
       {/* The plain-language conclusion is the lead. */}
       <p className="mt-xxs break-words text-subheading font-semibold text-foreground">
@@ -500,14 +500,11 @@ const ReviewDecisions: React.FC<{
   <PostureSection
     title={<>
       Decisions for this review
-      <InfoTip text="What was observed, how far it reaches, and the next assessment step — ranked worst-first from the same signals that set the security condition. Rows marked Assessment work (an unassigned finding) are things to do, and never change the condition; neither do pending approvals or blocked runs, which live in Operations." />
+      <InfoTip text="What was observed, how far it reaches, and the next assessment step — ranked worst-first from the same signals that set the security condition. Rows marked Assessment work (an unassigned finding) are things to do, and never change the condition; neither do blocked runs, which live in Operations." />
     </>}
-    actions={(decisions.pending_approvals > 0 || decisions.blocked_sessions > 0) && (
+    actions={decisions.blocked_sessions > 0 && (
       <Link to="/operations" className="text-info hover:underline">
-        {[
-          decisions.pending_approvals > 0 && `${decisions.pending_approvals} plan${decisions.pending_approvals === 1 ? '' : 's'} to approve`,
-          decisions.blocked_sessions > 0 && `${decisions.blocked_sessions} blocked run${decisions.blocked_sessions === 1 ? '' : 's'}`,
-        ].filter(Boolean).join(' · ')} in Operations →
+        {`${decisions.blocked_sessions} blocked run${decisions.blocked_sessions === 1 ? '' : 's'}`} in Operations →
       </Link>
     )}
   >

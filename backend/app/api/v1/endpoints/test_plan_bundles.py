@@ -1,6 +1,6 @@
 """Test-plan offline-bundle endpoints.
 
-The remote/offline execution workflow: export an approved plan as a ZIP the
+The remote/offline execution workflow: export a plan as a ZIP the
 operator hands to an air-gapped agent, then import the agent's results.json
 back. Carved out of ``test_plans.py`` (CLAUDE.md file-size policy) as a
 self-contained sub-surface — it depends only on bundle_service /
@@ -32,12 +32,12 @@ router = APIRouter()
 
 
 # ---------------------------------------------------------------------------
-# Export Bundle — package an approved plan for an offline remote agent
+# Export Bundle — package a plan for an offline remote agent
 # ---------------------------------------------------------------------------
 
 @router.post(
     "/{plan_id}/export-bundle",
-    summary="Export an approved test plan as a remote-execution bundle",
+    summary="Export a test plan as a remote-execution bundle",
     responses={
         200: {
             "description": "ZIP bundle containing manifest.json, plan.json, "
@@ -46,7 +46,7 @@ router = APIRouter()
                            "the UI can display it without parsing the ZIP.",
             "content": {"application/zip": {}},
         },
-        400: {"description": "Plan is empty, not approved, or in an invalid state"},
+        400: {"description": "Plan is empty, archived or completed"},
         404: {"description": "Plan not found"},
     },
 )
@@ -57,7 +57,7 @@ def export_test_plan_bundle(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(require_project_role(ProjectRole.ANALYST)),
 ):
-    """Package an approved plan into a downloadable ZIP bundle.
+    """Package a plan into a downloadable ZIP bundle.
 
     Creates a new execution session in ``exported`` mode tied to this
     bundle, pausing any existing active session for the plan.  The

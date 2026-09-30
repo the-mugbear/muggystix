@@ -7,8 +7,7 @@ silently come back:
 - B2  sanity-check unique-constraint 500 — (session, entry, method) key
 - B4  test-plan cross-project visibility — actionable 404
 
-(B3, the recon port-overcount fix, is covered in test_recon_service.py
-where the recon host/scan/port fixtures already live.)
+(B3, the recon port-overcount fix, went with recon runs in v2.433.0.)
 """
 from __future__ import annotations
 
@@ -23,71 +22,6 @@ from sqlalchemy.exc import IntegrityError
 # B1 — IngestionService.create_job stamps recon_session_id in the row-creation
 # transaction (previously a second commit, leaving a worker-race window).
 # ---------------------------------------------------------------------------
-
-@pytest.mark.asyncio
-async def test_create_job_stamps_recon_session_id_atomically(
-    db_session, test_project, test_agent, monkeypatch, tmp_path
-):
-    from app.core.config import settings
-    from app.db import models
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-    monkeypatch.setattr(settings, "INGESTION_STORAGE_DIR", str(tmp_path))
-    from app.services.ingestion_service import IngestionService
-
-    # A real ReconSession to point the job at — recon_session_id is a real
-    # FK, so a bogus integer is rejected by the database.
-    scope = models.Scope(
-        name="b1-scope", description="fixture", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    recon = ReconSession(
-        project_id=test_project.id,
-        scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-    )
-    db_session.add(recon)
-    db_session.flush()
-
-    svc = IngestionService()
-    xml = b'<?xml version="1.0"?>\n<nmaprun scanner="nmap"></nmaprun>'
-    upload = UploadFile(filename="recon-sweep.xml", file=io.BytesIO(xml))
-
-    job = await svc.create_job(
-        db=db_session,
-        upload=upload,
-        submitted_by_id=None,
-        options={"project_id": test_project.id, "recon_session_id": recon.id},
-    )
-
-    # The FK must be set on the row the moment it is committed as 'queued'
-    # — that is the whole point of the fix (no second-commit gap the
-    # worker could slip through).
-    assert job.recon_session_id == recon.id
-    assert job.status == "queued"
-
-
-@pytest.mark.asyncio
-async def test_create_job_without_recon_session_leaves_fk_null(
-    db_session, test_project, monkeypatch, tmp_path
-):
-    """A normal human upload carries no recon_session_id — must stay null."""
-    from app.core.config import settings
-    monkeypatch.setattr(settings, "INGESTION_STORAGE_DIR", str(tmp_path))
-    from app.services.ingestion_service import IngestionService
-
-    svc = IngestionService()
-    upload = UploadFile(
-        filename="manual.xml",
-        file=io.BytesIO(b'<?xml version="1.0"?>\n<nmaprun scanner="nmap"></nmaprun>'),
-    )
-    job = await svc.create_job(
-        db=db_session, upload=upload, submitted_by_id=None,
-        options={"project_id": test_project.id},
-    )
-    assert job.recon_session_id is None
-
 
 # ---------------------------------------------------------------------------
 # B2 — host_sanity_checks uniqueness widened to (session, entry, method) so
@@ -437,41 +371,24 @@ def test_archive_plan_abandons_non_terminal(client, test_project, test_plan):
     assert client.post(base, json={}).status_code == 400
 
 
-def test_complete_rejects_without_sanity_check_or_override(client, owned_execution_target, plan_agent_key, test_plan):
+def test_complete_needs_no_sanity_check(client, owned_execution_target, plan_agent_key, test_plan, db_session):
     execution_target = owned_execution_target
-    """No passing HostSanityCheck and no override_reason → 400."""
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
-        headers={"X-API-Key": plan_agent_key["raw"]},
-        json={"findings_summary": "no findings", "overall_status": "completed"},
-    )
-    assert resp.status_code == 400, resp.text
-    assert "sanity" in resp.json()["detail"].lower()
-
-
-def test_complete_accepts_with_override_reason(client, owned_execution_target, plan_agent_key, test_plan, db_session):
-    execution_target = owned_execution_target
-    """No passing sanity check but an explicit override_reason → accepted,
-    the reason is echoed in the response, and — v2.316.0 — a completion-override
-    audit event is written so a reviewer can find it without querying a JSON
-    column (the tool description promises it is "audit-visible")."""
+    """v2.433.0 — a target check is evidence, not a gate: an entry completes
+    without one.  Closing it with no test results still needs (and
+    audit-logs) no_tests_run_reason."""
     resp = client.post(
         f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
         headers={"X-API-Key": plan_agent_key["raw"]},
         json={
             "findings_summary": "host offline",
             "overall_status": "completed",
-            "override_reason": "target stopped responding before verification banner-grab",
-            # v2.65.0 — proposed_tests=[] gate now active; pass an
-            # explicit reason so the test exercises only the
-            # sanity-check override path it was written to verify.
             "no_tests_run_reason": "fixture entry has no proposed tests",
         },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["sanity_check_missing"] is True
-    assert "target stopped responding" in body["override_reason"]
+    assert body["sanity_checks_passed"] == 0
+    assert "override_reason" not in body
 
     from app.db.models_auth import AuditLog
     event = (
@@ -480,16 +397,14 @@ def test_complete_accepts_with_override_reason(client, owned_execution_target, p
         .order_by(AuditLog.id.desc())
         .first()
     )
-    assert event is not None, "completion override was not audit-logged"
+    assert event is not None, "closing without evidence was not audit-logged"
     assert event.details["entry_id"] == execution_target["entry"].id
-    assert "target stopped responding" in event.details["sanity_override_reason"]
     assert "fixture entry has no proposed tests" in event.details["no_tests_run_reason"]
 
 
 def test_complete_accepts_with_passing_sanity_check(client, owned_execution_target, plan_agent_key, test_plan, db_session):
     execution_target = owned_execution_target
-    """A passing sanity check on the entry → completion succeeds without
-    needing an override."""
+    """A passing target check on the entry is counted as evidence."""
     from app.db.models_agent import HostSanityCheck
     db_session.add(HostSanityCheck(
         execution_session_id=execution_target["session"].id,
@@ -506,16 +421,13 @@ def test_complete_accepts_with_passing_sanity_check(client, owned_execution_targ
         json={
             "findings_summary": "host verified, no findings",
             "overall_status": "completed",
-            # See sibling test_complete_accepts_with_override_reason —
-            # fixture entry's proposed_tests=[] needs the empty-tests
-            # gate satisfied so the sanity-check assertions are the
-            # actual test point.
+            # The fixture entry's proposed_tests=[] needs the empty-tests
+            # gate satisfied so the evidence count is the test point.
             "no_tests_run_reason": "fixture entry has no proposed tests",
         },
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["sanity_check_missing"] is False
     assert body["sanity_checks_passed"] == 1
 
 
@@ -526,59 +438,6 @@ def test_complete_accepts_with_passing_sanity_check(client, owned_execution_targ
 # stored data.  Verify the two sessions are isolated (a user posting to
 # their session does not poison another user's session on the same plan).
 # ---------------------------------------------------------------------------
-
-@pytest.fixture
-def recon_session(db_session, test_project, test_agent):
-    """An active ReconSession with its own scope, ready for the probe test."""
-    from app.db import models
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-    scope = models.Scope(
-        name="env-probe-scope", description="fixture", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    session = ReconSession(
-        project_id=test_project.id,
-        scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-    )
-    db_session.add(session)
-    db_session.commit()
-    db_session.refresh(session)
-    return {"scope": scope, "session": session}
-
-
-@pytest.fixture
-def recon_agent_key(db_session, test_agent, recon_session):
-    """A scope-bound APIKey for the recon session above."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey
-    raw = "nm_agent_recon_envprobe_" + "k" * 24
-    from app.db.models_agent import AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    base = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.RECON.value,
-        project_id=recon_session["session"].project_id,
-        agent_id=test_agent.id,
-        started_by_id=None,
-    )
-    recon_session["session"].agent_session_id = base.id
-    db_session.flush()
-    api_key = APIKey(
-        agent_id=test_agent.id,
-        agent_session_id=base.id,
-        name=f"recon-{recon_session['scope'].id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    )
-    db_session.add(api_key)
-    db_session.commit()
-    return raw
-
 
 @pytest.fixture
 def execution_session_with_key(db_session, test_agent, test_plan):
@@ -640,7 +499,7 @@ def test_execution_environment_persists_and_is_echoed(
     key = execution_session_with_key["key"]
 
     # Make the plan executable (the context endpoint demands approved/in_progress).
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     resp = client.post(
@@ -667,33 +526,6 @@ def test_execution_environment_persists_and_is_echoed(
     )
     assert ctx.status_code == 200, ctx.text
     assert ctx.json()["environment"]["os_family"] == "linux"
-
-
-def test_recon_environment_persists_and_is_echoed(
-    client, recon_session, recon_agent_key, db_session,
-):
-    """Same round-trip for the recon workflow."""
-    rs = recon_session["session"]
-
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": recon_agent_key},
-        json={**_PROBE_BODY, "os_family": "windows", "powershell_execution_policy": "RemoteSigned"},
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["session_type"] == "session"
-    assert body["environment"]["powershell_execution_policy"] == "RemoteSigned"
-
-    db_session.refresh(rs)
-    assert rs.environment_probed_by_user_id is not None  # audit chain stamped
-
-    ctx = client.get(
-        "/api/v1/agent/recon/context",
-        headers={"X-API-Key": recon_agent_key},
-    )
-    assert ctx.status_code == 200, ctx.text
-    assert ctx.json()["environment"]["os_family"] == "windows"
 
 
 def test_execution_probe_rejects_other_users_session(
@@ -730,7 +562,7 @@ def test_execution_probe_rejects_other_users_session(
     # Version 1 is already taken by the test_plan fixture, so use 2.
     intruder_plan = TestPlan(
         project_id=test_project.id, agent_id=intruder_agent.id,
-        version=2, title="intruder's plan", status=TestPlanStatus.APPROVED.value,
+        version=2, title="intruder's plan", status=TestPlanStatus.DRAFT.value,
     )
     db_session.add(intruder_plan)
     db_session.flush()
@@ -868,7 +700,7 @@ def test_middleware_records_agent_request_against_plan(
     key = execution_session_with_key["key"]
 
     # Approve the plan so /execution-context is willing to serve.
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     # An agent-side call goes through the middleware.
@@ -933,7 +765,7 @@ def test_middleware_captures_mutation_body_and_references_hosts(
         test_phase="enumeration", proposed_tests=[], rationale="fixture",
     )
     db_session.add(entry)
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
     db_session.refresh(entry)
 
@@ -1016,13 +848,8 @@ def test_api_activity_endpoints_enforce_project_membership(
         f"/api/v1/projects/{test_project.id}"
         f"/test-plans/{test_plan.id}/api-activity"
     )
-    recon_url = (
-        f"/api/v1/projects/{test_project.id}/recon-sessions/1/api-activity"
-    )
-
-    # Non-member → 403 on both endpoints.
+    # Non-member → 403.
     assert client.get(plan_url).status_code == 403
-    assert client.get(recon_url).status_code == 403
 
     # Grant membership → the same user now passes the authz gate (200).
     db_session.add(ProjectMembership(
@@ -1155,78 +982,6 @@ def test_purge_runs_in_batches_until_nothing_old_is_left(db_session, test_user):
 # finding from the cross-functional code review so it can't drift back.
 # ---------------------------------------------------------------------------
 
-def test_execution_env_probe_rejects_recon_scoped_key(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """Critical #1: a recon-scoped key (scoped_scope_id set,
-    scoped_plan_id null) used to bypass the plan check in the execution
-    environment-probe handler and could write into the wrong workflow.
-    Now explicitly rejected with 403."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db import models
-    from app.db.models_auth import APIKey
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        ReconSession, ReconSessionStatus,
-    )
-
-    # The victim execution session (under the same agent).
-    es = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-    )
-    db_session.add(es)
-    db_session.flush()
-
-    # A scope + active recon session for the same agent.
-    scope = models.Scope(name="auth-hole-scope", description="fixture",
-                        project_id=test_project.id)
-    db_session.add(scope)
-    db_session.flush()
-    rs = ReconSession(project_id=test_project.id, scope_id=scope.id,
-                     agent_id=test_agent.id,
-                     status=ReconSessionStatus.ACTIVE.value)
-    db_session.add(rs)
-    db_session.flush()
-
-    # A *recon-scoped* API key — bound to a recon AgentSession.
-    from app.db.models_agent import AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    recon_base = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.RECON.value,
-        project_id=test_project.id,
-        agent_id=test_agent.id,
-        started_by_id=None,
-    )
-    rs.agent_session_id = recon_base.id
-    db_session.flush()
-    raw = "nm_agent_recon_auth_hole_" + "r" * 24
-    db_session.add(APIKey(
-        agent_id=test_agent.id, agent_session_id=recon_base.id,
-        name=f"recon-{scope.id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    ))
-    db_session.commit()
-
-    # Attempt to write the victim session's environment with the
-    # recon-scoped key.  Must be refused.
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": raw},
-        json={"os_family": "linux", "tools_available": {"nmap": True}},
-    )
-    # v2.337.0 — the probe is session-level; any session key may post it. The
-    # recon session's probe does NOT leak onto an unrelated execution run (es),
-    # because propagate_probe only touches runs opened by THIS session.
-    assert resp.status_code == 200, resp.text
-    db_session.refresh(es)
-    assert es.environment is None  # the unrelated execution run is untouched
-
-
 def test_complete_rejects_unknown_overall_status(
     client, db_session, test_plan, execution_session_with_key,
 ):
@@ -1252,7 +1007,7 @@ def test_complete_rejects_unknown_overall_status(
         execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
         method="banner_grab", target_ip="10.0.0.99", passed=True,
     ))
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     resp = client.post(
@@ -1294,7 +1049,7 @@ def test_complete_rejects_when_proposed_tests_have_zero_results(
         execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
         method="banner_grab", target_ip="10.0.0.77", passed=True,
     ))
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     # Without the override → 400.
@@ -1349,7 +1104,7 @@ def test_execution_context_sanity_check_uses_any_passed(
         execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
         method="reverse_dns", target_ip="10.0.0.33", passed=False,
     ))
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     resp = client.get(
@@ -1393,7 +1148,7 @@ def test_execution_context_coerces_string_proposed_tests(
         rationale="fixture",
     )
     db_session.add(entry)
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     resp = client.get(
@@ -1455,7 +1210,7 @@ def test_execution_progress_aggregates_full_status_enum(
             execution_session_id=es.id, entry_id=entry.id,
             test_index=idx, status=status, is_finding=False,
         ))
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     resp = client.get(
@@ -1470,17 +1225,6 @@ def test_execution_progress_aggregates_full_status_enum(
     assert body["tests_not_applicable"] == 1
     # Only the one test with no row at all is genuinely pending.
     assert body["tests_pending"] == 1
-
-
-def test_analyze_scope_size_collapses_empty_into_small():
-    """Nit #9: ``size_bucket`` previously emitted ``"tiny"`` for empty
-    scopes — undocumented and leaked through to clients consuming the
-    field.  Now empty scopes return ``"small"`` so the documented
-    enum (small | medium | large) is exhaustive."""
-    from app.api.v1.endpoints.agent_recon import _analyze_scope_size
-    result = _analyze_scope_size([])
-    assert result["size_bucket"] == "small"
-    assert result["size_bucket"] in {"small", "medium", "large"}
 
 
 # ---------------------------------------------------------------------------
@@ -1508,7 +1252,7 @@ def test_rate_limit_is_enforced_from_shared_state_not_the_audit_log(
     from app.db.models_agent import AgentApiCall
 
     key = execution_session_with_key["key"]
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     test_agent.rate_limit_rpm = 3
     db_session.commit()
 
@@ -1544,7 +1288,7 @@ def test_rate_limit_does_not_count_a_previous_window(
     from app.db.models_agent import AgentRateBucket
 
     key = execution_session_with_key["key"]
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     test_agent.rate_limit_rpm = 3
     db_session.commit()
 
@@ -1697,7 +1441,7 @@ def test_activity_stamp_debounced(
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
     key = execution_session_with_key["key"]
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     # Stamp both as "just used now" — well inside the debounce window.
@@ -1737,7 +1481,7 @@ def test_activity_stamp_writes_when_stale(
     from datetime import datetime, timezone, timedelta
     from app.db.models_auth import APIKey
     key = execution_session_with_key["key"]
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
 
     stale = datetime.now(timezone.utc) - timedelta(seconds=300)
@@ -1801,7 +1545,7 @@ def test_completion_records_history_via_service(
         test_index=0, status=TestExecutionStatus.EXECUTED.value,
         is_finding=False,
     ))
-    test_plan.status = "approved"
+    test_plan.status = "draft"
     db_session.commit()
     initial_completed_at = entry.completed_at
 
@@ -1868,27 +1612,6 @@ def test_v2_27_0_host_serialization_module_surface():
     assert callable(host_serialization.vulnerability_sort_key)
     assert host_serialization.SEVERITY_ORDER["critical"] == 0
     assert host_serialization.SEVERITY_ORDER["unknown"] == 5
-
-
-def test_v2_27_0_recon_planning_module_surface():
-    """recon_planning_service.py exposes the four planning helpers
-    extracted from agent_recon.py.  Empty scope still buckets as
-    small (the v2.25.0 nit fix is preserved)."""
-    from app.services import recon_planning_service as p
-    assert callable(p.analyze_scope_size)
-    assert callable(p.masscan_rate_for_bucket)
-    assert callable(p.build_tool_catalog)
-    assert callable(p.build_recommended_sequence)
-    assert p.analyze_scope_size([])["size_bucket"] == "small"
-    assert p.masscan_rate_for_bucket("medium") == 2500
-
-
-def test_v2_27_0_recon_summary_module_surface():
-    from app.services import recon_summary_service as s
-    assert callable(s.recon_session_host_breakdown)
-    assert callable(s.web_targets_from_hosts)
-    assert callable(s.build_known_hosts_probe)
-    assert s.web_targets_from_hosts([]) == []
 
 
 def test_v2_27_0_content_detection_module_surface():
@@ -2026,16 +1749,12 @@ def test_v2_45_2_plan_generation_status_mapping():
     from app.services.agent_session_service import _plan_generation_status
     # Agent still filling entries — in-flight.
     assert _plan_generation_status("draft") == "in_progress"
-    # Agent submitted; awaiting human review.
-    assert _plan_generation_status("proposed") == "submitted"
     # Post-generation states all collapse to "completed" from the
     # plan-generation timeline's perspective — execution is tracked
     # separately by its own session row.
-    assert _plan_generation_status("approved") == "completed"
     assert _plan_generation_status("in_progress") == "completed"
     assert _plan_generation_status("completed") == "completed"
-    # Terminal rejection / archival pass through under their own labels.
-    assert _plan_generation_status("rejected") == "rejected"
+    # Archival passes through under its own label.
     assert _plan_generation_status("archived") == "archived"
     # Unknown enum values pass through unchanged so a future
     # TestPlanStatus addition doesn't silently become "in_progress".
@@ -2604,34 +2323,6 @@ def test_looks_like_httpx_still_accepts_str_for_back_compat():
 # Backend prep for the v3 UI overhaul.
 # ---------------------------------------------------------------------------
 
-def test_recon_probe_stamps_session_attribution(
-    client, db_session, recon_session, recon_agent_key,
-):
-    """POSTing the recon environment probe with agent_model /
-    agent_tool / agent_prompt_version persists them to the
-    recon_sessions row's dedicated columns (v2.30.0), mirroring the
-    v2.28.0 behaviour on execution_sessions."""
-    rs = recon_session["session"]
-    resp = client.post(
-        f"/api/v1/agent/session/environment",
-        headers={"X-API-Key": recon_agent_key},
-        json={
-            "os_family": "linux",
-            "tools_available": {"nmap": True, "masscan": True},
-            "agent_model": "gpt-5-codex",
-            "agent_tool": "codex",
-            "agent_prompt_version": "1.13.0",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    db_session.refresh(rs)
-    assert rs.generated_by_model == "gpt-5-codex"
-    assert rs.generated_by_tool == "codex"
-    assert rs.prompt_version == "1.13.0"
-    # Attribution lives in the columns, not in the JSON blob.
-    assert "agent_model" not in (rs.environment or {})
-
-
 def test_agent_sessions_unified_timeline(
     client, db_session, test_project, test_agent, test_plan,
 ):
@@ -2639,30 +2330,12 @@ def test_agent_sessions_unified_timeline(
     generation, and execution into one timeline ordered newest-first.
     Drives the v3 Project Activity surface."""
     from datetime import datetime, timezone, timedelta
-    from app.db import models
     from app.db.models_agent import (
-        ReconSession, ReconSessionStatus,
         ExecutionSession, ExecutionSessionStatus,
     )
 
-    # Build one of each: a recon session (oldest), the existing
-    # test_plan (middle), an execution session (newest).
-    scope = models.Scope(
-        name="unified-tl-scope", description="fixture",
-        project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
+    # The existing test_plan (plan_generation) plus an execution session.
     now = datetime.now(timezone.utc)
-    rs = ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-        started_at=now - timedelta(hours=3),
-        generated_by_model="claude-opus-4-7",
-        generated_by_tool="claude-code",
-    )
-    db_session.add(rs)
     es = ExecutionSession(
         test_plan_id=test_plan.id, agent_id=test_agent.id,
         status=ExecutionSessionStatus.ACTIVE.value,
@@ -2678,22 +2351,11 @@ def test_agent_sessions_unified_timeline(
     body = resp.json()
     # Should include all three kinds.
     kinds = [s["kind"] for s in body["sessions"]]
-    assert "recon" in kinds
     assert "plan_generation" in kinds  # test_plan from the fixture
     assert "execution" in kinds
-    # Attribution surfaces correctly for both recon (v2.30.0) and
-    # execution (v2.28.0).
-    recon_row = next(s for s in body["sessions"] if s["kind"] == "recon")
     exec_row = next(s for s in body["sessions"] if s["kind"] == "execution")
-    assert recon_row["generated_by_model"] == "claude-opus-4-7"
-    assert recon_row["generated_by_tool"] == "claude-code"
     assert exec_row["generated_by_model"] == "gpt-5-codex"
     assert exec_row["generated_by_tool"] == "codex"
-    # Newest-first ordering: execution (1h ago) → plan (created in
-    # fixture) → recon (3h ago).  Just assert recon is after exec.
-    exec_idx = kinds.index("execution")
-    recon_idx = kinds.index("recon")
-    assert exec_idx < recon_idx
 
 
 def test_agent_sessions_filter_by_model(
@@ -2702,24 +2364,15 @@ def test_agent_sessions_filter_by_model(
     """``?model=...`` narrows to sessions attributed to one model.
     Critical for the v3 "compare runs by model" workflow."""
     from datetime import datetime, timezone, timedelta
-    from app.db import models
     from app.db.models_agent import (
-        ReconSession, ReconSessionStatus,
         ExecutionSession, ExecutionSessionStatus,
     )
-    scope = models.Scope(
-        name="filter-scope", description="fixture",
-        project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
     now = datetime.now(timezone.utc)
-    # Two recon sessions, two different models.
+    # Two execution sessions, two different models.
     for model_id, hours_ago in (("claude-opus-4-7", 2), ("gpt-5-codex", 1)):
-        db_session.add(ReconSession(
-            project_id=test_project.id, scope_id=scope.id,
-            agent_id=test_agent.id,
-            status=ReconSessionStatus.COMPLETED.value,
+        db_session.add(ExecutionSession(
+            test_plan_id=test_plan.id, agent_id=test_agent.id,
+            status=ExecutionSessionStatus.COMPLETED.value,
             started_at=now - timedelta(hours=hours_ago),
             generated_by_model=model_id,
             generated_by_tool="claude-code" if "claude" in model_id else "codex",
@@ -2736,7 +2389,7 @@ def test_agent_sessions_filter_by_model(
     # test_plan has no attribution; it falls out of this filter.)
     assert len(body["sessions"]) == 1
     assert body["sessions"][0]["generated_by_model"] == "gpt-5-codex"
-    assert body["sessions"][0]["kind"] == "recon"
+    assert body["sessions"][0]["kind"] == "execution"
 
 
 def test_agent_sessions_by_model_tool_summary(
@@ -2745,42 +2398,24 @@ def test_agent_sessions_by_model_tool_summary(
     """The summary endpoint groups by (model, tool) and counts kinds.
     Drives the v3 "compare models on this project" rollup card."""
     from datetime import datetime, timezone, timedelta
-    from app.db import models
     from app.db.models_agent import (
-        ReconSession, ReconSessionStatus,
         ExecutionSession, ExecutionSessionStatus,
     )
-    scope = models.Scope(
-        name="summary-scope", description="fixture",
-        project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
     now = datetime.now(timezone.utc)
-    # Two claude-opus sessions, one codex session.
+    # Two claude-opus execution runs, one codex execution run.
     for spec in [
-        ("claude-opus-4-7", "claude-code", "recon"),
-        ("claude-opus-4-7", "claude-code", "execution"),
-        ("gpt-5-codex", "codex", "recon"),
+        ("claude-opus-4-7", "claude-code"),
+        ("claude-opus-4-7", "claude-code"),
+        ("gpt-5-codex", "codex"),
     ]:
-        model_id, tool_id, kind = spec
-        if kind == "recon":
-            db_session.add(ReconSession(
-                project_id=test_project.id, scope_id=scope.id,
-                agent_id=test_agent.id,
-                status=ReconSessionStatus.COMPLETED.value,
-                started_at=now - timedelta(hours=2),
-                generated_by_model=model_id,
-                generated_by_tool=tool_id,
-            ))
-        else:
-            db_session.add(ExecutionSession(
-                test_plan_id=test_plan.id, agent_id=test_agent.id,
-                status=ExecutionSessionStatus.PAUSED.value,
-                started_at=now - timedelta(hours=1),
-                generated_by_model=model_id,
-                generated_by_tool=tool_id,
-            ))
+        model_id, tool_id = spec
+        db_session.add(ExecutionSession(
+            test_plan_id=test_plan.id, agent_id=test_agent.id,
+            status=ExecutionSessionStatus.PAUSED.value,
+            started_at=now - timedelta(hours=1),
+            generated_by_model=model_id,
+            generated_by_tool=tool_id,
+        ))
     db_session.commit()
 
     resp = client.get(
@@ -2792,11 +2427,10 @@ def test_agent_sessions_by_model_tool_summary(
         for r in resp.json()["summary"]
     }
     claude = summary[("claude-opus-4-7", "claude-code")]
-    assert claude["recon"] == 1
-    assert claude["execution"] == 1
+    assert claude["execution"] == 2
     assert claude["total"] == 2
     codex = summary[("gpt-5-codex", "codex")]
-    assert codex["recon"] == 1
+    assert codex["execution"] == 1
     assert codex["total"] == 1
 
 
@@ -2805,132 +2439,15 @@ def test_agent_sessions_by_model_tool_summary(
 # /agent-sessions + project coverage endpoint.
 # ---------------------------------------------------------------------------
 
-def test_generate_plan_stamps_recon_session_source(
-    client, db_session, test_project, test_agent,
-):
-    """Plans created with source_kind='recon_session' persist the FK
-    and the API echoes both back on the detail response."""
-    from app.db import models
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-
-    scope = models.Scope(
-        name="prov-scope", description="x", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    recon = ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.COMPLETED.value,
-    )
-    db_session.add(recon)
-    db_session.commit()
-    db_session.refresh(recon)
-
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={
-            "title": "prov plan",
-            "source_kind": "recon_session",
-            "source_recon_session_id": recon.id,
-        },
-    )
-    assert resp.status_code == 201, resp.text
-    plan_id = resp.json()["plan_id"]
-
-    detail = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan_id}"
-    ).json()
-    assert detail["source_kind"] == "recon_session"
-    assert detail["source_recon_session_id"] == recon.id
-    assert detail["source_host_ids"] is None
-    assert detail["source_plan_id"] is None
-
-
-def test_generate_plan_manual_hosts_requires_payload(client, test_project):
-    """source_kind='manual_hosts' without source_host_ids → 422."""
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={"title": "missing payload", "source_kind": "manual_hosts"},
-    )
-    assert resp.status_code == 422
-    assert "source_host_ids" in resp.json()["detail"]
-
-
-def test_generate_plan_mutually_exclusive_payloads(client, test_project):
-    """Setting both source_recon_session_id and source_host_ids → 422."""
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={
-            "title": "conflicting",
-            "source_kind": "recon_session",
-            "source_recon_session_id": 1,
-            "source_host_ids": [1, 2],
-        },
-    )
-    assert resp.status_code == 422
-    assert "mutually exclusive" in resp.json()["detail"]
-
-
-def test_generate_plan_inferred_filter_set(client, test_project):
-    """Omitting source_kind but passing filter_criteria → server infers
-    'filter_set' so legacy clients get free provenance."""
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={
-            "title": "inferred",
-            "filter_criteria": {"min_severity": "high"},
-        },
-    )
-    assert resp.status_code == 201
-    plan_id = resp.json()["plan_id"]
-    detail = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan_id}"
-    ).json()
-    assert detail["source_kind"] == "filter_set"
-
-
-def test_generate_plan_bare_request_lands_as_unspecified(client, test_project):
-    """A request with neither source_kind nor filter_criteria lands as
-    'unspecified' — pre-alpha.3 callers keep working."""
-    resp = client.post(
-        f"/api/v1/projects/{test_project.id}/test-plans/generate",
-        json={"title": "bare"},
-    )
-    assert resp.status_code == 201
-    plan_id = resp.json()["plan_id"]
-    detail = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan_id}"
-    ).json()
-    assert detail["source_kind"] == "unspecified"
-
-
 def test_agent_sessions_status_filter_narrows_to_active(
     client, db_session, test_project, test_agent, test_plan,
 ):
     """v3 alpha.3 — ``?status=active`` returns only active sessions
     across kinds.  Drives the in-flight-runs banner."""
-    from app.db import models
     from app.db.models_agent import (
-        ReconSession, ReconSessionStatus,
         ExecutionSession, ExecutionSessionStatus,
     )
 
-    scope = models.Scope(
-        name="status-scope", description="x", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    db_session.add(ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-    ))
-    db_session.add(ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.COMPLETED.value,
-    ))
     db_session.add(ExecutionSession(
         test_plan_id=test_plan.id, agent_id=test_agent.id,
         status=ExecutionSessionStatus.ACTIVE.value,
@@ -2949,7 +2466,6 @@ def test_agent_sessions_status_filter_narrows_to_active(
     # Every returned row must be active, across all kinds.
     assert all(s["status"] == "active" for s in sessions)
     kinds = {s["kind"] for s in sessions}
-    assert "recon" in kinds
     assert "execution" in kinds
 
 
@@ -3064,165 +2580,6 @@ def test_coverage_summary_reports_scope_breakdown(
 # v3 alpha.6 — JWT-facing recon-session detail endpoint
 # ---------------------------------------------------------------------------
 
-def test_recon_session_detail_bundles_summary_uploads_and_plans(
-    client, db_session, test_project, test_agent,
-):
-    """``GET /projects/{id}/recon-sessions/{session_id}`` returns the
-    full bundle the v3 Recon Run Detail page consumes — summary +
-    upload rows + plans whose ``source_recon_session_id`` matches."""
-    from app.db import models
-    from app.db.models_agent import (
-        ReconSession, ReconSessionStatus,
-        TestPlan, TestPlanStatus, TestPlanSourceKind,
-    )
-
-    scope = models.Scope(
-        name="recon-detail-scope", description="x",
-        project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    rs = ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.COMPLETED.value,
-        uploads_submitted=2,
-        scans_ingested=2,
-        hosts_discovered=5,
-        generated_by_model="claude-opus-4-7",
-        generated_by_tool="claude-code",
-    )
-    db_session.add(rs)
-    db_session.flush()
-
-    # Two ingestion jobs tagged with this session — one completed,
-    # one failed.  The detail endpoint must surface both.
-    db_session.add(models.IngestionJob(
-        filename="nmap-output.xml",
-        original_filename="nmap-output.xml",
-        storage_path="/tmp/fixture/nmap-output.xml",
-        status="completed",
-        recon_session_id=rs.id,
-        skipped_count=0,
-    ))
-    db_session.add(models.IngestionJob(
-        filename="masscan-junk.json",
-        original_filename="masscan-junk.json",
-        storage_path="/tmp/fixture/masscan-junk.json",
-        status="failed",
-        recon_session_id=rs.id,
-        last_error="masscan parser rejected an empty body",
-    ))
-
-    # A plan with source_recon_session_id pointed at this run —
-    # should appear in the plans_generated list.
-    plan = TestPlan(
-        project_id=test_project.id, agent_id=test_agent.id,
-        version=1,
-        title="downstream plan",
-        status=TestPlanStatus.PROPOSED.value,
-        source_kind=TestPlanSourceKind.RECON_SESSION.value,
-        source_recon_session_id=rs.id,
-    )
-    db_session.add(plan)
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/recon-sessions/{rs.id}"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-
-    # Summary section
-    assert body["summary"]["id"] == rs.id
-    assert body["summary"]["status"] == "completed"
-    assert body["summary"]["generated_by_model"] == "claude-opus-4-7"
-    assert body["summary"]["uploads_submitted"] == 2
-
-    # Uploads section — both jobs surface with their statuses.
-    upload_files = {u["filename"]: u for u in body["uploads"]}
-    assert "nmap-output.xml" in upload_files
-    assert "masscan-junk.json" in upload_files
-    assert upload_files["masscan-junk.json"]["status"] == "failed"
-    assert upload_files["masscan-junk.json"]["last_error"]
-
-    # Plans-generated section — the alpha.3 FK is the join key.
-    assert len(body["plans_generated"]) == 1
-    assert body["plans_generated"][0]["plan_id"] == plan.id
-    assert body["plans_generated"][0]["title"] == "downstream plan"
-
-
-def test_recon_session_detail_returns_actionable_404_for_cross_project(
-    client, db_session, test_project, test_agent,
-):
-    """A recon session under project B must 404 with an actionable
-    detail when queried from project A's URL scope — same pattern as
-    get_test_plan."""
-    from app.db import models
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-    from app.db.models_project import Project
-
-    other = Project(name="other-recon-project", slug="other-recon", description="x")
-    db_session.add(other)
-    db_session.commit()
-    db_session.refresh(other)
-
-    scope = models.Scope(name="other-scope", description="x", project_id=other.id)
-    db_session.add(scope)
-    db_session.flush()
-    rs = ReconSession(
-        project_id=other.id, scope_id=scope.id, agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-    )
-    db_session.add(rs)
-    db_session.commit()
-    db_session.refresh(rs)
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/recon-sessions/{rs.id}"
-    )
-    assert resp.status_code == 404
-    detail = resp.json()["detail"]
-    assert "different project" in detail
-    assert f"#{other.id}" in detail
-
-
-def test_recon_session_list_filters_by_status(
-    client, db_session, test_project, test_agent,
-):
-    """``?status=active`` narrows the list to in-flight sessions —
-    drives the Operations Active Runs link-through (when a future
-    alpha shows multiple runs per scope)."""
-    from app.db import models
-    from app.db.models_agent import ReconSession, ReconSessionStatus
-
-    scope = models.Scope(
-        name="list-scope", description="x", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    db_session.add(ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.ACTIVE.value,
-    ))
-    db_session.add(ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.COMPLETED.value,
-    ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/recon-sessions/?status=active"
-    )
-    assert resp.status_code == 200, resp.text
-    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
-    rows = resp.json()["items"]
-    assert all(r["status"] == "active" for r in rows)
-    assert len(rows) == 1
-
-
 # ---------------------------------------------------------------------------
 # v3 alpha.7 — JWT-facing execution-session lookup by id
 # ---------------------------------------------------------------------------
@@ -3294,7 +2651,7 @@ def test_execution_session_lookup_404_for_cross_project(
     other_plan = TestPlan(
         project_id=other.id, agent_id=test_agent.id,
         version=1, title="other plan",
-        status=TestPlanStatus.APPROVED.value,
+        status=TestPlanStatus.DRAFT.value,
     )
     db_session.add(other_plan)
     db_session.flush()
@@ -3327,125 +2684,6 @@ def test_execution_session_lookup_404_for_missing(client, test_project):
 # ---------------------------------------------------------------------------
 # v3 alpha.9 — host workflow lineage
 # ---------------------------------------------------------------------------
-
-def test_host_lineage_returns_recons_plans_and_executions(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """``GET /projects/{id}/hosts/{host_id}/lineage`` returns the three
-    cross-workflow sections so HostDetail can render a single-query
-    'what's been done to this host' panel."""
-    from app.db import models
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        ReconSession, ReconSessionStatus,
-        TestExecutionResult, TestExecutionStatus,
-        TestPlanEntry,
-    )
-
-    # Build the lineage graph for one host:
-    #   - recon session #1 discovered it (HostScanHistory → Scan →
-    #     IngestionJob.recon_session_id)
-    #   - test plan entry references it
-    #   - execution session has a result against that entry
-    host = models.Host(
-        ip_address="10.0.3.5", state="up", project_id=test_project.id,
-    )
-    db_session.add(host)
-    db_session.flush()
-
-    scope = models.Scope(
-        name="lineage-scope", description="x", project_id=test_project.id,
-    )
-    db_session.add(scope)
-    db_session.flush()
-    rs = ReconSession(
-        project_id=test_project.id, scope_id=scope.id,
-        agent_id=test_agent.id,
-        status=ReconSessionStatus.COMPLETED.value,
-        generated_by_model="claude-opus-4-7",
-    )
-    db_session.add(rs)
-    db_session.flush()
-
-    # Scan + ingestion job tied to that recon session; HostScanHistory
-    # links the host to the scan.
-    scan = models.Scan(
-        filename="lineage.xml", scan_type="nmap",
-        project_id=test_project.id,
-    )
-    db_session.add(scan)
-    db_session.flush()
-    db_session.add(models.IngestionJob(
-        filename="lineage.xml",
-        original_filename="lineage.xml",
-        storage_path="/tmp/fixture/lineage.xml",
-        status="completed",
-        recon_session_id=rs.id,
-        scan_id=scan.id,
-    ))
-    db_session.add(models.HostScanHistory(
-        host_id=host.id, scan_id=scan.id,
-    ))
-
-    # Plan entry against this host.
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id,
-        priority="high", test_phase="enumeration",
-        proposed_tests=[], rationale="lineage fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()
-
-    # Execution session with one result + one finding for that entry.
-    es = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-        generated_by_model="gpt-5-codex",
-    )
-    db_session.add(es)
-    db_session.flush()
-    db_session.add(TestExecutionResult(
-        execution_session_id=es.id, entry_id=entry.id, test_index=0,
-        status=TestExecutionStatus.EXECUTED.value,
-        is_finding=True, severity="critical",
-        findings_summary="SQL injection",
-    ))
-    db_session.add(TestExecutionResult(
-        execution_session_id=es.id, entry_id=entry.id, test_index=1,
-        status=TestExecutionStatus.EXECUTED.value,
-        is_finding=False,
-    ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/hosts/{host.id}/lineage"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["host_id"] == host.id
-    assert body["ip_address"] == "10.0.3.5"
-
-    # Recon row surfaces with attribution and scope name resolution.
-    assert len(body["recon_sessions"]) == 1
-    rrow = body["recon_sessions"][0]
-    assert rrow["session_id"] == rs.id
-    assert rrow["scope_name"] == "lineage-scope"
-    assert rrow["generated_by_model"] == "claude-opus-4-7"
-
-    # Plan-entry row carries entry + plan attribution.
-    assert len(body["plan_entries"]) == 1
-    prow = body["plan_entries"][0]
-    assert prow["plan_id"] == test_plan.id
-    assert prow["entry_id"] == entry.id
-
-    # Execution row with the per-host counts (2 tests, 1 finding).
-    assert len(body["execution_sessions"]) == 1
-    erow = body["execution_sessions"][0]
-    assert erow["execution_session_id"] == es.id
-    assert erow["plan_id"] == test_plan.id
-    assert erow["test_count"] == 2
-    assert erow["finding_count"] == 1
-
 
 def test_host_lineage_404_for_missing_host(client, test_project):
     """A host id that doesn't exist returns 404."""

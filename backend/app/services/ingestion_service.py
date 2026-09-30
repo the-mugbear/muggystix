@@ -387,13 +387,11 @@ class IngestionService:
                 options=opts,
                 submitted_by_id=submitted_by_id,
                 project_id=opts.get("project_id"),
-                # Stamp recon_session_id in the SAME transaction that makes the
-                # row visible as ``queued``.  The worker polls for queued rows
-                # independently of the pg_notify hint, so any later "set the FK,
-                # commit again" step leaves a window where the worker can claim
-                # and process the job before it's attributed to its recon
-                # session.  Setting it here closes that window.
-                recon_session_id=opts.get("recon_session_id"),
+                # Stamp the agent attribution in the SAME transaction that
+                # makes the row visible as ``queued`` — the worker polls
+                # independently of the pg_notify hint, so a later "set the FK,
+                # commit again" would leave an unattributed window.
+                agent_session_id=opts.get("agent_session_id"),
                 batch_id=batch_id,
                 content_sha256=content_sha256,
             )
@@ -1379,7 +1377,7 @@ class IngestionService:
             if project_id and scan:
                 scan.project_id = project_id
             # v2.46.4 — provenance: agents pass the exact invocation as
-            # `command_run` on /agent/recon/upload, but only self-
+            # `command_run` on /agent/uploads, but only self-
             # describing formats (nmap embeds <nmaprun args=...>) leave
             # the parser anything to put on Scan.command_line.  For
             # every other tool (masscan list/json, httpx, naabu,
@@ -1413,7 +1411,7 @@ class IngestionService:
 
         # tool_name_hint mismatch detection (v2.55.0 review finding M-1,
         # repositioned in v2.55.1 to cover BOTH branches).
-        # `/agent/recon/upload` accepts a `tool_name` arg and stores it
+        # `/agent/uploads` accepts a `tool_name` arg and stores it
         # as `options["tool_name_hint"]`.  If the agent declared one
         # tool but a different parser succeeded, that's worth surfacing
         # — historically the hint was captured and never checked, so an

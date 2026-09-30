@@ -134,7 +134,7 @@ export interface PostureResponse {
   heatmap: PostureHeatmap | null;
   headline: PostureHeadline;
   priorities: PriorityItem[];
-  decisions: { pending_approvals: number; blocked_sessions: number };
+  decisions: { blocked_sessions: number };
   sites: { adopted: boolean; items: PostureSite[] };
   systemic: {
     adopted: boolean;

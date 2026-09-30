@@ -104,10 +104,9 @@ describe('navigation manifest', () => {
       ['/reports/4', 'findings'],
       ['/test-plans/4/runs', 'workflows'],
       ['/test-plans/compare', 'workflows'],
-      ['/recon/runs/9', 'workflows'],
-      ['/recon/compare', 'workflows'],
       ['/executions/2', 'workflows'],
       ['/assist-sessions/28', 'workflows'],
+      ['/agent-sessions/72', 'workflows'],
       ['/activity', 'collaboration'],
       ['/settings/projects', 'administration'],
       ['/system-settings', 'administration'],
@@ -121,8 +120,11 @@ describe('navigation manifest', () => {
     const tabs = (id: string) => HUBS.find((h) => h.id === id)!.children.map((c) => c.label);
     expect(tabs('inventory')).toEqual(['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope']);
     expect(tabs('findings')).toEqual(['Findings', 'Reports']);
-    expect(tabs('workflows')).toEqual(['Test Plans', 'Agent Runs', 'Tool Activity']);
-    expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/test-plans');
+    // v5.312.0 — Agent Runs became Agent Sessions. 5.313.0 — the agent session
+    // is how work starts (no plan approval), so it leads the hub and is its
+    // default.
+    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Test Plans', 'Tool Activity']);
+    expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/agent-activity');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
     expect(tabs('administration')).toEqual(['All projects', 'System', 'Agent Feedback']);
@@ -130,9 +132,11 @@ describe('navigation manifest', () => {
     // Findings sits right after Inventory in the sidebar.
     const order = HUBS.map((h) => h.id);
     expect(order.indexOf('findings')).toBe(order.indexOf('inventory') + 1);
-    // Agent Sessions, Profile and LLM Providers are palette-only now.
+    // Profile and LLM Providers are palette-only; /assist-sessions is only a
+    // redirect now (v5.312.0), with no palette entry of its own.
     const palettePaths = NAV_COMMANDS.map((c) => c.path);
-    for (const path of ['/assist-sessions', '/profile', '/llm-settings']) {
+    expect(NAV_PAGES.find((p) => p.path === '/assist-sessions')).toBeUndefined();
+    for (const path of ['/profile', '/llm-settings']) {
       expect(NAV_PAGES.find((p) => p.path === path)?.hub, path).toBeUndefined();
       expect(palettePaths, path).toContain(path);
     }
@@ -141,9 +145,10 @@ describe('navigation manifest', () => {
   it('App.tsx sends the old paths to their new homes', () => {
     const src = readFileSync(join(__dirname, '..', 'App.tsx'), 'utf8');
     expect(src).toMatch(/path="\/parse-errors" element={<RedirectKeepingQuery to="\/ingestion-results" \/>}/);
-    expect(src).toMatch(/path="\/assist-sessions"[\s\S]{0,200}?<Navigate to="\/agent-activity\?view=sessions" replace \/>/);
-    // The per-session detail keeps its page.
+    expect(src).toMatch(/path="\/assist-sessions"[\s\S]{0,200}?<Navigate to="\/agent-activity" replace \/>/);
+    // v5.312.0 — the old per-session path resolves to the session page.
     expect(src).toMatch(/path="\/assist-sessions\/:sessionId"/);
+    expect(src).toMatch(/path="\/agent-sessions\/:sessionId"[\s\S]{0,200}?<AgentSessionDetail \/>/);
   });
 
   // B4 — every page was "BlueStick" in the browser tab.
@@ -208,7 +213,6 @@ describe('navigation manifest', () => {
   // wired into App.tsx but forgotten in the IA (so it'd be reachable only by
   // deep link).  Param routes (detail/compare/sub-tabs) are excluded.
   const INTENTIONAL_NON_NAV = new Set<string>([
-    '/recon/compare',
     '/scans/compare',
     '/test-plans/compare',
     '/default-credentials',
@@ -223,6 +227,8 @@ describe('navigation manifest', () => {
     '/reference/sbom',
     // v5.296.0 — a Reference hub entry, like the SBOM.
     '/reference/tool-coverage',
+    // v5.312.0 — only a redirect to Agent Sessions now.
+    '/assist-sessions',
   ]);
 
   it('no static top-level route is missing from the manifest', () => {

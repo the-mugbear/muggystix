@@ -68,7 +68,6 @@ describe('binActivity', () => {
     const totals = kindTotals(bins);
     expect(totals).toEqual({
       scan: 1,
-      recon_session: 0,
       execution_session: 1,
       test_result: 1,
       sanity_check: 0,

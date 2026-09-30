@@ -216,8 +216,7 @@ const Feedback: React.FC = () => {
     const target = r.session_page_id != null
       ? `/assist-sessions/${r.session_page_id}`
       : r.test_plan_id != null ? `/test-plans/${r.test_plan_id}`
-        : r.recon_session_id != null ? `/recon/runs/${r.recon_session_id}`
-          : r.execution_session_id != null ? `/executions/${r.execution_session_id}` : null;
+        : r.execution_session_id != null ? `/executions/${r.execution_session_id}` : null;
     if (!target) return;
     if (r.project_id != null && r.project_id !== currentProject?.id) {
       const proj = projects.find((p) => p.id === r.project_id);
@@ -296,7 +295,7 @@ const Feedback: React.FC = () => {
             value={suggestionCount.toLocaleString()}
             to="/feedback?content=suggestions"
             toLabel="Show the feedback that suggests a tool"
-            info="Feedback asking for a tool BlueStick does not list as approved. The most requested one is named below."
+            info="Feedback asking for a tool BlueStick's tool catalogue does not list. The most requested one is named below."
           >
             <p className="break-words">
               {topTool ? `most asked for: ${topTool.name} (${topTool.count.toLocaleString()})` : 'no tool requested yet'}
@@ -400,7 +399,7 @@ const Feedback: React.FC = () => {
                   const suggestions = r.tool_suggestions?.length ?? 0;
                   const client = clientOf(r);
                   const canOpen = r.session_page_id != null || r.test_plan_id != null
-                    || r.recon_session_id != null || r.execution_session_id != null;
+                    || r.execution_session_id != null;
                   return (
                     <React.Fragment key={r.id}>
                       <TableRow data-testid={`feedback-row-${r.id}`}>
@@ -575,7 +574,6 @@ const FeedbackDetails: React.FC<{ r: AgentFeedbackEntry }> = ({ r }) => {
         <dt className="text-muted-foreground">What it was doing</dt>
         <dd className="min-w-0 truncate">{SOURCE_LABELS[r.source] ?? r.source} <span className="text-muted-foreground">(the agent's own label)</span></dd>
         {r.test_plan_id != null && (<><dt className="text-muted-foreground">Test plan</dt><dd>#{r.test_plan_id}</dd></>)}
-        {r.recon_session_id != null && (<><dt className="text-muted-foreground">Recon run</dt><dd>#{r.recon_session_id}</dd></>)}
         {r.execution_session_id != null && (<><dt className="text-muted-foreground">Execution run</dt><dd>#{r.execution_session_id}</dd></>)}
         {r.reviewed_at && (<><dt className="text-muted-foreground">Last triaged</dt><dd><TimeAgo value={r.reviewed_at} /></dd></>)}
         {r.reviewer_notes && (<><dt className="text-muted-foreground">Reviewer note</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.reviewer_notes}</dd></>)}

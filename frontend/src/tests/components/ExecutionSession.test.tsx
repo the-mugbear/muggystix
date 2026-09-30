@@ -64,7 +64,7 @@ const session: ExecutionSessionSummary = {
 describe('ExecutionSessionHeader', () => {
   it('renders session metadata, attribution, and env probe', () => {
     wrap(<ExecutionSessionHeader session={session} totalSessionCount={1} />);
-    expect(screen.getByText('Execution session')).toBeInTheDocument();
+    expect(screen.getByText('Execution run')).toBeInTheDocument();
     expect(screen.getByText('paused')).toBeInTheDocument();
     expect(screen.getByText('guided')).toBeInTheDocument();
     // Attribution line names the model.
@@ -77,7 +77,7 @@ describe('ExecutionSessionHeader', () => {
 
   it('surfaces multi-run chip and uses plural title when count > 1', () => {
     wrap(<ExecutionSessionHeader session={session} totalSessionCount={4} />);
-    expect(screen.getByText('Execution sessions')).toBeInTheDocument();
+    expect(screen.getByText('Execution runs')).toBeInTheDocument();
     expect(screen.getByText('4 runs')).toBeInTheDocument();
   });
 

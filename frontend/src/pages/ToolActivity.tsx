@@ -9,7 +9,7 @@
  * single target IP, applied to the focused query AND the past-7-day
  * snapshot, so "when did nmap run this week?" is one filter away.
  *
- * Kinds: uploaded scans (scanner timestamps), recon and execution runs
+ * Kinds: uploaded scans (scanner timestamps), execution runs
  * (containers), and the per-command record — `test_result` (a command an
  * agent reported, with its tool and target host) and `sanity_check` (a
  * target-verification probe).
@@ -126,8 +126,6 @@ function kindBadgeVariant(kind: ActivityKind): BadgeVariant {
   switch (kind) {
     case 'scan':
       return 'secondary';
-    case 'recon_session':
-      return 'info';
     case 'execution_session':
       return 'success';
     case 'test_result':
@@ -139,7 +137,6 @@ function kindBadgeVariant(kind: ActivityKind): BadgeVariant {
 
 const KIND_LABEL: Record<ActivityKind, string> = {
   scan: 'scan upload',
-  recon_session: 'recon run',
   execution_session: 'execution run',
   test_result: 'command run',
   sanity_check: 'target probe',
@@ -147,8 +144,7 @@ const KIND_LABEL: Record<ActivityKind, string> = {
 
 type QueryMode = 'at' | 'between';
 
-// v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/recon/runs/:id`,
-// `/executions/:id`).  There is no `/projects/:id/...` nested route
+// v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/executions/:id`).  There is no `/projects/:id/...` nested route
 // surface — the API client reads the active project from
 // `getCurrentProjectId()` and prefixes API calls with it.  Earlier
 // versions of this helper assembled `/projects/${item.project_id}/…`
@@ -159,8 +155,6 @@ function deepLinkFor(item: ActivityItem): string {
   switch (item.kind) {
     case 'scan':
       return `/scans/${item.ref_id}`;
-    case 'recon_session':
-      return `/recon/runs/${item.ref_id}`;
     case 'execution_session':
       return `/executions/${item.ref_id}`;
     case 'test_result':
@@ -437,8 +431,8 @@ export const ToolActivity: React.FC = () => {
               </button>
             </TooltipTrigger>
             <TooltipContent className="max-w-sm">
-              Scan uploads (at the scanner&rsquo;s own timestamps), recon and
-              execution runs, and the per-command record: commands an agent
+              Scan uploads (at the scanner&rsquo;s own timestamps), execution
+              runs, and the per-command record: commands an agent
               reported running and the target probes before them, each with its
               host. The tool / target filters also narrow the past-7-day
               snapshot, so it shows when that tool ran.

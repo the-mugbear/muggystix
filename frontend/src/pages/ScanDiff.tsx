@@ -7,8 +7,7 @@
  * lists are capped server-side; the count badges carry exact totals and
  * "View in Inventory" deep-links into /hosts for the full set.
  *
- * Mirrors ReconCompare.tsx: the page's job is to show *what changed*,
- * not to enumerate every row.
+ * The page's job is to show *what changed*, not to enumerate every row.
  */
 import React, { useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';

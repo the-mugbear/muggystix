@@ -593,8 +593,8 @@ def test_tools_list_is_scoped_by_workflow_not_by_grant(client, test_project):
     assert "assist_list_hosts" in names
     assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= names
     # v2.337.0 — one project session does everything, so tools/list is no
-    # longer scoped by workflow: recon and plan tooling are listed too.
-    assert {"start_recon", "start_execution", "create_test_plan"} <= names
+    # longer scoped by workflow: scope reads and plan tooling are listed too.
+    assert {"scope_list_subnets", "start_execution", "create_test_plan"} <= names
 
     # Without a key the full catalogue is still listed — that's the docs view.
     anon = {t["name"] for t in _rpc(

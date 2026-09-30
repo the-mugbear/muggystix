@@ -1,731 +1,384 @@
+/**
+ * Agent Sessions (`/agent-activity`, pages/ProjectActivity.tsx) — v5.312.0,
+ * session-first: what is live (with its work and its controls), what an ended
+ * session left open, then the history, then the analytics.
+ */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 
-import ProjectActivity from '../../pages/ProjectActivity';
+import ProjectActivity, { fillCallDays } from '../../pages/ProjectActivity';
+
+const emptyActivity = {
+  window_days: 14,
+  total_calls: 0,
+  distinct_agents: 0,
+  first_call_at: null,
+  last_call_at: null,
+  status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
+  by_workflow: [],
+  daily: [],
+  busiest_sessions: [],
+};
 
 vi.mock('../../services/api', () => ({
   listAgentSessions: vi.fn(),
   getAgentSessionSummary: vi.fn(),
-  // v5.214.0 — Resume on an owned active project row.
   resumeAgentSession: vi.fn(),
   endAgentSession: vi.fn(),
-  // v5.294.0 — the Sessions view (components/agent-sessions).
-  listAssistSessions: vi.fn().mockResolvedValue([]),
-  // v4.59.0 (NEW I) — page also calls getAgentActivitySummary for
-  // the ApiCallSummaryCard.  Pre-fix the mock omitted it; the
-  // page accessed summary.daily.map(...) which threw and broke
-  // render.  Default to an empty-but-shape-correct summary so the
-  // card renders its zero-state cleanly.
-  getAgentActivitySummary: vi.fn().mockResolvedValue({
-    window_days: 14,
-    total_calls: 0,
-    distinct_agents: 0,
-    first_call_at: null,
-    last_call_at: null,
-    status_breakdown: {
-      success: 0,
-      client_error: 0,
-      server_error: 0,
-      other: 0,
-    },
-    by_workflow: [],
-    daily: [],
-    busiest_sessions: [],
-  }),
-  // Anything pulled transitively by other consumers in the page tree.
+  getAgentActivitySummary: vi.fn(),
   getCurrentProjectId: vi.fn(() => 1),
   setCurrentProjectId: vi.fn(),
 }));
 
-// v5.212.0 — the page reads the signed-in user (to offer End on the sessions
-// they own) and toasts the outcome; neither provider is mounted here.
-vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ user: { id: 3, username: 'alice', role: 'member' } }),
-}));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn() }),
+}));
+const project = vi.hoisted(() => ({ my_role: 'analyst' as string | null }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: project.my_role } }),
 }));
 
 import * as api from '../../services/api';
 const mockedApi = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
+const HOUR = 1000 * 60 * 60;
+const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
+const ahead = (ms: number) => new Date(Date.now() + ms).toISOString();
+
+/** A consolidated session; live key unless overridden. */
+const session = (overrides: Record<string, unknown> = {}) => ({
+  kind: 'project' as const,
+  id: 72,
+  project_id: 1,
+  agent_id: 7,
+  agent_name: "alice's-agent",
+  user_id: 3,
+  user_username: 'alice',
+  user_full_name: 'Alice Analyst',
+  status: 'active',
+  started_at: ago(HOUR),
+  completed_at: null,
+  generated_by_model: null,
+  generated_by_tool: null,
+  prompt_version: '2.13.1',
+  scope_id: null,
+  test_plan_id: null,
+  purpose: 'map the DMZ',
+  key_expires_at: ahead(20 * HOUR),
+  renewable_until: ahead(6 * 24 * HOUR),
+  end_reason: null,
+  feedback_count: 0,
+  last_activity_at: ago(5 * 60 * 1000),
+  operator_role: 'analyst',
+  assist_session_id: 52,
+  phases: [
+    { kind: 'execution', id: 46, status: 'paused', label: 'SMB sweep', scope_id: null, test_plan_id: 17, started_at: ago(HOUR / 2) },
+  ],
+  can_end: true,
+  can_resume: true,
+  ...overrides,
+});
+
+const legacyRun = (overrides: Record<string, unknown> = {}) => ({
+  kind: 'execution' as const,
+  id: 42,
+  project_id: 1,
+  agent_id: 7,
+  agent_name: "alice's-agent",
+  user_id: 3,
+  user_username: 'alice',
+  status: 'completed',
+  started_at: ago(30 * HOUR),
+  completed_at: ago(29 * HOUR),
+  generated_by_model: 'claude-opus-4-7',
+  generated_by_tool: 'claude-code',
+  prompt_version: '1.13.0',
+  scope_id: null,
+  test_plan_id: 17,
+  target_label: 'Legacy plan',
+  ...overrides,
+});
+
+/** The live call is `{kind: 'project', status: 'active'}`; everything else is
+ *  the history. */
+const serve = (live: unknown[], history: unknown[], total = history.length) => {
+  mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) =>
+    filters.kind === 'project' && filters.status === 'active'
+      ? { project_id: 1, sessions: live, total: live.length }
+      : { project_id: 1, sessions: history, total });
+};
 
 const renderPage = () =>
   render(
     <MemoryRouter>
       <ProjectActivity />
-</MemoryRouter>,
+    </MemoryRouter>,
   );
 
-const sampleSessions = [
-  {
-    kind: 'execution' as const,
-    id: 42,
-    project_id: 1,
-    agent_id: 7,
-    agent_name: "alice's-agent",
-    user_id: 3,
-    user_username: 'alice',
-    status: 'active',
-    started_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-    completed_at: null,
-    generated_by_model: 'claude-opus-4-7',
-    generated_by_tool: 'claude-code',
-    prompt_version: '1.13.0',
-    scope_id: null,
-    test_plan_id: 17,
-  },
-  {
-    kind: 'recon' as const,
-    id: 3,
-    project_id: 1,
-    agent_id: 9,
-    agent_name: "bob's-agent",
-    user_id: 4,
-    user_username: 'bob',
-    status: 'completed',
-    started_at: new Date(Date.now() - 1000 * 60 * 60 * 5).toISOString(),
-    completed_at: new Date(Date.now() - 1000 * 60 * 60 * 4).toISOString(),
-    generated_by_model: 'gpt-5-codex',
-    generated_by_tool: 'codex',
-    prompt_version: '1.13.0',
-    scope_id: 12,
-    test_plan_id: null,
-  },
-];
-
-const sampleSummary = [
-  {
-    generated_by_model: 'claude-opus-4-7',
-    generated_by_tool: 'claude-code',
-    recon: 1,
-    plan_generation: 2,
-    execution: 5,
-    total: 8,
-  },
-  {
-    generated_by_model: 'gpt-5-codex',
-    generated_by_tool: 'codex',
-    recon: 3,
-    plan_generation: 0,
-    execution: 1,
-    total: 4,
-  },
-];
-
-describe('ProjectActivity', () => {
+describe('Agent Sessions', () => {
   beforeEach(() => {
+    project.my_role = 'analyst';
     mockedApi.listAgentSessions.mockReset();
     mockedApi.getAgentSessionSummary.mockReset();
-    // v4.59.0 (NEW I) — restore the default empty rollup after
-    // mockReset so tests that don't override it don't blow up the
-    // ModelRollupCard.
+    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
     mockedApi.getAgentActivitySummary.mockReset();
-    mockedApi.getAgentActivitySummary.mockResolvedValue({
-      window_days: 14,
-      total_calls: 0,
-      distinct_agents: 0,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: {
-        success: 0,
-        client_error: 0,
-        server_error: 0,
-        other: 0,
-      },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
-    });
+    mockedApi.getAgentActivitySummary.mockResolvedValue(emptyActivity);
+    mockedApi.endAgentSession.mockReset();
+    mockedApi.resumeAgentSession.mockReset();
   });
 
-  // v5.214.0 — a project session the signed-in user owns, whose key has
-  // lapsed but is still renewable: the row says so, offers Resume, and the
-  // dialog rotates the key on the same session.
-  it('offers Resume on an owned active project session and rotates its key', async () => {
-    const user = userEvent.setup();
-    const projectRow = {
-      kind: 'project' as const,
-      id: 77,
-      project_id: 1,
-      agent_id: 7,
-      agent_name: "alice's-agent",
-      user_id: 3,
-      user_username: 'alice',
-      status: 'active',
-      started_at: new Date(Date.now() - 1000 * 60 * 60 * 30).toISOString(),
-      completed_at: null,
-      generated_by_model: null,
-      generated_by_tool: null,
-      prompt_version: '2.4.0',
-      scope_id: null,
-      test_plan_id: null,
-      purpose: 'recon the DMZ',
-      key_expires_at: new Date(Date.now() - 1000 * 60 * 60 * 6).toISOString(),
-      renewable_until: new Date(Date.now() + 1000 * 60 * 60 * 24 * 5).toISOString(),
-    };
-    mockedApi.listAgentSessions.mockResolvedValue({
-      project_id: 1,
-      sessions: [projectRow, ...sampleSessions],
-      total: 3,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-    mockedApi.resumeAgentSession.mockResolvedValue({
-      session_id: 77,
-      project_id: 1,
-      project_name: 'demo',
-      agent_id: 7,
-      api_key: 'nm_agent_replacement',
-      instructions: '> RESUMED SESSION. continue',
-      mcp_clients: [],
-      mcp_url: 'https://h/api/v1/mcp',
-      key_ttl_hours: 24,
-      key_expires_at: new Date(Date.now() + 1000 * 60 * 60 * 24).toISOString(),
-      renewable_until: projectRow.renewable_until,
-      active_recon_session_ids: [5],
-      active_execution_session_ids: [],
-    });
-
+  it('leads with what is live: its work, its last call and its controls', async () => {
+    const live = session();
+    serve([live], [live]);
     renderPage();
 
-    await screen.findByText(/recon the DMZ/);
-    // The status cell says the key lapsed but the session is still renewable.
-    expect(screen.getByText(/key expired · renewable until/)).toBeInTheDocument();
-    // Resume is offered only on the owned project row; the execution row
-    // (also active, also alice's) keeps its Open button.
-    expect(screen.getByLabelText('Resume agent session 77')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Resume agent session 42')).not.toBeInTheDocument();
-
-    await user.click(screen.getByLabelText('Resume agent session 77'));
-    // Path 1 — reopen the client, hand the agent the resume line.
-    await screen.findByText(/If the client that ran this session still has the key/);
-    expect(screen.getByText(/Resume BlueStick agent session #77/)).toBeInTheDocument();
-    // Path 2 — rotate.
-    await user.click(screen.getByRole('button', { name: /Rotate key and get the prompt/ }));
-    await waitFor(() => expect(mockedApi.resumeAgentSession).toHaveBeenCalledWith(77));
-    await screen.findByText('nm_agent_replacement');
-    expect(screen.getByText(/Still open:/)).toBeInTheDocument();
-    // 5.309.0 — no checkbox: Done warns once while nothing holding the key
-    // was copied, then "Close anyway" closes.
-    await user.click(screen.getByRole('button', { name: 'Done' }));
-    expect(screen.getByRole('alert')).toHaveTextContent(/Nothing was copied/);
-    await user.click(screen.getByRole('button', { name: 'Close anyway' }));
-    await waitFor(() => expect(screen.queryByText('nm_agent_replacement')).not.toBeInTheDocument());
+    const section = await screen.findByTestId('live-sessions');
+    expect(screen.getByRole('heading', { level: 1 })).toHaveTextContent('Agent Sessions');
+    expect(screen.getByText('1 session live now.')).toBeInTheDocument();
+    const item = within(section).getByTestId('live-session');
+    // The session opens its own page, keyed by the SESSION id.
+    expect(within(item).getByRole('link', { name: /#72 · map the DMZ/ })).toHaveAttribute('href', '/agent-sessions/72');
+    // Its runs link to their pages — they appear nowhere else on the page.
+    expect(within(item).getByRole('link', { name: /Execution #46/ })).toHaveAttribute('href', '/executions/46');
+    expect(within(item).getByText(/last call/)).toBeInTheDocument();
+    expect(within(item).getByText('Live')).toBeInTheDocument();
+    expect(within(item).getByText('Analyst role')).toBeInTheDocument();
+    expect(within(item).getByRole('button', { name: /Resume/ })).toBeInTheDocument();
+    expect(within(item).getByRole('button', { name: /End/ })).toBeInTheDocument();
+    expect(within(item).getByRole('link', { name: 'Open agent session 72' })).toHaveAttribute('href', '/agent-sessions/72');
   });
 
-  // v5.219.0 — the End flow hands the operator a wrap-up prompt while the
-  // agent is still reachable (feedback + clean exit come from the agent, not
-  // from the UI), and ended rows say how they ended and whether they filed
-  // feedback.
-  it('offers a wrap-up prompt before ending a live session and labels ended rows', async () => {
-    const user = userEvent.setup();
-    const liveRow = {
-      kind: 'project' as const,
-      id: 78,
-      project_id: 1,
-      agent_id: 7,
-      agent_name: "alice's-agent",
-      user_id: 3,
-      user_username: 'alice',
-      status: 'active',
-      started_at: new Date(Date.now() - 1000 * 60 * 30).toISOString(),
-      completed_at: null,
-      generated_by_model: null,
-      generated_by_tool: null,
-      prompt_version: '2.5.0',
-      scope_id: null,
-      test_plan_id: null,
-      purpose: 'live one',
-      key_expires_at: new Date(Date.now() + 1000 * 60 * 60 * 20).toISOString(),
-      renewable_until: new Date(Date.now() + 1000 * 60 * 60 * 24 * 6).toISOString(),
-      end_reason: null,
-      feedback_count: 0,
-    };
-    const lapsedRow = {
-      ...liveRow,
-      id: 79,
-      status: 'ended',
-      purpose: 'lapsed one',
-      completed_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
-      key_expires_at: null,
-      end_reason: 'lapsed',
-      feedback_count: 0,
-    };
-    const cleanRow = {
-      ...liveRow,
-      id: 80,
-      status: 'ended',
-      purpose: 'clean one',
-      completed_at: new Date(Date.now() - 1000 * 60 * 60).toISOString(),
-      key_expires_at: null,
-      end_reason: 'agent',
-      feedback_count: 2,
-    };
-    mockedApi.listAgentSessions.mockResolvedValue({
-      project_id: 1,
-      sessions: [liveRow, lapsedRow, cleanRow],
-      total: 3,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-    mockedApi.getAgentActivitySummary.mockResolvedValue({
-      window_days: 14,
-      total_calls: 12,
-      distinct_agents: 1,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: { success: 12, client_error: 0, server_error: 0, other: 0 },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
-      session_hygiene: {
-        sessions_started: 3,
-        sessions_active: 1,
-        sessions_ended: 2,
-        ended_by_agent: 1,
-        ended_by_operator: 0,
-        lapsed: 1,
-        sessions_with_feedback: 1,
-      },
-    });
-
+  it('offers only the controls the caller has — a project admin may end, not resume', async () => {
+    const other = session({ id: 73, user_id: 9, user_full_name: 'Bob', can_resume: false, can_end: true });
+    const viewerSees = session({ id: 74, purpose: 'someone else', can_resume: false, can_end: false });
+    serve([other, viewerSees], [other, viewerSees]);
     renderPage();
-    await screen.findByText(/live one/);
 
-    // Ended rows say how they ended and whether they said anything.
-    expect(screen.getByText('lapsed (never ended) · no feedback')).toBeInTheDocument();
-    expect(screen.getByText('ended by agent · 2 feedback')).toBeInTheDocument();
+    const items = await screen.findAllByTestId('live-session');
+    expect(within(items[0]).queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
+    expect(within(items[0]).getByRole('button', { name: /End/ })).toBeInTheDocument();
+    expect(within(items[1]).queryByRole('button', { name: /End/ })).not.toBeInTheDocument();
+    expect(within(items[1]).queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
+  });
 
-    // The hygiene strip reads off the summary, not the page of rows.
-    expect(screen.getByText('Session hygiene')).toBeInTheDocument();
-    // v5.288.0 — below five sessions a count, not a percentage.
-    expect(screen.getByText('1 of 2')).toBeInTheDocument(); // ended by the agent, of 2 ended
-    expect(screen.getByText('1 of 3')).toBeInTheDocument(); // filed feedback, of 3 started
+  it('says a session is waiting to be resumed when its key ran out, without a spinner of work', async () => {
+    const stale = session({ key_expires_at: ago(6 * HOUR), last_activity_at: null, phases: [] });
+    serve([stale], [stale]);
+    renderPage();
 
-    // End on the live row shows the wrap-up prompt first.
-    await user.click(screen.getByLabelText('End agent session 78'));
+    const item = await screen.findByTestId('live-session');
+    expect(within(item).getByText('Resumable')).toBeInTheDocument();
+    expect(within(item).getByText(/key expired · resumable until/)).toBeInTheDocument();
+    expect(within(item).getByText(/no call yet — the agent has not connected/)).toBeInTheDocument();
+    expect(within(item).getByText(/inventory queries only/)).toBeInTheDocument();
+    expect(screen.getByText(/0 sessions live now; 1 more waiting to be resumed/)).toBeInTheDocument();
+  });
+
+  it('hands over the wrap-up prompt before ending a connected session, then ends it', async () => {
+    const user = userEvent.setup();
+    const live = session();
+    serve([live], [live]);
+    mockedApi.endAgentSession.mockResolvedValue(undefined);
+    renderPage();
+
+    const item = await screen.findByTestId('live-session');
+    await user.click(within(item).getByRole('button', { name: /End/ }));
     await screen.findByText(/Agent still connected\? Paste this to it first/);
-    expect(screen.getByText(/We are done with this BlueStick session/)).toBeInTheDocument();
     expect(screen.getByText(/submit_feedback/)).toBeInTheDocument();
     expect(mockedApi.endAgentSession).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'End session' }));
+    await waitFor(() => expect(mockedApi.endAgentSession).toHaveBeenCalledWith(72));
   });
 
-  // Review (v5.219.1): the card returned early on zero calls, before the
-  // hygiene strip — hiding exactly the sessions whose agent never connected.
-  it('shows session hygiene even when no API calls were recorded', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+  it('opens the resume dialog on the same session', async () => {
+    const user = userEvent.setup();
+    const live = session({ key_expires_at: ago(HOUR) });
+    serve([live], [live]);
+    renderPage();
+
+    const item = await screen.findByTestId('live-session');
+    await user.click(within(item).getByRole('button', { name: /Resume/ }));
+    await screen.findByText(/Resume BlueStick agent session #72/);
+  });
+
+  it('says so when nothing is live, with the way to start one', async () => {
+    serve([], []);
+    renderPage();
+
+    expect(await screen.findByText('No agent session is live')).toBeInTheDocument();
+    expect(screen.getByText('No agent session is live on this project.')).toBeInTheDocument();
+    for (const link of screen.getAllByRole('link', { name: /Start agent session/ })) {
+      expect(link).toHaveAttribute('href', '/operations?start=agent-session');
+    }
+    expect(screen.getByText('No agent has run against this project yet.')).toBeInTheDocument();
+  });
+
+  it('lists one history row per session that opens the session page, and legacy rows their own', async () => {
+    const ended = session({
+      id: 60,
+      status: 'ended',
+      end_reason: 'agent',
+      feedback_count: 2,
+      key_expires_at: null,
+      can_end: false,
+      can_resume: false,
+    });
+    serve([], [ended, legacyRun()]);
+    renderPage();
+
+    const table = await screen.findByTestId('runs-table');
+    const rows = within(table).getAllByTestId('run-row');
+    for (const link of within(rows[0]).getAllByRole('link', { name: 'Open agent session 60' })) {
+      expect(link).toHaveAttribute('href', '/agent-sessions/60');
+    }
+    expect(within(rows[0]).getByText('ended by agent · 2 feedback')).toBeInTheDocument();
+    expect(within(rows[0]).getByText('Ended')).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('link', { name: /Execution #46/ })).toHaveAttribute('href', '/executions/46');
+    // Legacy: its own page, its own kind badge.
+    for (const link of within(rows[1]).getAllByRole('link', { name: 'Open Execution 42' })) {
+      expect(link).toHaveAttribute('href', '/executions/42');
+    }
+    expect(within(rows[1]).getByText('Legacy plan')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('claude-opus-4-7 · claude-code')).toBeInTheDocument();
+  });
+
+  it('offers the model filter once an agent has reported one, and passes it to the API', async () => {
+    const user = userEvent.setup();
+    serve([], [legacyRun()]);
+    renderPage();
+    await screen.findByTestId('runs-table');
+    expect(screen.queryByLabelText('Filter sessions by model')).not.toBeInTheDocument();
+
+    mockedApi.getAgentSessionSummary.mockResolvedValue({
+      project_id: 1,
+      summary: [{
+        generated_by_model: 'claude-opus-4-7', generated_by_tool: 'claude-code',
+        project: 0, plan_generation: 0, execution: 1, assist: 0, total: 1,
+      }],
+    });
+    await user.click(screen.getByRole('button', { name: /Refresh agent sessions/i }));
+    const trigger = await screen.findByLabelText('Filter sessions by model');
+    await user.click(trigger);
+    await user.click(await screen.findByRole('option', { name: 'claude-opus-4-7' }));
+    await waitFor(() =>
+      expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(expect.objectContaining({ model: 'claude-opus-4-7' })),
+    );
+  });
+
+  // N7 — a slow response for an older filter must not overwrite the newer one.
+  it('keeps the newest filter’s history when an older response arrives last', async () => {
+    const user = userEvent.setup();
+    let releaseOld!: () => void;
+    const oldDone = new Promise<void>((res) => { releaseOld = res; });
+    mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown> = {}) => {
+      if (filters.kind === 'project' && filters.status === 'active') {
+        return { project_id: 1, sessions: [], total: 0 };
+      }
+      if (filters.kind === 'execution') {
+        return { project_id: 1, sessions: [legacyRun({ id: 43, target_label: 'Newer filter' })], total: 1 };
+      }
+      await oldDone;
+      return { project_id: 1, sessions: [legacyRun({ target_label: 'Older filter' })], total: 1 };
+    });
+    renderPage();
+
+    await user.click(screen.getByLabelText('Filter sessions by kind'));
+    await user.click(await screen.findByRole('option', { name: 'Legacy execution' }));
+    expect(await screen.findByText('Newer filter')).toBeInTheDocument();
+
+    releaseOld();
+    await oldDone;
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.getByText('Newer filter')).toBeInTheDocument();
+    expect(screen.queryByText('Older filter')).toBeNull();
+  });
+
+  it('offers no way to start a session to a project viewer', async () => {
+    project.my_role = 'viewer';
+    serve([], []);
+    renderPage();
+    expect(await screen.findByText('No agent session is live')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Start agent session/ })).toBeNull();
+  });
+
+  it('shows session hygiene even when no API calls were recorded, counts under five', async () => {
+    serve([], []);
     mockedApi.getAgentActivitySummary.mockResolvedValue({
-      window_days: 14,
-      total_calls: 0,
-      distinct_agents: 0,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
+      ...emptyActivity,
       session_hygiene: {
-        sessions_started: 2,
-        sessions_active: 0,
-        sessions_ended: 2,
-        ended_by_agent: 0,
-        ended_by_operator: 0,
-        lapsed: 2,
-        sessions_with_feedback: 0,
+        sessions_started: 2, sessions_active: 0, sessions_ended: 2,
+        ended_by_agent: 0, ended_by_operator: 0, lapsed: 2, sessions_with_feedback: 0,
       },
     });
-
     renderPage();
+
     await screen.findByText(/No agent API calls recorded/);
     expect(screen.getByText('Session hygiene')).toBeInTheDocument();
-    expect(screen.getByText('Lapsed (never ended)')).toBeInTheDocument();
-    // "0 of 2" twice: agent exits of 2 ended, and feedback of 2 started —
-    // a percentage over two sessions says more than the sample does.
     expect(screen.getAllByText('0 of 2')).toHaveLength(2);
     expect(screen.queryByText(/0%/)).not.toBeInTheDocument();
+    expect(screen.getByText(/2 sessions in the last 14 days lapsed without ending/)).toBeInTheDocument();
   });
 
   it('keeps percentages once the sample is five sessions or more', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+    serve([], []);
     mockedApi.getAgentActivitySummary.mockResolvedValue({
-      window_days: 14,
-      total_calls: 0,
-      distinct_agents: 0,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
+      ...emptyActivity,
       session_hygiene: {
-        sessions_started: 8,
-        sessions_active: 0,
-        sessions_ended: 8,
-        ended_by_agent: 6,
-        ended_by_operator: 0,
-        lapsed: 2,
-        sessions_with_feedback: 2,
+        sessions_started: 8, sessions_active: 0, sessions_ended: 8,
+        ended_by_agent: 6, ended_by_operator: 0, lapsed: 2, sessions_with_feedback: 2,
       },
     });
-
     renderPage();
     await screen.findByText('Session hygiene');
     expect(screen.getByText('6 · 75%')).toBeInTheDocument();
     expect(screen.getByText('2 · 25%')).toBeInTheDocument();
   });
 
-  // v5.288.0 — a run keeps its own status after its session ends; the row and
-  // the lead say so instead of contradicting each other.
-  it('marks an active run whose session ended, and the lead explains it', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({
-      project_id: 1,
-      sessions: [
-        {
-          ...sampleSessions[0],
-          started_at: new Date(Date.now() - 1000 * 60 * 60 * 24 * 15).toISOString(),
-          generated_by_model: null,
-          generated_by_tool: null,
-          agent_session_id: 5,
-          session_live: false,
-        },
-      ],
-      total: 1,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
+  it('draws every day of the window, so one busy day is one bar and not the whole chart', async () => {
+    serve([], []);
+    const today = new Date().toISOString().slice(0, 10);
     mockedApi.getAgentActivitySummary.mockResolvedValue({
-      window_days: 14,
-      total_calls: 0,
-      distinct_agents: 0,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
-      session_hygiene: {
-        sessions_started: 1,
-        sessions_active: 0,
-        sessions_ended: 1,
-        ended_by_agent: 0,
-        ended_by_operator: 0,
-        lapsed: 1,
-        sessions_with_feedback: 0,
-      },
+      ...emptyActivity,
+      total_calls: 438,
+      distinct_agents: 4,
+      status_breakdown: { success: 416, client_error: 22, server_error: 0, other: 0 },
+      daily: [{ day: today, calls: 438, errors: 22 }],
+      busiest_sessions: [{ workflow: 'session', session_id: 72, calls: 199 }],
     });
-
     renderPage();
-    // v5.294.0 — one honest state: the badge used to read "active · session
-    // ended", which said two opposite things.
-    expect(await screen.findByText('Stalled')).toBeInTheDocument();
-    expect(screen.queryByText('active · session ended')).not.toBeInTheDocument();
-    expect(screen.getByText(/still active but its session ended — resume or close the run/)).toBeInTheDocument();
-    expect(
-      screen.getByText(/1 run below is still open after its session ended/),
-    ).toBeInTheDocument();
+
+    const chart = await screen.findByTestId('calls-per-day');
+    expect(chart.querySelectorAll('button')).toHaveLength(14);
+    expect(screen.getByLabelText(`${today}: 438 calls, 22 errors`)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Open session #72' })).toBeInTheDocument();
   });
 
-  it('hides the Model · Tool column when no row reports one, and names people in full', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({
-      project_id: 1,
-      sessions: [
-        {
-          ...sampleSessions[0],
-          generated_by_model: null,
-          generated_by_tool: null,
-          user_full_name: 'Alice Liddell',
-        },
-      ],
-      total: 1,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
-
-    renderPage();
-    await screen.findByText(/Plan #17/);
-    expect(screen.queryByText('Model · Tool')).not.toBeInTheDocument();
-    expect(screen.queryByText('(not reported)')).not.toBeInTheDocument();
-    // Full name, not the username, and it wraps rather than truncating.
-    const name = screen.getByText('Alice Liddell');
-    expect(name).toHaveClass('break-words');
-    expect(name).not.toHaveClass('truncate');
-    expect(screen.queryByText('alice')).not.toBeInTheDocument();
-  });
-
-  it('opens a run in place with a chevron and a labelled refresh', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-
-    renderPage();
-    await screen.findByText(/Plan #17/);
-    const open = screen.getByLabelText('Open execution run 42');
-    expect(open.querySelector('svg')).toHaveClass('lucide-chevron-right');
-    expect(open.querySelector('.lucide-external-link')).toBeNull();
-    // v5.294.0 — "updated …" with its refresh, not a bare Refresh button.
-    expect(screen.getByRole('button', { name: 'Refresh agent runs' })).toBeInTheDocument();
-    expect(screen.getByText(/^Updated /)).toBeInTheDocument();
-  });
-
-  it('shows the kind with the shared run badge', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-
-    renderPage();
-    const table = within(await screen.findByTestId('runs-table'));
-    expect(table.getByText('Execution')).toBeInTheDocument();
-    expect(table.getByText('Recon')).toBeInTheDocument();
-    expect(screen.queryByText('plan-gen')).not.toBeInTheDocument();
-  });
-
-  it('fits the runs table to the content width (B2)', async () => {
-    // It set min-w-[1000px] inside a scroller: 74px of sideways scroll at a
-    // 1246px viewport, with the actions column behind it.
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-
-    renderPage();
-    const table = await screen.findByTestId('runs-table');
-    expect(table.className).not.toMatch(/min-w-/);
-    expect(table.closest('.overflow-x-auto')).toBeNull();
-  });
-
-  it('offers the model and tool filters only once an agent has reported one', async () => {
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
+  it('shows a one-line note instead of the model table when no model or tool was reported', async () => {
+    serve([], []);
     mockedApi.getAgentSessionSummary.mockResolvedValue({
       project_id: 1,
-      summary: [{ generated_by_model: null, generated_by_tool: null, recon: 1, plan_generation: 0, execution: 0, total: 1 }],
+      summary: [{
+        generated_by_model: null, generated_by_tool: null,
+        project: 5, plan_generation: 0, execution: 0, assist: 0, total: 5,
+      }],
     });
-
     renderPage();
-    await screen.findByText(/Plan #17/);
-    expect(screen.getByLabelText('Filter runs by workflow')).toBeInTheDocument();
-    expect(screen.queryByLabelText('Filter runs by model')).not.toBeInTheDocument();
-    expect(screen.queryByLabelText('Filter runs by tool')).not.toBeInTheDocument();
+    await screen.findByText(/No agent has reported its model or tool yet/);
+    expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
   });
+});
 
-  it('lists sessions in its Sessions view, with Resume on the operator’s own', async () => {
-    const project = {
-      ...sampleSessions[0],
-      kind: 'project' as const,
-      id: 77,
-      status: 'active',
-      user_id: 3,
-      key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
-      renewable_until: new Date(Date.now() + 7_200_000).toISOString(),
-    };
-    mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [project], total: 1 });
-    mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: [] });
-    mockedApi.listAssistSessions.mockResolvedValue([
-      {
-        id: 77, project_id: 1, purpose: 'Recon the DMZ', status: 'active', started_by_id: 3,
-        started_by_username: 'alice', started_at: new Date().toISOString(), ended_at: null,
-        last_activity_at: null, environment_probed: false, key_expires_at: project.key_expires_at,
-        call_count: 3, note_count: 0, connection: 'mcp', first_call_at: null,
-      },
+describe('fillCallDays', () => {
+  it('fills the window with zero days, oldest first, ending today', () => {
+    const days = fillCallDays([{ day: '2026-09-28', calls: 3, errors: 0 }], 3, new Date('2026-09-29T12:00:00Z'));
+    expect(days.map((d) => [d.day, d.calls])).toEqual([
+      ['2026-09-27', 0], ['2026-09-28', 3], ['2026-09-29', 0],
     ]);
-
-    render(
-      <MemoryRouter initialEntries={['/agent-activity?view=sessions']}>
-        <ProjectActivity />
-      </MemoryRouter>,
-    );
-    expect(await screen.findByText('Recon the DMZ')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Sessions' })).toHaveAttribute('aria-pressed', 'true');
-    expect(await screen.findByLabelText('Resume agent session 77')).toBeInTheDocument();
-    expect(screen.getByLabelText('End agent session 77')).toBeInTheDocument();
-    // The runs table is the other view.
-    expect(screen.queryByTestId('runs-table')).not.toBeInTheDocument();
   });
 
-  it('renders both workflows side by side with model + user attribution', async () => {
-    mockedApi.listAgentSessions.mockResolvedValueOnce({
-      project_id: 1,
-      sessions: sampleSessions,
-      total: 2,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValueOnce({
-      project_id: 1,
-      summary: sampleSummary,
-    });
-
-    renderPage();
-
-    // Wait for the table rows to appear.
-    await screen.findByText(/Plan #17/);
-    expect(screen.getByText(/Scope #12/)).toBeInTheDocument();
-    // Models surface in BOTH the rollup card and the timeline table,
-    // so getAllByText (≥ 1 match).
-    expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('gpt-5-codex').length).toBeGreaterThan(0);
-    // User attribution lives only in the timeline rows.
-    expect(screen.getByText('alice')).toBeInTheDocument();
-    expect(screen.getByText('bob')).toBeInTheDocument();
-  });
-
-  it('renders the model rollup card with per-(model, tool) counts', async () => {
-    mockedApi.listAgentSessions.mockResolvedValueOnce({
-      project_id: 1,
-      sessions: [],
-      total: 0,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValueOnce({
-      project_id: 1,
-      summary: sampleSummary,
-    });
-
-    renderPage();
-
-    await screen.findByText('Activity by agent / model');
-    // Both model rows in the rollup.
-    expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('gpt-5-codex').length).toBeGreaterThan(0);
-    // Totals column.
-    expect(screen.getByText('8')).toBeInTheDocument();
-    expect(screen.getByText('4')).toBeInTheDocument();
-  });
-
-  it('passes the model filter to the API when the user picks a model', async () => {
-    const user = userEvent.setup();
-    mockedApi.listAgentSessions.mockResolvedValue({
-      project_id: 1,
-      sessions: sampleSessions,
-      total: 2,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValueOnce({
-      project_id: 1,
-      summary: sampleSummary,
-    });
-
-    renderPage();
-
-    await screen.findByText(/Plan #17/);
-
-    // Open the Model dropdown and pick claude-opus-4-7.  MUI Select
-    // renders as a button — click it then click the menu item.
-    const modelSelect = screen.getByLabelText('Filter runs by model');
-    await user.click(modelSelect);
-    const claude = await screen.findByRole('option', { name: 'claude-opus-4-7' });
-    await user.click(claude);
-
-    await waitFor(() => {
-      const calls = mockedApi.listAgentSessions.mock.calls;
-      const lastCall = calls[calls.length - 1];
-      expect(lastCall?.[0]).toEqual(expect.objectContaining({
-        model: 'claude-opus-4-7',
-      }));
-    });
-  });
-
-  it('shows an empty-state when no sessions match', async () => {
-    mockedApi.listAgentSessions.mockResolvedValueOnce({
-      project_id: 1,
-      sessions: [],
-      total: 0,
-    });
-    mockedApi.getAgentSessionSummary.mockResolvedValueOnce({
-      project_id: 1,
-      summary: [],
-    });
-
-    renderPage();
-
-    await screen.findByText(/No agent sessions match the current filters\./);
-  });
-
-  // v5.267.0 — the Posture layout: a lead sentence, one strip of four
-  // measures, sections over thin rules, no card anywhere.
-  describe('Posture layout', () => {
-    const hygieneSummary = (overrides: Record<string, unknown> = {}) => ({
-      window_days: 14,
-      total_calls: 0,
-      distinct_agents: 0,
-      first_call_at: null,
-      last_call_at: null,
-      status_breakdown: { success: 0, client_error: 0, server_error: 0, other: 0 },
-      by_workflow: [],
-      daily: [],
-      busiest_sessions: [],
-      session_hygiene: {
-        sessions_started: 3,
-        sessions_active: 1,
-        sessions_ended: 2,
-        ended_by_agent: 1,
-        ended_by_operator: 0,
-        lapsed: 1,
-        sessions_with_feedback: 1,
-      },
-      ...overrides,
-    });
-
-    it('leads with the session facts and renders no cards', async () => {
-      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary());
-
-      const { container } = renderPage();
-      await screen.findByText(/Plan #17/);
-      expect(
-        screen.getByText('3 sessions started in the last 14 days; 1 still active; 1 lapsed without ending.'),
-      ).toBeInTheDocument();
-      expect(container.querySelector('.bg-card.shadow-raised')).toBeNull();
-      // One strip of four measures — the fifth box (ended by operator) is gone.
-      for (const label of ['Sessions started', 'Ended by the agent', 'Lapsed (never ended)', 'Filed feedback']) {
-        expect(screen.getByText(label)).toBeInTheDocument();
-      }
-      expect(screen.queryByText('Ended by operator')).not.toBeInTheDocument();
-      // The filters are one row inside the Runs section; user and agent share
-      // a cell (v5.288.0 — on two wrapping lines).
-      expect(screen.getByTestId('runs-filters').parentElement).toHaveClass('border-b');
-      expect(screen.getByText('alice').closest('td')).toHaveTextContent("alicealice's-agent");
-    });
-
-    it('replaces an empty call chart with one caption line', async () => {
-      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary());
-
-      renderPage();
-      await screen.findByText('No agent API calls recorded in the last 14 days.');
-      expect(screen.queryByText('API calls')).not.toBeInTheDocument();
-      expect(screen.queryByText('Calls per day')).not.toBeInTheDocument();
-    });
-
-    it('renders the API-call section with its day bars and busiest sessions when there were calls', async () => {
-      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: sampleSessions, total: 2 });
-      mockedApi.getAgentSessionSummary.mockResolvedValue({ project_id: 1, summary: sampleSummary });
-      mockedApi.getAgentActivitySummary.mockResolvedValue(hygieneSummary({
-        total_calls: 30,
-        distinct_agents: 2,
-        status_breakdown: { success: 27, client_error: 2, server_error: 1, other: 0 },
-        by_workflow: [{ workflow: 'recon', calls: 30 }],
-        daily: [{ day: '2026-09-20', calls: 10, errors: 0 }, { day: '2026-09-21', calls: 20, errors: 3 }],
-        busiest_sessions: [{ workflow: 'recon', session_id: 3, calls: 30 }],
-      }));
-
-      renderPage();
-      await screen.findByText('API calls');
-      expect(screen.getByTestId('api-call-line')).toHaveTextContent('30 calls from 2 agents · 27 2xx · 2 4xx · 1 5xx');
-      expect(screen.getByLabelText('2026-09-21: 20 calls, 3 errors')).toBeInTheDocument();
-      expect(screen.getByText('Busiest sessions')).toBeInTheDocument();
-      expect(screen.getByRole('button', { name: 'Open recon #3' })).toBeInTheDocument();
-    });
-
-    it('shows a one-line note instead of the model table when no model or tool was reported', async () => {
-      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
-      mockedApi.getAgentSessionSummary.mockResolvedValue({
-        project_id: 1,
-        summary: [{
-          generated_by_model: null, generated_by_tool: null,
-          project: 5, recon: 0, plan_generation: 0, execution: 0, assist: 0, total: 5,
-        }],
-      });
-
-      renderPage();
-      await screen.findByText(/No agent has reported its model or tool yet/);
-      expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
-      expect(screen.queryByText('(not reported)')).not.toBeInTheDocument();
-      // No hygiene from this backend: the lead falls back to the unfiltered rollup.
-      expect(screen.getByText('5 agent sessions on record for this project.')).toBeInTheDocument();
-    });
+  it('never drops a day the server counted after the browser’s today', () => {
+    const days = fillCallDays([{ day: '2026-09-30', calls: 1, errors: 0 }], 2, new Date('2026-09-29T23:00:00Z'));
+    expect(days.map((d) => d.day)).toEqual(['2026-09-29', '2026-09-30']);
   });
 });

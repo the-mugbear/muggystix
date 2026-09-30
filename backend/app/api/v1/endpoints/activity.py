@@ -60,7 +60,6 @@ from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     ExecutionSession,
     HostSanityCheck,
-    ReconSession,
     TestExecutionResult,
     TestPlan,
     TestPlanEntry,
@@ -221,13 +220,12 @@ def _to_utc(value: Optional[datetime], *, allow_none: bool = False) -> Optional[
 
 
 KIND_SCAN = "scan"
-KIND_RECON = "recon_session"
 KIND_EXECUTION = "execution_session"
 KIND_TEST_RESULT = "test_result"
 KIND_SANITY = "sanity_check"
-ALL_KINDS = {KIND_SCAN, KIND_RECON, KIND_EXECUTION, KIND_TEST_RESULT, KIND_SANITY}
+ALL_KINDS = {KIND_SCAN, KIND_EXECUTION, KIND_TEST_RESULT, KIND_SANITY}
 #: The kinds that are containers for tool runs rather than tool runs.
-CONTAINER_KINDS = {KIND_RECON, KIND_EXECUTION}
+CONTAINER_KINDS = {KIND_EXECUTION}
 
 
 def _parse_target(raw: Optional[str]) -> Optional[str]:
@@ -457,74 +455,6 @@ def _scope_contains(db: Session, scope_ids: Set[int], target: str) -> Set[int]:
         except ValueError:
             continue
     return hits
-
-
-def _query_recon_sessions(
-    db: Session,
-    project_ids: List[int],
-    window_start: datetime,
-    window_end: datetime,
-    *,
-    target: Optional[str] = None,
-) -> List[ActivityItem]:
-    """ReconSession rows whose [started_at, COALESCE(completed_at, started_at)]
-    overlaps the window.  Same single-instant interpretation for NULL
-    completed_at as for scans.  With ``target`` set, only runs whose scope
-    contains that address.
-    """
-    effective_end = func.coalesce(
-        ReconSession.completed_at, ReconSession.started_at
-    )
-    rows = (
-        db.query(
-            ReconSession.id,
-            ReconSession.project_id,
-            Project.name,
-            models.Scope.name.label("scope_name"),
-            ReconSession.notes,
-            ReconSession.started_at,
-            ReconSession.completed_at,
-            ReconSession.status,
-            ReconSession.hosts_discovered,
-            ReconSession.scope_id,
-        )
-        .join(Project, Project.id == ReconSession.project_id)
-        .join(models.Scope, models.Scope.id == ReconSession.scope_id)
-        .filter(
-            ReconSession.started_at.isnot(None),
-            ReconSession.project_id.in_(project_ids),
-            ReconSession.started_at <= window_end,
-            effective_end >= window_start,
-        )
-        .order_by(ReconSession.started_at.desc())
-        .limit(MAX_RESULTS + 1)
-        .all()
-    )
-    if target:
-        # Applied after the LIMIT, unlike the other kinds: >MAX_RESULTS
-        # recon runs overlapping one window is not a real load, and the
-        # Python containment check keeps this portable to the SQLite test
-        # backend.  If it ever is, move to an ``inet >>=`` predicate.
-        in_scope = _scope_contains(db, {row[9] for row in rows}, target)
-        rows = [row for row in rows if row[9] in in_scope]
-    return [
-        ActivityItem(
-            kind=KIND_RECON,
-            ref_id=row[0],
-            project_id=row[1],
-            project_name=row[2],
-            label=f"recon: {row[3]}" if row[3] else "recon",
-            secondary_label=(row[4][:200] + "…")
-            if (row[4] and len(row[4]) > 200)
-            else row[4],
-            start_time=row[5],
-            end_time=row[6],
-            has_end_time=row[6] is not None,
-            host_count=int(row[8] or 0),
-            status=row[7],
-        )
-        for row in rows
-    ]
 
 
 def _query_execution_sessions(
@@ -780,10 +710,6 @@ def _query_in_window(
     items: List[ActivityItem] = []
     if KIND_SCAN in kinds:
         items.extend(_query_scans(db, project_ids, window_start, window_end, tool=tool, target=target))
-    if KIND_RECON in kinds:
-        items.extend(
-            _query_recon_sessions(db, project_ids, window_start, window_end, target=target)
-        )
     if KIND_EXECUTION in kinds:
         items.extend(
             _query_execution_sessions(db, project_ids, window_start, window_end, target=target)
@@ -888,7 +814,7 @@ def scans_at(
     kinds: Optional[str] = Query(
         None,
         description="Optional CSV of activity kinds to include: "
-        "`scan`, `recon_session`, `execution_session`, `test_result`, "
+        "`scan`, `execution_session`, `test_result`, "
         "`sanity_check`. Omit for all.",
     ),
     tool: Optional[str] = _TOOL_PARAM,

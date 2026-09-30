@@ -222,6 +222,29 @@ def s01_notes(c: Ctx, sc):
     return h
 
 
+
+# A tiny valid PNG (1x1), written where the screenshot endpoints read, so an
+# advertised screenshot can actually be fetched (agent feedback #24).
+def _png_1x1() -> bytes:
+    import struct
+    import zlib
+
+    def chunk(kind: bytes, data: bytes) -> bytes:
+        return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
+
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 2, 0, 0, 0)   # 1x1, 8-bit RGB
+    idat = zlib.compress(b"\x00\x80\x80\x80")            # filter byte + one grey pixel
+    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
+
+
+def _write_screenshot(rel_path: str) -> None:
+    from pathlib import Path
+    from app.core.config import settings
+    target = Path(settings.UPLOAD_DIR) / "web_screenshots" / rel_path
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(_png_1x1())
+
+
 def s02_web_history(c: Ctx, scans):
     aug, sep, untimed, late_old = scans["web_aug"], scans["web_sep"], scans["web_untimed"], scans["web_late_old"]
     h = host(c, "s02", "10.77.1.12", "s02-web.eval.test", sep, os_name="Windows Server 2022", os_family="Windows")
@@ -236,6 +259,8 @@ def s02_web_history(c: Ctx, scans):
                                 status_code=status, title=title, server_header="Microsoft-IIS/10.0",
                                 content_length=7168,
                                 screenshot_path=f"{sc.id}/s02-{status}.png" if shot else None)
+        if shot:
+            _write_screenshot(f"{sc.id}/s02-{status}.png")
         w.first_seen = written
         w.last_seen = written
         c.db.add(w)
@@ -380,8 +405,7 @@ def s05_blockers(c: Ctx, sc):
     plans = {}
     for i, (title, status) in enumerate((("s05 — paused run", "in_progress"),
                                          ("s05 — run whose agent session ended", "in_progress"),
-                                         ("s05 — healthy run", "in_progress"),
-                                         ("s05 — awaiting approval", "proposed")), start=1):
+                                         ("s05 — healthy run", "in_progress")), start=1):
         p = TestPlan(project_id=c.project.id, version=i, title=title, status=status,
                      generated_by_model="eval-seed")
         c.db.add(p)
@@ -401,13 +425,11 @@ def s05_blockers(c: Ctx, sc):
                                agent_session_id=live.id, started_by_id=c.owner.id, started_at=ago(hours=1))
     c.db.add_all([paused, orphan, healthy])
     c.db.flush()
-    c.note("s05", "Operations: the Blocked strip, Ingestion Results, approvals",
+    c.note("s05", "Operations: the Blocked strip, Ingestion Results",
            "/operations — 'Blocked': '2 imports failed · 1 finished partial', plus 'Run #… is paused' and "
            "'Run #… lost its agent session'. The healthy run and the dismissed failure are NOT listed.",
            "'Inspect import errors' → /parse-errors?status=needs_attention shows exactly 3 rows; the partial "
-           "one carries a 'partial' badge and the parser's warning; 'Dismiss the 3 shown' clears the strip.",
-           "'Needs your approval' leads the page (1 proposed plan). Reject it and reload: the block drops to "
-           "one line below My work.")
+           "one carries a 'partial' badge and the parser's warning; 'Dismiss the 3 shown' clears the strip.")
 
 
 def s06_review_queue(c: Ctx, sc):
@@ -529,9 +551,16 @@ def s10_netexec(c: Ctx, scans):
     for sc in (a, b):                                   # the SAME result, two scans → one row
         c.db.add(NetexecResult(scan_id=sc.id, host_id=h.id, protocol="smb", port=445, auth_success=False,
                                hostname="S10", shares=None))
+    # The parser's share shape (`permissions`) and its derived columns, so the
+    # row reads like a real import (agent feedback #23).
     c.db.add(NetexecResult(scan_id=b.id, host_id=h.id, protocol="smb", port=445, auth_success=True,
                            username="svc_backup", hostname="S10",
-                           shares=[{"name": "ADMIN$", "access": "READ"}, {"name": "Backups", "access": "READ,WRITE"}]))
+                           shares=[{"name": "ADMIN$", "permissions": "READ"},
+                                   {"name": "Backups", "permissions": "READ,WRITE"}],
+                           writable_share=True,
+                           raw_output=("SMB  10.77.2.40  445  S10  [+] CORP\\svc_backup:***\n"
+                                       "SMB  10.77.2.40  445  S10  ADMIN$   READ\n"
+                                       "SMB  10.77.2.40  445  S10  Backups  READ,WRITE")))
     c.db.flush()
     c.note("s10", "NetExec: repeats collapse, different outcomes do not",
            f"/hosts/{h.id} — 'NetExec enumeration 2': one line 'Auth failed · no shares enumerated · same result "
@@ -546,10 +575,11 @@ def s11_tests(c: Ctx, sc):
     # One entry per (plan, host) — uq_plan_host_name — so three entries on one
     # host are three plans, which is also how it looks in real use.
     for version, (status, tests, findings) in enumerate((
-        ("completed", [{"tool": "nmap", "command": "nmap -sV -p22 {ip}"}, {"tool": "ssh-audit", "command": "ssh-audit {ip}"}],
+        ("completed", [{"tool": "nmap", "description": "SSH version", "command": "nmap -sV -p22 {ip}"},
+                       {"tool": "ssh-audit", "description": "SSH algorithms", "command": "ssh-audit {ip}"}],
          "Weak KEX algorithms offered; no password auth."),
-        ("rejected", [{"tool": "hydra", "command": "hydra -L users.txt {ip} ssh"}], None),
-        ("proposed", [{"tool": "nikto", "command": "nikto -h {ip}"}], None),
+        ("rejected", [{"tool": "hydra", "description": "SSH password guessing", "command": "hydra -L users.txt {ip} ssh"}], None),
+        ("proposed", [{"tool": "nikto", "description": "Web server checks", "command": "nikto -h {ip}"}], None),
     ), start=90):
         plan = TestPlan(project_id=c.project.id, version=version, title=f"s11 — plan ({status} entry)",
                         status="in_progress", generated_by_model="eval-seed")

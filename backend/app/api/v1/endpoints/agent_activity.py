@@ -58,7 +58,6 @@ class AgentApiCallRow(BaseModel):
 
     test_plan_id: Optional[int] = None
     execution_session_id: Optional[int] = None
-    recon_session_id: Optional[int] = None
     scope_id: Optional[int] = None
 
     referenced_host_ids: Optional[List[int]] = None
@@ -75,7 +74,6 @@ def _base_query(
     db: Session,
     project_id: int,
     test_plan_id: Optional[int],
-    recon_session_id: Optional[int],
     method: Optional[str],
     status_min: Optional[int],
     status_max: Optional[int],
@@ -94,8 +92,6 @@ def _base_query(
         q = q.filter(AgentApiCall.agent_id.in_(owned))
     if test_plan_id is not None:
         q = q.filter(AgentApiCall.test_plan_id == test_plan_id)
-    if recon_session_id is not None:
-        q = q.filter(AgentApiCall.recon_session_id == recon_session_id)
     if method:
         q = q.filter(AgentApiCall.method == method.upper())
     if status_min is not None:
@@ -184,7 +180,7 @@ def list_plan_activity(
     # (a non-member gets 403).  Without it any authenticated user could read
     # another tenant's agent audit log via the path param alone.
     q = _base_query(
-        db, project_id=project.id, test_plan_id=plan_id, recon_session_id=None,
+        db, project_id=project.id, test_plan_id=plan_id,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
         mine_owner_id=current_user.id if mine else None,
@@ -295,7 +291,6 @@ def _session_hygiene(db: Session, project_id: int, window_start: datetime) -> Ag
 # ``agent_session_id``; they are "session" work, not "other".
 def _workflow_case():
     return case(
-        (AgentApiCall.recon_session_id.isnot(None), "recon"),
         (AgentApiCall.execution_session_id.isnot(None), "execution"),
         (AgentApiCall.assist_session_id.isnot(None), "assist"),
         (AgentApiCall.test_plan_id.isnot(None), "plan"),
@@ -413,7 +408,6 @@ def get_agent_activity_summary(
     busiest: List[AgentActivitySessionRow] = []
     for col, label in (
         (AgentApiCall.agent_session_id, "session"),
-        (AgentApiCall.recon_session_id, "recon"),
         (AgentApiCall.execution_session_id, "execution"),
         (AgentApiCall.assist_session_id, "assist"),
         (AgentApiCall.test_plan_id, "plan"),
@@ -496,49 +490,11 @@ def list_assist_session_activity(
     if assist.agent_session_id is not None:
         owner = owner | (AgentApiCall.agent_session_id == assist.agent_session_id)
     q = _base_query(
-        db, project_id=project.id, test_plan_id=None, recon_session_id=None,
+        db, project_id=project.id, test_plan_id=None,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
         mine_owner_id=current_user.id if mine else None,
     ).filter(owner)
-    total = q.count()
-    rows = (
-        q.order_by(AgentApiCall.created_at.desc())
-        .offset(offset).limit(limit).all()
-    )
-    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
-
-
-@router.get(
-    "/recon-sessions/{recon_session_id}/api-activity",
-    response_model=AgentApiCallListResponse,
-    summary="List the agent's API calls for this recon session",
-)
-def list_recon_session_activity(
-    project_id: int = Path(..., gt=0),
-    recon_session_id: int = Path(..., gt=0),
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-    method: Optional[str] = Query(None),
-    status_min: Optional[int] = Query(None, ge=100, le=599),
-    status_max: Optional[int] = Query(None, ge=100, le=599),
-    host_id: Optional[int] = Query(None),
-    target_ip: Optional[str] = Query(None),
-    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
-    since: Optional[datetime] = None,
-    until: Optional[datetime] = None,
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # get_current_project enforces ProjectMembership for the path project_id
-    # (see list_plan_activity) — guards the same cross-tenant read.
-    q = _base_query(
-        db, project_id=project.id, test_plan_id=None, recon_session_id=recon_session_id,
-        method=method, status_min=status_min, status_max=status_max,
-        host_id=host_id, target_ip=target_ip, since=since, until=until,
-        mine_owner_id=current_user.id if mine else None,
-    )
     total = q.count()
     rows = (
         q.order_by(AgentApiCall.created_at.desc())

@@ -15,7 +15,7 @@ const badgeVariants = cva(
   // earlier audit pass added `max-w-full overflow-hidden` to the
   // default so `max-w-[Nrem]` overrides would clip inner truncating
   // spans (the OS Badge case in HostInspector/Hosts, audit RSP·M6).
-  // That broke status badges in narrow columns (e.g. /recon/runs
+  // That broke status badges in narrow columns (e.g. a run list's
   // Status column at w-28) — short labels like "abandoned" hard-cut
   // mid-word. Reverted: keep default behaviour, opt into truncation
   // via `Badge className="max-w-[Nrem] overflow-hidden"` at the call
@@ -48,7 +48,7 @@ const badgeVariants = cva(
         // variants but still need the semantic color carried through.
         // Replaces the bespoke `border-warning/40 text-warning` class
         // soup that appeared in ~19 sites across ExecutionDetail,
-        // ReconRunDetail, PortfolioDashboard (audit H15).
+        // PortfolioDashboard (audit H15).
         'destructive-outline': 'border-destructive/40 text-destructive',
         'warning-outline': 'border-warning/40 text-warning',
         'info-outline': 'border-info/40 text-info',

@@ -6,10 +6,9 @@ and the service can't be exercised without the request layer.  This test
 fails if a *new* such import appears.
 
 ``operations_read_service`` and ``host_serialization`` were the modules the
-review flagged; they are clean now.  ``recon_summary_service`` still imports
-two helper symbols from the endpoints package and is the one remaining,
-explicitly-tracked exception — tighten it when that surface is next
-touched, then drop it from the allow-list here.
+review flagged; they are clean now.  The last exception,
+``recon_summary_service``, became ``scope_targets_service`` in v2.433.1 and
+owns its shapes and scope query, so the allow-list is empty.
 """
 from __future__ import annotations
 
@@ -21,7 +20,7 @@ SERVICES_DIR = pathlib.Path(__file__).resolve().parents[1] / "app" / "services"
 # Modules with a KNOWN, accepted service->router import.  Add nothing here
 # without a deliberate decision — the point of this test is to stop the
 # list from growing silently.
-ALLOWED = {"recon_summary_service.py"}
+ALLOWED: set = set()
 
 
 def _imports_router(path: pathlib.Path) -> bool:

@@ -62,7 +62,7 @@ def test_review_states_add_up_and_coverage_does_not_set_health(
     assert body["summary"]["total_reviewed"] >= 1 and body["summary"]["total_in_review"] >= 1
 
 
-def test_portfolio_surfaces_critical_and_pending_review(
+def test_portfolio_surfaces_critical_and_no_approval_queue(
     client, db_session, test_project,
 ):
     scan = models.Scan(project_id=test_project.id, filename="s.xml")
@@ -74,7 +74,7 @@ def test_portfolio_surfaces_critical_and_pending_review(
         source=VulnerabilitySource.MANUAL, host_id=host.id, scan_id=scan.id,
     ))
     db_session.add(TestPlan(
-        project_id=test_project.id, version=1, title="draft", status="proposed",
+        project_id=test_project.id, version=1, title="draft", status="draft",
     ))
     db_session.flush()
 
@@ -87,8 +87,9 @@ def test_portfolio_surfaces_critical_and_pending_review(
     # critical signal on the project.
     assert "critical_unjudged" in card["attention_reasons"]
     assert "critical_findings" not in card["attention_reasons"]
-    assert "pending_review" in card["attention_reasons"]
-    assert card["pending_plan_reviews"] == 1
+    # v2.433.0 — a plan never waits on approval, so it is never a reason.
+    assert "pending_review" not in card["attention_reasons"]
+    assert "pending_plan_reviews" not in card
     assert card["unjudged_observations"]["critical"] == 1
     assert card["findings"]["critical"] == 0
     assert card["health"] == "critical"
@@ -96,7 +97,7 @@ def test_portfolio_surfaces_critical_and_pending_review(
 
     summary = body["summary"]
     assert summary["projects_with_critical"] >= 1
-    assert summary["pending_approvals_total"] >= 1
+    assert "pending_approvals_total" not in summary
     assert summary["projects_requiring_attention"] >= 1
 
 
@@ -105,7 +106,7 @@ def test_blocked_uses_latest_session_only(client, db_session, test_project, test
     not 'blocked'; only the latest session per plan counts."""
     plan = TestPlan(
         project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="exec plan", status="approved",
+        title="exec plan", status="draft",
     )
     db_session.add(plan)
     db_session.flush()
@@ -128,7 +129,7 @@ def test_blocked_when_latest_session_paused(client, db_session, test_project, te
     """Inverse — when the latest session itself is paused/failed, it blocks."""
     plan = TestPlan(
         project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="exec plan 2", status="approved",
+        title="exec plan 2", status="draft",
     )
     db_session.add(plan)
     db_session.flush()
@@ -169,7 +170,7 @@ def test_team_roster_with_workload(client, db_session, test_project, test_agent)
     ))
     plan = TestPlan(
         project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="t", status="approved",
+        title="t", status="draft",
     )
     host = models.Host(project_id=test_project.id, ip_address="10.7.7.7", state="up")
     db_session.add_all([plan, host])

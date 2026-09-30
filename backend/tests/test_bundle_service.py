@@ -148,11 +148,11 @@ class TestExportHappyPath:
         assert session.mode == ExecutionSessionMode.EXPORTED.value
         assert session.bundle_id == bundle["bundle_id"]
 
-    def test_export_transitions_approved_to_in_progress(
+    def test_export_transitions_draft_to_in_progress(
         self, db_session, plan_with_entries, test_user
     ):
         plan = plan_with_entries["plan"]
-        assert plan.status == "approved"
+        assert plan.status == "draft"
         build_export_bundle(
             db=db_session,
             request=None,
@@ -177,14 +177,15 @@ class TestExportRejection:
                 agent_id=None,
             )
 
-    def test_draft_plan_rejected(
+    def test_completed_plan_rejected(
         self, db_session, plan_with_entries, test_user
     ):
-        """Only approved / in_progress plans can be exported."""
+        """Only draft / in_progress plans can be exported (no approval step
+        since v2.433.0 — a draft is exportable)."""
         plan = plan_with_entries["plan"]
-        plan.status = "draft"
+        plan.status = "completed"
         db_session.commit()
-        with pytest.raises(ValueError, match="status"):
+        with pytest.raises(ValueError, match="completed"):
             build_export_bundle(
                 db=db_session,
                 request=None,
@@ -193,13 +194,13 @@ class TestExportRejection:
                 agent_id=None,
             )
 
-    def test_rejected_plan_rejected(
+    def test_archived_plan_rejected(
         self, db_session, plan_with_entries, test_user
     ):
         plan = plan_with_entries["plan"]
-        plan.status = "rejected"
+        plan.status = "archived"
         db_session.commit()
-        with pytest.raises(ValueError, match="status"):
+        with pytest.raises(ValueError, match="archived"):
             build_export_bundle(
                 db=db_session,
                 request=None,

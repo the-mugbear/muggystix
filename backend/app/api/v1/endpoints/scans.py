@@ -920,7 +920,6 @@ class ScanBatchSummary(BaseModel):
     label: str
     created_at: Optional[datetime] = None
     created_by: Optional[str] = None
-    recon_session_id: Optional[int] = None
     files: int
     tools: List[str] = []
     hosts: int = Field(0, description="Distinct hosts the files observed")
@@ -1055,7 +1054,7 @@ def rename_scan_batch(
     label ("12 files · <time>") the moment the files are dropped; this gives
     it the name the operator recognises it by in the import history.
 
-    An AGENT'S batch is refused: it is keyed by ``(recon_session_id, label)``,
+    An AGENT'S batch is refused: it is keyed by ``(agent_session_id, label)``,
     so renaming it would send the sweep's next chunk into a new batch."""
     batch = (
         db.query(models.ScanBatch)
@@ -1064,10 +1063,10 @@ def rename_scan_batch(
     )
     if batch is None:
         raise HTTPException(status_code=404, detail="Batch not found in this project")
-    if batch.recon_session_id is not None:
+    if batch.agent_session_id is not None:
         raise HTTPException(
             status_code=409,
-            detail="This batch belongs to an agent's recon session, which keys it by its label; it cannot be renamed.",
+            detail="This batch belongs to an agent session, which keys it by its label; it cannot be renamed.",
         )
     label = body.label.strip()
     if not label:
@@ -1370,7 +1369,6 @@ def list_scan_batches(
             created_at=b.created_at,
             created_by=uname,
             created_by_name=(full or uname),
-            recon_session_id=b.recon_session_id,
             files=(r.files if r is not None else 0),
             total_files=imported,
             imported_files=imported,

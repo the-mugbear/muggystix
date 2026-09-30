@@ -19,7 +19,6 @@ import { buildCertTrust } from '../utils/mcpCert';
 import { CardListSkeleton } from '../components/PageSkeleton';
 import McpConnectPanel from '../components/McpConnectPanel';
 import McpFlowDiagram from '../components/mcp/McpFlowDiagram';
-import McpWorkflowMap from '../components/mcp/McpWorkflowMap';
 import { CodeBlock } from '../components/ui/code-block';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -32,39 +31,40 @@ import {
   TableRow,
 } from '../components/ui/table';
 
-/** Tools grouped by the kind of work they do (v2.337.0 — one session sees them
- *  all; this is presentation, not a per-key filter). Order follows the
- *  engagement: recon feeds planning, planning feeds execution. */
-const WORKFLOW_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
+/** Tools grouped by capability (5.313.0). Every session is offered every
+ *  tool — the key is the operator's project role, not a workflow — so the
+ *  groups are presentation only. The `key` is the catalog's `workflows` tag the
+ *  group is read from. */
+const CAPABILITY_GROUPS: Array<{ key: string; label: string; blurb: string }> = [
   {
-    key: 'recon',
-    label: 'Reconnaissance',
+    key: 'assist',
+    label: 'Read the inventory and write notes',
     blurb:
-      'Populates host data from scanners run on your machine. Bulk uploads and target-file downloads stay curl — see below.',
+      'What is here, what state it is in, what the estate has a systemic problem with, and the evidence behind a finding — plus the writes your project role allows (notes, review status, corrections).',
+  },
+  {
+    key: 'scope',
+    label: 'Read a scope, upload scans',
+    blurb:
+      'Read a scope’s subnets and in-scope names, then upload what the scanners on your machine produced. Bulk uploads and target-file downloads stay curl — see below.',
   },
   {
     key: 'plan_generation',
-    label: 'Plan generation',
+    label: 'Write test plans',
     blurb:
-      'Proposes tests against what recon found, then hands the draft to a human for approval. Nothing here runs anything.',
+      'Record what you intend to test, host by host, with the commands to run. A plan is a record for posterity — nothing waits on an approval.',
   },
   {
     key: 'execution',
-    label: 'Execution',
+    label: 'Record test results',
     blurb:
-      'Works an approved plan and records what each test produced. The commands run on your machine, under your client’s sandbox.',
-  },
-  {
-    key: 'assist',
-    label: 'Assist',
-    blurb:
-      'Interactive read over the existing inventory — what is here, what state it is in, what the estate has a systemic problem with, and the evidence behind a finding when the engagement is written up. Plus the three writes an operator can grant.',
+      'Open an execution run on a plan and record what each test produced, with any sanity checks as evidence. The commands run on your machine, under your client’s sandbox.',
   },
   {
     key: 'shared',
-    label: 'Every workflow',
+    label: 'Session and catalogue',
     blurb:
-      'The universal tools: what am I, probe my environment, open a phase (recon / plan / execution), read the guide and the approved-tool set, and ask for a tool you don’t approve.',
+      'Who am I, probe my environment, read the guide and the tool catalogue, suggest a tool the catalogue lacks, and end the session.',
   },
 ];
 
@@ -102,16 +102,15 @@ const McpReference: React.FC = () => {
     };
   }, []);
 
-  // Grouped by workflow rather than read/write (v5.168.0). A session sees only
-  // its own workflow's tools, so "which of these will my agent actually get?"
-  // is the first question the table has to answer; read-vs-write is a per-row
-  // property and shows as a badge.
+  // Grouped by capability; read-vs-write is a per-row property and shows as a
+  // badge. A tool tagged for every kind of work is filed once, under
+  // "Session and catalogue".
   const groups = useMemo(() => {
     const tools = catalog?.tools ?? [];
     const shared = tools.filter((t) => t.workflows?.length >= 4);
     const byWorkflow = (wf: string) =>
       tools.filter((t) => t.workflows?.includes(wf) && !shared.includes(t));
-    return WORKFLOW_GROUPS.map((g) => ({
+    return CAPABILITY_GROUPS.map((g) => ({
       ...g,
       tools: g.key === 'shared' ? shared : byWorkflow(g.key),
     })).filter((g) => g.tools.length > 0);
@@ -133,22 +132,6 @@ const McpReference: React.FC = () => {
   // The endpoint is server-resolved; fall back to a relative path so the
   // connect snippets still read correctly if the catalog call failed.
   const endpoint = catalog?.endpoint ?? '/api/v1/mcp';
-
-  // Per-workflow tool counts for the lifecycle map, read off the same live
-  // catalog the table below groups — a picture can't claim a tool the
-  // deployment doesn't serve. `shared` tools (>= 4 workflows) are excluded so
-  // a workflow's count is the tools distinctive to it, matching the groups.
-  const workflowCounts = useMemo(() => {
-    const tools = catalog?.tools ?? [];
-    const distinctive = (wf: string) =>
-      tools.filter((t) => t.workflows?.includes(wf) && (t.workflows?.length ?? 0) < 4).length;
-    return {
-      recon: distinctive('recon'),
-      plan_generation: distinctive('plan_generation'),
-      execution: distinctive('execution'),
-      assist: distinctive('assist'),
-    };
-  }, [catalog]);
 
   const toolRows = (tools: McpToolDoc[]) => (
     <Table style={{ tableLayout: 'fixed' }}>
@@ -229,18 +212,15 @@ const McpReference: React.FC = () => {
         </AlertDescription>
       </Alert>
 
-      {/* --- The lifecycle picture: the kinds of work one session does --- */}
-      <h2 className="text-section-title">One session, four kinds of work</h2>
-      <p className="mt-xxs mb-sm max-w-4xl text-caption text-muted-foreground">
-        One project session and key do everything: it reads the inventory, and opens a
-        reconnaissance run, a plan draft, or an execution run as it goes. Recon feeds planning,
-        planning feeds execution, and the read tools work across all of it at any time — the same
-        key throughout.
+      {/* 5.313.0 — no pipeline diagram: there is no fixed order and no
+          per-workflow key. */}
+      <h2 className="text-section-title">One session, one key</h2>
+      <p className="mt-xxs mb-lg max-w-4xl text-caption text-muted-foreground">
+        One project session and key do everything your project role allows: the agent reads the
+        inventory and scopes, uploads scan output, writes a test plan or records an execution run
+        whenever you ask it to — in any order, with nothing waiting on an approval. Every call is
+        recorded against the session.
       </p>
-      {/* v5.266.0 — documentation blocks, not cards. */}
-      <div className="mb-lg">
-        <McpWorkflowMap counts={workflowCounts} />
-      </div>
 
       {/* --- Transport facts, straight off the running server --- */}
       <div className="mb-lg border-y border-border py-sm">
@@ -380,7 +360,7 @@ const McpReference: React.FC = () => {
       {catalog?.sample_clients?.length ? (
         <McpConnectPanel
           clients={catalog.sample_clients}
-          blurb={`Exactly what the Start AI Assist dialog emits, with ${keyPlaceholder} standing in for the key a session mints:`}
+          blurb={`Exactly what the Start Agent Session dialog emits, with ${keyPlaceholder} standing in for the key a session mints:`}
         />
       ) : null}
       <p className="mb-lg mt-xs max-w-4xl text-caption text-muted-foreground">
@@ -409,9 +389,9 @@ const McpReference: React.FC = () => {
               authorization decision of its own.
             </li>
             <li>
-              That endpoint runs its normal checks — workflow scope, and the project role of
-              the operator who started the session — and records an audit row, exactly as it
-              would for a curl.
+              That endpoint runs its normal checks — the session&rsquo;s project, and the project
+              role of the operator who started the session — and records an audit row, exactly as
+              it would for a curl.
             </li>
             <li>
               The response comes back as the tool result. A <strong>403</strong> — valid key,
@@ -431,9 +411,9 @@ const McpReference: React.FC = () => {
         Read live from this deployment&rsquo;s server registry, so it always matches what your
         agent will see from <span className="font-mono">tools/list</span>.{' '}
         <strong className="text-foreground">Every session is offered the whole catalogue</strong>
-        — the groups below are by the kind of work a tool does, not by a key that can only reach
-        one of them. Whether a given call succeeds is decided at the endpoint by your role and the
-        phase you have opened. Required parameters are
+        — the groups below are by what a tool does, not by a key that can only reach one of
+        them. Whether a given call succeeds is decided at the endpoint by your project role and
+        the run it names. Required parameters are
         marked <span className="font-mono">*</span>. Every tool carries MCP annotations
         (<span className="font-mono">readOnlyHint</span> and friends) so a client can offer
         &ldquo;always allow&rdquo; on the reads without you classifying them by hand, and results
@@ -481,7 +461,7 @@ const McpReference: React.FC = () => {
             <ShieldCheck className="mt-xxs size-4 shrink-0 text-success" aria-hidden />
             <p className="text-caption text-muted-foreground">
               <strong className="text-foreground">Reads need only a valid session.</strong> Every
-              assist session can run the read tools. The write tools are separate and gated on the
+              session can run the read tools. The write tools are separate and gated on the
               operator&rsquo;s own project role, checked per request — see the next point.
             </p>
           </div>
@@ -512,9 +492,9 @@ const McpReference: React.FC = () => {
           <div className="flex gap-sm">
             <Lock className="mt-xxs size-4 shrink-0 text-muted-foreground" aria-hidden />
             <p className="text-caption text-muted-foreground">
-              <strong className="text-foreground">Keys are short-lived.</strong> An assist key
-              expires on the session&rsquo;s TTL (4 hours by default) and can be revoked at any
-              time by ending the session.
+              <strong className="text-foreground">Keys are short-lived.</strong> A session key
+              expires on the session&rsquo;s TTL, the agent can renew it within the session&rsquo;s
+              lifetime, and ending the session revokes it at any time.
             </p>
           </div>
         </div>

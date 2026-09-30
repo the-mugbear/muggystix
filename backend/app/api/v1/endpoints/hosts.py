@@ -32,8 +32,9 @@ from app.db.models_confidence import (
     NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, ConflictHistory, NetexecResult,
 )
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult
-from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2from app.services.note_attachment_service import require_readable_file
+from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult, PLANNED_PLAN_STATUSES
+from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
+from app.services.note_attachment_service import require_readable_file
 from app.services import host_query_predicates as P
 from app.services.scan_time import scan_time_for_api
 from app.schemas.schemas import (
@@ -577,11 +578,8 @@ def get_hosts_v2(
     follow_map = {record.host_id: record for record in follow_records}
 
     # Batch lookup: test plan entry counts per host.  Mirrors the host
-    # detail page filter — count entries from plans the team has
-    # accepted (approved/in_progress/completed) and exclude entries
-    # that have been explicitly rejected by a tester.  proposed entries
-    # in an approved plan still count: post-approval, "proposed" means
-    # "queued for execution", not "untriaged".
+    # detail page filter — entries of every plan but an archived one
+    # (PLANNED_PLAN_STATUSES), excluding entries a tester rejected.
     tp_count_map: Dict[int, int] = {}
     if host_ids:
         tp_rows = (
@@ -590,7 +588,7 @@ def get_hosts_v2(
             .filter(
                 TestPlanEntry.host_id.in_(host_ids),
                 TestPlan.project_id == project.id,
-                TestPlan.status.in_(("approved", "in_progress", "completed")),
+                TestPlan.status.in_(PLANNED_PLAN_STATUSES),
                 TestPlanEntry.status != "rejected",
             )
             .group_by(TestPlanEntry.host_id)
@@ -2426,29 +2424,10 @@ def list_host_web_interfaces(
         .order_by(models.WebInterface.port.asc().nulls_last(), models.WebInterface.url)
         .all()
     )
-    # One grouped lookup for the scans' own times (never per row).
-    scan_ids = {r.scan_id for r in rows}
-    scan_times = {
-        s.id: s
-        for s in (
-            db.query(
-                models.Scan.id, models.Scan.start_time, models.Scan.end_time,
-                models.Scan.time_source, models.Scan.filename,
-            )
-            .filter(models.Scan.id.in_(scan_ids))
-            .all()
-            if scan_ids else []
-        )
-    }
-
-    def _observed(r):
-        s = scan_times.get(r.scan_id)
-        tool_time = (s.end_time or s.start_time) if s else None
-        if tool_time is not None:
-            return scan_time_for_api(tool_time, s.time_source), "scan"
-        return r.first_seen, "import"
-
-    observed = {r.id: _observed(r) for r in rows}
+    # When each row was OBSERVED — the one rule shared with the agent read
+    # (services/web_interface_observation).
+    from app.services.web_interface_observation import observations
+    observed = observations(db, rows)
 
     return [
         WebInterfaceResponse(
@@ -2476,9 +2455,9 @@ def list_host_web_interfaces(
             last_seen=r.last_seen,
             scan_id=r.scan_id,
             port_id=r.port_id,
-            observed_at=observed[r.id][0],
-            observed_at_basis=observed[r.id][1],
-            scan_filename=(scan_times[r.scan_id].filename if r.scan_id in scan_times else None),
+            observed_at=observed[r.id].observed_at,
+            observed_at_basis=observed[r.id].basis,
+            scan_filename=observed[r.id].scan_filename,
         )
         for r in rows
     ]
@@ -2703,18 +2682,6 @@ def get_web_interface_screenshot(
 # HostDetail panel renders without N+1 queries against three
 # different surfaces.
 
-class HostLineageReconRow(BaseModel):
-    session_id: int
-    scope_id: int
-    scope_name: Optional[str] = None
-    status: str
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    generated_by_model: Optional[str] = None
-    generated_by_tool: Optional[str] = None
-    started_by_username: Optional[str] = None
-
-
 class HostLineagePlanRow(BaseModel):
     plan_id: int
     title: str
@@ -2745,7 +2712,6 @@ class HostLineageExecutionRow(BaseModel):
 class HostLineageResponse(BaseModel):
     host_id: int
     ip_address: str
-    recon_sessions: List[HostLineageReconRow] = Field(default_factory=list)
     plan_entries: List[HostLineagePlanRow] = Field(default_factory=list)
     execution_sessions: List[HostLineageExecutionRow] = Field(default_factory=list)
 
@@ -2763,18 +2729,13 @@ def get_host_lineage(
 ):
     """Return every workflow run that has touched this host.
 
-    Three sections — recon sessions that discovered it (via
-    HostScanHistory → IngestionJob → ReconSession), plan entries
-    referencing it (via TestPlanEntry → TestPlan), and execution
-    sessions that have produced per-test results against any of those
-    entries (via TestExecutionResult → ExecutionSession).  Each row
-    is the minimum needed for the UI's "Workflow lineage" panel —
-    deeper detail lives on the per-session pages, linked from each
-    row.
+    Two sections — plan entries referencing it (via TestPlanEntry →
+    TestPlan) and execution sessions that produced per-test results
+    against any of those entries (via TestExecutionResult →
+    ExecutionSession).  Deeper detail lives on the per-session pages.
     """
     from app.db.models_agent import (
         ExecutionSession,
-        ReconSession,
         TestExecutionResult,
     )
 
@@ -2788,64 +2749,6 @@ def get_host_lineage(
     )
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
-
-    # --- Recon sessions that discovered this host ---------------------
-    # Path: HostScanHistory.host_id → Scan → IngestionJob.scan_id +
-    # IngestionJob.recon_session_id → ReconSession.
-    #
-    # Resolved in two queries: first collect distinct session IDs
-    # (selecting whole ReconSession rows with DISTINCT fails on
-    # Postgres because the ``environment`` JSON column has no
-    # equality operator), then load the full session objects in a
-    # second query keyed on those IDs.
-    recon_ids = [
-        row[0] for row in (
-            db.query(ReconSession.id)
-            .join(
-                models.IngestionJob,
-                models.IngestionJob.recon_session_id == ReconSession.id,
-            )
-            .join(
-                models.HostScanHistory,
-                models.HostScanHistory.scan_id == models.IngestionJob.scan_id,
-            )
-            .filter(models.HostScanHistory.host_id == host_id)
-            .distinct()
-            .all()
-        )
-    ]
-    recon_rows: list = []
-    if recon_ids:
-        recon_rows = (
-            db.query(ReconSession)
-            .filter(ReconSession.id.in_(recon_ids))
-            .order_by(ReconSession.started_at.desc())
-            .all()
-        )
-    scope_ids = {r.scope_id for r in recon_rows if r.scope_id is not None}
-    scope_name_by_id = {}
-    if scope_ids:
-        scope_name_by_id = dict(
-            db.query(models.Scope.id, models.Scope.name)
-            .filter(models.Scope.id.in_(scope_ids))
-            .all()
-        )
-    recon_out = [
-        HostLineageReconRow(
-            session_id=r.id,
-            scope_id=r.scope_id,
-            scope_name=scope_name_by_id.get(r.scope_id),
-            status=r.status,
-            started_at=r.started_at,
-            completed_at=r.completed_at,
-            generated_by_model=r.generated_by_model,
-            generated_by_tool=r.generated_by_tool,
-            started_by_username=(
-                r.started_by.username if r.started_by else None
-            ),
-        )
-        for r in recon_rows
-    ]
 
     # --- Plan entries referencing this host ---------------------------
     # Project-scope through the plan's project_id (the entry FK doesn't
@@ -2955,7 +2858,6 @@ def get_host_lineage(
     return HostLineageResponse(
         host_id=host.id,
         ip_address=host.ip_address,
-        recon_sessions=recon_out,
         plan_entries=plan_out,
         execution_sessions=execution_out,
     )

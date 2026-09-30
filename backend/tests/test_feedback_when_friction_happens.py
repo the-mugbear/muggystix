@@ -59,6 +59,23 @@ def _file_feedback(client, key, note="assist_list_hosts has no total"):
     assert r.status_code in (200, 201), r.text
 
 
+def _open_execution_run(client, db, project, key):
+    from app.db import models
+    from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
+    host = models.Host(project_id=project.id, ip_address="10.0.0.5", state="up")
+    db.add(host)
+    db.flush()
+    plan = TestPlan(project_id=project.id, version=1, title="p", status=TestPlanStatus.DRAFT.value)
+    db.add(plan)
+    db.flush()
+    db.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high",
+                         test_phase="enumeration", proposed_tests=[], rationale="x"))
+    db.commit()
+    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    assert r.status_code == 201, r.text
+    return r.json()["session_id"]
+
+
 def _row(client, project, sid):
     r = client.get(f"/api/v1/projects/{project.id}/agent-sessions", params={"kind": "project"})
     assert r.status_code == 200, r.text
@@ -160,35 +177,24 @@ def test_activity_summary_counts_session_hygiene(client, test_project, db_sessio
 # The checkpoint: phase completion says whether feedback was filed
 # ---------------------------------------------------------------------------
 
-def test_recon_complete_reports_missing_feedback_and_is_not_refused(client, test_project, db_session):
+def test_execution_complete_reports_missing_feedback_and_is_not_refused(client, test_project, db_session):
     key, _assist_id = _start_session(client, test_project)
-    scope = _scope_with_subnet(db_session, test_project)
-    r = client.post("/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id})
-    assert r.status_code == 201, r.text
-
-    # Polled summary stays quiet — a nag on every poll would be noise.
-    r = client.get("/api/v1/agent/recon/summary", headers=_hdr(key))
-    assert r.status_code == 200, r.text
-    assert r.json()["feedback_recorded"] is None
+    run_id = _open_execution_run(client, db_session, test_project, key)
 
     # Completion with nothing filed: advisory flag + hint, still a 200.
-    r = client.post("/api/v1/agent/recon/complete", headers=_hdr(key), json={"notes": "swept"})
+    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
     assert r.status_code == 200, r.text
     body = r.json()
-    assert body["status"] == "completed"
     assert body["feedback_recorded"] is False
     assert "/agent/feedback" in body["feedback_hint"]
     assert "submit_feedback" in body["feedback_hint"]
 
 
-def test_recon_complete_acknowledges_feedback_already_filed(client, test_project, db_session):
+def test_execution_complete_acknowledges_feedback_already_filed(client, test_project, db_session):
     key, _assist_id = _start_session(client, test_project)
-    scope = _scope_with_subnet(db_session, test_project)
-    assert client.post(
-        "/api/v1/agent/recon/start", headers=_hdr(key), json={"scope_id": scope.id},
-    ).status_code == 201
-    _file_feedback(client, key, note="recon/upload wanted multipart, guide showed json")
-    r = client.post("/api/v1/agent/recon/complete", headers=_hdr(key), json={"notes": "swept"})
+    run_id = _open_execution_run(client, db_session, test_project, key)
+    _file_feedback(client, key, note="upload wanted multipart, guide showed json")
+    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
     assert r.status_code == 200, r.text
     assert r.json()["feedback_recorded"] is True
     assert r.json()["feedback_hint"] is None
@@ -219,7 +225,7 @@ def test_mcp_tool_descriptions_carry_the_trigger_rule():
     from app.api.v1.endpoints.mcp_tools import TOOLS
     fb = TOOLS["submit_feedback"]["description"]
     assert "AT THE MOMENT you hit friction" in fb
-    for name in ("recon_complete", "execution_complete_session"):
+    for name in ("execution_complete_session",):
         assert "feedback_recorded" in TOOLS[name]["description"], name
     assert "file any feedback you have not filed yet first" in TOOLS["end_session"]["description"]
 

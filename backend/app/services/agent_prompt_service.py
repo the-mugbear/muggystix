@@ -3,8 +3,8 @@ Agent Prompt Service
 
 v2.337.0 — the four per-workflow prompts (plan generation, execution, recon,
 assist) collapse into ONE session prompt.  A single project-scoped session
-lets the agent query the inventory, open a reconnaissance run against a scope,
-draft a plan, and execute an approved one; the operational detail for each of
+lets the agent query the inventory, scan and upload, register a plan and
+execute it, and record what it found; the operational detail for each of
 those is served by the workflow-sliced guide (``/agents-guide?workflow=…``)
 and by the read-back each phase-start endpoint returns, not by four separate
 start prompts.
@@ -142,8 +142,8 @@ def _feedback_section(base_url: str) -> str:
         f"are the norm. Most sessions never reach a tidy ending — the terminal "
         f"closes, the operator moves on — so feedback saved for the end is "
         f"feedback that is never filed.\n\n"
-        f"**Checkpoints, if you filed nothing along the way:** `recon/complete` "
-        f"and `execution-sessions/{{id}}/complete` answer with "
+        f"**Checkpoints, if you filed nothing along the way:** "
+        f"`execution-sessions/{{id}}/complete` answers with "
         f"`feedback_recorded`; when it is `false`, file before you go on. The "
         f"session end is the last resort, not the plan.\n\n"
         f"**Who reads it:** a coding agent working on BlueStick itself, looking for "
@@ -155,14 +155,14 @@ def _feedback_section(base_url: str) -> str:
         f"`assist_count_hosts`\" is.\n\n"
         f"Your session is attributed from your key; `source` says what kind of work "
         f"the feedback is about — `assist` for queries and notes only, "
-        f"`reconnaissance` (add `recon_session_id`), `plan_generation` (add "
+        f"`reconnaissance` (scanning and uploading), `plan_generation` (add "
         f"`test_plan_id`), or `in_session_execution` (add `execution_session_id`). "
         f"A session that did several kinds may submit one per kind.\n\n"
         f"```json\n"
         f"{{\n"
         f'  "source": "assist | reconnaissance | plan_generation | in_session_execution",\n'
         f'  "prompt_version": "{PROMPT_VERSION}",\n'
-        f'  "recon_session_id": null, "test_plan_id": null, "execution_session_id": null,\n'
+        f'  "test_plan_id": null, "execution_session_id": null,\n'
         f'  "overall_rating": 1-5,\n'
         f'  "api_critiques": [\n'
         f'    {{"endpoint": "/agent/... or tool name", "issue": "expected X, got Y — exact error/field", "suggestion": "the change that would have removed this"}}\n'
@@ -201,14 +201,14 @@ def _integration_block(integrations: list) -> str:
             "No scanner integrations are configured for this project. If a "
             "vulnerability scanner, template runner, or web-app scanner would "
             "help, ask the user to configure one at **Scanner Integrations** in "
-            "the sidebar. Use them from a reconnaissance run — feed their output "
-            "to `POST /agent/recon/upload` like any other scanner.\n"
+            "the sidebar, and upload its output to `POST /agent/uploads` like any "
+            "other scanner.\n"
         )
     lines = ["\n### Credentialed scanners\n"]
     lines.append(
         "The user has configured these scanner credentials. Use them **only** "
-        "against in-scope targets inside a reconnaissance run, and always show "
-        "the exact invocation to the user before running it.\n"
+        "against in-scope targets, and always show the exact invocation to the "
+        "user before running it.\n"
     )
     for i in integrations:
         itype = i.get("integration_type", "generic_api")
@@ -241,7 +241,7 @@ def _integration_block(integrations: list) -> str:
                 f"  - URL: `{base}` · GMP port: `{gmp_port}`\n"
                 f"  - Username: `{i.get('secret') or '(missing)'}`\n"
                 f"  - Password: `{i.get('secret2') or '(missing)'}`\n"
-                f"  - Guidance: use `gvm-cli` / `gvm-tools` (approved) over GMP to create a "
+                f"  - Guidance: use `gvm-cli` / `gvm-tools` over GMP to create a "
                 f"    target + task against in-scope subnets, start it, poll, then export "
                 f"    the XML report and upload it. The GSA web URL cannot drive scans; GMP can.\n"
             )
@@ -268,7 +268,7 @@ def _integration_block(integrations: list) -> str:
                 f"  - Guidance: ask the user for the exact invocation if it isn't obvious.\n"
             )
     lines.append(
-        "\nUpload scanner output to the recon run so it lands in the same "
+        "\nUpload scanner output (`POST /agent/uploads`) so it lands in the same "
         "hosts/ports/findings tables as everything else; don't dump raw output "
         "into notes.\n"
     )
@@ -291,11 +291,10 @@ def build_session_instructions(
     """The session-start prompt for a unified project agent session.
 
     One prompt for the whole session.  It orients the agent, states the
-    session-level ground rules (which it must read back before acting), and
-    points at the guide and the phase-start endpoints for the operational
-    detail of reconnaissance, planning, and execution.  Each of those phases
-    returns its own focused read-back when it is opened, which is the moment
-    its scope / plan / working-directory facts exist and can be checked.
+    session-level rules (which it reads back before acting), and points at
+    the guide for the operational detail.  Execution runs are optional
+    groupings that return their own read-back when opened; there are no
+    recon runs (v2.433.1).
     """
     from datetime import datetime, timezone
     base_url = resolve_base_url(request)
@@ -305,7 +304,7 @@ def build_session_instructions(
         base_url=base_url,
         user_label=user_label,
         user_id=user_id,
-        action="agent session (query · recon · plan · execute)",
+        action="agent session",
         target_label=f"project #{project_id} ({project_name}); agent session #{session_id}",
         timestamp_iso=datetime.now(timezone.utc).isoformat(),
     )
@@ -317,10 +316,10 @@ def build_session_instructions(
             "the previous key is revoked. A prior agent process worked this "
             "session and may have died mid-command — check the working directory "
             "for output files it left behind and upload any that never landed "
-            "before running anything again. Any reconnaissance or execution runs "
-            "it had open are listed under `open_phases` on `GET /agent/identity` "
-            "— read their progress before continuing (`/agent/recon/summary`, "
-            "`/agent/test-plans/{plan_id}/execution-context`) so you continue "
+            "before running anything again. Any execution runs it had open are "
+            "listed under `open_phases` on `GET /agent/identity` — read their "
+            "progress before continuing "
+            "(`/agent/test-plans/{plan_id}/execution-context`) so you continue "
             "coverage rather than "
             "repeating it. The environment probe is still required for the new "
             "key.\n\n"
@@ -335,11 +334,10 @@ def build_session_instructions(
         provenance +
         resume_notice +
         f"## Agent Session — project {project_name} (id {project_id})\n\n"
-        f"You act as **{user_label}** in one BlueStick project. A single "
-        f"session and key cover everything: answering questions about the "
-        f"inventory, running reconnaissance against a scope, drafting a test "
-        f"plan, and executing an approved one. You do what {user_label} may do — "
-        f"a write that returns 403 means their project role does not permit it, "
+        f"You act as **{user_label}** in one BlueStick project, and they drive: "
+        f"work on what they ask, and propose next steps rather than taking them "
+        f"unasked. You can do anything {user_label} may do in this project — a "
+        f"write that returns 403 means their project role does not permit it, "
         f"which is the guardrail working, not an error to route around.\n\n"
         + render_read_back("project") + "\n"
         + render_safety_rules() + "\n"
@@ -351,63 +349,49 @@ def build_session_instructions(
         f"`Invoke-RestMethod -SkipCertificateCheck`. If curl is blocked by your "
         f"sandbox, ask the user to run it.\n\n"
         + render_key_expiry_guidance() + "\n"
-        f"### Read the guide — it is binding\n\n"
+        f"### Read the guide\n\n"
         f"```\n"
         f"curl -sk '{guide_url}?workflow=<what you are doing>'\n"
         f"```\n\n"
-        f"The guide holds the field shapes, body formats, safety/approval "
-        f"protocol, upload formats, and exit criteria for each kind of work. "
-        f"Fetch the slice for the phase you are in (`reconnaissance`, "
-        f"`plan_generation`, `execution`, or `assist` for queries and notes); "
-        f"omit `workflow` for the whole thing. Don't improvise from this prompt "
-        f"alone.\n\n"
+        f"The guide holds the field shapes, body formats, upload formats and "
+        f"endpoint details. Fetch the slice for what you are doing "
+        f"(`reconnaissance`, `plan_generation`, `execution`, or `assist` for "
+        f"queries and notes); omit `workflow` for the whole thing.\n\n"
         f"### First — probe your environment (MANDATORY before any command)\n"
         f"`POST {base_url}/agent/session/environment` with your OS family, shell, "
         f"and the tools on PATH (guide § Environment probe). Include "
         f"`agent_model`, `agent_tool`, `agent_prompt_version: \"{PROMPT_VERSION}\"`. "
-        f"The probe rides along into every recon/execution run you open so "
+        f"The probe rides along into every execution run you open so "
         f"commands match this operator's host. Re-post it any time the "
         f"environment changes.\n\n"
-        f"### What you can do\n"
+        f"### What you can do — in whatever order the work needs\n"
         f"- **Answer questions / write a report.** Query the inventory read-only "
         f"via the `/agent/assist/*` reads — `GET /agent/assist/context`, "
         f"`/agent/assist/hosts`, `/agent/assist/hosts/{{id}}`, "
         f"`/agent/assist/findings`, `/agent/assist/posture`, "
         f"`/agent/assist/patterns`, and the bulk `*.ndjson` downloads for report "
-        f"material. Guide § assist. No phase needed; this is the default.\n"
-        f"- **Record what you found.** `POST /agent/hosts/{{id}}/notes`, "
+        f"material. Guide § assist.\n"
+        f"- **Record what you found about a host.** `POST /agent/hosts/{{id}}/notes`, "
         f"`POST /agent/hosts/{{id}}/follow` (review status), "
         f"`PATCH /agent/hosts/{{id}}` (correct hostname/OS). Notes carry "
-        f"{user_label}'s name and an agent badge — say what you'll write before "
-        f"you write it, cite the host/port/finding, and never mark a host "
-        f"`reviewed` on your own initiative.\n"
-        f"- **Run reconnaissance against a scope.** `GET /agent/scopes` for the "
-        f"scopes, then `POST /agent/recon/start` `{{\"scope_id\": N}}` to open a "
-        f"run — its response carries the scope's CIDRs, the recommended "
-        f"sequence, and the phase read-back you must state before scanning. "
-        f"Then `/agent/recon/context`, run tools locally, "
-        f"`POST /agent/recon/upload`, poll `/agent/recon/jobs/{{id}}`, "
-        f"`GET /agent/recon/summary`, and `POST /agent/recon/complete` when done. "
-        f"Guide § reconnaissance.\n"
-        f"- **Draft a test plan.** `POST /agent/test-plans` `{{\"title\": ...}}` "
-        f"opens a draft, then `/agent/test-plans/{{id}}/context` for candidates, "
-        f"`PATCH` the description, `POST .../entries`, `.../validate`, "
-        f"`.../submit` for human approval. You cannot approve it. Guide § "
-        f"plan_generation.\n"
-        f"- **Execute an approved plan.** `POST /agent/execution-sessions/start` "
-        f"`{{\"plan_id\": N}}` opens a run (the plan must be human-approved; the "
-        f"response carries the per-host read-back). Then work host-by-host with "
-        f"the sanity-check and approve-by-exception protocol in guide § execution "
-        f"(present every command; in-policy ones run, anything else waits).\n\n"
-        f"### When to hand back\n"
-        f"You drive the whole flow, but the human owns the gates: a plan needs "
-        f"their approval before you can execute it, and anything outside a "
-        f"declared scope or the working directory stops and asks. Suggest the "
-        f"next step; don't force it.\n\n"
+        f"{user_label}'s name and an agent badge — cite the host/port/finding, "
+        f"and never mark a host `reviewed` on your own initiative.\n"
+        f"- **Scan and upload.** Run scanners locally from the working directory "
+        f"and `POST /agent/uploads` (multipart; poll `GET /agent/uploads/{{id}}`) — "
+        f"no run needs to be open. `GET /agent/scopes` lists the declared scopes; "
+        f"`GET /agent/scopes/{{id}}/subnets` and `/domains` are what is in scope, "
+        f"and `/live-hosts.txt`, `/web-targets.txt`, `/hosts.ndjson` are target "
+        f"files to feed your scanners. Guide § reconnaissance.\n"
+        f"- **Plan and execute tests.** Register a plan (`POST /agent/test-plans` "
+        f"`{{\"title\": ...}}`, then `.../entries`) — the record of what you set "
+        f"out to test — and work it when ready: `POST /agent/execution-sessions/start` "
+        f"`{{\"plan_id\": N}}`, then record each test's command, output and "
+        f"finding. Nothing waits on approval. Guide § plan_generation and § "
+        f"execution.\n\n"
         f"### Long-running commands — never block a single tool call on one\n"
         f"Your client has its own tool timeout, and a scan that outlives it ends "
-        f"your process while the scan keeps running: the output is orphaned, the "
-        f"phase never gets its `/complete`, and the operator sees a session that "
+        f"your process while the scan keeps running: the output is orphaned, any "
+        f"open run never gets its `/complete`, and the operator sees a session that "
         f"looks alive but isn't. Run anything that may take more than a minute "
         f"or two in the background from the working directory, capture its PID "
         f"at launch, and poll that PID (guide § Working directory). Upload each "
@@ -418,15 +402,15 @@ def build_session_instructions(
         f"Finishing a task is not that: report what you did and wait for the "
         f"next instruction. A session opened with no task yet is waiting for "
         f"one, not done — after the setup steps, say you are ready and wait. "
-        f"When the operator says they are finished: close every open phase (`POST /agent/recon/complete`, "
-        f"`POST /agent/execution-sessions/{{id}}/complete`); if you have filed "
+        f"When the operator says they are finished: close every execution run you opened "
+        f"(`POST /agent/execution-sessions/{{id}}/complete`); if you have filed "
         f"no feedback yet in this session, file it now (below); then "
         f"`POST {base_url}/agent/session/end` (MCP `end_session`) "
         f"with a line of `notes`. It revokes your key and marks the session "
         f"ended; nothing you call afterwards will authenticate, so it is the last "
         f"call. A session that is never ended shows as running on the operator's "
         f"Agent Activity page until it lapses days later. If it refuses with 409 "
-        f"it names the phases still open — complete them and call it again.\n"
+        f"it names the runs still open — complete them and call it again.\n"
         f"\n**Session:** #{session_id} · **Project:** {project_name}\n"
     )
 

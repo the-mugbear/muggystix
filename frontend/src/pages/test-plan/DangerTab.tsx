@@ -2,16 +2,16 @@
  * /test-plans/:planId/danger — destructive actions, fenced off behind
  * a dedicated tab so they don't sit on the always-visible action bar.
  *
- * Currently: Delete Plan.  Future additions (Archive, Reset all
- * entries to proposed, Force-unlock agent key, etc.) should land here
- * too so the dangerous-action surface stays in one place.
+ * Currently: Delete Plan.  Future additions (Reset all entries to
+ * proposed, etc.) should land here too so the dangerous-action surface
+ * stays in one place.
  *
  * The Delete confirmation dialog itself lives in `TestPlanLayout` —
  * this tab opens it via `openDeleteDialog` from `TestPlanContext`.
  * Keeping the dialog up at the layout level means the DELETE-typed-
  * name confirmation, the in-flight loading state, and the actual
  * deleteTestPlan call all stay co-located with the rest of the plan-
- * level mutations (reject, execute, etc.).
+ * level mutations (abandon, import, etc.).
  */
 import React from 'react';
 import { Trash2 } from 'lucide-react';
