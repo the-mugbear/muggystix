@@ -268,10 +268,12 @@ raw sensitive output.
 
 ## Results for the redesigned surface
 
-The [2026-09-30 live acceptance run](MCP_ACCEPTANCE_RUN_2026-09-30.md) records
-112 protocol/HTTP requests, practitioner artifacts, confirmed defects, and the
-remaining unexercised scenarios. It is partial acceptance, not a native-client
-or production-scale certification.
+A run's written report and artifacts are working files, not part of the
+repository: write them under `documentation/` (`MCP_*_RUN_*.md`,
+`documentation/acceptance/`, both git-ignored), and delete them once every
+defect they raise is fixed or decided. What lasts is the fix, its regression
+test and its CHANGELOG entry (the 2026-09-30 run's defects are the CHANGELOG's
+"acceptance run" entries), plus the feedback records the agent filed.
 
 For subsequent runs, copy one row per scenario; include deployed commit/version,
 prompt version, client, model, role, fixture IDs, dataset sizes and whether the

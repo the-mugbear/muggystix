@@ -279,3 +279,7 @@ CODEREVIEW.txt
 # were committed once (zero-byte files); never again.
 /backend/backend/
 /frontend/backend/
+
+# Acceptance-run reports and artifacts: working files, deleted once addressed (never tracked)
+documentation/MCP_*_RUN_*.md
+documentation/acceptance/
