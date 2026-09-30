@@ -132,6 +132,10 @@ export interface ReportSummary {
   missing_details?: string[];
   images?: number;
   images_skipped?: number;
+  /** v5.316.0 — images in the report attached to an agent-written note. A warning, never a block. */
+  agent_images?: number;
+  /** v5.316.0 — reported findings with proposals nobody has decided yet. A warning, never a block. */
+  pending_proposals?: Array<{ id: number; ref: string; title: string; count: number }>;
   delta?: { new_findings: number; findings_with_new_endpoints: number; withdrawn: number } | null;
   /** Set when the summary could not be built (e.g. an addendum lost its baseline). */
   error?: string;

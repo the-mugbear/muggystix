@@ -25,11 +25,12 @@ from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
 from app.db.models_agent import AgentSession
 from app.db.models_auth import User
+from app.db.models_project import Notification
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus, FindingStatus
 from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
@@ -117,7 +118,69 @@ def _add(db: Session, project_id: int, kind: str, who: Attribution, **cols) -> A
     proposal = AgentProposal(project_id=project_id, kind=kind, **who.columns(), **cols)
     db.add(proposal)
     db.flush()
+    if proposal.finding_id is not None:
+        _notify_finding_people(db, proposal, who)
     return proposal
+
+
+def _notify_finding_people(db: Session, proposal: AgentProposal, who: Attribution) -> None:
+    """Tell a finding's author and owner that an AI proposed changes to it
+    (decision 6): ONE notification per person per agent session (per finding
+    for an in-app draft), kept current as the run proposes more, never one
+    per proposal.  The person whose agent it is is not told about their own
+    run."""
+    finding = db.get(Finding, proposal.finding_id)
+    if finding is None:
+        return
+    recipients = {uid for uid in (finding.created_by_id, finding.owner_id) if uid and uid != who.user_id}
+    if not recipients:
+        return
+    if who.session is not None:
+        source_type, source_id = "agent_session", who.session.id
+        scope = AgentProposal.agent_session_id == who.session.id
+    else:
+        source_type, source_id = "finding", finding.id
+        scope = (AgentProposal.finding_id == finding.id) & AgentProposal.agent_session_id.is_(None)
+    proposer = db.get(User, who.user_id) if who.user_id else None
+    name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
+    model = f" ({who.model})" if who.model else ""
+    for uid in recipients:
+        finding_ids = sorted({
+            fid for (fid,) in db.query(AgentProposal.finding_id)
+            .join(Finding, Finding.id == AgentProposal.finding_id)
+            .filter(scope, (Finding.created_by_id == uid) | (Finding.owner_id == uid))
+            .distinct()
+        } | {finding.id})
+        one = len(finding_ids) == 1
+        title = (
+            f"AI proposed changes to your finding: {finding.title}"[:255] if one
+            else f"AI proposed changes to {len(finding_ids)} of your findings"
+        )
+        body = (
+            f"{name}'s agent{model} proposed changes for review — accept or reject them."
+            if who.session is not None else
+            f"{name} drafted report text{model} for review — accept or reject it."
+        )
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == uid, Notification.type == "proposal",
+                Notification.source_type == source_type, Notification.source_id == source_id,
+                Notification.is_read.is_(False),
+            )
+            .first()
+        )
+        if existing is None:
+            existing = Notification(
+                user_id=uid, project_id=proposal.project_id, type="proposal",
+                source_type=source_type, source_id=source_id, actor_id=who.user_id,
+            )
+            db.add(existing)
+        existing.title = title
+        existing.body = body
+        # A single finding opens that finding; several open the Proposals page.
+        existing.finding_id = finding_ids[0] if one else None
+    db.flush()
 
 
 # ---------------------------------------------------------------------------
@@ -381,7 +444,16 @@ def list_proposals(
     if agent_session_id is not None:
         q = q.filter(AgentProposal.agent_session_id == agent_session_id)
     total = q.count()
-    rows = q.order_by(AgentProposal.created_at.desc(), AgentProposal.id.desc()).offset(offset).limit(limit).all()
+    rows = (
+        q.options(
+            selectinload(AgentProposal.proposed_by), selectinload(AgentProposal.decided_by),
+            selectinload(AgentProposal.finding),
+            selectinload(AgentProposal.vulnerability).selectinload(Vulnerability.host),
+            selectinload(AgentProposal.finding_host).selectinload(FindingHost.host),
+        )
+        .order_by(AgentProposal.created_at.desc(), AgentProposal.id.desc())
+        .offset(offset).limit(limit).all()
+    )
     return rows, total
 
 
@@ -413,6 +485,7 @@ def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Find
         "field": proposal.field,
         "payload": proposal.payload,
         "current_value": current_value,
+        "target": _target(proposal),
         "rationale": proposal.rationale,
         "evidence_ids": proposal.evidence_ids or [],
         "agent_session_id": proposal.agent_session_id,
@@ -426,6 +499,18 @@ def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Find
         "decision_note": proposal.decision_note,
         "result_finding_id": proposal.result_finding_id,
         "error": proposal.error,
+    }
+
+
+def _target(proposal: AgentProposal) -> dict:
+    """What a reviewer needs to recognise the target without opening it."""
+    finding, vuln, fh = proposal.finding, proposal.vulnerability, proposal.finding_host
+    host = (vuln.host if vuln is not None else None) or (fh.host if fh is not None else None)
+    return {
+        "finding_title": finding.title if finding is not None else None,
+        "observation_title": vuln.title if vuln is not None else None,
+        "host_id": host.id if host is not None else None,
+        "host_ip": host.ip_address if host is not None else None,
     }
 
 

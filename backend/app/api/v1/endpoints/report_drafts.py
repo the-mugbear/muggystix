@@ -6,7 +6,7 @@ stays separate from the deterministic export renderers — a genuine seam, not a
 line-count split. Mounted under the same ``/reports`` prefix, so the path is
 ``POST /projects/{project_id}/reports/draft``.
 """
-from typing import Dict, List, Literal, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -16,10 +16,11 @@ from app.db.session import get_db
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
 from app.api.v1.endpoints.auth import get_current_user
-from app.api.v1.endpoints.findings import get_finding_viewer
 from app.api.deps import get_current_project, require_project_role
 from app.api.deps import ProjectRole
 from app.services.client_report_service import REQUIRED_TEXT
+from app.db.models_proposals import ProposalSource
+from app.services import proposal_service as proposals
 from app.services.report_draft_service import ReportDraftService
 
 FindingTextField = Literal["description", "impact", "recommendation", "steps_to_reproduce", "references"]
@@ -119,7 +120,9 @@ class FindingTextDraftRequest(BaseModel):
 
 
 class FindingTextDraftResponse(BaseModel):
-    suggestions: Dict[str, str]
+    # v2.437.0 — the draft is PROPOSALS (one per field, source ``llm_draft``),
+    # reviewed like an agent's: the same panel, accept (then edit) or reject.
+    proposals: List[dict]
     provider_id: int
     provider_type: str
     model_id: Optional[str] = None
@@ -129,7 +132,7 @@ class FindingTextDraftResponse(BaseModel):
 @router.post(
     "/draft/finding-text",
     response_model=FindingTextDraftResponse,
-    summary="Suggest report text for one finding's empty sections via the LLM",
+    summary="Draft report text for one finding's empty sections via the LLM, as proposals",
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def draft_finding_text(
@@ -137,13 +140,13 @@ def draft_finding_text(
     db: Session = Depends(get_db),
     current_user=Depends(get_current_user),
     project: Project = Depends(get_current_project),
-    viewer=Depends(get_finding_viewer),
 ):
-    """Suggestions for the finding's report text — the report's "missing
-    text" to-do list, drafted (review 2026-09-23 B-Ops-5).  Nothing is
-    written: the author reviews and saves them through the finding update,
-    so only someone who may edit that text (its author or a project admin)
-    may ask for a draft."""
+    """Draft the finding's report text — the report's "missing text" to-do
+    list (review 2026-09-23 B-Ops-5).  Since v2.437.0 the draft is a set of
+    ``finding_text`` proposals (source ``llm_draft``, the provider's model),
+    exactly what an MCP agent produces: one review path, one UI.  Proposing
+    changes nothing, so any analyst may draft; accepting still needs the
+    finding's author or a project admin."""
     finding = (
         db.query(Finding)
         .options(selectinload(Finding.hosts).selectinload(FindingHost.host))
@@ -152,11 +155,6 @@ def draft_finding_text(
     )
     if finding is None:
         raise HTTPException(status_code=404, detail="Finding not found")
-    if not viewer.may_modify(finding):
-        raise HTTPException(
-            status_code=403,
-            detail="Only the finding's author or a project admin can write its report text.",
-        )
     fields = list(dict.fromkeys(body.fields)) if body.fields else [
         k for k in REQUIRED_TEXT if not (getattr(finding, k) or "").strip()
     ]
@@ -177,4 +175,18 @@ def draft_finding_text(
                 "Check the provider on the LLM Providers page and try again."
             ),
         )
-    return FindingTextDraftResponse(**result)
+    who = proposals.Attribution(
+        user_id=current_user.id, source=ProposalSource.LLM_DRAFT.value,
+        model=result.get("model_id") or result.get("provider_type"),
+    )
+    rows = proposals.propose_finding_text(
+        db, project.id, who, finding_id=finding.id, fields=result["suggestions"],
+        rationale="Drafted in BlueStick with your LLM provider.",
+    )
+    db.commit()
+    current = proposals.current_findings(db, rows)
+    return FindingTextDraftResponse(
+        proposals=[proposals.serialize_proposal(p, current) for p in rows],
+        provider_id=result["provider_id"], provider_type=result["provider_type"],
+        model_id=result.get("model_id"), usage=result.get("usage"),
+    )

@@ -52,6 +52,7 @@ export * from './api/parse-errors';
 export * from './api/portfolio';
 export * from './api/posture';
 export * from './api/projects';
+export * from './api/proposals';
 export * from './api/references';
 export * from './api/scans';
 export * from './api/scopes';

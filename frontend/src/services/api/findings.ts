@@ -4,6 +4,7 @@
  */
 import { api, p } from './client';
 import type { Annotation, NoteAttachment } from './hosts';
+import type { Proposal } from './proposals';
 
 export type FindingSeverity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 export type FindingStatus =
@@ -84,12 +85,13 @@ export type FindingReportTextUpdate = Partial<
   Record<FindingReportTextField | 'cvss_vector', string | null> & { cvss_score: number | null }
 >;
 
-/** AI suggestions for a finding's report text (backend 2.394.0).  Nothing is
- *  saved: the author reviews them in the editor and saves as usual.
- *  Errors: 400 (no provider / nothing empty), 403 (not the author or a
- *  project admin), 502 (provider failed or answered unreadably). */
+/** A draft of a finding's report text with your LLM provider.  Since v5.316.0
+ *  (backend 2.437.0) it is a set of PROPOSALS, one per field — reviewed in the
+ *  finding's Proposals section like an agent's.  Nothing is written until
+ *  accepted.  Errors: 400 (no provider / nothing empty), 403 (below analyst),
+ *  502 (provider failed or answered unreadably). */
 export interface FindingTextDraft {
-  suggestions: Partial<Record<FindingReportTextField, string>>;
+  proposals: Proposal[];
   provider_id: number;
   provider_type: string;
   model_id: string | null;

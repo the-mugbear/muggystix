@@ -260,6 +260,15 @@ export const NAV_PAGES: NavPage[] = [
     },
   },
   {
+    // v5.316.0 — agents' proposed changes to what the team concluded.
+    id: 'proposals', path: '/proposals', label: 'Proposals', requiredRole: 'viewer', hub: 'workflows',
+    palette: {
+      Icon: Bot,
+      keywords: ['proposal', 'review', 'accept', 'reject', 'agent', 'draft', 'ai', 'suggestion'],
+      order: 7.6,
+    },
+  },
+  {
     id: 'test-plans', path: '/test-plans', label: 'Test Plans', requiredRole: 'viewer', hub: 'workflows',
     palette: { Icon: ShieldCheck, order: 8 },
   },

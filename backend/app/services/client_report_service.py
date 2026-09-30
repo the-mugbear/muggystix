@@ -56,6 +56,7 @@ from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
 )
 from app.db.models_project import Project
+from app.db.models_proposals import AgentProposal, ProposalStatus
 from app.db.models_reports import (
     RenderStatus, Report, ReportKind, ReportProfile, ReportStatus,
 )
@@ -348,28 +349,33 @@ class ClientReportService:
                 str(name), str(name).capitalize()))
         return {fid: sorted(names) for fid, names in out.items()}
 
-    def _evidence(self, findings: List[Finding]) -> Tuple[Dict[int, List[dict]], int]:
+    def _evidence(self, findings: List[Finding]) -> Tuple[Dict[int, List[dict]], int, int]:
         """Images MARKED for the report, from the finding's source-note thread
-        and its own comments.  Returns (by finding, count skipped for format)."""
+        and its own comments.  Returns (by finding, count skipped for format,
+        count attached to an agent-written note — v2.437.0, a warning before
+        issuing, never a block)."""
         by_finding: Dict[int, List[dict]] = defaultdict(list)
-        skipped = 0
+        skipped = by_agent = 0
         finding_ids = {f.id for f in findings}
         roots: Dict[int, int] = {
             f.evidence_annotation_id: f.id for f in findings if f.evidence_annotation_id
         }
         if not finding_ids:
-            return {}, 0
+            return {}, 0, 0
         conds = [Annotation.finding_id.in_(finding_ids)]
         if roots:
             conds += [Annotation.id.in_(roots), Annotation.thread_root_id.in_(roots)]
         rows = (
-            self.db.query(NoteAttachment, Annotation.id, Annotation.finding_id, Annotation.thread_root_id)
+            self.db.query(
+                NoteAttachment, Annotation.id, Annotation.finding_id, Annotation.thread_root_id,
+                Annotation.actor_type,
+            )
             .join(Annotation, Annotation.id == NoteAttachment.annotation_id)
             .filter(or_(*conds), NoteAttachment.include_in_report.is_(True))
             .order_by(NoteAttachment.id)
             .all()
         )
-        for att, ann_id, ann_finding, ann_root in rows:
+        for att, ann_id, ann_finding, ann_root, actor_type in rows:
             targets = set()
             if ann_finding in finding_ids:
                 targets.add(ann_finding)
@@ -381,13 +387,31 @@ class ClientReportService:
             if ext is None:
                 skipped += 1
                 continue
+            if actor_type == "agent" and targets:
+                by_agent += 1
             for fid in targets:
                 by_finding[fid].append({
                     "attachment_id": att.id,
                     "file": f"evidence/{att.id}.{ext}",
                     "caption": att.filename,
                 })
-        return dict(by_finding), skipped
+        return dict(by_finding), skipped, by_agent
+
+    def _pending_proposals(self, finding_ids: List[int]) -> Dict[int, int]:
+        """Pending agent proposals per finding (v2.437.0): a finding with one
+        is "needs review".  Issuing warns about them, never blocks."""
+        if not finding_ids:
+            return {}
+        rows = (
+            self.db.query(AgentProposal.finding_id, func.count(AgentProposal.id))
+            .filter(
+                AgentProposal.finding_id.in_(finding_ids),
+                AgentProposal.status == ProposalStatus.PENDING.value,
+            )
+            .group_by(AgentProposal.finding_id)
+            .all()
+        )
+        return {fid: n for fid, n in rows}
 
     def _endpoint(self, fh: FindingHost, ports: Dict[int, str]) -> dict:
         host = fh.host
@@ -446,7 +470,7 @@ class ClientReportService:
         findings = self._included(report.project_id)
         ports = self._ports(findings)
         corroboration = self._corroboration([f.id for f in findings])
-        evidence, skipped_images = self._evidence(findings)
+        evidence, skipped_images, agent_images = self._evidence(findings)
 
         endpoints: Dict[int, Dict[str, dict]] = {
             f.id: {endpoint_key(fh): self._endpoint(fh, ports) for fh in f._report_endpoints}
@@ -594,6 +618,7 @@ class ClientReportService:
             "delta": delta,
         }
 
+        pending = self._pending_proposals([item["id"] for item in items])
         summary = {
             "counts": counts,
             "findings_shown": len(items),
@@ -613,6 +638,12 @@ class ClientReportService:
             ),
             "images": sum(len(i["evidence"]) for i in items),
             "images_skipped": skipped_images,
+            # v2.437.0 — warnings before issuing, never blocks.
+            "agent_images": agent_images,
+            "pending_proposals": [
+                {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
+                for item in items if pending.get(item["id"])
+            ],
             "delta": {
                 "new_findings": delta["new_findings"],
                 "findings_with_new_endpoints": delta["findings_with_new_endpoints"],

@@ -35,6 +35,7 @@ import {
 } from '../services/api';
 import MessageBubble from '../components/MessageBubble';
 import FindingReportTextCard from '../components/FindingReportTextCard';
+import FindingProposalsPanel from '../components/proposals/FindingProposalsPanel';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
 import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
@@ -117,6 +118,8 @@ const FindingDetail: React.FC = () => {
   // shown inline (the page previously only linked out to it).
   const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
   const [addHostsOpen, setAddHostsOpen] = useState(false);
+  // Bumped after an AI draft so the Proposals section re-reads.
+  const [proposalsKey, setProposalsKey] = useState(0);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
@@ -156,6 +159,18 @@ const FindingDetail: React.FC = () => {
       toast.warning(formatApiError(err, 'Saved, but the page could not refresh — reload to see the change.'));
     } finally {
       setRefreshing(null);
+    }
+  }, [id, toast]);
+
+  // An accepted proposal changed the finding (text, an endpoint): re-read it
+  // and its history quietly.
+  const refreshAfterProposal = useCallback(async () => {
+    try {
+      const [f, h] = await Promise.all([getFinding(id), getFindingHistory(id)]);
+      setFinding(f);
+      setHistory(h);
+    } catch {
+      toast.warning('Accepted, but the page could not refresh — reload to see the change.');
     }
   }, [id, toast]);
 
@@ -649,8 +664,14 @@ const FindingDetail: React.FC = () => {
           </div>
       </PostureSection>
 
+      <FindingProposalsPanel
+        findingId={finding.id} canDecide={canManage} reloadKey={proposalsKey}
+        onApplied={() => { void refreshAfterProposal(); }}
+      />
+
       <FindingReportTextCard
-        finding={finding} canEdit={canModify} onSaved={setFinding}
+        finding={finding} canEdit={canModify} canPropose={canManage} onSaved={setFinding}
+        onDrafted={() => setProposalsKey((k) => k + 1)}
         startEditing={searchParams.get('edit') === 'report-text'}
       />
 

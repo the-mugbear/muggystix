@@ -123,7 +123,8 @@ describe('navigation manifest', () => {
     // v5.312.0 — Agent Runs became Agent Sessions. 5.313.0 — the agent session
     // is how work starts (no plan approval), so it leads the hub and is its
     // default.
-    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Test Plans', 'Tool Activity']);
+    // 5.316.0 — Proposals: agents' proposed changes, decided by a person.
+    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Proposals', 'Test Plans', 'Tool Activity']);
     expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/agent-activity');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);

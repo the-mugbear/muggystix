@@ -131,6 +131,11 @@ class AgentProposal(Base):
 
     proposed_by = relationship("User", foreign_keys=[proposed_by_user_id])
     decided_by = relationship("User", foreign_keys=[decided_by_user_id])
+    # What it is about — for a reviewer's label (loaded with selectinload by
+    # the list; never a cascade path: the FKs above decide deletion).
+    finding = relationship("Finding", foreign_keys=[finding_id], viewonly=True)
+    vulnerability = relationship("Vulnerability", viewonly=True)
+    finding_host = relationship("FindingHost", viewonly=True)
 
     __table_args__ = (
         Index("idx_agent_proposals_project_status", "project_id", "status"),

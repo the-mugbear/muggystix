@@ -1,7 +1,9 @@
 """Review 2026-09-23 B-Ops-5 — the report's "missing report text" list meets
-AI drafting: ``POST /reports/draft/finding-text`` suggests Markdown for one
-finding's empty sections.  Nothing is written; the author saves through the
-finding update, so only someone who may edit that text may ask."""
+AI drafting: ``POST /reports/draft/finding-text`` drafts Markdown for one
+finding's empty sections.  Since v2.437.0 the draft is a set of
+``finding_text`` PROPOSALS (source ``llm_draft``) — the same thing an MCP
+agent produces, reviewed in the same place.  Nothing is written until the
+finding's author (or a project admin) accepts."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -76,9 +78,14 @@ def test_drafts_only_the_empty_required_sections_and_writes_nothing(client, db_s
     )
     r = client.post(_url(test_project), json={"finding_id": fid})
     assert r.status_code == 200, r.text
-    assert r.json()["suggestions"] == {
+    body = r.json()
+    assert {p["field"]: p["payload"]["value"] for p in body["proposals"]} == {
         "impact": "An attacker can relay NTLM.", "recommendation": "Require signing.",
     }
+    assert all(
+        (p["status"], p["source"], p["agent_model"], p["agent_session_id"]) == ("pending", "llm_draft", "m", None)
+        for p in body["proposals"]
+    )
     # Asked for exactly the empty required sections, with the written one as context.
     assert '["impact", "recommendation"]' in seen["user"]
     assert "Hosts accept unsigned SMB sessions." in seen["user"]
@@ -88,7 +95,9 @@ def test_drafts_only_the_empty_required_sections_and_writes_nothing(client, db_s
     # Explicit fields are honoured; an unknown field is refused by the schema.
     answer["content"] = '{"steps_to_reproduce": "1. Run nxc smb."}'
     r = client.post(_url(test_project), json={"finding_id": fid, "fields": ["steps_to_reproduce"]})
-    assert r.json()["suggestions"] == {"steps_to_reproduce": "1. Run nxc smb."}
+    assert [(p["field"], p["payload"]["value"]) for p in r.json()["proposals"]] == [
+        ("steps_to_reproduce", "1. Run nxc smb."),
+    ]
     r = client.post(_url(test_project), json={"finding_id": fid, "fields": ["cvss_score"]})
     assert r.status_code == 422
 
@@ -98,21 +107,36 @@ def test_drafts_only_the_empty_required_sections_and_writes_nothing(client, db_s
     assert r.status_code == 502
 
 
-def test_only_someone_who_may_edit_the_text_may_draft_it(client, db_session, test_project, llm):
+def test_any_analyst_may_draft_but_only_the_author_accepts_and_is_told(client, db_session, test_project, llm):
+    """Proposing changes nothing, so a colleague may draft (v2.437.0); the
+    author is notified and decides; a viewer cannot draft."""
+    from app.db.models_project import Notification
     answer, _ = llm
     answer["content"] = '{"impact": "x", "recommendation": "y", "description": "z"}'
     alice = _member(db_session, test_project, 311, "alice", ProjectRole.ANALYST)
     bob = _member(db_session, test_project, 312, "bob", ProjectRole.ANALYST)
-    padmin = _member(db_session, test_project, 313, "padmin", ProjectRole.ADMIN)
+    vic = _member(db_session, test_project, 313, "vic", ProjectRole.VIEWER)
     app.dependency_overrides[get_current_user] = lambda: alice
     fid = client.post(f"/api/v1/projects/{test_project.id}/findings",
                       json={"title": "Weak TLS", "severity": "medium"}).json()["id"]
 
-    app.dependency_overrides[get_current_user] = lambda: bob
+    app.dependency_overrides[get_current_user] = lambda: vic
     assert client.post(_url(test_project), json={"finding_id": fid}).status_code == 403
-    app.dependency_overrides[get_current_user] = lambda: padmin
-    assert client.post(_url(test_project), json={"finding_id": fid}).status_code == 200
+    app.dependency_overrides[get_current_user] = lambda: bob
+    r = client.post(_url(test_project), json={"finding_id": fid})
+    assert r.status_code == 200, r.text
+    pid = r.json()["proposals"][0]["id"]
     assert client.post(_url(test_project), json={"finding_id": 999999}).status_code == 404
+    # Bob cannot accept text on Alice's finding; Alice can.
+    base = f"/api/v1/projects/{test_project.id}/proposals"
+    assert client.post(f"{base}/{pid}/accept", json={}).status_code == 403
+    app.dependency_overrides[get_current_user] = lambda: alice
+    assert client.post(f"{base}/{pid}/accept", json={}).status_code == 200
+
+    # ONE notification for Alice, not one per proposal, pointing at the finding.
+    notes = db_session.query(Notification).filter(
+        Notification.user_id == alice.id, Notification.type == "proposal").all()
+    assert len(notes) == 1 and notes[0].finding_id == fid and "Weak TLS" in notes[0].title
 
 
 def test_nothing_to_draft_when_every_required_section_is_written(client, db_session, test_project, llm):

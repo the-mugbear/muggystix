@@ -1,7 +1,8 @@
 /**
  * Report text — AI drafting of the empty sections (review 2026-09-23
- * B-Ops-5): a suggestion fills only the empty required boxes, is marked as
- * an AI draft, and nothing is saved until the author saves.
+ * B-Ops-5).  Since v5.316.0 a draft is a set of PROPOSALS reviewed in the
+ * finding's Proposals section, like an agent's: it never fills the editor
+ * and saves nothing; any analyst may draft, only the author may edit.
  */
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -32,30 +33,35 @@ beforeEach(() => {
 });
 
 describe('FindingReportTextCard — drafting', () => {
-  it('fills only the empty required sections, marks them, and saves nothing by itself', async () => {
+  it('drafts only the empty required sections as proposals and fills nothing in', async () => {
     draftFindingText.mockResolvedValue({
-      suggestions: { impact: 'Downgrade attacks.', recommendation: 'Disable TLS 1.0.' },
+      proposals: [{ id: 1, field: 'impact' }, { id: 2, field: 'recommendation' }],
       provider_id: 1, provider_type: 'openai', model_id: 'm',
     });
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} />);
+    const onDrafted = vi.fn();
+    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
 
-    await waitFor(() => expect(screen.getByLabelText('Impact')).toHaveValue('Downgrade attacks.'));
+    await waitFor(() => expect(onDrafted).toHaveBeenCalledTimes(1));
     expect(draftFindingText).toHaveBeenCalledWith(42, ['impact', 'recommendation']);
-    expect(screen.getByLabelText('Recommendation')).toHaveValue('Disable TLS 1.0.');
-    expect(screen.getByLabelText('Description')).toHaveValue('TLS 1.0 is accepted.');
-    expect(screen.getAllByText(/Drafted by AI/)).toHaveLength(2);
+    // No editor was opened and nothing was saved: the drafts wait as proposals.
+    expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
     expect(updateFinding).not.toHaveBeenCalled();
-    // Every required box is filled: nothing left to draft.
-    expect(screen.queryByRole('button', { name: /Draft empty sections/ })).not.toBeInTheDocument();
   });
 
-  it('says why a draft failed and keeps the editor open', async () => {
+  it('says why a draft failed', async () => {
     draftFindingText.mockRejectedValue(new Error('No LLM provider is configured.'));
-    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} />);
+    const onDrafted = vi.fn();
+    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
     fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
     expect(await screen.findByText(/No LLM provider is configured|Could not draft/)).toBeInTheDocument();
-    expect(screen.getByLabelText('Impact')).toHaveValue('');
+    expect(onDrafted).not.toHaveBeenCalled();
+  });
+
+  it('lets an analyst who is not the author draft, but not edit', () => {
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose onSaved={vi.fn()} />);
+    expect(screen.getByRole('button', { name: /Draft empty sections/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
   });
 
   it('opens in the editor when asked, and offers nothing to someone who may not edit', () => {

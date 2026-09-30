@@ -95,6 +95,7 @@ const ScanDetail = lazy(() => import('./pages/ScanDetail'));
 const ScanDiff = lazy(() => import('./pages/ScanDiff'));
 const Hosts = lazy(() => import('./pages/Hosts'));
 const Activity = lazy(() => import('./pages/Activity'));
+const Proposals = lazy(() => import('./pages/Proposals'));
 const HostDetail = lazy(() => import('./pages/HostDetail'));
 const Scopes = lazy(() => import('./pages/Scopes'));
 const Names = lazy(() => import('./pages/Names'));
@@ -444,6 +445,15 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <ProjectActivity />
+                          </ProtectedRoute>
+                        }
+                      />
+                      {/* v5.316.0 — agents' proposed changes, for a person to decide. */}
+                      <Route
+                        path="/proposals"
+                        element={
+                          <ProtectedRoute requiredRole="viewer">
+                            <Proposals />
                           </ProtectedRoute>
                         }
                       />

@@ -283,7 +283,11 @@ const Activity: React.FC = () => {
   // Open a notification's source: mark it read, then deep-link by kind.
   const openMention = useCallback((n: NotificationItem) => {
     void dismissMention(n.id);
-    if (n.source_type === 'scan' && n.source_id) {
+    if (n.type === 'proposal') {
+      // v5.316.0 — one finding opens it; a review run over several opens its proposals.
+      navigate(n.finding_id ? `/findings/${n.finding_id}#proposals`
+        : n.source_type === 'agent_session' && n.source_id ? `/proposals?agent_session_id=${n.source_id}` : '/proposals');
+    } else if (n.source_type === 'scan' && n.source_id) {
       navigate(`/hosts?scan_ids=${n.source_id}`);
     } else if (n.source_type === 'report_job' && n.source_id) {
       navigate(`/hosts?reports=1&job=${n.source_id}`);

@@ -352,3 +352,75 @@ def test_proposals_do_not_cross_projects(client, db_session, test_project):
     r = client.post("/api/v1/agent/proposals/finding", headers=key, json={
         "title": "t", "severity": "low", "host_ids": [host.id]})
     assert r.status_code == 404
+
+
+# ---------------------------------------------------------------------------
+# Notifications and the report warning (commit 2)
+# ---------------------------------------------------------------------------
+
+def test_the_author_and_owner_get_one_notification_per_agent_session(client, db_session, test_project):
+    """Decision 6: author AND owner are told; one notification per person per
+    review run, kept current, never one per proposal; the operator whose
+    agent it is is not told about their own run."""
+    from app.db.models_project import Notification
+    key, sid = _start(client, test_project)  # operator: the fixture admin
+    host = _host(db_session, test_project)
+    alice = _member(db_session, test_project, 421, "prop-alice")
+    bob = _member(db_session, test_project, 422, "prop-bob")
+    f1 = Finding(project_id=test_project.id, title="First", severity="low", status="open",
+                 source="manual", created_by_id=alice.id, owner_id=bob.id)
+    f2 = Finding(project_id=test_project.id, title="Second", severity="low", status="open",
+                 source="manual", created_by_id=alice.id)
+    db_session.add_all([f1, f2])
+    db_session.commit()
+
+    for fid in (f1.id, f2.id, f1.id):
+        r = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+            "finding_id": fid, "fields": {"impact": "i", "description": "d"}, "agent_model": "model-a"})
+        assert r.status_code == 201, r.text
+
+    def notes(uid):
+        db_session.expire_all()
+        return db_session.query(Notification).filter(
+            Notification.user_id == uid, Notification.type == "proposal").all()
+
+    [a] = notes(alice.id)
+    assert (a.source_type, a.source_id, a.finding_id) == ("agent_session", sid, None)
+    assert "2 of your findings" in a.title and "model-a" in a.body
+    [b] = notes(bob.id)  # owner of f1 only
+    assert b.finding_id == f1.id and "First" in b.title
+    assert notes(1) == []  # the operator's own run
+
+    # Once read, the next proposal from the run starts a fresh notification.
+    a.is_read = True
+    db_session.commit()
+    client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": f2.id, "fields": {"impact": "again"}})
+    assert len(notes(alice.id)) == 2
+
+
+def test_issuing_warns_about_pending_proposals_on_reported_findings(client, db_session, test_project, tmp_path, monkeypatch):
+    import json
+    folder = tmp_path / "report-templates" / "pentest"
+    folder.mkdir(parents=True)
+    (folder / "template.json").write_text(json.dumps({"title": "T", "entry": "report.qmd", "formats": ["html"]}))
+    (folder / "report.qmd").write_text("---\ntitle: x\n---\n")
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(tmp_path / "report-templates"))
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    f = Finding(project_id=test_project.id, title="Reported", severity="high", status="confirmed",
+                source="manual", description="d", impact="i", recommendation="r")
+    db_session.add(f)
+    db_session.flush()
+    db_session.add(FindingHost(finding_id=f.id, host_id=host.id, host_status="open"))
+    db_session.commit()
+    client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": f.id, "fields": {"impact": "better", "recommendation": "better"}})
+
+    r = client.post(f"{_base(test_project)}/client-reports", json={"kind": "full"})
+    assert r.status_code == 201, r.text
+    summary = r.json()["summary"]
+    assert summary["pending_proposals"] == [{"id": f.id, "ref": "F-01", "title": "Reported", "count": 2}]
+    assert summary["agent_images"] == 0
+    # A warning, never a block: it still issues.
+    assert client.post(f"{_base(test_project)}/client-reports/{r.json()['id']}/issue").status_code == 200

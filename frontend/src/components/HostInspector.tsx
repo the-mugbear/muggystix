@@ -95,6 +95,7 @@ import { previewThreads, rootNoteId } from '../utils/notePreview';
 import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProductObservationGroup from './host-inspector/ProductObservationGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
+import HostEvidenceSection from './host-inspector/HostEvidenceSection';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
@@ -2006,6 +2007,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           certStatus={host.cert_status}
         />
       )}
+
+      {/* v5.316.0 — what agents ran against this host (renders nothing when none). */}
+      <HostEvidenceSection hostId={host.id} />
 
       {/* Notes — one section: the composer (a single line until used) over the
           thread, after the evidence it is written about. */}

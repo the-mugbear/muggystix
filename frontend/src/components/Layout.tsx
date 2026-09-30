@@ -10,6 +10,7 @@ import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useHorizontalOverflowGuard } from '../hooks/useHorizontalOverflowGuard';
 import { useProject } from '../contexts/ProjectContext';
+import PendingProposalsButton from './proposals/PendingProposalsButton';
 import { getUnreadNotificationCount } from '../services/api';
 import { formatStatusLabel } from '../utils/statusMeta';
 import { cn } from '../utils/cn';
@@ -749,6 +750,9 @@ export default function Layout({ children }: LayoutProps) {
                 : 'No unread mentions'}
             </TooltipContent>
           </Tooltip>
+
+          {/* v5.316.0 — pending proposals; nothing when there are none. */}
+          <PendingProposalsButton />
 
           {/* Agent activity rail — floating popover, renders nothing
               when there are zero agent sessions in this project. */}

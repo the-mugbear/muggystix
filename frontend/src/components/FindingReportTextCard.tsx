@@ -12,6 +12,11 @@
  * 5.293.0 — each field is a MarkdownField: a formatting toolbar, a preview
  * under the same rules (tables included), a guide to what the report prints,
  * and a fix for a table written straight after text.
+ *
+ * 5.316.0 — "Draft empty sections" produces PROPOSALS (one per section),
+ * reviewed in the finding's Proposals section exactly like an agent's; it no
+ * longer fills the editor.  Any analyst may draft; accepting stays the
+ * author's or a project admin's.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Sparkles } from 'lucide-react';
@@ -67,19 +72,23 @@ interface Props {
   finding: Finding;
   /** Analyst+ AND the server's can_modify (author / project admin). */
   canEdit: boolean;
+  /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
+  canPropose?: boolean;
   onSaved: (finding: Finding) => void;
+  /** A draft created proposals: re-read the Proposals section. */
+  onDrafted?: () => void;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
 }
 
-const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, startEditing = false }) => {
+const FindingReportTextCard: React.FC<Props> = ({
+  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false,
+}) => {
   const toast = useToast();
   const text = finding.report_text;
   const [draft, setDraft] = useState<Draft | null>(() => (startEditing && canEdit ? toDraft(text) : null));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  // Sections filled by an AI suggestion and not yet saved — marked until then.
-  const [aiFilled, setAiFilled] = useState<Set<FindingReportTextField>>(new Set());
   const [drafting, setDrafting] = useState(false);
   const cardRef = useRef<HTMLDivElement>(null);
 
@@ -89,34 +98,26 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
 
   const missing = missingReportText(text);
 
-  // Suggest text for the required sections still empty in the editor.  The
-  // suggestion only fills those boxes; nothing is saved until Save.
-  const draftEmpty = async (base: Draft) => {
-    const empty = DRAFTABLE.filter((k) => !base[k].trim());
+  // Draft the required sections still empty as proposals — the same review
+  // path an agent's drafts take; nothing is written until one is accepted.
+  const draftEmpty = async () => {
+    const empty = DRAFTABLE.filter((k) => !(text?.[k] ?? '').trim());
     if (empty.length === 0) return;
     setDrafting(true);
     setError(null);
     try {
-      const { suggestions } = await draftFindingText(finding.id, empty);
-      const filled = empty.filter((k) => suggestions[k]);
-      setDraft((current) => {
-        const next = { ...(current ?? base) };
-        for (const k of filled) if (!next[k].trim()) next[k] = suggestions[k] as string;
-        return next;
-      });
-      setAiFilled((prev) => new Set([...prev, ...filled]));
+      const { proposals } = await draftFindingText(finding.id, empty);
+      onDrafted?.();
+      toast.success(
+        `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review them under Proposals.`,
+      );
+      document.getElementById('proposals')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     } catch (err) {
       setError(formatApiError(err, 'Could not draft the report text.'));
     } finally {
       setDrafting(false);
     }
   };
-  const startDraft = () => {
-    const base = draft ?? toDraft(text);
-    if (!draft) setDraft(base);
-    void draftEmpty(base);
-  };
-  const emptyInEditor = draft ? DRAFTABLE.filter((k) => !draft[k].trim()).length : 0;
 
   const save = async () => {
     if (!draft) return;
@@ -142,7 +143,6 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
       const updated = await updateFinding(finding.id, payload);
       onSaved(updated);
       setDraft(null);
-      setAiFilled(new Set());
       toast.success('Report text saved.');
     } catch (err) {
       setError(formatApiError(err, 'Could not save the report text.'));
@@ -167,16 +167,16 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
             <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
           )}
         </>}
-        actions={canEdit ? (
+        actions={canEdit || canPropose ? (
           <>
-            {((!draft && missing.length > 0) || emptyInEditor > 0) && (
-              <Button variant="ghost" size="sm" onClick={startDraft} disabled={drafting || saving}
-                title="Suggest text for the empty sections with your LLM provider; nothing is saved until you save">
+            {canPropose && !draft && missing.length > 0 && (
+              <Button variant="ghost" size="sm" onClick={() => void draftEmpty()} disabled={drafting || saving}
+                title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
                 {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
                 Draft empty sections
               </Button>
             )}
-            {!draft && (
+            {canEdit && !draft && (
               <Button variant="ghost" size="sm" onClick={() => { setDraft(toDraft(text)); setError(null); }}>
                 <Pencil className="size-4" aria-hidden /> Edit
               </Button>
@@ -190,11 +190,6 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
               <div key={f.key} className="space-y-xxs">
                 <Label htmlFor={`rt-${f.key}`}>{f.label}</Label>
                 <p className="text-caption text-muted-foreground">{f.hint}</p>
-                {aiFilled.has(f.key) && (
-                  <p className="text-caption text-warning">
-                    Drafted by AI from this finding&apos;s data — check every statement before you save.
-                  </p>
-                )}
                 <MarkdownField
                   id={`rt-${f.key}`}
                   label={f.label}
@@ -238,12 +233,14 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
               <Button type="submit" size="sm" disabled={saving}>
                 {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
               </Button>
-              <Button type="button" variant="ghost" size="sm" onClick={() => { setDraft(null); setAiFilled(new Set()); }} disabled={saving}>
+              <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={saving}>
                 Cancel
               </Button>
             </div>
           </form>
         ) : (
+          <>
+          {error && <p className="mb-sm break-words text-caption text-destructive">{error}</p>}
           <dl className="space-y-sm">
             {REPORT_TEXT_FIELDS.map((f) => (
               <div key={f.key} className="min-w-0">
@@ -262,6 +259,7 @@ const FindingReportTextCard: React.FC<Props> = ({ finding, canEdit, onSaved, sta
               </dd>
             </div>
           </dl>
+          </>
         )}
       </PostureSection>
     </div>

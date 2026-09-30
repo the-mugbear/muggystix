@@ -341,12 +341,14 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/proposals` | Proposals, newest first. `status` (default `pending`; `accepted` · `rejected` · `superseded`), `kind` (`finding_text` · `finding_create` · `observation_promote` · `observation_dismiss` · `endpoint_status`), `finding_id`, `host_id` (its observations and endpoints), `agent_session_id`, `limit` ≤500, `offset`. A `finding_text` row carries `current_value` (the finding's text now) beside the proposed `payload.value`; every row carries its session, `agent_model`, `agent_client`, `prompt_version`, `source` (`agent` · `llm_draft`). |
-| GET | `/proposals/summary` | `{pending, by_kind}` — the pending count. |
+| GET | `/proposals` | Proposals, newest first. `status` (default `pending`; `accepted` · `rejected` · `superseded`), `kind` (`finding_text` · `finding_create` · `observation_promote` · `observation_dismiss` · `endpoint_status`), `finding_id`, `host_id` (its observations and endpoints), `agent_session_id`, `limit` ≤500, `offset`. A `finding_text` row carries `current_value` (the finding's text now) beside the proposed `payload.value`; every row carries its session, `agent_model`, `agent_client`, `prompt_version`, `source` (`agent` · `llm_draft`), and `target` {`finding_title`, `observation_title`, `host_id`, `host_ip`} (v2.437.0). |
+| GET | `/proposals/summary` | `{pending, by_kind}` — the pending count (the top bar's button, v5.316.0). |
 | POST | `/proposals/{id}/accept` | Analyst+. `{note?, edited_value?}` (`edited_value`: report text only — accept with your edit). Runs the SAME code as the equivalent click, as you: report text needs the finding's author or a project admin (403 otherwise, the proposal stays pending). Accepting report text marks that field's other pending proposals `superseded`. A refusal from the underlying action (e.g. the target changed) is kept on the proposal's `error` and the proposal stays pending; a decided one → 409. |
 | POST | `/proposals/{id}/reject` | Analyst+. `{note?}`. |
 | POST | `/proposals/bulk` | Analyst+. `{ids (≤200), action: accept|reject, note?}` — each decided on its own; returns `decided` and `failed` [{id, status_code, detail}]. |
 | GET | `/evidence` · `/evidence/{id}/raw` | Evidence records an agent made (`host_id`, `finding_id`, `agent_session_id`, `limit`, `offset`) with a 2,000-character preview · the whole raw output (text). Any member. |
+
+**Notifications (v2.437.0).** A proposal on a finding notifies its author and its owner (`type: "proposal"`), except the person whose agent or draft it is: ONE unread notification per person per agent session (per finding for an in-app draft), updated as the run proposes more. `finding_id` is set when it covers one finding; otherwise `source_type: "agent_session"` + `source_id` point at the session's proposals. The client report's summary carries `pending_proposals` [{id, ref, title, count}] and `agent_images` (images from agent-written notes) — warnings before issuing, never blocks.
 
 Renaming a finding (a changed `title`) and deleting it need the finding's author, a project admin or a global admin (responses carry `can_modify`); severity / owner / status are any analyst's. A comment is its author's only, and one with replies is kept (409).
 
@@ -393,7 +395,7 @@ Since v2.196.0 the heavy report formats (JSON, agent package, markdown bundle; t
 | POST | `/reports/jobs/{job_id}/dismiss` | Hide a finished/failed job from the report-jobs tray. |
 | POST | `/reports/jobs/{job_id}/retry` · `/cancel` | Re-queue a failed job; cancel a queued job before the worker claims it (409 otherwise). |
 | GET | `/reports/limits` | Host cap per format (`null` = every matching host). CSV, JSON and the agent package are uncapped (v2.394.0); HTML is capped at `ReportGenerator.MAX_REPORT_HOSTS`; the markdown bundle at `REPORT_MAX_INMEMORY_HOSTS`. |
-| POST | `/reports/draft/finding-text` | `{finding_id, fields?, provider_id?}` → `{suggestions}`: the operator's LLM provider suggests Markdown for one finding's empty report sections (default: the empty ones of description / impact / recommendation). Writes nothing — the author saves through the finding update. Author or project admin only (403); 400 no provider / nothing empty; 502 provider failed or answered unreadably. |
+| POST | `/reports/draft/finding-text` | `{finding_id, fields?, provider_id?}` → `{proposals, provider_id, provider_type, model_id, usage}`: the operator's LLM provider drafts Markdown for one finding's empty report sections (default: the empty ones of description / impact / recommendation). **Since v2.437.0 the draft is a set of `finding_text` proposals** (`source: llm_draft`, the provider's model), reviewed and accepted like an agent's (§4.5); nothing is written until one is accepted. Analyst+ (proposing changes nothing; accepting still needs the author or a project admin); the finding's author and owner are notified when someone else drafts. 400 no provider / nothing empty; 502 provider failed or answered unreadably. |
 
 ### 4.8 DNS
 
