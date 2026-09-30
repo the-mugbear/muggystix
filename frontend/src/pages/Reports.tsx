@@ -430,7 +430,15 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
         </form>
       )}
     </PostureSection>
-    {profile && <TemplatesSection templates={templates} problems={problems} defaultName={profile.template} isAdmin={isAdmin} />}
+    {profile && (
+      <TemplatesSection
+        templates={templates}
+        problems={problems}
+        defaultName={profile.template}
+        isAdmin={isAdmin}
+        onTemplateChange={(changed) => setTemplates((all) => all.map((x) => (x.name === changed.name ? changed : x)))}
+      />
+    )}
     </>
   );
 };
@@ -438,12 +446,14 @@ const ProfileSection: React.FC<{ canEdit: boolean }> = ({ canEdit }) => {
 /**
  * Every template installed on the server, the default first, each with the
  * files it uses besides the findings' evidence. A template is a folder under
- * `report-templates/`, read on each request — there is no upload.
+ * `report-templates/`, read on each request — templates are not uploaded, but
+ * a global admin uploads a template's own files here (v5.311.0).
  */
 const TemplatesSection: React.FC<{
   templates: ReportTemplate[]; problems: ReportTemplateProblem[]; defaultName: string | null; isAdmin: boolean;
+  onTemplateChange: (template: ReportTemplate) => void;
 }> = ({
-  templates, problems, defaultName, isAdmin,
+  templates, problems, defaultName, isAdmin, onTemplateChange,
 }) => {
   const ordered = [...templates].sort((a, b) => Number(b.name === defaultName) - Number(a.name === defaultName));
   return (
@@ -469,7 +479,12 @@ const TemplatesSection: React.FC<{
                 </summary>
                 <div className="mt-xs space-y-xs">
                   {t.description && <p className="max-w-3xl break-words text-caption text-muted-foreground">{t.description}</p>}
-                  <TemplateImages template={t} templateName={t.name} showServerPaths={isAdmin} />
+                  <TemplateImages
+                    template={t}
+                    templateName={t.name}
+                    showServerPaths={isAdmin}
+                    onTemplateChange={onTemplateChange}
+                  />
                 </div>
               </details>
             );

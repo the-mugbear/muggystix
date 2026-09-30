@@ -471,7 +471,12 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
                 <p className="text-caption text-destructive">
                   {assetCountLabel(template)} — preview and issue are unavailable until {missingRequiredAssets(template).length === 1 ? 'it is' : 'they are'} installed:
                 </p>
-                <TemplateImages template={template} templateName={report.template} showServerPaths={isAdmin} />
+                <TemplateImages
+                  template={template}
+                  templateName={report.template}
+                  showServerPaths={isAdmin}
+                  onTemplateChange={(changed) => setTemplates((all) => all.map((x) => (x.name === changed.name ? changed : x)))}
+                />
               </div>
             ) : template ? (
               <TemplateFilesLine template={template} />

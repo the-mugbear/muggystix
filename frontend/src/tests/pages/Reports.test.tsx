@@ -20,6 +20,9 @@ vi.mock('../../services/api', () => ({
   reviseClientReport: vi.fn(),
   listReportTemplates: vi.fn(),
   listReportTemplateProblems: vi.fn(),
+  uploadReportTemplateAsset: vi.fn(),
+  removeReportTemplateAsset: vi.fn(),
+  fetchReportTemplateAssetPreview: vi.fn(() => Promise.reject(new Error('no preview in tests'))),
   getReportProfile: vi.fn(),
   saveReportProfile: vi.fn(),
   downloadClientReportFile: vi.fn(),
@@ -453,7 +456,7 @@ describe('Template images', () => {
     mocked.getClientReport.mockResolvedValue(report());
     renderDetail();
     expect(await screen.findByText('Missing · required')).toBeInTheDocument();
-    expect(screen.getByText('Installed')).toBeInTheDocument();
+    expect(screen.getByText('Installed on server')).toBeInTheDocument();
     expect(screen.getByText(/1 required missing — preview and issue are unavailable/)).toBeInTheDocument();
     expect(screen.getByText('report-templates/pentest/img/cover.png')).toBeInTheDocument();
     expect(screen.getByText('A Word header belongs in reference.docx.')).toBeInTheDocument();
@@ -548,6 +551,84 @@ describe('Template images', () => {
     expect(screen.queryByText('report-templates/pentest/img/logo.png')).not.toBeInTheDocument();
     expect(screen.queryByText('Add a template')).not.toBeInTheDocument();
     expect(mocked.listReportTemplateProblems).not.toHaveBeenCalled();
-    expect(screen.getByText(/An administrator installs these files on the server/)).toBeInTheDocument();
+    expect(screen.getByText(/A global administrator uploads these files or installs them on the server/)).toBeInTheDocument();
+    // Branding is instance-wide: no upload for a member.
+    expect(screen.queryByRole('button', { name: 'Upload' })).not.toBeInTheDocument();
+  });
+
+  // v5.311.0 — uploading a template's own files, with the template's guidance.
+  const logo = (over: Record<string, unknown> = {}) => asset({
+    kind: 'png', uploadable: true, max_bytes: 2097152, min_width: 400, min_height: 100, aspect: '3.4:1',
+    installed: false, source: null, upload: null, ...over,
+  });
+  const listPage = async () => {
+    mocked.listClientReports.mockResolvedValue({ items: [], latest_issued_id: null, can_create: true, can_issue: true });
+    renderList();
+    return screen.findByTestId('asset-guidance-logo');
+  };
+
+  it('says what each file must be, from the template', async () => {
+    withAssets([
+      logo(),
+      asset({ id: 'styles', label: 'Word styles', kind: 'docx', uploadable: true, max_bytes: 10485760 }),
+      asset({ id: 'icon', label: 'Icon', kind: 'svg', uploadable: false }),
+    ]);
+    expect((await listPage()).textContent).toBe('PNG · at least 400 × 100 px · shaped 3.4:1 · up to 2 MB');
+    expect(screen.getByTestId('asset-guidance-styles').textContent).toBe('Word document (.docx) · up to 10 MB');
+    expect(screen.getByTestId('asset-guidance-icon').textContent).toBe('SVG — installed on the server by an administrator');
+    // Upload is offered for the PNG and the Word file, never the SVG.
+    expect(screen.getAllByRole('button', { name: 'Upload' })).toHaveLength(2);
+  });
+
+  it('refuses a file of the wrong type or size before sending it', async () => {
+    withAssets([logo()]);
+    await listPage();
+    const input = screen.getByLabelText('Upload Company logo') as HTMLInputElement;
+    fireEvent.change(input, { target: { files: [new File(['x'], 'photo.jpg', { type: 'image/jpeg' })] } });
+    expect(await screen.findByRole('alert')).toHaveTextContent('Company logo must be a PNG; “photo.jpg” is not.');
+    const big = new File([new Uint8Array(3 * 1048576)], 'huge.png', { type: 'image/png' });
+    fireEvent.change(input, { target: { files: [big] } });
+    expect(await screen.findByText(/“huge.png” is 3 MB; Company logo can be at most 2 MB/)).toBeInTheDocument();
+    expect(mocked.uploadReportTemplateAsset).not.toHaveBeenCalled();
+  });
+
+  it('uploads a file, shows it as uploaded with the server’s warning, and removes it', async () => {
+    withAssets([logo()]);
+    const uploaded = logo({
+      present: true, source: 'uploaded',
+      upload: { width: 500, height: 500, size: 4096, uploaded_by: 'admin', original_filename: 'square.png' },
+    });
+    mocked.uploadReportTemplateAsset.mockResolvedValue({
+      template: { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'], assets: [uploaded] },
+      warnings: ['The image is 500 × 500 px; this place is shaped 3.4:1.'],
+    });
+    await listPage();
+    const file = new File(['png'], 'square.png', { type: 'image/png' });
+    fireEvent.change(screen.getByLabelText('Upload Company logo'), { target: { files: [file] } });
+    await waitFor(() => expect(mocked.uploadReportTemplateAsset).toHaveBeenCalledWith('pentest', 'logo', file));
+    expect(await screen.findByText('Uploaded')).toBeInTheDocument();
+    expect(screen.getByText(/this place is shaped 3.4:1/)).toBeInTheDocument();
+    expect(screen.getByText(/Uploaded by admin/).textContent).toMatch(/500 × 500 px, 4 KB · square.png/);
+    expect(screen.getByRole('button', { name: 'Replace' })).toBeInTheDocument();
+
+    mocked.removeReportTemplateAsset.mockResolvedValue({
+      template: { name: 'pentest', title: 'Penetration test report', description: '', formats: ['html'], assets: [logo()] },
+      warnings: [],
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Remove upload' }));
+    await waitFor(() => expect(mocked.removeReportTemplateAsset).toHaveBeenCalledWith('pentest', 'logo'));
+    expect(await screen.findByText('Not installed · optional')).toBeInTheDocument();
+  });
+
+  it('shows the server’s reason when it refuses an upload', async () => {
+    withAssets([logo()]);
+    mocked.uploadReportTemplateAsset.mockRejectedValue({
+      response: { data: { detail: 'The image is 300 × 80 px; Company logo needs at least 400 × 100 px to print sharply.' } },
+    });
+    await listPage();
+    fireEvent.change(screen.getByLabelText('Upload Company logo'), {
+      target: { files: [new File(['png'], 'small.png', { type: 'image/png' })] },
+    });
+    expect(await screen.findByRole('alert')).toHaveTextContent('needs at least 400 × 100 px');
   });
 });

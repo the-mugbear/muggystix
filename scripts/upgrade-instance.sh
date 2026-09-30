@@ -27,6 +27,9 @@
 #   NGINX_CONFIG             only if .env points at a custom nginx conf
 #   .deploy-rollback-state   so deploy.sh option 7 still knows the prior build
 #   report-templates/*/…     the images each template.json declares (a logo…)
+#                            that were installed on the server; ones uploaded
+#                            on the Reports page live in <UPLOAD_DIR>/template_assets
+#                            and move with the uploads dir
 #
 # Then it hands off to ./scripts/deploy.sh option 1 (pre-deploy DB backup,
 # rollback image tags, rebuild, recreate, health wait) and verifies the

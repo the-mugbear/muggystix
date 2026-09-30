@@ -23,7 +23,9 @@ stays standalone for template authors).
 
 Templates come from the repository, never from users: nothing here accepts an
 uploaded template, and a name is only ever resolved to a folder directly under
-the templates root.
+the templates root.  A template's declared IMAGES may be uploaded (v2.431.0,
+``template_asset_store``): they are stored outside the folder and placed over
+the template's own in the render's private copy.
 
 ``fingerprint`` is a SHA-256 over every file in the folder (paths and bytes,
 rendered output excluded), recorded on each issued report so its history says
@@ -41,6 +43,7 @@ from typing import Dict, List, Optional
 
 from app.core.config import settings
 from app.services import quarto_render
+from app.services import template_asset_store as asset_store
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # A template that still lists "pdf" (removed v2.407.0) simply loses it.
@@ -97,10 +100,23 @@ def _load(folder: Path) -> ReportTemplate:
         target = (folder / str(script)).resolve()
         if fmt in FORMATS and target.is_file() and target.is_relative_to(folder.resolve()):
             post[fmt] = str(script)
+    uploaded = asset_store.uploads(folder.name)
     try:
-        assets = tuple(quarto_render.template_assets(folder, data))
+        declared = quarto_render.template_assets(
+            folder, data, overrides={k: m["file"] for k, m in uploaded.items()},
+        )
     except quarto_render.TemplateAssetError as exc:
         raise TemplateError(f"{folder.name}: template.json: {exc}")
+    # v2.431.0 — where each present file comes from: an upload (it wins) or
+    # the server's template folder.
+    assets = tuple(
+        {
+            **a,
+            "source": "uploaded" if a["id"] in uploaded else ("installed" if a["installed"] else None),
+            "upload": asset_store.public_info(uploaded[a["id"]]) if a["id"] in uploaded else None,
+        }
+        for a in declared
+    )
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
@@ -180,9 +196,21 @@ def template_files(template: ReportTemplate) -> List[Path]:
     return files
 
 
+def asset_files(template: ReportTemplate) -> Dict[str, Path]:
+    """The uploaded images the renderer uses for this template (v2.431.0)."""
+    return asset_store.overrides(template.name)
+
+
 def fingerprint(template: ReportTemplate) -> str:
+    """The template's files — and, since v2.431.0, its uploaded images, so an
+    issued report whose logo was replaced since refuses to re-render (a
+    revision), exactly as when a file in the folder changed.  With no upload
+    the value is what it always was, so earlier issued reports still match."""
     digest = hashlib.sha256()
     for rel in template_files(template):
         digest.update(rel.as_posix().encode("utf-8") + b"\0")
         digest.update(hashlib.sha256((template.path / rel).read_bytes()).digest())
+    for asset_id, path in sorted(asset_files(template).items()):
+        digest.update(f"upload:{asset_id}".encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(path.read_bytes()).digest())
     return digest.hexdigest()

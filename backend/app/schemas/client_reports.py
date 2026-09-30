@@ -69,7 +69,32 @@ class ReportTemplateAssetOut(BaseModel):
     formats: List[str] = []
     # When installed, used in place of this template file (e.g. reference.docx).
     replaces: Optional[str] = None
+    # present = installed on the server OR uploaded (v2.431.0).
     present: bool = False
+    installed: bool = False
+    # "uploaded" (wins), "installed" (the server's template folder), or None.
+    source: Optional[str] = None
+    # What an upload must be: kind (png, jpeg, docx; svg/gif/webp are server
+    # only), and the template's size / shape guidance.
+    kind: str = ""
+    uploadable: bool = False
+    max_bytes: Optional[int] = None
+    min_width: Optional[int] = None
+    min_height: Optional[int] = None
+    aspect: Optional[str] = None
+    upload: Optional["ReportTemplateAssetUploadOut"] = None
+
+
+class ReportTemplateAssetUploadOut(BaseModel):
+    """The current upload of an asset: what it is and who put it there."""
+    kind: Optional[str] = None
+    size: Optional[int] = None
+    width: Optional[int] = None
+    height: Optional[int] = None
+    sha256: Optional[str] = None
+    original_filename: Optional[str] = None
+    uploaded_at: Optional[str] = None
+    uploaded_by: Optional[str] = None
 
 
 class ReportTemplateOut(BaseModel):
@@ -78,6 +103,15 @@ class ReportTemplateOut(BaseModel):
     description: str
     formats: List[str]
     assets: List[ReportTemplateAssetOut] = []
+
+
+ReportTemplateAssetOut.model_rebuild()
+
+
+class ReportTemplateAssetChangeOut(BaseModel):
+    """The template after an upload or removal, and what to know about it."""
+    template: ReportTemplateOut
+    warnings: List[str] = []
 
 
 class ReportTemplateProblemOut(BaseModel):

@@ -13,7 +13,7 @@ from __future__ import annotations
 import logging
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, File, HTTPException, Response, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, defer, selectinload
 
@@ -26,12 +26,14 @@ from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatu
 from app.db.session import get_db
 from app.schemas.client_reports import (
     EngagementSettings, PreviewRequest, ReportCreate, ReportFileOut, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateOut, ReportTemplateProblemOut, ReportUpdate, Tester,
+    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateAssetChangeOut, ReportTemplateOut,
+    ReportTemplateProblemOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import ClientReportService, ReportStateError, stored_file_path
 from app.services.report_job_service import ReportJobService
 from app.services import report_template_service as templates
+from app.services import template_asset_store as asset_store_module
 
 logger = logging.getLogger(__name__)
 
@@ -215,6 +217,108 @@ def list_report_template_problems():
     """Folders under report-templates/ that are not offered, and why — so a
     template with a mistake says so instead of simply not appearing."""
     return [ReportTemplateProblemOut(**p) for p in templates.template_problems()]
+
+
+# --- a template's own images, uploaded (v2.431.0) -------------------------------
+# Templates are shared by every project, so an upload is instance-wide
+# branding: global administrators only, audited.  Storage and validation:
+# app/services/template_asset_store.py.
+
+def _declared_asset(name: str, asset_id: str) -> tuple:
+    template = _template_or_422(name)
+    asset = next((a for a in template.assets if a["id"] == asset_id), None)
+    if asset is None:
+        raise HTTPException(status_code=404, detail=f"The '{name}' template declares no asset '{asset_id}'.")
+    return template, asset
+
+
+def _require_global_admin(user: User) -> None:
+    if user.role != UserRole.ADMIN:
+        raise HTTPException(
+            status_code=403,
+            detail="Template files are shared by every project; only a global administrator can change them.",
+        )
+
+
+@router.put("/templates/{name}/assets/{asset_id}", response_model=ReportTemplateAssetChangeOut)
+async def upload_report_template_asset(
+    name: str,
+    asset_id: str,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Upload the file a template expects (a logo, the title page image, the
+    Word styles file).  It is used in place of a server-installed one from the
+    next preview or issue on; issued reports keep theirs (the template
+    fingerprint includes it, so an issued report refuses to re-render)."""
+    _require_global_admin(current_user)
+    _template, asset = _declared_asset(name, asset_id)
+    limit = int(asset.get("max_bytes") or 0) or asset_store_module.MAX_DOCX_UNCOMPRESSED
+    data = await file.read(limit + 1)  # every await BEFORE any database write
+    try:
+        _meta, warnings = asset_store_module.save(
+            name, asset, data, uploaded_by=current_user.username, original_filename=file.filename,
+        )
+    except asset_store_module.AssetUploadError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+    log_audit_event(
+        db, user_id=current_user.id, action="report_template_asset_uploaded", resource_type="report_template",
+        resource_id=name,
+        details={"project_id": project.id, "template": name, "asset": asset_id, "sha256": _meta["sha256"],
+                 "size": _meta["size"], "width": _meta["width"], "height": _meta["height"]},
+    )
+    return ReportTemplateAssetChangeOut(template=ReportTemplateOut(**_template_or_422(name).as_dict()), warnings=warnings)
+
+
+@router.delete("/templates/{name}/assets/{asset_id}", response_model=ReportTemplateAssetChangeOut)
+def remove_report_template_asset(
+    name: str,
+    asset_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Remove an uploaded file; the template falls back to a server-installed
+    one, or goes without (a required file then blocks preview and issue)."""
+    _require_global_admin(current_user)
+    _declared_asset(name, asset_id)
+    removed = asset_store_module.remove(name, asset_id)
+    if removed is None:
+        raise HTTPException(status_code=404, detail="Nothing was uploaded for this file.")
+    log_audit_event(
+        db, user_id=current_user.id, action="report_template_asset_removed", resource_type="report_template",
+        resource_id=name,
+        details={"project_id": project.id, "template": name, "asset": asset_id, "sha256": removed.get("sha256")},
+    )
+    return ReportTemplateAssetChangeOut(template=ReportTemplateOut(**_template_or_422(name).as_dict()))
+
+
+_PREVIEW_MEDIA = {"png": "image/png", "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp"}
+
+
+@router.get("/templates/{name}/assets/{asset_id}/preview")
+def preview_report_template_asset(name: str, asset_id: str):
+    """The image the render would use for this asset (the upload, else the
+    server-installed file), for the Reports page's thumbnail.  Raster images
+    only — never an SVG (script) or the Word styles file."""
+    template, asset = _declared_asset(name, asset_id)
+    media = _PREVIEW_MEDIA.get(asset.get("kind") or "")
+    if media is None:
+        raise HTTPException(status_code=404, detail="This file has no image preview.")
+    uploaded = asset_store_module.overrides(name).get(asset_id)
+    path = uploaded if uploaded is not None else (template.path / asset["path"] if asset.get("installed") else None)
+    if path is None or not path.is_file() or path.is_symlink():
+        raise HTTPException(status_code=404, detail="This file is not installed.")
+    return FileResponse(
+        path, media_type=media,
+        headers={
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+            "Content-Security-Policy": "default-src 'none'",
+        },
+    )
 
 
 def _profile_out(db: Session, project_id: int, profile: Optional[ReportProfile]) -> ReportProfileOut:

@@ -29,7 +29,7 @@ Each folder here is one client report template. BlueStick lists every valid fold
        --data /tpl/my-template/sample-data.json --out /tpl/my-template/_output
    ```
 4. **Install it.** Put the folder in `report-templates/` on the server. The folder is mounted read-only into the backend and the report worker and is read on every request, so it is listed on the next page load, with no rebuild or restart. If a folder is present but **not offered**, a global administrator sees it on the Reports page with the reason, such as a bad folder name, a missing `template.json`, a manifest that doesn't parse, or an entry file that doesn't exist.
-5. **Keep it.** `scripts/upgrade-instance.sh` carries the images a template declares under `assets` across upgrades. Your own template folder is part of the source tree: commit it, or copy it along with the rest.
+5. **Keep it.** `scripts/upgrade-instance.sh` carries the images a template declares under `assets` across upgrades, both those installed in the folder and those uploaded on the Reports page (they live in `uploads/`). Your own template folder is part of the source tree: commit it, or copy it along with the rest.
 
 Every issued report records a fingerprint of the template folder, so its history shows exactly which version produced it. Changing a template never changes a report that was already issued.
 
@@ -63,7 +63,11 @@ Every issued report records a fingerprint of the template folder, so its history
       "label": "Company logo",
       "description": "Where it appears and what size fits.",
       "required": false,
-      "formats": ["html", "docx"]
+      "formats": ["html", "docx"],
+      "max_bytes": 2097152,
+      "min_width": 400,
+      "min_height": 100,
+      "aspect": "3.4:1"
     }
   ]
 }
@@ -74,6 +78,12 @@ Every issued report records a fingerprint of the template folder, so its history
 - **`formats`**: any of `html`, `docx` and `qmd` (a zip of the filled source with the data and filters). There is no PDF: export the Word file.
 - **`postprocess`**: optional, one script per format, run on the rendered file (see `pentest/scripts/fix-docx-report.py`).
 - **`assets`**: optional, the template's own images and files, each with a unique `id` (lower-case, starting with a letter, at most 32 characters) and a `path` inside the folder. `label`, `description` and an optional `note` are shown on the Reports page, which lists each asset as installed or missing; `formats` says where it appears (`html`, `docx`; default both). A path must be an image (png, jpg, jpeg, svg, gif, webp) unless the asset `replaces` a file of the same type (`.docx` allowed). A `required` asset that is missing blocks preview and issue. An asset with `"replaces": "reference.docx"` is used in place of that shipped file when it is installed. Inside the template, `asset("logo")` gives the path when the file is installed and an empty string otherwise; `asset()` of an id that is not declared fails the render.
+- **Uploading assets** (v2.431.0): a global administrator can also upload a PNG, JPEG or `.docx` asset from **Template files** on the Reports page instead of installing it on the server. The upload is stored in `uploads/template_assets/<template>/`, never in your folder. It wins over a server-installed file, applies to every project, and counts in the template fingerprint, so issued reports keep theirs. SVG, GIF and WebP assets can only be installed on the server: an SVG would carry script into the HTML report. The upload's type must match the `path` extension (`logo.png` takes a PNG). Optional guidance per asset, shown on the page and enforced on upload:
+  - `max_bytes`: largest file accepted (default 5 MB for an image, 10 MB for a Word file).
+  - `min_width` / `min_height`: fewest pixels accepted; set them from the printed size, about 250–300 px per inch of the box the image fills.
+  - `aspect`: the shape of the place it fills, as `"W:H"`. A different shape is accepted with a warning, since it will be scaled to fit.
+
+  A Word file must be a real `.docx` (no macros, not a `.dotx`) with its styles part.
 
 ## The data
 

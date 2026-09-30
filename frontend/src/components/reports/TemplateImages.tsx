@@ -8,12 +8,22 @@
  * server refuses too); an optional one is simply left out of the layout.
  * The files live on the server in `report-templates/<name>/`, mounted
  * read-only into the backend and report worker — adding one needs no rebuild.
+ *
+ * v5.311.0 — a global administrator uploads them here instead (stored
+ * outside the template folder; an upload wins over a server-installed file),
+ * and every row says what the file must be: type, minimum pixels, shape and
+ * size, from the template's own guidance.  The server checks the bytes; this
+ * page checks type and size first so a wrong file fails before it is sent.
  */
-import React from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import {
+  fetchReportTemplateAssetPreview, removeReportTemplateAsset, uploadReportTemplateAsset,
+} from '../../services/api';
 import type { ClientReportFormat, ReportTemplate, ReportTemplateAsset } from '../../services/api';
 import { Badge } from '../ui/badge';
+import { Button } from '../ui/button';
 
 const FORMAT_LABEL: Record<ClientReportFormat, string> = { html: 'HTML', docx: 'Word', qmd: 'QMD source' };
 
@@ -44,8 +54,185 @@ export const missingAssetsReason = (template: ReportTemplate | undefined): strin
   return `The template needs ${missing.map((a) => a.label).join(', ')} — see Template files`;
 };
 
+const KIND = {
+  png: { label: 'PNG', accept: '.png,image/png', mimes: ['image/png'], exts: ['png'] },
+  jpeg: { label: 'JPEG', accept: '.jpg,.jpeg,image/jpeg', mimes: ['image/jpeg'], exts: ['jpg', 'jpeg'] },
+  docx: {
+    label: 'Word document (.docx)', accept: '.docx',
+    mimes: ['application/vnd.openxmlformats-officedocument.wordprocessingml.document'], exts: ['docx'],
+  },
+} as const;
+type UploadKind = keyof typeof KIND;
+const PREVIEWABLE = new Set(['png', 'jpeg', 'gif', 'webp']);
+
+const megabytes = (bytes: number) => {
+  const mb = bytes / 1048576;
+  return mb >= 1 ? `${Number.isInteger(mb) ? mb : mb.toFixed(1)} MB` : `${Math.max(1, Math.round(bytes / 1024))} KB`;
+};
+
+/** One line saying what the file must be, from the template's guidance
+ *  ("PNG · at least 400 × 100 px · shaped 3.4:1 · up to 2 MB"). */
+export const assetGuidance = (a: ReportTemplateAsset): string => {
+  const kind = (a.kind ?? '') as UploadKind;
+  if (!a.uploadable || !(kind in KIND)) {
+    return a.kind
+      ? `${a.kind.toUpperCase()} — installed on the server by an administrator`
+      : 'Installed on the server by an administrator';
+  }
+  const parts: string[] = [KIND[kind].label];
+  if (a.min_width || a.min_height) parts.push(`at least ${a.min_width ?? 1} × ${a.min_height ?? 1} px`);
+  if (a.aspect) parts.push(`shaped ${a.aspect}`);
+  if (a.max_bytes) parts.push(`up to ${megabytes(a.max_bytes)}`);
+  return parts.join(' · ');
+};
+
+/** Why a chosen file cannot be this asset (type or size), or null — checked
+ *  before it is sent; the server checks the bytes, pixels and shape. */
+export const assetFileProblem = (a: ReportTemplateAsset, file: File): string | null => {
+  const kind = (a.kind ?? '') as UploadKind;
+  if (!(kind in KIND)) return `${a.label} cannot be uploaded here.`;
+  const spec = KIND[kind];
+  const ext = file.name.includes('.') ? file.name.split('.').pop()!.toLowerCase() : '';
+  if (!(spec.exts as readonly string[]).includes(ext) && !(spec.mimes as readonly string[]).includes(file.type)) {
+    return `${a.label} must be a ${spec.label}; “${file.name}” is not.`;
+  }
+  if (a.max_bytes && file.size > a.max_bytes) {
+    return `“${file.name}” is ${megabytes(file.size)}; ${a.label} can be at most ${megabytes(a.max_bytes)}.`;
+  }
+  if (file.size === 0) return `“${file.name}” is empty.`;
+  return null;
+};
+
+const errorDetail = (err: unknown): string => {
+  const detail = (err as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
+  if (typeof detail === 'string') return detail;
+  // A request the server could not read (FastAPI's validation list).
+  if (Array.isArray(detail)) {
+    const msgs = detail.map((d) => (d as { msg?: string })?.msg).filter(Boolean);
+    if (msgs.length) return `The file could not be uploaded: ${msgs.join('; ')}.`;
+  }
+  return 'The file could not be uploaded.';
+};
+
+const uploadLine = (a: ReportTemplateAsset): string | null => {
+  const u = a.upload;
+  if (!u) return null;
+  const bits = [
+    u.uploaded_by ? `Uploaded by ${u.uploaded_by}` : 'Uploaded',
+    u.uploaded_at ? `on ${new Date(u.uploaded_at).toLocaleDateString()}` : null,
+  ].filter(Boolean).join(' ');
+  const facts = [
+    u.width && u.height ? `${u.width} × ${u.height} px` : null,
+    u.size ? megabytes(u.size) : null,
+  ].filter(Boolean).join(', ');
+  return facts ? `${bits} · ${facts}` : bits;
+};
+
+/** The image the render would use, fetched with the session (an <img> cannot
+ *  send the token).  Refetched whenever the file changes. */
+const AssetThumbnail: React.FC<{ templateName: string; asset: ReportTemplateAsset }> = ({ templateName, asset }) => {
+  const [url, setUrl] = useState<string | null>(null);
+  const version = asset.upload?.sha256 ?? (asset.installed ? 'installed' : '');
+  useEffect(() => {
+    if (!asset.present || !PREVIEWABLE.has(asset.kind ?? '')) { setUrl(null); return undefined; }
+    let objectUrl: string | null = null;
+    let cancelled = false;
+    fetchReportTemplateAssetPreview(templateName, asset.id)
+      .then((blob) => {
+        if (cancelled) return;
+        objectUrl = URL.createObjectURL(blob);
+        setUrl(objectUrl);
+      })
+      .catch(() => { if (!cancelled) setUrl(null); });
+    return () => {
+      cancelled = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+    };
+  }, [templateName, asset.id, asset.present, asset.kind, version]);
+  if (!url) return null;
+  return (
+    <img
+      src={url}
+      alt={`${asset.label} as it will be used`}
+      className="max-h-16 max-w-[12rem] rounded border border-border bg-muted object-contain p-xxs"
+    />
+  );
+};
+
+/** Upload / replace / remove one template file (global administrators). */
+const AssetUpload: React.FC<{
+  templateName: string;
+  asset: ReportTemplateAsset;
+  onTemplateChange: (template: ReportTemplate) => void;
+}> = ({ templateName, asset, onTemplateChange }) => {
+  const input = useRef<HTMLInputElement>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [warnings, setWarnings] = useState<string[]>([]);
+  const kind = (asset.kind ?? '') as UploadKind;
+  if (!asset.uploadable || !(kind in KIND)) return null;
+
+  const choose = async (file: File | undefined) => {
+    if (input.current) input.current.value = '';
+    if (!file) return;
+    setWarnings([]);
+    const problem = assetFileProblem(asset, file);
+    if (problem) { setError(problem); return; }
+    setBusy(true);
+    setError(null);
+    try {
+      const result = await uploadReportTemplateAsset(templateName, asset.id, file);
+      setWarnings(result.warnings ?? []);
+      onTemplateChange(result.template);
+    } catch (err) {
+      setError(errorDetail(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async () => {
+    setBusy(true);
+    setError(null);
+    setWarnings([]);
+    try {
+      onTemplateChange((await removeReportTemplateAsset(templateName, asset.id)).template);
+    } catch (err) {
+      setError(errorDetail(err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="space-y-xxs">
+      <div className="flex flex-wrap items-center gap-xs">
+        <input
+          ref={input}
+          type="file"
+          accept={KIND[kind].accept}
+          className="hidden"
+          aria-label={`Upload ${asset.label}`}
+          onChange={(e) => void choose(e.target.files?.[0])}
+        />
+        <Button size="sm" variant="outline" disabled={busy} onClick={() => input.current?.click()}>
+          {busy ? 'Working…' : asset.source === 'uploaded' ? 'Replace' : 'Upload'}
+        </Button>
+        {asset.source === 'uploaded' && (
+          <Button size="sm" variant="ghost" disabled={busy} onClick={() => void remove()}>
+            Remove upload
+          </Button>
+        )}
+      </div>
+      {error && <p role="alert" className="break-words text-caption text-destructive">{error}</p>}
+      {warnings.map((w) => <p key={w} className="break-words text-caption text-warning">{w}</p>)}
+    </div>
+  );
+};
+
 const status = (a: ReportTemplateAsset) => {
-  if (a.present) return <Badge variant="success">Installed</Badge>;
+  if (a.present && a.source === 'uploaded') return <Badge variant="success">Uploaded</Badge>;
+  if (a.present) return <Badge variant="success">Installed on server</Badge>;
   if (a.required) return <Badge variant="destructive">Missing · required</Badge>;
   // A replacing file that is absent is not a gap: the shipped one is used.
   if (a.replaces) return <Badge variant="outline">Not installed · shipped used</Badge>;
@@ -62,6 +249,9 @@ export interface TemplateImagesProps {
   /** Server paths and install instructions — only for someone who can put
    *  files on the server (a global admin); everyone else sees the status. */
   showServerPaths?: boolean;
+  /** Given with `showServerPaths` (a global admin): offer upload / replace /
+   *  remove, and report the changed template here (v5.311.0). */
+  onTemplateChange?: (template: ReportTemplate) => void;
 }
 
 /**
@@ -84,7 +274,10 @@ export const TemplateFilesLine: React.FC<{ template: ReportTemplate | undefined 
   );
 };
 
-const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName, showServerPaths = false }) => {
+const TemplateImages: React.FC<TemplateImagesProps> = ({
+  template, templateName, showServerPaths = false, onTemplateChange,
+}) => {
+  const canUpload = showServerPaths && Boolean(onTemplateChange);
   if (!templateName) {
     return <p className="text-caption text-muted-foreground">No template chosen.</p>;
   }
@@ -132,18 +325,38 @@ const TemplateImages: React.FC<TemplateImagesProps> = ({ template, templateName,
                   Used in {a.formats.map((f) => FORMAT_LABEL[f] ?? f).join(', ')}
                 </p>
               )}
+              <p className="break-words text-caption text-foreground" data-testid={`asset-guidance-${a.id}`}>
+                {assetGuidance(a)}
+              </p>
+              {uploadLine(a) && (
+                <p className="truncate text-caption text-muted-foreground" title={a.upload?.original_filename ?? undefined}>
+                  {uploadLine(a)}
+                  {a.upload?.original_filename && <> · {a.upload.original_filename}</>}
+                </p>
+              )}
+              {a.source === 'uploaded' && a.installed && (
+                <p className="break-words text-caption text-muted-foreground">
+                  Used instead of the file installed on the server; remove the upload to go back to it.
+                </p>
+              )}
+              <AssetThumbnail templateName={template.name} asset={a} />
+              {canUpload && onTemplateChange && (
+                <AssetUpload templateName={template.name} asset={a} onTemplateChange={onTemplateChange} />
+              )}
             </div>
           </li>
         ))}
       </ul>
       <p className="max-w-3xl text-caption text-muted-foreground">
-        {!showServerPaths && <>An administrator installs these files on the server. </>}
+        {!showServerPaths && <>A global administrator uploads these files or installs them on the server. </>}
+        {canUpload && <>Files uploaded here are used by every project&apos;s reports from the next preview or issue on;
+          reports already issued keep theirs. </>}
         A missing optional image is left out of the layout; a file that replaces one of the template&apos;s own falls back
         to the shipped one.
       </p>
       {showServerPaths && (
         <details className="max-w-3xl text-caption text-muted-foreground">
-          <summary className="cursor-pointer text-foreground">Where the files go on the server</summary>
+          <summary className="cursor-pointer text-foreground">Or install them on the server</summary>
           <ul className="mt-xxs space-y-xxs">
             {assets.map((a) => (
               <li key={a.id} className="flex min-w-0 flex-wrap gap-x-xs">

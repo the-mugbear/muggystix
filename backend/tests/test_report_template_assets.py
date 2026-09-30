@@ -142,6 +142,10 @@ def test_the_template_list_says_which_images_are_installed(client, root, test_pr
         # "pdf" (no longer a format, v2.407.0) is dropped, not an error.
         "note": "Word header: reference.docx", "required": False, "formats": ["html"],
         "replaces": None, "present": True,
+        # v2.431.0 — where the file comes from, and what an upload must be.
+        "installed": True, "source": "installed", "upload": None,
+        "kind": "png", "uploadable": True, "max_bytes": 5 * 1024 * 1024,
+        "min_width": None, "min_height": None, "aspect": None,
     }
     assert assets["cover"]["present"] is False and assets["cover"]["required"] is True
 

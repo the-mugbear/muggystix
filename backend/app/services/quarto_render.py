@@ -115,6 +115,16 @@ ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
 # (``"replaces": "reference.docx"`` — an operator's Word styles over the
 # shipped ones).  Only these kinds of file can be replaced.
 REPLACEABLE_EXTENSIONS = ASSET_EXTENSIONS + (".docx",)
+# v2.431.0 — the kinds of file an operator may UPLOAD for an asset (the
+# Reports page), by the declared path's extension.  SVG, GIF and WebP stay
+# server-installed only: an SVG carries script into the HTML report, and the
+# Word pipeline expects PNG/JPEG.
+ASSET_KINDS = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".svg": "svg",
+               ".gif": "gif", ".webp": "webp", ".docx": "docx"}
+UPLOADABLE_KINDS = ("png", "jpeg", "docx")
+DEFAULT_MAX_BYTES = {"png": 5 * 1024 * 1024, "jpeg": 5 * 1024 * 1024, "docx": 10 * 1024 * 1024}
+MAX_ASSET_BYTES = 25 * 1024 * 1024
+_ASPECT = re.compile(r"^\d+(\.\d+)?:\d+(\.\d+)?$")
 
 
 class RenderError(RuntimeError):
@@ -125,11 +135,19 @@ class TemplateAssetError(ValueError):
     """template.json declares an asset it may not (the message names it)."""
 
 
-def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List[dict]:
+def template_assets(
+    template_dir: Path, manifest: Optional[dict] = None, overrides: Optional[Dict[str, Path]] = None,
+) -> List[dict]:
     """The images a template expects besides the findings' evidence, from
-    ``template.json`` → ``assets``, each with ``present``: the file is in the
+    ``template.json`` → ``assets``, each with ``installed``: the file is in the
     folder and would be copied into the render (a regular file, no symlink on
-    the way — ``_copy_template`` skips symlinks).
+    the way — ``_copy_template`` skips symlinks) — and ``present``: installed,
+    or an uploaded file in ``overrides`` ({asset id: file}, v2.431.0) that the
+    render puts at the asset's path instead.
+
+    Guidance for an upload (v2.431.0), optional per asset: ``max_bytes``,
+    ``min_width`` / ``min_height`` (pixels) and ``aspect`` ("3:2"), reported
+    with ``kind`` (png, jpeg, docx …) and ``uploadable``.
 
     An asset with ``replaces`` names another file of the template (e.g.
     ``reference.docx``): when the asset is installed, the render uses it in
@@ -176,6 +194,9 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
         # carries every file anyway).
         rendered = [f for f, spec in FORMATS.items() if spec[0] is not None]
         formats = [f for f in (entry.get("formats") or rendered) if f in rendered]
+        kind = ASSET_KINDS.get(Path(path).suffix.lower(), "")
+        installed = _asset_present(template_dir, parts)
+        override = (overrides or {}).get(asset_id)
         out.append({
             "id": asset_id,
             "path": path,
@@ -185,9 +206,38 @@ def template_assets(template_dir: Path, manifest: Optional[dict] = None) -> List
             "required": bool(entry.get("required", False)),
             "formats": formats,
             "replaces": replaces or None,
-            "present": _asset_present(template_dir, parts),
+            "present": installed or bool(override is not None and override.is_file()),
+            "installed": installed,
+            "kind": kind,
+            "uploadable": kind in UPLOADABLE_KINDS,
+            **_upload_guidance(asset_id, entry, kind),
         })
     return out
+
+
+def _upload_guidance(asset_id: str, entry: dict, kind: str) -> dict:
+    """The optional size / shape guidance a template declares for an asset,
+    validated: whole positive numbers, an aspect as "W:H"."""
+    def whole(key: str, cap: int) -> Optional[int]:
+        value = entry.get(key)
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or not 0 < value <= cap:
+            raise TemplateAssetError(f"Asset '{asset_id}': {key} must be a whole number from 1 to {cap}.")
+        return value
+
+    max_bytes = whole("max_bytes", MAX_ASSET_BYTES) or DEFAULT_MAX_BYTES.get(kind, MAX_ASSET_BYTES)
+    aspect = entry.get("aspect")
+    if aspect is not None:
+        aspect = str(aspect)
+        if not _ASPECT.match(aspect) or 0 in [float(x) for x in aspect.split(":")]:
+            raise TemplateAssetError(f"Asset '{asset_id}': aspect must be width:height, e.g. \"3:2\".")
+    return {
+        "max_bytes": max_bytes,
+        "min_width": whole("min_width", 20000),
+        "min_height": whole("min_height", 20000),
+        "aspect": aspect,
+    }
 
 
 def _asset_parts(asset_id: str, path: str) -> List[str]:
@@ -231,13 +281,28 @@ def _write_bundle(work: Path, files: List[Path], target: Path, dataset: dict) ->
             zf.write(work / rel, f"{folder}/{rel.as_posix()}")
 
 
-def _apply_replacements(template_dir: Path, work: Path) -> None:
-    """In the render's copy of the template, put each INSTALLED replacing
-    asset in the place of the file it replaces (an operator's reference.docx
-    over the shipped one).  An asset that is not installed changes nothing."""
-    if not (template_dir / "template.json").is_file():
+def _place_overrides(template_dir: Path, work: Path, overrides: Optional[Dict[str, Path]]) -> None:
+    """In the render's copy of the template, put each uploaded file at its
+    asset's declared path (over a server-installed one: the upload wins).
+    Only declared ids; the template folder itself is never written."""
+    if not overrides or not (template_dir / "template.json").is_file():
         return
     for a in template_assets(template_dir):
+        source = overrides.get(a["id"])
+        if source is not None and source.is_file():
+            target = work / a["path"]
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, target)
+
+
+def _apply_replacements(template_dir: Path, work: Path, overrides: Optional[Dict[str, Path]] = None) -> None:
+    """In the render's copy of the template, put each PRESENT replacing
+    asset (installed, or uploaded and already placed by ``_place_overrides``)
+    in the place of the file it replaces (an operator's reference.docx over
+    the shipped one).  An asset that is not present changes nothing."""
+    if not (template_dir / "template.json").is_file():
+        return
+    for a in template_assets(template_dir, overrides=overrides):
         if a["replaces"] and a["present"]:
             target = work / a["replaces"]
             target.parent.mkdir(parents=True, exist_ok=True)
@@ -253,12 +318,12 @@ def _asset_present(template_dir: Path, parts: List[str]) -> bool:
     return node.is_file()
 
 
-def missing_required_assets(template_dir: Path) -> List[dict]:
-    """The declared, REQUIRED images whose file is not in the folder."""
+def missing_required_assets(template_dir: Path, overrides: Optional[Dict[str, Path]] = None) -> List[dict]:
+    """The declared, REQUIRED images neither in the folder nor uploaded."""
     if not (template_dir / "template.json").is_file():
         return []
     try:
-        return [a for a in template_assets(template_dir) if a["required"] and not a["present"]]
+        return [a for a in template_assets(template_dir, overrides=overrides) if a["required"] and not a["present"]]
     except (TemplateAssetError, ValueError, OSError) as exc:
         raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
 
@@ -267,12 +332,16 @@ def missing_assets_message(template_name: str, missing: List[dict]) -> str:
     where = ", ".join(f"report-templates/{template_name}/{a['path']} ({a['label']})" for a in missing)
     return (
         f"The '{template_name}' template needs image(s) that are not installed: {where}. "
-        "Put the file(s) there on the server — the folder is mounted, no rebuild needed."
+        "A global administrator uploads them under Template files on the Reports page, "
+        "or puts them there on the server (the folder is mounted, no rebuild needed)."
     )
 
 
-def _asset_factory(template_dir: Path):
-    assets = {a["id"]: a for a in template_assets(template_dir)} if (template_dir / "template.json").is_file() else {}
+def _asset_factory(template_dir: Path, overrides: Optional[Dict[str, Path]] = None):
+    assets = (
+        {a["id"]: a for a in template_assets(template_dir, overrides=overrides)}
+        if (template_dir / "template.json").is_file() else {}
+    )
 
     def asset(asset_id: str) -> Markup:
         """The path of one of the template's declared images when the file is
@@ -401,7 +470,9 @@ def plain(value: Any) -> Markup:
     return Markup(text)
 
 
-def jinja_environment(template_dir: Path, dataset: Optional[dict] = None) -> SandboxedEnvironment:
+def jinja_environment(
+    template_dir: Path, dataset: Optional[dict] = None, overrides: Optional[Dict[str, Path]] = None,
+) -> SandboxedEnvironment:
     """Includes resolve inside the template folder only (FileSystemLoader
     refuses ``..``).  Use includes, not macros, for reusable parts: a macro's
     result is printed through ``<< >>`` and so escaped like data."""
@@ -414,7 +485,7 @@ def jinja_environment(template_dir: Path, dataset: Optional[dict] = None) -> San
         trim_blocks=True, lstrip_blocks=True, keep_trailing_newline=True,
     )
     try:
-        asset = _asset_factory(template_dir)
+        asset = _asset_factory(template_dir, overrides)
     except (TemplateAssetError, ValueError, OSError) as exc:
         raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
     env.globals.update(
@@ -424,8 +495,10 @@ def jinja_environment(template_dir: Path, dataset: Optional[dict] = None) -> San
     return env
 
 
-def render_source(template_dir: Path, entry: str, dataset: dict) -> str:
-    env = jinja_environment(template_dir, dataset)
+def render_source(
+    template_dir: Path, entry: str, dataset: dict, overrides: Optional[Dict[str, Path]] = None,
+) -> str:
+    env = jinja_environment(template_dir, dataset, overrides)
     try:
         # Quarto reads the YAML front matter only at the very top.
         return env.get_template(entry).render(**dataset).lstrip()
@@ -520,8 +593,12 @@ def render(
     timeout: int = 300,
     quarto: str = "quarto",
     strict_evidence: bool = False,
+    asset_files: Optional[Dict[str, Path]] = None,
 ) -> Dict[str, Path]:
     """Render ``dataset`` with the template into ``out_dir`` → {format: file}.
+
+    ``asset_files`` ({asset id: file}, v2.431.0): uploaded template images,
+    used in place of (or instead of a missing) server-installed file.
 
     ``strict_evidence`` (an ISSUED report): an evidence image that cannot be
     found fails the render instead of being dropped.  A draft preview drops it
@@ -533,7 +610,7 @@ def render(
         raise RenderError("No format to render.")
     if not re.match(r"^[A-Za-z0-9._-]{1,120}$", basename):
         raise RenderError("Unusable output file name.")
-    missing_assets = missing_required_assets(template_dir)
+    missing_assets = missing_required_assets(template_dir, asset_files)
     if missing_assets:
         raise RenderError(missing_assets_message(template_dir.name, missing_assets))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -542,7 +619,8 @@ def render(
         work = Path(tmp) / "work"
         work.mkdir()
         _copy_template(template_dir, work)
-        _apply_replacements(template_dir, work)
+        _place_overrides(template_dir, work, asset_files)
+        _apply_replacements(template_dir, work, asset_files)
         (work / "_bluestick").mkdir(exist_ok=True)
         shutil.copyfile(FIELDS_FILTER, work / "_bluestick" / "fields.lua")
         missing = _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))
@@ -554,7 +632,7 @@ def render(
             )
         (work / "data.json").write_text(json.dumps(dataset, ensure_ascii=False), encoding="utf-8")
         source_name = "report.qmd"
-        (work / source_name).write_text(render_source(template_dir, entry, dataset), encoding="utf-8")
+        (work / source_name).write_text(render_source(template_dir, entry, dataset, asset_files), encoding="utf-8")
         if entry != source_name and (work / entry).exists():
             (work / entry).unlink()
         # What the source bundle holds — taken now, before any format adds

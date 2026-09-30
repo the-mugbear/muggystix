@@ -62,8 +62,40 @@ export interface ReportTemplateAsset {
   formats: ClientReportFormat[];
   /** When installed, used in place of this template file (e.g. `reference.docx`). */
   replaces?: string | null;
-  /** The file is installed where the manifest says. */
+  /** The file is available to the render: installed on the server or uploaded. */
   present: boolean;
+  /** v5.311.0 — installed in the server's template folder. */
+  installed?: boolean;
+  /** Where the file the render uses comes from: an upload wins over the server's. */
+  source?: 'uploaded' | 'installed' | null;
+  /** png, jpeg, docx (uploadable); svg, gif, webp (server-installed only). */
+  kind?: string;
+  uploadable?: boolean;
+  /** The template's guidance for an upload. */
+  max_bytes?: number | null;
+  min_width?: number | null;
+  min_height?: number | null;
+  /** "W:H" — a different shape is accepted with a warning. */
+  aspect?: string | null;
+  upload?: ReportTemplateAssetUpload | null;
+}
+
+/** The current upload of a template file (v5.311.0). */
+export interface ReportTemplateAssetUpload {
+  kind?: string | null;
+  size?: number | null;
+  width?: number | null;
+  height?: number | null;
+  sha256?: string | null;
+  original_filename?: string | null;
+  uploaded_at?: string | null;
+  uploaded_by?: string | null;
+}
+
+/** The template after an upload or removal, and what to know about the file. */
+export interface ReportTemplateAssetChange {
+  template: ReportTemplate;
+  warnings: string[];
 }
 
 export interface ReportTemplate {
@@ -181,6 +213,33 @@ export const reviseClientReport = async (id: number): Promise<ClientReport> =>
 
 export const listReportTemplates = async (): Promise<ReportTemplate[]> =>
   (await api.get<ReportTemplate[]>(`${base()}/templates`)).data;
+
+/** Upload a file a template expects (global administrators; instance-wide). */
+export const uploadReportTemplateAsset = async (
+  template: string, assetId: string, file: File,
+): Promise<ReportTemplateAssetChange> => {
+  const form = new FormData();
+  form.append('file', file);
+  // The client's default Content-Type is JSON, and axios then serialises a
+  // FormData body AS JSON — the file never arrives (422 "field required").
+  return (await api.put<ReportTemplateAssetChange>(
+    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`, form,
+    { headers: { 'Content-Type': 'multipart/form-data' } },
+  )).data;
+};
+
+/** Remove an uploaded template file (it falls back to a server-installed one). */
+export const removeReportTemplateAsset = async (template: string, assetId: string): Promise<ReportTemplateAssetChange> =>
+  (await api.delete<ReportTemplateAssetChange>(
+    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}`,
+  )).data;
+
+/** The image the render would use for a template file (authenticated → blob). */
+export const fetchReportTemplateAssetPreview = async (template: string, assetId: string): Promise<Blob> =>
+  (await api.get(
+    `${base()}/templates/${encodeURIComponent(template)}/assets/${encodeURIComponent(assetId)}/preview`,
+    { responseType: 'blob' },
+  )).data as Blob;
 
 /** A folder under report-templates/ that is not offered, and why (v2.409.0). */
 export interface ReportTemplateProblem {

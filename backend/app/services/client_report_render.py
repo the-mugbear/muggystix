@@ -96,6 +96,7 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
         strict_evidence=issued,
+        asset_files=templates.asset_files(template),
     )
 
 
