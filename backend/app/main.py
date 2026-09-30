@@ -282,6 +282,10 @@ _OPENAPI_TAGS = [
         "description": "An agent works a plan (draft or in progress) and records what it ran.  `POST /agent/execution-sessions/start` → `GET /agent/test-plans/{id}/execution-context` → per test `POST .../test-results` (upserts by `test_index`) → `POST .../complete` per entry. `POST .../sanity-check` records an optional target check as evidence. Humans watch progress via `GET .../execution-progress`.",
     },
     {
+        "name": "agent-proposals",
+        "description": "Evidence and proposals (v2.436.0).  `POST /agent/evidence` records what you ran against a host and what came back — directly, never changed (raw output kept as a file; `GET /agent/evidence/{id}/raw`).  A change to what the team concluded is a PROPOSAL a person accepts or rejects: `POST /agent/proposals/finding-text`, `/finding`, `/observation` (promote or dismiss a scanner observation), `/endpoint-status`; `GET /agent/proposals` shows what happened to them.",
+    },
+    {
         "name": "agent-scope",
         "description": "Scope reads and uploads.  `GET /agent/scopes/{scope_id}/subnets` and `/domains` say what is in scope; `hosts.ndjson`, `live-hosts.txt` and `web-targets.txt` are target files to save and feed to a scanner (project auditor or higher).  `POST /agent/uploads` (multipart) → `GET /agent/uploads/{job_id}`.",
     },

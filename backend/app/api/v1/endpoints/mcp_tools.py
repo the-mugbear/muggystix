@@ -1275,6 +1275,198 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    # --- evidence and proposals (v2.436.0) ---
+    # What the agent DID is recorded directly; a change to what the team
+    # CONCLUDED (report text, a finding, an observation's promotion or
+    # dismissal, an endpoint's status) is a proposal a person decides.
+    "record_evidence": {
+        "description": (
+            "Record what you ran against a host and what came back — the tool, the "
+            "command verbatim, the outcome, a one-line summary, and the raw output "
+            "(stored as a file, up to 5 MB). No test plan needed. Recorded as it "
+            "happened and never changed; cite it from proposals (evidence_ids)."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/evidence",
+        "body_params": [
+            "host_id", "finding_id", "finding_host_id", "tool", "command", "outcome",
+            "summary", "raw_output", "observed_ip", "executed_at", "agent_model",
+        ],
+        "additive": True,
+        "idempotent": False,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                **HOST_ID_PROP,
+                "finding_id": {"type": "integer", "minimum": 1, "description": "The finding this bears on, if any."},
+                "finding_host_id": {"type": "integer", "minimum": 1, "description": "The finding endpoint (vhost) it ran against, if any."},
+                "tool": {"type": "string", "minLength": 1, "maxLength": 100, "description": "The tool or method (nmap, curl, a script…)."},
+                "command": {"type": "string", "maxLength": 10000, "description": "The command as actually run, verbatim."},
+                "outcome": {
+                    "type": "string",
+                    "enum": ["finding", "no_finding", "inconclusive", "failed", "info"],
+                    "description": (
+                        "finding: it demonstrated an issue; no_finding: it ran and the issue was "
+                        "not there; inconclusive; failed: it could not run; info: context, not a test."
+                    ),
+                },
+                "summary": {"type": "string", "minLength": 1, "maxLength": 10000, "description": "What it showed, in a sentence or two."},
+                "raw_output": {"type": "string", "description": "The tool's output (up to 5 MB)."},
+                "observed_ip": {"type": "string", "maxLength": 45, "description": "The address actually reached."},
+                "executed_at": {"type": "string", "format": "date-time"},
+                **AGENT_MODEL_PROP,
+            },
+            "required": ["host_id", "tool", "outcome", "summary"],
+            "additionalProperties": False,
+        },
+    },
+    "list_evidence": {
+        "description": (
+            "Evidence records, newest first, with a 2 KB preview of each raw output. "
+            "The full output is a file: curl GET /agent/evidence/{id}/raw with your key."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/evidence",
+        "query_params": ["host_id", "finding_id", "limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "host_id": {"type": "integer", "minimum": 1},
+                "finding_id": {"type": "integer", "minimum": 1},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                "offset": {"type": "integer", "minimum": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
+    "propose_finding_text": {
+        "description": (
+            "Propose report text for a finding — a person accepts (then may edit) or "
+            "rejects it; nothing changes until then. One proposal per field; several "
+            "may stand side by side (e.g. from different models). Fields: description, "
+            "impact, recommendation, references, steps_to_reproduce (Markdown), cvss_vector."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/finding-text",
+        "body_params": ["finding_id", "fields", "rationale", "evidence_ids", "agent_model"],
+        "additive": True,
+        "idempotent": False,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "finding_id": {"type": "integer", "minimum": 1},
+                "fields": {
+                    "type": "object",
+                    "additionalProperties": {"type": "string"},
+                    "description": "Field name → proposed text.",
+                },
+                "rationale": {"type": "string", "maxLength": 10000, "description": "Why — what the reviewer should know."},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                **AGENT_MODEL_PROP,
+            },
+            "required": ["finding_id", "fields"],
+            "additionalProperties": False,
+        },
+    },
+    "propose_finding": {
+        "description": (
+            "Propose a new finding on one or more hosts — a person accepts or rejects it. "
+            "Cite the evidence records that support it."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/finding",
+        "body_params": ["title", "severity", "host_ids", "status", "report_text", "rationale", "evidence_ids", "agent_model"],
+        "additive": True,
+        "idempotent": False,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "minLength": 1, "maxLength": 500},
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+                "host_ids": {"type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 1000},
+                "status": {"type": "string", "enum": ["open", "confirmed"], "default": "open"},
+                "report_text": {"type": "object", "additionalProperties": {"type": "string"}},
+                "rationale": {"type": "string", "maxLength": 10000},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                **AGENT_MODEL_PROP,
+            },
+            "required": ["title", "severity", "host_ids"],
+            "additionalProperties": False,
+        },
+    },
+    "propose_observation": {
+        "description": (
+            "Propose promoting a scanner observation to a confirmed finding (or joining "
+            "its finding), or dismissing it as a false positive — a person decides. "
+            "scope: host (this host only; the default for dismiss) or issue (every host "
+            "carrying it; the default for promote)."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/observation",
+        "body_params": ["vulnerability_id", "action", "scope", "severity", "summary", "rationale", "evidence_ids", "agent_model"],
+        "additive": True,
+        "idempotent": False,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vulnerability_id": {"type": "integer", "minimum": 1, "description": "The scanner observation's id."},
+                "action": {"type": "string", "enum": ["promote", "dismiss"]},
+                "scope": {"type": "string", "enum": ["host", "issue"]},
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
+                "summary": {"type": "string", "maxLength": 2000},
+                "rationale": {"type": "string", "maxLength": 10000},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                **AGENT_MODEL_PROP,
+            },
+            "required": ["vulnerability_id", "action"],
+            "additionalProperties": False,
+        },
+    },
+    "propose_endpoint_status": {
+        "description": (
+            "Propose a finding endpoint's status — open, remediated, retest or "
+            "false_positive (this endpoint only) — for a person to decide."
+        ),
+        "method": "POST",
+        "path": "/api/v1/agent/proposals/endpoint-status",
+        "body_params": ["finding_id", "finding_host_id", "host_status", "rationale", "evidence_ids", "agent_model"],
+        "additive": True,
+        "idempotent": False,
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "finding_id": {"type": "integer", "minimum": 1},
+                "finding_host_id": {"type": "integer", "minimum": 1},
+                "host_status": {"type": "string", "enum": ["open", "remediated", "retest", "false_positive"]},
+                "rationale": {"type": "string", "maxLength": 10000},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                **AGENT_MODEL_PROP,
+            },
+            "required": ["finding_id", "finding_host_id", "host_status"],
+            "additionalProperties": False,
+        },
+    },
+    "list_proposals": {
+        "description": "Proposals in this project and what happened to them (pending / accepted / rejected / superseded).",
+        "method": "GET",
+        "path": "/api/v1/agent/proposals",
+        "query_params": ["status", "kind", "finding_id", "mine", "limit", "offset"],
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "status": {"type": "string", "enum": ["pending", "accepted", "rejected", "superseded"]},
+                "kind": {
+                    "type": "string",
+                    "enum": ["finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status"],
+                },
+                "finding_id": {"type": "integer", "minimum": 1},
+                "mine": {"type": "boolean", "description": "Only this session's proposals."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
+                "offset": {"type": "integer", "minimum": 0},
+            },
+            "additionalProperties": False,
+        },
+    },
     # --- assist writes (allowed iff the operator's project role permits writes) ---
     "assist_add_note": {
         "description": (

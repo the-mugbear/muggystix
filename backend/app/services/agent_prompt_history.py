@@ -21,6 +21,20 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "3.4.0",
+        "app_version": "2.436.0",
+        "summary": (
+            "Evidence and proposals. POST /agent/evidence (MCP record_evidence) "
+            "records what the agent ran against a host and what came back — no plan "
+            "needed; raw output kept as a file. A change to what the team concluded "
+            "is now a proposal a person accepts or rejects: finding report text, a "
+            "new finding, promoting or dismissing a scanner observation, an "
+            "endpoint's status (propose_finding_text / propose_finding / "
+            "propose_observation / propose_endpoint_status; list_proposals shows "
+            "the decisions). agent_model is accepted on each."
+        ),
+    },
+    {
         "version": "3.3.0",
         "app_version": "2.435.0",
         "summary": (

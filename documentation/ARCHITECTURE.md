@@ -123,7 +123,7 @@ backend/app/
 │       ├── agent_assist_operations.py  # agent reads of Operations (workbench, Worth a look, terrain), Evidence gaps, scan compare
 │       ├── agent_assist_reporting.py   # agent reads of scanner observations and client reports
 │       ├── mcp_assist.py          # POST /mcp — MCP transport (loops back in-process; no authz of its own)
-│       ├── mcp_tools.py           # declarative MCP tool registry (67 tools → /agent/* routes)
+│       ├── mcp_tools.py           # declarative MCP tool registry (68 tools → /agent/* routes)
 │       ├── mcp_telemetry.py       # admin — per-tool MCP outcomes
 │       ├── agent_sessions.py      # JWT — list / end / resume a project's agent sessions
 │       ├── agent_activity.py      # JWT, project-scoped (NOT under /agent) — human-facing read of the agent API call log
@@ -181,6 +181,10 @@ backend/app/
 │   │                         # MCP) and the one host/note serializer (`note_load_options`)
 │   ├── finding_service.py    # the findings spine: promote/dismiss (issue- or host-scoped),
 │   │                         # per-endpoint state, history
+│   ├── finding_actions.py    # the finding writes a click AND an accepted proposal run:
+│   │                         # authored-content rule (FindingActor), report text, promote/dismiss
+│   ├── proposal_service.py, agent_evidence_service.py
+│   │                         # agent proposals (a person accepts/rejects) + evidence records
 │   ├── scanner_observation_service.py, vuln_identity.py, misconfig_checks.py, misconfig_backfill.py
 │   │                         # scanner rows grouped by issue (issue_key / check_id), bulk
 │   │                         # promote; the weakness catalog and its backfill
@@ -373,16 +377,25 @@ For the senior-tester case where the operator just wants to *query* a project �
 
 1. **`POST /projects/{id}/assist/start`** (JWT user, `assist.py`) — the one session start since v2.433.0 — mints the project session and returns the key plus the agent prompt. It requires only `auditor` (lowered from `analyst` in v2.308.0 — safe because a key carries its operator's permissions). Sessions are listed and ended from the project's agent-sessions surface.
 2. The agent reads through `/agent/assist/*` (`agent_assist.py`): context, hosts (list / count / detail / vulnerabilities / notes / testing / web interfaces), findings, posture, patterns, segments, coverage, vocabulary, names, scans, ingestion issues, plus the NDJSON downloads (`hosts.ndjson`, `report-context.ndjson`); and, since v2.428.0, what the other pages show — the Operations workbench, Worth a look and terrain, Evidence gaps and scan compare (`agent_assist_operations.py`), scanner observations by issue and client reports (`agent_assist_reporting.py`). **Each agent read wraps the service its page uses** (`workbench_service`, `scan_diff_service`, `host_detail_service`, `scanner_observation_service`, `client_report_service`…), so an agent and a page cannot disagree on a number; read roles equal the page's (`deps.AGENT_READ_ROLE_OVERRIDES`). The same host query DSL as the Hosts page drives `q=`.
-3. **Reads need project membership; bulk exports need `auditor`; writes are whatever the operator's role allows.** There is no "assist-scoped" key and no capability grant (both gone — v2.337.0 / v2.309.0): an analyst's assist session can write notes, review status and hostname/OS corrections; an auditor's or viewer's cannot, because its operator cannot. Nothing narrows writes to "assigned" hosts. An agent cannot triage (promote or dismiss) a finding under any role.
+3. **Reads need project membership; bulk exports need `auditor`; writes are whatever the operator's role allows.** There is no "assist-scoped" key and no capability grant (both gone — v2.337.0 / v2.309.0): an analyst's assist session can write notes, review status and hostname/OS corrections; an auditor's or viewer's cannot, because its operator cannot. Nothing narrows writes to "assigned" hosts. An agent cannot triage (promote or dismiss) a finding or change its report text under any role — it PROPOSES (see §5.7).
 4. **Managed and reviewable from one page per session** (v2.432.0 / 5.312.0). Agent Sessions (`/agent-activity`) leads with the live sessions — each with its key state, last call, the work it opened (`phases` on the row, built in `agent_session_service._attach_target_labels` from the same three queries as its target label) and Resume / End — then the history (there is no "left open" section: ending a session abandons its open runs). `/agent-sessions/{id}` (keyed by the SESSION id) adds the notes the agent wrote (its only durable output) and the per-session API-call feed, both keyed by the session's `assist_sessions` detail row, whose id the session row names (`assist_session_id`); `/assist-sessions/{id}` redirects through it. End / Resume rights come from the row (`can_end` / `can_resume`, the rules the routes enforce), never from the global role. A session whose key has expired reports as `ended` immediately — derived on read, with an hourly sweep converging the stored column (`assist_session_service`).
 
 ### 5.6 MCP transport (Workflow F — all of the above, as tools)
 
 Every workflow above is also reachable over the **Model Context Protocol** at `POST /api/v1/mcp` (`mcp_assist.py` for the transport, `mcp_tools.py` for the declarative registry). A `tools/call` loops back into the same `/agent/*` endpoint **in-process** via an ASGI transport, forwarding the caller's `X-API-Key`, so auth, the operator-role check, row scope, and the audit log run unchanged — the MCP layer makes no authorization decision of its own.
 
-`tools/list` returns the WHOLE catalogue to every session (67 tools; the per-workflow filter went with the per-workflow keys in v2.337.0). Listing was always presentation rather than authorisation — the endpoint behind a tool decides on every call. Bulk, file-shaped endpoints (NDJSON streams, target lists, `POST /agent/uploads`) are deliberately *not* tools.
+`tools/list` returns the WHOLE catalogue to every session (68 tools at 2.436.0; the per-workflow filter went with the per-workflow keys in v2.337.0). Listing was always presentation rather than authorisation — the endpoint behind a tool decides on every call. Bulk, file-shaped endpoints (NDJSON streams, target lists, `POST /agent/uploads`) are deliberately *not* tools.
 
 See [MCP.md](MCP.md) for the transport details, the certificate (local root CA + fingerprint check), the tool catalogue, and the guardrail model.
+
+### 5.7 Evidence records and proposals (v2.436.0)
+
+The rule: an agent's change is a **proposal** when it alters what the team has concluded or what the client report says; everything else it writes is direct and attributed to its session.
+
+- **Evidence records** (`evidence_records`, `agent_evidence_service`; `POST /agent/evidence`) are direct and immutable: host, optional finding / endpoint, tool, command, outcome, summary, session + model + client. Raw output is a file under `uploads/evidence/<project>/` (5 MB cap) with a 2,000-character preview on the row. No plan or run needed — this is how ad-hoc agent work leaves an audit trail.
+- **Proposals** (`agent_proposals`, `proposal_service`; `POST /agent/proposals/*`) have five kinds: `finding_text` (one row per report field), `finding_create`, `observation_promote`, `observation_dismiss`, `endpoint_status`. Each keeps its payload, rationale, cited evidence ids and attribution (`source` agent | llm_draft, session, model, client, prompt version).
+- **Accepting runs the same code as the click** (`finding_actions.py`: `apply_report_text`, `promote_or_dismiss_vulnerability`; `FindingService.create_finding` / `set_endpoint_status`) as the person accepting, inside a savepoint. So the authored-content rule decides who may accept report text, and a refusal leaves the proposal pending with the reason in `error` (not for a 403, which is about the caller). Accepting a field's text supersedes that field's other pending proposals; several stand side by side until then, so output from different models can be compared.
+- Reviewer routes are project-scoped (`proposals.py`: list, summary, accept, reject, bulk; evidence reads); agent routes are in `agent_proposals.py`.
 
 ---
 

@@ -227,6 +227,8 @@ The template lives on the operator's machine and the agent fills it there
 | The synopsis material — condition, patterns | `assist_get_posture`, `assist_get_patterns` | **have** (2.294.0) |
 | **A promoted finding's write-up: its evidence note, comment thread, and attachments** | `assist_get_finding` | **have** (2.294.0) |
 | **The screenshots themselves** | `GET /agent/assist/attachments/{id}` — curl, not a tool | **have** (2.294.0) |
+| **Write or improve a finding's report text** | `propose_finding_text` — a proposal per field, accepted or rejected by a person in the app | **have** (2.436.0) |
+| **Record what was run and what it showed** | `record_evidence` / `list_evidence` | **have** (2.436.0) |
 
 **`assist_get_finding`** is the tool the report stage turns on. A promoted
 finding carries an `evidence_annotation_id` (the note that justified promotion),

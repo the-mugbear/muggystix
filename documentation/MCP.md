@@ -148,6 +148,14 @@ the operator says they are finished — it revokes the key; takes an optional
 catalogue lacks, for a curator — it grants nothing), **`get_upload_job`** (poll
 an upload's parse) and **`submit_feedback`**.
 
+**Evidence and proposals (v2.436.0).** `record_evidence` / `list_evidence`
+record and read what the agent ran against a host and what came back (the full
+raw output is a file: `curl` `GET /agent/evidence/{id}/raw`). A change to what
+the team concluded is a proposal a person accepts or rejects in the app:
+`propose_finding_text`, `propose_finding`, `propose_observation`,
+`propose_endpoint_status`; `list_proposals` shows the decisions. Each creates a
+row per call, so none is marked idempotent.
+
 Each tool also carries a `workflows` grouping tag — `assist`, `plan_generation`,
 `execution` or `scope` (scope reads and uploads; it was `recon` until the recon
 runs were removed) — which the tool reference page groups by. It is

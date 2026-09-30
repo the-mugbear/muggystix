@@ -12,6 +12,8 @@ from app.api.v1.endpoints import (
     # Mounted individually below so each gets its own Swagger/Redoc tag —
     # the old single "agent-api" tag made the agent surface unscannable.
     agent_browse, agent_test_plans, agent_execution, agent_recon,
+    # v2.436.0 — agent evidence records + proposals (agent side / reviewer side).
+    agent_proposals, proposals,
     # v2.64.0 — fourth agent surface: read-only interactive assist.
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
@@ -124,6 +126,12 @@ api_router.include_router(
     agent_recon.router, prefix="/agent", tags=["agent-scope"],
     dependencies=_agent_operator_access,
 )
+# v2.436.0 — evidence the agent records directly, and the changes to what
+# the team concluded that it proposes for a person to decide.
+api_router.include_router(
+    agent_proposals.router, prefix="/agent", tags=["agent-proposals"],
+    dependencies=_agent_operator_access,
+)
 # v2.428.0 — the Findings hub's scanner-observations view and the Reports
 # page, for agents (wrapping the same services as those pages).
 api_router.include_router(
@@ -210,6 +218,7 @@ project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-no
 # one that would swallow them.
 project_router.include_router(findings_bulk.router, prefix="", tags=["findings-bulk"])
 project_router.include_router(findings.router, prefix="", tags=["findings"])
+project_router.include_router(proposals.router, prefix="", tags=["proposals"])
 # v2.386.0 — scanner observations by issue, and their bulk promotion.
 project_router.include_router(scanner_observations.router, prefix="", tags=["scanner-observations"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])

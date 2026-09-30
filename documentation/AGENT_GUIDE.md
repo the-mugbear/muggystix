@@ -119,9 +119,9 @@ BlueStick does not inspect the operator's machine and does not choose your tools
 |---|---|
 | **Client** (the harness — `generated_by_tool`) | Over MCP, the `initialize` handshake's `clientInfo` (name and version, e.g. `claude-code 2.1.0`), when the handshake carries your key. A curl agent: the first call's `User-Agent` (e.g. `curl/8.5.0`); a handshake name replaces it, never the other way round. You send nothing for this. |
 | **Prompt version** | Set by the server when the session starts or is resumed — the version of the instructions you were given. You send nothing for this. |
-| **Model** (`generated_by_model`) | Your own report, the one thing no protocol carries. Pass the optional `agent_model` (e.g. `"claude-opus-5-5"`) on `POST /agent/test-plans` (MCP `create_test_plan`), `POST /agent/execution-sessions/start` (`start_execution`) and `POST /agent/session/end` (`end_session`). |
+| **Model** (`generated_by_model`) | Your own report, the one thing no protocol carries. Pass the optional `agent_model` (e.g. `"claude-opus-5-5"`) on `POST /agent/test-plans` (MCP `create_test_plan`), `POST /agent/execution-sessions/start` (`start_execution`), `POST /agent/evidence` (`record_evidence`), each `POST /agent/proposals/*` (`propose_*`) and `POST /agent/session/end` (`end_session`). |
 
-The session keeps the last model reported; a test plan and an execution run each take a snapshot of the session's attribution (client, model, prompt version) when they are created. **Pass `agent_model` on those three calls** — a plan or run registered without it is recorded with no model.
+The session keeps the last model reported; a test plan, an execution run, an evidence record and a proposal each take a snapshot of the session's attribution (client, model, prompt version) when they are created. **Pass `agent_model` on those calls** — a record made without it carries the session's last-reported model, or none. Several proposals for one field from different models stand side by side so the operator can compare them; the model is what tells them apart.
 
 ### Plans describe intent — you translate at execution time
 
@@ -134,6 +134,21 @@ A plan entry's `proposed_tests` may include a sample command, but treat the desc
 | List listening ports on the local host | `ss -tlnp` | `powershell -Command "Get-NetTCPConnection -State Listen \| Format-Table"` |
 
 When you record the test result, put the *actual command you ran* in `command_run` so a reviewer can correlate the plan's intent with what happened on this operator's machine. The audit trail is then full: BlueStick has the inbound API calls, the session's attribution, and the agent-reported `command_run` per test.
+
+### Evidence and proposals — what you did, and what you think it means
+
+**Evidence (direct).** `POST /agent/evidence` (MCP `record_evidence`) records a command you ran against a host and what came back: `host_id`, `tool`, the `command` verbatim, `outcome` (`finding` · `no_finding` · `inconclusive` · `failed` · `info`), a one-line `summary`, and the `raw_output` (up to 5 MB, stored as a file; the record carries a 2,000-character preview). Optional `finding_id` / `finding_host_id` when it bears on a finding, `observed_ip`, `executed_at`. No plan or run is needed, and a record is never changed afterwards — it is the audit trail. `GET /agent/evidence` (`list_evidence`) lists them; the full output is `GET /agent/evidence/{id}/raw` (curl — it is a file).
+
+**Proposals (a person decides).** A change to what the team has CONCLUDED or what the CLIENT REPORT says is never made directly. You propose it; the operator or a colleague accepts (and may edit) or rejects it, and on accept it runs as them:
+
+| Proposal | Route (MCP tool) | Body |
+|---|---|---|
+| Report text for a finding | `POST /agent/proposals/finding-text` (`propose_finding_text`) | `finding_id`, `fields` {`description` · `impact` · `recommendation` · `references` · `steps_to_reproduce` · `cvss_vector`: text} — one proposal per field |
+| A new finding | `POST /agent/proposals/finding` (`propose_finding`) | `title`, `severity`, `host_ids`, optional `status` (`open` · `confirmed`), `report_text` |
+| Promote or dismiss a scanner observation | `POST /agent/proposals/observation` (`propose_observation`) | `vulnerability_id`, `action` (`promote` · `dismiss`), optional `scope` (`host` · `issue`), `severity`, `summary` |
+| An endpoint's status | `POST /agent/proposals/endpoint-status` (`propose_endpoint_status`) | `finding_id`, `finding_host_id`, `host_status` (`open` · `remediated` · `retest` · `false_positive`) |
+
+Every proposal takes an optional `rationale` (what the reviewer should know) and `evidence_ids` (records from this project that support it) — cite them. Proposing changes nothing, so it never waits; `GET /agent/proposals` (`list_proposals`, `mine=true` for this session's) shows what was decided: `pending`, `accepted` (`result_finding_id` for a new finding), `rejected` (with the reviewer's `decision_note`), or `superseded` (another proposal for the same field was accepted first). Everything else you write — notes, review status, hostname/OS corrections, uploads, plans, test results, feedback — is direct and carries your session.
 
 ### What the user sees
 
@@ -561,6 +576,10 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | POST | `/agent/session/end` | **End the session — the last call you make, only when the operator says they are finished.** Revokes your key; `409` while an execution run you opened is still active (complete those first). A run left paused (another session took its plan over) is marked `abandoned` when the session ends, its results kept. Over MCP: `end_session`. Optional `notes` |
 | POST | `/agent/uploads` | **Submit scanner output here** — multipart upload, any supported tool format; no run needed. Form fields: `file`, optional `tool_name`, `command_run`, `batch` (see Upload batches & duplicates), and `skip_informational=true|false` (Nessus only, v2.341.0): drop severity-0 report items instead of storing a vulnerability row each — ports are still derived from them. Omit it to follow the project's setting; do not set it on your own initiative, it is the operator's choice. `409 duplicate_scan` = already ingested |
 | GET | `/agent/uploads/{job_id}` | Poll an upload's parse status — only jobs this session uploaded (404 otherwise). MCP `get_upload_job` |
+| POST | `/agent/evidence` | Record a command you ran against a host and what came back — direct, never changed (see Evidence and proposals). MCP `record_evidence` |
+| GET | `/agent/evidence` · `/agent/evidence/{id}/raw` | Evidence records (newest first; `host_id`, `finding_id` filters) · one record's full raw output. MCP `list_evidence` |
+| POST | `/agent/proposals/finding-text` · `/finding` · `/observation` · `/endpoint-status` | Propose a change a person decides (see Evidence and proposals). MCP `propose_finding_text` · `propose_finding` · `propose_observation` · `propose_endpoint_status` |
+| GET | `/agent/proposals` | Proposals and their decisions (`status`, `kind`, `finding_id`, `mine`). MCP `list_proposals` |
 | POST | `/agent/tool-suggestions` | Propose a tool for BlueStick's catalogue (201) — one you used or needed that `list_tools` lacks. Catalogue intake only: it grants or withholds nothing. The response's `already_catalogued` says whether the tool was already there. |
 
 <!-- agents:end -->
@@ -989,7 +1008,7 @@ The operator drives every action; you assist their query.
 
 - Create notes or change follow status when `can_write_project_data` is false. Cannot assign hosts to anyone, ever.
 - Access other projects, or list other operators' assist sessions.
-- **Promote, dismiss or otherwise triage a finding.** There is no agent route for it — that judgement is the operator's (and theirs can be about one host or the whole issue). You can READ findings (`/agent/assist/findings`, `/agent/assist/findings/{id}`); if a scanner observation looks real or looks like a false positive, say so in a note on the host with your evidence.
+- **Promote, dismiss or otherwise triage a finding directly.** That judgement is a person's: PROPOSE it (`POST /agent/proposals/observation`, `/agent/proposals/endpoint-status`, `/agent/proposals/finding`) with your evidence records, and the operator or a colleague accepts or rejects it. The same holds for a finding's report text (`/agent/proposals/finding-text`).
 - Archive or delete a test plan — that is the operator's, from the Test Plans page.
 
 ### Tone

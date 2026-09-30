@@ -7,7 +7,6 @@ itself (delete), a comment's text — is further limited to its author (or a
 project admin, for the finding); triage stays open to any analyst.
 """
 import logging
-from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
@@ -17,13 +16,15 @@ from app.db.session import get_db
 from app.db.models import Annotation, Host
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingStatusHistory
-from app.db.models_auth import User, UserRole
-from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.db.models_auth import User
+from app.db.models_project import Project, ProjectRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
-from app.core.security import check_permissions, log_audit_event
-from app.services.cvss_service import CvssError, normalize_cvss
+from app.core.security import log_audit_event
 from app.services.finding_service import FindingService, validate_severity
+from app.services.finding_actions import (
+    FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
+)
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -47,45 +48,18 @@ logger = logging.getLogger(__name__)
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-@dataclass(frozen=True)
-class _Viewer:
-    """The caller, as far as authored-content rights go (v2.375.0)."""
-    user_id: int
-    is_project_admin: bool
-
-    def may_modify(self, finding: Finding) -> bool:
-        return self.is_project_admin or (
-            finding.created_by_id is not None and finding.created_by_id == self.user_id
-        )
+# The authored-content rule lives in the service (v2.436.0) so an accepted
+# agent proposal applies it exactly as this route does.
+_Viewer = FindingActor
+_require_modify = require_modify
 
 
 def get_finding_viewer(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
-) -> _Viewer:
-    if current_user.role == UserRole.ADMIN:
-        return _Viewer(user_id=current_user.id, is_project_admin=True)
-    role = (
-        db.query(ProjectMembership.role)
-        .filter(
-            ProjectMembership.project_id == project.id,
-            ProjectMembership.user_id == current_user.id,
-        )
-        .scalar()
-    )
-    return _Viewer(
-        user_id=current_user.id,
-        is_project_admin=bool(role) and check_permissions(role, ProjectRole.ADMIN.value),
-    )
-
-
-def _require_modify(viewer: _Viewer, finding: Finding, what: str) -> None:
-    if not viewer.may_modify(finding):
-        raise HTTPException(
-            status_code=403,
-            detail=f"Only the finding's author or a project admin can {what}.",
-        )
+) -> FindingActor:
+    return finding_actor(db, project.id, current_user)
 
 
 def _report_text(finding: Finding) -> FindingReportText:
@@ -314,35 +288,13 @@ def promote_vulnerability(
     if not vuln:
         raise HTTPException(status_code=404, detail="Vulnerability not found in this project")
     resolve_project_assignee(db, project.id, body.owner_id)
-    status = body.status or FindingStatus.CONFIRMED.value
-    # v2.360.0 — a false-positive dismissal is about THIS host unless the
-    # caller says the whole issue.  v2.366.0 — a PROMOTION may be too
-    # (``scope: "host"``): "confirmed" is then recorded for the host that was
-    # looked at, not for every host carrying the issue.  The API default for a
-    # promotion is unchanged ("issue"), so agents and existing callers behave
-    # as before; the inspector's dialog sends its choice explicitly.  Accepted
-    # risk stays issue-wide: it is a decision about the issue, not a host.
-    is_fp = status == FindingStatus.FALSE_POSITIVE.value
-    scope = body.scope or ("host" if is_fp else "issue")
-    if scope == "host" and status == FindingStatus.ACCEPTED_RISK.value:
-        raise HTTPException(
-            status_code=422,
-            detail="scope='host' does not apply to accepted risk, which is a decision "
-                   "about the issue on every host.",
-        )
-    svc = FindingService(db)
-    if scope == "host" and is_fp:
-        finding = svc.dismiss_vulnerability_on_host(
-            vuln=vuln, project_id=project.id, actor_id=current_user.id,
-            severity=body.severity, owner_id=body.owner_id, summary=body.summary,
-        )
-    else:
-        finding = svc.promote_vulnerability(
-            vuln=vuln, project_id=project.id, actor_id=current_user.id,
-            severity=body.severity, status=status,
-            owner_id=body.owner_id, summary=body.summary,
-            only_this_host=(scope == "host"),
-        )
+    # The scope rules (host vs issue, accepted risk) live in the shared
+    # service (v2.436.0), which an accepted agent proposal also calls.
+    finding = promote_or_dismiss_vulnerability(
+        db, vuln=vuln, project_id=project.id, actor_id=current_user.id,
+        severity=body.severity, status=body.status, owner_id=body.owner_id,
+        summary=body.summary, scope=body.scope,
+    )
     db.commit()
     return _serialize(_load(db, project, finding.id), viewer)
 
@@ -376,31 +328,13 @@ def update_finding(
     # being silently ignored. A non-null owner must be a valid project assignee.
     if "owner_id" in body.model_fields_set:
         finding.owner_id = resolve_project_assignee(db, project.id, body.owner_id)
-    # v2.379.0 — report text is authored content too: same rule as the title.
-    # Only a field whose value actually changes needs the right, so a client
-    # resending the whole form after a triage edit is not refused.
+    # v2.379.0 — report text is authored content too: same rule as the title
+    # (applied by the shared service, v2.436.0).
     sent = body.model_fields_set
-    changes = {}
-    for field in REPORT_TEXT_FIELDS:
-        if field in sent:
-            value = (getattr(body, field) or "").strip() or None
-            if value != getattr(finding, field):
-                changes[field] = value
-    if "cvss_vector" in sent or "cvss_score" in sent:
-        vector = body.cvss_vector if "cvss_vector" in sent else finding.cvss_vector
-        score = body.cvss_score if "cvss_score" in sent else finding.cvss_score
-        try:
-            vector, score = normalize_cvss(vector, score)
-        except CvssError as exc:
-            raise HTTPException(status_code=422, detail=str(exc))
-        if vector != finding.cvss_vector:
-            changes["cvss_vector"] = vector
-        if score != finding.cvss_score:
-            changes["cvss_score"] = score
-    if changes:
-        _require_modify(viewer, finding, "edit its report text")
-        for field, value in changes.items():
-            setattr(finding, field, value)
+    apply_report_text(
+        finding, viewer,
+        {f: getattr(body, f) for f in (*REPORT_TEXT_FIELDS, "cvss_vector", "cvss_score") if f in sent},
+    )
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
 

@@ -337,6 +337,17 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | GET | `/scanner-observations/hosts?issue_key=` | The hosts carrying one issue (`limit` ≤5000). |
 | POST | `/scanner-observations/promote` | Analyst+. `{items: [{issue_key, host_ids?}]}` — promote several issues at once, each on every host carrying it or exactly the named ones (validated all-or-nothing; 422). An issue that already has a finding JOINS it, and the bulk path never changes that finding's status. |
 
+**Agent proposals and evidence (v2.436.0).** An agent never changes what the team concluded directly: it proposes, and a person decides.
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/proposals` | Proposals, newest first. `status` (default `pending`; `accepted` · `rejected` · `superseded`), `kind` (`finding_text` · `finding_create` · `observation_promote` · `observation_dismiss` · `endpoint_status`), `finding_id`, `host_id` (its observations and endpoints), `agent_session_id`, `limit` ≤500, `offset`. A `finding_text` row carries `current_value` (the finding's text now) beside the proposed `payload.value`; every row carries its session, `agent_model`, `agent_client`, `prompt_version`, `source` (`agent` · `llm_draft`). |
+| GET | `/proposals/summary` | `{pending, by_kind}` — the pending count. |
+| POST | `/proposals/{id}/accept` | Analyst+. `{note?, edited_value?}` (`edited_value`: report text only — accept with your edit). Runs the SAME code as the equivalent click, as you: report text needs the finding's author or a project admin (403 otherwise, the proposal stays pending). Accepting report text marks that field's other pending proposals `superseded`. A refusal from the underlying action (e.g. the target changed) is kept on the proposal's `error` and the proposal stays pending; a decided one → 409. |
+| POST | `/proposals/{id}/reject` | Analyst+. `{note?}`. |
+| POST | `/proposals/bulk` | Analyst+. `{ids (≤200), action: accept|reject, note?}` — each decided on its own; returns `decided` and `failed` [{id, status_code, detail}]. |
+| GET | `/evidence` · `/evidence/{id}/raw` | Evidence records an agent made (`host_id`, `finding_id`, `agent_session_id`, `limit`, `offset`) with a 2,000-character preview · the whole raw output (text). Any member. |
+
 Renaming a finding (a changed `title`) and deleting it need the finding's author, a project admin or a global admin (responses carry `can_modify`); severity / owner / status are any analyst's. A comment is its author's only, and one with replies is kept (409).
 
 ### 4.6 Scopes & subnets
@@ -554,6 +565,20 @@ There is no run to open (recon runs and the `/agent/recon/*` routes were removed
 |---|---|---|
 | POST | `/agent/feedback` | Record structured feedback at the end of a run. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required; `test_plan_id` / `execution_session_id` / `assist_session_id` are optional body fields, checked against the project and against `source`; the project and session come from the key. |
 
+### 5.6a Evidence and proposals (v2.436.0)
+
+| Method | Path | Notes |
+|---|---|---|
+| POST | `/agent/evidence` | Record a command run against a host and its result: `host_id`, `tool`, `outcome` (`finding` · `no_finding` · `inconclusive` · `failed` · `info`), `summary`, optional `command`, `raw_output` (≤5 MB → 413; stored as a file under `uploads/evidence/<project>/`), `finding_id`, `finding_host_id`, `observed_ip`, `executed_at`, `agent_model`. Immutable — no update or delete route. |
+| GET | `/agent/evidence` · `/agent/evidence/{id}/raw` | This project's records (`host_id`, `finding_id`) · one record's raw output. |
+| POST | `/agent/proposals/finding-text` | `{finding_id, fields: {field: text}, rationale?, evidence_ids?, agent_model?}` — one proposal per field (`description`, `impact`, `recommendation`, `references`, `steps_to_reproduce`, `cvss_vector` — validated now). Returns `{proposals: [...]}`. |
+| POST | `/agent/proposals/finding` | `{title, severity, host_ids, status? (open|confirmed), report_text?, …}` — a new finding, created by the person who accepts it. |
+| POST | `/agent/proposals/observation` | `{vulnerability_id, action (promote|dismiss), scope? (host|issue), severity?, summary?, …}` — accepted through the promote route's own logic. |
+| POST | `/agent/proposals/endpoint-status` | `{finding_id, finding_host_id, host_status (open|remediated|retest|false_positive), …}`. |
+| GET | `/agent/proposals` | This project's proposals and their decisions (`status`, `kind`, `finding_id`, `mine`). |
+
+Writes need the operator's project write role. `evidence_ids` must name records in this project (404).
+
 ### 5.7 Assist workflow (read-only Q&A — v2.64.0)
 
 For "ask questions about this project" agents. These reads are the DEFAULT surface of every session — no run, no special key (`require_assist_scope` is gone). Project membership is the floor, and a read needs the role its page needs (v2.428.0): the NDJSON exports and client reports require `auditor`, ingestion issues and uninterpreted lines `analyst`; attachments and screenshots any member. The table below is a sample. Since v2.428.0 the agent reads mirror the pages — `/assist/workbench`, `/assist/workbench/investigate`, `/assist/workbench/terrain`, `/assist/evidence/gaps`, `/assist/scans/compare`, `/assist/scanner-observations[/hosts]`, `/assist/client-reports[/{id}[/files/{fmt}]]`, each wrapping its page's service; the agent guide's assist table describes them. The router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/hosts/{id}/testing`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, `/assist/hosts/{id}/access` (NetExec / SMBMap results beside the raw line — which may carry credentials, shown as found), `/assist/uninterpreted-lines?job_id=` (redacted lines a parser did not read), `/assist/attachments/{id}` and `/assist/web-interfaces/{id}/screenshot`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
@@ -587,7 +612,7 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
 
 * **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so workflow scope, the operator's project role, and the audit log are unchanged. The MCP layer makes no authorization decision.
 * **401 vs. isError.** No usable credential answers a real **HTTP 401** with a plain RFC 6750 challenge (`WWW-Authenticate: Bearer realm="BlueStick assist"`, plus `error="invalid_token"` when a key was sent) (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
-* **Unfiltered listing.** `tools/list` returns the whole catalogue (67 tools at 2.428; `GET /references/mcp-tools` is the live count) to every session; each tool's `workflows` field (`assist`, `plan_generation`, `execution`, `scope` — the last was `recon` until recon runs were removed) is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
+* **Unfiltered listing.** `tools/list` returns the whole catalogue (68 tools at 2.436.0; `GET /references/mcp-tools` is the live count) to every session; each tool's `workflows` field (`assist`, `plan_generation`, `execution`, `scope` — the last was `recon` until recon runs were removed) is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
 * **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages, and refused outright under protocol `2025-06-18` (which removed batching) — allowed only when `2025-03-26` is declared.
 * **Not tools:** the file-shaped endpoints (`report-context.ndjson`, `scopes/{scope_id}/hosts.ndjson`, `scopes/{scope_id}/live-hosts.txt`, `scopes/{scope_id}/web-targets.txt`, `scopes/{scope_id}/named-targets.ndjson`, `POST uploads`) stay `curl` — they belong on disk, not in a model's context.
 

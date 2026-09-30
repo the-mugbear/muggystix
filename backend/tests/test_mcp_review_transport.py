@@ -114,6 +114,9 @@ _CREATES_A_ROW = {
     "create_test_plan", "start_execution",
     "submit_feedback", "suggest_tool", "assist_add_note", "plan_add_entries",
     "execution_record_sanity_check", "execution_record_test_result",
+    # v2.436.0: each call records a new evidence row / proposal.
+    "record_evidence", "propose_finding_text", "propose_finding",
+    "propose_observation", "propose_endpoint_status",
 }
 #: Writes that converge on retry.
 _CONVERGES = {
