@@ -159,11 +159,6 @@ class EndpointStatusProposal(_ProposalBase):
     host_status: Literal["open", "remediated", "retest", "false_positive"]
 
 
-def _out(db: Session, rows) -> list:
-    current = proposals.current_findings(db, rows)
-    return [proposals.serialize_proposal(p, current) for p in rows]
-
-
 @router.post("/proposals/finding-text", status_code=201, summary="Propose report text for a finding")
 def propose_finding_text(
     body: FindingTextProposal, request: Request,
@@ -174,7 +169,7 @@ def propose_finding_text(
         fields=body.fields, rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
     db.commit()
-    return {"proposals": _out(db, rows)}
+    return {"proposals": proposals.serialize_many(db,rows)}
 
 
 @router.post("/proposals/finding", status_code=201, summary="Propose a new finding")
@@ -188,7 +183,7 @@ def propose_finding(
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
     db.commit()
-    return _out(db, [row])[0]
+    return proposals.serialize_many(db,[row])[0]
 
 
 @router.post("/proposals/observation", status_code=201, summary="Propose promoting or dismissing a scanner observation")
@@ -203,7 +198,7 @@ def propose_observation(
         evidence_ids=body.evidence_ids,
     )
     db.commit()
-    return _out(db, [row])[0]
+    return proposals.serialize_many(db,[row])[0]
 
 
 @router.post("/proposals/endpoint-status", status_code=201, summary="Propose a finding endpoint's status")
@@ -217,7 +212,7 @@ def propose_endpoint_status(
         rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
     db.commit()
-    return _out(db, [row])[0]
+    return proposals.serialize_many(db,[row])[0]
 
 
 @router.get("/proposals", summary="Proposals in this project and what happened to them")
@@ -239,4 +234,4 @@ def list_proposals(
         db, agent.project_id, status=status, kind=kind, finding_id=finding_id,
         agent_session_id=session_id, limit=limit, offset=offset,
     )
-    return {"total": total, "items": _out(db, rows), "has_more": offset + len(rows) < total}
+    return {"total": total, "items": proposals.serialize_many(db,rows), "has_more": offset + len(rows) < total}

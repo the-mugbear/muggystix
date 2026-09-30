@@ -50,10 +50,6 @@ router = APIRouter(dependencies=[Depends(get_current_user)])
 
 # The authored-content rule lives in the service (v2.436.0) so an accepted
 # agent proposal applies it exactly as this route does.
-_Viewer = FindingActor
-_require_modify = require_modify
-
-
 def get_finding_viewer(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
@@ -68,7 +64,7 @@ def _report_text(finding: Finding) -> FindingReportText:
 
 
 def _serialize(
-    finding: Finding, viewer: Optional[_Viewer] = None, *, with_report_text: bool = True,
+    finding: Finding, viewer: Optional[FindingActor] = None, *, with_report_text: bool = True,
 ) -> FindingResponse:
     hosts = [
         FindingHostInfo(
@@ -142,7 +138,7 @@ def list_findings(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     svc = FindingService(db)
     rows, total = svc.list_findings(
@@ -166,7 +162,7 @@ def get_finding(
     finding_id: int,
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     return _serialize(_load(db, project, finding_id), viewer)
 
@@ -178,7 +174,7 @@ def create_finding(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """Create a finding directly, without promoting an annotation.
 
@@ -211,7 +207,7 @@ def promote_annotation(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     annotation = db.get(Annotation, annotation_id)
     if not annotation:
@@ -270,7 +266,7 @@ def promote_vulnerability(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """Promote (or dismiss) a scanner vulnerability as a Finding. The finding
     references the vuln (vuln_id), severity defaults to the vuln's own, and a
@@ -306,7 +302,7 @@ def update_finding(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     # Only status transitions are audited (via finding_status_history);
     # title/severity/owner edits are not — they're attributes, not lifecycle.
@@ -319,7 +315,7 @@ def update_finding(
         if not title:
             raise HTTPException(status_code=422, detail="A finding's title cannot be empty.")
         if title != finding.title:
-            _require_modify(viewer, finding, "rename it")
+            require_modify(viewer, finding, "rename it")
         finding.title = title[:500]
     if body.severity is not None:
         finding.severity = validate_severity(body.severity)
@@ -350,7 +346,7 @@ def delete_finding(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """v2.375.0 — for a finding recorded in error.  Removes the finding, its
     endpoint rows, disposition history and comment thread; the evidence it
@@ -359,7 +355,7 @@ def delete_finding(
     set a status instead — that keeps the record.  The deletion itself is
     written to the audit log, since the finding's own history goes with it."""
     finding = _load(db, project, finding_id)
-    _require_modify(viewer, finding, "delete it")
+    require_modify(viewer, finding, "delete it")
     summary = {
         "project_id": project.id, "title": finding.title, "severity": finding.severity,
         "status": finding.status, "source": finding.source,
@@ -385,7 +381,7 @@ def set_finding_status(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     finding = _load(db, project, finding_id)
     FindingService(db).set_status(
@@ -433,7 +429,7 @@ def add_finding_hosts(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
     current_user: User = Depends(get_current_user),
 ):
     """Attach hosts (``host_ids``: the issue was verified there too; any host
@@ -461,7 +457,7 @@ def remove_finding_host(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """Removes all affected-endpoint rows for ``host_id`` (named and
     unnamed).  To detach ONE named endpoint use
@@ -485,7 +481,7 @@ def set_finding_endpoint_status(
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
     current_user: User = Depends(get_current_user),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """v2.349.0 — the finding's status is the issue's; each endpoint keeps
     its own (design review item 7).  Confirming or remediating on one host
@@ -511,7 +507,7 @@ def remove_finding_endpoint(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
     _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
-    viewer: _Viewer = Depends(get_finding_viewer),
+    viewer: FindingActor = Depends(get_finding_viewer),
 ):
     """v2.325.0 — a host may carry several endpoint rows (one per vhost);
     this removes exactly the one addressed, leaving its siblings.  The

@@ -593,3 +593,91 @@ def test_a_rejection_reason_reaches_a_fresh_agent_over_mcp(client, db_session, t
     [row] = mcp["structuredContent"]["items"]
     assert (row["id"], row["status"], row["decision_note"]) == (pid, "rejected", reason)
     assert row["decided_by"]
+
+
+# ---------------------------------------------------------------------------
+# Provenance and notification cost (review R2, R3)
+# ---------------------------------------------------------------------------
+
+def test_the_findings_history_names_the_proposal_each_accepted_change_came_from(client, db_session, test_project):
+    """Decision 4: an accepted change says it came from an agent (or an AI
+    draft) on the history row the change itself writes — never a second row.
+    Report text had no history at all, so nothing showed an AI wrote it."""
+    key, sid = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    base = _base(test_project)
+
+    def history(fid):
+        return [h["summary"] for h in client.get(f"{base}/findings/{fid}/history").json()]
+
+    text = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": "Relay.", "description": "Signing off."},
+        "agent_model": "model-a"}).json()["proposals"]
+    impact = next(p["id"] for p in text if p["field"] == "impact")
+    desc = next(p["id"] for p in text if p["field"] == "description")
+    client.post(f"{base}/proposals/{impact}/accept", json={})
+    client.post(f"{base}/proposals/{desc}/accept", json={"edited_value": "Signing is off."})
+    summaries = history(finding["id"])
+    assert f"Impact set from agent proposal #{impact} (model-a, agent session #{sid})" in summaries
+    assert f"Description set (edited on accept) from agent proposal #{desc} (model-a, agent session #{sid})" in summaries
+
+    fh = db_session.query(FindingHost).filter(FindingHost.finding_id == finding["id"]).one()
+    ep = client.post("/api/v1/agent/proposals/endpoint-status", headers=key, json={
+        "finding_id": finding["id"], "finding_host_id": fh.id, "host_status": "retest"}).json()["id"]
+    before = len(history(finding["id"]))
+    client.post(f"{base}/proposals/{ep}/accept", json={})
+    after = history(finding["id"])
+    assert len(after) == before + 1  # one row for one change
+    assert any(s.startswith("Endpoint ") and s.endswith(f"from agent proposal #{ep} (model-a, agent session #{sid})")
+               for s in after)
+
+    new = client.post("/api/v1/agent/proposals/finding", headers=key, json={
+        "title": "Proposed", "severity": "low", "host_ids": [host.id]}).json()["id"]
+    created = client.post(f"{base}/proposals/{new}/accept", json={}).json()["result_finding_id"]
+    assert history(created) == [f"Created from agent proposal #{new} (model-a, agent session #{sid})"]
+
+    # The activity feed shows what such a row says, not "Marked … <status>".
+    items = client.get(f"/api/v1/projects/{test_project.id}/workbench/my-activity",
+                       params={"kinds": "finding_status"}).json()["items"]
+    assert any(i["summary"].startswith("SMB signing not required: Impact set from agent proposal") for i in items)
+    assert not any(i["summary"] == "Marked SMB signing not required open" for i in items)
+
+
+def test_an_ai_draft_is_named_as_one_in_the_history(client, db_session, test_project, test_user):
+    from app.db.models_proposals import ProposalSource
+    from app.services import proposal_service
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    who = proposal_service.Attribution(user_id=test_user.id, source=ProposalSource.LLM_DRAFT.value, model="llama-3")
+    [p] = proposal_service.propose_finding_text(db_session, test_project.id, who,
+                                                finding_id=finding["id"], fields={"impact": "x"})
+    db_session.commit()
+    proposal_service.accept_proposal(db_session, p, test_user)
+    db_session.commit()
+    summaries = [h["summary"] for h in client.get(f"{_base(test_project)}/findings/{finding['id']}/history").json()]
+    assert f"Impact set from AI draft #{p.id}, llama-3" in summaries
+
+
+def test_a_report_text_request_notifies_once_not_once_per_field(client, db_session, test_project):
+    """Each notification re-reads the run's proposals; a six-field request
+    used to do that six times per recipient."""
+    from sqlalchemy import event
+    key, _ = _start(client, test_project)
+    alice = _member(db_session, test_project, 431, "prop-notify")
+    f = Finding(project_id=test_project.id, title="Hers", severity="low", status="open",
+                source="manual", created_by_id=alice.id)
+    db_session.add(f)
+    db_session.commit()
+
+    statements = []
+    listener = lambda conn, cur, stmt, *a: statements.append(stmt)  # noqa: E731
+    event.listen(db_session.bind, "before_cursor_execute", listener)
+    try:
+        r = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+            "finding_id": f.id, "fields": {k: "text" for k in
+                                           ("description", "impact", "recommendation", "references", "steps_to_reproduce")}})
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", listener)
+    assert r.status_code == 201, r.text
+    assert sum(1 for s in statements if "FROM notifications" in s) == 1

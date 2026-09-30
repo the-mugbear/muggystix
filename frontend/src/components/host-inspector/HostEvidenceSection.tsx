@@ -106,7 +106,9 @@ const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
                   </div>
                   <p className="break-words text-body">{rec.summary}</p>
                   {rec.command && (
-                    <p className="break-all font-mono text-caption text-muted-foreground" title={rec.command}>{rec.command}</p>
+                    // Up to 10,000 characters: clamped (UI style guide —
+                    // command lines truncate); the title holds the whole.
+                    <p className="line-clamp-3 break-all font-mono text-caption text-muted-foreground" title={rec.command}>{rec.command}</p>
                   )}
                   {rec.finding_id != null && (
                     <p className="text-caption"><Link to={`/findings/${rec.finding_id}`} className="text-info hover:underline">Finding #{rec.finding_id}</Link></p>

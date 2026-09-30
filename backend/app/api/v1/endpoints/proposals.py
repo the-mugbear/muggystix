@@ -28,11 +28,6 @@ _Status = Literal["pending", "accepted", "rejected", "superseded"]
 _Kind = Literal["finding_text", "finding_create", "observation_promote", "observation_dismiss", "endpoint_status"]
 
 
-def _out(db: Session, rows) -> list:
-    current = proposals.current_findings(db, rows)
-    return [proposals.serialize_proposal(p, current) for p in rows]
-
-
 @router.get("/proposals", summary="Agent proposals in this project")
 def list_proposals(
     status: Optional[_Status] = Query("pending"),
@@ -49,7 +44,7 @@ def list_proposals(
         db, project.id, status=status, kind=kind, finding_id=finding_id, host_id=host_id,
         agent_session_id=agent_session_id, limit=limit, offset=offset,
     )
-    return {"total": total, "items": _out(db, rows), "has_more": offset + len(rows) < total}
+    return {"total": total, "items": proposals.serialize_many(db,rows), "has_more": offset + len(rows) < total}
 
 
 @router.get("/proposals/summary", summary="Pending proposals per kind (the top-bar count)")
@@ -81,7 +76,7 @@ def _decide(db: Session, project_id: int, proposal_id: int, user: User, action: 
         db.commit()
         raise
     db.commit()
-    return _out(db, [proposal])[0]
+    return proposals.serialize_many(db,[proposal])[0]
 
 
 @router.post("/proposals/{proposal_id}/accept", summary="Accept a proposal: apply it as you")

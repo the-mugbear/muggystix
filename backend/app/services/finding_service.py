@@ -681,7 +681,10 @@ class FindingService:
         host_ids: Optional[Sequence[int]] = None,
         vuln_id: Optional[int] = None,
         exec_result_id: Optional[int] = None,
+        summary: Optional[str] = None,
     ) -> Finding:
+        """``summary`` goes on the creation history row (v2.439.1: an
+        accepted agent proposal names itself there)."""
         validate_severity(severity)
         _validate_status(status)
         finding = Finding(
@@ -710,7 +713,7 @@ class FindingService:
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,
-            changed_by_id=actor_id,
+            changed_by_id=actor_id, summary=summary,
         )
         self.db.flush()
         return finding
@@ -743,7 +746,7 @@ class FindingService:
 
     def set_endpoint_status(
         self, *, finding: Finding, finding_host_id: int, host_status: str,
-        actor_id: Optional[int],
+        actor_id: Optional[int], note: Optional[str] = None,
     ) -> Finding:
         """v2.349.0 — the per-endpoint disposition (design review item 7).
 
@@ -777,7 +780,9 @@ class FindingService:
         # own status and skips a no-change move, which this is by design.
         self.db.add(FindingStatusHistory(
             finding_id=finding.id, from_status=finding.status, to_status=finding.status,
-            changed_by_id=actor_id, summary=f"Endpoint {label}: {old} → {host_status}",
+            changed_by_id=actor_id,
+            # ``note``: where the change came from (an accepted proposal).
+            summary=f"Endpoint {label}: {old} → {host_status}" + (f" — {note}" if note else ""),
         ))
         self.db.flush()
         return finding

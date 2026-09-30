@@ -33,6 +33,8 @@ import {
 } from '../components/ui/select';
 
 const PAGE = 50;
+/** The list endpoint's `limit` ceiling. */
+const MAX_RELOAD = 500;
 
 const KINDS: Array<{ kind: ProposalKind; label: string; info: string }> = [
   { kind: 'finding_text', label: 'Report text', info: 'A finding’s description, impact, recommendation, steps, references or CVSS vector.' },
@@ -62,14 +64,20 @@ const Proposals: React.FC = () => {
   const [loadingMore, setLoadingMore] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const bulkNote = useRef('');
+  // 5.317.3 — how many rows "Show more" has loaded.  A decision or the poll
+  // re-reads that many, not the first page: deciding one on page 3 used to
+  // drop the reviewer back to page 1.  Capped at the server's limit.
+  const loaded = useRef(PAGE);
 
-  const query = useCallback((offset: number) => listProposals({
-    status, kind, agent_session_id: sessionId, limit: PAGE, offset,
+  const query = useCallback((offset: number, limit: number = PAGE) => listProposals({
+    status, kind, agent_session_id: sessionId, limit, offset,
   }), [status, kind, sessionId]);
 
   const load = useCallback(async () => {
     try {
-      const [res, sum] = await Promise.all([query(0), getProposalSummary()]);
+      const [res, sum] = await Promise.all([
+        query(0, Math.min(MAX_RELOAD, Math.max(PAGE, loaded.current))), getProposalSummary(),
+      ]);
       setItems(res.items);
       setTotal(res.total);
       setSummary(sum);
@@ -79,7 +87,8 @@ const Proposals: React.FC = () => {
     }
   }, [query]);
 
-  useEffect(() => { setItems(null); void load(); }, [load]);
+  // A new filter starts from the first page again.
+  useEffect(() => { loaded.current = PAGE; setItems(null); void load(); }, [load]);
   useVisibilityPoll(load, 60_000);
 
   const more = async () => {
@@ -87,6 +96,7 @@ const Proposals: React.FC = () => {
     setLoadingMore(true);
     try {
       const res = await query(items.length);
+      loaded.current = items.length + res.items.length;
       setItems([...items, ...res.items]);
       setTotal(res.total);
     } catch (err) {

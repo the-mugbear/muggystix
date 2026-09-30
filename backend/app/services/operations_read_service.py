@@ -1534,10 +1534,16 @@ def compute_my_activity(
         if needle is not None:
             q = q.filter(Finding.title.ilike(needle))
         for hist, f in q.order_by(desc(FindingStatusHistory.created_at)).limit(limit).all():
+            # A same-status row is not a disposition: an endpoint change,
+            # added hosts, accepted report text.  It says what happened in its
+            # summary; "Marked <title> confirmed" misreported it.
+            if hist.from_status == hist.to_status and hist.summary:
+                summary = f"{f.title}: {hist.summary}"
+            else:
+                summary = f"Marked {f.title} {hist.to_status.replace('_', ' ')}"
             events.append(ActivityEvent(
                 kind="finding_status", at=hist.created_at,
-                summary=f"Marked {f.title} {hist.to_status.replace('_', ' ')}",
-                finding_id=f.id, severity=f.severity,
+                summary=summary, finding_id=f.id, severity=f.severity,
             ))
 
     # Hosts the caller marked Reviewed.  A fresh follow row has updated_at=NULL

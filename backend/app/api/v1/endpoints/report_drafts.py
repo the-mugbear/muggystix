@@ -184,9 +184,8 @@ def draft_finding_text(
         rationale="Drafted in BlueStick with your LLM provider.",
     )
     db.commit()
-    current = proposals.current_findings(db, rows)
     return FindingTextDraftResponse(
-        proposals=[proposals.serialize_proposal(p, current) for p in rows],
+        proposals=proposals.serialize_many(db, rows),
         provider_id=result["provider_id"], provider_type=result["provider_type"],
         model_id=result.get("model_id"), usage=result.get("usage"),
     )

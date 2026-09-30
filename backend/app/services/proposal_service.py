@@ -32,7 +32,7 @@ from app.db.models_agent import AgentSession
 from app.db.models_auth import User
 from app.db.models_project import Notification
 from app.db.models_findings import (
-    Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
+    Finding, FindingHost, FindingHostStatus, FindingStatus, FindingStatusHistory, FindingVulnerability,
 )
 from app.db.models_proposals import (
     AgentProposal, EvidenceRecord, ProposalKind, ProposalSource, ProposalStatus,
@@ -117,21 +117,23 @@ def _check_evidence(db: Session, project_id: int, evidence_ids: Optional[Iterabl
 
 
 def _add(db: Session, project_id: int, kind: str, who: Attribution, **cols) -> AgentProposal:
+    """Add one proposal.  The caller notifies once for the whole request
+    (:func:`_notify_finding_people`), not once per proposal: a report-text
+    request is up to six proposals, and each notification re-reads the run's
+    proposals."""
     proposal = AgentProposal(project_id=project_id, kind=kind, **who.columns(), **cols)
     db.add(proposal)
     db.flush()
-    if proposal.finding_id is not None:
-        _notify_finding_people(db, proposal, who)
     return proposal
 
 
-def _notify_finding_people(db: Session, proposal: AgentProposal, who: Attribution) -> None:
+def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribution) -> None:
     """Tell a finding's author and owner that an AI proposed changes to it
     (decision 6): ONE notification per person per agent session (per finding
     for an in-app draft), kept current as the run proposes more, never one
     per proposal.  The person whose agent it is is not told about their own
     run."""
-    finding = db.get(Finding, proposal.finding_id)
+    finding = db.get(Finding, finding_id) if finding_id is not None else None
     if finding is None:
         return
     recipients = {uid for uid in (finding.created_by_id, finding.owner_id) if uid and uid != who.user_id}
@@ -174,7 +176,7 @@ def _notify_finding_people(db: Session, proposal: AgentProposal, who: Attributio
         )
         if existing is None:
             existing = Notification(
-                user_id=uid, project_id=proposal.project_id, type="proposal",
+                user_id=uid, project_id=finding.project_id, type="proposal",
                 source_type=source_type, source_id=source_id, actor_id=who.user_id,
             )
             db.add(existing)
@@ -220,6 +222,7 @@ def propose_finding_text(
             finding_id=finding_id, field=field, payload={"value": value},
             rationale=rationale, evidence_ids=ev,
         ))
+    _notify_finding_people(db, finding_id, who)
     return out
 
 
@@ -289,12 +292,14 @@ def propose_endpoint_status(
     fh = db.get(FindingHost, finding_host_id)
     if fh is None or fh.finding_id != finding_id:
         raise HTTPException(status_code=404, detail="That endpoint is not on this finding")
-    return _add(
+    proposal = _add(
         db, project_id, ProposalKind.ENDPOINT_STATUS.value, who,
         finding_id=finding_id, finding_host_id=finding_host_id,
         payload={"host_status": host_status},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    _notify_finding_people(db, finding_id, who)
+    return proposal
 
 
 # ---------------------------------------------------------------------------
@@ -323,9 +328,28 @@ def _require_pending(proposal: AgentProposal) -> None:
 
 
 def _history_note(proposal: AgentProposal, text: Optional[str]) -> str:
-    who = proposal.agent_model or "an agent"
-    base = f"From agent proposal #{proposal.id} ({who})"
-    return f"{text} — {base}" if text else base
+    base = _provenance(proposal)
+    return f"{text} — {base}" if text else base[0].upper() + base[1:]
+
+
+def _provenance(proposal: AgentProposal) -> str:
+    """Where an accepted change came from, for the finding's history
+    (decision 4): the proposal, its model, and its agent session — or that it
+    was an in-app AI draft."""
+    if proposal.source == ProposalSource.LLM_DRAFT.value:
+        model = f", {proposal.agent_model}" if proposal.agent_model else ""
+        return f"from AI draft #{proposal.id}{model}"
+    detail = ", ".join(filter(None, [
+        proposal.agent_model,
+        f"agent session #{proposal.agent_session_id}" if proposal.agent_session_id else None,
+    ]))
+    return f"from agent proposal #{proposal.id}" + (f" ({detail})" if detail else "")
+
+
+_FIELD_LABELS = {
+    "description": "Description", "impact": "Impact", "recommendation": "Recommendation",
+    "references": "References", "steps_to_reproduce": "Steps to reproduce", "cvss_vector": "CVSS vector",
+}
 
 
 def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optional[str]) -> Optional[int]:
@@ -343,13 +367,22 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
             # Nobody reviewing a vector proposal sees a score, so leave it
             # empty (shown as missing) rather than wrong.
             sent["cvss_score"] = None
-        apply_report_text(finding, finding_actor(db, project_id, user), sent)
+        if apply_report_text(finding, finding_actor(db, project_id, user), sent):
+            # Report text has no history of its own; an accepted proposal's
+            # text is recorded, so the finding shows an AI wrote it.
+            label = _FIELD_LABELS.get(proposal.field, proposal.field)
+            edited = " (edited on accept)" if edited_value is not None else ""
+            db.add(FindingStatusHistory(
+                finding_id=finding.id, from_status=finding.status, to_status=finding.status,
+                changed_by_id=user.id, summary=f"{label} set{edited} {_provenance(proposal)}",
+            ))
         return finding.id
     if kind == ProposalKind.FINDING_CREATE.value:
         finding = FindingService(db).create_finding(
             project_id=project_id, title=payload["title"], severity=payload["severity"],
             status=payload.get("status") or FindingStatus.OPEN.value,
             host_ids=payload.get("host_ids") or [], actor_id=user.id,
+            summary=f"Created {_provenance(proposal)}",
         )
         text = payload.get("report_text") or {}
         if text:
@@ -372,7 +405,7 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         finding = _finding(db, project_id, proposal.finding_id)
         FindingService(db).set_endpoint_status(
             finding=finding, finding_host_id=proposal.finding_host_id,
-            host_status=payload["host_status"], actor_id=user.id,
+            host_status=payload["host_status"], actor_id=user.id, note=_provenance(proposal),
         )
         return finding.id
     raise HTTPException(status_code=422, detail=f"Unknown proposal kind {kind!r}")
@@ -592,8 +625,15 @@ def _target(proposal: AgentProposal) -> dict:
     }
 
 
-def current_findings(db: Session, proposals: Iterable[AgentProposal]) -> Dict[int, Finding]:
+def _current_findings(db: Session, proposals: Iterable[AgentProposal]) -> Dict[int, Finding]:
     ids = {p.finding_id for p in proposals if p.finding_id is not None}
     if not ids:
         return {}
     return {f.id: f for f in db.query(Finding).filter(Finding.id.in_(ids)).all()}
+
+
+def serialize_many(db: Session, proposals: List[AgentProposal]) -> List[dict]:
+    """Rows as every proposal route returns them, with each report-text
+    proposal's ``current_value`` read in one query."""
+    current = _current_findings(db, proposals)
+    return [serialize_proposal(p, current) for p in proposals]
