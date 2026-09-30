@@ -84,7 +84,10 @@ CATEGORY_LABEL = {
 # SUBSTRINGS through one trie-shaped regex (filenames inside storage paths,
 # multi-word names).
 TOKEN_CATEGORIES = {"host", "fqdn"}
-VOCAB_CATEGORIES = {"host", "fqdn", "user", "label"}
+# ``mcp``: an MCP client's self-reported name / version and the tool names
+# callers sent — kept when BlueStick's own source names them (claude-code, a
+# catalogue tool), replaced otherwise.
+VOCAB_CATEGORIES = {"host", "fqdn", "user", "label", "mcp"}
 
 
 class Pseudonyms:

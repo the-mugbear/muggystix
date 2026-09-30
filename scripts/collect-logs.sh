@@ -213,6 +213,12 @@ if $DB_UP; then
         "org|network_attributions|org_name" "org|network_attributions|as_name"
         "org|network_attributions|handle"
         "org|web_interfaces|cert_subject_org" "org|web_interfaces|cert_issuer_org"
+        # Caller-supplied MCP labels, grouped in agent_surface.txt: a client
+        # names itself freely ("Acme audit workstation"), and an unknown tool
+        # name is whatever the caller sent.  Names in BlueStick's own source
+        # (claude-code, the catalogue's tools) survive the vocabulary pass.
+        "mcp|mcp_tool_calls|client_name" "mcp|mcp_tool_calls|client_version"
+        "mcp|mcp_tool_calls|tool_name" "mcp|mcp_tool_calls|rpc_method"
     )
     harvest_failed=0
     for spec in "${HARVEST[@]}"; do
@@ -469,10 +475,14 @@ print_info "Collecting the served TLS certificate (derived facts only)..."
         echo "openssl not on PATH — unavailable"
     else
         chain="$WORK/tls_chain.pem"
-        echo | openssl s_client -connect localhost:443 -servername localhost -showcerts 2>/dev/null \
-            | sed -n '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > "$chain"
+        # Bounded, and a refused / stalled connection is a RESULT: under
+        # pipefail a failed s_client used to end the whole collection (and the
+        # trap deleted everything gathered) exactly when the frontend was down.
+        tls_timeout=(); command -v timeout >/dev/null 2>&1 && tls_timeout=(timeout 10)
+        echo | ${tls_timeout[@]+"${tls_timeout[@]}"} openssl s_client -connect localhost:443 -servername localhost -showcerts 2>/dev/null \
+            | sed -n '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > "$chain" || true
         if [[ ! -s "$chain" ]]; then
-            echo "No certificate served on localhost:443."
+            echo "No certificate served on localhost:443 (connection refused, TLS failed, or no answer within 10 s)."
         else
             echo "certificates presented: $(grep -c 'BEGIN CERTIFICATE' "$chain")"
             if [[ "$(openssl x509 -in "$chain" -noout -issuer_hash)" == "$(openssl x509 -in "$chain" -noout -subject_hash)" ]]; then
@@ -518,7 +528,7 @@ print_info "Collecting the served TLS certificate (derived facts only)..."
             fi
         fi
     fi
-} > "$LOG_DIR/tls.txt" 2>&1
+} > "$LOG_DIR/tls.txt" 2>&1 || echo "(a TLS check command failed; the facts above are what was gathered)" >> "$LOG_DIR/tls.txt"
 
 # ----------------------------------------------------------------------
 # Container logs
