@@ -19,6 +19,8 @@ This directory contains utility scripts for deployment and maintenance.
 ### Maintenance Scripts
 
 - **`collect-logs.sh`** - Anonymised diagnostics bundle (container logs, ingestion queue, parser audit), safe to share. Options: `--since 72h` and `--terms FILE` (extra names to remove).
+  - `tls.txt` reports the certificate nginx actually serves: self-signed or CA-issued, expiry, SAN counts, whether it names `HOST_IP`, whether it is the file in `ssl/certs` and matches its key. It shows derived facts only, never names. The health checks use `curl -k`, so this file is the only place a certificate problem appears.
+  - `agent_surface.txt` holds agent sessions, refused agent calls by route template, MCP tool outcomes and client handshakes, proposals by kind and status (with accept errors), evidence records and missing raw-output files, and feedback. It holds counts only, because a refused call never leaves a traceback.
 - **`scrub_logs.py`** - The scrubber `collect-logs.sh` runs over the bundle (stdlib only, host `python3`); it fails closed.
 - **`parse-audit-agent-prompt.md`** - Bootstrap prompt for an agent auditing parse accuracy on the client network (what the operator provides, the report of redacted shapes it returns); the short version is `documentation/PARSE_AUDIT_BRIEF.md`.
 - **`status.sh`** - Quick status check of the running instance

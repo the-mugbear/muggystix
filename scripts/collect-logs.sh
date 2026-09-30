@@ -17,7 +17,10 @@
 # the ingestion queue (formats, outcomes, skip counts, warnings, tracebacks),
 # parse errors, a PARSER AUDIT of aggregate field coverage (how many rows of
 # each format carry each field — counts only, never values), health checks,
-# and the backend / worker / report-worker / frontend (nginx) / db logs.
+# the TLS certificate nginx serves (derived facts: CA-issued or self-signed,
+# expiry, whether it names HOST_IP), agent-surface outcomes (refused calls by
+# route, MCP tool outcomes, proposals, evidence — counts only), and the
+# backend / worker / report-worker / frontend (nginx) / db logs.
 #
 # How identifying information is removed:
 #   * Collection happens in a private temp directory (mode 700).  Nothing
@@ -426,6 +429,98 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Agent surface (2.438.0): refused calls never leave a traceback, so an
+# agent failing quietly after an upgrade shows only here.  Counts only —
+# path TEMPLATES (no ids), never bodies, rationales, commands or payloads.
+# ----------------------------------------------------------------------
+if $DB_UP; then
+    print_info "Collecting agent-surface outcomes (counts only)..."
+    {
+        echo "=== AGENT SURFACE (counts; no bodies, commands or text) ==="
+        q "Agent sessions by status" "SELECT status, count(*) FROM agent_sessions GROUP BY 1 ORDER BY 2 DESC;"
+        q "Agent API calls by status class (last 7 days)" "SELECT (status_code / 100) || 'xx' AS class, count(*), count(*) FILTER (WHERE via_mcp) AS via_mcp FROM agent_api_calls WHERE created_at > now() - interval '7 days' GROUP BY 1 ORDER BY 1;"
+        q "Refused / failed agent calls by route (last 7 days)" "SELECT method, coalesce(path_template, '(unmatched route)') AS route, status_code, coalesce(error_class, '-') AS error_class, count(*), max(created_at) AS last FROM agent_api_calls WHERE status_code >= 400 AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3, 4 ORDER BY 5 DESC LIMIT 40;"
+        q "MCP tool calls by tool and outcome (last 7 days)" "SELECT coalesce(tool_name, rpc_method, '-') AS tool, outcome, coalesce(error_code::text, '-') AS error_code, count(*), round(avg(duration_ms)) AS avg_ms FROM mcp_tool_calls WHERE created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 60;"
+        q "MCP handshakes by client (last 7 days; the client names itself only in initialize)" "SELECT coalesce(client_name, '(unnamed)') AS client, coalesce(client_version, '-') AS version, coalesce(protocol_version, '-') AS protocol, count(*) AS handshakes FROM mcp_tool_calls WHERE rpc_method = 'initialize' AND created_at > now() - interval '7 days' GROUP BY 1, 2, 3 ORDER BY 4 DESC LIMIT 20;"
+        q "Proposals by kind and status (an accept refused by the target keeps its reason in error)" "SELECT kind, status, source, count(*), count(error) AS with_accept_error FROM agent_proposals GROUP BY 1, 2, 3 ORDER BY 1, 2;"
+        q "Evidence records by outcome" "SELECT outcome, count(*), count(raw_output_path) AS with_raw_output, pg_size_pretty(coalesce(sum(raw_output_bytes), 0)) AS raw_bytes FROM evidence_records GROUP BY 1 ORDER BY 2 DESC;"
+        q "Agent feedback by source" "SELECT source, count(*), round(avg(overall_rating), 1) AS avg_rating, max(created_at) AS last FROM agent_feedback GROUP BY 1 ORDER BY 2 DESC;"
+        echo ""
+        echo "--- evidence raw-output files missing on disk (count only) ---"
+        if $BACKEND_UP; then
+            psql_q -A -t -c "SELECT raw_output_path FROM evidence_records WHERE raw_output_path IS NOT NULL;" 2>/dev/null \
+                | compose exec -T backend sh -c 'n=0; t=0; while IFS= read -r p; do [ -z "$p" ] && continue; t=$((t+1)); [ -f "$p" ] || n=$((n+1)); done; echo "$n missing of $t"' 2>&1 \
+                || echo "(check failed)"
+        else
+            echo "backend container not running"
+        fi
+    } > "$LOG_DIR/agent_surface.txt" 2>&1
+fi
+
+# ----------------------------------------------------------------------
+# TLS certificate actually served.  The health checks use curl -k, so a
+# certificate problem is invisible everywhere else in the bundle.  Derived
+# facts only: no subject, issuer or SAN values (they name the deployment).
+# ----------------------------------------------------------------------
+print_info "Collecting the served TLS certificate (derived facts only)..."
+{
+    echo "=== TLS CERTIFICATE (derived facts; no names) ==="
+    if ! command -v openssl >/dev/null 2>&1; then
+        echo "openssl not on PATH — unavailable"
+    else
+        chain="$WORK/tls_chain.pem"
+        echo | openssl s_client -connect localhost:443 -servername localhost -showcerts 2>/dev/null \
+            | sed -n '/-BEGIN CERTIFICATE-/,/-END CERTIFICATE-/p' > "$chain"
+        if [[ ! -s "$chain" ]]; then
+            echo "No certificate served on localhost:443."
+        else
+            echo "certificates presented: $(grep -c 'BEGIN CERTIFICATE' "$chain")"
+            if [[ "$(openssl x509 -in "$chain" -noout -issuer_hash)" == "$(openssl x509 -in "$chain" -noout -subject_hash)" ]]; then
+                echo "issued by: itself (self-signed — not from the local root CA)"
+            else
+                echo "issued by: a CA (issuer differs from subject — ca/local-ca.sh install)"
+            fi
+            echo "expires: $(openssl x509 -in "$chain" -noout -enddate | cut -d= -f2)"
+            if ! openssl x509 -in "$chain" -noout -checkend 0 >/dev/null; then
+                echo "EXPIRED"
+            elif ! openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null; then
+                echo "expires within 30 days"
+            fi
+            san=$(openssl x509 -in "$chain" -noout -ext subjectAltName 2>/dev/null || true)
+            echo "SAN entries: $(grep -o 'DNS:' <<<"$san" | wc -l) DNS name(s), $(grep -o 'IP Address:' <<<"$san" | wc -l) IP address(es)"
+            host_ip=$(env_value HOST_IP)
+            if [[ -z "$host_ip" ]]; then
+                echo "HOST_IP (.env) named in the certificate: HOST_IP not set"
+            elif grep -qE "IP Address:${host_ip//./\\.}(,|$)" <<<"$san"; then
+                echo "HOST_IP (.env) named in the certificate: yes"
+            else
+                echo "HOST_IP (.env) named in the certificate: NO — clients reaching it by address will refuse it"
+            fi
+            if [[ -f ssl/certs/networkmapper.crt ]]; then
+                served_fp=$(openssl x509 -in "$chain" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)
+                file_fp=$(openssl x509 -in ssl/certs/networkmapper.crt -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2)
+                if [[ "$served_fp" == "$file_fp" ]]; then
+                    echo "served == ssl/certs/networkmapper.crt: yes"
+                else
+                    echo "served == ssl/certs/networkmapper.crt: NO — nginx is serving an older certificate (restart the frontend)"
+                fi
+                if [[ -r ssl/certs/networkmapper.key ]]; then
+                    cert_pub=$(openssl x509 -in ssl/certs/networkmapper.crt -noout -pubkey 2>/dev/null | openssl sha256 2>/dev/null)
+                    key_pub=$(openssl pkey -in ssl/certs/networkmapper.key -pubout 2>/dev/null | openssl sha256 2>/dev/null)
+                    [[ -n "$cert_pub" && "$cert_pub" == "$key_pub" ]] \
+                        && echo "ssl/certs key matches its certificate: yes" \
+                        || echo "ssl/certs key matches its certificate: NO"
+                else
+                    echo "ssl/certs key matches its certificate: key not readable by this user"
+                fi
+            else
+                echo "ssl/certs/networkmapper.crt: not found"
+            fi
+        fi
+    fi
+} > "$LOG_DIR/tls.txt" 2>&1
+
+# ----------------------------------------------------------------------
 # Container logs
 # ----------------------------------------------------------------------
 print_info "Collecting container logs${SINCE:+ (since $SINCE)}..."
@@ -527,6 +622,13 @@ Files:
                           catalog check; NetExec/SMBMap outcomes by protocol
 - logs_<service>.txt      backend, worker, report-worker, frontend (nginx), db
 - health.txt              reachability through nginx and the internal DB probe
+- tls.txt                 the certificate nginx serves: self-signed or CA-issued,
+                          expiry, SAN counts, whether it names HOST_IP, whether it
+                          is the file in ssl/certs and matches its key (no names)
+- agent_surface.txt       agent sessions, refused agent calls by route, MCP tool
+                          outcomes and clients, proposals (with accept errors),
+                          evidence records and missing raw-output files,
+                          feedback — counts only
 - error_analysis.txt      error counts, tracebacks, parser skip lines, auth events
 - code.txt                branch / recent commits when deployed from git
 - anonymisation.txt       how many values of each kind were replaced
