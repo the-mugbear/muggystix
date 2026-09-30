@@ -34,7 +34,9 @@ import {
   NoteAttachment,
 } from '../services/api';
 import MessageBubble from '../components/MessageBubble';
-import FindingReportTextCard from '../components/FindingReportTextCard';
+import FindingReportTextCard, { missingReportText } from '../components/FindingReportTextCard';
+import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
+import { agentInstruction } from '../utils/agentRuns';
 import FindingProposalsPanel from '../components/proposals/FindingProposalsPanel';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
@@ -672,6 +674,14 @@ const FindingDetail: React.FC = () => {
       <FindingReportTextCard
         finding={finding} canEdit={canModify} canPropose={canManage} onSaved={setFinding}
         onDrafted={() => setProposalsKey((k) => k + 1)}
+        agentAction={(
+          <AgentTaskButton
+            variant="ghost"
+            label="Work on this with your agent"
+            title="Give your agent session this finding to review and complete — its changes arrive as proposals under Proposals"
+            instruction={agentInstruction.reviewFinding(finding.id, missingReportText(finding.report_text))}
+          />
+        )}
         startEditing={searchParams.get('edit') === 'report-text'}
       />
 

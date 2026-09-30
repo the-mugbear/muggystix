@@ -129,6 +129,14 @@ export const agentInstruction = {
     const reason = why?.trim();
     return reason ? `${base} Why these hosts: ${reason}` : base;
   },
+  /** 5.317.0 — review a finding's write-up and write what is missing, as
+   *  proposals (the finding's author accepts or rejects them). */
+  reviewFinding: (findingId: number, missing: string[] = []): string => {
+    const gaps = missing.length > 0 ? ` Still empty: ${missing.join(', ')}.` : '';
+    return `Review finding #${findingId} in BlueStick: read its report text, hosts and evidence, then propose `
+      + `improvements and any missing sections with propose_finding_text (cite evidence you record). `
+      + `Do not change the finding directly.${gaps}`;
+  },
 };
 
 /** Statuses that mean a run or plan still has work outstanding — an agent or

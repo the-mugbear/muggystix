@@ -154,3 +154,27 @@ describe('FindingReportTextCard — v5.290.0 the written text is shown rendered,
     expect(box.value).toBe('Seen on **filesrv-01**.');
   });
 });
+
+describe('FindingReportTextCard — 5.317.0 work on this with your agent', () => {
+  const agentButton = <button type="button">Work on this with your agent</button>;
+
+  it('offers the agent task to anyone who may propose, and hides it while editing', () => {
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose onSaved={vi.fn()} agentAction={agentButton} />);
+    expect(screen.getByRole('button', { name: /Work on this with your agent/ })).toBeInTheDocument();
+  });
+
+  it('is not offered to someone who may not propose', () => {
+    render(<FindingReportTextCard finding={finding} canEdit={false} canPropose={false} onSaved={vi.fn()} agentAction={agentButton} />);
+    expect(screen.queryByRole('button', { name: /Work on this with your agent/ })).not.toBeInTheDocument();
+  });
+
+  it('the task names the finding, asks for proposals, and lists what is empty', async () => {
+    const { agentInstruction } = await import('../../utils/agentRuns');
+    const task = agentInstruction.reviewFinding(42, ['impact', 'recommendation']);
+    expect(task).toMatch(/finding #42/);
+    expect(task).toMatch(/propose_finding_text/);
+    expect(task).toMatch(/Do not change the finding directly/);
+    expect(task).toMatch(/Still empty: impact, recommendation\./);
+    expect(agentInstruction.reviewFinding(42)).not.toMatch(/Still empty/);
+  });
+});

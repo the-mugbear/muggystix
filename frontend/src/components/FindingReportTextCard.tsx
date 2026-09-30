@@ -80,10 +80,13 @@ interface Props {
   onDrafted?: () => void;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
+  /** 5.317.0 — "Work on this with your agent" (the page supplies it, so the
+   *  card stays free of the session hooks). Shown beside the draft button. */
+  agentAction?: React.ReactNode;
 }
 
 const FindingReportTextCard: React.FC<Props> = ({
-  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false,
+  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction,
 }) => {
   const toast = useToast();
   const text = finding.report_text;
@@ -171,6 +174,7 @@ const FindingReportTextCard: React.FC<Props> = ({
         </>}
         actions={canEdit || canPropose ? (
           <>
+            {canPropose && !draft && agentAction}
             {canPropose && !draft && missing.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => void draftEmpty()} disabled={drafting || saving}
                 title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
