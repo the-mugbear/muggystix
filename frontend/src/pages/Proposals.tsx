@@ -8,7 +8,7 @@
  * Sections, not cards (UI_STYLE_GUIDE §7): a lead sentence, one strip of
  * measures (pending by kind — each opens its list), then the list.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { Loader2, X } from 'lucide-react';
 
@@ -27,6 +27,7 @@ import PostureSection from '../components/posture/PostureSection';
 import ProposalItem from '../components/proposals/ProposalItem';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
+import { Textarea } from '../components/ui/textarea';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '../components/ui/select';
@@ -60,6 +61,7 @@ const Proposals: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const bulkNote = useRef('');
 
   const query = useCallback((offset: number) => listProposals({
     status, kind, agent_session_id: sessionId, limit: PAGE, offset,
@@ -103,17 +105,28 @@ const Proposals: React.FC = () => {
   const bulk = async (action: 'accept' | 'reject') => {
     const shown = (items ?? []).filter((p) => p.status === 'pending');
     if (!shown.length) return;
+    // 5.317.1 — an optional reason for a bulk rejection (each proposal's
+    // decision_note; the proposing agents read it back).
+    bulkNote.current = '';
     const ok = await confirm({
       title: action === 'accept' ? `Accept ${shown.length} proposals?` : `Reject ${shown.length} proposals?`,
       body: action === 'accept'
         ? 'Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding) or whose target has changed is left pending and listed.'
-        : 'Each is marked rejected. The agent can read the decision.',
+        : (
+          <div className="space-y-xs">
+            <p>Each is marked rejected. The agents that proposed them read the decision and this reason.</p>
+            <Label htmlFor="bulk-reject-note">Why reject them? (optional)</Label>
+            <Textarea id="bulk-reject-note" rows={2} maxLength={2000}
+              onChange={(e) => { bulkNote.current = e.target.value; }} />
+          </div>
+        ),
       confirmLabel: action === 'accept' ? 'Accept all shown' : 'Reject all shown',
     });
     if (!ok) return;
     setBulkBusy(true);
     try {
-      const res = await decideProposals(shown.map((p) => p.id), action);
+      const note = action === 'reject' ? bulkNote.current.trim() || undefined : undefined;
+      const res = await decideProposals(shown.map((p) => p.id), action, note);
       if (res.failed.length) {
         toast.warning(`${res.decided.length} decided; ${res.failed.length} left pending (${String(res.failed[0].detail)}).`);
       } else {

@@ -19,6 +19,7 @@ import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
+import { Textarea } from '../ui/textarea';
 import MarkdownField from '../MarkdownField';
 import SafeMarkdown from '../SafeMarkdown';
 
@@ -152,17 +153,21 @@ const ProposalItem: React.FC<Props> = ({
   const toast = useToast();
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
+  // 5.317.1 — Reject asks for an optional reason (stored as decision_note,
+  // which the proposing agent reads back through list_proposals).
+  const [rejecting, setRejecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pending = pr.status === 'pending';
 
-  const decide = async (action: 'accept' | 'reject', editedValue?: string) => {
+  const decide = async (action: 'accept' | 'reject', editedValue?: string, note?: string) => {
     setBusy(action);
     setError(null);
     try {
       const updated = action === 'accept'
         ? await acceptProposal(pr.id, editedValue !== undefined ? { editedValue } : {})
-        : await rejectProposal(pr.id);
+        : await rejectProposal(pr.id, note?.trim() || undefined);
       setEditing(null);
+      setRejecting(null);
       onDecided(updated);
       announceProposalsChanged();
       toast.success(action === 'accept' ? 'Accepted — applied as you.' : 'Rejected.');
@@ -218,7 +223,24 @@ const ProposalItem: React.FC<Props> = ({
         </p>
       )}
       {error && <p className="break-words text-caption text-destructive">{error}</p>}
-      {pending && canDecide && editing === null && (
+      {pending && canDecide && rejecting !== null && (
+        <div className="space-y-xs">
+          <Label htmlFor={`reject-${pr.id}`}>Why reject it? (optional)</Label>
+          <p className="text-caption text-muted-foreground">
+            The agent that proposed it reads this — say what to change so its next proposal can follow it.
+          </p>
+          <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting}
+            onChange={(e) => setRejecting(e.target.value)} disabled={busy !== null} />
+          <div className="flex flex-wrap gap-xs">
+            <Button size="sm" variant="outline" onClick={() => void decide('reject', undefined, rejecting)} disabled={busy !== null}>
+              {busy === 'reject' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
+              Reject
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setRejecting(null)} disabled={busy !== null}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {pending && canDecide && editing === null && rejecting === null && (
         <div className="flex flex-wrap gap-xs">
           <Button size="sm" variant="outline" onClick={() => void decide('accept')} disabled={busy !== null}>
             {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
@@ -229,9 +251,8 @@ const ProposalItem: React.FC<Props> = ({
               <Pencil className="size-4" aria-hidden /> Accept and edit
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={() => void decide('reject')} disabled={busy !== null}>
-            {busy === 'reject' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
-            Reject
+          <Button size="sm" variant="ghost" onClick={() => setRejecting('')} disabled={busy !== null}>
+            <X className="size-4" aria-hidden /> Reject…
           </Button>
         </div>
       )}

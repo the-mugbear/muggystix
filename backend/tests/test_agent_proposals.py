@@ -424,3 +424,26 @@ def test_issuing_warns_about_pending_proposals_on_reported_findings(client, db_s
     assert summary["agent_images"] == 0
     # A warning, never a block: it still issues.
     assert client.post(f"{_base(test_project)}/client-reports/{r.json()['id']}/issue").status_code == 200
+
+
+def test_a_rejection_reason_reaches_a_fresh_agent_over_mcp(client, db_session, test_project):
+    """Plan-feedback run 2026-09-30: the reviewer's reason (decision_note) is
+    what a FRESH agent — a different session, no chat context — reads to
+    revise its proposal, through the MCP tool, not only the REST route."""
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    pid = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"description": "Relay proven."}}).json()["proposals"][0]["id"]
+    reason = "Remove the relay claim until the raw artifact is verified."
+    assert client.post(f"{_base(test_project)}/proposals/{pid}/reject", json={"note": reason}).status_code == 200
+
+    fresh, _ = _start(client, test_project)
+    mcp = client.post("/api/v1/mcp", headers=fresh, json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "list_proposals", "arguments": {"status": "rejected", "finding_id": finding["id"]}},
+    }).json()["result"]
+    assert mcp["isError"] is False
+    [row] = mcp["structuredContent"]["items"]
+    assert (row["id"], row["status"], row["decision_note"]) == (pid, "rejected", reason)
+    assert row["decided_by"]
