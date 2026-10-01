@@ -180,7 +180,7 @@ export const HOST_FILTER_PRESETS: Array<{
     id: 'planned_not_tested',
     name: 'Planned, not tested',
     Icon: ClipboardList,
-    description: 'In a test plan but no results recorded yet — work that never ran',
+    description: 'A test is proposed or in progress, but no result is recorded yet — work that has not run',
     filters: { query: 'has:planned AND NOT has:tested' },
   },
 ];

@@ -20,7 +20,6 @@ import {
   LogOut,
   Palette,
   Search as SearchIcon,
-  ShieldCheck,
 } from 'lucide-react';
 import {
   AlertHexIcon,
@@ -35,12 +34,10 @@ import {
   getFinding,
   getHosts,
   getScans,
-  getTestPlans,
   listFindings,
   type Finding,
   type Host,
   type Scan,
-  type TestPlanSummary,
 } from '../services/api';
 import { cn } from '../utils/cn';
 
@@ -61,20 +58,18 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   const { themeName, setThemeName, availableThemes } = useAppTheme();
   const [search, setSearch] = useState('');
 
-  // v2.43.0 — UX review #6.  All three resource searches now hit the
-  // server with a `search=` query and a small `limit`; previously plans
-  // and scans were fetched unfiltered and client-side filtered (degraded
+  // v2.43.0 — UX review #6.  Every resource search hits the
+  // server with a `search=` query and a small `limit`; previously
+  // scans were fetched unfiltered and client-side filtered (degraded
   // poorly at scale, hid failures behind "no results").  Per-group
   // error state surfaces backend failures inline instead of swallowing.
   const debouncedSearch = useDebouncedValue(search, 300);
   const [hostResults, setHostResults] = useState<Host[]>([]);
   const [findingResults, setFindingResults] = useState<Finding[]>([]);
-  const [planResults, setPlanResults] = useState<TestPlanSummary[]>([]);
   const [scanResults, setScanResults] = useState<Scan[]>([]);
   const [resourcesLoading, setResourcesLoading] = useState(false);
   const [hostsError, setHostsError] = useState<string | null>(null);
   const [findingsError, setFindingsError] = useState<string | null>(null);
-  const [plansError, setPlansError] = useState<string | null>(null);
   const [scansError, setScansError] = useState<string | null>(null);
 
   // Reset search on close so the next open starts clean.
@@ -83,11 +78,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
       setSearch('');
       setHostResults([]);
       setFindingResults([]);
-      setPlanResults([]);
       setScanResults([]);
       setHostsError(null);
       setFindingsError(null);
-      setPlansError(null);
       setScansError(null);
     }
   }, [open]);
@@ -100,11 +93,9 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
     if (q.length < 2 && !findingId) {
       setHostResults([]);
       setFindingResults([]);
-      setPlanResults([]);
       setScanResults([]);
       setHostsError(null);
       setFindingsError(null);
-      setPlansError(null);
       setScansError(null);
       setResourcesLoading(false);
       return;
@@ -114,7 +105,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
     setResourcesLoading(true);
     setHostsError(null);
     setFindingsError(null);
-    setPlansError(null);
     setScansError(null);
 
     // Helper that converts a fetch failure to a per-group banner unless
@@ -134,7 +124,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
     const wide = q.length >= 2;
     if (!wide) {
       setHostResults([]);
-      setPlanResults([]);
       setScanResults([]);
     }
 
@@ -164,19 +153,13 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
       })
       .catch(groupFail(setFindingsError, 'Findings'));
 
-    const plansPromise = !wide ? Promise.resolve() : getTestPlans({ search: q, limit: 5, signal: controller.signal })
-      .then((plans) => {
-        if (!cancelled) setPlanResults(plans);
-      })
-      .catch(groupFail(setPlansError, 'Test plans'));
-
     const scansPromise = !wide ? Promise.resolve() : getScans(0, 5, { search: q, signal: controller.signal })
       .then((scans) => {
         if (!cancelled) setScanResults(scans);
       })
       .catch(groupFail(setScansError, 'Scans'));
 
-    Promise.allSettled([hostsPromise, findingsPromise, plansPromise, scansPromise]).then(() => {
+    Promise.allSettled([hostsPromise, findingsPromise, scansPromise]).then(() => {
       if (!cancelled) setResourcesLoading(false);
     });
 
@@ -224,7 +207,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
         >
           <DialogPrimitive.Title className="sr-only">Command palette</DialogPrimitive.Title>
           <DialogPrimitive.Description className="sr-only">
-            Type to search pages, hosts, findings (by title or number), test plans, scans, projects
+            Type to search pages, hosts, findings (by title or number), scans, projects
             and quick actions. Use arrow keys to navigate, Enter to run, Escape to dismiss.
           </DialogPrimitive.Description>
           <CommandPrimitive loop shouldFilter>
@@ -234,7 +217,7 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
                 autoFocus
                 value={search}
                 onValueChange={setSearch}
-                placeholder="Search pages, hosts, findings, plans, scans, projects…"
+                placeholder="Search pages, hosts, findings, scans, projects…"
                 className="flex h-10 w-full bg-transparent text-body text-foreground placeholder:text-muted-foreground focus:outline-none"
               />
               <kbd className="hidden text-caption text-muted-foreground sm:inline">esc</kbd>
@@ -350,40 +333,6 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
                         </CommandPrimitive.Item>
                       );
                     })}
-                  </CommandPrimitive.Group>
-
-                  <CommandPrimitive.Group
-                    heading="Test Plans"
-                    className={cn(
-                      '[&_[cmdk-group-heading]]:px-sm [&_[cmdk-group-heading]]:py-xxs',
-                      '[&_[cmdk-group-heading]]:text-micro [&_[cmdk-group-heading]]:font-semibold',
-                      '[&_[cmdk-group-heading]]:uppercase [&_[cmdk-group-heading]]:tracking-wider',
-                      '[&_[cmdk-group-heading]]:text-muted-foreground',
-                    )}
-                  >
-                    {resourcesLoading && planResults.length === 0 && !plansError && (
-                      <div className="px-sm py-xxs text-caption text-muted-foreground">
-                        Searching…
-                      </div>
-                    )}
-                    {plansError && (
-                      <div className="px-sm py-xxs text-caption text-destructive">
-                        {plansError}
-                      </div>
-                    )}
-                    {planResults.map((plan) => (
-                      <CommandPrimitive.Item
-                        key={`plan:${plan.id}`}
-                        value={`plan:${plan.id}:${plan.title}`}
-                        keywords={[plan.title, plan.status]}
-                        onSelect={() => run(() => navigate(`/test-plans/${plan.id}`))}
-                        className={itemClass}
-                      >
-                        <ShieldCheck className="size-4 text-muted-foreground" />
-                        <span className="min-w-0 flex-1 truncate">{plan.title}</span>
-                        <span className="text-caption text-muted-foreground">{plan.status}</span>
-                      </CommandPrimitive.Item>
-                    ))}
                   </CommandPrimitive.Group>
 
                   <CommandPrimitive.Group

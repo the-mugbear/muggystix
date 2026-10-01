@@ -10,10 +10,9 @@
 /** Host review/follow state. */
 export type FollowStatus = 'watching' | 'in_review' | 'reviewed';
 
-/** Lifecycle state of a host note thread. */
-export type NoteStatus = 'open' | 'in_progress' | 'resolved';
-
 /** Thread-level note kinds (P3) — set on the thread's root note. */
+/** What a thread can be labelled. 'finding' and 'action' are older labels:
+ *  still shown on threads that carry them, no longer offered (5.326.0). */
 export type NoteType = 'observation' | 'finding' | 'question' | 'decision' | 'action' | 'handoff';
 
 /**

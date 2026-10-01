@@ -7,18 +7,12 @@ with a live assist key showed nothing on the surface whose whole job is
 answering "what are the agents doing right now?" — and the per-(model, tool)
 rollup under-reported what a given harness had been doing.
 
-The fix is additive: assist is sourced from `AssistSession`, exactly as the
-other three kinds come from their own detail tables.
+The fix is additive: assist is sourced from `AssistSession`, its own detail
+table, keyed by that table's ids.
 
-Deliberately NOT collapsed onto the unified `AgentSession` base row, which the
-external review proposed. Three things block that and none are cosmetic:
-  * plan_generation rows are keyed by `TestPlan.id`, not `AgentSession.id`, so
-    switching would change every id the UI links on;
-  * plan_generation status is derived live from `TestPlan.status` and nothing
-    copies it onto the base row, so reading the base row would freeze every
-    plan session at "active";
-  * the backfill migration (b8e1f37a92c4) creates base rows for execution,
-    recon and assist — but not plan_generation.
+v2.442.0 — the plan-generation and execution kinds went with their tables, so
+the timeline is `project` sessions plus these legacy assist rows; asking for a
+retired kind is a 422, not an empty list.
 """
 from datetime import datetime, timedelta, timezone
 
@@ -78,10 +72,10 @@ def test_assist_sessions_appear_on_the_timeline(
     assert row["status"] == "active"
     assert row["generated_by_model"] == "claude-opus-5"
     assert row["prompt_version"] == "1.56.0"
-    # Assist is project-scoped: no target plan.  (No row carries a scope_id
-    # since recon runs went, v2.433.1.)
+    # Assist is project-scoped.  (No row carries a scope_id since recon runs
+    # went, v2.433.1, or a test_plan_id since plans went, v2.442.0.)
     assert "scope_id" not in row
-    assert row["test_plan_id"] is None
+    assert "test_plan_id" not in row
 
 
 def test_assist_is_counted_in_the_total(client, test_project, assist_session):
@@ -104,9 +98,15 @@ def test_excluding_assist_still_works(client, test_project, assist_session):
     """The kind filter has to keep excluding what it isn't asked for —
     otherwise adding a kind quietly widens every existing caller's results."""
     body = client.get(
-        f"/api/v1/projects/{test_project.id}/agent-sessions?kind=execution"
+        f"/api/v1/projects/{test_project.id}/agent-sessions?kind=project"
     ).json()
     assert [r for r in body["sessions"] if r["kind"] == "assist"] == []
+
+
+@pytest.mark.parametrize("retired", ["execution", "plan_generation", "recon"])
+def test_a_retired_kind_is_refused_not_answered_with_nothing(client, test_project, retired):
+    r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions?kind={retired}")
+    assert r.status_code == 422, r.text
 
 
 def test_ended_assist_reports_its_completion_time(

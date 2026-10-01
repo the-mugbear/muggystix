@@ -2,8 +2,8 @@
 Agent API — shared helpers.
 
 Non-route helper functions used by more than one agent endpoint module.
-Must not import from the endpoint modules (agent_browse / agent_test_plans
-/ agent_execution / agent_recon) to avoid circular imports.
+Must not import from the endpoint modules (agent_browse / agent_recon /
+agent_assist…) to avoid circular imports.
 """
 
 from typing import Dict, List, Optional
@@ -14,20 +14,17 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry
-from app.services.test_plan_service import TestPlanService
-
-from app.api.v1.endpoints.agent_schemas import PlanResponse
+from app.db.models_agent import AgentSession
 
 
 def load_agent_session(db: Session, request: Request) -> AgentSession:
     """The unified ``AgentSession`` the caller's key belongs to.
 
     v2.337.0 — every ``/agent/*`` handler resolves its session from here
-    (``get_current_agent`` stashed the id after authenticating).  The phase a
-    call is about (a recon run, an execution run) is resolved from the session
-    by the ``agent_session_service.resolve_*_phase`` helpers, replacing the
-    per-key scope binding the deleted workflow guards used to carry.
+    (``get_current_agent`` stashed the id after authenticating).  Since
+    v2.442.0 a session has no phases: test plans and execution runs are gone,
+    and what an agent proposes or records (host tests, evidence) carries the
+    session id itself.
     """
     session_id = getattr(request.state, "agent_session_id", None)
     if session_id is None:
@@ -98,7 +95,6 @@ def _apply_agent_host_filters(
     has_high_vulns: Optional[bool] = None,
     has_exploit_available: Optional[bool] = None,
     search: Optional[str] = None,
-    not_in_plan_id: Optional[int] = None,
 ):
     """Apply optional filters to a Host query. Returns the modified query.
 
@@ -195,14 +191,6 @@ def _apply_agent_host_filters(
             )
         )
 
-    if not_in_plan_id is not None:
-        q = q.filter(
-            ~models.Host.id.in_(
-                db.query(TestPlanEntry.host_id).filter(
-                    TestPlanEntry.test_plan_id == not_in_plan_id
-                )
-            )
-        )
 
     return q
 
@@ -323,23 +311,3 @@ def _batch_host_enrichment(db: Session, host_ids: List[int], include_ports: bool
                 top_vulns.setdefault(v.host_id, []).append(v)
 
     return port_counts, vuln_map, svc_map, port_details, top_vulns
-
-
-# ---------------------------------------------------------------------------
-# Shared test-plan response builder
-# ---------------------------------------------------------------------------
-
-def _plan_response(plan: TestPlan, db: Session) -> PlanResponse:
-    svc = TestPlanService(db)
-    progress = svc.get_progress(plan.id)
-    return PlanResponse(
-        id=plan.id,
-        version=plan.version,
-        title=plan.title,
-        description=plan.description,
-        status=plan.status,
-        entry_count=progress["total_entries"],
-        completion_pct=progress["completion_pct"],
-        created_at=plan.created_at,
-        updated_at=plan.updated_at,
-    )

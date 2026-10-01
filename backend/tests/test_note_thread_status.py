@@ -1,6 +1,8 @@
-"""Review #5 — activity status filter/counts/history use THREAD (root)
-status, not a reply's, so a resolved thread with an open reply is
-consistent everywhere.  Notes are created through the API so
+"""The Collaboration feed's host-note threads (file named for review #5's
+thread-status rules; notes lost their status in v2.446.0, see
+``test_notes_as_work.py``).  What is pinned here: the feed carries no
+status, a combined reply PATCH answers with the reply, and a thread's size
+is the whole thread.  Notes are created through the API so
 ``thread_root_id`` is stamped (create_note).  ``client`` is a global admin.
 """
 from __future__ import annotations
@@ -19,64 +21,40 @@ def _notes_base(pid, host_id):
     return f"/api/v1/projects/{pid}/hosts/{host_id}/notes"
 
 
-def test_thread_status_filter_counts_and_history(client, db_session, test_project):
+def test_the_feed_has_no_note_status(client, db_session, test_project):
     host = _make_host(db_session, test_project.id, "10.10.0.1")
     base = _notes_base(test_project.id, host.id)
-
-    # Root note (open) + an open reply.
-    root = client.post(base, json={"body": "root", "status": "open"}).json()
+    root = client.post(base, json={"body": "root"}).json()
     reply = client.post(base, json={"body": "reply", "parent_id": root["id"]}).json()
 
-    # Resolve the thread (root) with a summary.
-    r = client.patch(
-        f"{base}/{root['id']}",
-        json={"status": "resolved", "resolution_summary": "done"},
-    )
-    assert r.status_code == 200, r.text
-
     activity_url = f"/api/v1/projects/{test_project.id}/hosts/notes/activity"
-
-    # Filtering by resolved returns the whole thread (root + open reply).
-    resolved = client.get(activity_url, params={"status": "resolved"}).json()
-    ids = {n["note_id"] for n in resolved["notes"]}
-    assert {root["id"], reply["id"]} <= ids
-    # Counts are thread-level: this thread counts once as resolved, not open.
-    assert resolved["status_counts"]["resolved"] >= 1
-
-    # Filtering by open must NOT return the resolved thread's messages,
-    # even though the reply's own status is open.
-    open_ = client.get(activity_url, params={"status": "open"}).json()
-    open_ids = {n["note_id"] for n in open_["notes"]}
-    assert root["id"] not in open_ids
-    assert reply["id"] not in open_ids
-
-    # History requested via the REPLY id resolves to the thread root.
-    hist = client.get(f"{base}/{reply['id']}/history").json()
-    assert any(h["to_status"] == "resolved" for h in hist)
+    # A leftover ?status= from an old link narrows nothing.
+    feed = client.get(activity_url, params={"status": "resolved"}).json()
+    assert {root["id"], reply["id"]} <= {n["note_id"] for n in feed["notes"]}
+    assert "status_counts" not in feed
+    assert all("status" not in n and "thread_root_status" not in n for n in feed["notes"])
+    assert all(n["thread_root_id"] == root["id"] for n in feed["notes"])
 
 
 def test_combined_reply_patch_returns_reply_not_root(client, db_session, test_project):
-    """CR3-#4 — a reply PATCH with body + thread metadata returns the
-    EDITED REPLY (and applies status to the root), not the root."""
+    """CR3-#4 — a reply PATCH with body + a thread label returns the EDITED
+    REPLY (and applies the label to the root), not the root."""
     host = _make_host(db_session, test_project.id, "10.10.1.1")
     base = _notes_base(test_project.id, host.id)
-    root = client.post(base, json={"body": "root body", "status": "open"}).json()
+    root = client.post(base, json={"body": "root body"}).json()
     reply = client.post(base, json={"body": "reply body", "parent_id": root["id"]}).json()
 
-    r = client.patch(
-        f"{base}/{reply['id']}",
-        json={"body": "edited reply", "status": "resolved", "resolution_summary": "done"},
-    )
+    r = client.patch(f"{base}/{reply['id']}", json={"body": "edited reply", "pinned": True})
     assert r.status_code == 200, r.text
     body = r.json()
     # Response is the edited reply, with its new body — not the root.
     assert body["id"] == reply["id"]
     assert body["body"] == "edited reply"
 
-    # The root absorbed the status change.
+    # The root took the label.
     roots = client.get(base).json()
     root_now = next(n for n in roots if n["id"] == root["id"])
-    assert root_now["status"] == "resolved"
+    assert root_now["pinned"] is True
 
 
 def test_thread_note_count_is_the_whole_thread_not_the_page(client, db_session, test_project):
@@ -84,7 +62,7 @@ def test_thread_note_count_is_the_whole_thread_not_the_page(client, db_session, 
     reported only the entries on the current page."""
     host = _make_host(db_session, test_project.id, "10.10.2.1")
     base = _notes_base(test_project.id, host.id)
-    root = client.post(base, json={"body": "root", "status": "open"}).json()
+    root = client.post(base, json={"body": "root"}).json()
     for i in range(3):
         client.post(base, json={"body": f"reply {i}", "parent_id": root["id"]})
 

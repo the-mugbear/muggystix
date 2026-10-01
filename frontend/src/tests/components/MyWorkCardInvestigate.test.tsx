@@ -11,7 +11,7 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => navigate };
 });
-const api = vi.hoisted(() => ({ updateTestPlanEntry: vi.fn(), followHost: vi.fn() }));
+const api = vi.hoisted(() => ({ updateHostTest: vi.fn(), followHost: vi.fn() }));
 vi.mock('../../services/api', () => api);
 vi.mock('../../contexts/AuthContext', () => ({ useAuth: () => ({ user: { id: 1 } }) }));
 vi.mock('../../contexts/ToastContext', () => ({
@@ -72,7 +72,6 @@ const renderCard = (
       <MyWorkCard
         queue={null}
         tasks={null}
-        notes={null}
         findings={null}
         investigate={investigate}
         investigateUnavailable={investigateUnavailable}
@@ -105,7 +104,7 @@ describe('MyWorkCard — Worth a look', () => {
 
     rerender(
       <MemoryRouter>
-        <MyWorkCard queue={null} tasks={null} notes={null} findings={null} investigate={withCounts}
+        <MyWorkCard queue={null} tasks={null} findings={null} investigate={withCounts}
           loading={false} error={null} onRetry={onRetry} investigateTier={3} onInvestigateTier={onInvestigateTier} />
       </MemoryRouter>,
     );
@@ -358,5 +357,50 @@ describe('MyWorkCard — the queue a host is opened with', () => {
     renderCard(many);
     fireEvent.click(screen.getByRole('link', { name: '10.7.7.1' }));
     expect(lastState().hostIds).toEqual([101, 102, 103, 104, 105, 106, 107]);
+  });
+});
+
+// 5.320.0 — a task is a host test (it was a test-plan entry): the row opens
+// the test on its host's page, and Claim assigns it under the revision read.
+describe('MyWorkCard — host tests as tasks', () => {
+  const task = (over: Record<string, unknown> = {}) => ({
+    test_id: 31, description: 'SMB signing', label: 'SMB sweep', revision: 4,
+    host_id: 5, host_ip: '10.0.0.5', host_hostname: null, priority: 'high', status: 'proposed',
+    rationale: null, updated_at: new Date().toISOString(), reasons: ['triage'], assigned_to_id: null,
+    ...over,
+  });
+  const tasks = (items: ReturnType<typeof task>[]) => ({
+    items, total_open: items.length, reason_counts: { assigned: 0, in_review: 0, triage: items.length },
+  });
+
+  it('links a task to its test on the host page, with the label and description', () => {
+    renderCard(null, false, { tasks: tasks([task()]) as never });
+    const link = screen.getByRole('link', { name: /10\.0\.0\.5/ });
+    expect(link).toHaveAttribute('href', '/hosts/5#host-test-31');
+    expect(link).toHaveTextContent('SMB sweep · SMB signing');
+  });
+
+  it('claims with the revision it was shown, then refreshes', async () => {
+    const onChanged = vi.fn();
+    api.updateHostTest.mockResolvedValue({ id: 31, revision: 5 });
+    renderCard(null, false, { tasks: tasks([task()]) as never, onChanged });
+    fireEvent.click(screen.getByRole('button', { name: 'Claim' }));
+    await waitFor(() => expect(api.updateHostTest).toHaveBeenCalledWith(31, { assigned_to_id: 1, expected_revision: 4 }));
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('offers no Claim on a test already assigned to the caller', () => {
+    renderCard(null, false, {
+      tasks: tasks([task({ reasons: ['assigned'], assigned_to_id: 1 })]) as never,
+    });
+    expect(screen.getByRole('link', { name: /10\.0\.0\.5/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Claim' })).not.toBeInTheDocument();
+  });
+
+  it('renders a task with no label and a 200-character description without breaking the row', () => {
+    const long = 'x'.repeat(200);
+    renderCard(null, false, { tasks: tasks([task({ label: null, description: long })]) as never });
+    const meta = screen.getByText(new RegExp(long));
+    expect(meta).toHaveClass('truncate');
   });
 });

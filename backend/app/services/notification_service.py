@@ -310,59 +310,6 @@ class NotificationService:
             notifications.append(notification)
         return notifications
 
-    def notify_status_change(
-        self,
-        note: Annotation,
-        old_status: str,
-        new_status: str,
-        actor: User,
-        project: Optional[Project] = None,
-    ) -> List[Notification]:
-        """Notify note author and thread participants when note status changes."""
-        notifications = []
-        project_id = project.id if project else None
-        host = note.host
-        host_label = host.ip_address if host else f"host #{note.host_id}"
-
-        # Collect users to notify: EVERY distinct author in the thread, not
-        # just the root + immediate parent (review #3-round #2).  Status is
-        # set on the thread root (parent_id is null), so the old parent
-        # lookup found nobody and reply authors were never notified.  Resolve
-        # the thread root and notify all its participants, minus the actor.
-        root_id = getattr(note, "thread_root_id", None) or note.id
-        participant_rows = (
-            self.db.query(Annotation.user_id)
-            .filter(
-                Annotation.thread_root_id == root_id,
-                Annotation.user_id.isnot(None),
-                Annotation.user_id != actor.id,
-            )
-            .distinct()
-            .all()
-        )
-        notify_user_ids = {uid for (uid,) in participant_rows}
-        # Defensive fallback for any pre-backfill note with a null
-        # thread_root_id: still notify the root author.
-        if note.user_id and note.user_id != actor.id:
-            notify_user_ids.add(note.user_id)
-
-        for user_id in notify_user_ids:
-            notification = Notification(
-                user_id=user_id,
-                project_id=project_id,
-                type="status_change",
-                title=f"Note status changed to {new_status} on {host_label}",
-                body=f"{display_name(actor)} changed status from {old_status} to {new_status}",
-                source_type="note",
-                source_id=note.id,
-                host_id=note.host_id,
-                actor_id=actor.id,
-            )
-            self.db.add(notification)
-            notifications.append(notification)
-
-        return notifications
-
     def notify_host_followers_of_note(
         self,
         note: Annotation,
@@ -502,36 +449,6 @@ class NotificationService:
         self.db.add(notification)
         return notification
 
-    def _plan_steward_ids(self, project_id: int) -> List[int]:
-        """User ids of project members who can close plans (admin or analyst
-        role) — the recipients for plan-lifecycle nudges."""
-        return [
-            m.user_id for m in self.db.query(ProjectMembership)
-            .filter(
-                ProjectMembership.project_id == project_id,
-                ProjectMembership.role.in_([ProjectRole.ADMIN.value, ProjectRole.ANALYST.value]),
-            ).all()
-        ]
-
-    def _notify_plan_stewards(
-        self, plan, project_id: int, ntype: str, title: str, body: str,
-    ) -> List[Notification]:
-        notifications = []
-        for uid in self._plan_steward_ids(project_id):
-            notification = Notification(
-                user_id=uid,
-                project_id=project_id,
-                type=ntype,
-                title=title,
-                body=body,
-                source_type="test_plan",
-                source_id=plan.id,
-                actor_id=None,  # agent actor, no User
-            )
-            self.db.add(notification)
-            notifications.append(notification)
-        return notifications
-
     def notify_queue_unhealthy(self, queue_name: str, failed_count: int) -> List[Notification]:
         """Alert global admins that the job reaper PERMANENTLY failed jobs it
         couldn't recover (retry cap exceeded or the uploaded file went missing).
@@ -564,20 +481,6 @@ class NotificationService:
             self.db.add(notification)
             notifications.append(notification)
         return notifications
-
-    def notify_plan_ready_to_close(self, plan, project_id: int) -> List[Notification]:
-        """Notify plan stewards that every entry on a plan has been executed —
-        the plan is ready to be closed.
-
-        The session-complete path knows ``entries_remaining == 0`` but
-        deliberately does NOT auto-transition the plan (plans outlive sessions),
-        so this is a nudge, not an auto-close.  Best-effort.
-        """
-        return self._notify_plan_stewards(
-            plan, project_id, "plan_ready",
-            f"Test plan \"{plan.title}\" is ready to close",
-            "All entries on this plan have been executed.",
-        )
 
     def notify_report_job_finished(self, job) -> Optional[Notification]:
         """Tell the requester their async report finished (completed or failed).

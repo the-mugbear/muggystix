@@ -32,7 +32,8 @@ from app.db.models_confidence import (
     NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, ConflictHistory, NetexecResult,
 )
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import TestPlanEntry, TestPlan, TestExecutionResult, PLANNED_PLAN_STATUSES
+from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTCOMES
+from app.db.models_proposals import EvidenceRecord
 from app.services.host_serialization import _serialize_follow, _serialize_note, note_load_options  # CR4-2
 from app.services.note_attachment_service import require_readable_file
 from app.services import host_query_predicates as P
@@ -77,7 +78,7 @@ from app.services.host_serialization import (
     serialize_vulnerability as _serialize_vulnerability,
     vulnerability_sort_key as _vulnerability_sort_key,
 )
-from app.db.models import HostFollow, FollowStatus, Annotation as AnnotationModel, NoteStatus
+from app.db.models import HostFollow, FollowStatus, Annotation as AnnotationModel
 
 
 # --- Response schemas for previously untyped endpoints ---
@@ -302,7 +303,7 @@ class HostFilterParams:
         has_medium_vulns: Optional[bool] = Query(None, description="If true, only hosts with medium-severity vulnerabilities"),
         has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
         has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
-        has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have had at least one agentic test executed against them (i.e. at least one TestExecutionResult with status 'executed' — a pending, skipped, failed or not-applicable row is not a test — recorded via any TestPlanEntry for the host). Drives the 'tested' badge on the Hosts list."),
+        has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have been tested: at least one evidence record whose outcome is finding, no_finding or inconclusive (a failed attempt or an informational record is not a test). Drives the 'tested' badge on the Hosts list."),
         follow_status: Optional[str] = Query(None, description="Filter by team-shared review status: in_review, reviewed, or none (nobody reviewing)", examples=["none"]),
         out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
         scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
@@ -577,42 +578,12 @@ def get_hosts_v2(
         )
     follow_map = {record.host_id: record for record in follow_records}
 
-    # Batch lookup: test plan entry counts per host.  Mirrors the host
-    # detail page filter — entries of every plan but an archived one
-    # (PLANNED_PLAN_STATUSES), excluding entries a tester rejected.
-    tp_count_map: Dict[int, int] = {}
-    if host_ids:
-        tp_rows = (
-            db.query(TestPlanEntry.host_id, func.count(TestPlanEntry.id))
-            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
-            .filter(
-                TestPlanEntry.host_id.in_(host_ids),
-                TestPlan.project_id == project.id,
-                TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-                TestPlanEntry.status != "rejected",
-            )
-            .group_by(TestPlanEntry.host_id)
-            .all()
-        )
-        tp_count_map = {row[0]: row[1] for row in tp_rows}
-
-    # Batch lookup: TestExecutionResult counts per host (v2.81.0).
-    # Joins TestPlanEntry by entry_id to land on host_id, then counts
-    # the rows.  Drives the "tested" left-border accent on the Hosts
-    # list — a host with count>0 has had at least one agentic test
-    # executed against it (distinct from tp_count_map which only
-    # counts whether the host is in a plan).  One grouped query per
-    # page, not N+1.
-    te_count_map: Dict[int, int] = {}
-    if host_ids:
-        te_rows = (
-            db.query(TestPlanEntry.host_id, func.count(TestExecutionResult.id))
-            .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-            .filter(TestPlanEntry.host_id.in_(host_ids))
-            .group_by(TestPlanEntry.host_id)
-            .all()
-        )
-        te_count_map = {row[0]: row[1] for row in te_rows}
+    tp_count_map = dict(db.query(HostTest.host_id, func.count(HostTest.id)).filter(
+        HostTest.host_id.in_(host_ids), HostTest.status.in_(ACTIVE_TEST_STATUSES),
+    ).group_by(HostTest.host_id).all()) if host_ids else {}
+    te_count_map = dict(db.query(EvidenceRecord.host_id, func.count(EvidenceRecord.id)).filter(
+        EvidenceRecord.host_id.in_(host_ids), EvidenceRecord.outcome.in_(TESTED_OUTCOMES),
+    ).group_by(EvidenceRecord.host_id).all()) if host_ids else {}
 
     # Batch lookup: NetExec result counts per host — surfaces the "NetExec /
     # credential checks ran" signal as a Hosts-list badge.  One grouped query
@@ -2672,192 +2643,3 @@ def get_web_interface_screenshot(
 
 
 # ---------------------------------------------------------------------------
-# Host workflow lineage (v3 alpha.9)
-# ---------------------------------------------------------------------------
-#
-# Answers the host-centric question the v3 design review prioritised:
-# "for this host, what's been done to it?"  Returns the recon sessions
-# that discovered it, the plans that include it, and the execution
-# sessions that have produced results against it — in one call so the
-# HostDetail panel renders without N+1 queries against three
-# different surfaces.
-
-class HostLineagePlanRow(BaseModel):
-    plan_id: int
-    title: str
-    status: str
-    version: int
-    entry_id: int
-    entry_status: str
-    created_at: datetime
-    generated_by_model: Optional[str] = None
-    source_kind: Optional[str] = None
-
-
-class HostLineageExecutionRow(BaseModel):
-    execution_session_id: int
-    plan_id: int
-    plan_title: str
-    status: str
-    started_at: Optional[datetime] = None
-    completed_at: Optional[datetime] = None
-    generated_by_model: Optional[str] = None
-    started_by_username: Optional[str] = None
-    # Per-host counts within this session — quick read for "did this
-    # session test this host, and was anything found?"
-    test_count: int = 0
-    finding_count: int = 0
-
-
-class HostLineageResponse(BaseModel):
-    host_id: int
-    ip_address: str
-    plan_entries: List[HostLineagePlanRow] = Field(default_factory=list)
-    execution_sessions: List[HostLineageExecutionRow] = Field(default_factory=list)
-
-
-@router.get(
-    "/{host_id:int}/lineage",
-    response_model=HostLineageResponse,
-    summary="Workflow lineage for one host (v3 alpha.9)",
-)
-def get_host_lineage(
-    host_id: int,
-    db: Session = Depends(get_db),
-    _user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Return every workflow run that has touched this host.
-
-    Two sections — plan entries referencing it (via TestPlanEntry →
-    TestPlan) and execution sessions that produced per-test results
-    against any of those entries (via TestExecutionResult →
-    ExecutionSession).  Deeper detail lives on the per-session pages.
-    """
-    from app.db.models_agent import (
-        ExecutionSession,
-        TestExecutionResult,
-    )
-
-    host = (
-        db.query(models.Host)
-        .filter(
-            models.Host.id == host_id,
-            models.Host.project_id == project.id,
-        )
-        .first()
-    )
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-
-    # --- Plan entries referencing this host ---------------------------
-    # Project-scope through the plan's project_id (the entry FK doesn't
-    # carry project_id directly).  One row per (plan, entry); since
-    # v2.324.0 a host may appear more than once per plan — once per named
-    # target (uq_plan_host_name).
-    plan_entries = (
-        db.query(TestPlanEntry, TestPlan)
-        .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)
-        .filter(
-            TestPlanEntry.host_id == host_id,
-            TestPlan.project_id == project.id,
-        )
-        .order_by(TestPlan.created_at.desc())
-        .all()
-    )
-    plan_out = [
-        HostLineagePlanRow(
-            plan_id=plan.id,
-            title=plan.title,
-            status=plan.status,
-            version=plan.version,
-            entry_id=entry.id,
-            entry_status=entry.status,
-            created_at=plan.created_at,
-            generated_by_model=plan.generated_by_model,
-            source_kind=plan.source_kind,
-        )
-        for entry, plan in plan_entries
-    ]
-
-    # --- Execution sessions that have touched this host ---------------
-    # Path: TestPlanEntry.host_id → TestExecutionResult.entry_id →
-    # ExecutionSession.id.  Distinct sessions, with per-session test +
-    # finding counts for this host computed in one batch.
-    entry_ids = [e.id for e, _ in plan_entries]
-    execution_out: List[HostLineageExecutionRow] = []
-    if entry_ids:
-        # Distinct sessions that have at least one result against any
-        # of this host's entries.  Same JSON-DISTINCT issue as the
-        # recon query above — collect IDs first, then load full rows.
-        exec_ids = [
-            row[0] for row in (
-                db.query(ExecutionSession.id)
-                .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-                .join(
-                    TestExecutionResult,
-                    TestExecutionResult.execution_session_id == ExecutionSession.id,
-                )
-                .filter(
-                    TestExecutionResult.entry_id.in_(entry_ids),
-                    TestPlan.project_id == project.id,
-                )
-                .distinct()
-                .all()
-            )
-        ]
-        session_rows = []
-        if exec_ids:
-            session_rows = (
-                db.query(ExecutionSession, TestPlan)
-                .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-                .filter(ExecutionSession.id.in_(exec_ids))
-                .order_by(ExecutionSession.started_at.desc())
-                .all()
-            )
-        # Counts: tests run against this host's entries + how many of
-        # those tests are findings.  Two cheap counts per session at
-        # the current scale (typically O(1) sessions per host); using
-        # two filtered count() queries instead of SUM(CAST(...)) keeps
-        # the SQL portable across Postgres and SQLite tests.
-        for sess, plan in session_rows:
-            test_count = (
-                db.query(func.count(TestExecutionResult.id))
-                .filter(
-                    TestExecutionResult.execution_session_id == sess.id,
-                    TestExecutionResult.entry_id.in_(entry_ids),
-                )
-                .scalar()
-            ) or 0
-            finding_count = (
-                db.query(func.count(TestExecutionResult.id))
-                .filter(
-                    TestExecutionResult.execution_session_id == sess.id,
-                    TestExecutionResult.entry_id.in_(entry_ids),
-                    TestExecutionResult.is_finding.is_(True),
-                )
-                .scalar()
-            ) or 0
-            execution_out.append(
-                HostLineageExecutionRow(
-                    execution_session_id=sess.id,
-                    plan_id=plan.id,
-                    plan_title=plan.title,
-                    status=sess.status,
-                    started_at=sess.started_at,
-                    completed_at=sess.completed_at,
-                    generated_by_model=sess.generated_by_model,
-                    started_by_username=(
-                        sess.started_by.username if sess.started_by else None
-                    ),
-                    test_count=int(test_count or 0),
-                    finding_count=int(finding_count or 0),
-                )
-            )
-
-    return HostLineageResponse(
-        host_id=host.id,
-        ip_address=host.ip_address,
-        plan_entries=plan_out,
-        execution_sessions=execution_out,
-    )

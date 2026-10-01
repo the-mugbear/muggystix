@@ -41,9 +41,13 @@ _SECTION_START = re.compile(
 )
 _SECTION_END = re.compile(r'<!--\s*agents:end\s*-->', re.IGNORECASE)
 
+# "testing" replaced the plan-generation and execution slices in v2.442.0; the
+# old names still resolve so an older client's request gets the right slice.
 _WORKFLOW_ALIASES = {
-    "plan": "plan_generation",
-    "exec": "execution",
+    "plan": "testing",
+    "plan_generation": "testing",
+    "exec": "testing",
+    "execution": "testing",
     "recon": "reconnaissance",
 }
 

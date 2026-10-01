@@ -9,8 +9,8 @@
  */
 import React, { useCallback, useEffect, useState } from 'react';
 import { Loader2, Tag as TagIcon, UserPlus, Eye, X, Copy, Check, ClipboardList } from 'lucide-react';
-import PlanFromSelectionDialog from './PlanFromSelectionDialog';
-import { describeSelection } from '../../utils/planSelection';
+import ProposeTestsDialog from './ProposeTestsDialog';
+import { describeSelection } from '../../utils/hostSelection';
 import {
   HostTagWithCount,
   ProjectMember,
@@ -100,7 +100,8 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const [working, setWorking] = useState(false);
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [copiedIps, setCopiedIps] = useState(false);
-  // v5.221.0 — carry the selection into a test plan (design review item 6).
+  // v5.221.0 — hand the selection to the agent as a fixed list (design review
+  // item 6); 5.320.0: to propose tests on those hosts (it was a test plan).
   const [planDialogOpen, setPlanDialogOpen] = useState(false);
 
   // Copy the explicitly-checked rows' IPs as a newline-delimited target
@@ -391,15 +392,15 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* Test plan — the selection becomes a fixed target list. */}
+        {/* Propose tests — the selection becomes a fixed target list. */}
         <Button
           size="sm"
           variant="outline"
           disabled={working || effectiveCount === 0}
           onClick={() => setPlanDialogOpen(true)}
-          title="Create a test plan from these hosts, add them to a draft, or have your agent draft it"
+          title="Have your agent propose tests on these hosts; they appear on each host's page"
         >
-          <ClipboardList className="size-3.5" aria-hidden /> Test plan
+          <ClipboardList className="size-3.5" aria-hidden /> Propose tests
         </Button>
 
         <Button size="sm" variant="ghost" onClick={onClear} disabled={working} aria-label="Clear selection">
@@ -407,7 +408,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
         </Button>
       </div>
 
-      <PlanFromSelectionDialog
+      <ProposeTestsDialog
         open={planDialogOpen}
         onOpenChange={setPlanDialogOpen}
         resolveIds={resolveIds}

@@ -29,7 +29,7 @@ const buildShortcuts = (): ShortcutRow[] => [
   { keys: ['/'], label: 'Focus the page search (where available)' },
   { keys: [commandModifierLabel(), 'K'], label: 'Open command palette' },
   { keys: ['g', 'h'], label: 'Go to Hosts' },
-  { keys: ['g', 'p'], label: 'Go to Test Plans' },
+  { keys: ['g', 'p'], label: 'Go to Proposals' },
   { keys: ['g', 's'], label: 'Go to Scans' },
   { keys: ['g', 'i'], label: 'Go to Inventory hub' },
   { keys: ['g', 'o'], label: 'Go to Operations hub' },

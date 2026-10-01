@@ -17,8 +17,6 @@ export interface AgentFeedbackEntry {
   id: number;
   project_id: number | null;
   agent_id: number | null;
-  test_plan_id: number | null;
-  execution_session_id: number | null;
   source: string;
   prompt_version: string | null;
   overall_rating: number | null;
@@ -50,8 +48,6 @@ export interface AgentFeedbackListParams {
   has_tool_suggestions?: boolean;
   has_api_critiques?: boolean;
   search?: string;
-  /** v2.28.0 — narrow to feedback rows attributed to a specific test plan. */
-  test_plan_id?: number;
   project_id?: number;
   skip?: number;
   limit?: number;

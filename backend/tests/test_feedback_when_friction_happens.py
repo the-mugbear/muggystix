@@ -11,8 +11,9 @@ These pin:
 
 * ``end_reason`` is set by each of the three end paths — agent, operator, sweep;
 * the timeline row carries ``end_reason`` and ``feedback_count``;
-* a phase completion says whether the session has filed feedback yet, with a
-  hint when it has not, and is never refused over it;
+* feedback names the kind of work it is about — ``assist``, ``reconnaissance``
+  or ``testing`` (v2.442.0; the plan-era names still file, the offline-bundle
+  one is refused) — and is attributed to the session from the key alone;
 * the activity summary's ``session_hygiene`` counts starts, exits by kind, and
   sessions that filed feedback;
 * the prompt and the MCP tool descriptions carry the trigger rule.
@@ -57,23 +58,6 @@ def _file_feedback(client, key, note="assist_list_hosts has no total"):
         json={"source": "assist", "overall_rating": 3, "friction_notes": note},
     )
     assert r.status_code in (200, 201), r.text
-
-
-def _open_execution_run(client, db, project, key):
-    from app.db import models
-    from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
-    host = models.Host(project_id=project.id, ip_address="10.0.0.5", state="up")
-    db.add(host)
-    db.flush()
-    plan = TestPlan(project_id=project.id, version=1, title="p", status=TestPlanStatus.DRAFT.value)
-    db.add(plan)
-    db.flush()
-    db.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high",
-                         test_phase="enumeration", proposed_tests=[], rationale="x"))
-    db.commit()
-    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
-    assert r.status_code == 201, r.text
-    return r.json()["session_id"]
 
 
 def _row(client, project, sid):
@@ -174,35 +158,46 @@ def test_activity_summary_counts_session_hygiene(client, test_project, db_sessio
 
 
 # ---------------------------------------------------------------------------
-# The checkpoint: phase completion says whether feedback was filed
+# What a feedback row is about
+#
+# (v2.343.0 also had a "checkpoint": an execution run's ``/complete`` answered
+# ``feedback_recorded`` / ``feedback_hint``.  Runs went in v2.442.0 and the
+# checkpoint with them — there is no completion step left to hang it on.  The
+# trigger rule in the prompt and the tool text, pinned below, is what remains.)
 # ---------------------------------------------------------------------------
 
-def test_execution_complete_reports_missing_feedback_and_is_not_refused(client, test_project, db_session):
-    key, _assist_id = _start_session(client, test_project)
-    run_id = _open_execution_run(client, db_session, test_project, key)
+def test_testing_feedback_is_accepted_and_attributed_from_the_key(client, test_project, db_session):
+    from app.db.models_agent import AgentFeedback
 
-    # Completion with nothing filed: advisory flag + hint, still a 200.
-    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
-    assert r.status_code == 200, r.text
+    key, assist_id = _start_session(client, test_project)
+    sid = _agent_session_id(db_session, assist_id)
+    r = client.post("/api/v1/agent/feedback", headers=_hdr(key), json={
+        "source": "testing", "overall_rating": 2,
+        "friction_notes": "host_tests_propose 409 did not say which request_key",
+    })
+    assert r.status_code in (200, 201), r.text
     body = r.json()
-    assert body["feedback_recorded"] is False
-    assert "/agent/feedback" in body["feedback_hint"]
-    assert "submit_feedback" in body["feedback_hint"]
+    assert body["source"] == "testing"
+    for retired in ("test_plan_id", "execution_session_id"):
+        assert retired not in body
+    row = db_session.get(AgentFeedback, body["id"])
+    assert (row.agent_session_id, row.project_id, row.source) == (sid, test_project.id, "testing")
+    assert _row(client, test_project, sid)["feedback_count"] == 1
 
 
-def test_execution_complete_acknowledges_feedback_already_filed(client, test_project, db_session):
+def test_plan_era_sources_still_file_and_the_bundle_one_is_refused(client, test_project, db_session):
     key, _assist_id = _start_session(client, test_project)
-    run_id = _open_execution_run(client, db_session, test_project, key)
-    _file_feedback(client, key, note="upload wanted multipart, guide showed json")
-    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
-    assert r.status_code == 200, r.text
-    assert r.json()["feedback_recorded"] is True
-    assert r.json()["feedback_hint"] is None
-
-
-def test_feedback_checkpoint_helper_handles_no_session():
-    from app.services.agent_session_service import feedback_checkpoint
-    assert feedback_checkpoint(None, None) == (None, None)
+    for legacy in ("plan_generation", "in_session_execution"):
+        r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
+                        json={"source": legacy, "friction_notes": "old client"})
+        assert r.status_code in (200, 201), (legacy, r.text)
+    r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
+                    json={"source": "exported_execution", "friction_notes": "x"})
+    assert r.status_code == 400, r.text
+    assert "offline result bundles" in r.json()["detail"]
+    r = client.post("/api/v1/agent/feedback", headers=_hdr(key),
+                    json={"source": "made_up", "friction_notes": "x"})
+    assert r.status_code == 400, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -215,7 +210,10 @@ def test_session_prompt_asks_for_feedback_at_the_moment_of_friction(client, test
     prompt = r.json()["instructions"]
     assert "file it when the friction happens" in prompt
     assert "trigger is an event, not the end of the session" in prompt
-    assert "feedback_recorded" in prompt
+    # No checkpoint is advertised that no longer exists.
+    assert "feedback_recorded" not in prompt
+    assert "execution-sessions" not in prompt
+    assert "assist | reconnaissance | testing" in prompt
     # The exit step no longer treats feedback as part of the ceremony.
     assert "if you have filed no feedback yet" in prompt
     assert "Before you finish, submit structured feedback" not in prompt
@@ -225,8 +223,10 @@ def test_mcp_tool_descriptions_carry_the_trigger_rule():
     from app.api.v1.endpoints.mcp_tools import TOOLS
     fb = TOOLS["submit_feedback"]["description"]
     assert "AT THE MOMENT you hit friction" in fb
-    for name in ("execution_complete_session",):
-        assert "feedback_recorded" in TOOLS[name]["description"], name
+    assert "execution_complete_session" not in fb and "feedback_recorded" not in fb
+    assert TOOLS["submit_feedback"]["input_schema"]["properties"]["source"]["enum"] == [
+        "assist", "reconnaissance", "testing",
+    ]
     assert "file any feedback you have not filed yet first" in TOOLS["end_session"]["description"]
 
 

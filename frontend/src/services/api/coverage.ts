@@ -26,7 +26,12 @@ export interface ScopeCoverageRow {
 export interface ProjectCoverageResponse {
   project_id: number;
   total_hosts: number;
+  /** Hosts with a test still to do (proposed / in progress). The field names
+   *  date from test plans (removed 5.320.0); the definitions are the
+   *  backend's `host_test_queries`. */
   hosts_with_plan_entry: number;
+  /** Hosts with evidence of a test that ran (finding / no finding /
+   *  inconclusive). */
   hosts_with_execution_result: number;
   /** Gap counts — explicit fields rather than derived so the UI
    *  doesn't drift from the backend's definition. */

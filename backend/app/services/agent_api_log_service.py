@@ -39,10 +39,10 @@ from sqlalchemy.orm import Session
 from starlette.background import BackgroundTask, BackgroundTasks
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 
 from app.db import session as _session_module
-from app.db.models_agent import AgentApiCall, ExecutionSession
+from app.db.models_agent import AgentApiCall
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,58 @@ agent_audit_plumbing: contextvars.ContextVar[bool] = contextvars.ContextVar(
 mcp_loopback_active: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "mcp_loopback_active", default=False
 )
+
+
+def unmatched_route_body(method: str, path: str) -> dict:
+    """The 404 for an /agent/ path that is not an endpoint: what to read, and
+    where to say that the route you expected is missing."""
+    return {
+        "detail": f"No agent endpoint at {method} {path}.",
+        "hint": (
+            "The endpoints that exist are in the guide (GET /api/v1/agents-guide) and, "
+            "over MCP, tools/list. If you expected this one to exist, say so: "
+            "POST /api/v1/agent/feedback (MCP submit_feedback) with the path you tried "
+            "and what you were trying to do."
+        ),
+        "guide": "/api/v1/agents-guide",
+        "feedback": "/api/v1/agent/feedback",
+    }
+
+
+def _attribution_from_key(db: Session, request: Request) -> Optional[dict]:
+    """Who called, read from the key itself — for a request no route (and so
+    no auth dependency) handled.  None unless the key is a real, active agent
+    key: an anonymous probe is still not an audit record."""
+    import hashlib
+
+    from app.db.models_agent import Agent
+    from app.db.models_auth import APIKey
+
+    token = request.headers.get("x-api-key")
+    if not token:
+        auth = request.headers.get("authorization") or ""
+        if auth.lower().startswith("bearer "):
+            token = auth[7:].strip()
+    if not token:
+        return None
+    key = (
+        db.query(APIKey)
+        .filter(
+            APIKey.key_hash == hashlib.sha256(token.encode()).hexdigest(),
+            APIKey.is_active.is_(True),
+            APIKey.agent_id.isnot(None),
+        )
+        .first()
+    )
+    if key is None:
+        return None
+    agent = db.get(Agent, key.agent_id)
+    if agent is None:
+        return None
+    return {
+        "agent_id": agent.id, "project_id": agent.project_id, "api_key_id": key.id,
+        "api_key_prefix": key.key_prefix, "agent_session_id": key.agent_session_id,
+    }
 
 
 def is_agent_audited_path(path: str) -> bool:
@@ -350,30 +402,12 @@ def _strip_sensitive_fields(node: Any) -> Any:
 
 
 def _path_template_from_route(request: Request) -> Optional[str]:
-    """Recover the route's path template (``/agent/test-plans/{plan_id}/...``)
+    """Recover the route's path template (``/agent/host-tests/{test_id}``)
     from the scope so the log is groupable by endpoint, not just URL."""
     route = request.scope.get("route")
     if route is not None and hasattr(route, "path"):
         return route.path
     return None
-
-
-def _active_execution_session_id(db: Session, plan_id: int) -> Optional[int]:
-    """Best-effort: tie this call to the currently-active execution
-    session of the scoped plan.  None when there is no active session
-    (e.g. plan-generation phase before /execute was clicked)."""
-    if not plan_id:
-        return None
-    row = (
-        db.query(ExecutionSession.id)
-        .filter(
-            ExecutionSession.test_plan_id == plan_id,
-            ExecutionSession.status == "active",
-        )
-        .order_by(ExecutionSession.started_at.desc())
-        .first()
-    )
-    return row[0] if row else None
 
 
 def _safe_write_row(
@@ -503,6 +537,16 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
         if not is_agent_path or plumbing:
             return response
 
+        # v2.444.0 — a path under /agent/ that matches no route.  An agent
+        # that guessed a URL got FastAPI's bare {"detail": "Not Found"}, took it
+        # for its own mistake and said nothing (and nothing was logged).  The
+        # answer now names the guide and the feedback call at the moment of the
+        # friction, and the call is recorded when the key is real.
+        if response.status_code == 404 and request.scope.get("route") is None \
+                and path.startswith(AGENT_API_PREFIX):
+            request.state._agent_unmatched_route = True  # type: ignore[attr-defined]
+            response = JSONResponse(status_code=404, content=unmatched_route_body(request.method, path))
+
         # Resolved only now — the tee fills as the application reads.
         body_bytes = bytes(captured)
         if capture_state["truncated"] and body_skip_reason is None:
@@ -570,14 +614,21 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
             project_id = getattr(request.state, "agent_project_id", None)
             api_key_id = getattr(request.state, "api_key_id", None)
             api_key_prefix = getattr(request.state, "api_key_prefix", None)
-            # v2.337.0 — a key no longer binds a workflow/plan/scope. The
-            # durable attribution is the session id; the per-phase FK columns
-            # are filled from what the call's PATH names (a plan_id, an
-            # execution session id, a scope_id), which is what "show every call
-            # that touched this plan" needs.
+            # v2.337.0 — a key no longer binds a workflow or scope.  The
+            # durable attribution is the session id; ``scope_id`` is filled
+            # from what the call's PATH names.  (The plan and execution-run
+            # columns went with those objects in v2.442.0.)
             agent_session_id = getattr(request.state, "agent_session_id", None)
-            scoped_plan_id = None
             scoped_scope_id = None
+            # No route matched, so no dependency stamped the caller: read it
+            # from the key (v2.444.0).  The row's path_template stays NULL,
+            # which is how the diagnostics bundle counts "(unmatched route)".
+            if agent_id is None and getattr(request.state, "_agent_unmatched_route", False):
+                who = _attribution_from_key(db, request)
+                if who is not None:
+                    agent_id, project_id = who["agent_id"], who["project_id"]
+                    api_key_id, api_key_prefix = who["api_key_id"], who["api_key_prefix"]
+                    agent_session_id = who["agent_session_id"]
 
             path_params = dict(request.path_params or {})
             query_params = dict(request.query_params or {})
@@ -627,22 +678,7 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 path_params, query_params, body_for_id_scan,
             )
 
-            # Per-phase FKs from the call's own path/query — these say which
-            # plan or run the call touched, independent of the session's other
-            # open phases.
             assist_session_id = None
-            plan_from_path = path_params.get("plan_id")
-            try:
-                test_plan_id = int(plan_from_path) if plan_from_path is not None else None
-            except (TypeError, ValueError):
-                test_plan_id = None
-            exec_from_path = path_params.get("session_id")
-            try:
-                execution_session_id = int(exec_from_path) if exec_from_path is not None else None
-            except (TypeError, ValueError):
-                execution_session_id = None
-            if execution_session_id is None and test_plan_id is not None:
-                execution_session_id = _active_execution_session_id(db, test_plan_id)
             # v2.433.1 — the scope reads name their scope in the path
             # (/agent/scopes/{scope_id}/…).  Only on success: a refused id may
             # name no scope at all, and the column is a foreign key.
@@ -688,8 +724,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 user_agent=request.headers.get("user-agent"),
                 project_id=project_id,
                 agent_session_id=agent_session_id,
-                test_plan_id=test_plan_id,
-                execution_session_id=execution_session_id,
                 scope_id=scoped_scope_id,
                 assist_session_id=assist_session_id,
                 method=request.method,

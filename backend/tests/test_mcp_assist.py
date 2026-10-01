@@ -582,8 +582,9 @@ def test_tools_list_is_scoped_by_workflow_not_by_grant(client, test_project):
     assert "assist_list_hosts" in names
     assert {"assist_add_note", "assist_set_follow", "assist_patch_host"} <= names
     # v2.337.0 — one project session does everything, so tools/list is no
-    # longer scoped by workflow: scope reads and plan tooling are listed too.
-    assert {"scope_list_subnets", "start_execution", "create_test_plan"} <= names
+    # longer scoped by workflow: scope reads and the host-test tools are
+    # listed too.
+    assert {"scope_list_subnets", "host_tests_propose", "host_tests_update"} <= names
 
     # Without a key the full catalogue is still listed — that's the docs view.
     anon = {t["name"] for t in _rpc(
@@ -748,31 +749,41 @@ def test_advertised_defaults_match_what_the_server_injects(client):
     assert catalog["assist_list_hosts"]["input_schema"]["properties"]["limit"]["default"] == 100
 
 
-def test_tools_accept_the_attribution_field_the_prompt_asks_for(client, test_project):
+def test_tools_accept_the_attribution_field_the_prompt_asks_for(client, test_project, db_session):
     """The prompt tells agents to send agent_model. When a tool omitted an
     attribution field the prompt asked for, an agent following its
     instructions got -32602 (unknown arguments are an error). The environment
     probe that used to carry these is gone; agent_model now rides on
-    create_test_plan / start_execution / end_session, so the MCP schema must
-    advertise it on each."""
+    host_tests_propose / record_evidence / the proposal tools / end_session
+    (create_test_plan and start_execution until v2.442.0), so the MCP schema
+    must advertise it on each."""
     from app.api.v1.endpoints.mcp_tools import TOOLS
+    from app.db import models
+    from app.db.models_host_tests import HostTest
 
-    for name in ("create_test_plan", "start_execution", "end_session"):
+    for name in ("host_tests_propose", "record_evidence", "propose_finding_text", "end_session"):
         spec = TOOLS[name]
         assert "agent_model" in spec["input_schema"]["properties"], name
         assert "agent_model" in spec["body_params"], name
 
+    host = models.Host(project_id=test_project.id, ip_address="10.31.0.1", state="up")
+    db_session.add(host)
+    db_session.commit()
     body = _start_session(client, test_project.id)
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 1, "method": "tools/call",
         "params": {
-            "name": "create_test_plan",
-            "arguments": {"title": "attributed", "agent_model": "claude-opus-5"},
+            "name": "host_tests_propose",
+            "arguments": {"agent_model": "claude-opus-5", "tests": [{
+                "request_key": "attributed-1", "host_id": host.id, "tool": "curl",
+                "description": "attributed", "rationale": "r",
+            }]},
         },
     }, headers={"X-API-Key": body["api_key"]}).json()
 
     assert "error" not in resp, resp
     assert resp["result"]["isError"] is False, resp
+    assert db_session.query(HostTest).one().agent_model == "claude-opus-5"
 
 
 def test_overwriting_tools_are_not_advertised_as_additive(client):
@@ -897,13 +908,24 @@ def test_granted_writes_land_through_mcp(client, test_project, test_user, db_ses
     ).count() == 0
 
 
-def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_project, db_session):
+def test_auto_params_read_the_identity_without_an_audit_row(client, test_project, db_session):
     """v2.338.1 — found live: a tool's auto-filled plan_id / session_id came
-    from a 60 s identity cache, which predated the phase the agent had just
-    opened (and, across four uvicorn workers, could not be invalidated), so
-    execution_complete_session completed the PREVIOUS run.  Auto-fill must read
-    the live identity every time — and, being plumbing, add no audit row."""
+    from a 60 s identity cache that predated the phase the agent had just
+    opened, so execution_complete_session completed the PREVIOUS run.  The fix
+    read the live identity on every auto-fill and, being plumbing, added no
+    audit row.
+
+    v2.442.0 — plans and runs are gone, so no tool has an id to fill from the
+    key any more (the stale-cache half of this test went with them).  The one
+    auto-filled argument left is the guide's ``workflow``; what still holds,
+    and is pinned here, is that the lookup behind it is not audited — and that
+    no tool quietly grew a key-derived id again."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
     from app.db.models_agent import AgentApiCall
+
+    assert {name: spec["auto_params"] for name, spec in TOOLS.items() if spec.get("auto_params")} == {
+        "read_agent_guide": {"workflow": "workflow"},
+    }
 
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
@@ -915,27 +937,18 @@ def test_auto_params_read_a_fresh_identity_not_the_listing_cache(client, test_pr
             .count()
         )
 
-    # List tools first, as a client does, while no plan exists yet.
     _rpc(client, {"jsonrpc": "2.0", "id": 1, "method": "tools/list"}, headers=headers)
     warmed = identity_rows()
 
-    created = _rpc(client, {
-        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-        "params": {"name": "create_test_plan", "arguments": {"title": "fresh-identity"}},
-    }, headers=headers).json()["result"]
-    assert not created.get("isError"), created
-    plan_id = created["structuredContent"]["id"]
-
-    # plan_get with no plan_id: the cache still says None; the live answer is
-    # the plan just opened.
     got = _rpc(client, {
         "jsonrpc": "2.0", "id": 3, "method": "tools/call",
-        "params": {"name": "plan_get", "arguments": {}},
+        "params": {"name": "read_agent_guide", "arguments": {}},
     }, headers=headers).json()["result"]
     assert not got.get("isError"), got
-    assert got["structuredContent"]["id"] == plan_id
+    # ``project`` was filled in: the whole guide, not a refusal for a missing slice.
+    assert "/agent/uploads" in got["content"][0]["text"]
 
-    # The fresh lookup was plumbing: no identity row joined the activity log.
+    # The lookup was plumbing: no identity row joined the activity log.
     assert identity_rows() == warmed, "auto-fill identity lookups must not be audited"
 
 

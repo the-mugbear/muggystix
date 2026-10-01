@@ -105,10 +105,10 @@ def test_assist_key_can_read_context_and_hosts(client, test_project, db_session)
     assert hosts.json() == {"items": [], "total": 0, "has_more": False, "limit": 500, "offset": 0}
 
 
-def test_one_session_key_reaches_plan_and_scope_reads(client, db_session, test_project, test_plan):
+def test_one_session_key_reaches_host_test_and_scope_reads(client, db_session, test_project):
     """v2.337.0 — the assist/plan/scope key boundary is gone: an assist-started
-    session is one project session, so its key reads test plans and scopes
-    too."""
+    session is one project session, so its key reads host tests (test plans
+    until v2.442.0) and scopes too."""
     from app.db import models
     scope = models.Scope(project_id=test_project.id, name="s", description="")
     db_session.add(scope)
@@ -119,10 +119,9 @@ def test_one_session_key_reaches_plan_and_scope_reads(client, db_session, test_p
     body = _start_session(client, test_project.id)
     headers = _auth_headers(body["api_key"])
 
-    plan = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/context", headers=headers,
-    )
-    assert plan.status_code == 200, plan.text
+    tests = client.get("/api/v1/agent/host-tests", headers=headers)
+    assert tests.status_code == 200, tests.text
+    assert tests.json() == {"items": [], "total": 0, "has_more": False}
 
     subnets = client.get(f"/api/v1/agent/scopes/{scope.id}/subnets", headers=headers)
     assert subnets.status_code == 200, subnets.text
@@ -692,7 +691,7 @@ def test_the_agent_can_read_notes_it_could_already_write(
     """The asymmetry that made "what do we already know about this host?"
     unanswerable — and let an agent write a note duplicating one a colleague
     added an hour earlier."""
-    from app.db.models import Annotation, Host, NoteStatus
+    from app.db.models import Annotation, Host
 
     host = Host(project_id=test_project.id, ip_address="10.8.1.1", state="up")
     db_session.add(host)
@@ -701,8 +700,7 @@ def test_the_agent_can_read_notes_it_could_already_write(
     db_session.add(
         Annotation(
             host_id=host.id, project_id=test_project.id, user_id=test_user.id,
-            body="Confirmed false positive — the banner is a honeypot.",
-            status=NoteStatus.OPEN, actor_type="user",
+            body="Confirmed false positive — the banner is a honeypot.", actor_type="user",
         )
     )
     db_session.commit()
@@ -782,96 +780,76 @@ def test_testing_history_distinguishes_a_scanner_claim_from_a_confirmed_one(
 ):
     """v2.293.0. Assist could see what scanners reported and nothing about what
     the team did, so it could not tell a finding nobody has looked at from one a
-    tester confirmed by hand — and every answer implicitly claimed the former."""
+    tester confirmed by hand — and every answer implicitly claimed the former.
+
+    v2.442.0 — the read is the host's tests and their evidence
+    (``/agent/host-tests?host_id=`` + ``/agent/evidence``); it was
+    ``/assist/hosts/{id}/testing`` over plan entries and execution results."""
     from app.db.models import Host
-    from app.db.models_agent import (
-        Agent as AgentModel,
-        ExecutionSession,
-        TestExecutionResult,
-        TestPlan,
-        TestPlanEntry,
-    )
 
     host = Host(project_id=test_project.id, ip_address="10.8.3.1", state="up")
-    agent_row = AgentModel(project_id=test_project.id, name="a", owner_id=test_user.id)
-    db_session.add_all([host, agent_row])
-    db_session.commit()
-    db_session.refresh(host)
-    db_session.refresh(agent_row)
-
-    plan = TestPlan(
-        project_id=test_project.id, title="Worked plan", status="in_progress",
-        agent_id=agent_row.id, created_by_user_id=test_user.id,
-    )
-    hidden = TestPlan(
-        # version 2: (project_id, version) is unique, and a second plan in the
-        # same project is exactly the case that constraint governs.
-        project_id=test_project.id, title="Archived plan", status="archived",
-        version=2, agent_id=agent_row.id, created_by_user_id=test_user.id,
-    )
-    # A third plan: (test_plan_id, host_id) is unique, so the rejected entry
-    # cannot share a plan with the completed one — it needs its own, and it is
-    # a live draft, so exclusion has to come from the ENTRY status rather than
-    # the plan's.
-    rejected_plan = TestPlan(
-        project_id=test_project.id, title="Draft, entry rejected",
-        status="draft", version=3, agent_id=agent_row.id,
-        created_by_user_id=test_user.id,
-    )
-    db_session.add_all([plan, hidden, rejected_plan])
-    db_session.commit()
-
-    entry = TestPlanEntry(
-        test_plan_id=plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration", status="completed",
-        rationale="FTP banner suggests anonymous login",
-        proposed_tests=[{"tool": "nmap", "description": "confirm ftp"}],
-    )
-    rejected = TestPlanEntry(
-        test_plan_id=rejected_plan.id, host_id=host.id, priority="low",
-        test_phase="enumeration", status="rejected",
-        rationale="decided against", proposed_tests=[],
-    )
-    draft_entry = TestPlanEntry(
-        test_plan_id=hidden.id, host_id=host.id, priority="low",
-        test_phase="enumeration", status="proposed",
-        rationale="plan archived", proposed_tests=[],
-    )
-    db_session.add_all([entry, rejected, draft_entry])
-    db_session.commit()
-
-    exec_session = ExecutionSession(
-        test_plan_id=plan.id, agent_id=agent_row.id, started_by_id=test_user.id,
-        status="completed",
-    )
-    db_session.add(exec_session)
-    db_session.commit()
-    db_session.add(
-        TestExecutionResult(
-            execution_session_id=exec_session.id, entry_id=entry.id, test_index=0,
-            status="executed", command_run="nmap -p21 -sV 10.8.3.1",
-            findings_summary="Anonymous login accepted", severity="critical",
-            is_finding=True,
-        )
-    )
+    other = Host(project_id=test_project.id, ip_address="10.8.3.2", state="up")
+    db_session.add_all([host, other])
     db_session.commit()
 
     headers = _assist(client, test_project.id)
-    body = client.get(
-        f"/api/v1/agent/assist/hosts/{host.id}/testing", headers=headers
-    ).json()
 
-    # The non-rejected entry of a live plan only: an archived plan's entries
-    # never leak, and a rejected entry is an explicit "do not test this" that
-    # an agent must not re-litigate as outstanding work.
-    assert len(body) == 1
-    e = body[0]
-    assert e["status"] == "completed" and e["plan_title"] == "Worked plan"
-    assert e["proposed_tests"][0]["tool"] == "nmap"
+    def spec(key, host_id, **extra):
+        return {"request_key": key, "host_id": host_id, "tool": "nmap",
+                "description": "confirm ftp", "command": "nmap -p21 -sV {ip}",
+                "rationale": "FTP banner suggests anonymous login", "priority": "high", **extra}
+
+    created = client.post("/api/v1/agent/host-tests", headers=headers, json={"tests": [
+        spec("worked", host.id, label="Worked"),
+        spec("dropped", host.id, label="Decided against", priority="low"),
+        spec("elsewhere", other.id),
+    ]})
+    assert created.status_code == 201, created.text
+    worked, dropped, _elsewhere = created.json()["items"]
+
+    # An explicit "do not test this" stays on the record with its reason; an
+    # agent must be able to tell it from outstanding work.
+    r = client.patch(f"/api/v1/agent/host-tests/{dropped['id']}", headers=headers, json={
+        "expected_revision": dropped["revision"], "status": "dismissed",
+        "dismissed_reason": "decided against",
+    })
+    assert r.status_code == 200, r.text
+
+    ev = client.post("/api/v1/agent/evidence", headers=headers, json={
+        "host_id": host.id, "host_test_id": worked["id"], "request_key": "worked-1",
+        "tool": "nmap", "command": "nmap -p21 -sV 10.8.3.1", "outcome": "finding",
+        "summary": "Anonymous login accepted",
+    })
+    assert ev.status_code == 201, ev.text
+
+    # The host's tests only — another host's test never leaks into this read.
+    body = client.get("/api/v1/agent/host-tests", headers=headers, params={"host_id": host.id}).json()
+    assert body["total"] == 2
+    by_id = {t["id"]: t for t in body["items"]}
+    assert by_id[worked["id"]]["evidence_count"] == 1 and by_id[worked["id"]]["label"] == "Worked"
+    assert by_id[dropped["id"]]["status"] == "dismissed"
+    assert by_id[dropped["id"]]["dismissed_reason"] == "decided against"
+    assert by_id[dropped["id"]]["evidence_count"] == 0
+    # Outstanding work is the proposed / in-progress ones, not the dismissed one.
+    active = client.get("/api/v1/agent/host-tests", headers=headers,
+                        params={"host_id": host.id, "active_only": True}).json()
+    assert [t["id"] for t in active["items"]] == [worked["id"]]
+
     # The part that makes a claim citable: what was actually run, and what it showed.
-    assert e["results"][0]["command_run"] == "nmap -p21 -sV 10.8.3.1"
-    assert e["results"][0]["is_finding"] is True
-    assert e["results"][0]["severity"] == "critical"
+    records = client.get("/api/v1/agent/evidence", headers=headers,
+                         params={"host_test_id": worked["id"]}).json()
+    assert records["total"] == 1
+    rec = records["items"][0]
+    assert rec["command"] == "nmap -p21 -sV 10.8.3.1"
+    assert rec["outcome"] == "finding" and rec["summary"] == "Anonymous login accepted"
+
+    # And the host detail says it has been tested.
+    detail = client.get(f"/api/v1/agent/assist/hosts/{host.id}", headers=headers).json()
+    assert detail["assessment"]["tests_executed"] == 1
+    assert detail["assessment"]["last_tested_at"] is not None
+    untested = client.get(f"/api/v1/agent/assist/hosts/{other.id}", headers=headers).json()
+    assert untested["assessment"]["tests_executed"] == 0
+    assert untested["assessment"]["last_tested_at"] is None
 
 
 def test_segments_rank_the_network_so_the_agent_does_not_have_to(
@@ -935,7 +913,7 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
 ):
     """Per-host notes answer "what about THIS host"; picking an engagement back
     up is a question about the work, not one asset."""
-    from app.db.models import Annotation, Host, NoteStatus
+    from app.db.models import Annotation, Host
 
     host = Host(project_id=test_project.id, ip_address="10.8.4.1", state="up")
     db_session.add(host)
@@ -943,9 +921,9 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
     db_session.refresh(host)
     db_session.add_all([
         Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
-                   body="Still chasing the vendor", status=NoteStatus.OPEN, actor_type="user"),
+                   body="Still chasing the vendor", actor_type="user"),
         Annotation(host_id=host.id, project_id=test_project.id, user_id=test_user.id,
-                   body="Closed this one out", status=NoteStatus.RESOLVED, actor_type="user"),
+                   body="Closed this one out", actor_type="user"),
     ])
     db_session.commit()
 
@@ -955,11 +933,13 @@ def test_recent_notes_answer_what_the_team_has_been_doing(
     # The host is resolved so the agent can say which asset without another call.
     assert all_notes[0]["host_ip"] == "10.8.4.1"
 
-    # Open notes are the outstanding-work list the project actually keeps.
-    open_only = client.get(
+    # Notes are discussion, not a work list: no status to read or filter by
+    # (v2.446.0).  A leftover ?status= narrows nothing.
+    assert all("status" not in n for n in all_notes)
+    still_all = client.get(
         "/api/v1/agent/assist/notes", params={"status": "open"}, headers=headers
     ).json()
-    assert [n["body"] for n in open_only] == ["Still chasing the vendor"]
+    assert len(still_all) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -1057,7 +1037,7 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
     and its screenshots. Listing findings gives titles and severities; without
     the evidence an agent asked to 'write up the findings' has nothing to cite
     but the title it was already given."""
-    from app.db.models import Annotation, Host, NoteAttachment, NoteStatus
+    from app.db.models import Annotation, Host, NoteAttachment
     from app.db.models_findings import Finding, FindingHost
 
     host = Host(project_id=test_project.id, ip_address="10.9.0.5", state="up")
@@ -1067,8 +1047,7 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
 
     note = Annotation(
         host_id=host.id, project_id=test_project.id, user_id=test_user.id,
-        body="Confirmed anonymous bind on the LDAP service; screenshot attached.",
-        status=NoteStatus.OPEN, note_type="finding",
+        body="Confirmed anonymous bind on the LDAP service; screenshot attached.", note_type="observation",
     )
     db_session.add(note)
     db_session.commit()
@@ -1091,7 +1070,7 @@ def test_finding_detail_reaches_the_evidence_a_writeup_cites(
     # The finding's own discussion thread — a second, separate note path.
     db_session.add(Annotation(
         finding_id=finding.id, user_id=test_user.id,
-        body="Retest after the vendor patch lands.", status=NoteStatus.OPEN,
+        body="Retest after the vendor patch lands.",
     ))
     db_session.commit()
 
@@ -1143,7 +1122,7 @@ def test_attachment_download_is_project_scoped(client, db_session, test_project,
     """The download path handed out by assist_get_finding is key-authenticated
     and project-scoped; it must not become a way to read another engagement's
     evidence by guessing an id."""
-    from app.db.models import Annotation, NoteAttachment, NoteStatus
+    from app.db.models import Annotation, NoteAttachment
     from app.db.models_project import Project
 
     other = Project(name="Other engagement", slug="other-engagement-b")
@@ -1151,7 +1130,6 @@ def test_attachment_download_is_project_scoped(client, db_session, test_project,
     db_session.commit()
     note = Annotation(
         project_id=other.id, user_id=test_user.id, body="theirs",
-        status=NoteStatus.OPEN,
     )
     db_session.add(note)
     db_session.commit()

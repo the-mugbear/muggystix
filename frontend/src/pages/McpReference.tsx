@@ -48,16 +48,10 @@ const CAPABILITY_GROUPS: Array<{ key: string; label: string; blurb: string }> = 
       'Read a scope’s subnets and in-scope names, then upload what the scanners on your machine produced. Bulk uploads and target-file downloads stay curl — see below.',
   },
   {
-    key: 'plan_generation',
-    label: 'Write test plans',
+    key: 'testing',
+    label: 'Propose and work host tests',
     blurb:
-      'Record what you intend to test, host by host, with the commands to run. A plan is a record for posterity — nothing waits on an approval.',
-  },
-  {
-    key: 'execution',
-    label: 'Record test results',
-    blurb:
-      'Open an execution run on a plan and record what each test produced, with any sanity checks as evidence. The commands run on your machine, under your client’s sandbox.',
+      'Propose tests on hosts — one check each, with its command and why — and change their status as they are worked. They appear on each host’s page; nothing waits on an approval. What a test produced is recorded as evidence (record_evidence, under Session and catalogue). The commands run on your machine, under your client’s sandbox.',
   },
   {
     key: 'shared',
@@ -103,10 +97,13 @@ const McpReference: React.FC = () => {
 
   // Grouped by capability; read-vs-write is a per-row property and shows as a
   // badge. A tool tagged for every kind of work is filed once, under
-  // "Session and catalogue".
+  // "Session and catalogue". "Every kind" follows the groups listed here
+  // (5.320.0: it was a literal 4, and with three kinds the shared group never
+  // rendered and each universal tool was repeated in every group).
   const groups = useMemo(() => {
     const tools = catalog?.tools ?? [];
-    const shared = tools.filter((t) => t.workflows?.length >= 4);
+    const kinds = CAPABILITY_GROUPS.filter((g) => g.key !== 'shared').map((g) => g.key);
+    const shared = tools.filter((t) => kinds.every((k) => t.workflows?.includes(k)));
     const byWorkflow = (wf: string) =>
       tools.filter((t) => t.workflows?.includes(wf) && !shared.includes(t));
     return CAPABILITY_GROUPS.map((g) => ({
@@ -209,7 +206,7 @@ const McpReference: React.FC = () => {
       <h2 className="text-section-title">One session, one key</h2>
       <p className="mt-xxs mb-lg max-w-4xl text-caption text-muted-foreground">
         One project session and key do everything your project role allows: the agent reads the
-        inventory and scopes, uploads scan output, writes a test plan or records an execution run
+        inventory and scopes, uploads scan output, proposes tests on hosts and records what it ran
         whenever you ask it to — in any order, with nothing waiting on an approval. Every call is
         recorded against the session.
       </p>

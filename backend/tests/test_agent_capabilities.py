@@ -51,9 +51,28 @@ OPERATOR_METADATA_WRITES = {
     ("POST", "/api/v1/agent/tool-suggestions"),
     # v2.343.2 (MCP review finding 6) — closing one's own session is lifecycle
     # bookkeeping: it revokes the caller's key and writes no project data.
-    # An auditor could start a session but not end it; ownership and the
-    # open-phase refusal still apply inside the route.
+    # An auditor could start a session but not end it; ownership still
+    # applies inside the route.
     ("POST", "/api/v1/agent/session/end"),
+}
+
+#: Every agent route that writes PROJECT data, by name (v2.442.0 — this was a
+#: floor, ``checked >= 10``, which the removal of every plan and
+#: execution write routes would have passed straight through, and under which
+#: a route could vanish from the sweep unnoticed).  Adding or removing an
+#: agent write route means editing this set, on purpose.
+GATED_PROJECT_WRITES = {
+    ("PATCH", "/api/v1/agent/host-tests/{test_id}"),
+    ("PATCH", "/api/v1/agent/hosts/{host_id}"),
+    ("POST", "/api/v1/agent/evidence"),
+    ("POST", "/api/v1/agent/host-tests"),
+    ("POST", "/api/v1/agent/hosts/{host_id}/follow"),
+    ("POST", "/api/v1/agent/hosts/{host_id}/notes"),
+    ("POST", "/api/v1/agent/proposals/endpoint-status"),
+    ("POST", "/api/v1/agent/proposals/finding"),
+    ("POST", "/api/v1/agent/proposals/finding-text"),
+    ("POST", "/api/v1/agent/proposals/observation"),
+    ("POST", "/api/v1/agent/uploads"),
 }
 
 #: Not under /agent, but mutation-capable: tools/call loops back into the
@@ -144,6 +163,17 @@ def test_every_agent_write_route_refuses_a_read_only_operator(client, viewer_key
     routes = _agent_write_routes()
     assert routes, "expected to discover agent write routes"
 
+    # The sweep covers exactly the surface it claims: every discovered write
+    # route is either a named project write or a named session-metadata write.
+    assert set(routes) == GATED_PROJECT_WRITES | OPERATOR_METADATA_WRITES, (
+        "the agent write surface changed — update GATED_PROJECT_WRITES (a "
+        "project write, refused for a read-only operator) or "
+        "OPERATOR_METADATA_WRITES (with a justification):\n  unlisted: "
+        f"{sorted(set(routes) - GATED_PROJECT_WRITES - OPERATOR_METADATA_WRITES)}\n  gone: "
+        f"{sorted((GATED_PROJECT_WRITES | OPERATOR_METADATA_WRITES) - set(routes))}"
+    )
+    assert not [r for r in routes if "test-plans" in r[1] or "execution-sessions" in r[1]]
+
     checked = 0
     failures = []
     for method, path in routes:
@@ -162,10 +192,10 @@ def test_every_agent_write_route_refuses_a_read_only_operator(client, viewer_key
             failures.append(f"{method} {path} -> {resp.status_code} {resp.text[:120]}")
 
     # Guards against the vacuity that killed the first draft of this test: an
-    # assertion that inspects nothing passes forever. 13 routes today.
-    assert checked >= 10, (
-        f"only {checked} write routes were exercised — the sweep is not seeing "
-        "the surface it claims to cover"
+    # assertion that inspects nothing passes forever.
+    assert checked == len(GATED_PROJECT_WRITES), (
+        f"{checked} write routes were exercised, {len(GATED_PROJECT_WRITES)} are "
+        "named — the sweep is not seeing the surface it claims to cover"
     )
     assert not failures, (
         "agent write routes that did NOT refuse a read-only operator:\n  "

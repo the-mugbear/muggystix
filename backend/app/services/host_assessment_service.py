@@ -30,7 +30,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
+from app.db.models_proposals import EvidenceRecord
+from app.db.models_host_tests import TESTED_OUTCOMES
 from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability
 from app.services.evidence_service import (
@@ -53,13 +54,12 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
 
     last_tested_at, tests_executed = (
         db.query(
-            func.max(func.coalesce(TestExecutionResult.executed_at, TestExecutionResult.created_at)),
-            func.count(TestExecutionResult.id),
+            func.max(func.coalesce(EvidenceRecord.executed_at, EvidenceRecord.created_at)),
+            func.count(EvidenceRecord.id),
         )
-        .join(TestPlanEntry, TestExecutionResult.entry_id == TestPlanEntry.id)
         .filter(
-            TestPlanEntry.host_id == hid,
-            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
+            EvidenceRecord.host_id == hid,
+            EvidenceRecord.outcome.in_(TESTED_OUTCOMES),
         )
         .one()
     )

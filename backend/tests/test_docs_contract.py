@@ -30,17 +30,16 @@ import pytest
 from app.main import app, _OPENAPI_TAGS
 from app.services.agents_guide_service import read_agent_guide, slice_agents_md
 
-WORKFLOWS = ["plan_generation", "execution", "reconnaissance", "assist"]
+WORKFLOWS = ["testing", "reconnaissance", "assist"]
 
 # A substring each workflow slice MUST contain — its workflow-specific
 # heading — proving the slice kept its own body, not just shared preamble.
 # ASCII-only on purpose (no em-dash) so the assertion can't fail on encoding.
 WORKFLOW_ANCHORS = {
-    # v2.370.2 — the headings dropped "(from `/generate`)" / "(from `/execute`)":
-    # a session opens these phases itself, the operator buttons are one way in.
-    # v2.433.0 — "an Approved Plan" became "a Plan": plans are not approved.
-    "plan_generation": "## Workflow A — Build a Test Plan",
-    "execution": "## Workflow B — Execute a Plan",
+    # v2.442.0 — "testing" replaced the plan-generation and execution slices:
+    # tests are proposed on hosts (Workflow A) and run with evidence recorded
+    # (Workflow B); both are in the one slice.
+    "testing": "Propose Tests on Hosts",
     "reconnaissance": "Populate Host Data",
     "assist": "Inventory-assist phase (interactive query",
 }
@@ -48,7 +47,7 @@ WORKFLOW_ANCHORS = {
 SHARED_ANCHOR = "Instance Identity (verify once"
 
 # The canonical tags a section may route to (slicer matches these literally).
-KNOWN_SECTION_TAGS = {"shared", "plan_generation", "execution", "reconnaissance", "assist"}
+KNOWN_SECTION_TAGS = {"shared", "testing", "reconnaissance", "assist"}
 
 
 def _load_agents_md() -> str:
@@ -112,7 +111,7 @@ def test_unknown_workflow_returns_shared_only():
     full = _load_agents_md()
     sliced = slice_agents_md(full, "bogus_workflow_xyz")
     assert SHARED_ANCHOR in sliced
-    assert WORKFLOW_ANCHORS["plan_generation"] not in sliced
+    assert WORKFLOW_ANCHORS["testing"] not in sliced
     assert WORKFLOW_ANCHORS["reconnaissance"] not in sliced
 
 
@@ -158,8 +157,8 @@ def test_agent_workflow_tags_are_described():
     declared = {t["name"] for t in _OPENAPI_TAGS}
     required = {
         "agent-browse",
-        "agent-plan-generation",
-        "agent-execution",
+        "agent-host-tests",
+        "agent-proposals",
         "agent-scope",
         "agent-assist",
         "agent-feedback",

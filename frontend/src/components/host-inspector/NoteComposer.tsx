@@ -2,7 +2,7 @@
  * The investigation-note composer — one line until it is used (v5.240.0).
  *
  * It was a permanently open form: a title, a subtitle, a label, a three-row
- * textarea, a two-line tip and a status row, ~250px on every host whether or
+ * textarea and a two-line tip, ~250px on every host whether or
  * not anyone was writing. Now the field is a single row; focusing it, typing,
  * pasting an image, or an error opens the rest. It stays open while it holds
  * anything, so a draft is never hidden by clicking elsewhere.
@@ -13,14 +13,10 @@
 import React, { useState } from 'react';
 import { Loader2, NotebookPen, X } from 'lucide-react';
 
-import type { NoteStatus } from '../../services/api';
 import { cn } from '../../utils/cn';
 import { Alert, AlertDescription } from '../ui/alert';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '../ui/select';
 import MentionTextarea from '../MentionTextarea';
 
 export interface ComposerImage {
@@ -33,9 +29,6 @@ export interface NoteComposerProps {
   hostId: number;
   body: string;
   onBodyChange: (body: string) => void;
-  status: NoteStatus;
-  onStatusChange: (status: NoteStatus) => void;
-  statusMeta: Record<NoteStatus, { label: string }>;
   submitting: boolean;
   onSubmit: () => void;
   error: string | null;
@@ -48,7 +41,7 @@ export interface NoteComposerProps {
 }
 
 export const NoteComposer: React.FC<NoteComposerProps> = ({
-  hostId, body, onBodyChange, status, onStatusChange, statusMeta, submitting, onSubmit,
+  hostId, body, onBodyChange, submitting, onSubmit,
   error, onDismissError, onPaste, images, failedAttachmentCount, onRemoveImage, onRetryImage,
 }) => {
   const [focused, setFocused] = useState(false);
@@ -59,10 +52,9 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
       className="space-y-xs"
       onFocus={() => setFocused(true)}
       onBlur={(event) => {
-        // Moving between the field, the status select and Save is not leaving —
-        // and the select's option list is portalled outside this element.
+        // Moving between the field and Save is not leaving.
         const next = event.relatedTarget as HTMLElement | null;
-        if (event.currentTarget.contains(next) || next?.closest('[role="listbox"]')) return;
+        if (event.currentTarget.contains(next)) return;
         setFocused(false);
       }}
     >
@@ -81,7 +73,7 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
         id={`host-${hostId}-note-body`}
         rows={open ? 3 : 1}
         className={cn(!open && 'min-h-0 resize-none')}
-        placeholder="Add a note — an observation, a remediation step, handoff context…"
+        placeholder="Add a note — a question, context for the team, a handoff…"
         value={body}
         onChange={(event) => {
           if (error) onDismissError();
@@ -139,25 +131,6 @@ export const NoteComposer: React.FC<NoteComposerProps> = ({
       )}
       {open && (
         <div className="flex flex-wrap items-center gap-sm">
-          <div className="flex items-center gap-xs">
-            <Label htmlFor={`host-${hostId}-note-status`} className="text-caption">Status</Label>
-            <Select
-              value={status}
-              onValueChange={(value) => onStatusChange(value as NoteStatus)}
-              disabled={submitting}
-            >
-              <SelectTrigger id={`host-${hostId}-note-status`} className="h-8 w-[9rem]">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {Object.entries(statusMeta).map(([value, meta]) => (
-                  <SelectItem key={value} value={value}>
-                    {meta.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
           <p className="min-w-0 flex-1 text-caption text-muted-foreground">
             <strong>@username</strong> notifies a teammate · replies reach everyone in the thread · <strong>paste a screenshot</strong> (Ctrl/Cmd+V) to attach it
           </p>

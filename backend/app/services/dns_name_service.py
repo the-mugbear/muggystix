@@ -358,14 +358,14 @@ def _cmp_ts(a: datetime, b: datetime) -> int:
 
 def observation_key(
     name_id: Optional[int], record_type: str, value: str, resolver_name: Optional[str], scan_id: Optional[int],
-    exec_result_id: Optional[int] = None,
+    evidence_record_id: Optional[int] = None,
 ) -> Tuple:
     """The identity the DB enforces (see the partial unique indexes created in
     migrations a7d3e5f91c26 / c3f7a9d2e4b8): scan-bound rows are unique on
     (name, kind, value, resolver-or-empty, scan); imports (no scan) on
-    (name, IMPORT, value); result-bound rows (TESTED) on (name, kind, value,
-    exec_result).  Orphaned rows (their scan was deleted) carry no uniqueness."""
-    return (name_id, record_type, value, resolver_name or "", scan_id, exec_result_id)
+    (name, IMPORT, value); evidence-bound rows (TESTED) on (name, kind, value,
+    evidence record — a plan's execution result until v2.442.0).  Orphaned rows (their scan was deleted) carry no uniqueness."""
+    return (name_id, record_type, value, resolver_name or "", scan_id, evidence_record_id)
 
 
 def record_observation(
@@ -383,7 +383,7 @@ def record_observation(
     cache: Optional[ObservationCache] = None,
     journal: Optional[List[Tuple[str, object]]] = None,
     check_exists: bool = True,
-    exec_result_id: Optional[int] = None,
+    evidence_record_id: Optional[int] = None,
 ) -> Optional[int]:
     """Persist one observation about ``name``.  Returns the new row's id, or
     None when an identical observation (same name, kind, value, resolver, scan)
@@ -419,7 +419,7 @@ def record_observation(
             )
 
     name_id = name_row.id if name_row is not None else None
-    key = observation_key(name_id, record_type, value, resolver_name, scan_id, exec_result_id)
+    key = observation_key(name_id, record_type, value, resolver_name, scan_id, evidence_record_id)
     if cache is not None and key in cache.observations:
         return None
 
@@ -430,8 +430,8 @@ def record_observation(
             func.coalesce(models.DNSRecord.resolver_name, "") == (resolver_name or ""),
             models.DNSRecord.scan_id.is_(None) if scan_id is None
             else models.DNSRecord.scan_id == scan_id,
-            models.DNSRecord.exec_result_id.is_(None) if exec_result_id is None
-            else models.DNSRecord.exec_result_id == exec_result_id,
+            models.DNSRecord.evidence_record_id.is_(None) if evidence_record_id is None
+            else models.DNSRecord.evidence_record_id == evidence_record_id,
         )
         if name_id is None:
             # Legacy shape: no name to key on, fall back to the raw domain string.
@@ -450,7 +450,8 @@ def record_observation(
 
     ts = observed_at or _now()
     result = _insert_ignore(db, models.DNSRecord.__table__, {
-        "project_id": project_id, "scan_id": scan_id, "name_id": name_id, "exec_result_id": exec_result_id,
+        "project_id": project_id, "scan_id": scan_id, "name_id": name_id,
+        "evidence_record_id": evidence_record_id,
         "domain": (name or "").strip(), "record_type": record_type, "value": value,
         "ttl": ttl, "resolver_name": resolver_name, "observed_at": ts, "created_at": ts,
     })
@@ -843,7 +844,7 @@ def import_names(
         if key not in cache.observations:
             cache.observations.add(key)
             obs_rows.append({
-                "project_id": project_id, "scan_id": None, "name_id": name_row.id, "exec_result_id": None,
+                "project_id": project_id, "scan_id": None, "name_id": name_row.id, "evidence_record_id": None,
                 "domain": raw_s, "record_type": DNS_OBS_IMPORT, "value": raw_s,
                 "ttl": None, "resolver_name": None, "observed_at": now, "created_at": now,
             })

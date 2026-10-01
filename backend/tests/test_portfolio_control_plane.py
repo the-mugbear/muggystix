@@ -10,7 +10,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from app.db import models
-from app.db.models_agent import TestPlan, ExecutionSession
+from app.db.models_host_tests import HostTest
 from app.db.models_project import ProjectMembership
 from app.db.models_auth import User, UserRole
 from app.db.models_vulnerability import (
@@ -23,6 +23,14 @@ _UID = [6000]
 
 def _card_for(body, pid):
     return next(c for c in body["projects"] if c["id"] == pid)
+
+
+def _host_test(project, host, key, status="proposed", **extra):
+    return HostTest(
+        project_id=project.id, host_id=host.id, tool="nmap", description="x", rationale="r",
+        priority="high", status=status, source="person", request_key=key, request_hash="0" * 64,
+        **extra,
+    )
 
 
 def _make_user(db_session, username):
@@ -73,9 +81,8 @@ def test_portfolio_surfaces_critical_and_no_approval_queue(
         title="rce", severity=VulnerabilitySeverity.CRITICAL,
         source=VulnerabilitySource.MANUAL, host_id=host.id, scan_id=scan.id,
     ))
-    db_session.add(TestPlan(
-        project_id=test_project.id, version=1, title="draft", status="draft",
-    ))
+    # Work proposed and not yet done: counted, never a reason for attention.
+    db_session.add(_host_test(test_project, host, "proposed-1"))
     db_session.flush()
 
     r = client.get(PORTFOLIO_URL)
@@ -87,9 +94,10 @@ def test_portfolio_surfaces_critical_and_no_approval_queue(
     # critical signal on the project.
     assert "critical_unjudged" in card["attention_reasons"]
     assert "critical_findings" not in card["attention_reasons"]
-    # v2.433.0 — a plan never waits on approval, so it is never a reason.
+    # v2.433.0 — nothing waits on approval, so proposed work is never a reason.
     assert "pending_review" not in card["attention_reasons"]
     assert "pending_plan_reviews" not in card
+    assert card["open_tasks"] == 1
     assert card["unjudged_observations"]["critical"] == 1
     assert card["findings"]["critical"] == 0
     assert card["health"] == "critical"
@@ -101,50 +109,42 @@ def test_portfolio_surfaces_critical_and_no_approval_queue(
     assert summary["projects_requiring_attention"] >= 1
 
 
-def test_blocked_uses_latest_session_only(client, db_session, test_project, test_agent):
-    """CR-A3/#6 — a paused OLD session superseded by an active newer one is
-    not 'blocked'; only the latest session per plan counts."""
-    plan = TestPlan(
-        project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="exec plan", status="draft",
-    )
-    db_session.add(plan)
+def test_open_tasks_are_the_host_tests_still_to_do(client, db_session, test_project):
+    """v2.442.0 — ``open_tasks`` is the project's host tests that are proposed
+    or in progress (the one "planned" definition); a done or dismissed test is
+    not open work, and another project's tests are not this project's."""
+    from app.db.models_project import Project
+
+    host = models.Host(project_id=test_project.id, ip_address="10.7.5.1", state="up")
+    other_project = Project(name="elsewhere", slug="pcp-elsewhere")
+    db_session.add_all([host, other_project])
     db_session.flush()
-    # Older session paused (superseded), newer session active.
-    db_session.add(ExecutionSession(
-        test_plan_id=plan.id, agent_id=test_agent.id, status="paused",
-    ))
+    other_host = models.Host(project_id=other_project.id, ip_address="10.7.5.1", state="up")
+    db_session.add(other_host)
     db_session.flush()
-    db_session.add(ExecutionSession(
-        test_plan_id=plan.id, agent_id=test_agent.id, status="active",
-    ))
+    db_session.add_all([
+        _host_test(test_project, host, "a", status="proposed"),
+        _host_test(test_project, host, "b", status="in_progress"),
+        _host_test(test_project, host, "c", status="done"),
+        _host_test(test_project, host, "d", status="dismissed"),
+        _host_test(other_project, other_host, "e", status="proposed"),
+    ])
     db_session.flush()
 
-    card = _card_for(client.get(PORTFOLIO_URL).json(), test_project.id)
-    assert card["blocked_sessions"] == 0
+    body = client.get(PORTFOLIO_URL).json()
+    assert _card_for(body, test_project.id)["open_tasks"] == 2
+    assert _card_for(body, other_project.id)["open_tasks"] == 1
+
+
+def test_no_blocked_run_signal_remains(client, db_session, test_project):
+    """v2.442.0 — execution runs are gone, so nothing can be "blocked": the
+    card carries no ``blocked_sessions`` and it is never a reason.  (It used
+    to count the latest paused / failed run per plan.)"""
+    body = client.get(PORTFOLIO_URL).json()
+    card = _card_for(body, test_project.id)
+    assert "blocked_sessions" not in card
     assert "blocked_session" not in card["attention_reasons"]
-
-
-def test_blocked_when_latest_session_paused(client, db_session, test_project, test_agent):
-    """Inverse — when the latest session itself is paused/failed, it blocks."""
-    plan = TestPlan(
-        project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="exec plan 2", status="draft",
-    )
-    db_session.add(plan)
-    db_session.flush()
-    db_session.add(ExecutionSession(
-        test_plan_id=plan.id, agent_id=test_agent.id, status="active",
-    ))
-    db_session.flush()
-    db_session.add(ExecutionSession(
-        test_plan_id=plan.id, agent_id=test_agent.id, status="failed",
-    ))
-    db_session.flush()
-
-    card = _card_for(client.get(PORTFOLIO_URL).json(), test_project.id)
-    assert card["blocked_sessions"] == 1
-    assert "blocked_session" in card["attention_reasons"]
+    assert not any("blocked" in key for key in body["summary"])
 
 
 def test_no_admin_governance_moved_to_oversight(client, db_session, test_project):
@@ -158,28 +158,25 @@ def test_no_admin_governance_moved_to_oversight(client, db_session, test_project
     assert "projects_without_admin" not in body["summary"]
 
 
-def test_team_roster_with_workload(client, db_session, test_project, test_agent):
+def test_team_roster_with_workload(client, db_session, test_project):
     """SOC-P4 — /portfolio/team lists members with per-project roles +
     workload (assigned open tasks + hosts In Review)."""
-    from app.db.models_agent import TestPlanEntry
     from app.db.models import HostFollow, FollowStatus
 
     u = _make_user(db_session, "soc-analyst")
     db_session.add(ProjectMembership(
         project_id=test_project.id, user_id=u.id, role="analyst",
     ))
-    plan = TestPlan(
-        project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="t", status="draft",
-    )
     host = models.Host(project_id=test_project.id, ip_address="10.7.7.7", state="up")
-    db_session.add_all([plan, host])
+    db_session.add(host)
     db_session.flush()
-    db_session.add(TestPlanEntry(
-        test_plan_id=plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration", proposed_tests=["x"], rationale="r",
-        status="proposed", assigned_to_id=u.id,
-    ))
+    db_session.add_all([
+        _host_test(test_project, host, "mine-open", assigned_to_id=u.id),
+        _host_test(test_project, host, "mine-started", status="in_progress", assigned_to_id=u.id),
+        # Finished or dismissed work is not on anyone's plate.
+        _host_test(test_project, host, "mine-done", status="done", assigned_to_id=u.id),
+        _host_test(test_project, host, "nobody"),
+    ])
     db_session.add(HostFollow(user_id=u.id, host_id=host.id, status=FollowStatus.IN_REVIEW))
     db_session.flush()
 
@@ -189,7 +186,7 @@ def test_team_roster_with_workload(client, db_session, test_project, test_agent)
     assert member["project_count"] >= 1
     assert any(pr["project_id"] == test_project.id and pr["role"] == "analyst"
                for pr in member["projects"])
-    assert member["open_tasks"] >= 1
+    assert member["open_tasks"] == 2
     assert member["hosts_in_review"] >= 1
 
 

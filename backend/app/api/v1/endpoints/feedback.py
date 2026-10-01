@@ -8,9 +8,8 @@ Two surfaces:
      ``GET /feedback/stats`` (admin-facing, JWT) — the developer
      triage queue surfaced in the UI.
 
-Feedback is also persisted by ``bundle_import_service.py`` when an
-imported results file contains a top-level ``feedback`` object; that
-path doesn't go through these endpoints but produces the same rows.
+(Offline result bundles also wrote feedback rows until v2.442.0, when they
+were retired with test plans.)
 """
 
 import re
@@ -26,7 +25,7 @@ from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
-    AssistSession, ExecutionSession, McpToolCall, TestPlan,
+    AssistSession, McpToolCall,
 )
 from app.db.models_auth import APIKey
 from app.db.models_project import Project
@@ -49,13 +48,12 @@ class AgentFeedbackCreate(BaseModel):
     source: str = Field(
         ...,
         description=(
-            "One of plan_generation | reconnaissance | in_session_execution "
-            "| exported_execution | assist"
+            "What you were doing: assist | reconnaissance | testing. "
+            "(plan_generation and in_session_execution are still accepted and "
+            "mean testing; they date from test plans.)"
         ),
     )
     prompt_version: Optional[str] = None
-    test_plan_id: Optional[int] = None
-    execution_session_id: Optional[int] = None
     # v2.85.0 — assist linkage so the triage queue can filter by session.
     assist_session_id: Optional[int] = None
     overall_rating: Optional[int] = Field(None, ge=1, le=5)
@@ -69,8 +67,6 @@ class AgentFeedbackResponse(BaseModel):
     id: int
     project_id: Optional[int]
     agent_id: Optional[int]
-    test_plan_id: Optional[int]
-    execution_session_id: Optional[int]
     assist_session_id: Optional[int] = None
     # v2.428.2 — who and where, so the triage queue can check a claim against
     # the record: the unified session the feedback came from, the page that
@@ -146,78 +142,29 @@ def submit_agent_feedback(
 
     The row is stamped with ``agent_id`` and ``project_id`` from the
     authenticated API key — the payload itself cannot override those.
-    If the payload references a test plan or execution session, those
-    IDs are validated against the agent's project before persisting.
     """
     if body.source not in {s.value for s in AgentFeedbackSource}:
+        allowed = sorted(
+            s.value for s in AgentFeedbackSource
+            if s is not AgentFeedbackSource.EXPORTED_EXECUTION
+        )
         raise HTTPException(
             status_code=400,
-            detail=f"Unknown source {body.source!r}. Allowed: "
-                   f"{sorted(s.value for s in AgentFeedbackSource)}",
+            detail=f"Unknown source {body.source!r}. Allowed: {allowed}",
         )
-    # ``exported_execution`` rows are written by bundle_import_service
-    # when an imported results file carries a top-level ``feedback``
-    # block; the live agent endpoint never produces one.  Reject up
-    # front so an agent can't masquerade as a bundle import.
+    # ``exported_execution`` rows came from offline result bundles (retired
+    # with test plans in v2.442.0); the value stays only so old rows read.
     if body.source == AgentFeedbackSource.EXPORTED_EXECUTION.value:
         raise HTTPException(
             status_code=400,
-            detail="source=exported_execution is reserved for bundle import, not live feedback",
+            detail="source=exported_execution was for offline result bundles, which no longer exist",
         )
 
-    # v2.337.0 — a session is no longer scoped to one workflow, so there is no
-    # per-key workflow to pin `source` against. The row is stamped with the
-    # session id (from the key) and the body's optional phase ids are validated
-    # against the project below. The source↔ID coherence guard stays: it keeps
-    # a single feedback row internally consistent.
+    # The row is stamped with the session id from the key: that is the whole
+    # attribution.  (Until v2.442.0 the body could also name a test plan or an
+    # execution run, validated here; both are gone.)
     agent_session_id = getattr(request.state, "agent_session_id", None)
 
-    # Source ↔ ID coherence guard (v2.85.2): the body's source string and
-    # the populated session IDs must agree on which workflow this feedback
-    # belongs to.  Plan/execution sources own test_plan_id +
-    # execution_session_id; assist owns assist_session_id.
-    # v2.429.1 (MCP acceptance run 2) — the refusal now says how to file it:
-    # a session that did several kinds of work files one row per kind.
-    _split = (
-        " One row is about one kind of work: file this part with the source "
-        "that owns that id (test_plan_id → plan_generation or "
-        "in_session_execution), and the rest as its own row. Your session is "
-        "attributed from your key either way."
-    )
-    plan_sources = {AgentFeedbackSource.PLAN_GENERATION.value,
-                    AgentFeedbackSource.IN_SESSION_EXECUTION.value}
-    if body.source in plan_sources:
-        if body.assist_session_id is not None:
-            raise HTTPException(
-                status_code=400,
-                detail=f"source={body.source!r} cannot reference an assist session." + _split,
-            )
-    elif body.source == AgentFeedbackSource.ASSIST.value:
-        if body.test_plan_id is not None or body.execution_session_id is not None:
-            raise HTTPException(
-                status_code=400,
-                detail="source=assist cannot reference plan/execution IDs." + _split,
-            )
-
-    # v2.337.0 — the per-key workflow-pinning guard is gone with per-workflow
-    # keys. A session can produce feedback about any phase it ran, so `source`
-    # is no longer constrained by the key. The body's optional phase ids are
-    # still validated against the project below, and the row carries the
-    # session id, so attribution stays answerable.
-
-    # Defensive FK validation — the referenced phase must belong to this
-    # agent's project.
-    if body.test_plan_id is not None:
-        plan = (
-            db.query(TestPlan)
-            .filter(
-                TestPlan.id == body.test_plan_id,
-                TestPlan.project_id == agent.project_id,
-            )
-            .first()
-        )
-        if not plan:
-            raise HTTPException(status_code=404, detail="test_plan_id not found in this project")
     if body.assist_session_id is not None:
         assist = (
             db.query(AssistSession)
@@ -232,30 +179,11 @@ def submit_agent_feedback(
                 status_code=404,
                 detail="assist_session_id not found in this project",
             )
-    if body.execution_session_id is not None:
-        # Code review critical #4: previously we fetched the session by
-        # ID alone, so a key could attach feedback to an execution
-        # session belonging to a different project.  Join through
-        # TestPlan so the session is resolved only if its plan belongs
-        # to the agent's project.
-        sess = (
-            db.query(ExecutionSession)
-            .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-            .filter(
-                ExecutionSession.id == body.execution_session_id,
-                TestPlan.project_id == agent.project_id,
-            )
-            .first()
-        )
-        if not sess:
-            raise HTTPException(status_code=404, detail="execution_session_id not found")
 
     row = AgentFeedback(
         project_id=agent.project_id,
         agent_id=agent.id,
         agent_session_id=agent_session_id,
-        test_plan_id=body.test_plan_id,
-        execution_session_id=body.execution_session_id,
         assist_session_id=body.assist_session_id,
         source=body.source,
         prompt_version=body.prompt_version,
@@ -350,10 +278,6 @@ def list_feedback(
     has_tool_suggestions: Optional[bool] = Query(None),
     has_api_critiques: Optional[bool] = Query(None),
     search: Optional[str] = Query(None, description="Substring match in friction_notes"),
-    test_plan_id: Optional[int] = Query(
-        None,
-        description="Filter to feedback rows attributed to a specific test plan (v2.28.0).",
-    ),
     project_id: Optional[int] = Query(None, gt=0, description="Feedback from one project."),
     skip: int = Query(0, ge=0),
     limit: int = Query(50, ge=1, le=500),
@@ -368,8 +292,6 @@ def list_feedback(
         q = q.filter(AgentFeedback.source == source)
     if min_rating is not None:
         q = q.filter(AgentFeedback.overall_rating >= min_rating)
-    if test_plan_id is not None:
-        q = q.filter(AgentFeedback.test_plan_id == test_plan_id)
     if search:
         q = q.filter(AgentFeedback.friction_notes.ilike(f"%{escape_like(search)}%", escape="\\"))
     # JSON array non-empty filters.  SQLAlchemy's JSON type doesn't give

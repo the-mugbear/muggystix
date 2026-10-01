@@ -216,21 +216,6 @@ def test_scanner_promotion_seeds_once_and_corroboration_never_rewrites(client, d
     assert r.json()["report_text"]["recommendation"] == "Require message signing."
 
 
-def test_note_promotion_seeds_the_description_from_the_note(client, db_session, test_project, test_user):
-    host = models.Host(project_id=test_project.id, ip_address="10.30.0.9", state="up")
-    db_session.add(host)
-    db_session.flush()
-    note = Annotation(host_id=host.id, user_id=test_user.id, body="Anonymous LDAP bind\nReturns the full tree.", note_type="finding")
-    db_session.add(note)
-    db_session.commit()
-    r = client.post(
-        f"/api/v1/projects/{test_project.id}/annotations/{note.id}/promote", json={"severity": "high"},
-    )
-    assert r.status_code == 201, r.text
-    assert r.json()["title"] == "Anonymous LDAP bind"
-    assert r.json()["report_text"]["description"] == "Anonymous LDAP bind\nReturns the full tree."
-
-
 def test_report_image_opt_in_is_the_uploaders_or_an_admins(client, db_session, test_project, people, act_as):
     host = models.Host(project_id=test_project.id, ip_address="10.30.0.20", state="up")
     db_session.add(host)

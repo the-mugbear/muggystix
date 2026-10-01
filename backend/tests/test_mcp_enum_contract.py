@@ -88,11 +88,9 @@ def test_every_advertised_enum_matches_the_endpoint():
     assert not problems, "MCP schemas disagree with their endpoints:\n" + "\n".join(problems)
 
 
-def test_the_result_outcomes_are_the_endpoints():
-    """The reported case, pinned by value: no ``completed``."""
+def test_host_test_and_evidence_states_are_distinct():
     from app.api.v1.endpoints.mcp_tools import TOOLS
-    from app.db.models_agent import TestExecutionStatus
-
-    status = TOOLS["execution_record_test_result"]["input_schema"]["properties"]["status"]
-    assert set(status["enum"]) == {s.value for s in TestExecutionStatus}
-    assert "completed" not in status["enum"]
+    status = TOOLS["host_tests_list"]["input_schema"]["properties"]["status"]
+    assert set(status["enum"]) == {"proposed", "in_progress", "done", "dismissed"}
+    outcome = TOOLS["record_evidence"]["input_schema"]["properties"]["outcome"]
+    assert set(outcome["enum"]) == {"finding", "no_finding", "inconclusive", "failed", "info"}

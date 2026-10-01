@@ -21,8 +21,9 @@ reads.
 **v2.433.0 — no rails.**  The rules used to carry an approved-tool allowlist
 (run without asking only an "approved" tool against an inventory host), a
 mandatory per-host sanity check, and a fixed recon → plan → human approval →
-execution order.  The operator drives their agent now and the agent executes
-its own plans, so those are gone.  What stays protects the client and the
+execution order.  The operator drives their agent now, so those are gone —
+and since v2.442.0 so are plans and execution runs themselves: the agent
+proposes tests on hosts and records what it ran as evidence.  What stays protects the client and the
 operator: the declared scope, the working directory, the operator's machine,
 and a record of every command.
 """
@@ -75,9 +76,9 @@ _READ_BACK_HEADER = (
     "**FIRST MESSAGE — state your bounds back to the operator (mandatory):**"
 )
 
-# Two layers (v2.337.0): the session's bounds at start, and a run's own facts
-# (this plan's hosts) when an execution run opens, which is the moment those
-# facts exist and can be wrong.
+# One layer since v2.442.0: the session's bounds at start.  (An execution
+# run's start carried a second read-back — that plan's hosts — until runs
+# were removed.)
 _READ_BACK_ITEMS = {
     "project": [
         "which project you are working in, and as whom — the operator whose "
@@ -94,32 +95,20 @@ _READ_BACK_ITEMS = {
         "address outside the CIDRs or a name no declared domain covers — "
         "anything outside the working directory, changes to their machine)",
     ],
-    "execution": [
-        "the working directory every command will run from and write into",
-        "which hosts this plan covers — by IP, not by count",
-        "what you will ask about before acting (a target outside the scope, "
-        "anything outside that directory, changes to their machine)",
-    ],
 }
 
 
 def render_read_back(workflow: str = "project") -> str:
-    """The mandatory "say your bounds back" block for a session or a phase.
+    """The mandatory "say your bounds back" block of the session prompt.
 
-    ``project`` is the session-start block.  ``execution`` is the phase-start
-    block ``/execution-sessions/start`` returns in its ``read_back`` field (the
-    recon-run block went with recon runs, v2.433.1; its scope/domain rule is in
-    ``project``).  Falls back to the ``project`` items for an unknown key.
+    ``workflow`` is kept for callers that pass the session's; every value
+    renders the ``project`` items (the recon-run block went in v2.433.1 and the
+    execution-run block in v2.442.0, each with its runs).
     """
-    known = workflow in _READ_BACK_ITEMS
-    items = _READ_BACK_ITEMS[workflow] if known else _READ_BACK_ITEMS["project"]
-    # An unregistered phase falls back to the project (session) wording exactly,
-    # so it under-claims rather than reciting phase bounds nobody defined.
-    is_phase = known and workflow != "project"
-    what = "command in this phase" if is_phase else "tool call or command"
+    items = _READ_BACK_ITEMS.get(workflow, _READ_BACK_ITEMS["project"])
     lines = [
         _READ_BACK_HEADER,
-        f"Before your first {what}, tell the operator — in your own "
+        "Before your first tool call or command, tell the operator — in your own "
         "words, specific to this session, not a recital of this text:",
     ]
     lines.extend(f"- {item}" for item in items)
@@ -129,20 +118,6 @@ def render_read_back(workflow: str = "project") -> str:
         "act."
     )
     return "\n".join(lines) + "\n"
-
-
-def render_phase_read_back(phase: str, *, facts: List[str]) -> str:
-    """The read-back a phase-start response carries, with the phase's own
-    facts (the CIDRs, the plan's hosts, the working directory) listed so the
-    agent restates THESE rather than a template.
-
-    ``facts`` are the concrete bounds; the generic items say what to cover.
-    """
-    block = render_read_back(phase)
-    if facts:
-        block += "\nThe bounds of this phase, which your read-back must name:\n"
-        block += "\n".join(f"- {f}" for f in facts) + "\n"
-    return block
 
 
 # ---------------------------------------------------------------------------

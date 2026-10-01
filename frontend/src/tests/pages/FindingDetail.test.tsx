@@ -11,6 +11,8 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useNavigate: () => navigateSpy };
 });
 vi.mock('../../services/api', () => ({
+  // The finding's linked test evidence (5.321.0); none unless a test says so.
+  listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getFinding: vi.fn(),
   getFindingHistory: vi.fn(),
   setFindingStatus: vi.fn(),
@@ -41,7 +43,7 @@ const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>;
 
 const finding = (over: Record<string, unknown> = {}) => ({
   id: 7, project_id: 1, title: 'Weak TLS on portal', severity: 'high', status: 'open', source: 'manual',
-  owner_id: null, owner_name: null, evidence_annotation_id: null, vuln_id: null, exec_result_id: null,
+  owner_id: null, owner_name: null, evidence_annotation_id: null, vuln_id: null,
   host_count: 0, hosts: [], created_at: '2026-08-01T00:00:00Z', updated_at: null, ...over,
 });
 
@@ -277,7 +279,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     await screen.findByText('TLS 1.0 is enabled.');
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     fireEvent.change(screen.getByLabelText('Impact'), { target: { value: 'Traffic can be read.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
     await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { impact: 'Traffic can be read.' }));
     expect(await screen.findByText('Traffic can be read.')).toBeInTheDocument();
   });
@@ -288,7 +290,7 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     await screen.findByText('TLS 1.0 is enabled.');
     fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
     fireEvent.change(screen.getByLabelText('Score'), { target: { value: '12' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
     expect(await screen.findByText('A CVSS score is a number from 0.0 to 10.0.')).toBeInTheDocument();
     expect(mocked.updateFinding).not.toHaveBeenCalled();
   });

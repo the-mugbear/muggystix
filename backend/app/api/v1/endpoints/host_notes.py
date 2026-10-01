@@ -25,13 +25,13 @@ from app.services.note_attachment_service import (
 from app.db.session import get_db
 from app.db import models
 from app.services.host_query_common import escape_like
-from app.db.models import Annotation as AnnotationModel, NoteStatus, ActivityCursor
+from app.db.models import Annotation as AnnotationModel, ActivityCursor
 from app.db.models_auth import User, UserRole
 from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole, ProjectMembership
 from app.schemas.schemas import (
-    Annotation, AnnotationCreate, AnnotationUpdate, AnnotationStatusHistoryEntry,
+    Annotation, AnnotationCreate, AnnotationUpdate,
     NoteAttachmentOut,
 )
 from app.services.notification_service import NotificationService
@@ -109,7 +109,6 @@ def mark_activity_seen(
     summary="Project activity feed — host notes grouped by host",
 )
 def get_note_activity(
-    status: Optional[str] = Query(None, description="Filter by note status (open, in_progress, resolved)"),
     author_id: Optional[int] = Query(None, description="Filter by author user ID"),
     search: Optional[str] = Query(None, description="Search notes by IP, hostname, or note body"),
     # v2.86.4 — pagination caps added.
@@ -126,21 +125,6 @@ def get_note_activity(
         .join(models.Host, AnnotationModel.host_id == models.Host.id)
         .filter(models.Host.project_id == project.id)
     )
-
-    if status:
-        # review #5 — filter by THREAD (root) status, not the per-message
-        # status: return every message of threads whose root has `status`,
-        # so the feed agrees with the root-status badge the UI renders.
-        root_ids_with_status = (
-            db.query(AnnotationModel.id)
-            .join(models.Host, AnnotationModel.host_id == models.Host.id)
-            .filter(
-                models.Host.project_id == project.id,
-                AnnotationModel.parent_id.is_(None),
-                AnnotationModel.status == status,
-            )
-        )
-        query = query.filter(AnnotationModel.thread_root_id.in_(root_ids_with_status))
 
     if author_id:
         query = query.filter(AnnotationModel.user_id == author_id)
@@ -204,20 +188,6 @@ def get_note_activity(
     total_notes = db.query(func.count(AnnotationModel.id)).join(
         models.Host, AnnotationModel.host_id == models.Host.id
     ).filter(models.Host.project_id == project.id).scalar() or 0
-    # review #5 — status counts are THREAD counts by root status (root
-    # notes only), matching the thread-status filter above so totals and
-    # filtered results can't contradict each other.
-    status_counts = dict(
-        db.query(AnnotationModel.status, func.count(AnnotationModel.id))
-        .join(models.Host, AnnotationModel.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            AnnotationModel.parent_id.is_(None),
-        )
-        .group_by(AnnotationModel.status)
-        .all()
-    )
-
     def resolve_thread_root_id(note: AnnotationModel) -> int:
         current = note
         seen = {note.id}
@@ -257,26 +227,12 @@ def get_note_activity(
         if note.author:
             author_name = note.author.full_name or note.author.username
         thread_root_id = resolve_thread_root_id(note)
-        # Thread status is the ROOT note's status, not the latest reply's.
-        # Pre-fix the Activity feed showed `latest.status`, so replying to a
-        # resolved thread (replies are forced to status "open" client-side)
-        # silently reopened it.  The root note is always loaded into
-        # ancestor_note_map by the parent-walk above; fall back to this
-        # note's own status only if the root somehow isn't present.
-        root_note = ancestor_note_map.get(thread_root_id)
-        thread_status_source = root_note if root_note is not None else note
-        thread_root_status = (
-            thread_status_source.status.value
-            if hasattr(thread_status_source.status, "value")
-            else thread_status_source.status
-        )
         results.append({
             "note_id": note.id,
             "host_id": note.host_id,
             "ip_address": host.ip_address if host else None,
             "hostname": host.hostname if host else None,
             "body": note.body,
-            "status": note.status.value if hasattr(note.status, "value") else note.status,
             "author_name": author_name,
             "author_id": note.user_id,
             # 'user' or 'agent' — the author is the operator either way, so
@@ -284,7 +240,6 @@ def get_note_activity(
             "actor_type": note.actor_type or "user",
             "parent_id": note.parent_id,
             "thread_root_id": thread_root_id,
-            "thread_root_status": thread_root_status,
             "thread_note_count": thread_note_counts.get(thread_root_id, 1),
             "created_at": note.created_at.isoformat() if note.created_at else None,
             "updated_at": note.updated_at.isoformat() if note.updated_at else None,
@@ -321,11 +276,6 @@ def get_note_activity(
     return {
         "notes": results,
         "total_notes": total_notes,
-        "status_counts": {
-            "open": status_counts.get(NoteStatus.OPEN, status_counts.get("open", 0)),
-            "in_progress": status_counts.get(NoteStatus.IN_PROGRESS, status_counts.get("in_progress", 0)),
-            "resolved": status_counts.get(NoteStatus.RESOLVED, status_counts.get("resolved", 0)),
-        },
         "authors": authors,
     }
 
@@ -373,7 +323,7 @@ def create_host_note(
     follow_service = HostFollowService(db)
     try:
         note = follow_service.create_note(
-            host_id, current_user.id, payload.body, payload.status,
+            host_id, current_user.id, payload.body,
             parent_id=payload.parent_id,
         )
     except ValueError as exc:
@@ -461,7 +411,7 @@ def create_host_note(
 @router.patch(
     "/{host_id:int}/notes/{note_id:int}",
     response_model=Annotation,
-    summary="Edit a note body (author-only) and/or thread work-state (any project member)",
+    summary="Edit a note body (author-only) and/or the thread's type and pin (any analyst)",
     # RV-4 — ANALYST+ to mutate; "any project member" in the docstring
     # means any member who can write (ANALYST/ADMIN), not viewers/auditors.
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
@@ -474,17 +424,14 @@ def update_host_note(
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
 ):
-    """P3 permission split:
-
-    * ``body`` is authored content — only its author may change it.
-    * thread work-state (``status``/``assignee_id``/``due_at``/
-      ``note_type``/``resolution_summary``/``pinned``) is collaborative —
-      any project member may change it, so a teammate can resolve or
-      reassign an abandoned thread.  Status changes are recorded in
-      ``annotation_status_history`` and resolving requires a summary.
+    """``body`` is authored content — only its author may change it.  The
+    thread's ``note_type`` and ``pinned`` are labels any analyst may set
+    (they live on the thread root).  A note is discussion: it has no status,
+    assignee or due date (removed v2.446.0 — work is a host test and its
+    evidence).
 
     ``model_fields_set`` distinguishes an omitted field from an explicit
-    null (which clears a nullable thread field).
+    null (which clears ``note_type``).
     """
     host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
     if not host:
@@ -493,9 +440,8 @@ def update_host_note(
     provided = payload.model_fields_set
     follow_service = HostFollowService(db)
 
-    # Resolve target + thread root up front so we can validate everything
-    # BEFORE mutating, capture the pre-change root status for the status
-    # notification, and never partially commit (review #1).
+    # Resolve the target up front so everything is validated BEFORE
+    # mutating, and nothing is ever partially committed (review #1).
     target = (
         db.query(AnnotationModel)
         .filter(AnnotationModel.id == note_id, AnnotationModel.host_id == host_id)
@@ -504,35 +450,8 @@ def update_host_note(
     if target is None:
         raise HTTPException(status_code=404, detail="Note not found")
     root = follow_service._root_note(target)
-    old_status = root.status
 
-    # Validate assignee membership up front (review #3) — mirror host
-    # assignment: assignee must be an active user, and (unless a global
-    # admin) a member of this project.  null clears the assignee.
-    if "assignee_id" in provided and payload.assignee_id is not None:
-        assignee = db.query(User).filter(
-            User.id == payload.assignee_id, User.is_active.is_(True)
-        ).first()
-        if not assignee:
-            raise HTTPException(status_code=404, detail="Assignee not found")
-        if assignee.role != UserRole.ADMIN:
-            is_member = db.query(ProjectMembership).filter(
-                ProjectMembership.project_id == project.id,
-                ProjectMembership.user_id == assignee.id,
-            ).first()
-            if not is_member:
-                raise HTTPException(
-                    status_code=400, detail="Assignee is not a member of this project"
-                )
-
-    # Collect thread-meta fields (model_fields_set distinguishes omitted
-    # from an explicit null that clears a nullable field).
-    meta = {}
-    if "status" in provided and payload.status is not None:
-        meta["status"] = NoteStatus(payload.status.value)
-    for key in ("assignee_id", "due_at", "note_type", "resolution_summary", "pinned"):
-        if key in provided:
-            meta[key] = getattr(payload, key)
+    meta = {key: getattr(payload, key) for key in ("note_type", "pinned") if key in provided}
 
     want_body = "body" in provided and payload.body is not None
 
@@ -546,24 +465,13 @@ def update_host_note(
             status_code=400,
             detail=f"Invalid note_type; expected one of {sorted(VALID_NOTE_TYPES)}",
         )
-    if meta.get("status") == NoteStatus.RESOLVED:
-        eff_summary = (
-            meta["resolution_summary"] if "resolution_summary" in meta
-            else root.resolution_summary
-        )
-        if not (eff_summary and str(eff_summary).strip()):
-            raise HTTPException(
-                status_code=400, detail="Resolving a thread requires a resolution summary"
-            )
-
     # Apply body (author-only) + thread-meta (any analyst) in ONE
     # transaction; both service calls defer their commit so the PATCH is
     # all-or-nothing.  Validation already passed, so the only failure here
     # is an unexpected DB error.
     # review #3-round #4 — keep the EDITED note (the target reply) distinct
     # from the thread ROOT.  Body edits + @mentions + the response belong to
-    # the edited note; status/assignee/etc. + the status notification belong
-    # to the root.  Previously a combined reply PATCH reassigned `note` to
+    # the edited note; the type and pin belong to the root.  Previously a combined reply PATCH reassigned `note` to
     # the root, so mentions parsed the root's body and the response returned
     # the root instead of the edited reply.
     edited_note = target
@@ -583,13 +491,9 @@ def update_host_note(
         db.rollback()
         raise
 
-    new_status = root.status
-    status_changed = bool("status" in meta and new_status != old_status)
-
     # Best-effort notifications in a SEPARATE transaction — the note write
     # already committed, so a notification failure can't lose the edit
-    # (audit H3 contract).  Restores in-app status-change notifications to
-    # the thread author/participants (review #2), not just the webhook.
+    # (audit H3 contract).
     mention_warning: Optional[str] = None
     mention_notifs = []
     outcome: dict = {}
@@ -598,13 +502,6 @@ def update_host_note(
         if body_changed and payload.body:
             mention_notifs = notification_service.process_note_mentions(edited_note, current_user, project) or []
             outcome = notification_service.mention_outcome(edited_note.body, project.id, mention_notifs)
-        if status_changed:
-            notification_service.notify_status_change(
-                root,
-                old_status.value if hasattr(old_status, "value") else str(old_status),
-                new_status.value if hasattr(new_status, "value") else str(new_status),
-                current_user, project,
-            )
         # v2.302.0 — staged inside this transaction (see the create path).
         host_label = host.hostname or host.ip_address
         if mention_notifs:
@@ -615,16 +512,6 @@ def update_host_note(
                 title=f"@{current_user.username} mentioned {len(mention_notifs)} user(s) on {host_label}",
                 body=(payload.body or "")[:280],
                 context={"host_id": host_id, "note_id": note_id},
-            )
-        if status_changed:
-            ns = new_status.value if hasattr(new_status, "value") else str(new_status)
-            stage_dispatch(
-                db,
-                project_id=project.id,
-                event="note_status_change",
-                title=f"Note thread on {host_label} → {ns}",
-                body=(root.resolution_summary or "")[:280],
-                context={"host_id": host_id, "note_id": root.id, "status": ns},
             )
         db.commit()
     except Exception:
@@ -639,70 +526,23 @@ def update_host_note(
         )
         mention_warning = (
             "Note updated, but notifications could not be delivered. "
-            "Tagged users or status watchers may not have been alerted."
+            "Tagged users may not have been alerted."
         )
         outcome = {}
         db.rollback()
 
-    # Both webhooks are staged above, inside the transaction — the rollback in
-    # the except branch discards them along with the notifications, which is
-    # exactly the old `if mention_warning is None` guard, now enforced by the
-    # transaction instead of by a condition that could drift out of sync.
+    # The webhook is staged above, inside the transaction — the rollback in
+    # the except branch discards it along with the notifications.
 
     # Response: the edited reply when the body changed (what the client
     # edited); otherwise the thread root (where the metadata lives).
     response_note = edited_note if body_changed else root
     db.refresh(response_note)
-    db.refresh(response_note, attribute_names=["author", "assignee"])
+    db.refresh(response_note, attribute_names=["author"])
     serialized = _serialize_note(response_note)
     if mention_warning:
         return serialized.model_copy(update={"mention_warning": mention_warning})
     return serialized.model_copy(update=outcome)
-
-
-@router.get(
-    "/{host_id:int}/notes/{note_id:int}/history",
-    response_model=List[AnnotationStatusHistoryEntry],
-    summary="Status-transition history for a note thread",
-)
-def get_host_note_history(
-    host_id: int,
-    note_id: int,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    host = db.query(models.Host).filter(models.Host.id == host_id, models.Host.project_id == project.id).first()
-    if not host:
-        raise HTTPException(status_code=404, detail="Host not found")
-    note = (
-        db.query(AnnotationModel)
-        .filter(AnnotationModel.id == note_id, AnnotationModel.host_id == host_id)
-        .first()
-    )
-    if note is None:
-        raise HTTPException(status_code=404, detail="Note not found")
-
-    # review #5 — status history is thread-level; resolve a reply id to its
-    # root so requesting history through a reply doesn't return the reply's
-    # (empty) history.
-    follow_service = HostFollowService(db)
-    root_id = note.thread_root_id or follow_service._root_note(note).id
-    rows = follow_service.get_status_history(root_id)
-    return [
-        AnnotationStatusHistoryEntry(
-            id=r.id,
-            from_status=r.from_status,
-            to_status=r.to_status,
-            changed_by_id=r.changed_by_id,
-            changed_by_name=(
-                (r.changed_by.full_name or r.changed_by.username) if r.changed_by else None
-            ),
-            summary=r.summary,
-            created_at=r.created_at,
-        )
-        for r in rows
-    ]
 
 
 @router.delete(

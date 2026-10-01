@@ -45,7 +45,7 @@ def note_load_options(via=None) -> list:
     """Loader options for EVERY relationship ``_serialize_note`` reads (v2.369.1).
 
     Callers used to spell these out themselves, and drifted: the host
-    endpoints listed author + assignee + promoted_findings, the report
+    endpoints listed author + promoted_findings, the report
     loaders only author — so a report ran one ``promoted_findings`` query per
     note (it is one-to-many, so nothing is ever served from the session the
     way a repeated author is). Keep this list beside the serializer and in
@@ -60,7 +60,6 @@ def note_load_options(via=None) -> list:
 
     relationships = (
         AnnotationModel.author,
-        AnnotationModel.assignee,
         AnnotationModel.promoted_findings,
     )
     if via is None:
@@ -72,21 +71,13 @@ def _serialize_note(note: AnnotationModel) -> Annotation:
     author_name = None
     if note.author:
         author_name = note.author.full_name or note.author.username
-    assignee_name = None
-    if note.assignee:
-        assignee_name = note.assignee.full_name or note.assignee.username
     return Annotation(
         id=note.id,
         body=note.body,
-        status=note.status,
         author_id=note.user_id,
         author_name=author_name,
         parent_id=note.parent_id,
-        assignee_id=note.assignee_id,
-        assignee_name=assignee_name,
-        due_at=note.due_at,
         note_type=note.note_type,
-        resolution_summary=note.resolution_summary,
         pinned=bool(note.pinned),
         # v2.434.1 (acceptance run H3) — left out, so the schema's "user"
         # default labelled every agent note human-written in the host page,

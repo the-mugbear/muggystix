@@ -1,11 +1,11 @@
 /**
  * HostInspector — the data-bearing body of the host detail surface.
  *
- * Renders host overview, proposed tests, vulnerabilities, notes
- * (threaded), data conflicts (when toggled), workflow lineage, and
- * port details.  Owns every API call: getHost, getHostConflicts,
- * getHostTestPlanEntries, getHostFollowers, and the per-action
- * mutations (follow, note CRUD, test-plan-entry status / findings).
+ * Renders host overview, tests, vulnerabilities, notes (threaded),
+ * data conflicts (when toggled) and port details.  Owns its API calls:
+ * getHost, getHostConflicts, getHostFollowers, and the per-action
+ * mutations (follow, note CRUD).  The Tests and Evidence sections
+ * load their own data (HostTestsSection, HostEvidenceSection).
  *
  * Used in two contexts:
  *  - Standalone page (`pages/HostDetail.tsx`): the page renders
@@ -26,7 +26,6 @@ import {
   ChevronDown,
   ChevronRight,
   CheckCircle2,
-  ClipboardList,
   Computer,
   ExternalLink,
   Eye,
@@ -46,14 +45,10 @@ import {
   uploadNoteAttachment,
   updateAnnotation,
   deleteAnnotation,
-  promoteAnnotation,
   promoteVulnerability,
   previewPromoteVulnerability,
   recordHostView,
-  getHostTestPlanEntries,
-  updateTestPlanEntry,
   getHostFollowers,
-  listProjectMembers,
 } from '../services/api';
 import type {
   Host,
@@ -62,31 +57,23 @@ import type {
   FollowStatus,
   Annotation,
   NoteAttachment,
-  NoteStatus,
   NoteType,
-  HostTestPlanEntry,
-  ProposedTestObject,
   HostFollowerEntry,
   FindingHostStatus,
-  FindingSeverity,
   FindingStatus,
   HostVulnerability,
   PromoteVulnerabilityPreview,
-  ProjectMember,
   ReviewConclusion,
 } from '../services/api';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { buildSameVulnQuery, buildExploitOnPortsQuery } from '../utils/vulnQuery';
 import { getHostWebLinks, HostWebLink } from '../utils/webLinks';
 import { getConnectionHelpers, ConnectionHelper } from '../utils/connectionHelpers';
-import { StructuredTestCard } from './ProposedTestList';
-import EntryResultsPanel from './EntryResultsPanel';
 import NseScriptsCard from './NseScriptsCard';
 import HostFindingsCard from './HostFindingsCard';
 import HostNamesCard from './HostNamesCard';
 import { TimeAgo } from './TimeAgo';
 import { AssigneeControl, TagControl } from './host-inspector/HostWorkControls';
-import HostLineagePanel from './HostLineagePanel';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { NoteThread } from './host-inspector/NoteThread';
 import { NoteComposer } from './host-inspector/NoteComposer';
@@ -96,6 +83,8 @@ import VulnerabilityGroup from './host-inspector/VulnerabilityGroup';
 import ProductObservationGroup from './host-inspector/ProductObservationGroup';
 import ProvenanceCard, { provenanceExceedsSummary, attributionIsStale } from './host-inspector/ProvenanceCard';
 import HostEvidenceSection from './host-inspector/HostEvidenceSection';
+import { HostTestsSection } from './host-inspector/HostTestsSection';
+import { HostTestsProvider, useHostTestsController } from './host-inspector/hostTestsController';
 import ScopeMembershipCard from './host-inspector/ScopeMembershipCard';
 import PortDetailsCard from './host-inspector/PortDetailsCard';
 import { changesSinceReview, freshnessFacts } from '../utils/evidenceFreshness';
@@ -104,6 +93,7 @@ import HostConflictsPanel from './host-inspector/HostConflictsPanel';
 import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { testNeedsWork } from '../utils/hostTests';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
 import { announceMentionOutcome } from '../utils/mentions';
@@ -114,7 +104,6 @@ import { Badge } from './ui/badge';
 import { Button } from './ui/button';
 import { Card, CardContent } from './ui/card';
 import { InfoTip } from './ui/info-tip';
-import { Input } from './ui/input';
 import { Label } from './ui/label';
 import {
   Dialog,
@@ -189,14 +178,7 @@ const FOLLOW_STATUS_META: Record<
   },
 };
 
-const NOTE_STATUS_META: Record<
-  NoteStatus,
-  { label: string; badgeVariant: 'muted' | 'info' | 'warning' | 'success' }
-> = {
-  open: { label: 'Open', badgeVariant: 'info' },
-  in_progress: { label: 'In Progress', badgeVariant: 'warning' },
-  resolved: { label: 'Resolved', badgeVariant: 'success' },
-};
+
 
 
 interface PendingImage {
@@ -361,62 +343,70 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   // created; it stays here (bound to its own `noteId`) until the user
   // retries or removes it — never silently dropped (UX review C3).
   const [pendingImages, setPendingImages] = useState<PendingImage[]>([]);
-  const [noteStatus, setNoteStatus] = useState<NoteStatus>('open');
   const [noteSubmitting, setNoteSubmitting] = useState(false);
   const [replyTo, setReplyTo] = useState<{ id: number; author: string } | null>(null);
   const [replyBody, setReplyBody] = useState('');
   const [noteError, setNoteError] = useState<string | null>(null);
   // The thread shows its newest threads until asked for the rest (v5.240.0).
   const [showAllNotes, setShowAllNotes] = useState(false);
-  // Finished proposed-test entries the analyst opened (they start as one line).
-  const [openDoneEntries, setOpenDoneEntries] = useState<Record<number, boolean>>({});
-  useEffect(() => { setShowAllNotes(false); setOpenDoneEntries({}); }, [hostId]);
-  // Promote-note-to-finding dialog state (foundation 6b).
-  const [promoteNoteId, setPromoteNoteId] = useState<number | null>(null);
-  const [promoteSeverity, setPromoteSeverity] = useState<FindingSeverity>('medium');
-  // §12 — let the analyst confirm the finding title + owner before promoting
-  // (the note's first line / assignee are just defaults).
-  const [promoteTitle, setPromoteTitle] = useState('');
-  const [promoteOwnerId, setPromoteOwnerId] = useState<number | 'none'>('none');
-  const [promoting, setPromoting] = useState(false);
-  // Bumped after a promote so the inline HostFindingsCard refetches.
+  useEffect(() => { setShowAllNotes(false); }, [hostId]);
+  // Bumped when a finding is made from a test result, so the inline
+  // HostFindingsCard refetches.
   const [findingsRefresh, setFindingsRefresh] = useState(0);
-  // Note-details editor (type/assignee/due/pin) — the write path for the
-  // thread work fields the My Work queue groups by.
+  // Bumped when a test result or a finding from one is recorded below.
+  const [evidenceRefresh, setEvidenceRefresh] = useState(0);
+  // The host's tests, held once: the Weaknesses rows and the Tests section
+  // both read them, and the result panel is rendered once (5.322.0).
+  const onTestResultRecorded = useCallback(() => {
+    setEvidenceRefresh((n) => n + 1);
+    reloadHost();
+  }, [reloadHost]);
+  const onTestFindingCreated = useCallback((findingId: number) => {
+    // The test leaves the to-do list with its finding made, so the way to the
+    // write-up is offered here rather than on a row that is no longer shown.
+    toast.success(`On finding #${findingId}.`, {
+      autoHideMs: 8000,
+      action: { label: 'Write it up', onClick: () => navigate(`/findings/${findingId}?edit=report-text`) },
+    });
+    setFindingsRefresh((n) => n + 1);
+    setEvidenceRefresh((n) => n + 1);
+    // A linked result promotes the scanner observation: its row must say so.
+    reloadHost();
+  }, [reloadHost, toast, navigate]);
+  const { controller: hostTests, element: hostTestsElement } = useHostTestsController({
+    hostId,
+    canEdit: canManageEntries,
+    userId: user?.id,
+    onResultRecorded: onTestResultRecorded,
+    onFindingCreated: onTestFindingCreated,
+  });
+  const testsReloadRef = React.useRef(hostTests.reload);
+  testsReloadRef.current = hostTests.reload;
+  const testsToDo = (hostTests.tests ?? []).filter(testNeedsWork).length;
+  // Note-details editor: a thread's type and pin.
   const [detailsNote, setDetailsNote] = useState<Annotation | null>(null);
   const [detailsType, setDetailsType] = useState<string>('none');
-  const [detailsAssignee, setDetailsAssignee] = useState<string>('none');
-  const [detailsDue, setDetailsDue] = useState<string>('');
+  const NOTE_TYPES = ['observation', 'question', 'decision', 'handoff'] as const;
   const [detailsPinned, setDetailsPinned] = useState(false);
   // Port-table sort by port number (null = scan order). Shared across the
   // open/closed/filtered port tables so they stay consistent.
   const [detailsSaving, setDetailsSaving] = useState(false);
-  const [members, setMembers] = useState<ProjectMember[]>([]);
 
-  // Lazy-load the project roster the first time the details editor opens
-  // (drives the assignee picker); cheap and avoids a fetch on every host open.
   const openNoteDetails = (note: Annotation) => {
     setDetailsNote(note);
     setDetailsType(note.note_type || 'none');
-    setDetailsAssignee(note.assignee_id != null ? String(note.assignee_id) : 'none');
-    setDetailsDue(note.due_at ? note.due_at.slice(0, 10) : '');
     setDetailsPinned(!!note.pinned);
-    if (members.length === 0) {
-      listProjectMembers()
-        .then(setMembers)
-        .catch(() => { /* assignee picker just stays empty */ });
-    }
   };
 
   const handleSaveNoteDetails = async () => {
     if (!detailsNote) return;
     setDetailsSaving(true);
     try {
+      // The type goes only when it changed: a thread labelled before 5.326.0
+      // may carry "finding" or "action", which can be kept but not chosen.
+      const typeChanged = detailsType !== (detailsNote.note_type || 'none');
       const updated = await updateAnnotation(hostId, detailsNote.id, {
-        note_type: detailsType === 'none' ? null : (detailsType as NoteType),
-        assignee_id: detailsAssignee === 'none' ? null : Number(detailsAssignee),
-        // Date input is YYYY-MM-DD; send an ISO timestamp (or null to clear).
-        due_at: detailsDue ? new Date(detailsDue).toISOString() : null,
+        ...(typeChanged ? { note_type: detailsType === 'none' ? null : (detailsType as NoteType) } : {}),
         pinned: detailsPinned,
       });
       setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
@@ -492,11 +482,20 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           : hostOnly
             ? `Dismissed as false positive on this host only: ${finding.title}`
             : `Dismissed as false positive${span}: ${finding.title}`,
-        { autoHideMs: 6000, action: { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) } },
+        {
+          autoHideMs: 8000,
+          // A promotion leads to the write-up; a dismissal has none to write.
+          action: intent === 'confirmed'
+            ? { label: 'Write it up', onClick: () => navigate(`/findings/${finding.id}?edit=report-text`) }
+            : { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
+        },
       );
       setPromotedVulns((prev) => ({ ...prev, [vulnId]: finding.id }));
       if (hostOnly) setDismissedHereVulns((prev) => ({ ...prev, [vulnId]: true }));
       setFindingsRefresh((n) => n + 1);
+      // The promotion took the issue's test results onto the finding.
+      setEvidenceRefresh((n) => n + 1);
+      void testsReloadRef.current?.();
       setTriageVuln(null);
       setTriageReason('');
     } catch (err) {
@@ -511,35 +510,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setTriageVuln({ id: vulnId, title, intent });
   };
 
-  const handlePromoteNote = async () => {
-    if (promoteNoteId === null) return;
-    setPromoting(true);
-    try {
-      const finding = await promoteAnnotation(promoteNoteId, {
-        severity: promoteSeverity,
-        title: promoteTitle.trim() || undefined,
-        owner_id: promoteOwnerId === 'none' ? null : promoteOwnerId,
-      });
-      toast.success(`Promoted to finding: ${finding.title}`, {
-        autoHideMs: 6000,
-        action: { label: 'Open finding', onClick: () => navigate(`/findings/${finding.id}`) },
-      });
-      // Optimistically mark the note promoted so its badge appears + the
-      // promote affordance hides without waiting for a host reload.
-      setNotes((prev) => prev.map((n) => (n.id === promoteNoteId ? { ...n, finding_id: finding.id } : n)));
-      setPromoteNoteId(null);
-      setFindingsRefresh((n) => n + 1);
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to promote note to finding.'));
-    } finally {
-      setPromoting(false);
-    }
-  };
   const [noteActionId, setNoteActionId] = useState<number | null>(null);
-  // Resolution-summary capture (replaces window.prompt): the note id being
-  // resolved + its in-progress summary text.
-  const [resolvePrompt, setResolvePrompt] = useState<number | null>(null);
-  const [resolveText, setResolveText] = useState('');
   const [showAllVulnerabilities, setShowAllVulnerabilities] = useState(false);
   // v5.215.0 — informational rows are left out of the detail payload until
   // asked; the loader lives below, next to the fetch-generation guard it uses.
@@ -553,12 +524,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       else next.add(id);
       return next;
     });
-  const [testPlanEntries, setTestPlanEntries] = useState<HostTestPlanEntry[]>([]);
   const [fetchError, setFetchError] = useState<string | null>(null);
-  const [testPlanError, setTestPlanError] = useState(false);
-  const [findingsDrafts, setFindingsDrafts] = useState<Record<number, string>>({});
-  const [findingsOpen, setFindingsOpen] = useState<Record<number, boolean>>({});
-  const [savingEntryId, setSavingEntryId] = useState<number | null>(null);
   const [otherFollowers, setOtherFollowers] = useState<HostFollowerEntry[]>([]);
   const [followersError, setFollowersError] = useState(false);
   const [retryNonce, setRetryNonce] = useState(0);
@@ -597,12 +563,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   useEffect(() => {
     onDirtyChangeRef.current = onDirtyChange;
   }, [onDirtyChange]);
-  // A test-summary draft is seeded from the saved text when its editor opens,
-  // so it is unsaved work only while it differs from what the entry holds.
-  const findingsDraftDirty = testPlanEntries.some(
-    (e) => e.id in findingsDrafts
-      && (findingsDrafts[e.id] ?? '').trim() !== (e.findings ?? '').trim(),
-  );
+  const [findingsDraftDirty, setFindingsDraftDirty] = useState(false);
   const composerDirty = noteBody.trim().length > 0
     || pendingImages.length > 0
     || replyBody.trim().length > 0
@@ -677,28 +638,15 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     };
   }, [hostId, linkedNoteId, linkedRootId]);
 
-  const refetchTestPlanEntries = React.useCallback(async () => {
-    const fetchId = fetchIdRef.current;
-    setTestPlanError(false);
-    try {
-      const tpEntries = await getHostTestPlanEntries(hostId);
-      if (fetchId === fetchIdRef.current) setTestPlanEntries(tpEntries);
-    } catch (err) {
-      if (fetchId === fetchIdRef.current) setTestPlanError(true);
-    }
-  }, [hostId]);
-
   useEffect(() => {
     const fetchId = ++fetchIdRef.current;
     setLoading(true);
     setFetchError(null);
-    setTestPlanError(false);
     setFollowersError(false);
     setShowAllVulnerabilities(false);
     setLoadingInformational(false);
     setShowConflicts(false);
     setNoteBody('');
-    setNoteStatus('open');
     setNoteError(null);
     setReplyTo(null);
     setReplyBody('');
@@ -712,8 +660,8 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 
     // Audit PRF·H8: previously a single Promise.all blocked the host
     // panel on the slowest of three fetches.  Now the primary host
-    // fetch releases the loading skeleton; conflicts and test-plan
-    // entries land into their subsections as they resolve.
+    // fetch releases the loading skeleton; conflicts land into their
+    // subsection as they resolve.
     const fetchHost = async () => {
       try {
         const hostData = await getHost(hostId);
@@ -753,15 +701,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         // rejection here is a real failure — surface it instead of letting an
         // empty list read as "no conflicts" (a data-quality false negative).
         if (fetchId === fetchIdRef.current) setConflictsError(true);
-      });
-
-    getHostTestPlanEntries(hostId)
-      .then((tpEntries) => {
-        if (fetchId !== fetchIdRef.current) return;
-        setTestPlanEntries(tpEntries);
-      })
-      .catch(() => {
-        if (fetchId === fetchIdRef.current) setTestPlanError(true);
       });
 
     recordHostView(hostId).catch(() => {});
@@ -828,68 +767,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     if (saved && advance) onNextUnreviewed?.();
   };
 
-  const handleEntryStatusChange = async (entry: HostTestPlanEntry, newStatus: string) => {
-    if (newStatus === entry.status) return;
-    setSavingEntryId(entry.id);
-    try {
-      const updated = await updateTestPlanEntry(entry.test_plan_id, entry.id, {
-        status: newStatus,
-        expected_updated_at: entry.updated_at,
-      });
-      setTestPlanEntries((prev) =>
-        prev.map((e) =>
-          e.id === entry.id
-            ? { ...e, status: updated.status as string, updated_at: updated.updated_at as string }
-            : e,
-        ),
-      );
-      toast.success(`Marked ${newStatus.replace('_', ' ')}`, {
-        id: `host-entry-status-${entry.id}`,
-        autoHideMs: 2000,
-      });
-    } catch (err: unknown) {
-      console.error('Failed to update test plan entry status:', err);
-      toast.error(formatApiError(err, 'Failed to update entry status.'), {
-        id: `host-entry-status-${entry.id}-err`,
-      });
-    } finally {
-      setSavingEntryId(null);
-    }
-  };
-
-  const handleSaveFindings = async (entry: HostTestPlanEntry) => {
-    const draft = (findingsDrafts[entry.id] ?? '').trim();
-    setSavingEntryId(entry.id);
-    try {
-      const updated = await updateTestPlanEntry(entry.test_plan_id, entry.id, {
-        findings: draft || undefined,
-        expected_updated_at: entry.updated_at,
-      });
-      setTestPlanEntries((prev) =>
-        prev.map((e) =>
-          e.id === entry.id
-            ? { ...e, findings: draft || undefined, updated_at: updated.updated_at as string }
-            : e,
-        ),
-      );
-      setFindingsOpen((prev) => ({ ...prev, [entry.id]: false }));
-      toast.success('Findings saved', { autoHideMs: 2000 });
-    } catch (err: unknown) {
-      console.error('Failed to save findings:', err);
-      toast.error(formatApiError(err, 'Failed to save findings.'));
-    } finally {
-      setSavingEntryId(null);
-    }
-  };
-
-  const toggleFindings = (entry: HostTestPlanEntry) => {
-    setFindingsOpen((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }));
-    setFindingsDrafts((prev) => {
-      if (entry.id in prev) return prev;
-      return { ...prev, [entry.id]: entry.findings ?? '' };
-    });
-  };
-
   const addPendingImages = useCallback((files: File[]) => {
     const imgs = files
       .filter((f) => f.type.startsWith('image/'))
@@ -952,7 +829,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     try {
       const response = await createAnnotation(submitHostId, {
         body: noteBody.trim(),
-        status: noteStatus,
       });
       if (response.mention_warning) toast.warning(response.mention_warning);
       else announceMentionOutcome(toast, response);
@@ -977,7 +853,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       // the only copy (UX review C3).
       setPendingImages((prev) => [...prev.filter((p) => p.error), ...failed]);
       setNoteBody('');
-      setNoteStatus('open');
       setNoteError(null);
     } catch (err) {
       if (submitHostId !== hostIdRef.current) return;
@@ -1048,7 +923,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     try {
       const newNote = await createAnnotation(hostId, {
         body: replyBody.trim(),
-        status: 'open',
         parent_id: replyTo.id,
       });
       setNotes((prev) => [newNote, ...prev]);
@@ -1061,43 +935,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     } finally {
       setNoteSubmitting(false);
     }
-  };
-
-  const doUpdateNoteStatus = async (
-    noteId: number, status: NoteStatus, resolutionSummary?: string,
-  ) => {
-    setNoteActionId(noteId);
-    try {
-      const response = await updateAnnotation(hostId, noteId, {
-        status,
-        ...(resolutionSummary ? { resolution_summary: resolutionSummary } : {}),
-      });
-      setNotes((previous) => previous.map((note) => (note.id === noteId ? response : note)));
-      setHost((previous) =>
-        previous
-          ? {
-              ...previous,
-              notes: (previous.notes ?? []).map((note) => (note.id === noteId ? response : note)),
-            }
-          : previous,
-      );
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update note status.'));
-    } finally {
-      setNoteActionId(null);
-    }
-  };
-
-  const handleUpdateNoteStatus = (noteId: number, status: NoteStatus) => {
-    // Resolving a thread requires a summary (the backend rejects a
-    // summary-less resolve with 400).  Capture it in an accessible dialog
-    // (consistent styling/validation) instead of a native window.prompt.
-    if (status === 'resolved') {
-      setResolveText('');
-      setResolvePrompt(noteId);
-      return;
-    }
-    void doUpdateNoteStatus(noteId, status);
   };
 
   if (loading) {
@@ -1246,38 +1083,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const hiddenInformational =
     host.informational_included === false ? (host.informational_count ?? 0) : 0;
   const hasVulnerabilities = vulnGroups.length > 0 || hiddenInformational > 0;
-
-  const TESTER_STATUSES = [
-    { value: 'in_progress', label: 'In Progress' },
-    { value: 'completed', label: 'Completed' },
-    { value: 'rejected', label: 'Rejected' },
-  ];
-  // 5.313.0 — the entry-level `approved` status is gone; `proposed` means
-  // "not tested yet".
-  const STATUS_LABEL: Record<string, string> = {
-    proposed: 'Proposed',
-    in_progress: 'In Progress',
-    completed: 'Completed',
-    rejected: 'Rejected',
-  };
-
-  const entriesWithTests = testPlanEntries.filter(
-    (entry) => (entry.proposed_tests?.length ?? 0) > 0,
-  );
-  const totalProposedTests = entriesWithTests.reduce(
-    (sum, e) => sum + (e.proposed_tests?.length ?? 0),
-    0,
-  );
-
-  // v4.55.0 — triage summary strip counts.  Derived from already-
-  // loaded state so the strip never blocks first paint; the test-plan
-  // cell appears once the async fetch resolves (which is the same
-  // shape as the Proposed Tests card below).
-  const testPlanCounts = {
-    in_progress: testPlanEntries.filter((e) => e.status === 'in_progress').length,
-    completed: testPlanEntries.filter((e) => e.status === 'completed').length,
-    pending: testPlanEntries.filter((e) => e.status === 'proposed').length,
-  };
 
   // v4.55.0 — intra-page jump helper.  Each card below carries
   // ``id="host-detail-{section}"`` so the triage strip cells and
@@ -1461,14 +1266,11 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           ? <><strong className="text-foreground">{notes.length}</strong> note{notes.length === 1 ? '' : 's'} · add</>
           : 'Add note'}
       </button>
-      {(testPlanCounts.in_progress + testPlanCounts.pending + testPlanCounts.completed) > 0 && (
-        <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')}
-          className={cn('inline-flex items-center gap-xxs', glanceLinkClass)}>
-          <ClipboardList className="size-3.5" aria-hidden />
-          <strong className="text-foreground">{testPlanCounts.in_progress}</strong> in progress
-          {testPlanCounts.pending > 0 && <> · <strong className="text-foreground">{testPlanCounts.pending}</strong> proposed</>}
-        </button>
-      )}
+      <button type="button" onClick={() => scrollToSection('host-detail-proposed-tests')} className={glanceLinkClass}>
+        {testsToDo > 0
+          ? <><strong className="text-foreground">{testsToDo}</strong> test{testsToDo === 1 ? '' : 's'} to do</>
+          : 'Tests'}
+      </button>
     </>
   );
 
@@ -1476,8 +1278,10 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
   const titleIconClass = density === 'sheet' ? 'size-5' : 'size-6';
 
   return (
+    <HostTestsProvider value={hostTests}>
     <div className="space-y-md">
       {confirmEl}
+      {hostTestsElement}
       {vulnSummaryError && (
         <Alert variant="warning">
           <AlertDescription>
@@ -1965,7 +1769,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           findings, then each service with everything known about it. */}
       {observationsSection}
 
-      {/* This host's findings, inline — appears once a note here is promoted. */}
+      {/* This host's findings, inline. */}
       <HostFindingsCard hostId={host.id} refreshKey={findingsRefresh} />
 
       {/* Services — one row per open port; a row opens to its weaknesses,
@@ -2009,13 +1813,19 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       )}
 
       {/* v5.316.0 — what agents ran against this host (renders nothing when none). */}
-      <HostEvidenceSection hostId={host.id} />
+      {/* Tests proposed for this host, then every command an agent recorded
+          against it (the evidence a test's result is). */}
+      <HostTestsSection key={host.id} hostId={host.id} canEdit={canManageEntries} userId={user?.id} onDirtyChange={setFindingsDraftDirty} />
 
-      {/* Notes — one section: the composer (a single line until used) over the
-          thread, after the evidence it is written about. */}
+      <HostEvidenceSection hostId={host.id} refreshKey={evidenceRefresh} />
+
+      {/* Discussion — one section: the composer (a single line until used)
+          over the thread, after the evidence it is written about. Notes are
+          talk about the host; work is a test and its result (5.325.0). */}
       <InspectorSection
         id="host-detail-notes"
-        title="Notes"
+        title="Discussion"
+        titleHint="Notes and replies about this host, for the team. Record work as a test and its result; a finding comes from a weakness or a test result."
         icon={<MessageSquare className="size-4 shrink-0 text-primary" aria-hidden />}
         count={notes.length}
       >
@@ -2024,9 +1834,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             hostId={hostId}
             body={noteBody}
             onBodyChange={setNoteBody}
-            status={noteStatus}
-            onStatusChange={setNoteStatus}
-            statusMeta={NOTE_STATUS_META}
             submitting={noteSubmitting}
             onSubmit={handleCreateNote}
             error={noteError}
@@ -2044,7 +1851,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             <NoteThread
               topLevel={visibleTopLevelNotes}
               repliesByParent={noteThreadGroups.repliesByParent}
-              noteStatusMeta={NOTE_STATUS_META}
               replyTo={replyTo}
               replyBody={replyBody}
               onReplyToChange={setReplyTo}
@@ -2052,21 +1858,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
               onSubmitReply={handleReply}
               noteSubmitting={noteSubmitting}
               noteActionId={noteActionId}
-              onUpdateNoteStatus={handleUpdateNoteStatus}
               onDeleteNote={handleDeleteNote}
-              onPromoteNote={(noteId) => {
-                const note = notes.find((n) => n.id === noteId);
-                const firstLine = (note?.body ?? '')
-                  .split('\n').map((l) => l.trim()).find(Boolean) ?? '';
-                setPromoteTitle(firstLine.slice(0, 200));
-                setPromoteOwnerId(note?.assignee_id ?? user?.id ?? 'none');
-                setPromoteSeverity('medium');
-                // Need the roster for the owner picker (lazy — only fetched once).
-                if (members.length === 0) {
-                  listProjectMembers().then(setMembers).catch(() => { /* picker degrades */ });
-                }
-                setPromoteNoteId(noteId);
-              }}
               onEditDetails={openNoteDetails}
               currentUserId={user?.id ?? null}
               hostId={hostId}
@@ -2077,8 +1869,6 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
           {hiddenNoteCount > 0 && (
             <Button size="sm" variant="ghost" className="text-caption" onClick={() => setShowAllNotes(true)}>
               Show {hiddenNoteCount} earlier thread{hiddenNoteCount === 1 ? '' : 's'}
-              {/* Hidden open work is never silent. */}
-              {notePreview.hiddenOpen > 0 && ` · ${notePreview.hiddenOpen} not resolved`}
             </Button>
           )}
         </div>
@@ -2343,91 +2133,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </DialogContent>
       </Dialog>
 
-      {/* Promote-to-finding dialog (foundation 6b) — the bridge from a note
-          thread (which stays as the finding's evidence) to a durable,
-          roll-up-able record.  Severity is the one required input. */}
-      <Dialog open={promoteNoteId !== null} onOpenChange={(v) => { if (!v) setPromoteNoteId(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Promote to finding</DialogTitle>
-            <DialogDescription>
-              Creates a finding from this note thread. The thread stays attached as the
-              finding's evidence; the finding rolls up on the Findings page and can span
-              multiple hosts.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="space-y-sm">
-            <div className="space-y-xxs">
-              <Label htmlFor="promote-title">Title</Label>
-              <Input
-                id="promote-title"
-                value={promoteTitle}
-                onChange={(e) => setPromoteTitle(e.target.value)}
-                placeholder="Finding title (defaults to the note's first line)"
-                maxLength={200}
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-sm">
-              <div className="space-y-xxs">
-                <Label htmlFor="promote-severity">Severity</Label>
-                <Select
-                  value={promoteSeverity}
-                  onValueChange={(v) => setPromoteSeverity(v as FindingSeverity)}
-                >
-                  <SelectTrigger id="promote-severity">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {(['critical', 'high', 'medium', 'low', 'info'] as FindingSeverity[]).map((s) => (
-                      <SelectItem key={s} value={s}>{s[0].toUpperCase() + s.slice(1)}</SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-xxs">
-                <Label htmlFor="promote-owner">Owner</Label>
-                <Select
-                  value={promoteOwnerId === 'none' ? 'none' : String(promoteOwnerId)}
-                  onValueChange={(v) => setPromoteOwnerId(v === 'none' ? 'none' : Number(v))}
-                >
-                  <SelectTrigger id="promote-owner">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="none">Unassigned</SelectItem>
-                    {members.map((m) => (
-                      <SelectItem key={m.user_id} value={String(m.user_id)}>
-                        {m.full_name || m.username || `User ${m.user_id}`}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <p className="text-caption text-muted-foreground">
-              The note thread stays attached as the finding's evidence.
-            </p>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPromoteNoteId(null)} disabled={promoting}>
-              Cancel
-            </Button>
-            <Button onClick={handlePromoteNote} disabled={promoting}>
-              {promoting ? 'Promoting…' : 'Promote'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      {/* Note-details editor — the write path for the thread work fields
-          (type/assignee/due/pin) that the My Work queue groups by. */}
+      {/* Note-details editor — a thread's type and pin. */}
       <Dialog open={detailsNote !== null} onOpenChange={(v) => { if (!v) setDetailsNote(null); }}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Note details</DialogTitle>
             <DialogDescription>
-              Set the note's type, owner, and due date so it surfaces in the assignee's
-              My Work queue (handoffs, assigned, and overdue groups).
+              Label what kind of thread this is, and pin it to keep it at the top of the discussion.
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-sm">
@@ -2437,34 +2149,16 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                 <SelectTrigger id="note-type"><SelectValue /></SelectTrigger>
                 <SelectContent>
                   <SelectItem value="none">— none —</SelectItem>
-                  {(['observation', 'finding', 'question', 'decision', 'action', 'handoff'] as const).map((t) => (
+                  {NOTE_TYPES.map((t) => (
                     <SelectItem key={t} value={t} className="capitalize">{t}</SelectItem>
                   ))}
-                </SelectContent>
-              </Select>
-            </div>
-            <div className="space-y-xxs">
-              <Label htmlFor="note-assignee">Assignee</Label>
-              <Select value={detailsAssignee} onValueChange={setDetailsAssignee}>
-                <SelectTrigger id="note-assignee"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">Unassigned</SelectItem>
-                  {members.map((m) => (
-                    <SelectItem key={m.user_id} value={String(m.user_id)}>
-                      {m.full_name || m.username || `User ${m.user_id}`}
+                  {detailsNote?.note_type && !(NOTE_TYPES as readonly string[]).includes(detailsNote.note_type) && (
+                    <SelectItem value={detailsNote.note_type} className="capitalize">
+                      {detailsNote.note_type} (older label)
                     </SelectItem>
-                  ))}
+                  )}
                 </SelectContent>
               </Select>
-            </div>
-            <div className="space-y-xxs">
-              <Label htmlFor="note-due">Due date</Label>
-              <Input
-                id="note-due"
-                type="date"
-                value={detailsDue}
-                onChange={(e) => setDetailsDue(e.target.value)}
-              />
             </div>
             <Button
               type="button"
@@ -2487,273 +2181,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         </DialogContent>
       </Dialog>
 
-      {/* Proposed Tests */}
-      {testPlanError && testPlanEntries.length === 0 && (
-        <Alert variant="warning">
-          <AlertDescription className="flex flex-wrap items-center justify-between gap-sm">
-            <span>Test plan data could not be loaded for this host.</span>
-            <Button size="sm" variant="outline" onClick={() => refetchTestPlanEntries()}>
-              <RefreshCw className="size-4" aria-hidden />
-              Retry
-            </Button>
-          </AlertDescription>
-        </Alert>
-      )}
-      {entriesWithTests.length > 0 && (
-        <InspectorSection
-          id="host-detail-proposed-tests"
-          title="Proposed tests"
-          icon={<ClipboardList className="size-4 shrink-0 text-primary" aria-hidden />}
-          count={totalProposedTests}
-        >
-          <div className="space-y-sm">
-            {entriesWithTests.map((entry) => {
-              const structured = entry.proposed_tests.filter(
-                (t): t is ProposedTestObject =>
-                  typeof t === 'object' && t !== null && 'tool' in t,
-              );
-              const legacy = entry.proposed_tests.filter(
-                (t): t is string => typeof t === 'string',
-              );
-              const isFindingsOpen = !!findingsOpen[entry.id];
-              const isTerminal = entry.status === 'completed' || entry.status === 'rejected';
-              const isSaving = savingEntryId === entry.id;
-              // v5.241.0 — a completed or rejected entry is one line until
-              // asked for: it was dimmed but kept its full height, so finished
-              // work outweighed the work still to do.
-              const entryBodyOpen = !isTerminal || !!openDoneEntries[entry.id] || isFindingsOpen;
-              const testCount = structured.length + legacy.length;
-
-              return (
-                <div
-                  key={entry.id}
-                  className={cn(
-                    'rounded-control border border-border p-sm',
-                    isTerminal && 'opacity-80',
-                  )}
-                >
-                  <div className={cn('flex flex-wrap items-center justify-between gap-xs', entryBodyOpen && 'mb-sm')}>
-                    <div className="flex flex-wrap items-center gap-xs">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/test-plans/${entry.test_plan_id}`)}
-                        className="inline-flex max-w-[18rem] items-center rounded-chip border border-border px-sm py-px text-micro font-semibold uppercase tracking-wider text-foreground hover:bg-accent"
-                      >
-                        <span className="truncate">{entry.plan_title}</span>
-                      </button>
-                      <Badge
-                        variant={
-                          entry.priority === 'critical'
-                            ? 'severity-critical'
-                            : entry.priority === 'high'
-                              ? 'severity-high'
-                              : entry.priority === 'medium'
-                                ? 'severity-medium'
-                                : entry.priority === 'low'
-                                  ? 'severity-low'
-                                  : 'outline'
-                        }
-                      >
-                        {entry.priority}
-                      </Badge>
-                      <Badge variant="outline">{entry.test_phase.replace('_', ' ')}</Badge>
-                      {isTerminal && (
-                        <button
-                          type="button"
-                          onClick={() => setOpenDoneEntries((prev) => ({ ...prev, [entry.id]: !prev[entry.id] }))}
-                          aria-expanded={entryBodyOpen}
-                          className="rounded text-caption text-primary underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                        >
-                          {entryBodyOpen
-                            ? 'hide detail'
-                            : `${testCount} test${testCount === 1 ? '' : 's'}${entry.findings ? ' · summary' : ''} · show`}
-                        </button>
-                      )}
-                    </div>
-
-                    {canManageEntries ? (
-                      <Select
-                        value={
-                          TESTER_STATUSES.some((s) => s.value === entry.status)
-                            ? entry.status
-                            : ''
-                        }
-                        disabled={isSaving}
-                        onValueChange={(value) => handleEntryStatusChange(entry, value)}
-                      >
-                        <SelectTrigger className="w-[12rem]">
-                          <SelectValue
-                            placeholder={`${STATUS_LABEL[entry.status] ?? entry.status} — set status`}
-                          />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {TESTER_STATUSES.map((s) => (
-                            <SelectItem key={s.value} value={s.value}>
-                              {s.label}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge
-                        variant={
-                          entry.status === 'completed'
-                            ? 'success'
-                            : entry.status === 'rejected'
-                              ? 'muted'
-                              : entry.status === 'in_progress'
-                                ? 'warning'
-                                : 'info'
-                        }
-                      >
-                        {STATUS_LABEL[entry.status] ?? entry.status}
-                      </Badge>
-                    )}
-                  </div>
-
-                  {entryBodyOpen && (
-                  <>
-                  <div className="space-y-xs">
-                    {structured.map((test, i) => (
-                      <StructuredTestCard
-                        key={`s-${entry.id}-${i}`}
-                        test={test}
-                        hostIp={host?.ip_address}
-                      />
-                    ))}
-                    {legacy.map((label, i) => (
-                      <Badge key={`l-${entry.id}-${i}`} variant="outline">
-                        {label}
-                      </Badge>
-                    ))}
-                  </div>
-
-                  {/* v4.42.0 — per-test execution results (which tool ran, what
-                      command, the recorded finding/severity/raw output).
-                      Pre-fix the host detail showed only `entry.findings` (the
-                      tester's overall summary) as a lumped paragraph below,
-                      making it impossible to attribute "which tool produced
-                      which finding" or see what actually ran. Mount only when
-                      the entry has been executed so we don't fetch for every
-                      proposed entry. The same panel is used on the test-plan
-                      detail page (PlanTab); proposed_tests is passed in so
-                      each result row shows the originating tool. */}
-                  {(entry.status === 'in_progress' || entry.status === 'completed') && (
-                    <div className="mt-sm">
-                      <EntryResultsPanel
-                        planId={entry.test_plan_id}
-                        entryId={entry.id}
-                        proposedTests={entry.proposed_tests}
-                        showSessionPicker
-                      />
-                    </div>
-                  )}
-
-                  {canManageEntries && (
-                    <div className="mt-sm">
-                      {!isFindingsOpen ? (
-                        <Button size="sm" variant="ghost" onClick={() => toggleFindings(entry)}>
-                          {entry.findings ? 'Edit tester summary' : 'Add tester summary'}
-                        </Button>
-                      ) : (
-                        <div className="space-y-xs">
-                          <Textarea
-                            rows={3}
-                            aria-label={`Tester summary for ${entry.plan_title}`}
-                            placeholder="Overall summary for this entry — per-test details (tool, command, severity, output) are recorded above."
-                            value={findingsDrafts[entry.id] ?? ''}
-                            onChange={(e) =>
-                              setFindingsDrafts((prev) => ({
-                                ...prev,
-                                [entry.id]: e.target.value,
-                              }))
-                            }
-                            disabled={isSaving}
-                          />
-                          <div className="flex gap-xs">
-                            <Button
-                              size="sm"
-                              onClick={() => handleSaveFindings(entry)}
-                              disabled={isSaving}
-                            >
-                              Save summary
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => toggleFindings(entry)}
-                              disabled={isSaving}
-                            >
-                              Cancel
-                            </Button>
-                          </div>
-                        </div>
-                      )}
-                      {!isFindingsOpen && entry.findings && (
-                        <div className="mt-xxs">
-                          <p className="text-caption font-semibold text-muted-foreground">
-                            Tester summary
-                          </p>
-                          <p className="whitespace-pre-wrap text-metadata text-muted-foreground">
-                            {entry.findings}
-                          </p>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  </>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </InspectorSection>
-      )}
-
-      {/* History: workflow lineage (only when an agent workflow touched the
-          host — v5.297.0) and the scans that observed it. */}
-      <HostLineagePanel hostId={host.id} hideWhenEmpty />
-
       {/* Scan discovery timeline — audit evidence, relevant occasionally, so it
           lives at the bottom with a show-all expander (was pinned in the header,
           capped at 3). */}
       <DiscoveryTimelineCard discoveries={discoveryTimeline} />
 
-      {/* Resolution-summary capture (replaces window.prompt) — required to
-          resolve a note thread; the backend 400s without it. */}
-      <Dialog open={resolvePrompt !== null} onOpenChange={(v) => { if (!v) setResolvePrompt(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Resolve thread</DialogTitle>
-            <DialogDescription>
-              A resolution summary is required — record the outcome on the thread's history.
-            </DialogDescription>
-          </DialogHeader>
-          <Textarea
-            rows={3}
-            autoFocus
-            value={resolveText}
-            onChange={(e) => setResolveText(e.target.value)}
-            placeholder="e.g. patched on all affected hosts; retest passed"
-            aria-label="Resolution summary"
-          />
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setResolvePrompt(null)}>Cancel</Button>
-            <Button
-              disabled={!resolveText.trim()}
-              onClick={() => {
-                const noteId = resolvePrompt;
-                const summary = resolveText.trim();
-                setResolvePrompt(null);
-                if (noteId !== null && summary) void doUpdateNoteStatus(noteId, 'resolved', summary);
-              }}
-            >
-              Resolve
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
+    </HostTestsProvider>
   );
 };
 

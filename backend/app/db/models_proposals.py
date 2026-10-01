@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import enum
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.orm import deferred, relationship
 from sqlalchemy.sql import func
 
@@ -34,7 +34,8 @@ class EvidenceOutcome(str, enum.Enum):
 
 
 class EvidenceRecord(Base):
-    """What an agent ran against a host and what came back.  Immutable: no
+    """What an agent — or, since v2.443.0, an analyst recording a test's
+    result — ran against a host and what came back.  Immutable: no
     update or delete path (a project's deletion cascades).  The raw output is
     ``raw_output`` (≤5 MB, deferred — a list never loads it) with a short
     inline preview; it was a file until v2.439.0, which outlived deletion."""
@@ -45,6 +46,9 @@ class EvidenceRecord(Base):
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
     finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="SET NULL"), nullable=True)
+    host_test_id = Column(Integer, ForeignKey("host_tests.id", ondelete="SET NULL"), nullable=True)
+    request_key = Column(String(100), nullable=True)
+    request_hash = Column(String(64), nullable=True)
 
     tool = Column(String(100), nullable=False)
     command = Column(Text, nullable=True)
@@ -64,6 +68,11 @@ class EvidenceRecord(Base):
 
     host = relationship("Host")
     recorded_by = relationship("User", foreign_keys=[recorded_by_user_id])
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "request_key", name="uq_evidence_request"),
+        Index("ix_evidence_host_test_created", "host_test_id", "created_at", "id"),
+    )
 
 
 class ProposalKind(str, enum.Enum):

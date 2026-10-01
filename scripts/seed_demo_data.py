@@ -41,7 +41,7 @@ sys.path.insert(0, "/app")
 from app.db.session import SessionLocal  # noqa: E402
 from app.db import models  # noqa: E402
 # Register every model module so SQLAlchemy can resolve cross-module
-# relationships (Annotation → TestPlan, etc.) before mapper configuration.
+# relationships (Annotation → Finding, etc.) before mapper configuration.
 from app.db import (  # noqa: E402,F401
     models_agent, models_auth, models_confidence, models_findings,
     models_integrations, models_llm, models_project, models_vulnerability,

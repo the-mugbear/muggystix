@@ -1,10 +1,10 @@
-import type { AgentSessionRow, SessionPhase } from '../services/api';
+import type { AgentSessionRow } from '../services/api';
 import { formatTimestamp } from './relativeTime';
 
-/** v5.288.0 — an in-progress run whose session can no longer act: it will not
- *  move on its own.  Workflow state, not evidence age.  Shared by Agent Runs
- *  and Operations (5.304.0), and the backend's Blocked strip uses the same
- *  rule (`agent_session_service.runs_session_live`). */
+/** v5.288.0 — an in-progress legacy row whose session can no longer act: it
+ *  will not move on its own.  Workflow state, not evidence age.  Only
+ *  pre-consolidation assist rows can be in this state now (execution runs
+ *  went in 5.320.0). */
 export const isStalledRun = (row: AgentSessionRow): boolean =>
   row.kind !== 'project'
   && row.session_live === false
@@ -62,13 +62,12 @@ export const endedState = (row: AgentSessionRow): StateLine | null => {
 
 /** v5.219.0 — what the operator pastes to a still-connected agent before
  *  ending from the UI. Mirrors the contract's ending steps so the agent does
- *  the clean exit itself: feedback (if none filed), phases closed, session end. */
+ *  the clean exit itself: feedback (if none filed), then session end. */
 export const WRAP_UP_PROMPT =
   'We are done with this BlueStick session. Wrap up now: (1) if you have filed no '
   + 'feedback in this session yet, call submit_feedback (POST /agent/feedback) with the '
   + 'friction you hit — one line per endpoint or tool where you retried, guessed, or worked '
-  + 'around something; (2) close any execution run you have open — '
-  + 'execution_complete_session; (3) call end_session (POST /agent/session/end) with a '
+  + 'around something; (2) call end_session (POST /agent/session/end) with a '
   + 'one-line note of what this session did. Confirm each step’s response to me.';
 
 /** Where one session lives: the detail page for a consolidated session. */
@@ -78,57 +77,48 @@ export const agentSessionPath = (sessionId: number): string => `/agent-sessions/
 export const SESSIONS_LIST_PATH = '/agent-activity';
 
 /** Where a row of the sessions timeline opens, or null when it has no page:
- *  a project session opens its own page; a pre-consolidation execution or
- *  plan-generation row opens that run or plan.  A legacy assist row has no
- *  page (5.312.0 replaced it with the session page, which only project
- *  sessions have), and recon runs no longer exist (5.313.1).  The one rule
- *  for Agent Sessions, Operations and the agent rail. */
-export const sessionRowPath = (row: AgentSessionRow): string | null => {
-  switch (row.kind) {
-    case 'project':
-      return agentSessionPath(row.id);
-    case 'execution':
-      return `/executions/${row.id}`;
-    case 'plan_generation':
-      return row.test_plan_id != null ? `/test-plans/${row.test_plan_id}` : null;
-    default:
-      return null;
-  }
-};
-
-/** The page for one piece of a session's work. */
-export const phasePath = (phase: SessionPhase): string => {
-  switch (phase.kind) {
-    case 'execution':
-      return `/executions/${phase.id}`;
-    case 'plan':
-    default:
-      return `/test-plans/${phase.id}`;
-  }
-};
-
-export const PHASE_KIND_LABEL: Record<SessionPhase['kind'], string> = {
-  plan: 'Plan',
-  execution: 'Execution',
-};
+ *  a project session opens its own page; a legacy assist row has none
+ *  (5.312.0 replaced it with the session page, which only project sessions
+ *  have).  The one rule for Agent Sessions, Operations and the agent rail. */
+export const sessionRowPath = (row: AgentSessionRow): string | null =>
+  row.kind === 'project' ? agentSessionPath(row.id) : null;
 
 /** 5.313.0 — the one-line tasks the per-object entry points hand to the
- *  operator's agent session (AgentTaskButton). There are no per-workflow keys:
- *  the session's agent opens the plan / execution run itself. 5.313.1 — a
- *  scan is no run: the agent reads the scope and uploads to its session. */
+ *  operator's agent session (AgentTaskButton). There are no per-workflow keys.
+ *  5.313.1 — a scan is no run: the agent reads the scope and uploads to its
+ *  session. 5.320.0 — tests are proposed on hosts; there is no plan. */
 export const agentInstruction = {
   scanScope: (scopeId?: number): string =>
     scopeId != null
       ? `Read scope ${scopeId} in BlueStick, run your scanners on what is in scope, and upload the output to this session.`
       : 'Read this project’s scopes in BlueStick, run your scanners on what is in scope, and upload the output to this session.',
-  workPlan: (planId: number): string => `Work test plan #${planId} in BlueStick.`,
-  draftPlan: (hostIds?: number[], why?: string): string => {
-    const base = hostIds && hostIds.length > 0
-      ? `Draft a test plan in BlueStick for these hosts only (host ids): ${hostIds.join(', ')}.`
-      : 'Draft a test plan in BlueStick for this project.';
-    const reason = why?.trim();
-    return reason ? `${base} Why these hosts: ${reason}` : base;
+  /** Propose tests on a fixed host list (or one host). Proposing only: the
+   *  operator asks for a run separately. */
+  proposeTests: (hostIds: number[], what?: string): string => {
+    const base = hostIds.length > 0
+      ? `Propose tests in BlueStick for these hosts only (host ids): ${hostIds.join(', ')}.`
+      : 'Propose tests in BlueStick for this project’s hosts.';
+    const typed = what?.trim();
+    // The operator's words end as a sentence, so the next one does not run on.
+    const focus = typed && !/[.!?]$/.test(typed) ? `${typed}.` : typed;
+    return `${base}${focus ? ` What to test: ${focus}` : ''} Read what each host exposes and the tests `
+      + 'already on it (host_tests_list) so you do not duplicate them, then use host_tests_propose: one '
+      + 'test per check, each with its exact command and why it is worth running. Do not run anything yet.';
   },
+  /** Propose a test that would confirm ONE scanner observation on a host
+   *  (5.322.0). `vulnerability_id` links the test to the weakness, so its
+   *  result is shown on it and promoting it joins the issue's finding. */
+  proposeTestForObservation: (hostId: number, vulnerabilityId: number, title: string): string =>
+    `Propose a test in BlueStick that would confirm or rule out this scanner observation on host ${hostId}: `
+    + `"${title.replace(/"/g, "'").slice(0, 200)}" (vulnerability_id ${vulnerabilityId}). Read the observation and what the host exposes, `
+    + 'check the tests already on the host (host_tests_list) so you do not duplicate one, then use '
+    + `host_tests_propose with vulnerability_id ${vulnerabilityId}: the exact command, what output would confirm it, `
+    + 'and why. Do not run anything yet.',
+  /** Run the tests already proposed on one host and record what came back. */
+  runHostTests: (hostId: number): string =>
+    `Run the proposed tests on host ${hostId} in BlueStick: read them with host_tests_list, show me each `
+    + 'command before you run it, record what came back with record_evidence (host_test_id), and mark each '
+    + 'test done.',
   /** 5.317.0 — review a finding's write-up and write what is missing, as
    *  proposals (the finding's author accepts or rejects them). */
   reviewFinding: (findingId: number, missing: string[] = []): string => {
@@ -142,10 +132,3 @@ export const agentInstruction = {
       + `alone. Cite evidence you record. Do not change the finding directly.${gaps}`;
   },
 };
-
-/** Statuses that mean a run or plan still has work outstanding — an agent or
- *  a person to finish it. */
-const OPEN_PHASE_STATUSES = new Set(['active', 'paused', 'in_progress', 'draft']);
-
-export const isOpenPhase = (phase: SessionPhase): boolean =>
-  OPEN_PHASE_STATUSES.has(phase.status.toLowerCase());

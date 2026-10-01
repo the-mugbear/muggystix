@@ -38,8 +38,9 @@ sys.path.insert(0, "/app")
 from app.db.session import SessionLocal  # noqa: E402
 from app.db import models  # noqa: E402
 from app.db import model_registry  # noqa: E402,F401  (registers every model module)
-from app.db.models import FollowStatus, NoteStatus, OperationsCursor  # noqa: E402
-from app.db.models_agent import AgentSession, ExecutionSession, TestPlan, TestPlanEntry  # noqa: E402
+from app.db.models import FollowStatus, OperationsCursor  # noqa: E402
+from app.db.models_host_tests import HostTest  # noqa: E402
+from app.db.models_proposals import EvidenceRecord  # noqa: E402
 from app.db.models_auth import User, UserRole  # noqa: E402
 from app.db.models_confidence import ConflictHistory, HostConfidence, NetexecResult  # noqa: E402
 from app.db.models_findings import Finding, FindingHost, FindingHostStatus  # noqa: E402
@@ -138,14 +139,13 @@ def vuln(c: Ctx, h, sc, title: str, severity, *, source=VulnerabilitySource.NESS
     return v
 
 
-def annotation(c: Ctx, h, body: str, *, created: datetime, status=NoteStatus.OPEN, pinned=False,
-               parent=None, note_type="observation", assignee=None, due=None):
+def annotation(c: Ctx, h, body: str, *, created: datetime, pinned=False,
+               parent=None, note_type="observation"):
     # Exactly ONE target per note (ck_annotations_exactly_one_target): the host.
     a = models.Annotation(host_id=h.id, user_id=c.owner.id, body=body,
-                          status=status, pinned=pinned, note_type=note_type,
+                          pinned=pinned, note_type=note_type,
                           parent_id=parent.id if parent else None,
-                          thread_root_id=(parent.thread_root_id or parent.id) if parent else None,
-                          assignee_id=assignee.id if assignee else None, due_at=due)
+                          thread_root_id=(parent.thread_root_id or parent.id) if parent else None)
     a.created_at = created
     c.db.add(a)
     c.db.flush()
@@ -197,13 +197,13 @@ def s01_notes(c: Ctx, sc):
     vuln(c, h, sc, "OpenSSH outdated", VulnerabilitySeverity.MEDIUM, port_obj=p, plugin_id="s01-1")
 
     pinned = annotation(c, h, "PINNED — out-of-hours testing only on this host (change window Tue 22:00).",
-                        created=ago(days=30), pinned=True, note_type="action")
+                        created=ago(days=30), pinned=True, note_type="decision")
     old_active = annotation(c, h, "Old thread: is the 8443 console meant to be reachable from the user VLAN?",
                             created=ago(days=25), note_type="question")
     annotation(c, h, "Reply from TODAY — yes, confirmed with the platform owner.", created=ago(hours=1),
                parent=old_active)
     resolved = annotation(c, h, "Resolved long ago: NTP drift explained the certificate warning.",
-                          created=ago(days=22), status=NoteStatus.RESOLVED)
+                          created=ago(days=22))
     stale_open = annotation(c, h, "Open and never answered: who owns the backup job on this box?",
                             created=ago(days=20), note_type="question")
     agent = annotation(c, h, AGENT_NOTE, created=ago(days=3))
@@ -402,32 +402,8 @@ def s05_blockers(c: Ctx, sc):
     job("s05-clean.xml", "completed", tool_name="nmap", scan_id=sc.id, message="Processed successfully")
     job("s05-already-dismissed.xml", "failed", error_message="old failure", dismissed_at=ago(days=2))
 
-    plans = {}
-    for i, (title, status) in enumerate((("s05 — paused run", "in_progress"),
-                                         ("s05 — run whose agent session ended", "in_progress"),
-                                         ("s05 — healthy run", "in_progress")), start=1):
-        p = TestPlan(project_id=c.project.id, version=i, title=title, status=status,
-                     generated_by_model="eval-seed")
-        c.db.add(p)
-        c.db.flush()
-        plans[title] = p
-    ended = AgentSession(workflow="execution", project_id=c.project.id, status="completed",
-                         started_by_id=c.owner.id)
-    live = AgentSession(workflow="execution", project_id=c.project.id, status="active",
-                        started_by_id=c.owner.id)
-    c.db.add_all([ended, live])
-    c.db.flush()
-    paused = ExecutionSession(test_plan_id=plans["s05 — paused run"].id, status="paused",
-                              started_by_id=c.owner.id, started_at=ago(days=1))
-    orphan = ExecutionSession(test_plan_id=plans["s05 — run whose agent session ended"].id, status="active",
-                              agent_session_id=ended.id, started_by_id=c.owner.id, started_at=ago(hours=9))
-    healthy = ExecutionSession(test_plan_id=plans["s05 — healthy run"].id, status="active",
-                               agent_session_id=live.id, started_by_id=c.owner.id, started_at=ago(hours=1))
-    c.db.add_all([paused, orphan, healthy])
-    c.db.flush()
     c.note("s05", "Operations: the Blocked strip, Ingestion Results",
-           "/operations — 'Blocked': '2 imports failed · 1 finished partial', plus 'Run #… is paused' and "
-           "'Run #… lost its agent session'. The healthy run and the dismissed failure are NOT listed.",
+           "/operations — 'Blocked': '2 imports failed · 1 finished partial'. The dismissed failure is NOT listed.",
            "'Inspect import errors' → /parse-errors?status=needs_attention shows exactly 3 rows; the partial "
            "one carries a 'partial' badge and the parser's warning; 'Dismiss the 3 shown' clears the strip.")
 
@@ -572,25 +548,44 @@ def s11_tests(c: Ctx, sc):
     h = host(c, "s11", "10.77.2.31", "s11-proposed-tests.eval.test", sc, os_name="Ubuntu 22.04", os_family="Linux")
     port(c, h, sc, 22, "ssh")
     port(c, h, sc, 80, "http")
-    # One entry per (plan, host) — uq_plan_host_name — so three entries on one
-    # host are three plans, which is also how it looks in real use.
-    for version, (status, tests, findings) in enumerate((
-        ("completed", [{"tool": "nmap", "description": "SSH version", "command": "nmap -sV -p22 {ip}"},
-                       {"tool": "ssh-audit", "description": "SSH algorithms", "command": "ssh-audit {ip}"}],
-         "Weak KEX algorithms offered; no password auth."),
-        ("rejected", [{"tool": "hydra", "description": "SSH password guessing", "command": "hydra -L users.txt {ip} ssh"}], None),
-        ("proposed", [{"tool": "nikto", "description": "Web server checks", "command": "nikto -h {ip}"}], None),
-    ), start=90):
-        plan = TestPlan(project_id=c.project.id, version=version, title=f"s11 — plan ({status} entry)",
-                        status="in_progress", generated_by_model="eval-seed")
-        c.db.add(plan)
-        c.db.flush()
-        c.db.add(TestPlanEntry(test_plan_id=plan.id, host_id=h.id, priority="high", test_phase="enumeration",
-                               proposed_tests=tests, rationale="eval fixture", status=status, findings=findings))
+    # Four tests on one host, one per state, with the evidence a finished
+    # one carries.
+    tests = {}
+    for key, tool, description, command, status, extra in (
+        ("done", "ssh-audit", "SSH algorithms", "ssh-audit {ip}", "done",
+         {"tester_summary": "Weak KEX algorithms offered; no password auth."}),
+        ("dismissed", "hydra", "SSH password guessing", "hydra -L users.txt {ip} ssh", "dismissed",
+         {"dismissed_reason": "Password guessing is outside the rules of engagement.",
+          "dismissed_by_id": c.owner.id, "dismissed_at": ago(hours=5)}),
+        ("in_progress", "nmap", "SSH version", "nmap -sV -p22 {ip}", "in_progress",
+         {"assigned_to_id": c.owner.id}),
+        ("proposed", "nikto", "Web server checks", "nikto -h {ip}", "proposed", {}),
+    ):
+        t = HostTest(project_id=c.project.id, host_id=h.id, tool=tool, description=description, command=command,
+                     rationale="eval fixture", priority="high", label="s11 — host tests", status=status,
+                     source="person", created_by_user_id=c.owner.id,
+                     request_key=f"eval-s11-{key}", request_hash="0" * 64, **extra)
+        c.db.add(t)
+        tests[key] = t
     c.db.flush()
-    c.note("s11", "Proposed tests: finished entries fold",
-           f"/hosts/{h.id} — the completed entry reads '2 tests · summary · show', the rejected one '1 test · show'; "
-           "the proposed entry is open.")
+    for key, outcome, summary, output in (
+        ("done", "finding", "diffie-hellman-group1-sha1 and other weak KEX algorithms are offered.",
+         "(kex) diffie-hellman-group1-sha1  -- [fail] removed (in server) since OpenSSH 6.7"),
+        ("done", "failed", "First attempt: connection timed out.", None),
+    ):
+        c.db.add(EvidenceRecord(project_id=c.project.id, host_id=h.id, host_test_id=tests[key].id,
+                                tool="ssh-audit", command=f"ssh-audit {h.ip_address}", outcome=outcome,
+                                summary=summary, raw_output=output, raw_output_preview=output,
+                                raw_output_bytes=len(output) if output else None,
+                                observed_ip=h.ip_address, executed_at=ago(hours=3),
+                                recorded_by_user_id=c.owner.id))
+    c.db.flush()
+    c.note("s11", "Tests on a host: open while to do, one line when finished",
+           f"/hosts/{h.id} → Tests: 'To do' lists the in-progress and the proposed test, both open. "
+           "Switch to 'All tests': the done and the dismissed test are one line each; open the done one — "
+           "its summary and 2 evidence records (one finding, one 'could not run'); the dismissed one shows its reason.",
+           "The Hosts list marks this host Tested (the finding counts; the failed attempt alone would not) "
+           "and it matches has:planned (two tests still to do).")
 
 
 def s12_worst_case(c: Ctx, sc):
@@ -656,12 +651,12 @@ def discussion_users(c: Ctx) -> dict[str, tuple[User, str]]:
 
 
 def message(c: Ctx, author: User, body: str, *, created: datetime, parent=None, host=None, finding=None,
-            status=NoteStatus.OPEN, note_type=None):
+            note_type=None):
     """One message in a thread by ANY author — `annotation()` always writes as
     the owner.  Exactly one target: a host or a finding.  A root is its own
     thread root (what the API's create paths store)."""
     a = models.Annotation(host_id=host.id if host else None, finding_id=finding.id if finding else None,
-                          user_id=author.id, body=body, status=status, note_type=note_type,
+                          user_id=author.id, body=body, note_type=note_type,
                           parent_id=parent.id if parent else None)
     a.created_at = created
     c.db.add(a)

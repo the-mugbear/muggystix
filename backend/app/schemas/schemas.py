@@ -1,10 +1,8 @@
 import re
-from typing import Dict, List, Optional, Union
+from typing import Dict, List, Optional
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
-
-_SAFE_URL_RE = re.compile(r"^https?://", re.IGNORECASE)
 
 class ScriptBase(BaseModel):
     script_id: str
@@ -89,12 +87,6 @@ class FollowStatus(str, Enum):
     reviewed = "reviewed"
 
 
-class NoteStatus(str, Enum):
-    open = "open"
-    in_progress = "in_progress"
-    resolved = "resolved"
-
-
 class HostFollowInfo(BaseModel):
     status: FollowStatus
     last_viewed_at: Optional[datetime] = None
@@ -112,7 +104,6 @@ class AnnotationBase(BaseModel):
     # 1 KB; the ceiling exists so a copy-pasted pentest report or a
     # stuck client loop can't insert multi-megabyte rows into the DB.
     body: str = Field(..., max_length=16384)
-    status: NoteStatus = NoteStatus.open
 
 
 class NoteAttachmentOut(BaseModel):
@@ -139,19 +130,16 @@ class Annotation(AnnotationBase):
     author_id: Optional[int] = Field(None, validation_alias="user_id")
     author_name: Optional[str] = None
     parent_id: Optional[int] = None
-    # Thread-level work fields (P3) — populated on the root note.
-    assignee_id: Optional[int] = None
-    assignee_name: Optional[str] = None
-    due_at: Optional[datetime] = None
+    # Thread labels, set on the root note.  A note is discussion: no status,
+    # assignee or due date (v2.446.0).
     note_type: Optional[str] = None
-    resolution_summary: Optional[str] = None
     pinned: bool = False
     # 'user' (a human typed it) or 'agent' (an AI assist session wrote it on
     # the operator's behalf).  ``author_id`` is the operator in both cases, so
     # this is the only thing distinguishing the two in the UI and in reports.
     actor_type: str = "user"
-    # Set when this thread root has been promoted to a finding — drives the
-    # note's "promoted" badge + link and guards a duplicate promote.
+    # Set when this thread root was promoted to a finding (before v2.446.0,
+    # when notes could be) — drives the note's "promoted" badge + link.
     finding_id: Optional[int] = None
     # Image/screenshot attachments on this note (evidence).  Empty for notes
     # without any; the frontend builds each fetch URL from the attachment id.
@@ -180,7 +168,6 @@ class NoteActivityEntry(BaseModel):
     host_id: int
     ip_address: str
     hostname: Optional[str] = None
-    status: NoteStatus
     preview: str
     created_at: datetime
     updated_at: Optional[datetime] = None
@@ -221,32 +208,16 @@ class HostFollowUpdate(BaseModel):
 
 
 class AnnotationCreate(AnnotationBase):
-    status: NoteStatus = NoteStatus.open
     parent_id: Optional[int] = None
 
 
 class AnnotationUpdate(BaseModel):
     body: Optional[str] = Field(None, max_length=16384)
-    status: Optional[NoteStatus] = None
-    # Thread-level work fields (P3). The endpoint uses ``model_fields_set``
-    # to tell "omitted" from an explicit null (which clears the field).
-    assignee_id: Optional[int] = None
-    due_at: Optional[datetime] = None
+    # Thread labels.  The endpoint uses ``model_fields_set`` to tell
+    # "omitted" from an explicit null (which clears ``note_type``).
     note_type: Optional[str] = None
-    resolution_summary: Optional[str] = Field(None, max_length=16384)
     pinned: Optional[bool] = None
 
-
-class AnnotationStatusHistoryEntry(BaseModel):
-    id: int
-    from_status: Optional[str] = None
-    to_status: str
-    changed_by_id: Optional[int] = None
-    changed_by_name: Optional[str] = None
-    summary: Optional[str] = None
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
 
 class HostVulnerabilitySummary(BaseModel):
     total_vulnerabilities: int = 0
@@ -543,13 +514,12 @@ class Host(HostBase):
     follow: Optional[HostFollowInfo] = None
     notes: List[Annotation] = []
     note_count: int = 0
+    # The host's tests still to do (proposed / in progress) — "planned".  The
+    # name is from when these were test-plan entries (until v2.442.0).
     test_plan_entry_count: int = 0
-    # v2.81.0 — count of TestExecutionResult rows recorded against this
-    # host (joined via TestPlanEntry.host_id).  Surfaced on the Hosts
-    # list so a row can render a "tested" left-border accent when an
-    # agentic execution has actually run against the host (distinct
-    # from `test_plan_entry_count`, which only means "host is in a
-    # plan" — i.e. planned, not necessarily executed).
+    # Evidence records on the host whose outcome is finding / no_finding /
+    # inconclusive — "tested".  Surfaced on the Hosts list as the "tested"
+    # left-border accent (distinct from planned, which is not yet run).
     test_execution_count: int = 0
     # v4.9.1 — OTHER users (not the caller) who have this host In Review.
     # Teammates-only by design: the caller's own status is on the Follow
@@ -1203,50 +1173,3 @@ class ParseErrorSummary(BaseModel):
     created_at: datetime
 
     model_config = ConfigDict(from_attributes=True)
-
-
-# ---------------------------------------------------------------------------
-# Proposed Test — shared by agent_api.py and test_plans.py
-# ---------------------------------------------------------------------------
-
-class ProposedTest(BaseModel):
-    """Structured test specification. Agents should use this format."""
-    tool: str
-    description: str
-    command: Optional[str] = None
-    expected_result: Optional[str] = None
-    references: Optional[List[str]] = None
-
-    @field_validator("references", mode="before")
-    @classmethod
-    def _sanitize_references(cls, v: Optional[List[str]]) -> Optional[List[str]]:
-        if v is None:
-            return v
-        safe = []
-        for url in v:
-            if isinstance(url, str) and _SAFE_URL_RE.match(url.strip()):
-                safe.append(url.strip())
-            # Silently drop non-http(s) URLs (javascript:, data:, etc.)
-        return safe if safe else None
-
-
-ProposedTestItem = Union[str, ProposedTest]
-
-
-class StoredProposedTest(ProposedTest):
-    """A proposed test as READ back from storage.
-
-    Writes validate against ``ProposedTest``; a response must not.  Rows
-    written before a field became required, by a seed, or by an import carry
-    whatever shape they were stored in, and one strict row used to 500 the
-    whole plan (agent feedback #23: ``plan_get`` on a plan whose tests had no
-    ``description``).  Every field is optional here and unknown keys pass
-    through.
-    """
-    model_config = ConfigDict(extra="allow")
-
-    tool: Optional[str] = None
-    description: Optional[str] = None
-
-
-StoredProposedTestItem = Union[str, StoredProposedTest]

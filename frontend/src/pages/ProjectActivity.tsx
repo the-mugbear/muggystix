@@ -11,9 +11,7 @@
  * session that does every kind of work, but the page still led with analytics
  * and split the list into two views that disagreed: the Sessions view numbered
  * sessions by their detail row's id and looked up End / Resume by it (so the
- * buttons never showed), and read a resumable session as ended. A session's own
- * execution runs appeared nowhere — the timeline excludes them — so an
- * execution was reachable only from /executions. Now: what is live (with its
+ * buttons never showed), and read a resumable session as ended. Now: what is live (with its
  * work and its controls) first, then the history — one row per session, its work under it, each opening the session
  * page (`/agent-sessions/:id`) — and the analytics last.
  */
@@ -41,7 +39,7 @@ import PostureSection, { SectionCount } from '../components/posture/PostureSecti
 import PostureEmpty from '../components/posture/PostureEmpty';
 import {
   AuthorityBadge,
-  PhaseLinks,
+  SessionWork,
   START_SESSION_PATH,
   SessionActions,
   SessionStateBadge,
@@ -88,10 +86,9 @@ import {
 const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
   { value: '', label: 'All sessions' },
   { value: 'project', label: 'Sessions' },
-  // The three below are rows from before the v2.337.0 consolidation, when
-  // each kind of work had its own key; they keep their own pages.
-  { value: 'plan_generation', label: 'Legacy plan generation' },
-  { value: 'execution', label: 'Legacy execution' },
+  // Rows from before the v2.337.0 consolidation, when each kind of work had
+  // its own key. (Legacy plan-generation and execution rows went with plans
+  // and execution runs in 5.320.0.)
   { value: 'assist', label: 'Legacy assist' },
 ];
 
@@ -135,8 +132,6 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
               <TableHead>Model</TableHead>
               <TableHead>Client</TableHead>
               <TableHead className="w-20 text-right">Sessions</TableHead>
-              <TableHead className="w-20 text-right">Plan-gen</TableHead>
-              <TableHead className="w-20 text-right">Execution</TableHead>
               <TableHead className="w-16 text-right">Assist</TableHead>
               <TableHead className="w-16 text-right">Total</TableHead>
             </TableRow>
@@ -155,8 +150,6 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
                   {r.generated_by_tool || <span className="text-caption text-muted-foreground">—</span>}
                 </TableCell>
                 <TableCell className="text-right tabular-nums">{r.project ?? 0}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.plan_generation}</TableCell>
-                <TableCell className="text-right tabular-nums">{r.execution}</TableCell>
                 <TableCell className="text-right tabular-nums">{r.assist}</TableCell>
                 <TableCell className="text-right font-semibold tabular-nums">{r.total}</TableCell>
               </TableRow>
@@ -199,7 +192,7 @@ const SessionsLead: React.FC<{
   return (
     <PostureLead
       tone={tone}
-      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, same open work, a new key. Ending a session revokes its key, abandons its open executions (their results are kept) and keeps draft plans."
+      restsOn="Live = an agent can use the session's key right now. A session whose key ran out inside its lifetime is resumable by the operator who started it: same session, a new key. Ending a session revokes its key; the tests it proposed and the evidence it recorded stay."
     >
       {parts.join(' ')}
     </PostureLead>
@@ -324,9 +317,7 @@ const ApiCallSection: React.FC<{
   const maxDay = Math.max(1, ...days.map((d) => d.calls));
   const sb = summary.status_breakdown;
   const openSession = (s: { workflow: string; session_id: number }) => {
-    if (s.workflow === 'execution') navigate(`/executions/${s.session_id}`);
-    else if (s.workflow === 'plan') navigate(`/test-plans/${s.session_id}`);
-    else if (s.workflow === 'session') navigate(agentSessionPath(s.session_id));
+    if (s.workflow === 'session') navigate(agentSessionPath(s.session_id));
   };
 
   return (
@@ -516,8 +507,8 @@ const ProjectActivity: React.FC = () => {
         <div className="min-w-0 flex-1">
           <h1 className="text-page-title">Agent Sessions</h1>
           <p className="mt-xxs max-w-4xl text-metadata text-muted-foreground">
-            Every session an operator has handed an agent on this project: what is live, the plans
-            and executions each one opened, and the controls to resume or end it. Open a
+            Every session an operator has handed an agent on this project: what is live, the
+            tests each one proposed and the evidence it recorded, and the controls to resume or end it. Open a
             session for its notes and every call it made.
           </p>
         </div>
@@ -604,7 +595,7 @@ const ProjectActivity: React.FC = () => {
                       <span aria-hidden>·</span>
                       <StateLineText line={keyState(row)} />
                     </p>
-                    <PhaseLinks row={row} />
+                    <SessionWork row={row} />
                   </div>
                   <SessionActions row={row} controls={controls} labelled showOpen />
                 </li>
@@ -702,10 +693,8 @@ const ProjectActivity: React.FC = () => {
                   <NavigableTableCell to={path} ariaLabel={label}>
                     <div className="flex min-w-0 items-center gap-xs">
                       {r.kind !== 'project' && <RunKindBadge kind={r.kind} className="shrink-0" />}
-                      <span className="min-w-0 truncate" title={r.purpose ?? r.target_label ?? undefined}>
-                        {r.kind === 'project'
-                          ? safeFallback(r.purpose, 'No stated purpose')
-                          : safeFallback(r.target_label, r.kind === 'assist' ? 'Project-wide' : '—')}
+                      <span className="min-w-0 truncate" title={r.purpose ?? undefined}>
+                        {r.kind === 'project' ? safeFallback(r.purpose, 'No stated purpose') : 'Project-wide'}
                       </span>
                     </div>
                     {(r.generated_by_model || r.generated_by_tool) && (
@@ -750,7 +739,7 @@ const ProjectActivity: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     {r.kind === 'project' ? (
-                      <PhaseLinks row={r} limit={3} />
+                      <SessionWork row={r} />
                     ) : (
                       <span className="text-caption text-muted-foreground">—</span>
                     )}

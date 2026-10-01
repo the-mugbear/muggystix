@@ -46,7 +46,9 @@ router = APIRouter()
 # v2.303.0 — assist was missing here, so the surface that calls itself the
 # unified agent-session timeline omitted a whole workflow: an operator could
 # have a live assist key and see nothing on Agent Runs.
-SessionKindLiteral = Literal["project", "plan_generation", "execution", "assist"]
+# (The legacy "plan_generation" and "execution" kinds went with their tables
+# in v2.442.0.)
+SessionKindLiteral = Literal["project", "assist"]
 
 
 class AgentSessionRowResponse(BaseModel):
@@ -68,11 +70,6 @@ class AgentSessionRowResponse(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
     prompt_version: Optional[str] = None
-    test_plan_id: Optional[int] = None
-    # v2.306.0 — the session's declared target in words (scope name + CIDRs, or
-    # the plan title). "Scope #3" cannot tell a second analyst that a range is
-    # already being worked, which is the reason a session declares one.
-    target_label: Optional[str] = None
     purpose: Optional[str] = None
     # v2.340.0 — project sessions only.  ``key_expires_at`` is when the live
     # key stops working (None once revoked); ``renewable_until`` is the
@@ -91,37 +88,25 @@ class AgentSessionRowResponse(BaseModel):
     # v2.402.0 — the operator's display name; the page shows it in preference
     # to the username.
     user_full_name: Optional[str] = None
-    # v2.402.0 — run rows only: the agent session the run belongs to and
-    # whether it can still act (active, with a live or renewable key).  False
-    # on an in-progress run means the run outlived its session — nothing will
-    # move it until someone resumes or closes it.  None when not computed.
+    # v2.402.0 — legacy assist rows only: the agent session the row belongs to
+    # and whether it can still act (active, with a live or renewable key).
+    # None when not computed.
     agent_session_id: Optional[int] = None
     session_live: Optional[bool] = None
-    # v2.432.0 — project sessions only: the work the session opened, its detail
-    # row's id (notes, API-call feed), its last authenticated call, and the
-    # authority it acts with.  ``can_end`` / ``can_resume`` are the CALLER's
-    # rights on an active session — owner or project admin may end, only the
-    # owner may resume (the routes below enforce the same rules).
-    phases: List["SessionPhase"] = []
+    # v2.432.0 — project sessions only: its detail row's id (notes, API-call
+    # feed), its last authenticated call, and the authority it acts with.
+    # ``can_end`` / ``can_resume`` are the CALLER's rights on an active session
+    # — owner or project admin may end, only the owner may resume (the routes
+    # below enforce the same rules).
+    # v2.442.0 — the host tests the session proposed and the evidence records
+    # it wrote (they replace ``phases``, the runs a session used to open).
+    host_test_count: int = 0
+    evidence_count: int = 0
     assist_session_id: Optional[int] = None
     last_activity_at: Optional[datetime] = None
     operator_role: Optional[str] = None
     can_end: bool = False
     can_resume: bool = False
-
-
-class SessionPhase(BaseModel):
-    """One piece of work a project session opened (v2.432.0)."""
-    kind: Literal["plan", "execution"]
-    id: int
-    status: str
-    # The plan's title.
-    label: Optional[str] = None
-    test_plan_id: Optional[int] = None
-    started_at: Optional[datetime] = None
-
-
-AgentSessionRowResponse.model_rebuild()
 
 
 class ResumeAgentSessionRequest(BaseModel):
@@ -145,7 +130,6 @@ class ResumeAgentSessionResponse(BaseModel):
     key_ttl_hours: int
     key_expires_at: datetime
     renewable_until: Optional[datetime] = None
-    active_execution_session_ids: List[int] = []
 
 
 class AgentSessionListResponse(BaseModel):
@@ -161,8 +145,6 @@ class ModelToolSummaryRow(BaseModel):
     generated_by_model: Optional[str] = None
     generated_by_tool: Optional[str] = None
     project: int = 0
-    plan_generation: int = 0
-    execution: int = 0
     assist: int = 0
     total: int = 0
 
@@ -183,7 +165,7 @@ def get_agent_sessions(
         None,
         description=(
             "Narrow to one kind: project (every session since v2.337.0), or a "
-            "legacy plan_generation, execution or assist row.  Omit for all."
+            "legacy assist row.  Omit for all."
         ),
     ),
     agent_id: Optional[int] = Query(None, description="Filter by agent."),
@@ -202,12 +184,9 @@ def get_agent_sessions(
     status: Optional[str] = Query(
         None,
         description=(
-            "Filter by native status of each kind.  Recon + execution use "
-            "'active' / 'paused' / 'completed' / 'failed' / 'abandoned'; "
-            "plan_generation uses the collapsed plan status — 'in_progress' / "
-            "'completed' / 'archived'; assist uses 'active' / 'ended' / 'expired'.  Pass "
-            "'active' for the in-flight-runs banner — it is the one value "
-            "every kind shares."
+            "Filter by native status: a project session is 'active' / 'ended'; "
+            "a legacy assist row 'active' / 'ended' / 'expired'.  Pass 'active' "
+            "for the sessions still open."
         ),
     ),
     limit: int = Query(200, ge=1, le=1000),
@@ -216,8 +195,7 @@ def get_agent_sessions(
     project: Project = Depends(get_current_project),
     _user: User = Depends(get_current_user),
 ):
-    """Return every agent session (project sessions, plus legacy plan generation,
-    execution and assist rows)
+    """Return every agent session (project sessions, plus legacy assist rows)
     for this project, ordered newest-started first.
 
     Filterable by kind, agent, model, tool, user, status.  Drives the
@@ -373,12 +351,12 @@ def resume_project_agent_session(
     """Reconnect an operator to a session whose agent process died (v2.340.0).
 
     The common case: an editor's agent session timed out while a scan ran, so
-    the agent never called the phase's ``/complete`` and the session sits
+    the agent never ended the session and it sits
     ``active`` with a perfectly good key that the operator may or may not still
     have configured.  Agent Activity showed such a row with only an End
     button.  This is the other button.
 
-    Same session, same open phases, same audit trail: the key is rotated on
+    Same session, same audit trail: the key is rotated on
     the existing ``AgentSession`` (the prior key is revoked in the same
     statement), and the response carries what the start dialog carried — the
     replacement key, the prompt with the resumed notice, and the MCP client
@@ -393,7 +371,6 @@ def resume_project_agent_session(
     """
     from app.api.v1.endpoints.assist import _build_mcp_clients
     from app.services.agent_prompt_service import build_session_instructions, resolve_base_url
-    from app.services.agent_session_service import session_phase_summary
 
     session = (
         db.query(AgentSession)
@@ -441,7 +418,6 @@ def resume_project_agent_session(
     )
     db.commit()
 
-    phases = session_phase_summary(db, session)
     expires_at = key_expiry_for_agent_sessions(db, [session.id]).get(session.id)
     mcp_url = f"{resolve_base_url(request)}/mcp"
     return ResumeAgentSessionResponse(
@@ -458,7 +434,6 @@ def resume_project_agent_session(
         key_ttl_hours=resolve_ttl_hours(ttl_hours),
         key_expires_at=expires_at,
         renewable_until=session_renewal_deadline(session),
-        active_execution_session_ids=phases["active_execution_session_ids"],
     )
 
 

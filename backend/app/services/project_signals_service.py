@@ -20,12 +20,10 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_agent import (
-    PLANNED_PLAN_STATUSES, AgentSession, TestPlan, TestPlanEntry,
-)
+from app.db.models_agent import AgentSession
 from app.db.models_auth import User
+from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.db.models_project import Project, ProjectMembership
-from app.services.agent_session_metrics import blocked_exec_session_counts
 
 QUIET_AFTER_DAYS = 14
 # v2.399.0 — one status for a project under way ('in_progress' was merged
@@ -41,7 +39,8 @@ class ProjectSignals:
     is_quiet: bool = False
     open_tasks: int = 0
     active_sessions: int = 0
-    blocked_sessions: int = 0
+    # (``blocked_sessions`` — paused or failed execution runs — went with
+    # execution runs in v2.442.0: there is nothing left that can be blocked.)
     member_count: int = 0
     admins: List[str] = field(default_factory=list)
 
@@ -75,28 +74,20 @@ def project_signals(
         out[pid].scan_count = n
         out[pid].last_scan_at = last
 
-    # Open tasks: non-terminal entries on plans that are not archived.
+    # Open tasks: host tests still to do (v2.442.0 — they were non-terminal
+    # entries on unarchived test plans; the same "planned" definition).
     open_tasks = _grouped(
-        db.query(TestPlan.project_id, func.count(TestPlanEntry.id))
-        .join(TestPlanEntry, TestPlanEntry.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlan.project_id.in_(ids),
-            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-            TestPlanEntry.status.in_(("proposed", "in_progress")),
-        )
-        .group_by(TestPlan.project_id)
+        db.query(HostTest.project_id, func.count(HostTest.id))
+        .filter(HostTest.project_id.in_(ids), HostTest.status.in_(ACTIVE_TEST_STATUSES))
+        .group_by(HostTest.project_id)
     )
     # Agent sessions still open (v2.433.1): the session is what an operator
-    # starts, and it does the uploads, plans and runs.  Counting execution
-    # runs missed an agent that was only scanning and uploading.
+    # starts, and it does the uploads, tests and evidence.
     active_agent_sessions = _grouped(
         db.query(AgentSession.project_id, func.count(AgentSession.id))
         .filter(AgentSession.project_id.in_(ids), AgentSession.status == "active")
         .group_by(AgentSession.project_id)
     )
-    # Only the LATEST execution session per plan counts as blocked — shared
-    # with Security Posture (agent_session_metrics).
-    blocked = blocked_exec_session_counts(db, ids)
     members = _grouped(
         db.query(ProjectMembership.project_id, func.count(ProjectMembership.id))
         .filter(ProjectMembership.project_id.in_(ids))
@@ -117,7 +108,6 @@ def project_signals(
         s = out[p.id]
         s.open_tasks = open_tasks.get(p.id, 0)
         s.active_sessions = active_agent_sessions.get(p.id, 0)
-        s.blocked_sessions = blocked.get(p.id, 0)
         s.member_count = members.get(p.id, 0)
         if s.last_scan_at is not None:
             last = s.last_scan_at.replace(tzinfo=None) if s.last_scan_at.tzinfo else s.last_scan_at

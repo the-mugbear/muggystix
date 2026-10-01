@@ -3,15 +3,14 @@ Agent Prompt Service
 
 v2.337.0 — the four per-workflow prompts (plan generation, execution, recon,
 assist) collapse into ONE session prompt.  A single project-scoped session
-lets the agent query the inventory, scan and upload, register a plan and
-execute it, and record what it found; the operational detail for each of
-those is served by the workflow-sliced guide (``/agents-guide?workflow=…``)
-and by the read-back each phase-start endpoint returns, not by four separate
-start prompts.
+lets the agent query the inventory, scan and upload, propose tests on hosts,
+and record what it ran and found; the operational detail for each of those is
+served by the workflow-sliced guide (``/agents-guide?workflow=…``), not by
+four separate start prompts.
 
-``build_session_instructions`` is the session-start block.  The per-phase
-read-backs live in ``agent_policy.render_phase_read_back`` and are emitted by
-the phase-start endpoints.
+``build_session_instructions`` is the session-start block; its read-back
+(``agent_policy.render_read_back``) is the only one since v2.442.0, when
+execution runs — and the read-back their start returned — were removed.
 
 The ``PROMPT_VERSION`` constant MUST be bumped whenever the instruction content
 changes in a way that affects agent behavior — prepend an entry to
@@ -127,7 +126,7 @@ def _feedback_section(base_url: str) -> str:
     """Standard feedback-request block appended to the session prompt.
 
     v2.339.0 — written for the unified session: ``source`` names the kind of
-    work the session did, the phase ids are optional (the session itself is
+    work the session did, there are no phase ids to pass (the session itself is
     attributed from the key), and the MCP tool is named so an MCP-connected
     agent has a way to comply without curl.
     """
@@ -135,17 +134,15 @@ def _feedback_section(base_url: str) -> str:
         f"\n---\n\n"
         f"## Feedback — file it when the friction happens\n\n"
         f"**The trigger is an event, not the end of the session.** The moment you "
-        f"retry a call, guess at a field, work around a tool, or go back to the "
+        f"retry a call, guess at a field or a route (a 404 on a path you expected to exist counts), work around a tool, or go back to the "
         f"guide to make something work, file a short critique right then: over "
         f"MCP **`submit_feedback`**, over curl `POST {base_url}/agent/feedback`. "
         f"One line per item is enough, and several submissions during a session "
         f"are the norm. Most sessions never reach a tidy ending — the terminal "
         f"closes, the operator moves on — so feedback saved for the end is "
         f"feedback that is never filed.\n\n"
-        f"**Checkpoints, if you filed nothing along the way:** "
-        f"`execution-sessions/{{id}}/complete` answers with "
-        f"`feedback_recorded`; when it is `false`, file before you go on. The "
-        f"session end is the last resort, not the plan.\n\n"
+        f"**If you filed nothing along the way,** file before you end the "
+        f"session — the session end is the last resort, not the plan.\n\n"
         f"**Who reads it:** a coding agent working on BlueStick itself, looking for "
         f"things to fix or build. Write for that reader: name the endpoint or tool, "
         f"say what you expected and what actually happened, include the exact error "
@@ -155,14 +152,13 @@ def _feedback_section(base_url: str) -> str:
         f"`assist_count_hosts`\" is.\n\n"
         f"Your session is attributed from your key; `source` says what kind of work "
         f"the feedback is about — `assist` for queries and notes only, "
-        f"`reconnaissance` (scanning and uploading), `plan_generation` (add "
-        f"`test_plan_id`), or `in_session_execution` (add `execution_session_id`). "
+        f"`reconnaissance` (scanning and uploading), or `testing` (proposing "
+        f"tests on hosts and recording evidence). "
         f"A session that did several kinds may submit one per kind.\n\n"
         f"```json\n"
         f"{{\n"
-        f'  "source": "assist | reconnaissance | plan_generation | in_session_execution",\n'
+        f'  "source": "assist | reconnaissance | testing",\n'
         f'  "prompt_version": "{PROMPT_VERSION}",\n'
-        f'  "test_plan_id": null, "execution_session_id": null,\n'
         f'  "overall_rating": 1-5,\n'
         f'  "api_critiques": [\n'
         f'    {{"endpoint": "/agent/... or tool name", "issue": "expected X, got Y — exact error/field", "suggestion": "the change that would have removed this"}}\n'
@@ -316,12 +312,10 @@ def build_session_instructions(
             "the previous key is revoked. A prior agent process worked this "
             "session and may have died mid-command — check the working directory "
             "for output files it left behind and upload any that never landed "
-            "before running anything again. Any execution runs it had open are "
-            "listed under `open_phases` on `GET /agent/identity` — read their "
-            "progress before continuing "
-            "(`/agent/test-plans/{plan_id}/execution-context`) so you continue "
-            "coverage rather than "
-            "repeating it.\n\n"
+            "before running anything again. Read the tests this session proposed "
+            f"(`GET /agent/host-tests?agent_session_id={session_id}`) and the "
+            f"evidence it recorded (`GET /agent/evidence?agent_session_id={session_id}`) so you "
+            "continue coverage rather than repeating it.\n\n"
         )
 
     purpose_line = (
@@ -359,11 +353,11 @@ def build_session_instructions(
         f"The guide holds the field shapes, body formats, upload formats and "
         f"endpoint details — read the part you need when something here leaves "
         f"you guessing, not all of it up front. Fetch the slice for what you are doing "
-        f"(`reconnaissance`, `plan_generation`, `execution`, or `assist` for "
+        f"(`reconnaissance`, `testing`, or `assist` for "
         f"queries and notes); omit `workflow` for the whole thing.\n\n"
         f"**Say which model you are.** Pass `agent_model` (the model you are "
-        f"running as, e.g. `claude-opus-5-5`) when you register a plan, open an "
-        f"execution run, record evidence, propose a change or end the session — "
+        f"running as, e.g. `claude-opus-5-5`) when you propose host tests, "
+        f"record evidence, propose a change or end the session — "
         f"it labels that work, so the "
         f"operator can tell which model produced what. Your client is recorded "
         f"from the MCP handshake; there is nothing else to report.\n\n"
@@ -381,7 +375,8 @@ def build_session_instructions(
         f"and never mark a host `reviewed` on your own initiative.\n"
         f"- **Record what you ran; propose what it means.** `POST /agent/evidence` "
         f"records a command you ran against a host and what came back (tool, "
-        f"command, outcome, summary, raw output) — no plan needed. A change to "
+        f"command, outcome, summary, raw output); pass `host_test_id` when it "
+        f"answers a proposed test. A change to "
         f"what the team has concluded is a PROPOSAL {user_label} or a colleague "
         f"accepts or rejects: report text for a finding "
         f"(`POST /agent/proposals/finding-text`), a new finding "
@@ -391,20 +386,26 @@ def build_session_instructions(
         f"`GET /agent/proposals?mine=true` shows what was decided.\n"
         f"- **Scan and upload.** Run scanners locally from the working directory "
         f"and `POST /agent/uploads` (multipart; poll `GET /agent/uploads/{{id}}`) — "
-        f"no run needs to be open. `GET /agent/scopes` lists the declared scopes; "
+        f"nothing needs to be open first. `GET /agent/scopes` lists the declared scopes; "
         f"`GET /agent/scopes/{{id}}/subnets` and `/domains` are what is in scope, "
         f"and `/live-hosts.txt`, `/web-targets.txt`, `/hosts.ndjson` are target "
         f"files to feed your scanners. Guide § reconnaissance.\n"
-        f"- **Plan and execute tests.** Register a plan (`POST /agent/test-plans` "
-        f"`{{\"title\": ...}}`, then `.../entries`) — the record of what you set "
-        f"out to test — and work it when ready: `POST /agent/execution-sessions/start` "
-        f"`{{\"plan_id\": N}}`, then record each test's command, output and "
-        f"finding. Nothing waits on approval. Guide § plan_generation and § "
-        f"execution.\n\n"
+        f"- **Propose tests on hosts, and run them.** `POST /agent/host-tests` "
+        f"`{{\"tests\": [...]}}` (MCP `host_tests_propose`) puts individual "
+        f"tests on the hosts {user_label} names — each one host, one tool, one "
+        f"command, with its rationale and a `request_key`; they show on each "
+        f"host's page at once and nothing waits on approval. "
+        f"`GET /agent/host-tests` lists what is already proposed (read it "
+        f"first, do not duplicate). When {user_label} asks you to run one: "
+        f"`PATCH /agent/host-tests/{{id}}` to `in_progress`, run it, record "
+        f"the result with `POST /agent/evidence` (`host_test_id`, "
+        f"`request_key`), then mark the test `done`. Which hosts and which "
+        f"tests is {user_label}'s request, not yours to widen. Guide § "
+        f"testing.\n\n"
         f"### Long-running commands — never block a single tool call on one\n"
         f"Your client has its own tool timeout, and a scan that outlives it ends "
-        f"your process while the scan keeps running: the output is orphaned, any "
-        f"open run never gets its `/complete`, and the operator sees a session that "
+        f"your process while the scan keeps running: the output is orphaned "
+        f"and the operator sees a session that "
         f"looks alive but isn't. Run anything that may take more than a minute "
         f"or two in the background from the working directory, capture its PID "
         f"at launch, and poll that PID (guide § Working directory). Upload each "
@@ -415,15 +416,13 @@ def build_session_instructions(
         f"Finishing a task is not that: report what you did and wait for the "
         f"next instruction. A session opened with no task yet is waiting for "
         f"one, not done — after the setup steps, say you are ready and wait. "
-        f"When the operator says they are finished: close every execution run you opened "
-        f"(`POST /agent/execution-sessions/{{id}}/complete`); if you have filed "
+        f"When the operator says they are finished: if you have filed "
         f"no feedback yet in this session, file it now (below); then "
         f"`POST {base_url}/agent/session/end` (MCP `end_session`) "
         f"with a line of `notes`. It revokes your key and marks the session "
         f"ended; nothing you call afterwards will authenticate, so it is the last "
         f"call. A session that is never ended shows as running on the operator's "
-        f"Agent Activity page until it lapses days later. If it refuses with 409 "
-        f"it names the runs still open — complete them and call it again.\n"
+        f"Agent Activity page until it lapses days later.\n"
         f"\n**Session:** #{session_id} · **Project:** {project_name}\n"
     )
 

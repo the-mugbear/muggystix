@@ -12,7 +12,7 @@ from fastapi import HTTPException
 from sqlalchemy import func, case, select, asc, desc
 from sqlalchemy.orm import Session, selectinload
 
-from app.db.models import Annotation, Host, Scope, NoteStatus
+from app.db.models import Annotation, Host
 from app.db.models_auth import User
 from app.db.models_findings import (
     ACTIVE_FINDING_STATUSES, Finding, FindingHost, FindingStatusHistory, FindingStatus, FindingSeverity,
@@ -20,7 +20,7 @@ from app.db.models_findings import (
 )
 from app.db.models_vulnerability import severity_rank
 from app.services.host_query_common import escape_like
-from app.services.report_text import clip as clip_report_text, seed_report_text_from_vuln
+from app.services.report_text import seed_report_text_from_vuln
 from app.services.status_history_service import record_status_transition
 from app.services.vuln_identity import issue_key_for
 
@@ -141,22 +141,6 @@ class FindingService:
         self.db = db
 
     # ------------------------------------------------------------------
-    # Project resolution for an annotation (which can target several things)
-    # ------------------------------------------------------------------
-    def _project_id_for_annotation(self, ann: Annotation) -> Optional[int]:
-        if ann.project_id is not None:
-            return ann.project_id
-        if ann.host_id is not None:
-            host = self.db.get(Host, ann.host_id)
-            return host.project_id if host else None
-        if ann.scope_id is not None:
-            scope = self.db.get(Scope, ann.scope_id)
-            return scope.project_id if scope else None
-        # scan/port/plan-targeted annotations don't carry an obvious project
-        # without another join; callers promote host/scope/project notes.
-        return None
-
-    # ------------------------------------------------------------------
     # Create / promote
     # ------------------------------------------------------------------
     def _attach_hosts(
@@ -214,82 +198,6 @@ class FindingService:
                 finding_id=finding.id, host_id=hid, name_id=name_id,
                 host_status=FindingHostStatus.OPEN.value,
             ))
-
-    def promote_annotation(
-        self,
-        *,
-        annotation: Annotation,
-        severity: str,
-        actor_id: Optional[int],
-        title: Optional[str] = None,
-        status: str = FindingStatus.CONFIRMED.value,
-        owner_id: Optional[int] = None,
-        extra_host_ids: Optional[Sequence[int]] = None,
-    ) -> Finding:
-        """Promote an annotation thread into a Finding.  Classifying a note
-        as a finding is itself a confirmation, so status defaults to
-        ``confirmed``; severity is required (the one real new input)."""
-        validate_severity(severity)
-        _validate_status(status)
-        project_id = self._project_id_for_annotation(annotation)
-        if project_id is None:
-            raise HTTPException(
-                status_code=422,
-                detail="Cannot resolve a project for this annotation; promote a "
-                       "host-, scope-, or project-scoped note.",
-            )
-        # The thread root is the evidence anchor (== self for a root note).
-        evidence_id = annotation.thread_root_id or annotation.id
-
-        # Idempotent: a double-click / retry must not create a second finding
-        # for the same note thread.  "References, never copies" (model
-        # docstring) — one note-sourced finding per evidence thread root.
-        existing = (
-            self.db.query(Finding)
-            .filter(
-                Finding.evidence_annotation_id == evidence_id,
-                Finding.source == FindingSource.NOTE.value,
-            )
-            .first()
-        )
-        if existing is not None:
-            return existing
-
-        derived_title = (title or _first_body_line(annotation.body))[:500]
-        # A promoted finding shouldn't land "unassigned": carry the note
-        # thread's existing work-assignee if it has one, else default to the
-        # promoter — they're the one triaging it.  (Explicit owner_id wins.)
-        effective_owner = owner_id or annotation.assignee_id or actor_id
-        finding = Finding(
-            project_id=project_id,
-            title=derived_title,
-            severity=severity,
-            status=status,
-            source=FindingSource.NOTE.value,
-            owner_id=effective_owner,
-            evidence_annotation_id=evidence_id,
-            created_by_id=actor_id,
-            # v2.379.0 — the note is the analyst's own account of the issue:
-            # it seeds the report description, which they then edit.
-            description=clip_report_text(annotation.body),
-        )
-        self.db.add(finding)
-        self.db.flush()
-
-        host_ids: List[int] = []
-        if annotation.host_id is not None:
-            host_ids.append(annotation.host_id)
-        if extra_host_ids:
-            host_ids.extend(extra_host_ids)
-        self._attach_hosts(finding, host_ids)
-
-        record_status_transition(
-            self.db, history_model=FindingStatusHistory, fk_field="finding_id",
-            entity_id=finding.id, from_status=None, to_status=status,
-            changed_by_id=actor_id, summary="Promoted from note",
-        )
-        self.db.flush()
-        return finding
 
     def promote_vulnerability(
         self,
@@ -680,7 +588,6 @@ class FindingService:
         owner_id: Optional[int] = None,
         host_ids: Optional[Sequence[int]] = None,
         vuln_id: Optional[int] = None,
-        exec_result_id: Optional[int] = None,
         summary: Optional[str] = None,
     ) -> Finding:
         """``summary`` goes on the creation history row (v2.439.1: an
@@ -690,26 +597,15 @@ class FindingService:
         finding = Finding(
             project_id=project_id, title=title[:500], severity=severity,
             status=status, source=source, owner_id=owner_id,
-            vuln_id=vuln_id, exec_result_id=exec_result_id, created_by_id=actor_id,
+            vuln_id=vuln_id, created_by_id=actor_id,
         )
         self.db.add(finding)
         self.db.flush()
-        # v2.323.0 — an execution-sourced finding inherits the plan entry's
-        # named endpoint: the finding anchors to the name, the result row
-        # (observed_ip) is the evidence about the binding.
-        names_by_host = None
-        if exec_result_id is not None:
-            from app.db.models_agent import TestExecutionResult, TestPlanEntry
-            row = (
-                self.db.query(TestPlanEntry.host_id, TestPlanEntry.name_id)
-                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-                .filter(TestExecutionResult.id == exec_result_id)
-                .first()
-            )
-            if row and row[1] is not None:
-                names_by_host = {row[0]: row[1]}
+        # (Until v2.442.0 a finding raised from a plan's execution result
+        # inherited the entry's named endpoint here; evidence records link to
+        # their finding through ``EvidenceRecord.finding_id`` instead.)
         if host_ids:
-            self._attach_hosts(finding, host_ids, names_by_host=names_by_host)
+            self._attach_hosts(finding, host_ids)
         record_status_transition(
             self.db, history_model=FindingStatusHistory, fk_field="finding_id",
             entity_id=finding.id, from_status=None, to_status=status,
@@ -1100,7 +996,7 @@ class FindingService:
         # in host_follow_service.
         note = Annotation(
             finding_id=finding_id, user_id=user_id, body=body,
-            status=NoteStatus.OPEN, parent_id=parent_id,
+            parent_id=parent_id,
         )
         self.db.add(note)
         self.db.flush()  # assign note.id before stamping thread_root_id

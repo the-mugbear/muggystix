@@ -37,7 +37,7 @@ from app.schemas.schemas import (
 from app.schemas.findings import (
     EndpointStatusUpdate,
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
-    PromoteAnnotationRequest, PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
+    PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
     FindingStatusUpdateRequest, FindingHostsRequest, FindingStatusHistoryEntry,
     FindingDiscussionList,
@@ -90,7 +90,7 @@ def _serialize(
         owner_id=finding.owner_id,
         owner_name=(finding.owner.full_name or finding.owner.username) if finding.owner else None,
         evidence_annotation_id=finding.evidence_annotation_id,
-        vuln_id=finding.vuln_id, exec_result_id=finding.exec_result_id,
+        vuln_id=finding.vuln_id,
         host_count=len(hosts), hosts=hosts,
         created_by_id=finding.created_by_id,
         created_by_name=(
@@ -191,40 +191,6 @@ def create_finding(
         project_id=project.id, title=body.title, severity=body.severity,
         status=body.status or FindingStatus.OPEN.value, owner_id=body.owner_id,
         host_ids=body.host_ids, actor_id=current_user.id,
-    )
-    db.commit()
-    return _serialize(_load(db, project, finding.id), viewer)
-
-
-@router.post(
-    "/annotations/{annotation_id}/promote",
-    response_model=FindingResponse, status_code=201,
-)
-def promote_annotation(
-    annotation_id: int,
-    body: PromoteAnnotationRequest,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
-    current_user: User = Depends(get_current_user),
-    viewer: FindingActor = Depends(get_finding_viewer),
-):
-    annotation = db.get(Annotation, annotation_id)
-    if not annotation:
-        raise HTTPException(status_code=404, detail="Annotation not found")
-    svc = FindingService(db)
-    # Guard cross-tenant: a resolvable project that isn't ours → 404.  When
-    # the project can't be resolved (scan/port/plan-targeted note), let the
-    # service raise its clearer 422 ("promote a host-/scope-/project-scoped
-    # note") rather than masking it as a 404 here.
-    resolved = svc._project_id_for_annotation(annotation)
-    if resolved is not None and resolved != project.id:
-        raise HTTPException(status_code=404, detail="Annotation not found in this project")
-    resolve_project_assignee(db, project.id, body.owner_id)
-    finding = svc.promote_annotation(
-        annotation=annotation, severity=body.severity, title=body.title,
-        status=body.status or FindingStatus.CONFIRMED.value, owner_id=body.owner_id,
-        extra_host_ids=body.extra_host_ids, actor_id=current_user.id,
     )
     db.commit()
     return _serialize(_load(db, project, finding.id), viewer)
@@ -350,7 +316,7 @@ def delete_finding(
 ):
     """v2.375.0 — for a finding recorded in error.  Removes the finding, its
     endpoint rows, disposition history and comment thread; the evidence it
-    pointed at survives (the source note can be promoted again, the scanner
+    pointed at survives (the source note stays on its host, the scanner
     rows are untriaged observations again).  To say an issue does not apply,
     set a status instead — that keeps the record.  The deletion itself is
     written to the audit log, since the finding's own history goes with it."""

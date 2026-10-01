@@ -175,7 +175,7 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
           {/* The buttons act on the hosts LISTED; say so when that is not all of them. */}
           {gaps.total > gaps.items.length && (
             <p className="mt-xxs text-caption text-muted-foreground">
-              Showing the first {gaps.items.length} of {gaps.total.toLocaleString()} — Copy and Plan act on these {gaps.items.length}.
+              Showing the first {gaps.items.length} of {gaps.total.toLocaleString()} — Copy and Propose tests act on these {gaps.items.length}.
             </p>
           )}
           <div className="mt-xs flex flex-wrap gap-xs">
@@ -183,12 +183,13 @@ const GapPanel: React.FC<{ selection: Selection; onClose: () => void }> = ({ sel
               Copy IPs
             </Button>
             {/* 5.313.0 — handed to the operator's agent session as a task
-                naming exactly these hosts (was: the generate dialog). */}
+                naming exactly these hosts. 5.320.0 — the agent proposes
+                tests on each host (there is no plan to draft). */}
             <AgentTaskButton
               variant={gaps.action.kind === 'plan' ? 'default' : 'outline'}
-              label="Plan these"
-              title="Hand these hosts to your agent to draft a test plan"
-              instruction={agentInstruction.draftPlan(gaps.items.map((h) => h.host_id), planRationale)}
+              label="Propose tests"
+              title="Hand these hosts to your agent to propose tests on them"
+              instruction={agentInstruction.proposeTests(gaps.items.map((h) => h.host_id), planRationale)}
             />
           </div>
         </>

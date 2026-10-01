@@ -343,12 +343,12 @@ def test_user_with_no_projects_gets_empty_response(client, db_session, activity_
 
 
 # ---------------------------------------------------------------------------
-# v2: execution_session kinds
+# v2: the kinds filter
 # ---------------------------------------------------------------------------
 
 
-def test_kinds_filter_default_is_all_three(client, activity_dataset):
-    """Omitting `kinds` returns scan + execution.  This dataset
+def test_kinds_filter_default_is_every_kind(client, activity_dataset):
+    """Omitting `kinds` returns scan + evidence.  This dataset
     has only scans, so the assertion is "all items are kind=scan" and
     no 400 fires from the kinds parser."""
     resp = client.get(
@@ -362,14 +362,15 @@ def test_kinds_filter_default_is_all_three(client, activity_dataset):
 
 
 def test_kinds_filter_excludes_scan(client, db_session, activity_dataset):
-    """Asking for only execution_session kind on a dataset with no
-    execution runs returns empty (not an error)."""
+    """Asking for only the evidence kind on a dataset with no evidence
+    records returns empty (not an error) — the scans in the window are not
+    listed.  (The kind was ``execution_session`` until v2.442.0.)"""
     resp = client.get(
         "/api/v1/activity/scans-at",
         params={
             "ts": ANCHOR.isoformat(),
             "tolerance_seconds": 30,
-            "kinds": "execution_session",
+            "kinds": "evidence",
         },
     )
     assert resp.status_code == 200

@@ -2,20 +2,23 @@
  * Collaboration → Activity — the project's discussions, latest first: host-note
  * threads AND finding comments in ONE feed (v5.295.0).  Finding comments were
  * a separate block above the notes, with their own time format and count noun;
- * now both are rows of the same shape in the same day groups — subject, status
- * chip + author, the latest message (mentions marked), time of day and a count
+ * now both are rows of the same shape in the same day groups — subject,
+ * author, the latest message (mentions marked), time of day and a count
  * of "messages" (the one noun that is true of a note entry and a comment).
  *
  * The Posture layout (UI_STYLE_GUIDE §7): a one-line header, ONE filter row
- * closed by a rule (the status breakdown is a line of clickable counts under
- * it, not four stat cards), then the threads as ONE ROW each, grouped by day.
- * A row is the host (IP + hostname), the thread's status as its one chip, the
+ * closed by a rule, then the threads as ONE ROW each, grouped by day.
+ * A row is the host (IP + hostname), the
  * latest message once — with its author and time — and the entry count; the
  * whole row opens the thread on the host.  It used to be a card per thread
  * that printed the same note twice ("Latest update: X", then X again as the
  * first entry) under a bright "Open thread" button on every card.
  *
- * Behaviour kept: search (debounced), status and author filters, paging via
+ * A host note is discussion and has no status (5.325.0: the status filter,
+ * its counts and the row's chip went); a finding's discussion shows the
+ * finding's status.
+ *
+ * Behaviour kept: search (debounced), the author filter, paging via
  * Load more, the since-last-visit cursor (markActivitySeen on mount), and the
  * unread notifications panel with the ?mentions=mine deep link.
  */
@@ -34,7 +37,6 @@ import {
   markAllNotificationsRead,
   NotificationItem,
 } from '../services/api';
-import { formatStatusLabel, getNoteStatusChipColor } from '../utils/statusMeta';
 import { AgentAuthorBadge } from '../components/AgentAuthorBadge';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
@@ -56,21 +58,6 @@ import { SeverityBadge } from '../components/ui/SeverityBadge';
 import { MentionText } from '../components/MentionText';
 import { STATUS_LABEL, populationOf, type FindingPopulation } from '../utils/findingStatus';
 
-const STATUS_OPTIONS = [
-  { value: '', label: 'All statuses' },
-  { value: 'open', label: 'Open' },
-  { value: 'in_progress', label: 'In progress' },
-  { value: 'resolved', label: 'Resolved' },
-];
-
-const STATUS_VARIANT: Record<string, 'info' | 'warning' | 'success' | 'muted' | 'default'> = {
-  info: 'info',
-  warning: 'warning',
-  success: 'success',
-  default: 'muted',
-  primary: 'default',
-};
-
 type NoteThreadGroup = {
   key: string;
   hostId: number;
@@ -81,7 +68,6 @@ type NoteThreadGroup = {
   latestNote: NoteActivityItem;
   latestTimestamp: string;
   participantNames: string[];
-  latestStatus: string;
   hostNoteCount: number;
   // The whole thread's size from the server — `notes` holds only the
   // entries on the loaded pages that match the filters.
@@ -154,11 +140,9 @@ const Activity: React.FC = () => {
   const mentionsFilter = searchParams.get('mentions');
   const mentionsPanelRef = useRef<HTMLDivElement | null>(null);
   const [notes, setNotes] = useState<NoteActivityItem[]>([]);
-  const [statusCounts, setStatusCounts] = useState({ open: 0, in_progress: 0, resolved: 0 });
   const [totalNotes, setTotalNotes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [statusFilter, setStatusFilter] = useState('');
   const [authorFilter, setAuthorFilter] = useState<string>('');
   const [authors, setAuthors] = useState<NoteActivityAuthor[]>([]);
   const [search, setSearch] = useState('');
@@ -191,13 +175,11 @@ const Activity: React.FC = () => {
       if (append) setLoadingMore(true); else setLoading(true);
       setFetchError(null);
       const params: Record<string, string | number> = { limit: PAGE_SIZE, skip };
-      if (statusFilter) params.status = statusFilter;
       if (authorFilter) params.author_id = Number(authorFilter);
       if (debouncedSearch) params.search = debouncedSearch;
       const data = await getNoteActivity(params);
       if (!current()) return;
       setNotes((prev) => (append ? [...prev, ...data.notes] : data.notes));
-      setStatusCounts(data.status_counts);
       setTotalNotes(data.total_notes);
       if (data.authors) setAuthors(data.authors);
     } catch (err) {
@@ -208,15 +190,14 @@ const Activity: React.FC = () => {
         if (append) setLoadingMore(false); else setLoading(false);
       }
     }
-  }, [statusFilter, authorFilter, debouncedSearch]);
+  }, [authorFilter, debouncedSearch]);
 
   // A filter change refetches from the first page (append=false replaces).
   useEffect(() => {
     fetchActivity(0);
   }, [fetchActivity]);
 
-  // Finding discussions: the same search and author; they have no note
-  // status, so while one is chosen they are left out (and the page says so).
+  // Finding discussions: the same search and author.
   const [discussions, setDiscussions] = useState<{ items: FindingDiscussion[]; total: number } | null>(null);
   const [discussionError, setDiscussionError] = useState<string | null>(null);
   useEffect(() => {
@@ -329,10 +310,6 @@ const Activity: React.FC = () => {
           latestNote: latest,
           latestTimestamp: getNoteTimestamp(latest),
           participantNames: participants,
-          // Thread status comes from the ROOT note (server-supplied), not the
-          // newest reply — replies post as "open", which would make a resolved
-          // thread look reopened.
-          latestStatus: latest.thread_root_status ?? latest.status,
           hostNoteCount: latest.host_note_count,
           threadNoteCount: Math.max(sorted.length, ...sorted.map((n) => n.thread_note_count ?? 0)),
           imageCount: sorted.reduce((sum, n) => sum + (n.attachments?.length ?? 0), 0),
@@ -341,10 +318,9 @@ const Activity: React.FC = () => {
       .sort((a, b) => new Date(b.latestTimestamp).getTime() - new Date(a.latestTimestamp).getTime());
   }, [notes]);
 
-  // Finding discussions join the feed unless a note status is chosen.
   const discussionItems = useMemo(
-    () => (statusFilter ? [] : (discussions?.items ?? []).filter((d) => d.last_activity_at)),
-    [discussions, statusFilter],
+    () => (discussions?.items ?? []).filter((d) => d.last_activity_at),
+    [discussions],
   );
 
   // ONE feed, latest first.  Notes are loaded a page at a time, so past the
@@ -372,7 +348,7 @@ const Activity: React.FC = () => {
     });
     return { feed: shown, heldBack: held };
   }, [threadGroups, discussionItems, notes, totalNotes]);
-  const discussionsCapped = !statusFilter && !!discussions && discussions.total > discussions.items.length;
+  const discussionsCapped = !!discussions && discussions.total > discussions.items.length;
 
   // Rows grouped by the day they were last active, latest day first.
   const days = useMemo(() => {
@@ -388,7 +364,7 @@ const Activity: React.FC = () => {
 
   const hostCount = useMemo(() => new Set(notes.map((n) => n.host_id)).size, [notes]);
   const findingRowsShown = feed.filter((i) => i.kind === 'finding').length;
-  const filtered = Boolean(statusFilter || authorFilter || debouncedSearch);
+  const filtered = Boolean(authorFilter || debouncedSearch);
 
   // j/k (↓/↑) move a row cursor through the feed (days in order), Enter opens
   // the row — a thread on its host, a discussion on its finding.
@@ -396,7 +372,7 @@ const Activity: React.FC = () => {
   const { cursorRowProps } = useListCursor(
     loading ? 0 : feed.length,
     (i) => navigate(feedHref(feed[i])),
-    { resetKey: `${statusFilter}|${authorFilter}|${debouncedSearch}` },
+    { resetKey: `${authorFilter}|${debouncedSearch}` },
   );
 
   return (
@@ -492,8 +468,7 @@ const Activity: React.FC = () => {
         </section>
       )}
 
-      {/* The shared filter row (v5.294.0); the status breakdown is a line of
-          counts under it that act as the status filter (was four stat cards). */}
+      {/* The shared filter row (v5.294.0). */}
       <div className="border-b border-border pb-sm">
         <ListFilterBar className="mb-0 border-b-0 pb-0">
           <ListFilterSearch
@@ -503,21 +478,6 @@ const Activity: React.FC = () => {
             label="Search discussions"
             className="w-80"
           />
-          <Select
-            value={statusFilter || 'all'}
-            onValueChange={(v) => setStatusFilter(v === 'all' ? '' : v)}
-          >
-            <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-40')} aria-label="Host note status">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {STATUS_OPTIONS.map((opt) => (
-                <SelectItem key={opt.value || 'all'} value={opt.value || 'all'}>
-                  {opt.label}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
           {authors.length > 0 && (
             <Select
               value={authorFilter || 'all'}
@@ -537,42 +497,6 @@ const Activity: React.FC = () => {
             </Select>
           )}
         </ListFilterBar>
-        {/* What these count is said, not implied: host-note threads have a
-            status; a finding comment has none (its finding does). */}
-        <p className="mt-xs flex flex-wrap items-center gap-x-xs text-caption text-muted-foreground" aria-label="Host notes by status">
-          <span>Host notes:</span>
-          {(['open', 'in_progress', 'resolved'] as const).map((s, i) => (
-            <React.Fragment key={s}>
-              {i > 0 && <span aria-hidden>·</span>}
-              <button
-                type="button"
-                onClick={() => setStatusFilter(statusFilter === s ? '' : s)}
-                aria-pressed={statusFilter === s}
-                className={cn(
-                  'rounded tabular-nums hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                  statusFilter === s && 'font-semibold text-foreground underline',
-                )}
-              >
-                {statusCounts[s].toLocaleString()} {s === 'in_progress' ? 'in progress' : s}
-              </button>
-            </React.Fragment>
-          ))}
-          {statusFilter && (discussions?.total ?? 0) > 0 && (
-            <>
-              <span aria-hidden>·</span>
-              <span role="status">
-                finding comments are hidden while a note status is chosen — they have none.{' '}
-                <button
-                  type="button"
-                  onClick={() => setStatusFilter('')}
-                  className="rounded text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                >
-                  Show all
-                </button>
-              </span>
-            </>
-          )}
-        </p>
       </div>
 
       {discussionError && (
@@ -604,12 +528,12 @@ const Activity: React.FC = () => {
             </p>
             <p className="mt-xxs text-metadata text-muted-foreground">
               {filtered
-                ? 'Nothing matches these filters. Try a different status or clear the filters to see everything.'
+                ? 'Nothing matches these filters. Clear them to see everything.'
                 : 'Notes added to hosts and comments on findings appear here, with your team’s replies.'}
             </p>
             <div className="mt-sm">
               {filtered ? (
-                <Button size="sm" variant="outline" onClick={() => { setStatusFilter(''); setAuthorFilter(''); setSearch(''); }}>
+                <Button size="sm" variant="outline" onClick={() => { setAuthorFilter(''); setSearch(''); }}>
                   Clear filters
                 </Button>
               ) : (
@@ -716,7 +640,7 @@ const DiscussionRow: React.FC<{ discussion: FindingDiscussion }> = ({ discussion
   );
 };
 
-/** One thread, one row: host, status, the latest message once, the count —
+/** One thread, one row: host, the latest message once, the count —
  *  and the whole row opens the thread on the host. */
 const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
   const latest = thread.latestNote;
@@ -739,9 +663,6 @@ const ThreadRow: React.FC<{ thread: NoteThreadGroup }> = ({ thread }) => {
       </span>
       <span className="min-w-0">
         <span className="flex min-w-0 flex-wrap items-center gap-xs">
-          <Badge variant={STATUS_VARIANT[getNoteStatusChipColor(thread.latestStatus)] || 'muted'}>
-            {formatStatusLabel(thread.latestStatus)}
-          </Badge>
           <span className="text-caption font-medium text-foreground">{latest.author_name || 'Unknown analyst'}</span>
           <AgentAuthorBadge actorType={latest.actor_type} />
           {others.length > 0 && (

@@ -106,10 +106,6 @@ class Settings:
     AGENT_SESSION_MAX_LIFETIME_HOURS: int = int(
         os.getenv("AGENT_SESSION_MAX_LIFETIME_HOURS", "168")
     )
-    # Max bytes of raw command output stored per test execution result.
-    # Default 100KB.  Configurable because some tools (Nessus, nmap scripts)
-    # produce verbose output that operators may want to retain in full.
-    TEST_OUTPUT_MAX_BYTES: int = int(os.getenv("TEST_OUTPUT_MAX_BYTES", str(100 * 1024)))
     # Max hosts a single in-memory report (PDF/HTML/JSON, agent/markdown zips)
     # may materialize — protects worker memory.  Raised from the old hard-coded
     # 10k now that the cap is surfaced (truncation banner/flag/header) instead

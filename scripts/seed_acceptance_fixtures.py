@@ -203,9 +203,7 @@ def main() -> None:
         analyst("POST", f"/hosts/{host.id}/notes", json={
             "body": f"{MARK} Thanks — I'll write it up.", "parent_id": reply["id"]})
         analyst("PATCH", f"/hosts/{host.id}/notes/{root['id']}", json={
-            "assignee_id": users["acc-analyst"].id, "note_type": "action",
-            "due_at": (datetime.now(timezone.utc) + timedelta(days=2)).isoformat(),
-            "status": "in_progress"})
+            "note_type": "handoff", "pinned": True})
         lead("POST", f"/hosts/{host.id}/notes/{reply['id']}/attachments",
              files={"file": ("null-session.png", io.BytesIO(_png()), "image/png")})
         print(f"host note thread on {host.ip_address} (root note {root['id']})")

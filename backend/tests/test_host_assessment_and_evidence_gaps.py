@@ -10,9 +10,7 @@
 from datetime import datetime, timedelta, timezone
 
 from app.db import models
-from app.db.models_agent import (
-    TestExecutionResult, TestExecutionStatus, TestPlan, TestPlanEntry, ExecutionSession,
-)
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 from app.services.evidence_service import evidence_gap_hosts
 from app.services.host_assessment_service import host_assessment
@@ -51,7 +49,7 @@ def test_assessment_says_not_assessed_and_counts_ports_missed_by_the_latest_swee
     assert a["open_ports_not_in_latest_scan"] == 1
 
 
-def test_assessment_dates_each_domain_from_its_own_evidence(db_session, test_project, test_user, test_agent):
+def test_assessment_dates_each_domain_from_its_own_evidence(db_session, test_project):
     now = datetime.now(timezone.utc)
     h = _host(db_session, test_project.id, "10.8.0.2", now, ports=[(22, now)])
     scan = models.Scan(project_id=test_project.id, filename="v.nessus", tool_name="nessus")
@@ -62,20 +60,17 @@ def test_assessment_dates_each_domain_from_its_own_evidence(db_session, test_pro
     v.last_seen = now - timedelta(days=5)
     db_session.add(v)
     h.smb_signing = "disabled"
-    plan = TestPlan(project_id=test_project.id, title="p", agent_id=test_agent.id, created_by_user_id=test_user.id)
-    db_session.add(plan)
-    db_session.flush()
-    entry = TestPlanEntry(test_plan_id=plan.id, host_id=h.id, priority="high", test_phase="enumeration",
-                          proposed_tests=[], rationale="r")
-    db_session.add(entry)
-    db_session.flush()
-    session = ExecutionSession(test_plan_id=plan.id, agent_id=test_agent.id)
-    db_session.add(session)
-    db_session.flush()
-    res = TestExecutionResult(execution_session_id=session.id, entry_id=entry.id, test_index=0,
-                              status=TestExecutionStatus.EXECUTED.value)
-    res.executed_at = now - timedelta(days=90)
-    db_session.add(res)
+    # "Tested" is dated by when the command RAN, not when it was recorded —
+    # and only a record that tested something counts: a failed attempt and an
+    # informational record (both newer) do not.
+    def evidence(outcome, ran_days_ago):
+        db_session.add(EvidenceRecord(
+            project_id=test_project.id, host_id=h.id, tool="nmap", outcome=outcome, summary="s",
+            executed_at=now - timedelta(days=ran_days_ago),
+        ))
+    evidence("no_finding", 90)
+    evidence("failed", 2)
+    evidence("info", 1)
     db_session.commit()
     db_session.refresh(h)
 

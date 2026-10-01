@@ -31,7 +31,8 @@ describe('locationAfterProjectSwitch', () => {
 
   it('sends resource pages to /operations', () => {
     expect(locationAfterProjectSwitch('/hosts/12', '')).toBe('/operations');
-    expect(locationAfterProjectSwitch('/test-plans/compare', '?a=1&b=2')).toBe('/operations');
+    expect(locationAfterProjectSwitch('/agent-sessions/72', '')).toBe('/operations');
+    expect(locationAfterProjectSwitch('/findings/37', '?tab=notes')).toBe('/operations');
   });
 
   it('keeps the view of pages that span projects', () => {
@@ -55,7 +56,9 @@ describe('every route with a resource id redirects after a project switch', () =
   it('finds the routes to check', () => {
     // A parsing change that silently matched nothing would make this suite
     // pass while checking nothing.
-    expect(routes.length).toBeGreaterThanOrEqual(8);
+    // (Six since 5.320.0, when the test-plan and execution routes went.)
+    expect(routes.length).toBeGreaterThanOrEqual(6);
+    expect(routes).toContain('/agent-sessions/:sessionId');
     expect(routes).toContain('/findings/:findingId');
   });
 

@@ -54,15 +54,16 @@ describe('notePreview', () => {
     expect(previewThreads(reversed, {}, { limit: 3 }).visible.map((n) => n.id)).toEqual([5, 4, 3]);
   });
 
-  it('says how much hidden work is still open', () => {
-    const mixed = [note(1), note(2, { status: 'resolved' as never }), note(3), note(4), note(5)];
-    const p = previewThreads(mixed, {}, { limit: 3 });
+  // 5.325.0 — a note has no status, so there is no "N not resolved" count
+  // to report for what is hidden: only how many threads are.
+  it('says how many threads are hidden, and nothing about their state', () => {
+    const p = previewThreads(roots, {}, { limit: 3 });
     expect(p.hidden).toBe(2);
-    expect(p.hiddenOpen).toBe(1);
+    expect(p).not.toHaveProperty('hiddenOpen');
   });
 
   it('shows everything when asked, and nothing to hide under the limit', () => {
     expect(previewThreads(roots, {}, { limit: 3, showAll: true })).toMatchObject({ hidden: 0 });
-    expect(previewThreads(roots.slice(0, 2), {}, { limit: 3 })).toMatchObject({ hidden: 0, hiddenOpen: 0 });
+    expect(previewThreads(roots.slice(0, 2), {}, { limit: 3 })).toMatchObject({ hidden: 0 });
   });
 });

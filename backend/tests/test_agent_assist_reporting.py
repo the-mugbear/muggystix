@@ -19,7 +19,7 @@ import pytest
 
 from app.core.config import settings
 from app.db import models
-from app.db.models import Annotation, NoteAttachment, NoteStatus
+from app.db.models import Annotation, NoteAttachment
 from app.db.models_reports import Report, ReportFile
 from tests.test_agent_role_route_matrix import _key_for, _member
 # The Reports page tests' template folder (autouse) and seeding helpers.
@@ -180,7 +180,7 @@ def test_report_evidence_is_an_attachment_id_and_files_download(client, db_sessi
     monkeypatch.setattr(settings, "REPORT_FILES_DIR", str(tmp_path / "client_reports"))
     host = _host(db_session, test_project, "10.60.0.2")
     f = _finding(db_session, test_project, "Default creds", "high", hosts=[host])
-    note = Annotation(project_id=test_project.id, finding_id=f.id, body="proof", status=NoteStatus.OPEN)
+    note = Annotation(project_id=test_project.id, finding_id=f.id, body="proof")
     db_session.add(note)
     db_session.flush()
     att = NoteAttachment(annotation_id=note.id, project_id=test_project.id, filename="login.png",
@@ -232,7 +232,7 @@ def uploads(tmp_path, monkeypatch):
 
 
 def _attachment(db_session, project, uploads, data, name="shot.png"):
-    note = Annotation(project_id=project.id, body="evidence", status=NoteStatus.OPEN)
+    note = Annotation(project_id=project.id, body="evidence")
     db_session.add(note)
     db_session.flush()
     folder = uploads / "note_attachments" / str(note.id)

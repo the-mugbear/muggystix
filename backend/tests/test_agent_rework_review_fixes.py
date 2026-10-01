@@ -1,34 +1,25 @@
 """Regressions from the review of the agent rework (v2.433.1).
 
-With plan approval gone, ``draft`` is where a finished plan waits for its
-first run, and a run can only be continued by the session that opened it.
-Three rules follow, each pinned here:
+Three of that review's rules were about test plans and execution runs (a draft
+with entries is never "interrupted"; a draft still being written belongs to
+its drafting session; ending a session abandons its open runs).  Plans and runs
+were removed in v2.442.0 and those rules with them.  What is still pinned here:
 
-* a draft WITH entries is never "possibly interrupted" (only an empty one);
-* ending a session abandons its open runs (tested in
-  ``test_unified_session_review_fixes``), and another session may not start
-  a draft that its drafting session is still writing;
-* Portfolio's open-session count is the agent sessions, not execution runs.
+* Portfolio's open-session count is the agent sessions, and its open-task
+  count is the host tests still to do — not every test ever proposed;
+* End / Resume are offered only where the routes would accept them.
 """
+import uuid
 from datetime import datetime, timedelta, timezone
 
-from app.db.models_agent import (
-    AgentSession,
-    ExecutionSession,
-    TestPlan,
-    TestPlanEntry,
-    TestPlanHistory,
-    TestPlanStatus,
-)
+from app.db import models
+from app.db.models_agent import AgentSession
+from app.db.models_host_tests import HostTest
 from app.services.agent_session_service import (
     create_agent_session,
     end_agent_session,
     mint_session_key,
 )
-
-
-def _hdr(key):
-    return {"X-API-Key": key}
 
 
 def _session_with_key(db, project, agent):
@@ -40,128 +31,13 @@ def _session_with_key(db, project, agent):
     return session, key
 
 
-def _plan(db, project, *, drafted_by=None, with_entry=True, created_at=None):
-    from app.db import models
-    plan = TestPlan(
-        project_id=project.id, version=1, title="p", description="d",
-        status=TestPlanStatus.DRAFT.value,
-        agent_session_id=drafted_by.id if drafted_by is not None else None,
-    )
-    if created_at is not None:
-        plan.created_at = created_at
-    db.add(plan)
-    db.flush()
-    if with_entry:
-        host = models.Host(project_id=project.id, ip_address="10.0.0.9", state="up")
-        db.add(host)
-        db.flush()
-        db.add(TestPlanEntry(
-            test_plan_id=plan.id, host_id=host.id, priority="high",
-            test_phase="enumeration", proposed_tests=[{"name": "t0", "command": "true"}],
-            rationale="x",
-        ))
-    db.commit()
-    return plan
-
-
 # ---------------------------------------------------------------------------
-# A draft with entries is a finished plan, not an interrupted drafting
+# Portfolio counts open agent sessions and the tests still to do
 # ---------------------------------------------------------------------------
 
-def test_only_an_empty_draft_can_look_interrupted(db_session, test_project):
-    from app.api.v1.endpoints.test_plans import _plan_is_stale
-
-    an_hour_ago = datetime.now(timezone.utc) - timedelta(hours=1)
-    plan = TestPlan(project_id=test_project.id, version=1, title="p",
-                    status=TestPlanStatus.DRAFT.value, created_at=an_hour_ago)
-    assert _plan_is_stale(plan, None, entry_count=3) is False
-    assert _plan_is_stale(plan, None, entry_count=0) is True
-    plan.status = TestPlanStatus.IN_PROGRESS.value
-    assert _plan_is_stale(plan, None, entry_count=0) is False
-
-
-def test_plan_list_does_not_flag_a_waiting_draft(client, db_session, test_project):
-    _plan(db_session, test_project, created_at=datetime.now(timezone.utc) - timedelta(hours=2))
-    r = client.get(f"/api/v1/projects/{test_project.id}/test-plans/")
-    assert r.status_code == 200, r.text
-    plans = r.json()["plans"] if isinstance(r.json(), dict) else r.json()
-    assert plans and all(p["is_stale"] is False for p in plans)
-
-
-# ---------------------------------------------------------------------------
-# A draft still being written belongs to the session writing it
-# ---------------------------------------------------------------------------
-
-def test_another_session_cannot_start_a_draft_its_drafter_is_still_writing(
-    client, db_session, test_project, test_agent,
-):
-    drafter, drafter_key = _session_with_key(db_session, test_project, test_agent)
-    _other, other_key = _session_with_key(db_session, test_project, test_agent)
-    plan = _plan(db_session, test_project, drafted_by=drafter)
-
-    r = client.post("/api/v1/agent/execution-sessions/start",
-                    headers=_hdr(other_key), json={"plan_id": plan.id})
-    assert r.status_code == 409, r.text
-    assert f"agent session #{drafter.id}" in r.json()["detail"]
-    db_session.expire_all()
-    assert db_session.get(TestPlan, plan.id).status == "draft"
-
-    # The drafter starts it whenever it likes, and the step is in the history.
-    r = client.post("/api/v1/agent/execution-sessions/start",
-                    headers=_hdr(drafter_key), json={"plan_id": plan.id})
-    assert r.status_code == 201, r.text
-    db_session.expire_all()
-    assert db_session.get(TestPlan, plan.id).status == "in_progress"
-    rows = db_session.query(TestPlanHistory).filter(
-        TestPlanHistory.test_plan_id == plan.id,
-        TestPlanHistory.field_changed == "status",
-    ).all()
-    assert [(h.old_value, h.new_value) for h in rows] == [("draft", "in_progress")]
-
-
-def test_a_draft_whose_drafter_has_ended_is_anyones_to_start(
-    client, db_session, test_project, test_agent,
-):
-    drafter, _key = _session_with_key(db_session, test_project, test_agent)
-    _other, other_key = _session_with_key(db_session, test_project, test_agent)
-    plan = _plan(db_session, test_project, drafted_by=drafter)
-    end_agent_session(db_session, drafter, reason="done")
-    db_session.commit()
-
-    r = client.post("/api/v1/agent/execution-sessions/start",
-                    headers=_hdr(other_key), json={"plan_id": plan.id})
-    assert r.status_code == 201, r.text
-
-
-def test_ending_a_session_abandons_a_run_another_session_had_paused(
-    client, db_session, test_project, test_agent,
-):
-    """A's run is paused when B takes the plan over; once A ends, nothing
-    can continue it, so it is abandoned rather than left paused for good."""
-    a, key_a = _session_with_key(db_session, test_project, test_agent)
-    _b, key_b = _session_with_key(db_session, test_project, test_agent)
-    plan = _plan(db_session, test_project)
-    run_a = client.post("/api/v1/agent/execution-sessions/start",
-                        headers=_hdr(key_a), json={"plan_id": plan.id}).json()["session_id"]
-    assert client.post("/api/v1/agent/execution-sessions/start",
-                       headers=_hdr(key_b), json={"plan_id": plan.id}).status_code == 201
-    db_session.expire_all()
-    assert db_session.get(ExecutionSession, run_a).status == "paused"
-
-    end_agent_session(db_session, db_session.get(AgentSession, a.id), reason="done")
-    db_session.commit()
-    assert db_session.get(ExecutionSession, run_a).status == "abandoned"
-
-
-# ---------------------------------------------------------------------------
-# Portfolio counts open agent sessions
-# ---------------------------------------------------------------------------
-
-def test_open_sessions_count_agent_sessions_not_execution_runs(
-    db_session, test_project, test_agent,
-):
-    """An agent that is only scanning and uploading opens no execution run;
-    it still counts as an open session."""
+def test_open_sessions_count_agent_sessions(db_session, test_project, test_agent):
+    """An agent that is only scanning and uploading proposes no test; it
+    still counts as an open session.  An ended one does not."""
     from app.services.project_signals_service import project_signals
 
     _session_with_key(db_session, test_project, test_agent)
@@ -171,6 +47,41 @@ def test_open_sessions_count_agent_sessions_not_execution_runs(
 
     signals = project_signals(db_session, [test_project], datetime.now(timezone.utc))
     assert signals[test_project.id].active_sessions == 1
+
+
+def test_open_tasks_are_the_host_tests_still_to_do(db_session, test_project):
+    """``open_tasks`` is the same "planned" definition the Hosts page uses:
+    proposed or in progress.  A done or dismissed test is not open work, and
+    another project's tests are not this project's."""
+    from app.db.models_project import Project
+    from app.services.project_signals_service import project_signals
+
+    other = Project(name="Other signals project", slug="signals-other")
+    db_session.add(other)
+    db_session.flush()
+
+    def _add(project, ip, status):
+        host = models.Host(project_id=project.id, ip_address=ip, state="up")
+        db_session.add(host)
+        db_session.flush()
+        key = str(uuid.uuid4())
+        db_session.add(HostTest(
+            project_id=project.id, host_id=host.id, tool="nmap", description="d",
+            rationale="r", priority="medium", status=status, source="person",
+            request_key=key, request_hash=key,
+            dismissed_reason="not in this engagement" if status == "dismissed" else None,
+        ))
+
+    for i, status in enumerate(("proposed", "in_progress", "done", "dismissed")):
+        _add(test_project, f"10.48.0.{i + 1}", status)
+    _add(other, "10.48.1.1", "proposed")
+    db_session.commit()
+
+    signals = project_signals(db_session, [test_project, other], datetime.now(timezone.utc))
+    assert signals[test_project.id].open_tasks == 2
+    assert signals[other.id].open_tasks == 1
+    # Nothing can be "blocked" any more: the field went with execution runs.
+    assert not hasattr(signals[test_project.id], "blocked_sessions")
 
 
 # ---------------------------------------------------------------------------
@@ -219,14 +130,3 @@ def test_an_owner_demoted_below_auditor_is_offered_neither(client, db_session, t
 
     row = _session_row(client, test_project, sid)
     assert row["can_end"] is False and row["can_resume"] is False
-
-
-# ---------------------------------------------------------------------------
-# A retired plan status is an error, not an empty list
-# ---------------------------------------------------------------------------
-
-def test_the_plan_list_rejects_a_retired_status(client, test_project):
-    r = client.get(f"/api/v1/projects/{test_project.id}/test-plans/", params={"status": "approved"})
-    assert r.status_code == 422
-    ok = client.get(f"/api/v1/projects/{test_project.id}/test-plans/", params={"status": "draft"})
-    assert ok.status_code == 200

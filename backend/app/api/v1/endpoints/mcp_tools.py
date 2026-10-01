@@ -30,8 +30,8 @@ Each entry:
 a tool from a key that cannot use it stops the model from trying a call whose
 403 it would read as its own bug.  It decides nothing: every dispatch still
 loops back through the real endpoint, where the router-level
-``enforce_agent_operator_access`` and the object-level gates (a run belongs
-to the session that opened it) make the actual decision.  The MCP layer
+``enforce_agent_operator_access`` and the operator's project role make the
+actual decision.  The MCP layer
 makes no security decision anywhere, and this file must not become the place it
 starts.
 
@@ -42,9 +42,10 @@ operator's project role, checked per request.  An agent that wants the answer
 before trying reads ``can_write_project_data`` from ``agent_identity``.
 
 **One session, every tool (v2.337.0).**  The operator starts one agent
-session; the agent opens whatever work it needs within it.  Plans and
-execution runs are optional groupings, not a sequence (v2.433.0); there are
-no recon runs — the agent reads a scope and uploads what its scanners found.
+session and the agent does whatever work is asked within it.  There are no
+plans, execution runs or recon runs (v2.433.0, v2.442.0): the agent reads a
+scope and uploads what its scanners found, proposes tests on hosts, and
+records what it ran as evidence.
 
 What is deliberately NOT a tool
 -------------------------------
@@ -60,24 +61,22 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-# The four kinds of work, used only as catalogue tags on the tool reference page
+# The kinds of work, used only as catalogue tags on the tool reference page
 # (`tool_workflows`) — since v2.337.0 a key belongs to one project session and
 # `tools/list` is not filtered by them.  Kept as plain strings rather than
 # importing the enum: this module is pure data with no DB dependency.
 WORKFLOW_ASSIST = "assist"
-WORKFLOW_PLAN_GENERATION = "plan_generation"
-WORKFLOW_EXECUTION = "execution"
+# Proposing tests on hosts and recording what they produced.  Replaces
+# "plan_generation" and "execution" (v2.442.0).
+WORKFLOW_TESTING = "testing"
 # Reading a scope (its subnets, domains, target lists) and uploading scan
 # output.  Was "recon" until v2.433.1, when recon runs were removed.
 WORKFLOW_SCOPE = "scope"
 
-ALL_WORKFLOWS = frozenset(
-    {WORKFLOW_ASSIST, WORKFLOW_PLAN_GENERATION, WORKFLOW_EXECUTION, WORKFLOW_SCOPE}
-)
+ALL_WORKFLOWS = frozenset({WORKFLOW_ASSIST, WORKFLOW_TESTING, WORKFLOW_SCOPE})
 
 _ASSIST = frozenset({WORKFLOW_ASSIST})
-_PLAN = frozenset({WORKFLOW_PLAN_GENERATION})
-_EXEC = frozenset({WORKFLOW_EXECUTION})
+_TESTING = frozenset({WORKFLOW_TESTING})
 _SCOPE = frozenset({WORKFLOW_SCOPE})
 
 HOST_ID_PROP = {
@@ -101,8 +100,8 @@ SCOPE_ID_PROP = {
 # the probe in v2.434.0.)
 
 # The model the agent says it is running as (v2.434.0).  No protocol carries
-# it, so the writes where it matters ask for it: it labels the plan, the run or
-# the session, and lets output from different models be compared.
+# it, so the writes where it matters ask for it: it labels the tests, the
+# proposal or the session, and lets output from different models be compared.
 AGENT_MODEL_PROP = {
     "agent_model": {
         "type": "string",
@@ -111,73 +110,15 @@ AGENT_MODEL_PROP = {
     }
 }
 
-# Closed vocabularies the endpoints enforce (v2.434.1, acceptance run H2: a
-# tool said "e.g. completed" for an enum that has no ``completed``, and left
-# ``test_phase`` free while the endpoint 422'd on anything off its list).
-# Plain literals because this module has no DB imports;
-# tests/test_mcp_enum_contract.py fails if one drifts from its endpoint.
-TEST_PHASE_FIELD = {
-    "type": "string",
-    "enum": ["reconnaissance", "enumeration", "exploitation", "post_exploitation", "reporting"],
-    "description": "Which phase of the engagement this belongs to.",
-}
-ENTRY_STATUS_FIELD = {
-    "type": "string",
-    "enum": ["proposed", "in_progress", "completed", "rejected"],
-    "description": "proposed (not tested yet), in_progress, completed, or rejected (dropped from the plan).",
-}
-TEST_RESULT_STATUS_FIELD = {
-    "type": "string",
-    "enum": ["pending", "pending_approval", "executed", "skipped", "failed", "not_applicable"],
-    "description": (
-        "executed (it ran — record what it produced), skipped, failed (it could not "
-        "run), not_applicable; pending / pending_approval (you showed the command and "
-        "wait for the operator's go-ahead) are not final and block completing the entry."
-    ),
-}
-SANITY_METHOD_FIELD = {
-    "type": "string",
-    "enum": ["ping", "banner_grab", "reverse_dns", "network_context"],
-    "description": "How you checked the target is the one the plan names.",
-}
-
-# A proposed test, as the plan entries carry it.  Mirrors ProposedTest in
-# app/schemas/schemas.py.
-_PROPOSED_TEST_ITEM = {
-    "type": "object",
-    "properties": {
-        "tool": {
-            "type": "string",
-            "description": (
-                "Tool name as invoked (e.g. nmap, testssl, netexec)."
-            ),
-        },
-        "description": {"type": "string", "description": "What this test establishes."},
-        "command": {
-            "type": "string",
-            "description": (
-                "Exact command to run. Write output into the working directory "
-                "the session runs in."
-            ),
-        },
-        "expected_result": {"type": "string"},
-        "references": {"type": "array", "items": {"type": "string"}},
-    },
-    "required": ["tool", "description"],
-    "additionalProperties": False,
-}
-
-
 TOOLS: Dict[str, Dict[str, Any]] = {
     # -----------------------------------------------------------------------
     # Every workflow
     # -----------------------------------------------------------------------
     "agent_identity": {
         "description": (
-            "What your API key is: its unified project session, open phases, bound "
-            "project, write capabilities, the operator you act for, and when the key "
-            "expires. Call this first to see which plans and execution runs your "
-            "session already has open; one key can open and use every kind of work."
+            "What your API key is: its project session, bound project, write "
+            "capabilities, the operator you act for, and when the key expires. "
+            "Call this first; one key does every kind of work."
         ),
         "method": "GET",
         "path": "/api/v1/agent/identity",
@@ -204,9 +145,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "says they are finished (finishing a task is not that: report and wait); "
             "file any feedback you have not filed yet first; the key dies with this call. It "
             "revokes your key and marks the session ended so the operator's Agent "
-            "Activity page stops showing it as running. Refused (409, naming the ids) "
-            "while an execution run is still open: complete it "
-            "first (execution_complete_session). Optional `notes`: one or two "
+            "Activity page stops showing it as running. Optional `notes`: one or two "
             "lines on what the session did (v2.340.0)."
         ),
         "method": "POST",
@@ -238,14 +177,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agents-guide",
         "query_params": ["workflow"],
         # A project session's identity supplies "project", which deliberately
-        # returns the full guide. A phase slice remains available on direct HTTP.
+        # returns the full guide. A slice remains available on direct HTTP.
         "auto_params": {"workflow": "workflow"},
         "input_schema": {
             "type": "object",
             "properties": {
                 "workflow": {
                     "type": "string",
-                    "enum": ["plan_generation", "execution", "reconnaissance", "assist"],
+                    "enum": ["testing", "reconnaissance", "assist"],
                     "description": "Usually omit — resolved from your API key.",
                 },
             },
@@ -315,22 +254,17 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "submit_feedback": {
         "description": (
             "File feedback about BlueStick AT THE MOMENT you hit friction — when "
-            "you retry a call, guess a field, work around a tool, or re-read the "
+            "you retry a call, guess a field or a route (a 404 on a path you expected), work around a tool, or re-read the "
             "guide to make something work — not from memory at the end. Several "
-            "one-line submissions during a session are the norm. "
-            "execution_complete_session reports `feedback_recorded: false` when "
-            "the session has filed none; end_session does not (it revokes your "
-            "key), so file before you end. It is read by a coding "
+            "one-line submissions during a session are the norm. end_session "
+            "revokes your key, so file before you end. It is read by a coding "
             "agent working on BlueStick itself, so write for that reader: name the "
             "tool or endpoint, expected vs actual, the exact error text or missing "
             "field, and what would have let you finish faster. `source` names the "
-            "kind of work: assist (queries/notes only), reconnaissance, "
-            "plan_generation, or in_session_execution; add the matching "
-            "test_plan_id / execution_session_id when you have one — the session "
-            "itself is attributed from your key. One row is "
-            "about ONE kind of work: source=assist takes no phase ids, so a "
-            "session that also drafted a plan files that part as its own "
-            "plan_generation row with test_plan_id. tool_suggestions "
+            "kind of work: assist (queries/notes only), reconnaissance (scope "
+            "reads and uploads), or testing (proposing host tests and recording "
+            "evidence) — the session itself is attributed from your key. One "
+            "row is about ONE kind of work. tool_suggestions "
             "here are context; suggest_tool files the registry entry."
         ),
         "method": "POST",
@@ -341,8 +275,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         # (v2.343.2).
         "idempotent": False,
         "body_params": [
-            "source", "prompt_version", "test_plan_id",
-            "execution_session_id", "assist_session_id", "overall_rating",
+            "source", "prompt_version", "assist_session_id", "overall_rating",
             "api_critiques", "tool_suggestions", "friction_notes", "agent_metrics",
         ],
         "input_schema": {
@@ -350,12 +283,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "source": {
                     "type": "string",
-                    "enum": ["assist", "reconnaissance", "plan_generation", "in_session_execution"],
+                    "enum": ["assist", "reconnaissance", "testing"],
                     "description": "The kind of work this feedback is about.",
                 },
                 "prompt_version": {"type": "string", "description": "The prompt_version from your instructions block."},
-                "test_plan_id": {"type": "integer", "minimum": 1},
-                "execution_session_id": {"type": "integer", "minimum": 1},
                 "assist_session_id": {
                     "type": "integer", "minimum": 1,
                     "description": "Only with source=assist, on a pre-consolidation assist session; normally omit — the session comes from your key.",
@@ -682,8 +613,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "observation an hour ago — and before answering \"what do we know "
             "about X\", where the answer often lives in a note rather than in "
             "scan data. Notes carry who wrote them and whether an agent did, the "
-            "thread (parent_id / thread_root_id), type, status, assignee, due date, "
-            "the finding a thread was promoted to, and attachments as download "
+            "thread (parent_id / thread_root_id), type, whether it is pinned, the "
+            "finding an older thread was promoted to, and attachments as download "
             "references. Paged, newest first: read `total` and `has_more`, and pass "
             "`offset` to continue — a page is not the whole record."
         ),
@@ -727,25 +658,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
-    },
-    "assist_get_host_testing": {
-        "description": (
-            "What has been PLANNED or RUN against this host by the team: "
-            "plan entries, the tests proposed for each, and the recorded "
-            "results (command, outcome, findings, severity). This is how you "
-            "tell a scanner's claim from something someone tested — say which "
-            "it is when you report a finding. Archived plans and rejected "
-            "entries are left out."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/assist/hosts/{host_id}/testing",
-        "path_params": ["host_id"],
-        "input_schema": {
-            "type": "object",
-            "properties": dict(HOST_ID_PROP),
-            "required": ["host_id"],
-            "additionalProperties": False,
-        },
     },
     "assist_list_segments": {
         "description": (
@@ -813,8 +725,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_get_workbench": {
         "description": (
             "Your operator's Operations 'My work', as they see it: hosts they are "
-            "reviewing (my_queue), plan steps (my_tasks), note threads assigned to "
-            "them, findings they own, team review, follow-ups ('needs another "
+            "reviewing (my_queue), host tests to do (my_tasks), "
+            "findings they own, team review, follow-ups ('needs another "
             "look'), blockers, and since_last_visit — scans, new and changed hosts, "
             "new critical/high scanner observations since they last marked "
             "Operations seen. Answers 'what's mine?' and 'what changed since I was "
@@ -836,7 +748,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_list_worth_a_look": {
         "description": (
             "Operations' 'Worth a look' queue: hosts NOBODY has touched (no review, "
-            "note, plan entry or finding) that carry an observed weakness or a "
+            "note, host test, evidence or finding) that carry an observed weakness or a "
             "relevant change, each with its reasons and next action, in stated "
             "tier order (1 exploitable critical, 2 critical vulnerability, 3 "
             "exploit available, 4 high-value service new/changed, 5 scans "
@@ -972,7 +884,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "severities, this gives you what to cite. Screenshots come back as "
             "references (filename, size, download_path): look at one with "
             "assist_get_image, or save it beside a report from its download_path "
-            "with the session's API key. scanner_evidence and execution_evidence say "
+            "with the session's API key. scanner_evidence and evidence_records say "
             "whether a claim rests on a scanner's output or on a command a "
             "tester actually ran; state which, they are different assertions. "
             "Also: `report_text` (what the client report says — description, "
@@ -1109,22 +1021,22 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "assist_list_recent_notes": {
         "description": (
             "Recent notes across the whole project, newest first — what the "
-            "team has been working on, as opposed to what a scanner found. "
-            "Filter by status (open notes are the outstanding-work list this "
-            "project actually keeps) or by author ('me' or a username). Each "
+            "team has been discussing, as opposed to what a scanner found. "
+            "Filter by author ('me' or a username). Each "
             "note names its `target` ({kind: host/port/finding/scan/scope/"
-            "test_plan/project, id, label}) and carries the same thread, "
-            "assignee and attachment fields as assist_get_host_notes."
+            "project, id, label}) and carries the same thread, "
+            "label and attachment fields as assist_get_host_notes. Notes are "
+            "discussion, not a work list: outstanding work is host tests "
+            "(host_tests_list) and findings."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/notes",
-        "query_params": ["limit", "status", "author"],
+        "query_params": ["limit", "author"],
         "defaults": {"limit": 25},
         "input_schema": {
             "type": "object",
             "properties": {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
-                "status": {"type": "string", "enum": ["open", "in_progress", "resolved"]},
                 "author": {"type": "string", "description": "Username, or 'me'."},
             },
             "additionalProperties": False,
@@ -1211,78 +1123,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "path": "/api/v1/agent/assist/session",
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
-    "start_execution": {
-        "description": (
-            "Open an execution run on a test plan (a draft or one in progress) in your "
-            "session, so you can record results against its entries. Returns the "
-            "plan's hosts and a `read_back` to state before testing."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/execution-sessions/start",
-        # A retry is refused (one active run per plan) or opens a second run
-        # on a later call — either way not a converging write (v2.343.2).
-        "idempotent": False,
-        "body_params": ["plan_id", "agent_model"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "The plan to execute."},
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["plan_id"],
-            "additionalProperties": False,
-        },
-    },
-    "create_test_plan": {
-        "description": (
-            "Register a test plan — the record of what you set out to test and, once "
-            "executed, what you found. Fill it in with plan_add_entries, then "
-            "start_execution when you are ready to work it; nothing waits on approval. "
-            "To plan an EXACT set of hosts, pass host_ids, or q (a host query such as "
-            "'follow:in_review OR assigned:me', resolved to its matching hosts now); "
-            "plan_get_context then offers only those hosts."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans",
-        # A retry creates a second draft plan (v2.343.2).
-        "idempotent": False,
-        "body_params": ["title", "description", "filter_criteria", "host_ids", "q", "agent_model"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "Plan title."},
-                "description": {"type": "string", "description": "Optional summary of scope/method."},
-                "filter_criteria": {
-                    "type": "object",
-                    "description": (
-                        "Optional: the host filters this plan is scoped to — plan_get_context "
-                        "then pre-filters candidate_hosts by them."
-                    ),
-                    "properties": {
-                        "subnets": {"type": "array", "items": {"type": "string"}},
-                        "ports": {"type": "array", "items": {"type": "integer"}},
-                        "services": {"type": "array", "items": {"type": "string"}},
-                        "min_severity": {"type": "string"},
-                        "has_critical_vulns": {"type": "boolean"},
-                        "has_high_vulns": {"type": "boolean"},
-                        "search": {"type": "string"},
-                    },
-                    "additionalProperties": False,
-                },
-                "host_ids": {
-                    "type": "array", "items": {"type": "integer"}, "minItems": 1, "maxItems": 10000,
-                    "description": "Plan exactly these hosts (ids from assist_list_hosts). Not with q.",
-                },
-                "q": {
-                    "type": "string",
-                    "description": "A host query, resolved to its matching hosts when the plan is created. Not with host_ids.",
-                },
-                **AGENT_MODEL_PROP,
-            },
-            "required": ["title"],
-            "additionalProperties": False,
-        },
-    },
     # --- evidence and proposals (v2.436.0) ---
     # What the agent DID is recorded directly; a change to what the team
     # CONCLUDED (report text, a finding, an observation's promotion or
@@ -1291,13 +1131,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Record what you ran against a host and what came back — the tool, the "
             "command verbatim, the outcome, a one-line summary, and the raw output "
-            "(up to 5 MB, kept with the record). No test plan needed. Recorded as it "
+            "(up to 5 MB, kept with the record). Pass `host_test_id` (with a "
+            "`request_key`) when it answers a proposed test. Recorded as it "
             "happened and never changed; cite it from proposals (evidence_ids)."
         ),
         "method": "POST",
         "path": "/api/v1/agent/evidence",
         "body_params": [
-            "host_id", "finding_id", "finding_host_id", "tool", "command", "outcome",
+            "host_id", "finding_id", "finding_host_id", "host_test_id", "request_key",
+            "tool", "command", "outcome",
             "summary", "raw_output", "observed_ip", "executed_at", "agent_model",
         ],
         "additive": True,
@@ -1308,6 +1150,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 **HOST_ID_PROP,
                 "finding_id": {"type": "integer", "minimum": 1, "description": "The finding this bears on, if any."},
                 "finding_host_id": {"type": "integer", "minimum": 1, "description": "The finding endpoint (vhost) it ran against, if any."},
+                "host_test_id": {
+                    "type": "integer", "minimum": 1,
+                    "description": "The host test this answers, if any (from host_tests_list). Needs request_key.",
+                },
+                "request_key": {
+                    "type": "string", "minLength": 1, "maxLength": 100,
+                    "description": "Your own stable key for this record; re-sending it returns the record already stored (a safe retry). Required with host_test_id.",
+                },
                 "tool": {"type": "string", "minLength": 1, "maxLength": 100, "description": "The tool or method (nmap, curl, a script…)."},
                 "command": {"type": "string", "maxLength": 10000, "description": "The command as actually run, verbatim."},
                 "outcome": {
@@ -1335,12 +1185,20 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         ),
         "method": "GET",
         "path": "/api/v1/agent/evidence",
-        "query_params": ["host_id", "finding_id", "limit", "offset"],
+        "query_params": ["host_id", "finding_id", "host_test_id", "agent_session_id", "limit", "offset"],
         "input_schema": {
             "type": "object",
             "properties": {
                 "host_id": {"type": "integer", "minimum": 1},
                 "finding_id": {"type": "integer", "minimum": 1},
+                "host_test_id": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Only the evidence that answers this host test.",
+                },
+                "agent_session_id": {
+                    "type": "integer", "minimum": 1,
+                    "description": "Only what this agent session recorded (yours is on agent_identity).",
+                },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 50},
                 "offset": {"type": "integer", "minimum": 0},
             },
@@ -1491,25 +1349,23 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Add a note to a host. Writes project data, so it succeeds only if the "
             "operator who started your session may write to this project — check "
             "`can_write_project_data` on agent_identity rather than probing. "
-            "Notes are stamped agent-authored and appear in the operator's UI and in "
-            "client-facing reports — record observations tied to host/port/finding "
-            "evidence, mark inferences as inferences."
+            "A note is discussion for the team: context, a question, a handoff. It "
+            "has no status and is not how work is recorded — a check you ran is "
+            "evidence (record_evidence), a check to run is a host test "
+            "(host_tests_propose). Notes are stamped agent-authored and appear in "
+            "the operator's UI and in host report exports; mark inferences as "
+            "inferences."
         ),
         "method": "POST",
         "path": "/api/v1/agent/hosts/{host_id}/notes",
         "path_params": ["host_id"],
-        "body_params": ["body", "status"],
+        "body_params": ["body"],
         "additive": True,
         "input_schema": {
             "type": "object",
             "properties": {
                 **HOST_ID_PROP,
                 "body": {"type": "string", "minLength": 1, "description": "Note text."},
-                "status": {
-                    "type": "string",
-                    "enum": ["open", "in_progress", "resolved"],
-                    "default": "open",
-                },
             },
             "required": ["host_id", "body"],
             "additionalProperties": False,
@@ -1571,441 +1427,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             # constraint is stated in the description and enforced by the
             # endpoint; typed parameters are worth more than a client-side
             # pre-check only some clients perform.
-            "additionalProperties": False,
-        },
-    },
-    # -----------------------------------------------------------------------
-    # Plans — the record of what an agent sets out to test.  Nothing here
-    # executes anything.
-    # -----------------------------------------------------------------------
-    "plan_get_context": {
-        "description": (
-            "Everything you need to draft this plan: candidate hosts with their open "
-            "ports, services and existing findings, a default ranking (advice only — the "
-            "operator's request decides what goes in the plan) and an entry template. Call this first — proposing tests without it means "
-            "proposing against hosts you have not looked at. plan_id is resolved from "
-            "your key. Page with `after_host_id` (the last host id from the previous "
-            "page); use `detail_level=brief` to pick candidates cheaply, then `full` "
-            "for the hosts you will write entries for."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans/{plan_id}/context",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "query_params": ["limit", "after_host_id", "include_zero_port", "detail_level"],
-        "defaults": {"limit": 100},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": "Usually omit — your key is bound to one plan.",
-                },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 2000},
-                "after_host_id": {
-                    "type": "integer",
-                    "minimum": 1,
-                    "description": (
-                        "Cursor: return only hosts with id greater than this. Pass the "
-                        "last host id from the previous page to fetch the next batch."
-                    ),
-                },
-                "include_zero_port": {
-                    "type": "boolean",
-                    "description": "Include hosts with no open ports (excluded by default).",
-                },
-                "detail_level": {
-                    "type": "string",
-                    "enum": ["brief", "full"],
-                    "description": (
-                        "'brief' = summary fields only (no ports array), for candidate "
-                        "selection; 'full' (default) = full port detail per host."
-                    ),
-                },
-            },
-            "additionalProperties": False,
-        },
-    },
-    "plan_list": {
-        "description": (
-            "List the project's test plans, newest first. Every plan in the "
-            "project is listed (any session may fill in or execute one its "
-            "operator may); `mine=true` narrows to the plans this session drafted."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans",
-        "query_params": ["status", "mine"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "status": {"type": "string", "description": "Filter by plan status (e.g. draft)."},
-                "mine": {"type": "boolean", "description": "Only the plans this session drafted."},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "plan_get": {
-        "description": (
-            "The plan with its entries — what you have proposed so far and each "
-            "entry's status. plan_id is resolved from your key."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans/{plan_id}",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-            },
-            "additionalProperties": False,
-        },
-    },
-    # Opening a plan is `create_test_plan` (above, with the other phase
-    # openers); the tools from here on fill it in.
-    "plan_update": {
-        "description": (
-            "Set the plan's title/description and record which model and harness "
-            "drafted it. Describe the scope, prioritisation and methodology — it is "
-            "what a reader of the plan sees first."
-        ),
-        "method": "PATCH",
-        "path": "/api/v1/agent/test-plans/{plan_id}",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": [
-            "title", "description", "generated_by_model", "generated_by_tool",
-            "prompt_version",
-        ],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "title": {"type": "string", "minLength": 1, "maxLength": 200},
-                "description": {
-                    "type": "string",
-                    "description": "Scope, prioritisation and methodology. Required before submit.",
-                },
-                "generated_by_model": {"type": "string", "description": "Model you are running as."},
-                "generated_by_tool": {"type": "string", "description": "Harness you run in."},
-                "prompt_version": {"type": "string"},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "plan_add_entries": {
-        "description": (
-            "Add proposed tests to the plan, one entry per host. Each entry carries a "
-            "rationale a reader of the plan will see — say what the evidence is and what "
-            "the test would establish, not just what you would run. Use the structured "
-            "proposed_tests form (tool + description + command). Batch related hosts in "
-            "one call."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans/{plan_id}/entries",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": ["entries"],
-        "additive": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "entries": {
-                    "type": "array",
-                    "minItems": 1,
-                    "maxItems": 500,
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            **HOST_ID_PROP,
-                            "priority": {
-                                "type": "string",
-                                "enum": ["critical", "high", "medium", "low"],
-                            },
-                            "test_phase": TEST_PHASE_FIELD,
-                            "proposed_tests": {
-                                "type": "array",
-                                "minItems": 1,
-                                "items": _PROPOSED_TEST_ITEM,
-                            },
-                            "rationale": {
-                                "type": "string",
-                                "minLength": 1,
-                                "description": "Why this host and these tests — the reviewer reads this.",
-                            },
-                            "notes": {"type": "string"},
-                            "target_fqdn": {
-                                "type": "string",
-                                "maxLength": 253,
-                                "description": (
-                                    "Optional named endpoint on this host the tests are against (must be one "
-                                    "of the host's `names`). Set it for web tests behind a shared address; "
-                                    "use {fqdn} in commands."
-                                ),
-                            },
-                        },
-                        "required": ["host_id", "priority", "test_phase", "proposed_tests", "rationale"],
-                        "additionalProperties": False,
-                    },
-                },
-            },
-            "required": ["entries"],
-            "additionalProperties": False,
-        },
-    },
-    "plan_update_entry": {
-        "description": (
-            "Revise one entry — usually to act on reviewer feedback before "
-            "resubmitting. Send only the fields you are changing."
-        ),
-        "method": "PATCH",
-        "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}",
-        "path_params": ["plan_id", "entry_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": [
-            "priority", "test_phase", "proposed_tests", "rationale", "status",
-            "findings", "results_data", "notes", "expected_updated_at",
-        ],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "entry_id": {"type": "integer", "minimum": 1},
-                "priority": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
-                "test_phase": TEST_PHASE_FIELD,
-                "proposed_tests": {"type": "array", "items": _PROPOSED_TEST_ITEM},
-                "rationale": {"type": "string"},
-                "status": ENTRY_STATUS_FIELD,
-                "findings": {"type": "string"},
-                "results_data": {
-                    "type": "object",
-                    "description": "Structured results for the entry (free-form object), as the REST body takes it.",
-                },
-                "notes": {"type": "string"},
-                "expected_updated_at": {
-                    "type": "string",
-                    "description": (
-                        "The entry's updated_at as you last read it. Send it to make "
-                        "the write conditional — it fails rather than overwriting a "
-                        "change someone else made in between."
-                    ),
-                },
-            },
-            "required": ["entry_id"],
-            "additionalProperties": False,
-        },
-    },
-    "plan_validate": {
-        "description": (
-            "Check the plan for gaps — no entries, a missing description, a too-short "
-            "rationale — and report its candidate-host coverage. Advice, not a gate."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans/{plan_id}/validate",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-            },
-            "additionalProperties": False,
-        },
-    },
-    # -----------------------------------------------------------------------
-    # Execution — records what the agent ran against a plan's hosts.  The
-    # commands run on the operator's machine, under their client's sandbox;
-    # BlueStick records.
-    # -----------------------------------------------------------------------
-    "execution_get_context": {
-        "description": (
-            "The plan to work through: every entry with its host, proposed tests, "
-            "priority and current status. "
-            "Work entries in the order given. plan_id is resolved from your key."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans/{plan_id}/execution-context",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "execution_record_sanity_check": {
-        "description": (
-            "Record a target check — evidence that you reached the host you meant to "
-            "(resolved IP, banner, source address). Optional; worth recording when the "
-            "target could be ambiguous (a name behind a load balancer, a reassigned "
-            "address). A failed check is worth raising with the operator."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
-        "path_params": ["plan_id", "entry_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": [
-            "method", "target_ip", "port_checked", "expected_value", "actual_value",
-            "source_ip", "dns_result", "passed", "details",
-        ],
-        "additive": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "entry_id": {"type": "integer", "minimum": 1},
-                "method": SANITY_METHOD_FIELD,
-                "target_ip": {"type": "string", "description": "The IP you actually reached."},
-                "port_checked": {"type": "integer", "minimum": 1, "maximum": 65535},
-                "expected_value": {"type": "string"},
-                "actual_value": {"type": "string"},
-                "source_ip": {"type": "string", "description": "The address you tested FROM."},
-                "dns_result": {"type": "string"},
-                "passed": {"type": "boolean", "description": "Did the target match what you expected."},
-                "details": {"type": "string"},
-            },
-            "required": ["entry_id", "method", "target_ip", "passed"],
-            "additionalProperties": False,
-        },
-    },
-    "execution_record_test_result": {
-        "description": (
-            "Record what one proposed test produced: the exact command you ran, its "
-            "output, and whether it is a finding. test_index is the position of the "
-            "test in the entry's proposed_tests. Record results as you go — an entry "
-            "cannot complete with no results recorded."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/test-results",
-        "path_params": ["plan_id", "entry_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": [
-            "test_index", "status", "command_run", "raw_output", "findings_summary",
-            "severity", "is_finding", "observed_ip",
-        ],
-        "additive": True,
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "entry_id": {"type": "integer", "minimum": 1},
-                "test_index": {
-                    "type": "integer",
-                    "minimum": 0,
-                    "description": "Index into the entry's proposed_tests array.",
-                },
-                "status": TEST_RESULT_STATUS_FIELD,
-                "command_run": {
-                    "type": "string",
-                    "description": (
-                        "The command as actually executed, verbatim. This is the audit "
-                        "record — do not paraphrase it or drop the output path."
-                    ),
-                },
-                "raw_output": {"type": "string", "description": "Tool output, trimmed if huge."},
-                "findings_summary": {"type": "string"},
-                "severity": {"type": "string"},
-                "is_finding": {"type": "boolean", "default": False},
-                "observed_ip": {
-                    "type": "string",
-                    "maxLength": 45,
-                    "description": (
-                        "The IP the command actually reached, when the entry targets a name "
-                        "(target_fqdn). A name behind a load balancer may resolve differently at "
-                        "run time; recording it keeps the evidence tied to the real address."
-                    ),
-                },
-            },
-            "required": ["entry_id", "test_index", "status"],
-            "additionalProperties": False,
-        },
-    },
-    "execution_complete_entry": {
-        "description": (
-            "Close out an entry once its tests are recorded. Closing one with proposed "
-            "tests that have no result needs no_tests_run_reason, which is audit-logged."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/complete",
-        "path_params": ["plan_id", "entry_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "body_params": [
-            "findings_summary", "overall_status", "no_tests_run_reason",
-        ],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "entry_id": {"type": "integer", "minimum": 1},
-                "findings_summary": {"type": "string"},
-                "overall_status": {
-                    "type": "string",
-                    "enum": ["completed", "rejected"],
-                    "default": "completed",
-                },
-                "no_tests_run_reason": {
-                    "type": "string",
-                    "maxLength": 500,
-                    "description": "Why the entry is closing with no test results recorded.",
-                },
-            },
-            "required": ["entry_id"],
-            "additionalProperties": False,
-        },
-    },
-    "execution_get_progress": {
-        "description": (
-            "Live progress for this execution session: entries done, in flight and "
-            "remaining. Use it to resume after an interruption instead of re-running "
-            "work that is already recorded."
-        ),
-        "method": "GET",
-        "path": "/api/v1/agent/test-plans/{plan_id}/execution-progress",
-        "path_params": ["plan_id"],
-        "auto_params": {"plan_id": "plan_id"},
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "plan_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-            },
-            "additionalProperties": False,
-        },
-    },
-    "execution_complete_session": {
-        "description": (
-            "Close the execution session with a summary. Use overall_status 'failed' "
-            "when you are stopping because the engagement broke rather than because "
-            "the work finished — that distinction is what a reviewer needs. The "
-            "response carries feedback_recorded: when false, submit_feedback with "
-            "this run's friction before you go on (v2.343.0)."
-        ),
-        "method": "POST",
-        "path": "/api/v1/agent/execution-sessions/{session_id}/complete",
-        "path_params": ["session_id"],
-        # v2.338.0 — filled from the execution-specific identity field, not the
-        # old recon-or-execution ``workflow_session_id`` that handed this route
-        # a recon run's id whenever both phases were open.
-        "auto_params": {"session_id": "execution_session_id"},
-        "body_params": ["notes", "overall_status"],
-        "input_schema": {
-            "type": "object",
-            "properties": {
-                "session_id": {"type": "integer", "minimum": 1, "description": "Usually omit."},
-                "notes": {
-                    "type": "string",
-                    "maxLength": 8192,
-                    "description": "Closing summary: coverage, gaps, environment problems.",
-                },
-                "overall_status": {
-                    "type": "string",
-                    "enum": ["completed", "failed"],
-                    "default": "completed",
-                },
-            },
             "additionalProperties": False,
         },
     },
@@ -2082,19 +1503,123 @@ TOOLS: Dict[str, Dict[str, Any]] = {
 }
 
 
+
+# ---------------------------------------------------------------------------
+# Host tests (v2.442.0) — the tests proposed on each host, shown on the host's
+# page.  They replace test plans: no plan to register, no run to open, no
+# approval.  The write schemas are the endpoints' own Pydantic models, so there
+# is no second contract to drift (pydantic only — still no DB import here).
+# ---------------------------------------------------------------------------
+from app.schemas.host_test_schemas import HostTestBatch, HostTestUpdate  # noqa: E402
+
+_HOST_TEST_ID = {
+    "type": "integer", "minimum": 1,
+    "description": "The host test's id (from host_tests_list or host_tests_propose).",
+}
+_propose_schema = HostTestBatch.model_json_schema()
+_update_schema = HostTestUpdate.model_json_schema()
+_update_body = list(_update_schema["properties"])
+_update_schema["properties"]["test_id"] = _HOST_TEST_ID
+_update_schema.setdefault("required", []).append("test_id")
+
+TOOLS["host_tests_propose"] = {
+    "description": (
+        "Propose tests on hosts — up to 200 in one call, each a single test on "
+        "one host: the tool, what it establishes, the exact command ({ip} / "
+        "{fqdn} placeholders allowed), the rationale and a priority. They "
+        "appear on each host's page at once; there is no approval step and no "
+        "plan to register. `label` groups the tests of one request (e.g. "
+        "'SMB review 2026-10-01'). When a test would confirm or rule out one "
+        "scanner observation, pass that observation's `vulnerability_id` (it "
+        "must be on the same host): the test is shown on that weakness and "
+        "its result settles it. Which hosts and which tests is the "
+        "operator's request, not yours to widen. Every test needs its own "
+        "`request_key`; re-sending the same key with the same content returns "
+        "the existing test (a safe retry), with different content is a 409. "
+        "The whole batch is validated before anything is written."
+    ),
+    "method": "POST",
+    "path": "/api/v1/agent/host-tests",
+    "body_params": list(_propose_schema["properties"]),
+    "input_schema": _propose_schema,
+    "additive": True,
+}
+TOOLS["host_tests_list"] = {
+    "description": (
+        "The project's host tests, each with its status (proposed, in_progress, "
+        "done, dismissed), revision and how many evidence records answer it. "
+        "Filter by host_id, status, label, assignee or the session that "
+        "proposed them; `mine` is tests assigned to your operator; "
+        "`active_only` keeps proposed and in_progress. Read this before "
+        "proposing, so you do not duplicate a test that is already there."
+    ),
+    "method": "GET",
+    "path": "/api/v1/agent/host-tests",
+    "query_params": [
+        "host_id", "status", "label", "assigned_to_id", "agent_session_id",
+        "mine", "q", "active_only", "limit", "offset",
+    ],
+    "input_schema": {
+        "type": "object",
+        "properties": {
+            "host_id": {"type": "integer", "minimum": 1},
+            "status": {"type": "string", "enum": ["proposed", "in_progress", "done", "dismissed"]},
+            "label": {"type": "string", "description": "Exact label."},
+            "assigned_to_id": {"type": "integer", "minimum": 1},
+            "agent_session_id": {"type": "integer", "minimum": 1},
+            "mine": {"type": "boolean"},
+            "q": {
+                "type": "string",
+                "description": "A Hosts query (the same language as assist_list_hosts' q, e.g. has:critical): tests on the hosts it matches.",
+            },
+            "active_only": {"type": "boolean"},
+            "limit": {"type": "integer", "minimum": 1, "maximum": 200},
+            "offset": {"type": "integer", "minimum": 0},
+        },
+        "additionalProperties": False,
+    },
+}
+TOOLS["host_tests_get"] = {
+    "description": "One host test: its command, rationale, status, revision and evidence count.",
+    "method": "GET",
+    "path": "/api/v1/agent/host-tests/{test_id}",
+    "path_params": ["test_id"],
+    "input_schema": {
+        "type": "object",
+        "properties": {"test_id": _HOST_TEST_ID},
+        "required": ["test_id"],
+        "additionalProperties": False,
+    },
+}
+TOOLS["host_tests_update"] = {
+    "description": (
+        "Change a host test's status (in_progress when you start it, done when "
+        "it is finished, dismissed with `dismissed_reason` when it should not "
+        "be run), its assignee or its `tester_summary`. Pass the "
+        "`expected_revision` you read; a 409 means someone changed it since — "
+        "read it again and decide. What the test produced is not written here: "
+        "record it with record_evidence(host_test_id=…), which is what marks "
+        "the host tested."
+    ),
+    "method": "PATCH",
+    "path": "/api/v1/agent/host-tests/{test_id}",
+    "path_params": ["test_id"],
+    "body_params": _update_body,
+    "input_schema": _update_schema,
+}
+
 # v2.337.0 — a single project session sees every tool, so nothing gates
 # ``tools/list`` any more.  What remains is a PRESENTATION grouping for the MCP
 # reference page (which kind of work a tool belongs to), and v2.338.0 derives
 # it from the tool's name in this one function instead of carrying a
 # ``workflows`` field on every entry that a loop then rewrote.  Universal tools
-# (identity, the guide/catalogue readers, the session bookkeeping, the phase
-# openers any session calls) report every kind and the page shows them as
+# (identity, the guide/catalogue readers, the session bookkeeping) report
+# every kind and the page shows them as
 # shared.
 _KIND_BY_PREFIX = (
     ("assist_", _ASSIST),
     ("scope_", _SCOPE),
-    ("plan_", _PLAN),
-    ("execution_", _EXEC),
+    ("host_tests_", _TESTING),
 )
 
 
@@ -2157,8 +1682,7 @@ def annotations(name: str, spec: Dict[str, Any]) -> Dict[str, Any]:
     metadata_write = bool(spec.get("metadata_write"))
     # idempotentHint answers one question: is a RETRY safe?  The inference
     # below ("a non-additive write converges") is right for updates and for
-    # completions, and wrong for anything that CREATES — create_test_plan and
-    # start_execution each mint a new row per call, and feedback
+    # completions, and wrong for anything that CREATES, and feedback
     # is an append even though it is session bookkeeping.  v2.343.2 (external
     # review, finding 8): a spec says so explicitly with ``"idempotent": False``
     # and the builder honours it; destructiveHint is untouched, because that is

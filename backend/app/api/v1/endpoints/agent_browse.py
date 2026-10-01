@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.db.session import get_db
 from app.db import models
-from app.db.models import NoteStatus, FollowStatus
+from app.db.models import FollowStatus
 from app.db.models_agent import (
     ActorType,
     Agent,
@@ -41,7 +41,7 @@ from app.services.host_follow_service import HostFollowService
 from app.services.host_serialization import exploit_count_maps
 from app.services.tool_registry_service import record_suggestion
 from app.services.agent_session_service import (
-    close_agent_session_from_agent, note_agent_model, session_phase_summary,
+    close_agent_session_from_agent, note_agent_model,
 )
 
 from app.api.v1.endpoints.agent_schemas import (
@@ -293,16 +293,12 @@ def get_agent_identity(
     # v2.337.0 — the phases this session has open, so the MCP layer can fill
     # tool arguments (an execution session's plan_id) and
     # the client can see what is in flight without probing surfaces.
-    phases = session_phase_summary(db, session) if session is not None else {}
 
     return AgentIdentity(
         workflow=(session.workflow if session is not None else None),
         session_id=session_id,
         # Each id in its own space; a single active run resolves cleanly,
         # several open return None and the agent names the one it means.
-        plan_id=phases.get("plan_id"),
-        execution_session_id=phases.get("execution_session_id"),
-        open_phases=phases,
         project_id=agent.project_id,
         project_name=(
             db.query(Project.name).filter(Project.id == agent.project_id).scalar()
@@ -435,7 +431,6 @@ def list_hosts(
         ),
     ),
     search: Optional[str] = Query(None, description="Search IP, hostname, or OS"),
-    not_in_plan_id: Optional[int] = Query(None, description="Exclude hosts already in this plan"),
     limit: int = Query(500, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -447,7 +442,7 @@ def list_hosts(
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
         has_exploit_available=has_exploit_available,
-        search=search, not_in_plan_id=not_in_plan_id,
+        search=search,
     )
     hosts = q.order_by(models.Host.ip_address).offset(offset).limit(limit).all()
     return _enrich_host_briefs(db, hosts)
@@ -619,17 +614,11 @@ def create_agent_note(
     if not host:
         raise HTTPException(status_code=404, detail="Host not found")
 
-    try:
-        note_status = NoteStatus(body.status)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid note status: {body.status}")
-
     svc = HostFollowService(db)
     note = svc.create_note(
         host_id,
         agent.owner_id,
         body.body,
-        note_status,
         actor_type=ActorType.AGENT.value,
         agent_session_id=getattr(request.state, "agent_session_id", None),
     )
@@ -638,7 +627,6 @@ def create_agent_note(
         id=note.id,
         host_id=host_id,
         body=note.body,
-        status=note.status,
         author_id=note.user_id,
         parent_id=note.parent_id,
         actor_type=note.actor_type,
@@ -673,7 +661,6 @@ def list_agent_notes(
             id=n.id,
             host_id=host_id,
             body=n.body,
-            status=n.status,
             author_id=n.user_id,
             parent_id=n.parent_id,
             created_at=n.created_at,

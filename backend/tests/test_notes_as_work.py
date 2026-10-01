@@ -1,8 +1,11 @@
-"""Tests for notes-as-work (refactor P3).
+"""Host notes are discussion (v2.446.0).
 
-Covers the permission split (body author-only; thread work-state open to
-any project member), resolve-requires-summary, status history, the
-thread-root semantics, and assignee/pinned/note_type handling.
+The file keeps its name from "notes as work" (P3), whose work fields —
+status, assignee, due date, resolution, status history — were removed from
+the application: work is a host test and its evidence.  What remains and is
+pinned here: the body is its author's, the thread's labels (type, pin) are
+any analyst's and live on the root, a PATCH is all-or-nothing, a root with
+replies is kept, and the role gate.
 
 The ``client`` fixture authenticates as ``test_user`` (id=1, admin).
 Notes authored by a *different* user exercise the non-author path.
@@ -13,7 +16,7 @@ import pytest
 from fastapi import HTTPException
 
 from app.db import models
-from app.db.models import Annotation, NoteStatus
+from app.db.models import Annotation
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.api.deps import require_project_role
 
@@ -47,8 +50,8 @@ def _make_host(db_session, project_id, ip):
     return h
 
 
-def _make_note(db_session, host_id, user_id, status=NoteStatus.OPEN, parent_id=None, body="note"):
-    n = Annotation(host_id=host_id, user_id=user_id, body=body, status=status, parent_id=parent_id)
+def _make_note(db_session, host_id, user_id, parent_id=None, body="note"):
+    n = Annotation(host_id=host_id, user_id=user_id, body=body, parent_id=parent_id)
     db_session.add(n)
     db_session.flush()
     return n
@@ -58,7 +61,7 @@ def _note_url(pid, host_id, note_id, suffix=""):
     return f"/api/v1/projects/{pid}/hosts/{host_id}/notes/{note_id}{suffix}"
 
 
-def test_non_author_can_change_status_but_not_body(client, db_session, test_project):
+def test_non_author_can_label_a_thread_but_not_rewrite_it(client, db_session, test_project):
     other = _make_user(db_session, "note-author")
     host = _make_host(db_session, test_project.id, "10.5.0.1")
     note = _make_note(db_session, host.id, other.id)
@@ -67,129 +70,107 @@ def test_non_author_can_change_status_but_not_body(client, db_session, test_proj
     r_body = client.patch(_note_url(test_project.id, host.id, note.id), json={"body": "hijack"})
     assert r_body.status_code == 403, r_body.text
 
-    # Status change by a project member (non-author) is allowed.
-    r_status = client.patch(
-        _note_url(test_project.id, host.id, note.id), json={"status": "in_progress"},
-    )
-    assert r_status.status_code == 200, r_status.text
-    assert r_status.json()["status"] == "in_progress"
+    # Pinning it, by an analyst who did not write it, is allowed.
+    r_pin = client.patch(_note_url(test_project.id, host.id, note.id), json={"pinned": True})
+    assert r_pin.status_code == 200, r_pin.text
+    assert r_pin.json()["pinned"] is True
 
 
-def test_resolve_requires_summary(client, db_session, test_project, test_user):
+def test_a_note_has_no_work_state(client, db_session, test_project, test_user):
+    """Status, assignee, due date and resolution are gone from the contract:
+    they are not returned, and sending them changes nothing."""
     host = _make_host(db_session, test_project.id, "10.5.1.1")
-    note = _make_note(db_session, host.id, test_user.id)
-
-    bad = client.patch(_note_url(test_project.id, host.id, note.id), json={"status": "resolved"})
-    assert bad.status_code == 400, bad.text
-    assert "summary" in bad.json()["detail"].lower()
-
-    ok = client.patch(
-        _note_url(test_project.id, host.id, note.id),
-        json={"status": "resolved", "resolution_summary": "patched and verified"},
+    created = client.post(
+        f"/api/v1/projects/{test_project.id}/hosts/{host.id}/notes",
+        json={"body": "is the share writable?", "status": "resolved"},
     )
-    assert ok.status_code == 200, ok.text
-    body = ok.json()
-    assert body["status"] == "resolved"
-    assert body["resolution_summary"] == "patched and verified"
+    assert created.status_code in (200, 201), created.text
+    data = created.json()
+    gone = ("status", "assignee_id", "assignee_name", "due_at", "resolution_summary")
+    assert not set(gone) & set(data)
 
-
-def test_status_history_recorded(client, db_session, test_project, test_user):
-    host = _make_host(db_session, test_project.id, "10.5.2.1")
-    note = _make_note(db_session, host.id, test_user.id)
-
-    client.patch(_note_url(test_project.id, host.id, note.id), json={"status": "in_progress"})
-    client.patch(
-        _note_url(test_project.id, host.id, note.id),
-        json={"status": "resolved", "resolution_summary": "fixed"},
+    r = client.patch(
+        _note_url(test_project.id, host.id, data["id"]),
+        json={"status": "resolved", "resolution_summary": "done", "assignee_id": test_user.id,
+              "due_at": "2026-12-01T00:00:00Z"},
     )
+    assert r.status_code == 200, r.text
+    assert not set(gone) & set(r.json())
+    # The columns themselves are gone (migration c2e6a4f8d103).
+    assert not {"status", "assignee_id", "due_at", "resolution_summary"} & set(Annotation.__table__.columns.keys())
+    assert not hasattr(models, "AnnotationStatusHistory") and not hasattr(models, "NoteStatus")
+    # And there is no history to read.
+    assert client.get(_note_url(test_project.id, host.id, data["id"], "/history")).status_code in (404, 405)
 
-    hist = client.get(_note_url(test_project.id, host.id, note.id, "/history"))
-    assert hist.status_code == 200, hist.text
-    rows = hist.json()
-    assert [r["to_status"] for r in rows] == ["in_progress", "resolved"]
-    assert rows[0]["from_status"] == "open"
-    assert rows[1]["summary"] == "fixed"
+
+def test_a_status_change_notifies_nobody(client, db_session, test_project):
+    from app.db.models_project import Notification
+    author = _make_user(db_session, "note-owner")
+    host = _make_host(db_session, test_project.id, "10.5.7.1")
+    note = _make_note(db_session, host.id, author.id)
+    r = client.patch(_note_url(test_project.id, host.id, note.id), json={"status": "in_progress"})
+    assert r.status_code == 200, r.text
+    assert db_session.query(Notification).filter(Notification.type == "status_change").count() == 0
 
 
-def test_thread_meta_targets_root_so_reply_doesnt_reopen(client, db_session, test_project, test_user):
+def test_thread_labels_live_on_the_root(client, db_session, test_project, test_user):
     host = _make_host(db_session, test_project.id, "10.5.3.1")
-    root = _make_note(db_session, host.id, test_user.id, status=NoteStatus.RESOLVED)
-    root.resolution_summary = "done"
+    root = _make_note(db_session, host.id, test_user.id)
     reply = _make_note(db_session, host.id, test_user.id, parent_id=root.id, body="reply")
     db_session.flush()
 
-    # Updating thread state via the REPLY id moves the ROOT's status.
-    r = client.patch(
-        _note_url(test_project.id, host.id, reply.id), json={"status": "in_progress"},
-    )
+    # Labelling through the REPLY id labels the ROOT.
+    r = client.patch(_note_url(test_project.id, host.id, reply.id), json={"pinned": True, "note_type": "handoff"})
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["id"] == root.id           # response is the thread root
-    assert body["status"] == "in_progress"
-
-    # The reply's own status is untouched.
+    assert (body["pinned"], body["note_type"]) == (True, "handoff")
     db_session.refresh(reply)
-    assert reply.status == NoteStatus.OPEN
-
-
-def test_invalid_note_type_rejected(client, db_session, test_project, test_user):
-    host = _make_host(db_session, test_project.id, "10.5.4.1")
-    note = _make_note(db_session, host.id, test_user.id)
-    r = client.patch(_note_url(test_project.id, host.id, note.id), json={"note_type": "bogus"})
-    assert r.status_code == 400, r.text
+    assert (bool(reply.pinned), reply.note_type) == (False, None)
 
 
 def test_patch_is_atomic_no_partial_commit(client, db_session, test_project, test_user):
-    """CR-A1/#1 — a PATCH with a valid body but invalid metadata (resolve
-    without summary) must 400 AND leave the body unchanged (no partial
-    commit)."""
+    """CR-A1/#1 — a PATCH with a valid body but an invalid label must 400 AND
+    leave the body unchanged (no partial commit)."""
     host = _make_host(db_session, test_project.id, "10.5.6.1")
     note = _make_note(db_session, host.id, test_user.id, body="original body")
 
     r = client.patch(
         _note_url(test_project.id, host.id, note.id),
-        json={"body": "rewritten body", "status": "resolved"},  # no summary → 400
+        json={"body": "rewritten body", "note_type": "bogus"},
     )
     assert r.status_code == 400, r.text
     db_session.expire_all()
     refreshed = db_session.query(Annotation).filter(Annotation.id == note.id).first()
     assert refreshed.body == "original body"  # body NOT committed
-    assert refreshed.status == NoteStatus.OPEN
+    assert refreshed.note_type is None
 
 
-def test_status_change_notifies_thread_author(client, db_session, test_project, test_user):
-    """CR-A1/#2 — a status change by a non-author creates an in-app
-    notification for the note author (not just a webhook)."""
-    from app.db.models_project import Notification
-    author = _make_user(db_session, "note-owner")
-    host = _make_host(db_session, test_project.id, "10.5.7.1")
-    note = _make_note(db_session, host.id, author.id)  # authored by someone else
-
-    # Actor is the admin client (id 1); changes status → author notified.
-    r = client.patch(
-        _note_url(test_project.id, host.id, note.id), json={"status": "in_progress"},
-    )
-    assert r.status_code == 200, r.text
-    notifs = (
-        db_session.query(Notification)
-        .filter(Notification.user_id == author.id, Notification.type == "status_change")
-        .all()
-    )
-    assert len(notifs) >= 1
-
-
-def test_assignee_must_be_project_member(client, db_session, test_project, test_user):
-    """CR-A1/#3 — assigning to a non-member is rejected with 400."""
-    outsider = _make_user(db_session, "outsider-nomember")  # no membership
-    host = _make_host(db_session, test_project.id, "10.5.8.1")
+def test_type_and_pin_are_set_and_the_type_cleared(client, db_session, test_project, test_user):
+    host = _make_host(db_session, test_project.id, "10.5.5.1")
     note = _make_note(db_session, host.id, test_user.id)
 
     r = client.patch(
-        _note_url(test_project.id, host.id, note.id),
-        json={"assignee_id": outsider.id},
+        _note_url(test_project.id, host.id, note.id), json={"pinned": True, "note_type": "question"},
     )
+    assert r.status_code == 200, r.text
+    assert (r.json()["pinned"], r.json()["note_type"]) == (True, "question")
+
+    # Explicit null clears the type (model_fields_set distinguishes omitted
+    # from null); pinned was omitted this call, so it stays True.
+    cleared = client.patch(_note_url(test_project.id, host.id, note.id), json={"note_type": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["note_type"] is None
+    assert cleared.json()["pinned"] is True
+
+
+@pytest.mark.parametrize("label", ["bogus", "finding", "action"])
+def test_invalid_note_type_rejected(client, db_session, test_project, test_user, label):
+    """"finding" and "action" were labels until v2.447.0: a note is neither."""
+    host = _make_host(db_session, test_project.id, "10.5.4.1")
+    note = _make_note(db_session, host.id, test_user.id)
+    r = client.patch(_note_url(test_project.id, host.id, note.id), json={"note_type": label})
     assert r.status_code == 400, r.text
-    assert "member" in r.json()["detail"].lower()
 
 
 def test_delete_root_with_replies_rejected(client, db_session, test_project, test_user):
@@ -209,30 +190,6 @@ def test_delete_root_with_replies_rejected(client, db_session, test_project, tes
         .first()
     )
     assert client.delete(_note_url(test_project.id, host.id, reply.id)).status_code == 204
-
-
-def test_status_change_notifies_all_thread_participants(client, db_session, test_project):
-    """CR3-#2 — a status change notifies EVERY thread participant (root +
-    reply authors), not just the root author."""
-    from app.db.models_project import Notification
-    a = _make_user(db_session, "thread-a")
-    b = _make_user(db_session, "thread-b")
-    host = _make_host(db_session, test_project.id, "10.5.10.1")
-    root = _make_note(db_session, host.id, a.id)
-    root.thread_root_id = root.id
-    reply = _make_note(db_session, host.id, b.id, parent_id=root.id)
-    reply.thread_root_id = root.id
-    db_session.flush()
-
-    # Actor is the admin client (id 1) — both a and b should be notified.
-    r = client.patch(_note_url(test_project.id, host.id, root.id), json={"status": "in_progress"})
-    assert r.status_code == 200, r.text
-    notified = {
-        n.user_id for n in db_session.query(Notification)
-        .filter(Notification.type == "status_change").all()
-    }
-    assert a.id in notified
-    assert b.id in notified
 
 
 def test_viewer_role_blocked_from_note_mutations(db_session, test_project):
@@ -260,33 +217,15 @@ def test_analyst_role_allowed_note_mutations(db_session, test_project):
     assert checker(project_id=test_project.id, db=db_session, current_user=analyst) is analyst
 
 
-def test_assignee_pinned_and_clear(client, db_session, test_project, test_user):
-    other = _make_user(db_session, "assignee-target")
-    # CR-A1/#3 — assignee must be a project member.
-    db_session.add(ProjectMembership(
-        project_id=test_project.id, user_id=other.id, role="analyst",
-    ))
-    db_session.flush()
-    host = _make_host(db_session, test_project.id, "10.5.5.1")
-    note = _make_note(db_session, host.id, test_user.id)
-
-    r = client.patch(
-        _note_url(test_project.id, host.id, note.id),
-        json={"assignee_id": other.id, "pinned": True, "note_type": "finding"},
-    )
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert body["assignee_id"] == other.id
-    assert body["assignee_name"] == other.full_name
-    assert body["pinned"] is True
-    assert body["note_type"] == "finding"
-
-    # Explicit null clears the assignee (model_fields_set distinguishes
-    # omitted from null).
-    cleared = client.patch(
-        _note_url(test_project.id, host.id, note.id), json={"assignee_id": None},
-    )
-    assert cleared.status_code == 200, cleared.text
-    assert cleared.json()["assignee_id"] is None
-    # Pinned was omitted this call, so it stays True.
-    assert cleared.json()["pinned"] is True
+def test_the_dashboard_still_reports_note_activity(client, db_session, test_project, test_user):
+    """The dashboard swallowed a KeyError on the note's status after the
+    column went (found in the backend log, v2.447.1) and answered
+    ``note_activity: null`` — an error nothing surfaced."""
+    host = _make_host(db_session, test_project.id, "10.5.11.1")
+    _make_note(db_session, host.id, test_user.id, body="who owns the backup job?")
+    db_session.commit()
+    stats = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats").json()
+    activity = stats["note_activity"]
+    assert activity is not None and activity["total_notes"] == 1
+    assert activity["recent_notes"][0]["preview"] == "who owns the backup job?"
+    assert "status" not in activity["recent_notes"][0]

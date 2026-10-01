@@ -81,17 +81,15 @@ export interface TeamReviewResponse {
 export type MyTaskReason = 'assigned' | 'in_review' | 'triage';
 
 export interface MyTaskItem {
-  entry_id: number;
-  plan_id: number;
-  plan_title: string;
-  plan_status: string;
+  test_id: number;
+  description: string;
+  label: string | null;
+  revision: number;
   host_id: number;
   host_ip: string;
   host_hostname: string | null;
   priority: string;
-  test_phase: string;
-  entry_status: string;
-  proposed_test_count: number;
+  status: string;
   rationale: string | null;
   updated_at: string | null;
   reasons: MyTaskReason[];
@@ -110,26 +108,6 @@ export interface MyTasksResponse {
   total_open: number;
   reason_counts: MyTasksReasonCounts;
 }
-export interface MyNoteItem {
-  note_id: number;
-  host_id: number | null;
-  host_ip: string | null;
-  host_hostname: string | null;
-  body_preview: string;
-  note_type: string | null; // observation|finding|question|decision|action|handoff
-  status: string;
-  due_at: string | null;
-  is_overdue: boolean;
-  updated_at: string | null;
-}
-
-export interface MyNotesResponse {
-  items: MyNoteItem[];
-  total_open: number;
-  handoff_count: number;
-  overdue_count: number;
-}
-
 export interface MyRecentNoteItem {
   note_id: number;
   host_id: number | null;
@@ -170,21 +148,10 @@ export interface BlockedImport {
   at?: string | null;
 }
 
-export interface InterruptedExecution {
-  session_id: number;
-  test_plan_id: number;
-  plan_title?: string | null;
-  /** `session_ended`: the run is still "active" but its agent session is not. */
-  reason: 'paused' | 'session_ended';
-  started_at?: string | null;
-}
-
 export interface OperationsBlockers {
   failed_import_count: number;
   partial_import_count: number;
   imports: BlockedImport[];
-  interrupted_execution_count: number;
-  executions: InterruptedExecution[];
 }
 
 export interface SinceLastVisit {
@@ -210,7 +177,7 @@ export interface SinceLastVisit {
 }
 
 // v5.223.0 — the engagement-wide investigation queue (design review item 2):
-// hosts nobody has touched (no review, assignment, note, plan entry or
+// hosts nobody has touched (no review, assignment, note, host test, evidence or
 // finding) that carry an observed weakness or a relevant change.  Ordered by
 // a stated tier, never a composite score; every row says why.
 export interface InvestigateReason {
@@ -258,7 +225,6 @@ export interface InvestigationQueueResponse {
 export interface WorkbenchResponse {
   my_queue: MyAttentionResponse;
   my_tasks: MyTasksResponse;
-  my_notes: MyNotesResponse;
   recent_notes: MyRecentNotesResponse;
   my_findings: MyFindingsResponse;
   team_review: TeamReviewResponse;

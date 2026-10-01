@@ -131,10 +131,16 @@ def _server_instructions(base_url: str) -> str:
     return (
         "BlueStick. Your API key belongs to one project session and acts as the "
         "operator who started it; they drive, you do what they ask within their "
-        "project role. You can query the inventory, upload scanner output, register "
-        "a test plan and execute it, and record what you found — in whatever order "
-        "the work needs. Call agent_identity first to see the project and anything "
-        "you have open. All calls are audited.\n\n"
+        "project role. You can query the inventory, upload scanner output, propose "
+        "tests on hosts (host_tests_propose — they appear on each host's page; "
+        "there are no test plans), run them and record what came back "
+        "(record_evidence), and propose findings — in whatever order the work "
+        "needs. Call agent_identity first to see the project and your authority. "
+        "All calls are audited.\n\n"
+        "When something here gets in your way — a call you had to retry, a field "
+        "or a route you guessed at, a tool you worked around — file it with "
+        "submit_feedback right then, one line naming the tool or path and what "
+        "you expected. Do not save it for the end of the session.\n\n"
         "Show the operator every command before you run it. Stay inside the "
         "project's declared scope (assist_list_scopes) and write output into the "
         "directory the session is working in. A target outside the scope, reading "
@@ -209,8 +215,8 @@ def tool_catalog(endpoint_url: str) -> Dict[str, Any]:
 
 
 # Identity lookups are server-initiated plumbing, not agent activity.  They
-# exist to fill a tool's auto-parameters (plan_id, the execution run's
-# session_id) from what the key's session currently has open.
+# exist to fill a tool's auto-parameters (today only the guide's workflow)
+# from the key's session.
 #
 # v2.338.1 — never cached.  A 60 s per-key cache used to collapse them, but
 # the answer changes the moment the agent opens or closes a phase, and the

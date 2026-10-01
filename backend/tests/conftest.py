@@ -50,7 +50,7 @@ TEST_USER_PASSWORD = "Test-Password-123!"
 TEST_USER_PW_HASH = get_password_hash(TEST_USER_PASSWORD)
 
 # Register EVERY model module on the shared SQLAlchemy Base *before* create_all
-# runs — otherwise contract tests that touch TestPlan / ExecutionSession /
+# runs — otherwise contract tests that touch HostTest / EvidenceRecord /
 # AgentFeedback / LLMProvider / IntegrationCredential hit "no such table"
 # because the declarative Base never saw them. The registry is the single
 # list (this copy was missing models_confidence + models_tools before it existed).
@@ -288,24 +288,6 @@ def test_agent(db_session, test_project, test_user):
     db_session.commit()
     db_session.refresh(agent)
     return agent
-
-
-@pytest.fixture
-def test_plan(db_session, test_project, test_agent):
-    """Return a persisted TestPlan in 'approved' state ready for execution."""
-    from app.db.models_agent import TestPlan, TestPlanStatus
-    plan = TestPlan(
-        project_id=test_project.id,
-        agent_id=test_agent.id,
-        version=1,
-        title="contract test plan",
-        description="fixture",
-        status=TestPlanStatus.DRAFT.value,
-    )
-    db_session.add(plan)
-    db_session.commit()
-    db_session.refresh(plan)
-    return plan
 
 
 @pytest.fixture

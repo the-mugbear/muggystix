@@ -102,9 +102,6 @@ describe('navigation manifest', () => {
       ['/scopes/3', 'inventory'],
       ['/findings/37', 'findings'],
       ['/reports/4', 'findings'],
-      ['/test-plans/4/runs', 'workflows'],
-      ['/test-plans/compare', 'workflows'],
-      ['/executions/2', 'workflows'],
       ['/assist-sessions/28', 'workflows'],
       ['/agent-sessions/72', 'workflows'],
       ['/activity', 'collaboration'],
@@ -124,7 +121,10 @@ describe('navigation manifest', () => {
     // is how work starts (no plan approval), so it leads the hub and is its
     // default.
     // 5.316.0 — Proposals: agents' proposed changes, decided by a person.
-    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Proposals', 'Test Plans', 'Tool Activity']);
+    // 5.320.0 — no Test Plans tab: tests live on each host's page.
+    expect(tabs('workflows')).toEqual(['Agent Sessions', 'Proposals', 'Tool Activity']);
+    expect(NAV_PAGES.map((p) => p.path)).not.toContain('/test-plans');
+    expect(NAV_PAGES.map((p) => p.path)).not.toContain('/executions');
     expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/agent-activity');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
@@ -156,7 +156,7 @@ describe('navigation manifest', () => {
   it('each route names itself in the browser title', () => {
     expect(documentTitleFor('/hosts', 'Demo — Insights Eval')).toBe('Hosts · Demo — Insights Eval · BlueStick');
     expect(documentTitleFor('/findings/37', 'Demo')).toBe('Finding · Demo · BlueStick');
-    expect(documentTitleFor('/test-plans/4/runs', 'Demo')).toBe('Test plan · Demo · BlueStick');
+    expect(documentTitleFor('/agent-sessions/72', 'Demo')).toBe('Agent session · Demo · BlueStick');
     expect(documentTitleFor('/project-settings', 'Demo')).toBe('Project Settings · Demo · BlueStick');
     expect(documentTitleFor('/activity', 'Demo')).toBe('Collaboration · Demo · BlueStick');
     // Cross-project pages leave the project out.
@@ -215,7 +215,6 @@ describe('navigation manifest', () => {
   // deep link).  Param routes (detail/compare/sub-tabs) are excluded.
   const INTENTIONAL_NON_NAV = new Set<string>([
     '/scans/compare',
-    '/test-plans/compare',
     '/default-credentials',
     '/tool-reference',
     '/reference/user-guide',

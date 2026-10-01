@@ -19,7 +19,7 @@ from app.db import models
 from app.db.models import HostFollow, FollowStatus
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
-from app.db.models_agent import TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
+from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.services.engagement_metrics_service import project_engagement
 from app.services.project_signals_service import project_signals
 from app.api.v1.endpoints.auth import get_current_user
@@ -75,7 +75,6 @@ class ProjectCard(BaseModel):
     attention_reasons: List[str] = []  # stable codes; frontend maps to labels
     open_tasks: int = 0
     active_sessions: int = 0          # agent sessions still open
-    blocked_sessions: int = 0         # execution sessions paused/failed
     member_count: int = 0
     user_role: Optional[str] = None   # caller's project role (None if global-admin non-member)
     # v2.377.0 — the "no project admin" governance signal (has_admin, admins,
@@ -101,7 +100,6 @@ class PortfolioSummary(BaseModel):
     projects_with_critical: int = 0
     stale_projects: int = 0
     projects_no_data: int = 0
-    blocked_sessions_total: int = 0
 
 
 class PortfolioDashboardResponse(BaseModel):
@@ -180,8 +178,8 @@ def get_portfolio_dashboard(
     # false-positive dismissal counting as "critical".
     engagement = project_engagement(db, project_ids)
 
-    # Workflow + governance signals (pending approvals, open tasks, active /
-    # blocked runs, members, admins, last import, "quiet") — shared with
+    # Workflow + governance signals (open tasks, active agent sessions,
+    # members, admins, last import, "quiet") — shared with
     # Oversight (project_signals_service).
     signals = project_signals(db, projects, now)
 
@@ -213,7 +211,6 @@ def get_portfolio_dashboard(
     projects_with_critical = 0
     stale_projects = 0
     projects_no_data = 0
-    blocked_sessions_total = 0
 
     for p in projects:
         e = engagement[p.id]
@@ -255,7 +252,6 @@ def get_portfolio_dashboard(
         if p.status == "active":
             active_projects += 1
 
-        blocked_sessions = s.blocked_sessions
         # Global admins may have no per-project membership row; surface
         # their global role so the table never shows a blank for them.
         role = my_roles.get(p.id)
@@ -273,8 +269,6 @@ def get_portfolio_dashboard(
             reasons.append("critical_unjudged")
         if unjudged.high > 0:
             reasons.append("high_unjudged")
-        if blocked_sessions > 0:
-            reasons.append("blocked_session")
         if is_stale:
             reasons.append("stale")
         if hc == 0:
@@ -297,7 +291,6 @@ def get_portfolio_dashboard(
             stale_projects += 1
         if hc == 0:
             projects_no_data += 1
-        blocked_sessions_total += blocked_sessions
 
         cards.append(ProjectCard(
             id=p.id,
@@ -323,7 +316,6 @@ def get_portfolio_dashboard(
             attention_reasons=reasons,
             open_tasks=s.open_tasks,
             active_sessions=s.active_sessions,
-            blocked_sessions=blocked_sessions,
             member_count=s.member_count,
             user_role=role,
         ))
@@ -344,7 +336,6 @@ def get_portfolio_dashboard(
             projects_with_critical=projects_with_critical,
             stale_projects=stale_projects,
             projects_no_data=projects_no_data,
-            blocked_sessions_total=blocked_sessions_total,
         ),
         projects=cards,
     )
@@ -417,17 +408,16 @@ def get_portfolio_team(
         .all()
     )
 
-    # Per-user open assigned tasks (non-terminal entries on accepted plans).
+    # Per-user open assigned tasks: host tests still to do (v2.442.0 — they
+    # were non-terminal entries on unarchived test plans).
     task_counts = dict(
-        db.query(TestPlanEntry.assigned_to_id, func.count(TestPlanEntry.id))
-        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+        db.query(HostTest.assigned_to_id, func.count(HostTest.id))
         .filter(
-            TestPlan.project_id.in_(project_ids),
-            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-            TestPlanEntry.status.in_(("proposed", "in_progress")),
-            TestPlanEntry.assigned_to_id.isnot(None),
+            HostTest.project_id.in_(project_ids),
+            HostTest.status.in_(ACTIVE_TEST_STATUSES),
+            HostTest.assigned_to_id.isnot(None),
         )
-        .group_by(TestPlanEntry.assigned_to_id)
+        .group_by(HostTest.assigned_to_id)
         .all()
     )
     # Per-user distinct hosts In Review.

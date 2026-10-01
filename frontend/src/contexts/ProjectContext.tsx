@@ -14,15 +14,13 @@ import { Textarea } from '../components/ui/textarea';
 // Routes whose URL contains a per-project resource id. After a project
 // switch we redirect the operator off these to /operations because
 // the previous project's resource won't exist (or, worse, the same
-// numeric id will silently resolve to a different scope/host/plan in
+// numeric id will silently resolve to a different scope/host/finding in
 // the new project). Static, child-free paths (lists, hubs, settings)
 // are project-wide and stay put.
 const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
-  /^\/test-plans\/[^/]+/,
   /^\/scans\/[^/]+/,
   /^\/hosts\/[^/]+/,
   /^\/scopes\/[^/]+/,
-  /^\/executions\/[^/]+/,
   /^\/findings\/[^/]+/,
   /^\/reports\/[^/]+/,
   /^\/assist-sessions\/[^/]+/,
@@ -30,12 +28,6 @@ const PROJECT_SCOPED_RESOURCE_ROUTES: RegExp[] = [
 ];
 
 function isProjectScopedResourceRoute(pathname: string): boolean {
-  // Treat `/test-plans/compare`, `/test-plans/:id/compare` as
-  // project-scoped too — comparison reads concrete resource ids from
-  // the query string.
-  if (pathname === '/test-plans/compare') {
-    return true;
-  }
   return PROJECT_SCOPED_RESOURCE_ROUTES.some((re) => re.test(pathname));
 }
 

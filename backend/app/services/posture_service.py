@@ -3,7 +3,7 @@
 This service does NOT collect new data.  It *composes* aggregates that already
 exist — the attention model (exposure + neglect, per project and per site), the
 systemic-insight model (estate blind spots), the finding spine (disposition +
-ownership), and the agent workflow (pending approvals, blocked runs) — into a
+ownership) — into a
 single snapshot a manager can read in ten seconds:
 
   * a deterministic posture LABEL (no synthetic 0–100 score) + its top reasons,
@@ -33,11 +33,7 @@ logger = logging.getLogger(__name__)
 from app.db import models
 from app.db.models_findings import ACTIVE_FINDING_STATUSES, Finding
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
-from app.db.models_agent import (
-    TestPlan, TestPlanStatus, TestPlanEntry,
-    TestExecutionResult, TestExecutionStatus,
-)
-from app.services.agent_session_metrics import blocked_exec_session_counts
+from app.services.host_test_queries import tested_host_ids
 from app.services.attention_service import (
     compute_project_attention, compute_site_attention,
 )
@@ -155,11 +151,11 @@ def _gather_signals(
                     severity="critical", owner=s.get("owner_name"), link="/insights",
                 ))
 
-    # NOTE: agent workflow queue state — blocked execution sessions and pending
-    # plan approvals — is deliberately NOT a strategic-posture signal. A manager's
-    # security-condition read must not flip because a run is paused or a plan
-    # awaits approval; that is operational state, owned by /operations. Those
-    # counts still ride along in the response's `decisions` block for context.
+    # NOTE: agent workflow state is deliberately NOT a strategic-posture signal:
+    # a manager's security-condition read must not flip because of how the work
+    # is going; that is operational state, owned by /operations.  (The
+    # `decisions` block that carried the blocked-run count went with execution
+    # runs in v2.442.0.)
 
     # E. Under-reviewed estate (assess).
     if review_pct is not None and review_pct < _REVIEW_FLOOR:
@@ -183,9 +179,6 @@ def _gather_signals(
             blast_radius=f"{detected_vulns} scanner-detected vulnerabilities", action="Promote real issues to findings",
             severity="medium", owner=None, link="/findings",
         ))
-
-    # (Pending plan approvals — an operational queue — is likewise excluded from
-    # the strategic label; see the note above. It remains in `decisions`.)
 
     # H. Coverage gaps — configured sites under their expected host count (assess).
     if site_att.get("adopted"):
@@ -311,17 +304,9 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
 
     # Validated hosts — distinct hosts with an executed test result (raw count;
     # there is no persisted "test-worthy" denominator, so this is NOT a ratio).
-    validated_hosts = (
-        db.query(func.count(func.distinct(TestPlanEntry.host_id)))
-        .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-        .join(models.Host, TestPlanEntry.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
-        )
-        .scalar()
-        or 0
-    )
+    validated_hosts = db.query(models.Host.id).filter(
+        models.Host.project_id == project_id, models.Host.id.in_(tested_host_ids(project_id)),
+    ).count()
 
     # Open assessment questions — reviewed hosts whose review concluded "needs
     # more evidence" (v2.373.0).  An EXPLICIT record, never inferred from
@@ -338,11 +323,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
         .scalar()
         or 0
     )
-
-    # Blocked runs — only the LATEST execution session per plan, in a blocked
-    # state (paused / failed; NOT abandoned, which is deliberately closed).
-    # Shared helper so Posture and Portfolio agree on the invariant.
-    blocked_sessions = blocked_exec_session_counts(db, [project_id]).get(project_id, 0)
 
     signals = _gather_signals(
         db, project_id, project_att=project_att, site_att=site_att, systemic=systemic,
@@ -440,9 +420,6 @@ def _compute_posture_uncached(db: Session, project_id: int) -> Dict[str, Any]:
             "scan_staleness_days": project_att["neglect"]["scan_staleness_days"],
         },
         "priorities": [s["priority"] | {"score": s["score"], "tier": s["tier"]} for s in signals[:8]],
-        "decisions": {
-            "blocked_sessions": int(blocked_sessions),
-        },
         "sites": {"adopted": site_att.get("adopted", False), "items": site_att.get("sites", [])},
         "systemic": {
             "adopted": systemic.get("adopted", False),

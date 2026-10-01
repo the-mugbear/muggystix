@@ -1,0 +1,170 @@
+import React, { useEffect, useState } from 'react';
+import { Loader2 } from 'lucide-react';
+
+import { formatApiError } from '../../utils/apiErrors';
+import { agentInstruction } from '../../utils/agentRuns';
+import AgentTaskButton from '../agent-sessions/AgentTaskButton';
+import { useCanStartAgentSession } from '../../hooks/useCanStartAgentSession';
+import { Button } from '../ui/button';
+import { Label } from '../ui/label';
+import { Textarea } from '../ui/textarea';
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '../ui/dialog';
+
+/**
+ * "Propose tests" from the Hosts bulk bar (5.320.0; it was "Test plan",
+ * v5.221.0).
+ *
+ * The selection becomes a FIXED host list the moment the dialog opens —
+ * resolved through `resolveIds` (the checked rows, or every host matching
+ * the current filters) — and that list is what the operator's agent is
+ * handed: a task naming exactly these host ids (AgentTaskButton). The agent
+ * proposes individual tests on each host, which appear on the host's page;
+ * nothing waits on approval and there is no plan to open.
+ */
+
+/** The most host ids an agent task may name: the task is pasted text, and
+ *  past this it is a wall of numbers (10,000 ids ≈ 60 KB). */
+export const AGENT_TASK_MAX_HOSTS = 200;
+
+export interface ProposeTestsDialogProps {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  /** Resolves the selection to its fixed id list (may hit the server). */
+  resolveIds: () => Promise<number[]>;
+  /** How the selection was made, shown beside the count. */
+  selectionSummary: string;
+  /** IPs of the checked rows on this page, shown as a sample of the targets. */
+  sampleIps: string[];
+}
+
+const ProposeTestsDialog: React.FC<ProposeTestsDialogProps> = ({
+  open,
+  onOpenChange,
+  resolveIds,
+  selectionSummary,
+  sampleIps,
+}) => {
+  const canUseAgent = useCanStartAgentSession();
+  const [what, setWhat] = useState('');
+  const [ids, setIds] = useState<number[] | null>(null);
+  const [resolveError, setResolveError] = useState<string | null>(null);
+  const [resolving, setResolving] = useState(false);
+
+  // Resolve the fixed list once per opening.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    setIds(null);
+    setResolveError(null);
+    setResolving(true);
+    resolveIds()
+      .then((resolved) => {
+        if (!cancelled) setIds(resolved);
+      })
+      .catch((err) => {
+        if (!cancelled) setResolveError(formatApiError(err, 'Could not resolve the selection.'));
+      })
+      .finally(() => {
+        if (!cancelled) setResolving(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, resolveIds]);
+
+  const count = ids?.length ?? 0;
+  const tooMany = count > AGENT_TASK_MAX_HOSTS;
+  const shownIps = sampleIps.slice(0, 8);
+  const moreIps = Math.max(count - shownIps.length, 0);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent size="lg">
+        <DialogHeader>
+          <DialogTitle>Propose tests for the selection</DialogTitle>
+          <DialogDescription>
+            Your agent proposes tests on each of these hosts; they appear on the host&apos;s page. The
+            selection is taken as a fixed list now — changing the Hosts filters later does not change it.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody className="flex flex-col gap-md">
+          <div className="min-w-0 rounded-panel border border-border p-sm">
+            <p className="text-metadata font-semibold">
+              {resolving ? (
+                <span className="inline-flex items-center gap-xs">
+                  <Loader2 className="size-3.5 animate-spin" aria-hidden /> Resolving selection…
+                </span>
+              ) : (
+                <>
+                  {count.toLocaleString()} host{count === 1 ? '' : 's'}{' '}
+                  <span className="break-words font-normal text-muted-foreground">· {selectionSummary}</span>
+                </>
+              )}
+            </p>
+            {shownIps.length > 0 && (
+              <p className="mt-xxs break-words font-mono text-caption text-muted-foreground">
+                {shownIps.join(', ')}
+                {moreIps > 0 && ` and ${moreIps.toLocaleString()} more`}
+              </p>
+            )}
+            {resolveError && (
+              <p role="alert" className="mt-xxs break-words text-caption text-destructive">{resolveError}</p>
+            )}
+          </div>
+
+          {tooMany && (
+            <p role="alert" className="text-metadata text-warning">
+              The task names every host id, so it takes at most {AGENT_TASK_MAX_HOSTS.toLocaleString()} hosts
+              and this selection has {count.toLocaleString()}. Narrow it on the Hosts page — by subnet, site
+              or severity — and hand it over in parts.
+            </p>
+          )}
+
+          {!canUseAgent && (
+            <p className="text-metadata text-muted-foreground">
+              Starting an agent session needs the auditor role or higher on this project.
+            </p>
+          )}
+
+          <div>
+            <Label htmlFor="pt-what">What to test (optional)</Label>
+            <Textarea
+              id="pt-what"
+              value={what}
+              onChange={(e) => setWhat(e.target.value)}
+              maxLength={2000}
+              rows={3}
+              placeholder="e.g. Confirm the critical vulnerabilities; check SMB signing and anonymous shares."
+            />
+            <p className="mt-xxs text-caption text-muted-foreground">
+              Left empty, your agent proposes tests from what each host exposes.
+            </p>
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <AgentTaskButton
+            variant="default"
+            size="md"
+            label="Hand to your agent"
+            instruction={agentInstruction.proposeTests(ids ?? [], what)}
+            title={`Propose tests for these ${count.toLocaleString()} hosts`}
+            disabled={resolving || count === 0 || tooMany}
+          />
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+};
+
+export default ProposeTestsDialog;

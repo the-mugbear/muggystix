@@ -126,15 +126,6 @@ describe('Activity — threads as rows', () => {
     expect(within(row).getByText('5 messages')).toBeInTheDocument();
   });
 
-  it('the status counts filter the feed, as the stat cards did', async () => {
-    getNoteActivity.mockResolvedValue(payload([note({})]));
-    render(<MemoryRouter><Activity /></MemoryRouter>);
-    const resolved = await screen.findByRole('button', { name: '1 resolved' });
-    fireEvent.click(resolved);
-    await waitFor(() => expect(getNoteActivity).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'resolved' })));
-    expect(screen.getByRole('button', { name: '1 resolved' })).toHaveAttribute('aria-pressed', 'true');
-  });
-
   it('offers Load more while notes remain', async () => {
     getNoteActivity.mockResolvedValue({ ...payload([note({})]), total_notes: 150 });
     render(<MemoryRouter><Activity /></MemoryRouter>);

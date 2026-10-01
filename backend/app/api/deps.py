@@ -355,10 +355,9 @@ def get_current_agent(
             detail="API key is bound to an unrecognized session kind; start a new session.",
         )
 
-    # v2.337.0 — a key no longer binds a workflow, a plan or a scope.  What
-    # the agent is working on is a phase it opens (recon run / plan draft /
-    # execution run), resolved by the handlers from the session.  The label
-    # is stashed only so the audit middleware can attach legacy detail rows.
+    # v2.337.0 — a key no longer binds a workflow, a plan or a scope; what it
+    # writes carries the session's id.  The label is stashed only so the audit
+    # middleware can attach legacy detail rows.
     request.state.agent_session_id = agent_session.id
     request.state.agent_session_workflow = agent_session.workflow
 
@@ -579,8 +578,8 @@ AGENT_SESSION_METADATA_WRITES = frozenset({
     # lifecycle bookkeeping, not a project write: an auditor could start a
     # session (AUDITOR floor on /assist/start) and then not end it, because
     # this route is mounted under the gate and was missing here.  Ownership
-    # (the key identifies its own session) and the open-phase refusal live in
-    # close_agent_session_from_agent and are unchanged.
+    # (the key identifies its own session) lives in
+    # close_agent_session_from_agent and is unchanged.
     ("POST", "/session/end"),
     ("POST", "/feedback"),
     ("POST", "/tool-suggestions"),
@@ -767,12 +766,9 @@ def enforce_agent_operator_access(
 # ``require_execution_session_scope``, ``require_recon_scope`` and
 # ``require_assist_scope`` are gone.  They gated each agent router on the
 # workflow a key was minted for; a key no longer has one.  What they were
-# also doing — binding a call to its plan / scope / session — now happens in
-# the handlers, which resolve the PHASE the call is about (the recon run,
-# the plan, the execution run) from the session the key belongs to, and the
-# object-level gates (an execution run belongs to one session, a recon run is
-# opened against a scope in the project) are what keep the record
-# trustworthy.
+# also doing — binding a call to its plan / scope / session — went with the
+# things they bound to (recon runs v2.433.1; plans and execution runs
+# v2.442.0): every write is project-scoped and carries the session's id.
 
 
 # v2.295.0 — ``deny_scoped_keys`` is gone with the unscoped global key.  It

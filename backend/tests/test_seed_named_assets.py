@@ -20,7 +20,8 @@ import pytest
 
 from app.db import models
 from app.db.models_findings import Finding
-from app.db.models_agent import TestPlan
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 
 
 def _load_seed_module():
@@ -67,7 +68,16 @@ def test_reset_removes_only_seeded_rows(db_session, test_project, test_user, tmp
     manifest = Path(seed._manifest_path(test_project, str(tmp_path)))
     assert manifest.exists()
     assert db_session.query(models.DNSName).filter_by(project_id=test_project.id).count() > 10
-    assert db_session.query(TestPlan).filter_by(project_id=test_project.id).count() == 1
+    # Host tests through the service: three on the LB and one on the internal
+    # wiki host; two with evidence, one dismissed — and only the named test
+    # whose evidence carries an observed address is TESTED.
+    seeded_tests = db_session.query(HostTest).filter_by(project_id=test_project.id).all()
+    assert sorted(t.status for t in seeded_tests) == ["dismissed", "done", "proposed", "proposed"]
+    assert db_session.query(EvidenceRecord).filter_by(project_id=test_project.id).count() == 2
+    tested = db_session.query(models.DNSRecord).filter_by(
+        project_id=test_project.id, record_type=models.DNS_OBS_TESTED,
+    ).all()
+    assert [(r.domain, r.value) for r in tested] == [("portal.example-corp.com", seed.LB_IP)]
 
     # Unrelated data planted AFTER seeding.
     svc.import_names(db_session, project_id=test_project.id, raw_names=["later.example.net"], created_by_id=None)
@@ -88,7 +98,8 @@ def test_reset_removes_only_seeded_rows(db_session, test_project, test_user, tmp
     assert lb is not None and (lb.hostname, lb.hostname_source) == ("operator-lb", "operator")
     # The seed's own old-LB host and everything it created are gone.
     assert db_session.query(models.Host).filter_by(ip_address=seed.OLD_LB_IP).count() == 0
-    assert db_session.query(TestPlan).filter_by(project_id=test_project.id).count() == 0
+    assert db_session.query(HostTest).filter_by(project_id=test_project.id).count() == 0
+    assert db_session.query(EvidenceRecord).filter_by(project_id=test_project.id).count() == 0
     assert db_session.query(Finding).filter_by(project_id=test_project.id).count() == 0
     assert db_session.query(models.WebInterface).filter_by(project_id=test_project.id).count() == 0
     assert db_session.query(models.DNSRecord).filter(

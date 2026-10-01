@@ -41,7 +41,7 @@ def _seed(db, project, author, count, ip="10.77.0.1"):
         db.flush()
         note = models.Annotation(
             host_id=host.id, project_id=project.id, user_id=author.id,
-            assignee_id=assignee.id, body=f"note {i}",
+            body=f"note {i}",
         )
         db.add(note)
         db.flush()
@@ -82,7 +82,7 @@ def test_serialising_preloaded_notes_runs_no_query(db_session, test_project, tes
         "_serialize_note read a relationship note_load_options() does not load:\n"
         + "\n".join(during.seen[:5])
     )
-    assert all(o.finding_id is not None and o.assignee_name for o in out)
+    assert all(o.finding_id is not None and o.author_name for o in out)
 
 
 def test_the_host_notes_loader_does_not_query_per_note(db_session, test_project, test_user):

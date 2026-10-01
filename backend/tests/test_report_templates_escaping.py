@@ -1,14 +1,14 @@
-"""Regression tests for the shared HTML report template generators.
+"""Regression tests for what the host HTML report embeds from
+``report_templates`` (the stylesheet and the table scripts) and for the
+report's own nav.
 
-The per-report escaping tests for the scope / scan / out-of-scope report
-types went with those types in v2.395.0 (they were never produced); the
-test plan execution report's escaping is pinned in
-``test_execution_report.py``.
-
-Covers the nav-link conditionality (no dead ``#metrics`` link when
-no statistics section is rendered) and the ``id="details"`` placement
-fix (the anchor must land on the first real ``.section`` rather than a
-detached empty div).
+v2.442.0 — the page generators that lived in ``ReportTemplates``
+(``generate_professional_html_report`` / ``_generate_content_sections``)
+rendered only the test plan execution report and went with test plans.  The
+three tests that pinned THAT page's nav conditionality (no dead ``#metrics``
+link) and its ``id="details"`` placement went with it; the same
+"every nav href has a matching id" rule is pinned for the report that remains
+in ``TestHostHtmlReportNav`` below.
 """
 
 from __future__ import annotations
@@ -17,41 +17,6 @@ import re
 from unittest.mock import MagicMock
 
 from app.services.report_templates import ReportTemplates
-
-
-class TestNavConditionality:
-    """Nav links must only point at sections that were actually rendered.
-
-    Previously the shared report nav unconditionally included
-    ``<a href="#metrics">``, which navigated to a missing target when no
-    statistics block was rendered.  The test plan execution report is the
-    only report this template renders.
-    """
-
-    def test_report_without_statistics_omits_metrics_link(self):
-        html = ReportTemplates.generate_professional_html_report({
-            'report_type': 'test_plan_execution',
-            'plan': {'title': 'Plan'},
-            'entries': [],
-        })
-        # The summary anchor is always present.
-        assert '<a href="#summary">Summary</a>' in html
-        # The metrics anchor must NOT appear when no stats section was rendered.
-        assert '<a href="#metrics">' not in html
-
-    def test_report_with_statistics_includes_metrics_link(self):
-        html = ReportTemplates.generate_professional_html_report({
-            'report_type': 'test_plan_execution',
-            'plan': {'title': 'Plan'},
-            'statistics': {'total_entries': 3, 'tests_executed': 5},
-            'entries': [],
-        })
-        assert '<a href="#metrics">' in html
-        # Every href="#X" must have a matching id="X" somewhere in the doc.
-        for anchor in re.findall(r'href="#([^"]+)"', html):
-            assert f'id="{anchor}"' in html, (
-                f"nav anchor #{anchor} has no matching section id"
-            )
 
 
 class TestSortableHeaderAccessibility:
@@ -114,22 +79,3 @@ class TestHostHtmlReportNav:
         # The host renders as a dossier section anchored #host-{id}.
         assert f'id="host-{host.id}"' in html
         assert 'host-dossiers' in html
-
-
-class TestDetailsAnchorPlacement:
-    """The ``#details`` anchor must land on the first real ``.section``
-    instead of a detached empty placeholder div."""
-
-    def test_details_id_lives_on_first_section(self):
-        content = ReportTemplates._generate_content_sections({
-            'report_type': 'test_plan_execution',
-            'entries': [],
-        })
-        # The first .section opens with id="details" — no detached
-        # <div id="details"></div> placeholder.
-        assert '<div class="section" id="details">' in content, (
-            "id='details' should be merged onto the first .section, not a detached div"
-        )
-        assert '<div id="details"></div>' not in content, (
-            "detached empty placeholder div should not be used"
-        )

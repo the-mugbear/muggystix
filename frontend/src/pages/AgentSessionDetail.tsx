@@ -1,7 +1,7 @@
 /**
  * One agent session (5.312.0) — the page an operator manages it from: where it
- * stands, the controls (Resume, End with the wrap-up prompt), the plans and
- * executions it opened, the notes it wrote under the operator's name,
+ * stands, the controls (Resume, End with the wrap-up prompt), the tests and
+ * evidence it recorded, the notes it wrote under the operator's name,
  * and every call it made.
  *
  * Keyed by the SESSION id — the one Agent Sessions, End, Resume and the agent
@@ -30,6 +30,7 @@ import {
   rowOperatorName,
   sessionStateLine,
 } from '../components/agent-sessions/SessionParts';
+import SessionTests from '../components/agent-sessions/SessionTests';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import LastUpdated from '../components/LastUpdated';
 import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
@@ -41,7 +42,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import { formatApiError } from '../utils/apiErrors';
 import { formatTimestamp } from '../utils/relativeTime';
 import { safeFallback } from '../utils/uiStyles';
-import { PHASE_KIND_LABEL, SESSIONS_LIST_PATH, isOpenPhase, phasePath } from '../utils/agentRuns';
+import { SESSIONS_LIST_PATH } from '../utils/agentRuns';
 
 /** How long the session ran (to its end, or to now while it is active).
  *  Not `utils/scanTime`'s formatDuration, which takes seconds. */
@@ -176,11 +177,8 @@ const AgentSessionDetail: React.FC = () => {
   const operator = rowOperatorName(row);
   // The agent's client, recorded from its MCP handshake.
   const clientName = row.generated_by_tool ?? review?.agent_tool ?? null;
-  const phases = row.phases ?? [];
-  // Only an execution RUN can be stranded by its session ending (and ending
-  // abandons them since 5.313.1, so this is legacy data); a draft plan is a
-  // resting state, not stranded work.
-  const strandedRuns = phases.filter((p) => p.kind === 'execution' && isOpenPhase(p)).length;
+  const testCount = row.host_test_count ?? 0;
+  const evidenceCount = row.evidence_count ?? 0;
   const ended = row.status !== 'active';
 
   return (
@@ -234,52 +232,13 @@ const AgentSessionDetail: React.FC = () => {
       </section>
 
       <PostureSection
-        title={<>Work opened {phases.length > 0 && <SectionCount>{phases.length}</SectionCount>}</>}
+        title={<>Tests proposed {testCount > 0 && <SectionCount>{testCount}</SectionCount>}</>}
         description={
-          strandedRuns > 0 && ended
-            ? 'This session has ended but an execution run it opened is still open — nothing will move it until someone abandons it from its page.'
-            : 'The plans and execution runs this session opened, each on its own page.'
+          `The tests this session put on hosts — each opens its host, where the test, its status and its `
+          + `evidence live. It recorded ${evidenceCount.toLocaleString()} evidence record${evidenceCount === 1 ? '' : 's'}.`
         }
       >
-        {phases.length === 0 ? (
-          <p className="text-metadata text-muted-foreground">
-            None — this session has only queried the inventory{ended ? '' : ' so far'}.
-          </p>
-        ) : (
-          <Table style={{ tableLayout: 'fixed' }} data-testid="session-phases">
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-28">Kind</TableHead>
-                <TableHead>Target</TableHead>
-                <TableHead className="w-32">Status</TableHead>
-                <TableHead className="w-44">Opened</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {phases.map((phase) => (
-                <TableRow key={`${phase.kind}-${phase.id}`}>
-                  <TableCell className="whitespace-nowrap">
-                    <Link to={phasePath(phase)} className="text-primary underline-offset-4 hover:underline">
-                      {PHASE_KIND_LABEL[phase.kind]} #{phase.id}
-                    </Link>
-                  </TableCell>
-                  <TableCell className="truncate" title={phase.label ?? undefined}>
-                    {safeFallback(phase.label, '—')}
-                  </TableCell>
-                  <TableCell>
-                    <Badge
-                      variant={isOpenPhase(phase) ? 'warning' : 'muted'}
-                      className="whitespace-nowrap"
-                    >
-                      {phase.status.replace(/_/g, ' ')}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-caption text-muted-foreground">{formatTimestamp(phase.started_at)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        )}
+        <SessionTests sessionId={row.id} ended={ended} />
       </PostureSection>
 
       {reviewError && (
@@ -305,8 +264,7 @@ const AgentSessionDetail: React.FC = () => {
               <TableHeader>
                 <TableRow>
                   <TableHead className="w-[18%]">Host</TableHead>
-                  <TableHead className="w-[54%]">Note</TableHead>
-                  <TableHead className="w-[12%]">Status</TableHead>
+                  <TableHead className="w-[66%]">Note</TableHead>
                   <TableHead className="w-[16%]">Written</TableHead>
                 </TableRow>
               </TableHeader>
@@ -328,9 +286,6 @@ const AgentSessionDetail: React.FC = () => {
                     </TableCell>
                     <TableCell className="align-top">
                       <span className="line-clamp-3 break-words text-caption text-foreground">{note.body}</span>
-                    </TableCell>
-                    <TableCell className="align-top">
-                      <Badge variant="outline">{safeFallback(note.status, 'open')}</Badge>
                     </TableCell>
                     <TableCell className="align-top text-caption text-muted-foreground">
                       {formatTimestamp(note.created_at)}

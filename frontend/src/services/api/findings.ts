@@ -23,7 +23,7 @@ export interface FindingHostInfo {
   ip_address: string | null;
   hostname: string | null;
   // v5.194.0 — the named endpoint on this host the finding applies to
-  // (inherited from the scanner row / plan entry); null = host-level.
+  // (inherited from the scanner row); null = host-level.
   name_id?: number | null;
   fqdn?: string | null;
   /** This endpoint's own state: open | remediated | retest | false_positive.
@@ -194,22 +194,6 @@ export const listFindings = async (
 
 export const getFinding = async (findingId: number): Promise<Finding> => {
   const response = await api.get<Finding>(`${p()}/findings/${findingId}`);
-  return response.data;
-};
-
-export interface PromoteAnnotationPayload {
-  severity: FindingSeverity;
-  title?: string;
-  status?: FindingStatus;
-  owner_id?: number | null;
-  extra_host_ids?: number[];
-}
-
-export const promoteAnnotation = async (
-  annotationId: number,
-  payload: PromoteAnnotationPayload,
-): Promise<Finding> => {
-  const response = await api.post<Finding>(`${p()}/annotations/${annotationId}/promote`, payload);
   return response.data;
 };
 

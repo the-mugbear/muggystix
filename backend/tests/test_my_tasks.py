@@ -7,18 +7,24 @@ behaviour under test is unchanged: the aggregation always lived in the service,
 and the deleted route was a thin wrapper over it.
 
 My Tasks is the UNION of three buckets, each tagged with a reason:
-  - assigned   — TestPlanEntry.assigned_to_id == caller
-  - in_review  — entry on a host the caller marked In Review
-  - triage     — unassigned critical/high entry
+  - assigned   — HostTest.assigned_to_id == caller
+  - in_review  — a test on a host the caller marked In Review
+  - triage     — unassigned critical/high test
+
+Since v2.442.0 a task is a host test still to do (proposed or in progress);
+until then it was a non-terminal entry on a test plan.  The buckets, their
+order and the limit rule are unchanged.
 
 The ``client`` fixture authenticates as ``test_user`` (id=1, admin), so
-"the caller" below is user id 1.  ``test_plan`` is an approved plan.
+"the caller" below is user id 1.
 """
 from __future__ import annotations
 
+import uuid
+
 from app.db import models
 from app.db.models import FollowStatus
-from app.db.models_agent import TestPlanEntry
+from app.db.models_host_tests import HostTest
 
 # Avoid colliding with conftest's hardcoded user id=1 (see the same
 # workaround in test_dashboard_aggregates.py).
@@ -52,21 +58,26 @@ def _make_host(db_session, project_id, ip):
     return h
 
 
-def _make_entry(db_session, plan_id, host_id, priority,
-                assigned_to_id=None, status="proposed", phase="enumeration"):
-    e = TestPlanEntry(
-        test_plan_id=plan_id,
+def _make_test(db_session, project_id, host_id, priority,
+               assigned_to_id=None, status="proposed"):
+    key = str(uuid.uuid4())
+    t = HostTest(
+        project_id=project_id,
         host_id=host_id,
         priority=priority,
-        test_phase=phase,
-        proposed_tests=["technique-a"],
+        tool="technique-a",
+        description="technique-a",
         rationale="because",
         status=status,
         assigned_to_id=assigned_to_id,
+        source="person",
+        request_key=key,
+        request_hash=key,
+        dismissed_reason="not needed" if status == "dismissed" else None,
     )
-    db_session.add(e)
+    db_session.add(t)
     db_session.flush()
-    return e
+    return t
 
 
 def _in_review(db_session, user_id, host_id):
@@ -90,7 +101,7 @@ def _my_tasks(client, pid):
 
 
 def test_my_tasks_unions_three_buckets_with_reasons(
-    client, db_session, test_project, test_plan, test_user,
+    client, db_session, test_project, test_user,
 ):
     other = _make_user(db_session, "someone-else")
     h_assigned = _make_host(db_session, test_project.id, "10.1.0.1")
@@ -100,32 +111,32 @@ def test_my_tasks_unions_three_buckets_with_reasons(
     h_other = _make_host(db_session, test_project.id, "10.1.0.5")
 
     # assigned to caller, host NOT in review, low priority
-    e_assigned = _make_entry(db_session, test_plan.id, h_assigned.id, "low",
+    e_assigned = _make_test(db_session, test_project.id, h_assigned.id, "low",
                              assigned_to_id=test_user.id)
     # in-review host, unassigned, low priority (NOT triage — low)
-    e_review = _make_entry(db_session, test_plan.id, h_review.id, "low")
+    e_review = _make_test(db_session, test_project.id, h_review.id, "low")
     _in_review(db_session, test_user.id, h_review.id)
     # unassigned critical, host not in review → triage
-    e_triage = _make_entry(db_session, test_plan.id, h_triage.id, "critical")
+    e_triage = _make_test(db_session, test_project.id, h_triage.id, "critical")
     # assigned to caller AND in-review host → both reasons
-    e_both = _make_entry(db_session, test_plan.id, h_both.id, "high",
+    e_both = _make_test(db_session, test_project.id, h_both.id, "high",
                          assigned_to_id=test_user.id)
     _in_review(db_session, test_user.id, h_both.id)
     # assigned to someone else, medium, not in review → excluded
-    _make_entry(db_session, test_plan.id, h_other.id, "medium",
+    _make_test(db_session, test_project.id, h_other.id, "medium",
                 assigned_to_id=other.id)
 
     body = _my_tasks(client, test_project.id)
 
-    by_entry = {it["entry_id"]: it for it in body["items"]}
-    # The 4 matching entries appear; the someone-else medium does not.
-    assert set(by_entry) == {e_assigned.id, e_review.id, e_triage.id, e_both.id}
+    by_test = {it["test_id"]: it for it in body["items"]}
+    # The 4 matching tests appear; the someone-else medium does not.
+    assert set(by_test) == {e_assigned.id, e_review.id, e_triage.id, e_both.id}
     assert body["total_open"] == 4
 
-    assert by_entry[e_assigned.id]["reasons"] == ["assigned"]
-    assert by_entry[e_review.id]["reasons"] == ["in_review"]
-    assert by_entry[e_triage.id]["reasons"] == ["triage"]
-    assert by_entry[e_both.id]["reasons"] == ["assigned", "in_review"]
+    assert by_test[e_assigned.id]["reasons"] == ["assigned"]
+    assert by_test[e_review.id]["reasons"] == ["in_review"]
+    assert by_test[e_triage.id]["reasons"] == ["triage"]
+    assert by_test[e_both.id]["reasons"] == ["assigned", "in_review"]
 
     counts = body["reason_counts"]
     assert counts["assigned"] == 2   # e_assigned, e_both
@@ -134,16 +145,15 @@ def test_my_tasks_unions_three_buckets_with_reasons(
 
 
 def test_my_tasks_excludes_terminal_entries(
-    client, db_session, test_project, test_plan, test_user,
+    client, db_session, test_project, test_user,
 ):
-    """A completed/rejected entry assigned to the caller must not appear."""
-    # Separate hosts — (test_plan_id, host_id) is unique (uq_plan_host).
+    """A done/dismissed test assigned to the caller must not appear."""
     h_done = _make_host(db_session, test_project.id, "10.2.0.1")
     h_rejected = _make_host(db_session, test_project.id, "10.2.0.2")
-    _make_entry(db_session, test_plan.id, h_done.id, "critical",
-                assigned_to_id=test_user.id, status="completed")
-    _make_entry(db_session, test_plan.id, h_rejected.id, "high",
-                assigned_to_id=test_user.id, status="rejected", phase="reconnaissance")
+    _make_test(db_session, test_project.id, h_done.id, "critical",
+                assigned_to_id=test_user.id, status="done")
+    _make_test(db_session, test_project.id, h_rejected.id, "high",
+                assigned_to_id=test_user.id, status="dismissed")
 
     body = _my_tasks(client, test_project.id)
     assert body["items"] == []
@@ -151,39 +161,39 @@ def test_my_tasks_excludes_terminal_entries(
 
 
 def test_my_tasks_orders_assigned_before_triage(
-    client, db_session, test_project, test_plan, test_user,
+    client, db_session, test_project, test_user,
 ):
     """Reason rank wins over priority: an assigned low-priority task
     outranks an unassigned critical triage task."""
     h_assigned = _make_host(db_session, test_project.id, "10.3.0.1")
     h_triage = _make_host(db_session, test_project.id, "10.3.0.2")
-    e_assigned = _make_entry(db_session, test_plan.id, h_assigned.id, "low",
+    e_assigned = _make_test(db_session, test_project.id, h_assigned.id, "low",
                              assigned_to_id=test_user.id)
-    e_triage = _make_entry(db_session, test_plan.id, h_triage.id, "critical")
+    e_triage = _make_test(db_session, test_project.id, h_triage.id, "critical")
 
     body = _my_tasks(client, test_project.id)
-    order = [it["entry_id"] for it in body["items"]]
+    order = [it["test_id"] for it in body["items"]]
     assert order.index(e_assigned.id) < order.index(e_triage.id), order
 
 
 def test_my_tasks_assigned_survives_limit_against_many_triage(
-    client, db_session, test_project, test_plan, test_user,
+    client, db_session, test_project, test_user,
 ):
     """Regression (RV-2): the SQL LIMIT must keep the top-ranked rows.
 
     Pre-fix the query over-fetched limit*4 rows with NO order_by, then
-    sorted in Python — so when more than limit*4 entries qualified, an
+    sorted in Python — so when more than limit*4 tests qualified, an
     assigned (rank-0) task could be excluded by the unordered LIMIT
-    before it was ever ranked.  Here limit=2 (limit*4=8) but 10 entries
+    before it was ever ranked.  Here limit=2 (limit*4=8) but 10 tests
     qualify; the single assigned task must still appear.
     """
-    # 9 unassigned-critical triage entries (each on its own host).
+    # 9 unassigned-critical triage tests (each on its own host).
     for i in range(9):
         h = _make_host(db_session, test_project.id, f"10.8.0.{i + 1}")
-        _make_entry(db_session, test_plan.id, h.id, "critical")
+        _make_test(db_session, test_project.id, h.id, "critical")
     # 1 assigned LOW-priority task — lowest priority but highest reason.
     h_assigned = _make_host(db_session, test_project.id, "10.8.9.9")
-    e_assigned = _make_entry(db_session, test_plan.id, h_assigned.id, "low",
+    e_assigned = _make_test(db_session, test_project.id, h_assigned.id, "low",
                              assigned_to_id=test_user.id)
 
     # Calls the service directly: the limit is the whole point of this
@@ -192,7 +202,7 @@ def test_my_tasks_assigned_survives_limit_against_many_triage(
     from app.services.operations_read_service import compute_my_tasks
 
     result = compute_my_tasks(db_session, test_user, test_project, limit=2)
-    ids = [it.entry_id for it in result.items]
+    ids = [it.test_id for it in result.items]
     # Assigned outranks triage regardless of priority → it's first and
     # always within the limit.
     assert ids[0] == e_assigned.id, ids
@@ -203,3 +213,40 @@ def test_my_tasks_empty_when_nothing_matches(client, test_project):
     assert body["items"] == []
     assert body["total_open"] == 0
     assert body["reason_counts"] == {"assigned": 0, "in_review": 0, "triage": 0}
+
+
+def test_my_tasks_carries_what_the_row_needs_to_act(
+    client, db_session, test_project, test_user,
+):
+    """The Operations row links to the host and claims / closes the test in
+    place, which needs the test's id, revision and host — and two tests on ONE
+    host are two tasks (a plan entry was one row per host)."""
+    host = _make_host(db_session, test_project.id, "10.9.0.1")
+    first = _make_test(db_session, test_project.id, host.id, "high",
+                       assigned_to_id=test_user.id)
+    second = _make_test(db_session, test_project.id, host.id, "low",
+                        assigned_to_id=test_user.id)
+
+    body = _my_tasks(client, test_project.id)
+    by_test = {it["test_id"]: it for it in body["items"]}
+    assert set(by_test) == {first.id, second.id}
+    assert body["total_open"] == 2
+    row = by_test[first.id]
+    assert row["host_id"] == host.id and row["host_ip"] == "10.9.0.1"
+    assert row["revision"] == 1 and row["status"] == "proposed"
+    assert row["description"] == "technique-a"
+
+
+def test_my_tasks_is_this_projects_only(client, db_session, test_project, test_user):
+    """A test assigned to the caller in ANOTHER project is not this project's
+    work."""
+    from app.db.models_project import Project
+    other = Project(name="Other tasks project", slug="my-tasks-other")
+    db_session.add(other)
+    db_session.flush()
+    foreign_host = _make_host(db_session, other.id, "10.9.1.1")
+    _make_test(db_session, other.id, foreign_host.id, "critical",
+               assigned_to_id=test_user.id)
+
+    body = _my_tasks(client, test_project.id)
+    assert body["items"] == [] and body["total_open"] == 0

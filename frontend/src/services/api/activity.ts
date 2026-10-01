@@ -11,23 +11,22 @@
  */
 import { api } from './client';
 
-/** v5.213.0 — `test_result` (one command an executing agent reported, with
- *  its tool and target host) and `sanity_check` (one target-verification
- *  probe) are the per-command, per-target record that answers "was this
- *  signature against this host at this time ours?". */
+/** `evidence` (5.320.0) is the per-command, per-target record that answers
+ *  "was this signature against this host at this time ours?": one command an
+ *  agent recorded, with its tool, the address it reached and the outcome.
+ *  Until 5.320.0 that record was a test plan's execution result or a target
+ *  probe, and execution runs were a kind too. */
 export type ActivityKind =
   | 'scan'
-  | 'execution_session'
-  | 'test_result'
-  | 'sanity_check';
+  | 'evidence';
 
 export interface ActivityItem {
   kind: ActivityKind;
-  /** scan_id for scans, session_id for execution sessions. */
+  /** The scan's id, or the evidence record's. */
   ref_id: number;
   project_id: number;
   project_name: string;
-  /** Human-readable primary label (tool / scope / plan). */
+  /** Human-readable primary label: the tool. */
   label: string;
   /** Optional secondary string for tooltip / detail (command line, notes, mode). */
   secondary_label: string | null;
@@ -35,9 +34,7 @@ export interface ActivityItem {
   end_time: string | null;
   /**
    * v2.60.0 — `Scan.created_at` for scans only (the row's ingestion
-   * time).  Always populated for scans; null for execution
-   * sessions (which don't carry a separate ingestion timestamp —
-   * `start_time` already is the row-creation moment for those).
+   * time).  Always populated for scans; null for evidence.
    */
   recorded_time: string | null;
   /**
@@ -45,7 +42,7 @@ export interface ActivityItem {
    * because the scanner didn't write one (some `.txt` exports, bare
    * masscan list output).  The UI uses this to badge the timestamp
    * so the analyst doesn't read upload time as execution time.
-   * False for scans with a real scanner timestamp and for sessions.
+   * False for scans with a real scanner timestamp and for evidence.
    */
   start_time_is_fallback: boolean;
   /**
@@ -54,15 +51,16 @@ export interface ActivityItem {
    * single-instant event at start_time.
    */
   has_end_time: boolean;
-  /** Host count for scans; null for execution_session. */
+  /** Host count for scans; null for evidence (one host, in `target`). */
   host_count: number | null;
-  /** Status string for execution sessions; null for scans. */
+  /** An evidence record's outcome (finding, no_finding, inconclusive,
+   *  failed, info); null for scans. */
   status: string | null;
-  /** v5.213.0 — the IP this row acted on when it is one (test_result,
-   *  sanity_check); null for scans and runs, which cover many. */
+  /** v5.213.0 — the IP this row acted on when it is one (evidence); null
+   *  for scans, which cover many. */
   target: string | null;
-  /** v5.213.0 — for the per-command kinds, the execution run the row
-   *  belongs to (`ref_id` is the row's own id); the deep link goes here. */
+  /** For evidence, the agent session that recorded it (`ref_id` is the
+   *  record's own id); the deep link goes to the session. */
   parent_id: number | null;
 }
 

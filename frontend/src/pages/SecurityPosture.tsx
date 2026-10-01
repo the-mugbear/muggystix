@@ -181,7 +181,7 @@ const SecurityPosture: React.FC = () => {
           <PostureConclusion data={data} />
           <ContextStrip data={data} />
           <WhereToFocus data={data} />
-          <ReviewDecisions priorities={data.priorities} decisions={data.decisions} />
+          <ReviewDecisions priorities={data.priorities} />
           <ConditionSegmentHeatmap data={data} />
           <PromotedFindings data={data} />
         </div>
@@ -495,18 +495,12 @@ export const ConditionSegmentHeatmap: React.FC<{ data: PostureResponse }> = ({ d
 // ---------------------------------------------------------------------------
 const ReviewDecisions: React.FC<{
   priorities: PriorityItem[];
-  decisions: PostureResponse['decisions'];
-}> = ({ priorities, decisions }) => (
+}> = ({ priorities }) => (
   <PostureSection
     title={<>
       Decisions for this review
-      <InfoTip text="What was observed, how far it reaches, and the next assessment step — ranked worst-first from the same signals that set the security condition. Rows marked Assessment work (an unassigned finding) are things to do, and never change the condition; neither do blocked runs, which live in Operations." />
+      <InfoTip text="What was observed, how far it reaches, and the next assessment step — ranked worst-first from the same signals that set the security condition. Rows marked Assessment work (an unassigned finding) are things to do, and never change the condition." />
     </>}
-    actions={decisions.blocked_sessions > 0 && (
-      <Link to="/operations" className="text-info hover:underline">
-        {`${decisions.blocked_sessions} blocked run${decisions.blocked_sessions === 1 ? '' : 's'}`} in Operations →
-      </Link>
-    )}
   >
     {priorities.length === 0 ? (
       <p className="text-metadata text-muted-foreground">Nothing demands a decision right now.</p>

@@ -27,7 +27,7 @@ const project = (over: Record<string, unknown>) => ({
   findings_false_positive: 0, finding_affected_targets: 0,
   observations: sev(), observations_judged: sev(), observations_unjudged: sev(),
   defect_rate: { critical: 0, high: 0, medium: 0, low: 0 }, last_scan_at: null,
-  pending_plan_reviews: 0, blocked_sessions: 0, targets_added: 0, reviews_concluded: 0,
+  targets_added: 0, reviews_concluded: 0,
   imports: 0, contributors: 0, attention_reasons: [],
   ...over,
 });
@@ -58,7 +58,7 @@ const response = {
     },
   },
   attention: {
-    critical_projects: 1, blocked_runs: 0,
+    critical_projects: 1,
     no_admin_projects: 1, quiet_projects: 0, no_inventory_projects: 0,
   },
   accounts: { total: 9, enabled: 8, disabled: 1, without_membership: 2 },
@@ -132,7 +132,7 @@ describe('Oversight — wording a reader can reconcile', () => {
     dashboardMock.mockReset().mockResolvedValue({
       ...response,
       attention: {
-        critical_projects: 1, blocked_runs: 2,
+        critical_projects: 1,
         no_admin_projects: 0, quiet_projects: 1, no_inventory_projects: 3,
       },
     });
@@ -141,7 +141,8 @@ describe('Oversight — wording a reader can reconcile', () => {
     expect(text('critical')).toBe('1 project with a critical finding or critical scanner output not yet judged');
     // 5.313.0 — plans are not approved, so nothing waits on an approval.
     expect(screen.queryByTestId('attention-pending_review')).toBeNull();
-    expect(text('blocked_session')).toBe('2 runs blocked');
+    // 5.320.0 — nor on a blocked run: there are no execution runs.
+    expect(screen.queryByTestId('attention-blocked_session')).toBeNull();
     expect(text('no_admin')).toBe('0 projects without a project admin');
     // Project activity, never the age of evidence.
     expect(text('quiet')).toBe('1 active project with no import in 14 days');

@@ -1,7 +1,7 @@
 """v2.340.0 — a session has an exit, and a dead-agent session has a way back.
 
 Two defects with one cause. Nothing on the agent surface could end a project
-session (recon / execution phases had ``/complete``; the session had nothing),
+session (recon / execution runs had ``/complete``; the session had nothing),
 and the operator's only action on an active row was End. So a client that died
 mid-tool — the common case, an editor agent session timing out while a scan
 ran — left a session that showed ``active`` for a week and offered the
@@ -9,7 +9,9 @@ operator no way to reconnect the agent it had lost.
 
 These pin:
 
-* the agent can end its own session, and is refused while a phase is open;
+* the agent can end its own session; ending closes nothing else — the host
+  tests it proposed and the evidence it recorded are project data and stay
+  (until v2.442.0 an end was refused, 409, while an execution run was open);
 * the operator can resume an active session — same session id, rotated key,
   prompt with the resumed notice, MCP setup — owner only, active only, and
   never past the lifetime cap;
@@ -18,7 +20,7 @@ These pin:
 """
 from datetime import datetime, timedelta, timezone
 
-from app.db.models_agent import AgentSession, AssistSession, ExecutionSession
+from app.db.models_agent import AgentSession, AssistSession
 from app.db.models_auth import APIKey, User
 
 
@@ -50,25 +52,25 @@ def _hdr(key):
     return {"X-API-Key": key}
 
 
-def _open_execution_run(client, db, project, key):
-    """Create a draft plan with one entry and open an execution run on it via
-    the agent surface — the surviving command-running run (recon runs gone)."""
+def _propose_and_run_a_test(client, db, project, key):
+    """Propose one host test with the session's key and record evidence for it
+    — the work a session leaves behind (it replaces the execution run)."""
     from app.db import models
-    from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
     host = models.Host(project_id=project.id, ip_address="10.0.0.5", state="up")
     db.add(host)
-    db.flush()
-    plan = TestPlan(project_id=project.id, version=1, title="p", status=TestPlanStatus.DRAFT.value)
-    db.add(plan)
-    db.flush()
-    db.add(TestPlanEntry(
-        test_plan_id=plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration", proposed_tests=[], rationale="x",
-    ))
     db.commit()
-    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    r = client.post("/api/v1/agent/host-tests", headers=_hdr(key), json={"tests": [{
+        "request_key": "resume-1", "host_id": host.id, "tool": "nmap",
+        "description": "Version scan", "rationale": "open ports",
+    }]})
     assert r.status_code == 201, r.text
-    return plan.id, r.json()["session_id"]
+    test_id = r.json()["items"][0]["id"]
+    r = client.post("/api/v1/agent/evidence", headers=_hdr(key), json={
+        "host_id": host.id, "host_test_id": test_id, "request_key": "resume-ev-1",
+        "tool": "nmap", "outcome": "no_finding", "summary": "nothing unusual",
+    })
+    assert r.status_code == 201, r.text
+    return test_id, r.json()["id"]
 
 
 # ---------------------------------------------------------------------------
@@ -99,29 +101,30 @@ def test_agent_ends_its_own_session_and_the_key_dies_with_it(client, test_projec
     assert r.status_code == 401
 
 
-def test_agent_end_is_refused_while_a_phase_is_open(client, test_project, db_session):
+def test_agent_end_is_not_refused_by_unfinished_work_and_keeps_it(client, test_project, db_session):
+    """v2.442.0 — there is no run to complete first.  A session with a test
+    still ``proposed`` ends at once, and the test and its evidence stay, still
+    attributed to the ended session, for a person or a later session."""
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
+
     key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
-    plan_id, run_id = _open_execution_run(client, db_session, test_project, key)
+    test_id, evidence_id = _propose_and_run_a_test(client, db_session, test_project, key)
 
     r = client.post("/api/v1/agent/session/end", headers=_hdr(key), json={})
-    assert r.status_code == 409, r.text
-    detail = r.json()["detail"]
-    assert detail["active_execution_session_ids"] == [run_id]
-    assert "execution" in detail["message"].lower()
-
-    # Refusal changed nothing: the session is still active, the key still works,
-    # the run is still active (not paused by an end underneath it).
-    row = db_session.query(AgentSession).filter(AgentSession.id == sid).first()
-    assert row.status == "active"
-    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == run_id).first()
-    assert run.status == "active"
-    assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 200
-
-    # Complete the run, then the end goes through.
-    r = client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=_hdr(key), json={})
     assert r.status_code == 200, r.text
-    r = client.post("/api/v1/agent/session/end", headers=_hdr(key), json={})
+    db_session.expire_all()
+    assert db_session.query(AgentSession).filter(AgentSession.id == sid).first().status == "ended"
+    test = db_session.get(HostTest, test_id)
+    assert (test.status, test.agent_session_id) == ("proposed", sid)
+    assert db_session.get(EvidenceRecord, evidence_id).agent_session_id == sid
+
+    # A person can carry the test on after the session is gone.
+    r = client.patch(
+        f"/api/v1/projects/{test_project.id}/host-tests/{test_id}",
+        json={"expected_revision": test.revision, "status": "in_progress"},
+    )
     assert r.status_code == 200, r.text
 
 
@@ -140,7 +143,7 @@ def test_end_session_is_an_mcp_tool():
 def test_resume_rotates_the_key_on_the_same_session(client, test_project, db_session):
     old_key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
-    plan_id, run_id = _open_execution_run(client, db_session, test_project, old_key)
+    test_id, evidence_id = _propose_and_run_a_test(client, db_session, test_project, old_key)
 
     r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/resume")
     assert r.status_code == 200, r.text
@@ -153,15 +156,25 @@ def test_resume_rotates_the_key_on_the_same_session(client, test_project, db_ses
     assert new_key in body["instructions"]
     assert body["mcp_clients"], "the resume must hand back the MCP setup like start does"
     assert body["mcp_url"].endswith("/mcp")
-    assert body["active_execution_session_ids"] == [run_id]
+    assert "active_execution_session_ids" not in body
     assert body["key_expires_at"] and body["renewable_until"]
+    # The resumed agent is told where its earlier work is, so it continues
+    # coverage instead of repeating it.
+    assert f"/agent/host-tests?agent_session_id={sid}" in body["instructions"]
+    assert f"/agent/evidence?agent_session_id={sid}" in body["instructions"]
 
-    # Same session, same open run: the execution run still belongs to it and is
-    # reachable with the new key; the old key is dead.
-    run = db_session.query(ExecutionSession).filter(ExecutionSession.id == run_id).first()
-    assert run.agent_session_id == sid and run.status == "active"
+    # Same session: the work it did is reachable with the new key through the
+    # reads the prompt names; the old key is dead.
     assert client.get("/api/v1/agent/identity", headers=_hdr(new_key)).status_code == 200
     assert client.get("/api/v1/agent/identity", headers=_hdr(old_key)).status_code == 401
+    tests = client.get("/api/v1/agent/host-tests", headers=_hdr(new_key),
+                       params={"agent_session_id": sid}).json()
+    assert [t["id"] for t in tests["items"]] == [test_id]
+    ev = client.get("/api/v1/agent/evidence", headers=_hdr(new_key),
+                    params={"agent_session_id": sid}).json()
+    assert [e["id"] for e in ev["items"]] == [evidence_id]
+    assert client.get("/api/v1/agent/evidence", headers=_hdr(new_key),
+                      params={"agent_session_id": sid + 999}).json()["total"] == 0
 
     # Exactly one live key on the session, and the session record says why.
     live = (

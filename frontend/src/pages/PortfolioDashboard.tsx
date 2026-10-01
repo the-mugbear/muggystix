@@ -104,7 +104,6 @@ const hasSeverity = (card: ProjectCard, sev: 'critical' | 'high'): boolean =>
 const SHOW_OPTIONS: { key: string; label: string; pred: (p: ProjectCard) => boolean }[] = [
   { key: 'critical', label: 'With critical', pred: (p) => hasSeverity(p, 'critical') },
   { key: 'high', label: 'With critical or high', pred: (p) => hasSeverity(p, 'critical') || hasSeverity(p, 'high') },
-  { key: 'blocked', label: 'Blocked runs', pred: (p) => p.blocked_sessions > 0 },
   { key: 'stale', label: 'Active, no import in 14 days', pred: (p) => p.is_stale },
   { key: 'no_data', label: 'No hosts yet', pred: (p) => p.host_count === 0 },
 ];
@@ -214,7 +213,6 @@ const ProjectsTable: React.FC<{
                 {/* One chip style for every waiting item — outlined, left-aligned —
                     so a neutral count never reads as loose, indented text. */}
                 <span className="flex min-w-0 flex-wrap justify-start gap-xxs" data-testid="waiting-chips">
-                  {p.blocked_sessions > 0 && <Badge variant="destructive-outline" className="max-w-full">{plural(p.blocked_sessions, 'blocked run')}</Badge>}
                   {p.active_sessions > 0 && <Badge variant="info-outline" className="max-w-full">{plural(p.active_sessions, 'open agent session')}</Badge>}
                   {p.open_tasks > 0 && <Badge variant="outline" className="max-w-full">{plural(p.open_tasks, 'open task')}</Badge>}
                 </span>
@@ -433,13 +431,6 @@ const PortfolioDashboard: React.FC = () => {
                   {n(s.findings.critical)} critical · {n(s.findings.high)} high
                   <br />
                   {plural(s.unjudged_observations.critical + s.unjudged_observations.high, 'critical/high scanner observation')} not yet judged
-                </PostureMeasure>
-                <PostureMeasure label="Blocked runs" value={n(s.blocked_sessions_total)}
-                  info="Execution runs that are paused or failed, or whose agent session can no longer act: they will not move until someone resumes the session or abandons the run.">
-                  <button type="button" className="text-info hover:underline disabled:text-muted-foreground disabled:no-underline"
-                    disabled={s.blocked_sessions_total === 0} onClick={() => setParam('show', 'blocked')}>
-                    {s.blocked_sessions_total === 0 ? 'none blocked' : `show ${plural(s.blocked_sessions_total, 'blocked run')}`}
-                  </button>
                 </PostureMeasure>
               </div>
 

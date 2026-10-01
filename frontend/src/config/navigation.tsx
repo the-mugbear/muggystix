@@ -28,7 +28,6 @@ import {
   Settings as SettingsIcon,
   ShieldCheck,
   Sparkles,
-  TerminalSquare,
   UserCog,
 } from 'lucide-react';
 import {
@@ -130,12 +129,12 @@ export const HUB_DEFS: HubDef[] = [
   // Posture is a real landing page (/posture) like Operations — its hub path
   // renders the roll-up directly, with Insights + Systemic as drill-down tabs.
   { id: 'posture', label: 'Posture', path: '/posture', requiredRole: 'viewer', Icon: Gauge },
-  // Every agent surface lives here (v5.294.0): a session's page and its run
-  // pages (execution; v5.312.0 /agent-sessions) are owned paths, so the
-  // sidebar still says where you are when you drill into one.
+  // Every agent surface lives here (v5.294.0): a session's page
+  // (v5.312.0 /agent-sessions) is an owned path, so the sidebar still says
+  // where you are when you drill into one.
   {
     id: 'workflows', label: 'Workflows', path: '/workflows', requiredRole: 'viewer', Icon: ShieldCheck,
-    defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions', '/assist-sessions', '/executions'],
+    defaultChildPath: '/agent-activity', ownedPaths: ['/agent-sessions', '/assist-sessions'],
   },
   { id: 'collaboration', label: 'Collaboration', path: '/collaboration', requiredRole: 'viewer', Icon: ActivityPulseIcon },
   { id: 'settings', label: 'Settings', path: '/settings', requiredRole: 'viewer', Icon: SettingsIcon, placement: 'utility' },
@@ -238,24 +237,21 @@ export const NAV_PAGES: NavPage[] = [
   },
 
   // Workflows hub — v2.337.0: agents run one project session that does every
-  // kind of work. 5.313.0 — the operator drives their agent and the agent
-  // executes its own plans (no approval), so Agent Sessions leads the hub and
-  // is its default; Test Plans is the record of intent and results a person or
-  // an agent writes. Executions are per-artifact views of a session's work —
-  // kept as routes, in the command palette and linked from every session that
-  // opened them (v5.312.0), but off the hub strip so it does not present a
-  // workflow split. (No `hub` field = palette-only.) Recon runs are gone
-  // (5.313.1): an agent reads a scope and uploads to its session.
-  // Every agent surface is in this hub, Tool Activity included.
+  // kind of work. 5.313.0 — the operator drives their agent (no approval), so
+  // Agent Sessions leads the hub and is its default. Recon runs are gone
+  // (5.313.1): an agent reads a scope and uploads to its session. Test plans
+  // and execution runs are gone too (5.320.0): tests are proposed on hosts
+  // and shown on each host's page, so there is no Test Plans or Executions
+  // page. Every agent surface is in this hub, Tool Activity included.
   {
     // v5.312.0 — "Agent Sessions" (was Agent Runs): the session is what an
-    // operator starts and manages; its runs are listed under it. The
+    // operator starts and manages. The
     // /assist-sessions palette entry that also said "Agent Sessions" is gone —
     // one page, one entry.
     id: 'agent-activity', path: '/agent-activity', label: 'Agent Sessions', requiredRole: 'viewer', hub: 'workflows',
     palette: {
       Icon: Bot,
-      keywords: ['agent', 'sessions', 'runs', 'llm', 'execution', 'assist', 'end', 'resume', 'key'],
+      keywords: ['agent', 'sessions', 'runs', 'llm', 'assist', 'end', 'resume', 'key'],
       order: 5,
     },
   },
@@ -269,15 +265,7 @@ export const NAV_PAGES: NavPage[] = [
     },
   },
   {
-    id: 'test-plans', path: '/test-plans', label: 'Test Plans', requiredRole: 'viewer', hub: 'workflows',
-    palette: { Icon: ShieldCheck, order: 8 },
-  },
-  {
     id: 'tool-activity', path: '/tool-activity', label: 'Tool Activity', requiredRole: 'viewer', hub: 'workflows',
-  },
-  {
-    id: 'executions', path: '/executions', label: 'Executions', requiredRole: 'viewer',
-    palette: { Icon: TerminalSquare, keywords: ['runs', 'execution'], order: 9 },
   },
 
   // Collaboration hub — one page (the tab strip hides for a single child).
@@ -402,8 +390,8 @@ export const HUBS: Hub[] = HUB_DEFS.map((hub) => ({
  * v5.294.0 — null when nothing matches.  Operations used to be the catch-all,
  * so a 404, the personal pages (/profile, /llm-settings) and the cross-project
  * pages all lit "Operations" as where you were.  Every project detail route is
- * covered by a child prefix (/hosts/12, /findings/37, /test-plans/4/runs) or an
- * owned path (/executions/…, /assist-sessions/…).
+ * covered by a child prefix (/hosts/12, /findings/37) or an
+ * owned path (/agent-sessions/…, /assist-sessions/…).
  */
 export function resolveActiveHub(pathname: string): Hub | null {
   for (const hub of HUBS) {
@@ -444,10 +432,6 @@ const DETAIL_TITLES: Array<{ pattern: RegExp; title: string }> = [
   { pattern: /^\/scans\/compare$/, title: 'Compare scans' },
   { pattern: /^\/scans\/[^/]+$/, title: 'Scan' },
   { pattern: /^\/reports\/[^/]+$/, title: 'Report' },
-  { pattern: /^\/test-plans\/compare$/, title: 'Compare plans' },
-  { pattern: /^\/test-plans\/[^/]+\/compare$/, title: 'Compare runs' },
-  { pattern: /^\/test-plans\/[^/]+(\/.*)?$/, title: 'Test plan' },
-  { pattern: /^\/executions\/[^/]+$/, title: 'Execution' },
   { pattern: /^\/assist-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/agent-sessions\/[^/]+$/, title: 'Agent session' },
   { pattern: /^\/reference\/user-guide(\/.*)?$/, title: 'User guide' },

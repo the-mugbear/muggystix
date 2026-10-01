@@ -69,6 +69,12 @@ export const missingReportText = (t: FindingReportText | null | undefined): stri
 /** The sections a report needs — the ones an AI draft may fill. */
 const DRAFTABLE: FindingReportTextField[] = ['description', 'impact', 'recommendation'];
 
+/** Nothing the report needs has been written — a finding that was just made.
+ *  Its page opens ready to write: a wall of "Not written yet" behind an Edit
+ *  button hid the one thing there is to do next (5.323.0). */
+const nothingWritten = (t: FindingReportText | null | undefined): boolean =>
+  DRAFTABLE.every((k) => !(t?.[k] ?? '').trim());
+
 interface Props {
   finding: Finding;
   /** Analyst+ AND the server's can_modify (author / project admin). */
@@ -90,7 +96,14 @@ const FindingReportTextCard: React.FC<Props> = ({
 }) => {
   const toast = useToast();
   const text = finding.report_text;
-  const [draft, setDraft] = useState<Draft | null>(() => (startEditing && canEdit ? toDraft(text) : null));
+  const [draft, setDraft] = useState<Draft | null>(() => ((startEditing || nothingWritten(text)) && canEdit ? toDraft(text) : null));
+  // Opened from an empty section: put the caret in that section.
+  const [focusField, setFocusField] = useState<string | null>(null);
+  useEffect(() => {
+    if (!draft || !focusField) return;
+    document.getElementById(`rt-${focusField}`)?.focus?.();
+    setFocusField(null);
+  }, [draft, focusField]);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
@@ -168,14 +181,14 @@ const FindingReportTextCard: React.FC<Props> = ({
         title={<span>Report text</span>}
         description={<>
           What the client report says about this finding. Written in Markdown; shown as the report prints it.
-          {missing.length > 0 && !draft && (
+          {missing.length > 0 && (
             <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
           )}
         </>}
         actions={canEdit || canPropose ? (
           <>
-            {canPropose && !draft && agentAction}
-            {canPropose && !draft && missing.length > 0 && (
+            {canPropose && agentAction}
+            {canPropose && missing.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => void draftEmpty()} disabled={drafting || saving}
                 title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
                 {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
@@ -237,7 +250,7 @@ const FindingReportTextCard: React.FC<Props> = ({
             {error && <p className="text-caption text-destructive">{error}</p>}
             <div className="flex gap-xs">
               <Button type="submit" size="sm" disabled={saving}>
-                {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save
+                {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save report text
               </Button>
               <Button type="button" variant="ghost" size="sm" onClick={() => setDraft(null)} disabled={saving}>
                 Cancel
@@ -254,7 +267,15 @@ const FindingReportTextCard: React.FC<Props> = ({
                 <dd className="min-w-0 break-words text-body" data-testid={`report-text-${f.key}`}>
                   {text?.[f.key]?.trim()
                     ? <SafeMarkdown text={text[f.key] as string} />
-                    : <span className="text-muted-foreground">Not written yet</span>}
+                    : canEdit ? (
+                      <button
+                        type="button"
+                        className="text-info hover:underline"
+                        onClick={() => { setDraft(toDraft(text)); setError(null); setFocusField(f.key); }}
+                      >
+                        Not written yet. Write it
+                      </button>
+                    ) : <span className="text-muted-foreground">Not written yet</span>}
                 </dd>
               </div>
             ))}

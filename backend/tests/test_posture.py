@@ -152,49 +152,38 @@ def test_owned_reviewed_finding_without_scans_is_insufficient_evidence(db_sessio
     assert out["label"] == "insufficient_evidence"
 
 
-def test_blocked_run_is_not_a_strategic_signal(db_session, test_project):
-    """A blocked execution session must NOT escalate the strategic label or
-    appear as a management priority — it's operational state (kept in decisions),
-    not a security-condition signal."""
-    from app.db.models_agent import TestPlan, ExecutionSession
+def test_outstanding_test_work_is_not_a_strategic_signal(db_session, test_project):
+    """Operational state must NOT escalate the strategic label or appear as a
+    management priority: tests still to do and an attempt that failed to run
+    say nothing about the security condition.  (Until v2.442.0 this was a
+    blocked execution run, counted in a ``decisions`` block that went with
+    execution runs.)"""
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
 
     host = _host(db_session, test_project.id, "10.0.0.30")
     db_session.add(models.Scan(project_id=test_project.id, filename="s", tool_name="nmap", scan_type="nmap"))
-    plan = TestPlan(project_id=test_project.id, title="plan")
-    db_session.add(plan)
+    db_session.commit()
+    before = compute_posture(db_session, test_project.id, use_cache=False)
+
+    test = HostTest(
+        project_id=test_project.id, host_id=host.id, tool="nmap", description="x", rationale="r",
+        priority="critical", status="in_progress", source="person",
+        request_key="posture-1", request_hash="0" * 64,
+    )
+    db_session.add(test)
     db_session.flush()
-    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
+    db_session.add(EvidenceRecord(
+        project_id=test_project.id, host_id=host.id, host_test_id=test.id,
+        tool="nmap", outcome="failed", summary="could not run",
+    ))
     db_session.commit()
 
     out = compute_posture(db_session, test_project.id, use_cache=False)
-    assert out["decisions"]["blocked_sessions"] == 1          # still counted...
-    assert out["label"] != "action_required"                 # ...but not a label driver
+    assert out["label"] == before["label"] and out["label"] != "action_required"
+    assert out["reasons"] == before["reasons"]
+    assert [p["kind"] for p in out["priorities"]] == [p["kind"] for p in before["priorities"]]
     assert not any(p["kind"] == "blocked" for p in out["priorities"])
-
-
-def test_blocked_runs_count_only_latest_session_per_plan(db_session, test_project):
-    """A superseded failed session (a newer run was started) must NOT leave a
-    permanent 'blocked' flag — only the latest session per plan counts."""
-    from app.db.models_agent import TestPlan, ExecutionSession
-
-    plan = TestPlan(project_id=test_project.id, title="plan")
-    db_session.add(plan)
-    db_session.flush()
-    # Older session failed; a newer session is active → the plan is progressing.
-    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
-    db_session.flush()
-    db_session.add(ExecutionSession(test_plan_id=plan.id, status="active"))
-    db_session.commit()
-
-    out = compute_posture(db_session, test_project.id, use_cache=False)
-    assert out["decisions"]["blocked_sessions"] == 0
-    assert not any(p["kind"] == "blocked" for p in out["priorities"])
-
-    # Now the LATEST session fails → it counts.
-    db_session.add(ExecutionSession(test_plan_id=plan.id, status="failed"))
-    db_session.commit()
-    out2 = compute_posture(db_session, test_project.id, use_cache=False)
-    assert out2["decisions"]["blocked_sessions"] == 1
 
 
 def test_posture_response_contract(db_session, test_project):
@@ -204,7 +193,7 @@ def test_posture_response_contract(db_session, test_project):
     out = compute_posture(db_session, test_project.id, use_cache=False)
     assert set(out) >= {
         "label", "conclusion", "reasons", "headline",
-        "priorities", "decisions", "sites", "systemic", "disposition", "evidence",
+        "priorities", "sites", "systemic", "disposition", "evidence",
     }
     assert set(out["conclusion"]) >= {"text", "tone"}
     # v2.372.0 — the engagement ends at the report; remediated / reopened /
@@ -216,9 +205,9 @@ def test_posture_response_contract(db_session, test_project):
     }
     assert "adopted" in out["headline"]["systemic"]
     assert set(out["disposition"]) >= {"scanner_active", "non_scanner_active", "by_status"}
-    assert set(out["decisions"]) >= {"blocked_sessions"}
-    # v2.433.0 — no plan approval step, so no approval queue.
-    assert "pending_approvals" not in out["decisions"]
+    # v2.442.0 — the ``decisions`` block (blocked execution runs; a plan
+    # approval queue until v2.433.0) went with execution runs.  Pinned absent.
+    assert "decisions" not in out
     assert set(out["evidence"]) >= {"scan_count", "scan_staleness_days"}
     for p in out["priorities"]:
         assert set(p) >= {"kind", "title", "blast_radius", "action", "severity", "owner", "link"}

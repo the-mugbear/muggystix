@@ -49,7 +49,6 @@ class FindingResponse(BaseModel):
     owner_name: Optional[str] = None
     evidence_annotation_id: Optional[int] = None
     vuln_id: Optional[int] = None
-    exec_result_id: Optional[int] = None
     host_count: int = 0
     hosts: List[FindingHostInfo] = []
     # v2.349.0 — {open: n, remediated: n, retest: n} over the endpoint rows.
@@ -93,16 +92,6 @@ class FindingStatusHistoryEntry(BaseModel):
     changed_by_name: Optional[str] = None
     summary: Optional[str] = None
     created_at: datetime
-
-
-class PromoteAnnotationRequest(BaseModel):
-    # Severity is required — promotion is the deliberate structuring step.
-    severity: str
-    title: Optional[str] = Field(None, max_length=500)
-    status: Optional[str] = None  # defaults to 'confirmed' server-side
-    owner_id: Optional[int] = None
-    # Additional hosts this single finding also affects (cross-host dedup).
-    extra_host_ids: List[int] = []
 
 
 class PromoteVulnerabilityRequest(BaseModel):

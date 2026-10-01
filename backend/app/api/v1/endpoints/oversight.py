@@ -103,13 +103,12 @@ class ProjectRow(BaseModel):
     # non-false-positive finding endpoint at that severity (was "defect").
     defect_rate: SeverityRate = SeverityRate()
     last_scan_at: Optional[datetime] = None
-    blocked_sessions: int = 0
     # Selected period
     targets_added: int = 0
     reviews_concluded: int = 0
     imports: int = 0
     contributors: int = 0
-    # Stable codes: critical, high, blocked_session, no_admin,
+    # Stable codes: critical, high, no_admin,
     # quiet, no_data.  They overlap; never sum them.
     attention_reasons: List[str] = []
 
@@ -177,7 +176,6 @@ class OversightSummary(BaseModel):
 class AttentionCounts(BaseModel):
     """Each count names its unit; the groups overlap and are never summed."""
     critical_projects: int = 0
-    blocked_runs: int = 0
     no_admin_projects: int = 0
     quiet_projects: int = 0
     no_inventory_projects: int = 0
@@ -344,9 +342,6 @@ def get_oversight_dashboard(
             attention.critical_projects += 1
         if high:
             reasons.append("high")
-        if s.blocked_sessions:
-            reasons.append("blocked_session")
-            attention.blocked_runs += s.blocked_sessions
         if not s.has_admin:
             reasons.append("no_admin")
             attention.no_admin_projects += 1
@@ -369,7 +364,6 @@ def get_oversight_dashboard(
             observations_unjudged=_sev(e.observations_unjudged),
             defect_rate=_rate(defects[p.id].defect_targets, e.hosts_tested),
             last_scan_at=s.last_scan_at,
-            blocked_sessions=s.blocked_sessions,
             targets_added=a.targets_added, reviews_concluded=a.reviews_concluded,
             imports=a.imports, contributors=a.contributors,
             attention_reasons=reasons,

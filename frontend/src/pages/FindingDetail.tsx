@@ -38,6 +38,7 @@ import FindingReportTextCard, { missingReportText } from '../components/FindingR
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import FindingProposalsPanel from '../components/proposals/FindingProposalsPanel';
+import FindingEvidence from '../components/FindingEvidence';
 import NoteAttachments from '../components/host-inspector/NoteAttachments';
 import FindingCommentThread from '../components/FindingCommentThread';
 import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
@@ -335,7 +336,7 @@ const FindingDetail: React.FC = () => {
     if (!finding) return;
     const survives =
       finding.source === 'note'
-        ? 'The host note it was promoted from stays, and can be promoted again.'
+        ? 'The host note it was promoted from stays.'
         : finding.source === 'scanner'
           ? 'The scanner observations stay, untriaged again.'
           : 'What it was recorded from stays.';
@@ -684,6 +685,8 @@ const FindingDetail: React.FC = () => {
         )}
         startEditing={searchParams.get('edit') === 'report-text'}
       />
+
+      <FindingEvidence findingId={finding.id} />
 
       {evidenceError && (
         <PostureSection className="mb-md" title={<span>Evidence note</span>}>

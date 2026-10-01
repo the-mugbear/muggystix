@@ -1,7 +1,7 @@
 /**
  * The pieces every agent-session surface draws the same way (5.312.0): the
  * state badge, the authority badge, the key / ended line, the work a session
- * opened, and its End / Resume / Open buttons. Agent Sessions and the session
+ * did, and its End / Resume / Open buttons. Agent Sessions and the session
  * page both use them, so a session never reads "active" on one and "ended" on
  * the other again (the Sessions view derived its own status from the detail
  * row and disagreed with Runs).
@@ -10,15 +10,12 @@ import React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, Loader2, RotateCcw, Square } from 'lucide-react';
 
-import type { AgentSessionRow, SessionPhase } from '../../services/api';
+import type { AgentSessionRow } from '../../services/api';
 import { canEndSession, canResumeSession, type AgentSessionControls } from '../../hooks/useAgentSessionControls';
 import {
-  PHASE_KIND_LABEL,
   agentSessionPath,
   endedState,
-  isOpenPhase,
   keyState,
-  phasePath,
   type StateLine,
 } from '../../utils/agentRuns';
 import { cn } from '../../utils/cn';
@@ -101,51 +98,29 @@ export const AuthorityBadge: React.FC<{ role: string | null | undefined; operato
   );
 };
 
-const phaseStatusClass = (phase: SessionPhase): string =>
-  isOpenPhase(phase) ? 'text-warning' : 'text-muted-foreground';
+const plural = (n: number, one: string, many: string): string =>
+  `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
-/** The work a session opened, each linking to its own page. `limit` keeps a
- *  table cell to a few; the rest is a count that opens the session. */
-export const PhaseLinks: React.FC<{
-  row: AgentSessionRow;
-  limit?: number;
-  className?: string;
-}> = ({ row, limit, className }) => {
-  const phases = row.phases ?? [];
-  if (phases.length === 0) {
-    return <span className="text-caption text-muted-foreground">No runs or plans — inventory queries only</span>;
+/** What a session did (5.320.0; it listed the runs and plans a session
+ *  opened): the host tests it proposed and the evidence records it wrote.
+ *  The counts open the session's page, which lists them. */
+export const SessionWork: React.FC<{ row: AgentSessionRow; className?: string }> = ({ row, className }) => {
+  const tests = row.host_test_count ?? 0;
+  const evidence = row.evidence_count ?? 0;
+  if (tests === 0 && evidence === 0) {
+    return <span className="text-caption text-muted-foreground">No tests or evidence — inventory queries only</span>;
   }
-  const shown = limit != null ? phases.slice(0, limit) : phases;
-  const more = phases.length - shown.length;
   return (
-    <ul className={cn('flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-caption', className)}>
-      {shown.map((phase) => (
-        <li key={`${phase.kind}-${phase.id}`} className="min-w-0 max-w-full">
-          <Link
-            to={phasePath(phase)}
-            className="flex min-w-0 items-baseline gap-xxs text-primary underline-offset-4 hover:underline"
-            title={[PHASE_KIND_LABEL[phase.kind], phase.label, phase.status].filter(Boolean).join(' · ')}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <span className="whitespace-nowrap">{PHASE_KIND_LABEL[phase.kind]} #{phase.id}</span>
-            <span className={cn('whitespace-nowrap', phaseStatusClass(phase))}>
-              {phase.status.replace(/_/g, ' ')}
-            </span>
-          </Link>
-        </li>
-      ))}
-      {more > 0 && (
-        <li>
-          <Link
-            to={agentSessionPath(row.id)}
-            className="whitespace-nowrap text-muted-foreground underline-offset-4 hover:underline"
-            onClick={(e) => e.stopPropagation()}
-          >
-            +{more} more
-          </Link>
-        </li>
-      )}
-    </ul>
+    <Link
+      to={agentSessionPath(row.id)}
+      className={cn('whitespace-nowrap text-caption text-primary underline-offset-4 hover:underline', className)}
+      onClick={(e) => e.stopPropagation()}
+    >
+      {[
+        tests > 0 ? plural(tests, 'test proposed', 'tests proposed') : null,
+        evidence > 0 ? plural(evidence, 'evidence record', 'evidence records') : null,
+      ].filter(Boolean).join(' · ')}
+    </Link>
   );
 };
 

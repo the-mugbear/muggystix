@@ -116,8 +116,7 @@ def get_assist_workbench(
 ):
     """What the session's operator sees on Operations → My work, computed by
     the same service: ``my_queue`` (hosts they are reviewing), ``my_tasks``
-    (plan steps), ``my_notes`` (note threads assigned to them),
-    ``recent_notes``, ``my_findings`` (findings they own), ``team_review``,
+    (host tests to do), ``recent_notes``, ``my_findings`` (findings they own), ``team_review``,
     ``since_last_visit`` (scans, new hosts, changed hosts, new critical/high
     scanner observations since the operator last marked Operations seen),
     ``followups`` ("needs another look") and ``blockers`` (stopped imports and

@@ -42,7 +42,7 @@ const response = {
       defect_targets: sev(), defect_rate: sev(),
     },
   },
-  attention: { critical_projects: 0, blocked_runs: 0, no_admin_projects: 0, quiet_projects: 0, no_inventory_projects: 0 },
+  attention: { critical_projects: 0, no_admin_projects: 0, quiet_projects: 0, no_inventory_projects: 0 },
   accounts: { total: 1, enabled: 1, disabled: 0, without_membership: 0 },
   projects: [], testers: [], project_options: OPTIONS, tester_options: [],
 };

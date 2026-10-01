@@ -65,7 +65,7 @@ interface DirectoryEntry {
 
 export const PROJECT_ROLES: Array<{ value: string; label: string; can: string }> = [
   { value: 'admin', label: 'Admin', can: 'project settings and members, plus everything below' },
-  { value: 'analyst', label: 'Analyst', can: 'uploads, scopes, triage, test plans, report drafts' },
+  { value: 'analyst', label: 'Analyst', can: 'uploads, scopes, triage, host tests, report drafts' },
   { value: 'auditor', label: 'Auditor', can: 'read everything, exports and reports' },
   { value: 'viewer', label: 'Viewer', can: 'read the inventory' },
 ];
@@ -244,7 +244,7 @@ const ProjectSettings: React.FC = () => {
         <>
           <p>
             This deletes the project and <strong>all</strong> data in it: scans, hosts, scopes, findings, reports,
-            test plans, agent sessions and execution runs. This cannot be undone.
+            host tests, evidence and agent sessions. This cannot be undone.
           </p>
           <p className="mt-xs">Type the project name exactly to confirm.</p>
         </>

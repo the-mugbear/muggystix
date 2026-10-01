@@ -21,6 +21,71 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.2.0",
+        "app_version": "2.446.0",
+        "summary": (
+            "Notes are discussion. An agent's note has no status (the `status` "
+            "argument of assist_add_note / POST /agent/hosts/{id}/notes is gone), "
+            "the note reads carry no status, assignee, due date or resolution, "
+            "assist_list_recent_notes no longer filters by status, and the "
+            "workbench has no `my_notes`. The guide says what a note is for — "
+            "context, a question, a handoff — and that work is a host test and "
+            "its evidence. A note can no longer be promoted to a finding."
+        ),
+    },
+    {
+        "version": "4.1.0",
+        "app_version": "2.445.0",
+        "summary": (
+            "A test can name the scanner observation it confirms: host_tests_propose takes an "
+            "optional vulnerability_id (an observation on the same host). The test is then shown "
+            "on that weakness on the host page, and a result that shows the issue is promoted as "
+            "that observation, joining the issue's finding instead of creating a second one. The "
+            "guide says to set it whenever a test is about a specific observation; the host "
+            "page's \"Ask agent to propose a test\" on a weakness hands over the id."
+        ),
+    },
+    {
+        "version": "4.0.2",
+        "app_version": "2.444.0",
+        "summary": (
+            "Feedback at the moment of friction reaches an MCP-only agent: the server's opening "
+            "instructions now ask for submit_feedback when a call is retried, a field or route "
+            "guessed, or a tool worked around. A 404 on an /agent/ path that is not an endpoint "
+            "says so, names the guide and the feedback call in its body, and is recorded in the "
+            "session's API activity. The trigger rule names a guessed route explicitly."
+        ),
+    },
+    {
+        "version": "4.0.1",
+        "app_version": "2.443.1",
+        "summary": (
+            "The MCP server's opening instructions still said \"register a test plan and execute "
+            "it\" and \"anything you have open\"; an agent went looking for a plan path that no "
+            "longer exists. They now name host_tests_propose and record_evidence and say there "
+            "are no test plans."
+        ),
+    },
+    {
+        "version": "4.0.0",
+        "app_version": "2.442.0",
+        "summary": (
+            "Test plans and execution runs are gone; tests belong to hosts. POST /agent/host-tests "
+            "(MCP host_tests_propose) proposes individual tests — one host, one tool, one command, a "
+            "rationale and a request_key each — which appear on the host's page at once with no "
+            "approval; GET /agent/host-tests lists them, PATCH /agent/host-tests/{id} changes status "
+            "under expected_revision (409 when stale). A test's result is an evidence record: "
+            "POST /agent/evidence with host_test_id + request_key; outcome finding / no_finding / "
+            "inconclusive makes the host tested. Removed: every plan_* and execution_* tool and route "
+            "(create_test_plan, start_execution, test results, sanity checks, completion, "
+            "execution-context), open_phases on agent_identity, the run read-back, the 409 from "
+            "end_session over an open run, and the feedback_recorded checkpoint. Feedback sources are "
+            "assist | reconnaissance | testing. A resumed session reads its own record with "
+            "?agent_session_id= on host-tests and evidence. Guide slices: testing | reconnaissance | "
+            "assist. curl uses -s, not -k (the certificate is CA-issued)."
+        ),
+    },
+    {
         "version": "3.5.1",
         "app_version": "2.441.0",
         "summary": (

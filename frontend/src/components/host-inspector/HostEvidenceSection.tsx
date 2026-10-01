@@ -1,5 +1,6 @@
 /**
- * Agent evidence on this host (v5.316.0): what an agent ran against it and
+ * Evidence on this host (v5.316.0; a person's test results too since
+ * 5.321.0): what an agent or an analyst ran against it and
  * what came back — tool, command, outcome, summary, and the raw output (a
  * preview, the whole of it on request).  Recorded directly and never changed:
  * the audit trail behind a proposal that cites it.  Renders nothing when the
@@ -58,14 +59,48 @@ const Output: React.FC<{ rec: EvidenceRecord }> = ({ rec }) => {
   );
 };
 
-const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
+/** One evidence record: tool, outcome, when and who, the summary, the command
+ *  and its output. Shared with the Tests section (5.320.0), which lists the
+ *  records that answer one test — so a record reads the same in both. */
+export const EvidenceItem: React.FC<{ rec: EvidenceRecord; hideFindingLink?: boolean }> = ({ rec, hideFindingLink }) => {
+  const outcome = OUTCOME[rec.outcome] ?? { label: rec.outcome, variant: 'muted' as const };
+  return (
+    <>
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
+        <span className="font-medium">#{rec.id} · {rec.tool}</span>
+        <Badge variant={outcome.variant} className="shrink-0">{outcome.label}</Badge>
+        <span className="min-w-0 text-caption text-muted-foreground">
+          {formatRelativeTime(rec.executed_at ?? rec.created_at, { fallback: '' })}
+          {rec.observed_ip ? ` · reached ${rec.observed_ip}` : ''}
+          {rec.agent_session_id != null && (
+            <> · <Link to={`/agent-sessions/${rec.agent_session_id}`} className="text-info hover:underline">session #{rec.agent_session_id}</Link></>
+          )}
+          {rec.agent_model ? ` · ${rec.agent_model}` : ''}
+          {rec.recorded_by ? ` · ${rec.recorded_by}` : ''}
+        </span>
+      </div>
+      <p className="break-words text-body">{rec.summary}</p>
+      {rec.command && (
+        // Up to 10,000 characters: clamped (UI style guide —
+        // command lines truncate); the title holds the whole.
+        <p className="line-clamp-3 break-all font-mono text-caption text-muted-foreground" title={rec.command}>{rec.command}</p>
+      )}
+      {rec.finding_id != null && !hideFindingLink && (
+        <p className="text-caption"><Link to={`/findings/${rec.finding_id}`} className="text-info hover:underline">Finding #{rec.finding_id}</Link></p>
+      )}
+      <Output rec={rec} />
+    </>
+  );
+};
+
+const HostEvidenceSection: React.FC<{ hostId: number; refreshKey?: number }> = ({ hostId, refreshKey = 0 }) => {
   const [items, setItems] = useState<EvidenceRecord[] | null>(null);
   const [total, setTotal] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const res = await listEvidenceRecords({ host_id: hostId, limit: 100 });
+      const res = await listEvidenceRecords({ host_id: hostId, unlinked: true, limit: 100 });
       setItems(res.items);
       setTotal(res.total);
       setError(null);
@@ -74,49 +109,26 @@ const HostEvidenceSection: React.FC<{ hostId: number }> = ({ hostId }) => {
     }
   }, [hostId]);
 
-  useEffect(() => { void load(); }, [load]);
+  // `refreshKey` changes when a result or a finding was recorded on this host.
+  useEffect(() => { void load(); }, [load, refreshKey]);
 
   if (!error && (!items || items.length === 0)) return null;
   return (
     <div id="evidence">
       <InspectorSection
         id="host-detail-evidence"
-        title="Agent evidence"
-        titleHint="Commands an agent ran against this host and what came back — recorded as they happened, never changed."
+        title="Other evidence"
+        titleHint="Commands recorded against this host that answer no test, and what came back. Recorded as they happened, never changed. A test's results are listed under that test."
         icon={<FileTerminal className="size-4 shrink-0 text-primary" aria-hidden />}
         count={total}
       >
         {error ? <p className="text-caption text-destructive">{error}</p> : (
           <ul className="space-y-sm">
-            {(items ?? []).map((rec) => {
-              const outcome = OUTCOME[rec.outcome] ?? { label: rec.outcome, variant: 'muted' as const };
-              return (
-                <li key={rec.id} className="min-w-0 space-y-xxs border-b border-border pb-sm last:border-b-0" data-evidence={rec.id}>
-                  <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
-                    <span className="font-medium">#{rec.id} · {rec.tool}</span>
-                    <Badge variant={outcome.variant} className="shrink-0">{outcome.label}</Badge>
-                    <span className="min-w-0 text-caption text-muted-foreground">
-                      {formatRelativeTime(rec.executed_at ?? rec.created_at, { fallback: '' })}
-                      {rec.agent_session_id != null && (
-                        <> · <Link to={`/agent-sessions/${rec.agent_session_id}`} className="text-info hover:underline">session #{rec.agent_session_id}</Link></>
-                      )}
-                      {rec.agent_model ? ` · ${rec.agent_model}` : ''}
-                      {rec.recorded_by ? ` · ${rec.recorded_by}` : ''}
-                    </span>
-                  </div>
-                  <p className="break-words text-body">{rec.summary}</p>
-                  {rec.command && (
-                    // Up to 10,000 characters: clamped (UI style guide —
-                    // command lines truncate); the title holds the whole.
-                    <p className="line-clamp-3 break-all font-mono text-caption text-muted-foreground" title={rec.command}>{rec.command}</p>
-                  )}
-                  {rec.finding_id != null && (
-                    <p className="text-caption"><Link to={`/findings/${rec.finding_id}`} className="text-info hover:underline">Finding #{rec.finding_id}</Link></p>
-                  )}
-                  <Output rec={rec} />
-                </li>
-              );
-            })}
+            {(items ?? []).map((rec) => (
+              <li key={rec.id} className="min-w-0 space-y-xxs border-b border-border pb-sm last:border-b-0" data-evidence={rec.id}>
+                <EvidenceItem rec={rec} />
+              </li>
+            ))}
           </ul>
         )}
         {items && total > items.length && (

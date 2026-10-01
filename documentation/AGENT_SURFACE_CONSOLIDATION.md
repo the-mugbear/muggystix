@@ -19,7 +19,11 @@
 > executes its own plans. Recon runs (`ReconSession`, `recon_sessions`,
 > `/agent/recon/*`, `recon_session_id`) were then removed altogether — an agent
 > reads a scope through `/agent/scopes/{scope_id}/…` and uploads to its session
-> — so every recon-run statement below is history too. For the current surface read `MCP.md` and
+> — so every recon-run statement below is history too. **v2.442.0 removed test
+> plans and execution runs as well** (and with them the plan-generation and
+> execution workflows, `agent_test_plans.py`, `agent_execution.py` and every
+> `plan_*` / `execution_*` tool): tests are proposed on hosts (`/agent/host-tests`)
+> and what was run is an evidence record. For the current surface read `MCP.md` and
 > `documentation/AGENT_GUIDE.md` (the contract agents are served). Kept because the reasoning — especially what
 > each guard turned out to be load-bearing for — is still the best account of
 > why the surface looks the way it does.

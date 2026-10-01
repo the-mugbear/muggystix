@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Add a named-asset scenario to an EXISTING project so the Names inventory,
 domain scope, the third coverage state, named web interfaces, per-vhost
-findings, named plan entries and tested bindings can be evaluated end to end.
+findings, host tests aimed at a name and tested bindings can be evaluated end
+to end.
 
 Run inside the backend container (scripts/ is bind-mounted at /app/scripts):
 
@@ -10,8 +11,9 @@ Run inside the backend container (scripts/ is bind-mounted at /app/scripts):
 
 Additive to `seed_demo_data.py` (defaults to the same project name).  Goes
 through the real write paths — dns_name_service, HostDeduplicationService,
-upsert_vulnerability, FindingService, TestPlanService, the execution
-endpoint's TESTED helper — so what lands is exactly what ingest would land.
+upsert_vulnerability, FindingService, host_test_service and
+agent_evidence_service (which writes the TESTED binding) — so what lands is
+exactly what ingest and an agent would land.
 
 Scenario (every fixture exercises one reviewed behaviour):
   * Imported FQDN list, NOT resolved → unresolved names, no hosts invented.
@@ -31,9 +33,10 @@ Scenario (every fixture exercises one reviewed behaviour):
   * Web interfaces bound to each vhost; nikto-style findings on two vhosts
     with the SAME plugin/port → two scanner rows; promoting both yields one
     umbrella finding with BOTH endpoints.
-  * A plan with three entries on the LB host (portal / shop / bare address)
-    plus a named internal entry; executed result WITH observed_ip → TESTED,
-    skipped result → no evidence, executed WITHOUT observed_ip → no evidence.
+  * Three tests on the LB host (aimed at portal / shop / the bare address)
+    plus one aimed at an internal name; evidence WITH observed_ip on a named
+    test → TESTED, a dismissed test → no evidence, evidence on the
+    bare-address test → no binding (there is no name to bind).
   * Internal names bound to existing demo hosts by PTR / scanner / forward
     evidence, and one operator-corrected display name (top rank).
 
@@ -53,9 +56,8 @@ from app.db import model_registry  # noqa: E402,F401
 from app.db.models import (  # noqa: E402
     DNS_OBS_CERT, DNS_OBS_DISCOVERED, DNS_OBS_HTTP, DNS_OBS_SCANNER,
 )
-from app.db.models_agent import (  # noqa: E402
-    Agent, ExecutionSession, TestExecutionResult, TestPlan,
-)
+from app.db.models_host_tests import HostTest  # noqa: E402
+from app.db.models_proposals import EvidenceRecord  # noqa: E402
 from app.db.models_auth import User, UserRole  # noqa: E402
 from app.db.models_project import Project  # noqa: E402
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource  # noqa: E402
@@ -64,8 +66,9 @@ from app.services import dns_name_service as names  # noqa: E402
 from app.services.cert_fields import derive_cert_fields, derive_cert_orgs, derive_weak_protocol  # noqa: E402
 from app.services.finding_service import FindingService  # noqa: E402
 from app.services.host_deduplication_service import HostDeduplicationService  # noqa: E402
-from app.services.test_plan_service import TestPlanService  # noqa: E402
-from app.services.tested_binding_service import sync_tested_binding  # noqa: E402
+from app.schemas.host_test_schemas import HostTestCreate, HostTestUpdate  # noqa: E402
+from app.services import agent_evidence_service, host_test_service  # noqa: E402
+from app.services.proposal_service import Attribution  # noqa: E402
 
 NOW = datetime.now(timezone.utc)
 TAG = "[named-assets seed]"           # marks rows this script owns (for --reset)
@@ -117,9 +120,8 @@ _OWNED_TABLES = {
     "vulnerabilities": Vulnerability,
     "findings": Finding,
     "finding_hosts": FindingHost,
-    "test_plans": TestPlan,
-    "agents": Agent,
-    "execution_sessions": ExecutionSession,
+    "host_tests": HostTest,
+    "evidence_records": EvidenceRecord,
 }
 
 
@@ -132,8 +134,6 @@ def _ids(db, project, key):
         q = db.query(m.id).join(models.Host, models.Host.id == m.host_id).filter(models.Host.project_id == project.id)
     elif key == "finding_hosts":
         q = db.query(m.id).join(Finding, Finding.id == m.finding_id).filter(Finding.project_id == project.id)
-    elif key == "execution_sessions":
-        q = db.query(m.id).join(TestPlan, TestPlan.id == m.test_plan_id).filter(TestPlan.project_id == project.id)
     else:
         q = db.query(m.id).filter(m.project_id == project.id)
     return {r[0] for r in q.all()}
@@ -176,17 +176,14 @@ def reset(db, project, manifest_dir):
         manifest = json.load(fh)
     created = {k: set(v) for k, v in manifest["created"].items()}
 
-    from app.db.models_agent import TestPlanEntry
+    # A finding endpoint is the reference that blocks (the API's rule); a
+    # host test only links to a name and keeps its target_fqdn when it goes.
     foreign_refs = (
         db.query(models.DNSName.fqdn)
         .filter(models.DNSName.id.in_(created["dns_names"] or {-1}))
         .filter(
             db.query(FindingHost.id).filter(
                 FindingHost.name_id == models.DNSName.id, ~FindingHost.id.in_(created["finding_hosts"] or {-1}),
-            ).exists()
-            | db.query(TestPlanEntry.id).filter(
-                TestPlanEntry.name_id == models.DNSName.id,
-                ~TestPlanEntry.test_plan_id.in_(created["test_plans"] or {-1}),
             ).exists()
         )
         .all()
@@ -209,11 +206,11 @@ def reset(db, project, manifest_dir):
         return len(rows)
 
     removed = {}
-    # Dependency order: plans (cascade entries/results/sessions) and agents,
-    # then findings / endpoints / scanner rows / web interfaces we created,
-    # then hosts we created (their remaining children cascade), scans, then
-    # observations and names, then scope domains.
-    for key in ("test_plans", "agents", "execution_sessions", "finding_hosts", "findings",
+    # Dependency order: evidence and host tests, then findings / endpoints /
+    # scanner rows / web interfaces we created, then hosts we created (their
+    # remaining children cascade), scans, then observations and names, then
+    # scope domains.
+    for key in ("evidence_records", "host_tests", "finding_hosts", "findings",
                 "vulnerabilities", "web_interfaces", "hosts", "scans", "dns_records", "dns_names", "scope_domains"):
         removed[key] = _delete(key)
     for host_id, (hostname, source) in manifest.get("hostname_before", {}).items():
@@ -400,63 +397,65 @@ def _seed_body(db, project, owner, hostname_before):
                              record_type=DNS_OBS_DISCOVERED, value="subfinder", scan_id=new_dns.id, cache=cache)
     db.flush()
 
-    # 5. Plan: three entries on the LB (portal / shop / bare) + a named internal
-    #    entry; execution results exercising the TESTED rule.
-    agent = Agent(name=f"{TAG} planner", project_id=project.id, owner_id=owner.id,
-                  description="seeded", is_active=True)
-    db.add(agent)
-    db.flush()
-    plan = TestPlan(project_id=project.id, agent_id=agent.id, created_by_user_id=owner.id, version=1,
-                    title=f"{TAG} Named endpoint evaluation", status="draft",
-                    description="Seeded plan: named targets on a shared address.")
-    db.add(plan)
-    db.flush()
-    psvc = TestPlanService(db)
-    base = {"host_id": lb.id, "priority": "high", "test_phase": "enumeration", "rationale": "Seeded: vhost-specific web test."}
-    entries = psvc.add_entries(plan, [
-        {**base, "target_fqdn": "portal.example-corp.com", "proposed_tests": [
-            {"tool": "curl", "description": "Confirm missing X-Frame-Options on the portal vhost",
-             "command": "curl -skI https://{fqdn}/ --resolve {fqdn}:443:{ip} | grep -i x-frame", "expected_result": "No header → finding"},
-        ]},
-        {**base, "target_fqdn": "shop.example-corp.com", "priority": "medium", "proposed_tests": [
-            {"tool": "curl", "description": "Same check on the store vhost",
-             "command": "curl -skI https://{fqdn}/ --resolve {fqdn}:443:{ip} | grep -i x-frame"},
-        ]},
-        {**base, "priority": "low", "rationale": "Seeded: bare-address service check.", "proposed_tests": [
-            {"tool": "nmap", "description": "TLS ciphers on the shared address", "command": "nmap --script ssl-enum-ciphers -p 443 {ip}"},
-        ]},
-    ] + ([{
-        "host_id": named_internal.id, "priority": "medium", "test_phase": "enumeration",
-        "rationale": "Seeded: internal vhost.", "target_fqdn": "kb.demo.local",
-        "proposed_tests": [{"tool": "nikto", "description": "Web checks on the wiki vhost", "command": "nikto -h https://{fqdn}/"}],
-    }] if named_internal else []), "user", owner.id)
-    db.flush()
-    session = ExecutionSession(test_plan_id=plan.id, agent_id=agent.id, started_by_id=owner.id, status="active")
-    db.add(session)
-    db.flush()
-    by_target = {(e.target_name.fqdn if e.target_name else None): e for e in entries if e.host_id == lb.id}
-    results = [
-        (by_target["portal.example-corp.com"], "executed", LB_IP,
-         "HTTP/2 200 … (no X-Frame-Options header)", True, "low"),
-        (by_target["shop.example-corp.com"], "skipped", None, None, False, None),
-        (by_target[None], "executed", None, "443/tcp open  https  TLSv1.2 …", False, None),
+    # 5. Host tests: three on the LB (aimed at portal / shop / the bare
+    #    address) + one aimed at an internal name; evidence exercising the
+    #    TESTED rule.  Written through the services, as a person's own tests.
+    who = Attribution(user_id=owner.id, source="person")
+    label = f"{TAG} Named endpoint evaluation"
+    base = {"host_id": lb.id, "priority": "high", "label": label,
+            "rationale": "Seeded: vhost-specific web test."}
+    specs = [
+        {**base, "request_key": "seed-named:portal", "target_fqdn": "portal.example-corp.com",
+         "tool": "curl", "description": "Confirm missing X-Frame-Options on the portal vhost",
+         "command": "curl -sI https://{fqdn}/ --resolve {fqdn}:443:{ip} | grep -i x-frame",
+         "expected_result": "No header → finding"},
+        {**base, "request_key": "seed-named:shop", "target_fqdn": "shop.example-corp.com", "priority": "medium",
+         "tool": "curl", "description": "Same check on the store vhost",
+         "command": "curl -sI https://{fqdn}/ --resolve {fqdn}:443:{ip} | grep -i x-frame"},
+        {**base, "request_key": "seed-named:bare", "priority": "low",
+         "rationale": "Seeded: bare-address service check.",
+         "tool": "nmap", "description": "TLS ciphers on the shared address",
+         "command": "nmap --script ssl-enum-ciphers -p 443 {ip}"},
     ]
-    for entry, status, observed_ip, output, is_finding, sev in results:
-        r = TestExecutionResult(
-            execution_session_id=session.id, entry_id=entry.id, test_index=0, status=status,
-            command_run=TestPlanService.resolve_command_placeholders(
-                entry.proposed_tests[0]["command"], LB_IP, entry.target_name.fqdn if entry.target_name else None),
-            raw_output=output, findings_summary=("Missing X-Frame-Options" if is_finding else None),
-            severity=sev, is_finding=is_finding, observed_ip=observed_ip,
-            executed_at=NOW - timedelta(hours=2) if status == "executed" else None,
+    if named_internal:
+        specs.append({
+            "request_key": "seed-named:kb", "host_id": named_internal.id, "priority": "medium", "label": label,
+            "rationale": "Seeded: internal vhost.", "target_fqdn": "kb.demo.local",
+            "tool": "nikto", "description": "Web checks on the wiki vhost", "command": "nikto -h https://{fqdn}/",
+        })
+    tests = host_test_service.create_tests(db, project.id, [HostTestCreate(**spec) for spec in specs], who)
+    db.flush()
+    by_key = {t.request_key: t for t in tests}
+    portal, shop, bare = (by_key[f"seed-named:{k}"] for k in ("portal", "shop", "bare"))
+
+    def _evidence(test, outcome, summary, output, observed_ip):
+        return agent_evidence_service.record_evidence(
+            db, project_id=project.id, host_id=test.host_id, host_test_id=test.id,
+            request_key=f"{test.request_key}:evidence", tool=test.tool, outcome=outcome, summary=summary,
+            command=test.command.replace("{ip}", LB_IP).replace("{fqdn}", test.target_fqdn or ""),
+            raw_output=output, observed_ip=observed_ip, executed_at=NOW - timedelta(hours=2),
+            recorded_by_user_id=owner.id,
         )
-        db.add(r)
-        db.flush()
-        db.refresh(entry)
-        sync_tested_binding(db, entry, r)   # executed + observed_ip → TESTED; otherwise nothing
+
+    # Ran, reached the LB address under the portal name → a TESTED binding.
+    _evidence(portal, "finding", "Missing X-Frame-Options", "HTTP/2 200 … (no X-Frame-Options header)", LB_IP)
+    # Ran against the bare address: evidence, but no name to bind.
+    _evidence(bare, "no_finding", "TLS 1.2 only, no weak ciphers", "443/tcp open  https  TLSv1.2 …", LB_IP)
+    db.flush()
+    # Not run: dismissed with its reason, so no evidence and no binding.
+    host_test_service.update_test(
+        db, project.id, shop.id,
+        HostTestUpdate(expected_revision=shop.revision, status="dismissed",
+                       dismissed_reason="Seeded: the store vhost is not in scope."),
+        owner.id,
+    )
+    host_test_service.update_test(
+        db, project.id, portal.id,
+        HostTestUpdate(expected_revision=portal.revision, status="done"), owner.id,
+    )
     db.commit()
-    print(f"  plan #{plan.id}: {len(entries)} entries (LB host appears {sum(1 for e in entries if e.host_id == lb.id)}×), "
-          f"session #{session.id} with {len(results)} results")
+    print(f"  host tests: {len(tests)} (LB host carries {sum(1 for t in tests if t.host_id == lb.id)}), "
+          "2 evidence records, 1 dismissed")
 
 
 def summarize(db, project):
@@ -506,7 +505,7 @@ def main():
         seed(db, project, owner, manifest_dir)
         summarize(db, project)
         print("Done. Open Inventory → Names, the Scopes page (Domains in scope), the LB host "
-              f"{LB_IP}, Findings, and the seeded test plan.")
+              f"{LB_IP} (its Tests section), and Findings.")
         return 0
     finally:
         db.close()

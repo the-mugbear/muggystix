@@ -31,7 +31,6 @@ from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as 
 from app.db.session import get_db
 from app.db import models
 from app.db.models_agent import (
-    PLANNED_PLAN_STATUSES,
     Agent,
     AgentSession,
 )
@@ -1596,11 +1595,10 @@ def _uploader_names(db: Session, attachments) -> Dict[int, str]:
 
 class AssistNote(BaseModel):
     """A note as the host inspector and the Collaboration feed show it
-    (v2.428.0: threads, triage state, attachments and the promoted finding —
+    (v2.428.0: threads, labels, attachments and the promoted finding —
     built from ``host_serialization._serialize_note``, the UI's serializer)."""
     id: int
     body: str
-    status: Optional[str] = None
     author: Optional[str] = None
     author_name: Optional[str] = None
     # Agent-authored notes are stamped as such; a reader deserves to know
@@ -1613,10 +1611,7 @@ class AssistNote(BaseModel):
     parent_id: Optional[int] = None
     thread_root_id: Optional[int] = None
     note_type: Optional[str] = None
-    assignee: Optional[str] = None
-    due_at: Optional[datetime] = None
     pinned: bool = False
-    resolution_summary: Optional[str] = None
     # The finding this thread was promoted to, when it was.
     finding_id: Optional[int] = None
     attachments: List[AssistAttachment] = []
@@ -1634,7 +1629,6 @@ def _assist_notes(db: Session, notes) -> List[AssistNote]:
         out.append(AssistNote(
             id=n.id,
             body=n.body,
-            status=n.status.value if hasattr(n.status, "value") else n.status,
             author=n.author.username if n.author else None,
             author_name=ui.author_name,
             actor_type=n.actor_type,
@@ -1643,10 +1637,7 @@ def _assist_notes(db: Session, notes) -> List[AssistNote]:
             parent_id=n.parent_id,
             thread_root_id=n.thread_root_id,
             note_type=n.note_type,
-            assignee=n.assignee.username if n.assignee else None,
-            due_at=n.due_at,
             pinned=bool(n.pinned),
-            resolution_summary=n.resolution_summary,
             finding_id=ui.finding_id,
             attachments=[_assist_attachment(a, uploaders) for a in (n.attachments or [])],
         ))
@@ -1810,130 +1801,6 @@ def assist_coverage(
 
     return compute_evidence_coverage(db, session.project_id)
 
-
-
-
-class AssistTestResult(BaseModel):
-    """One thing that was actually run, and what it showed."""
-    status: str
-    command_run: Optional[str] = None
-    findings_summary: Optional[str] = None
-    severity: Optional[str] = None
-    is_finding: bool = False
-    executed_at: Optional[datetime] = None
-
-
-class AssistHostTesting(BaseModel):
-    """Whether this host was tested, by whom, and with what result."""
-    entry_id: int
-    plan_id: int
-    plan_title: Optional[str] = None
-    plan_status: Optional[str] = None
-    priority: Optional[str] = None
-    test_phase: Optional[str] = None
-    status: str
-    rationale: Optional[str] = None
-    findings: Optional[str] = None
-    proposed_tests: List[dict] = []
-    results: List[AssistTestResult] = []
-
-
-@router.get(
-    "/assist/hosts/{host_id}/testing",
-    response_model=List[AssistHostTesting],
-    summary="What has been planned or run against this host",
-)
-def list_assist_host_testing(
-    request: Request,
-    host_id: int = Path(..., gt=0),
-    agent: Agent = Depends(check_agent_rate_limit),
-    db: Session = Depends(get_db),
-):
-    """"Has anyone tested this, and what happened?"
-
-    v2.293.0.  Assist could see what scanners reported and nothing about what
-    the team actually did — so it could not tell a finding nobody has looked at
-    from one a tester confirmed by hand, and every answer implicitly claimed the
-    former. That distinction is most of what an analyst wants from a colleague.
-
-    Mirrors the human host page: entries of every plan but an archived one
-    (PLANNED_PLAN_STATUSES), and never `rejected` entries — a tester flipping
-    an entry to rejected is an explicit "do not test this", and an agent
-    reporting it as outstanding work would re-litigate that decision.
-    """
-    session = _load_assist_session(db, request)
-    from app.db.models_agent import (
-        TestExecutionResult,
-        TestPlan,
-        TestPlanEntry,
-    )
-
-    host = (
-        db.query(models.Host)
-        .filter(models.Host.id == host_id, models.Host.project_id == session.project_id)
-        .first()
-    )
-    if host is None:
-        raise HTTPException(status_code=404, detail="Host not found in this project")
-
-    entries = (
-        db.query(TestPlanEntry, TestPlan)
-        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
-        .filter(
-            TestPlanEntry.host_id == host_id,
-            TestPlan.project_id == session.project_id,
-            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-            TestPlanEntry.status != "rejected",
-        )
-        .order_by(TestPlanEntry.id.desc())
-        .all()
-    )
-    if not entries:
-        return []
-
-    entry_ids = [e.id for e, _ in entries]
-    results_by_entry: dict = {}
-    for r in (
-        db.query(TestExecutionResult)
-        .filter(TestExecutionResult.entry_id.in_(entry_ids))
-        .order_by(TestExecutionResult.test_index)
-        .all()
-    ):
-        results_by_entry.setdefault(r.entry_id, []).append(
-            AssistTestResult(
-                status=r.status.value if hasattr(r.status, "value") else str(r.status),
-                command_run=r.command_run,
-                findings_summary=r.findings_summary,
-                severity=r.severity,
-                is_finding=bool(r.is_finding),
-                executed_at=r.executed_at,
-            )
-        )
-
-    def _value(v):
-        return v.value if hasattr(v, "value") else v
-
-    return [
-        AssistHostTesting(
-            entry_id=e.id,
-            plan_id=plan.id,
-            plan_title=plan.title,
-            plan_status=_value(plan.status),
-            priority=_value(e.priority),
-            test_phase=_value(e.test_phase),
-            status=_value(e.status),
-            rationale=e.rationale,
-            findings=e.findings,
-            # Normalised: entries carry either strings (legacy) or objects, and
-            # an agent should not have to branch on which era wrote the row.
-            proposed_tests=[
-                t if isinstance(t, dict) else {"description": str(t)}
-                for t in (e.proposed_tests or [])
-            ],
-            results=results_by_entry.get(e.id, []),
-        )
-        for e, plan in entries
-    ]
 
 
 class AssistSegment(BaseModel):
@@ -2115,7 +1982,6 @@ class AssistRecentNote(AssistNote):
 def list_assist_recent_notes(
     request: Request,
     limit: int = Query(50, ge=1, le=200),
-    status: Optional[str] = Query(None, description="open / in_progress / resolved."),
     author: Optional[str] = Query(None, description="Username, or 'me'."),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
@@ -2124,8 +1990,7 @@ def list_assist_recent_notes(
 
     v2.293.0.  Per-host notes answered "what do we know about THIS host"; this
     answers the question an analyst asks when they pick the engagement back up,
-    which is about the work rather than about one asset. Open notes are the
-    outstanding-work list the project actually keeps.
+    which is about the work rather than about one asset.
     """
     session = _load_assist_session(db, request)
     pid = session.project_id
@@ -2144,17 +2009,16 @@ def list_assist_recent_notes(
     # each target. Port notes go one hop further, via their host. All outer
     # joins: a note matches on exactly one branch and is NULL on the rest.
     #
-    # All seven targets are covered on purpose. Only host notes exist today, so
+    # Every target is covered on purpose. Only host notes exist today, so
     # a narrower fix would pass its tests and quietly reintroduce the same class
     # of gap the first time someone annotates a scan.
-    from app.db.models_agent import TestPlan
     from app.db.models_findings import Finding
 
     port_host = aliased(models.Host)
     q = (
         db.query(
             models.Annotation, models.Host.ip_address,
-            Finding.title, models.Scan.filename, models.Scope.name, TestPlan.title,
+            Finding.title, models.Scan.filename, models.Scope.name,
             models.Port.port_number, port_host.ip_address,
         )
         .options(*note_load_options())
@@ -2162,7 +2026,6 @@ def list_assist_recent_notes(
         .outerjoin(Finding, models.Annotation.finding_id == Finding.id)
         .outerjoin(models.Scan, models.Annotation.scan_id == models.Scan.id)
         .outerjoin(models.Scope, models.Annotation.scope_id == models.Scope.id)
-        .outerjoin(TestPlan, models.Annotation.plan_id == TestPlan.id)
         .outerjoin(models.Port, models.Annotation.port_id == models.Port.id)
         .outerjoin(port_host, models.Port.host_id == port_host.id)
         .filter(or_(
@@ -2171,12 +2034,9 @@ def list_assist_recent_notes(
             Finding.project_id == pid,
             models.Scan.project_id == pid,
             models.Scope.project_id == pid,
-            TestPlan.project_id == pid,
             port_host.project_id == pid,
         ))
     )
-    if status:
-        q = q.filter(models.Annotation.status == status)
     if author:
         if author.lower() == "me":
             q = q.filter(models.Annotation.user_id == session.started_by_id)
@@ -2189,7 +2049,7 @@ def list_assist_recent_notes(
     rows = q.order_by(models.Annotation.created_at.desc()).limit(limit).all()
     serialized = _assist_notes(db, [r[0] for r in rows])
     out = []
-    for note, (a, ip, f_title, scan_name, scope_name, plan_title, port_no, port_ip) in zip(serialized, rows):
+    for note, (a, ip, f_title, scan_name, scope_name, port_no, port_ip) in zip(serialized, rows):
         if a.host_id:
             target = {"kind": "host", "id": a.host_id, "label": ip}
         elif a.port_id:
@@ -2200,8 +2060,6 @@ def list_assist_recent_notes(
             target = {"kind": "scan", "id": a.scan_id, "label": scan_name}
         elif a.scope_id:
             target = {"kind": "scope", "id": a.scope_id, "label": scope_name}
-        elif a.plan_id:
-            target = {"kind": "test_plan", "id": a.plan_id, "label": plan_title}
         else:
             target = {"kind": "project", "id": a.project_id, "label": None}
         out.append(AssistRecentNote(
@@ -2553,7 +2411,6 @@ def get_assist_posture(
         "headline": p["headline"],
         "evidence": p["evidence"],
         "priorities": p["priorities"],
-        "decisions": p["decisions"],
         "disposition": p["disposition"],
         "sites": p["sites"],
     }
@@ -2854,7 +2711,6 @@ def list_assist_ingestion_issues(
 class AssistFindingNote(BaseModel):
     id: int
     body: str
-    status: Optional[str] = None
     note_type: Optional[str] = None
     author: Optional[str] = None
     # v2.343.2 — 'user' or 'agent': whether a person asserted this or an
@@ -2907,7 +2763,10 @@ class AssistFindingDetail(BaseModel):
     comments: List[AssistFindingNote] = []
     # Provenance for scanner- and execution-sourced findings.
     scanner_evidence: List[dict] = []
-    execution_evidence: Optional[dict] = None
+    # v2.442.0 — the agent evidence records that bear on this finding (what
+    # was run, and what came back).  It was ``execution_evidence``: one
+    # test-plan execution result.
+    evidence_records: List[dict] = []
     # --- v2.428.0: what the finding page shows beyond the evidence ---------
     updated_at: Optional[datetime] = None
     # Per-endpoint state counts (open / remediated / retest / false_positive):
@@ -2930,7 +2789,6 @@ def _serialize_finding_note(note, attachments_by_note, uploaders=None) -> "Assis
     return AssistFindingNote(
         id=note.id,
         body=note.body,
-        status=note.status.value if hasattr(note.status, "value") else note.status,
         note_type=note.note_type,
         author=note.author.username if note.author else None,
         actor_type=note.actor_type,
@@ -2967,7 +2825,7 @@ def get_assist_finding(
     Attachments come back as references (filename, type, size, path), not
     bytes.  Fetch each from ``download_path`` with the session's API key.
 
-    ``scanner_evidence`` / ``execution_evidence`` carry the other two
+    ``scanner_evidence`` / ``evidence_records`` carry the other two
     provenances: which scanner rows evidence this finding, and what command a
     tester actually ran.  Report which one a claim rests on — "Nessus reported"
     and "a tester confirmed" are different assertions, and conflating them is
@@ -3082,26 +2940,13 @@ def get_assist_finding(
                 "cve_id": v.cve_id,
             })
 
-    execution_evidence = None
-    if finding.exec_result_id:
-        from app.db.models_agent import TestExecutionResult
-
-        res = (
-            db.query(TestExecutionResult)
-            .filter(TestExecutionResult.id == finding.exec_result_id)
-            .first()
-        )
-        if res is not None:
-            execution_evidence = {
-                "result_id": res.id,
-                "command_run": res.command_run,
-                "findings_summary": res.findings_summary,
-                "severity": res.severity,
-                # Output is capped at the source but can still be large; a
-                # write-up quotes a line or two, so send the head and say so.
-                "output_excerpt": (res.raw_output or "")[:2000],
-                "output_truncated": len(res.raw_output or "") > 2000,
-            }
+    # Evidence records linked to the finding — the same rows the host's Agent
+    # evidence section shows (serialize_evidence: preview, never raw output).
+    from app.services import agent_evidence_service
+    evidence_rows, _ = agent_evidence_service.list_evidence(
+        db, session.project_id, finding_id=finding.id, limit=50,
+    )
+    evidence_records = [agent_evidence_service.serialize_evidence(r) for r in evidence_rows]
 
     # --- v2.428.0: report text, endpoint states, status history -----------
     from app.db.models_findings import FindingStatusHistory
@@ -3153,7 +2998,7 @@ def get_assist_finding(
         evidence_thread=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in evidence_replies],
         comments=[_serialize_finding_note(n, attachments_by_note, uploaders) for n in comment_notes],
         scanner_evidence=scanner_evidence,
-        execution_evidence=execution_evidence,
+        evidence_records=evidence_records,
     )
 
 

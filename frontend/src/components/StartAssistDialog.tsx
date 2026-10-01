@@ -4,7 +4,7 @@
  * Project-level dialog for starting an agent session — THE way an agent
  * starts. Mints one project-scoped agent API key and shows the prompt + key
  * to paste into Claude Code / Codex / etc. The same session queries the
- * inventory, uploads its scans, and opens its own plans and execution runs,
+ * inventory, uploads its scans, proposes tests on hosts and records evidence,
  * all within the operator's own project role; nothing waits on an approval.
  * (The component keeps its name; the endpoint it calls is /assist/start.)
  *
@@ -61,8 +61,9 @@ export interface StartAssistDialogProps {
   mySessions?: AssistSessionRow[];
   /** Re-fetch `mySessions` after this dialog starts or ends one. */
   onSessionsChanged?: () => void | Promise<void>;
-  /** A one-line task to give the agent (e.g. "Work test plan #12 in
-   *  BlueStick"), shown to copy before and after the session starts. */
+  /** A one-line task to give the agent (e.g. "Propose tests in BlueStick
+   *  for these hosts only…"), shown to copy before and after the session
+   *  starts. */
   instruction?: string;
 }
 

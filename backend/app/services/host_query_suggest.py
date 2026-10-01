@@ -230,6 +230,24 @@ def _label(ctx: _Ctx) -> List[Suggestion]:
     return [Suggestion(name, count=int(c)) for name, c in rows]
 
 
+def _testlabel(ctx: _Ctx) -> List[Suggestion]:
+    """Host-test labels in the project (v2.442.0), with the hosts carrying a
+    test under each — every status, as the ``testlabel:`` predicate matches."""
+    from app.db.models_host_tests import HostTest
+
+    n = func.count(func.distinct(HostTest.host_id))
+    rows = (
+        ctx.db.query(HostTest.label, n)
+        .filter(
+            HostTest.project_id == ctx.project_id,
+            HostTest.label.isnot(None),
+            ctx.contains(HostTest.label),
+        )
+        .group_by(HostTest.label).order_by(n.desc(), HostTest.label).limit(ctx.limit).all()
+    )
+    return [Suggestion(name, count=int(c)) for name, c in rows if name]
+
+
 def _scoped_subnet_values(ctx: _Ctx, column, *filters) -> list:
     """``column`` over the project's scoped subnets, with the distinct hosts
     mapped into them (a subnet nothing maps to still counts: 0)."""
@@ -364,6 +382,7 @@ _SOURCES: Dict[str, Callable[[_Ctx], List[Suggestion]]] = {
     "issue": _vuln_column(Vulnerability.issue_key),
     "tag": _tag,
     "label": _label,
+    "testlabel": _testlabel,
     "cidr": _cidr,
     "site": _site,
     "scan": _scan,

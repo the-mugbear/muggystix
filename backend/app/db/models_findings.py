@@ -5,7 +5,8 @@ unifies the three previously-disconnected result streams:
 
   * promoted annotations  (source='note', evidence -> the annotation thread)
   * scanner vulnerabilities (source='scanner', vuln_id reference)
-  * execution results flagged is_finding (source='execution', exec_result_id)
+  * test results that found something (source='execution'; the evidence
+    records point at the finding through ``EvidenceRecord.finding_id``)
 
 It carries the lifecycle the old ``SecurityFinding`` never had (status +
 owner) and a many-to-many to hosts (``finding_hosts``) so one finding —
@@ -82,18 +83,15 @@ class Finding(Base):
     source = Column(String(20), nullable=False)                 # FindingSource
     owner_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
 
-    # Evidence / source references — at most one of vuln_id / exec_result_id
-    # is set (scanner / execution sources); evidence_annotation_id points at
-    # the originating annotation THREAD ROOT for note-sourced findings.
+    # Evidence / source references — vuln_id for a scanner-sourced finding;
+    # evidence_annotation_id points at the originating annotation THREAD ROOT
+    # for note-sourced findings.  (``exec_result_id`` went with test plans in
+    # v2.442.0: evidence records carry ``finding_id`` instead.)
     evidence_annotation_id = Column(
         Integer, ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True,
     )
     vuln_id = Column(
         Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"), nullable=True, index=True,
-    )
-    exec_result_id = Column(
-        Integer, ForeignKey("test_execution_results.id", ondelete="CASCADE"),
-        nullable=True, index=True,
     )
     # Scanner-agnostic identity of the ISSUE this finding records — the value
     # from ``services.vuln_identity.issue_key`` (``cve:CVE-…`` or

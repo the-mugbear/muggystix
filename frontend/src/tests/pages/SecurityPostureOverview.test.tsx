@@ -63,7 +63,6 @@ const response = {
     { kind: 'ownership', tier: 'work', title: '2 active findings unassigned (1 critical/high)', blast_radius: '2 of 7 active findings',
       action: 'Assign an analyst', severity: 'high', owner: null, link: '/findings?status=active&owner=unowned', score: 61 },
   ],
-  decisions: { blocked_sessions: 2 },
   sites: { adopted: true, items: [] },
   systemic: { adopted: true, estate: { hosts_in_scope: 111, subnets: 4, sites: 3, blind_spot_count: 1 }, conditions: [], blind_spots: [] },
   disposition: { by_status: { open: 4, confirmed: 3, false_positive: 2 }, by_status_severity: {}, active_total: 7, scanner_active: 4, non_scanner_active: 3 },
@@ -125,11 +124,13 @@ describe('SecurityPosture — overview', () => {
     expect(within(focus).queryByText(/points higher/)).toBeNull();
   });
 
-  it('marks an unassigned finding as assessment work and keeps operations out of the list', async () => {
+  it('marks an unassigned finding as assessment work and carries nothing about agent runs', async () => {
     await renderPage();
     const decisions = screen.getByText('Decisions for this review').closest('section')!;
     expect(within(decisions).getByText(/Assessment work — does not change the condition/)).toBeInTheDocument();
-    expect(within(decisions).getByRole('link', { name: /2 blocked runs in Operations/ })).toHaveAttribute('href', '/operations');
+    // 5.320.0 — there are no execution runs, so nothing here counts blocked ones.
+    expect(within(decisions).queryByText(/blocked run/)).not.toBeInTheDocument();
+    expect(within(decisions).queryByRole('link', { name: /Operations/ })).not.toBeInTheDocument();
   });
 
   // From the first real screenshot of this page: a project with no sites put

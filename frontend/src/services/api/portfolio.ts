@@ -50,7 +50,6 @@ export interface ProjectCard {
   attention_reasons: string[];
   open_tasks: number;
   active_sessions: number;
-  blocked_sessions: number;
   member_count: number;
   user_role: string | null;
 }
@@ -68,7 +67,6 @@ export interface PortfolioSummary {
   unjudged_observations: SeverityBrief;
   // P4 attention rollups.
   stale_projects: number;
-  blocked_sessions_total: number;
 }
 
 export interface PortfolioDashboardResponse {

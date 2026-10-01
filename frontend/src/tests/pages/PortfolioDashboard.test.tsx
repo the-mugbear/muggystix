@@ -31,7 +31,7 @@ const card = (over: Partial<ProjectCard>): ProjectCard => ({
   open_port_count: 0, scan_count: 1, days_since_last_scan: 1, is_stale: false,
   unreviewed_hosts: 7, hosts_tested: 5, hosts_in_review: 2, hosts_reviewed: 3,
   findings: sev(), unjudged_observations: sev(), health: 'healthy', attention_reasons: [],
-  open_tasks: 0, active_sessions: 0, blocked_sessions: 0,
+  open_tasks: 0, active_sessions: 0,
   member_count: 1, user_role: 'admin', last_scan_at: '2026-09-20T10:00:00Z',
   ...over,
 });
@@ -40,8 +40,8 @@ const projects = [
   card({ id: 3, name: 'All judged' }),
   card({ id: 2, name: 'Untriaged critical', unjudged_observations: sev(3, 0, 5), health: 'critical',
     attention_reasons: ['critical_unjudged'] }),
-  card({ id: 1, name: LONG, findings: sev(1, 2), health: 'critical', blocked_sessions: 1,
-    attention_reasons: ['critical_findings', 'blocked_session'] }),
+  card({ id: 1, name: LONG, findings: sev(1, 2), health: 'critical', open_tasks: 4,
+    attention_reasons: ['critical_findings'] }),
 ];
 
 const summary = {
@@ -49,7 +49,6 @@ const summary = {
   total_reviewed: 9, total_in_review: 6,
   findings: sev(1, 2), unjudged_observations: sev(3, 0, 5),
   stale_projects: 0,
-  blocked_sessions_total: 1,
 };
 
 const renderPage = async () => {
@@ -86,7 +85,10 @@ describe('Portfolio', () => {
     expect(within(table).getByText('3 findings: 1 critical · 2 high')).toBeInTheDocument();
     expect(within(table).getAllByText('3 of 10 reviewed')).toHaveLength(3);
     expect(within(table).getAllByText('2 in review · 5 not started')).toHaveLength(3);
-    expect(within(table).getByText('1 blocked run')).toBeInTheDocument();
+    // Open tasks are the host tests still to do (5.320.0); no blocked runs.
+    expect(within(table).getByText('4 open tasks')).toBeInTheDocument();
+    expect(within(table).queryByText(/blocked run/)).toBeNull();
+    expect(screen.queryByText('Blocked runs')).toBeNull();
     // 5.313.0 — plans are not approved: nothing counts them as waiting.
     expect(within(table).queryByText(/to approve/)).toBeNull();
     // A long name truncates with its full value available.
@@ -122,10 +124,16 @@ describe('Portfolio', () => {
   });
 
   it('a measure filters the table to the projects it counts; Reset shows them all', async () => {
+    // The "no import in 14 days" count on the first measure is the filter
+    // (the Blocked runs measure went with execution runs in 5.320.0).
+    dashboardMock.mockReset().mockResolvedValue({
+      summary: { ...summary, stale_projects: 1 },
+      projects: projects.map((p) => (p.id === 3 ? { ...p, is_stale: true } : p)),
+    });
     await renderPage();
-    fireEvent.click(screen.getByRole('button', { name: /show 1 blocked run/ }));
+    fireEvent.click(screen.getByRole('button', { name: /1 active, no import in 14 days/ }));
     let table = screen.getByRole('table', { name: /worst first/ });
-    expect(within(table).getAllByRole('row')).toHaveLength(2); // header + the one project
+    expect(within(table).getAllByRole('row')).toHaveLength(2); // header + the one project it counts
     // Reset, then the "With critical" option via the URL-backed filter.
     fireEvent.click(screen.getByRole('button', { name: 'Reset' }));
     table = screen.getByRole('table', { name: /worst first/ });
@@ -164,12 +172,12 @@ describe('Portfolio', () => {
   it('every waiting item is the same outlined chip, open tasks included', async () => {
     dashboardMock.mockReset().mockResolvedValue({
       summary,
-      projects: [card({ id: 5, name: 'Busy', blocked_sessions: 1, active_sessions: 1, open_tasks: 1 })],
+      projects: [card({ id: 5, name: 'Busy', active_sessions: 1, open_tasks: 1 })],
     });
     render(<MemoryRouter><PortfolioDashboard /></MemoryRouter>);
     await screen.findByText('Busy');
     const chips = within(screen.getByTestId('waiting-chips')).getAllByText(/./);
-    expect(chips.map((c) => c.textContent)).toEqual(['1 blocked run', '1 open agent session','1 open task']);
+    expect(chips.map((c) => c.textContent)).toEqual(['1 open agent session', '1 open task']);
     for (const chip of chips) {
       expect(chip.className).toMatch(/\bborder-(warning|destructive|info|border)\b/);
       expect(chip.className).not.toMatch(/\bbg-/);

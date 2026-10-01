@@ -7,9 +7,11 @@ stage of the pipeline?
 
 Three coverage dimensions:
 
-    plan_covered       — host has at least one TestPlanEntry
-    execution_covered  — host has at least one EXECUTED TestExecutionResult
-                          (joined through its TestPlanEntry)
+    plan_covered       — host has a test still to do (proposed / in progress)
+    execution_covered  — host has an evidence record whose outcome is
+                          finding / no_finding / inconclusive
+                          (both are ``host_test_queries``' definitions; until
+                          v2.442.0 they were plan entries and execution results)
     scope_coverage     — for each scope, IPs in the CIDR ranges vs
                           discovered hosts in those ranges
 
@@ -45,11 +47,6 @@ from app.db.models import (
     HostSubnetMapping,
     Scope,
     Subnet,
-)
-from app.db.models_agent import (
-    TestExecutionResult,
-    TestExecutionStatus,
-    TestPlanEntry,
 )
 from app.db.models_auth import User
 from app.db.models_project import Project
@@ -161,38 +158,14 @@ def get_project_coverage(
         or 0
     )
 
-    # --- Plan-covered hosts: distinct host_id across TestPlanEntry ----
-    # Join through TestPlan implicitly via the FK on the entry; filter
-    # to entries whose plan belongs to this project.  We don't need to
-    # join TestPlan here because the entry's host_id is what we count
-    # and the host's project_id filter handles project-scoping (entries
-    # against hosts in another project shouldn't exist in the first
-    # place, but the filter is defensive).
-    hosts_with_plan_entry = (
-        db.query(func.count(distinct(TestPlanEntry.host_id)))
-        .join(Host, Host.id == TestPlanEntry.host_id)
-        .filter(Host.project_id == project.id)
-        .scalar()
-        or 0
-    )
-
-    # --- Execution-covered hosts: distinct hosts with at least one
-    # EXECUTED TestExecutionResult (joined through the entry).  A result
-    # row alone is not a test — pending / skipped / failed / not-applicable
-    # rows counted here once let the page say "all hosts tested" over hosts
-    # nobody ran anything against.  Same definition as ``has:tested``
-    # (the tile's drill-down), posture and the host assessment.
-    hosts_with_execution_result = (
-        db.query(func.count(distinct(TestPlanEntry.host_id)))
-        .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-        .join(Host, Host.id == TestPlanEntry.host_id)
-        .filter(
-            Host.project_id == project.id,
-            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
-        )
-        .scalar()
-        or 0
-    )
+    # --- Planned and tested hosts: the one definition of each ---------
+    from app.services.host_test_queries import planned_host_ids, tested_host_ids
+    hosts_with_plan_entry = db.query(Host.id).filter(
+        Host.project_id == project.id, Host.id.in_(planned_host_ids(project.id)),
+    ).count()
+    hosts_with_execution_result = db.query(Host.id).filter(
+        Host.project_id == project.id, Host.id.in_(tested_host_ids(project.id)),
+    ).count()
 
     # --- Scope-level coverage ----------------------------------------
     # One row per scope.  total_scoped_ips is the sum of CIDR sizes;

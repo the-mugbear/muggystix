@@ -14,6 +14,8 @@ reviewer's numbering:
 6. an auditor could not end their own session over MCP;
 7. host notes were silently capped with no total or continuation;
 8. ``create_test_plan`` (and other appends) advertised ``idempotentHint: true``.
+   (Plans went in v2.442.0; the creating tool that replaced them,
+   ``host_tests_propose``, carries the case now.)
 """
 from app.db.models import Scope, Subnet
 from app.db.models_agent import AgentSession
@@ -53,13 +55,26 @@ def test_auditor_can_end_own_session(client, db_session, test_project, test_user
     assert not response.get("result", {}).get("isError"), response
 
 
-def test_create_plan_is_not_advertised_idempotent(client, test_project):
+def test_a_creating_tool_is_not_advertised_idempotent(client, db_session, test_project):
+    from app.db.models import Host
+    host = Host(project_id=test_project.id, ip_address="10.98.0.8", state="up")
+    db_session.add(host)
+    db_session.commit()
     key = start(client, test_project)
-    first = call(client, key, "create_test_plan", title="review duplicate")
-    second = call(client, key, "create_test_plan", title="review duplicate")
-    assert first["result"]["structuredContent"]["id"] != second["result"]["structuredContent"]["id"]
+
+    def propose(request_key):
+        return call(client, key, "host_tests_propose", tests=[{
+            "request_key": request_key, "host_id": host.id, "tool": "curl",
+            "description": "review duplicate", "rationale": "r",
+        }])["result"]["structuredContent"]["items"][0]["id"]
+
+    # Two calls a client believes are "the same" (new key each time) are two rows…
+    first, second = propose("attempt-1"), propose("attempt-2")
+    assert first != second
+    # …and only the caller's own stable key makes a retry safe.
+    assert propose("attempt-1") == first
     r = client.post("/api/v1/mcp", headers={"X-API-Key": key}, json={"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
-    tool = next(t for t in r.json()["result"]["tools"] if t["name"] == "create_test_plan")
+    tool = next(t for t in r.json()["result"]["tools"] if t["name"] == "host_tests_propose")
     assert tool["annotations"]["idempotentHint"] is False, (first, second, tool["annotations"])
 
 
@@ -85,11 +100,11 @@ def test_finding_detail_includes_source_thread_reply_attachment(client, db_sessi
     host = Host(project_id=test_project.id, ip_address="10.98.0.3", state="up")
     db_session.add(host)
     db_session.flush()
-    root = Annotation(host_id=host.id, user_id=test_user.id, body="initial observation", status="open")
+    root = Annotation(host_id=host.id, user_id=test_user.id, body="initial observation")
     db_session.add(root)
     db_session.flush()
     root.thread_root_id = root.id
-    reply = Annotation(host_id=host.id, user_id=test_user.id, body="critical qualification of evidence", parent_id=root.id, thread_root_id=root.id, status="open")
+    reply = Annotation(host_id=host.id, user_id=test_user.id, body="critical qualification of evidence", parent_id=root.id, thread_root_id=root.id)
     db_session.add(reply)
     db_session.flush()
     attachment = NoteAttachment(annotation_id=reply.id, project_id=test_project.id, filename="proof.png", content_type="image/png", size_bytes=123, storage_path="review-does-not-exist.png")
@@ -124,7 +139,7 @@ def test_host_notes_signal_truncation(client, db_session, test_project, test_use
     host = Host(project_id=test_project.id, ip_address="10.98.0.5", state="up")
     db_session.add(host)
     db_session.flush()
-    db_session.add_all([Annotation(host_id=host.id, user_id=test_user.id, body=f"review note {i}", status="open") for i in range(51)])
+    db_session.add_all([Annotation(host_id=host.id, user_id=test_user.id, body=f"review note {i}") for i in range(51)])
     db_session.commit()
     response = call(client, start(client, test_project), "assist_get_host_notes", host_id=host.id)
     data = response["result"]["structuredContent"]

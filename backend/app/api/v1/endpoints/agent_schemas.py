@@ -2,29 +2,18 @@
 Agent API — Pydantic schemas.
 
 All request/response models for the agent-facing endpoints.  Split out
-of agent_api.py so the route modules (agent_browse / agent_test_plans /
-agent_execution / agent_recon) can share a single schema definition.
+of agent_api.py so the route modules (agent_browse / agent_recon /
+agent_assist…) can share a single schema definition.  The test-plan and
+execution schemas went with those routes in v2.442.0: a test is a host test
+(``app/schemas/host_test_schemas.py``), its results are evidence records.
 """
 
 from datetime import datetime
-from typing import Any, Dict, List, Literal, Optional
+from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from app.db.models_agent import (
-    SanityCheckMethod,
-    TestEntryPriority,
-    TestEntryStatus,
-    TestExecutionStatus,
-    TestPhase,
-)
-from app.schemas.schemas import ProposedTestItem, StoredProposedTestItem
 from app.services.scan_time import scan_time_for_api
-
-# Use ORM enums directly — Pydantic accepts enum values in JSON and validates membership
-PriorityValue = TestEntryPriority
-PhaseValue = TestPhase
-EntryStatusValue = TestEntryStatus
 
 
 # ---------------------------------------------------------------------------
@@ -137,114 +126,6 @@ class AssistFindingsResponse(BaseModel):
     total: int
     has_more: bool
     findings: List[AssistFinding] = Field(default_factory=list)
-
-
-class PortTuple(BaseModel):
-    port: int
-    protocol: str
-    state: str
-    service: Optional[str] = None
-    product: Optional[str] = None
-    version: Optional[str] = None
-
-
-class VulnBrief(BaseModel):
-    title: str
-    severity: str
-    cve_id: Optional[str] = None
-
-
-class CandidateHost(BaseModel):
-    """One host the planning agent should consider for inclusion.
-
-    Each candidate is a *grouped semantic view* of what the agent needs
-    to make a selection decision: identity (id/ip/hostname/os), observed
-    services (open_port_count/services/ports), vulnerability posture
-    (vuln_summary/top_vulnerabilities), and an explicit server-side
-    selection recommendation (meets_policy + inferred_service_hints).
-    """
-
-    # --- identity ---
-    id: int = Field(..., description="Internal host id (use for /agent/hosts/{host_id} drill-down).")
-    ip_address: str = Field(..., description="The host's primary IPv4/IPv6 address.")
-    hostname: Optional[str] = Field(None, description="Reverse DNS or scan-derived hostname; null when no name was discovered.")
-    os_name: Optional[str] = Field(None, description="OS family / version as detected by nmap or other scanners. May be a coarse family (e.g. 'Linux') or a specific build.")
-
-    # --- observed services ---
-    open_port_count: int = Field(0, description="Count of distinct open ports across all scans of this host. Derived; do not recompute from `ports`.")
-    services: List[str] = Field(default_factory=list, description="Distinct service names observed on open ports (e.g. 'ssh', 'http', 'smb'). Empty when no service detection ran or all services were null.")
-    ports: List[PortTuple] = Field(default_factory=list, description="Per-port detail (number, protocol, state, service). Concrete evidence the policy evaluator used.")
-
-    # --- vulnerability posture ---
-    vuln_summary: VulnCounts = Field(default_factory=VulnCounts, description="Counts per severity. Note: counts, not proof of exploitability — the agent should still review `top_vulnerabilities`.")
-    top_vulnerabilities: List[VulnBrief] = Field(default_factory=list, description="Highest-severity vulnerabilities for triage; capped to keep payloads scannable.")
-
-    # --- policy evaluation ---
-    meets_policy: bool = Field(False, description="The default prioritisation's suggestion (critical/high vulns, or medium with several services or a high-value port) — advice for when the operator gave no direction, never a rule. The operator's request decides what goes in the plan.")
-    inferred_service_hints: List[Dict[str, Any]] = Field(
-        default_factory=list,
-        description=(
-            "Fallback service identities for high-value ports (SMB, RDP, databases, etc.) "
-            "where nmap returned null/'unknown'.  Empty when every open port has a real "
-            "service name OR no high-value port is open.  Lets agents justify policy "
-            "decisions without re-implementing the port→service mapping.  Added v2.10.0."
-        ),
-    )
-
-
-class PlanningContext(BaseModel):
-    """The full bundle returned by `GET /agent/test-plans/{plan_id}/context`.
-
-    Workflow: read `summary` for candidate counts and any `filter_criteria`
-    already applied, then walk `candidate_hosts` creating entries for what
-    the operator asked for.  `prioritization_advice` / `meets_policy` are a
-    default ranking for when they gave no direction (v2.438.0 — advice, no
-    longer a "selection policy" to follow or quote).  `plan` is the plan's current state (title,
-    description, status) so the agent can detect a re-fetch on a
-    partially-populated plan.
-
-    The ``entry_template`` / ``entry_batch_example`` / ``entry_schema``
-    fields are the machine-readable contract for the follow-up
-    ``POST /entries`` call — agents that previously had to infer the
-    request shape from the agent guide examples can copy-paste from these
-    directly.
-    """
-
-    plan: dict = Field(..., description="Current TestPlan state — id, title, description, status, version, filter_criteria. Echo the id back when posting entries.")
-    filter_criteria: Optional[dict] = Field(None, description="The host filters the user picked at plan-generation time. `candidate_hosts` is already pre-filtered by these — do not re-apply them.")
-    source: Optional[dict] = Field(None, description="Present when the plan was made from a fixed host selection on the Hosts page: `kind` ('manual_hosts'), `host_count`, `note`. `candidate_hosts` is restricted to that list — do not add hosts outside it.")
-    agent_name: str = Field(..., description="The provisioned agent's display name. Must appear in the `🤖 Agent-generated — {agent_name}` attribution prefix on the plan description.")
-    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
-    prioritization_advice: str = Field(..., description="How `meets_policy` ranks hosts, and that it is advice: the operator's request decides what goes in the plan. You need not follow it or justify a choice against it.")
-    summary: dict = Field(..., description="Aggregate counts: `total_hosts`, `matching_filter`, `meets_policy_count`, plus vuln severity rollups. Report this to the user as the first thing after fetching context.")
-    candidate_hosts: List[CandidateHost] = Field(..., description="Per-host candidate details, already filtered by `filter_criteria` (or restricted to the operator's fixed selection).")
-    entry_template: dict = Field(
-        ...,
-        description=(
-            "Concrete example of a single `EntryCreate` payload with all "
-            "fields populated.  Replace `host_id` with one from "
-            "`candidate_hosts[].id`, then adjust `priority`, `test_phase`, "
-            "`proposed_tests`, `rationale`, and `notes` for the actual "
-            "intent.  Pattern-match on this directly — no need to infer "
-            "the shape from the agent guide examples."
-        ),
-    )
-    entry_batch_example: dict = Field(
-        ...,
-        description=(
-            "Concrete example of the `EntryBatch` body that "
-            "`POST /agent/test-plans/{plan_id}/entries` actually accepts: "
-            "`{\"entries\": [entry, …]}`, up to 500 entries per call."
-        ),
-    )
-    entry_schema: dict = Field(
-        ...,
-        description=(
-            "JSON Schema for `EntryCreate` (Pydantic-generated).  Use "
-            "this if your agent harness can validate against schemas; "
-            "otherwise the `entry_template` example is enough."
-        ),
-    )
 
 
 class ScanBrief(BaseModel):
@@ -384,19 +265,8 @@ class AgentIdentity(BaseModel):
     # per-workflow labels survive on older rows.
     workflow: Optional[str] = None
     session_id: Optional[int] = None
-    # v2.338.0 — the three ids the MCP layer fills tool arguments from, each in
-    # its own id space.  ``plan_id`` is the active execution run's plan, else
-    # the newest plan this session drafted.  ``recon_session_id`` /
-    # ``execution_session_id`` are set only when exactly one such run is
-    # active; with several open the agent names the one it means per call.
-    # (The old ``workflow_session_id`` folded recon and execution ids into one
-    # field, so a session with both open handed the recon id to
-    # ``execution_complete``.)  ``open_phases`` carries the full lists.
-    plan_id: Optional[int] = None
-    execution_session_id: Optional[int] = None
-    # Keys: recon_session_id, active_recon_session_ids, plan_id,
-    # execution_session_id, active_execution_session_ids, drafted_plan_ids.
-    open_phases: Dict[str, Any] = Field(default_factory=dict)
+    # (``plan_id`` / ``execution_session_id`` / ``open_phases`` went with test
+    # plans and execution runs in v2.442.0: a session has no phases.)
     project_id: int
     project_name: Optional[str] = None
     agent_id: int
@@ -455,156 +325,17 @@ class AgentDashboard(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Schemas — test plans
-# ---------------------------------------------------------------------------
-
-# ``PlanCreate`` removed in v2.295.0 with ``POST /agent/test-plans`` — the
-# agent no longer creates plans, it fills in one the operator created.
-
-
-class _PlanFilterCriteria(BaseModel):
-    """The host filters a drafted plan was scoped against (optional)."""
-    subnets: Optional[List[str]] = None
-    ports: Optional[List[int]] = None
-    services: Optional[List[str]] = None
-    min_severity: Optional[str] = None
-    has_critical_vulns: Optional[bool] = None
-    has_high_vulns: Optional[bool] = None
-    search: Optional[str] = None
-
-
-class PlanCreate(BaseModel):
-    """Body for POST /agent/test-plans — open a draft plan in this session."""
-    title: str = Field(..., max_length=200, min_length=1)
-    description: Optional[str] = None
-    filter_criteria: Optional[_PlanFilterCriteria] = None
-    # v2.428.5 — plan against an EXACT host list, as the Hosts page's "Test
-    # plan" action does (MCP acceptance feedback #19: an agent planning "the
-    # hosts in review by me" had to fake it with /32 subnet filters).  Either
-    # the ids, or a host query (the Hosts DSL) resolved to its matching hosts
-    # when the plan is created — a fixed selection, not a live filter.
-    host_ids: Optional[List[int]] = Field(None, min_length=1, max_length=10_000)
-    q: Optional[str] = Field(None, min_length=1, max_length=2000, description=(
-        "A host query (the Hosts page DSL, e.g. 'follow:in_review OR assigned:me'), "
-        "resolved to its matching hosts when the plan is created."
-    ))
-    agent_model: Optional[str] = Field(
-        None, max_length=200,
-        description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the plan.",
-    )
-
-
-class PlanUpdate(BaseModel):
-    title: Optional[str] = Field(None, max_length=200, min_length=1)
-    description: Optional[str] = None
-    # v2.19.0 — agent self-reports its own identity during plan generation
-    # so the audit trail can later show *which* model/harness produced the
-    # plan and against which prompt version.  All optional; the service
-    # only writes them once (a re-PATCH with these fields null is a no-op
-    # for them, so the agent can edit description later without erasing
-    # provenance).  Values are free-form strings — agents pick the same
-    # conventions the feedback endpoint already uses.
-    generated_by_model: Optional[str] = Field(
-        None, max_length=100,
-        description='Model id, e.g. "claude-opus-4-7" or "gpt-5".',
-    )
-    generated_by_tool: Optional[str] = Field(
-        None, max_length=100,
-        description='Agent harness/CLI, e.g. "claude-code", "codex", "chatgpt".',
-    )
-    prompt_version: Optional[str] = Field(
-        None, max_length=20,
-        description='The PROMPT_VERSION the agent was instructed with — echo back the value from the instructions block.',
-    )
-
-
-class EntryCreate(BaseModel):
-    host_id: int
-    priority: PriorityValue
-    test_phase: PhaseValue
-    proposed_tests: List[ProposedTestItem]
-    rationale: str
-    notes: Optional[str] = None
-    # v2.323.0 — the NAMED endpoint on this host the tests target (web tests
-    # behind a load balancer need the Host header / SNI).  Must be one of the
-    # host's ``names`` from GET /agent/hosts/{host_id}; an unknown name is
-    # rejected (the target-in-inventory guardrail applied to names).
-    target_fqdn: Optional[str] = Field(None, max_length=253, description=(
-        "Optional: the FQDN on this host the tests are against (e.g. portal.example.com). "
-        "Must appear in the host's `names` list; use {fqdn} in commands to reference it."
-    ))
-
-
-class EntryBatch(BaseModel):
-    entries: List[EntryCreate] = Field(..., max_length=500)
-
-
-class AgentEntryUpdate(BaseModel):
-    priority: Optional[PriorityValue] = None
-    test_phase: Optional[PhaseValue] = None
-    proposed_tests: Optional[List[ProposedTestItem]] = None
-    rationale: Optional[str] = None
-    status: Optional[EntryStatusValue] = None
-    findings: Optional[str] = None
-    results_data: Optional[dict] = None
-    notes: Optional[str] = None
-    expected_updated_at: Optional[datetime] = None
-
-
-class PlanResponse(BaseModel):
-    id: int
-    version: int
-    title: str
-    description: Optional[str] = None
-    status: str
-    entry_count: int = 0
-    completion_pct: float = 0.0
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class EntryResponse(BaseModel):
-    """Agent-facing entry response (excludes hostname and assigned_to_id)."""
-    id: int
-    host_id: int
-    host_ip: Optional[str] = None
-    # v2.323.0 — the named endpoint this entry targets, when one was set.
-    name_id: Optional[int] = None
-    target_fqdn: Optional[str] = None
-    priority: str
-    test_phase: str
-    proposed_tests: List[StoredProposedTestItem]
-    rationale: str
-    status: str
-    findings: Optional[str] = None
-    results_data: Optional[Dict[str, Any]] = None
-    notes: Optional[str] = None
-    created_at: datetime
-    updated_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class PlanDetailResponse(PlanResponse):
-    entries: List[EntryResponse] = Field(default_factory=list)
-
-
-# ---------------------------------------------------------------------------
 # Schemas — host notes & follow (agent-facing)
 # ---------------------------------------------------------------------------
 
 class AgentNoteCreate(BaseModel):
     body: str = Field(..., min_length=1)
-    status: str = Field("open")  # open | in_progress | resolved
 
 
 class AgentNoteResponse(BaseModel):
     id: int
     host_id: int
     body: str
-    status: str
     author_id: int
     parent_id: Optional[int] = None
     # 'agent' for anything written through this API — echoed back so the
@@ -639,237 +370,6 @@ class AgentHostUpdateResponse(BaseModel):
     os_name: Optional[str] = None
     changed: List[str] = Field(default_factory=list)
 
-
-class EntryBatchResponse(BaseModel):
-    """Wrapped response for batch entry creation.
-
-    The agent guide documents the response as ``{"entries": [...]}``,
-    not a bare array.  Wrapping is intentional so agents can call
-    ``response.get("entries")`` without crashing.
-    """
-    entries: List[EntryResponse] = Field(default_factory=list)
-
-
-class CoverageInfo(BaseModel):
-    """Non-blocking coverage summary appended to validate response.
-
-    v2.10.0: the single ``eligible_hosts_remaining`` number was
-    confusing — it conflated hosts the agent *should* have included
-    (policy-matching, true missed scope) with hosts the agent
-    *correctly excluded* (open ports but not policy-matching, e.g.
-    low-risk informational-only hosts).  Agent feedback flagged this
-    as the biggest friction point in plan creation.
-
-    The response now splits into two explicit counts:
-
-    - ``policy_matching_remaining`` — hosts without an entry that the
-      default prioritisation ranks high.  Information only (v2.438.0): the
-      operator's request decides what belongs in the plan.
-    - ``non_policy_with_open_ports`` — the other hosts with open ports and
-      no entry.
-
-    ``eligible_hosts_remaining`` is kept for backwards compatibility
-    with v2.9.x clients and equals the sum of both buckets.
-    """
-    entries_in_plan: int = 0
-    eligible_hosts_remaining: int = 0  # deprecated — sum of the two below
-    policy_matching_remaining: int = 0
-    non_policy_with_open_ports: int = 0
-    coverage_pct: float = 0.0
-    note: Optional[str] = None
-
-
-class PlanValidationReport(BaseModel):
-    """A plan's gaps and coverage — advice, not a gate."""
-    plan_id: int
-    ready: bool
-    total_entries: int
-    by_priority: Dict[str, int]
-    by_phase: Dict[str, int]
-    warnings: List[str]
-    coverage: Optional[CoverageInfo] = None
-
-
-# ---------------------------------------------------------------------------
-# Schemas — test execution
-# ---------------------------------------------------------------------------
-
-class ExecutionHostContext(BaseModel):
-    entry_id: int
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    # v2.323.0 — the named endpoint the entry targets (null = bare address).
-    # Commands carry {fqdn} resolved to this when set.
-    target_fqdn: Optional[str] = None
-    os_name: Optional[str] = None
-    priority: str
-    test_phase: str
-    entry_status: str
-    sanity_check_passed: Optional[bool] = None
-    tests: List[Dict[str, Any]] = Field(default_factory=list)
-    known_services: List[Dict[str, Any]] = Field(default_factory=list)
-
-
-class ExecutionStartRequest(BaseModel):
-    """Body for POST /agent/execution-sessions/start — open an execution run."""
-    plan_id: int = Field(..., gt=0, description="The plan to execute (a draft or one in progress).")
-    agent_model: Optional[str] = Field(
-        None, max_length=200,
-        description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the run.",
-    )
-
-
-class ExecutionContextResponse(BaseModel):
-    plan: dict
-    session_id: int
-    agent_name: str
-    prompt_version: str = Field("", description="The live PROMPT_VERSION this deployment runs. Compare it to the prompt_version in your instructions block: if they differ, the deployment changed mid-session — re-fetch the agents-guide.")
-    # v2.337.0 — present only on POST /agent/execution-sessions/start: the
-    # per-host read-back to state before testing. Null on /execution-context.
-    read_back: Optional[str] = None
-    hosts: List[ExecutionHostContext] = Field(default_factory=list)
-
-
-class SanityCheckRequest(BaseModel):
-    # use_enum_values keeps ``body.method`` as the plain string ("banner_grab"
-    # etc.) so it slots straight into the String(30) DB column without
-    # calling .value, while Pydantic still rejects unknown methods.
-    model_config = ConfigDict(use_enum_values=True)
-
-    method: SanityCheckMethod
-    target_ip: str
-    port_checked: Optional[int] = None
-    expected_value: Optional[str] = None
-    actual_value: Optional[str] = None
-    source_ip: Optional[str] = None
-    dns_result: Optional[str] = None
-    passed: bool
-    details: Optional[str] = None
-
-
-class TestResultRequest(BaseModel):
-    # Same pattern as SanityCheckRequest — accept the enum's string value,
-    # reject anything else.  Replaces the previous ``status: str``, which
-    # let arbitrary unknown statuses reach the DB.
-    model_config = ConfigDict(use_enum_values=True)
-
-    test_index: int
-    status: TestExecutionStatus
-    command_run: Optional[str] = None
-    raw_output: Optional[str] = None
-    findings_summary: Optional[str] = None
-    severity: Optional[str] = None
-    is_finding: bool = False
-    # v2.323.0 — the address the command actually hit, as you observed it
-    # (e.g. from the tool's output or a resolver check at run time).  Execution
-    # evidence references the binding; the finding anchors to the entry's
-    # named endpoint.  Omit when you targeted the bare IP.
-    observed_ip: Optional[str] = Field(None, max_length=45, description=(
-        "IPv4/IPv6 literal the test actually reached. Record it when the entry has a "
-        "target_fqdn — a name behind a load balancer may resolve differently at run time."
-    ))
-
-
-class CompleteEntryRequest(BaseModel):
-    # use_enum_values keeps ``body.overall_status`` as the plain string
-    # ("completed" / "rejected") so it slots straight into the
-    # String(20) DB column without calling .value, while Pydantic still
-    # rejects unknown statuses (v2.25.0 — previously str-typed, which
-    # let arbitrary statuses ("done", "complete", typos) reach the DB
-    # and disappear from progress/reporting that recognises only the
-    # canonical terminal states).
-    model_config = ConfigDict(use_enum_values=True)
-
-    findings_summary: Optional[str] = None
-    overall_status: TestEntryStatus = TestEntryStatus.COMPLETED
-    # v2.25.0 — completion also refuses when the entry has zero recorded
-    # TestExecutionResult rows AND zero proposed_tests, OR when the
-    # caller passes an explicit no_tests_run_reason to acknowledge that
-    # they're closing without evidence: every "no result row" completion
-    # carries a human-readable justification.
-    no_tests_run_reason: Optional[str] = Field(None, max_length=500)
-
-
-class ExecutionSessionCompleteRequest(BaseModel):
-    """Body for ``POST /agent/execution-sessions/{id}/complete`` (v2.45.2).
-
-    Mirrors the recon-side ``ReconCompleteRequest`` shape so the agent
-    closure flow is symmetric across workflows.  ``overall_status``
-    defaults to ``completed`` — set explicitly to ``failed`` when the
-    agent is closing because the engagement broke (target offline
-    mid-run, credentials revoked) rather than because all tests ran.
-    ``abandoned`` is reserved for the JWT-side endpoint operators use
-    when they're giving up; agents shouldn't self-abandon.
-    """
-    model_config = ConfigDict(use_enum_values=True)
-
-    notes: Optional[str] = Field(
-        None,
-        max_length=8192,
-        description=(
-            "Free-form closing note appended to the session record. "
-            "Use to summarize findings, coverage gaps, or environment "
-            "issues that affected the run."
-        ),
-    )
-    overall_status: Literal["completed", "failed"] = Field(
-        "completed",
-        description=(
-            "Terminal status for the session.  'completed' = all "
-            "planned entries ran (some may be skipped or failed at the "
-            "entry level — that's normal).  'failed' = the session "
-            "itself broke (auth lost, scope mismatch, etc.) and the "
-            "agent is closing it as a failure rather than a success."
-        ),
-    )
-
-
-class ExecutionSessionCompleteResponse(BaseModel):
-    """Confirmation echo after ``/execution-sessions/{id}/complete``."""
-    session_id: int
-    test_plan_id: int
-    status: str
-    completed_at: datetime
-    entries_total: int
-    entries_completed: int
-    entries_remaining: int
-    tests_recorded: int
-    findings_count: int
-    # v2.343.0 — the checkpoint nudge.  Phase completion is reached far more
-    # reliably than the session end the feedback ask used to hang off, so the
-    # completion says whether this session has filed any feedback yet and,
-    # when it has not, what to do about it.  Advisory: nothing is refused.
-    feedback_recorded: Optional[bool] = None
-    feedback_hint: Optional[str] = None
-
-
-class ExecutionProgressResponse(BaseModel):
-    plan_id: int
-    session_id: int
-    total_entries: int = 0
-    entries_completed: int = 0
-    entries_in_progress: int = 0
-    entries_remaining: int = 0
-    total_tests: int = 0
-    tests_executed: int = 0
-    tests_skipped: int = 0
-    # v2.25.0 — the three statuses below were previously lumped into
-    # ``tests_pending``, overstating remaining work the moment a
-    # result landed in any terminal-or-blocked state.  Surfaced
-    # explicitly now; ``tests_pending`` is derived from "proposed -
-    # everything we have a row for" so a future enum addition doesn't
-    # silently rejoin the pending bucket.
-    tests_failed: int = 0
-    tests_not_applicable: int = 0
-    tests_pending_approval: int = 0
-    tests_pending: int = 0
-    findings_count: int = 0
-    critical_findings: int = 0
-
-
-# (The environment probe schemas — ToolStatusItem, EnvironmentSummary,
-# EnvironmentProbeRequest/Response — went with the probe in v2.434.0.)
 
 
 # ---------------------------------------------------------------------------

@@ -119,7 +119,7 @@ const EVIDENCE_MEANING: Record<string, string> = {
   SCANNER: 'A scanner (Nmap, Nessus…) reported this name for an address',
   HTTP: 'The name was contacted over HTTP at an address (httpx…)',
   CERT: 'A TLS certificate presented at an address carried this name',
-  TESTED: 'A test-plan command ran against this name at an address',
+  TESTED: 'A recorded test command ran against this name at an address',
 };
 
 const evidenceChipTitle = (kind: string, count: number): string => {

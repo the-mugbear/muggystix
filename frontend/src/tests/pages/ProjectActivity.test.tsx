@@ -62,8 +62,6 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   generated_by_model: null,
   generated_by_tool: null,
   prompt_version: '2.13.1',
-  scope_id: null,
-  test_plan_id: null,
   purpose: 'map the DMZ',
   key_expires_at: ahead(20 * HOUR),
   renewable_until: ahead(6 * 24 * HOUR),
@@ -72,16 +70,17 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   last_activity_at: ago(5 * 60 * 1000),
   operator_role: 'analyst',
   assist_session_id: 52,
-  phases: [
-    { kind: 'execution', id: 46, status: 'paused', label: 'SMB sweep', scope_id: null, test_plan_id: 17, started_at: ago(HOUR / 2) },
-  ],
+  host_test_count: 3,
+  evidence_count: 1,
   can_end: true,
   can_resume: true,
   ...overrides,
 });
 
+/** A pre-consolidation assist row — the one legacy kind left (5.320.0: the
+ *  legacy plan-generation and execution rows went with their tables). */
 const legacyRun = (overrides: Record<string, unknown> = {}) => ({
-  kind: 'execution' as const,
+  kind: 'assist' as const,
   id: 42,
   project_id: 1,
   agent_id: 7,
@@ -94,9 +93,6 @@ const legacyRun = (overrides: Record<string, unknown> = {}) => ({
   generated_by_model: 'claude-opus-4-7',
   generated_by_tool: 'claude-code',
   prompt_version: '1.13.0',
-  scope_id: null,
-  test_plan_id: 17,
-  target_label: 'Legacy plan',
   ...overrides,
 });
 
@@ -139,8 +135,11 @@ describe('Agent Sessions', () => {
     const item = within(section).getByTestId('live-session');
     // The session opens its own page, keyed by the SESSION id.
     expect(within(item).getByRole('link', { name: /#72 · map the DMZ/ })).toHaveAttribute('href', '/agent-sessions/72');
-    // Its runs link to their pages — they appear nowhere else on the page.
-    expect(within(item).getByRole('link', { name: /Execution #46/ })).toHaveAttribute('href', '/executions/46');
+    // Its work — the tests it proposed and the evidence it recorded — opens
+    // the session page, which lists them.
+    expect(within(item).getByRole('link', { name: '3 tests proposed · 1 evidence record' }))
+      .toHaveAttribute('href', '/agent-sessions/72');
+    expect(within(item).queryByText(/Execution #|Plan #/)).not.toBeInTheDocument();
     expect(within(item).getByText(/last call/)).toBeInTheDocument();
     expect(within(item).getByText('Live')).toBeInTheDocument();
     expect(within(item).getByText('Analyst role')).toBeInTheDocument();
@@ -163,7 +162,7 @@ describe('Agent Sessions', () => {
   });
 
   it('says a session is waiting to be resumed when its key ran out, without a spinner of work', async () => {
-    const stale = session({ key_expires_at: ago(6 * HOUR), last_activity_at: null, phases: [] });
+    const stale = session({ key_expires_at: ago(6 * HOUR), last_activity_at: null, host_test_count: 0, evidence_count: 0 });
     serve([stale], [stale]);
     renderPage();
 
@@ -214,7 +213,7 @@ describe('Agent Sessions', () => {
     expect(screen.getByText('No agent has run against this project yet.')).toBeInTheDocument();
   });
 
-  it('lists one history row per session that opens the session page, and legacy rows their own', async () => {
+  it('lists one history row per session that opens the session page; a legacy row has no page', async () => {
     const ended = session({
       id: 60,
       status: 'ended',
@@ -234,12 +233,12 @@ describe('Agent Sessions', () => {
     }
     expect(within(rows[0]).getByText('ended by agent · 2 feedback')).toBeInTheDocument();
     expect(within(rows[0]).getByText('Ended')).toBeInTheDocument();
-    expect(within(rows[0]).getByRole('link', { name: /Execution #46/ })).toHaveAttribute('href', '/executions/46');
-    // Legacy: its own page, its own kind badge.
-    for (const link of within(rows[1]).getAllByRole('link', { name: 'Open Execution 42' })) {
-      expect(link).toHaveAttribute('href', '/executions/42');
-    }
-    expect(within(rows[1]).getByText('Legacy plan')).toBeInTheDocument();
+    expect(within(rows[0]).getByRole('link', { name: '3 tests proposed · 1 evidence record' }))
+      .toHaveAttribute('href', '/agent-sessions/60');
+    // Legacy assist: its kind badge, no page of its own (so no link), no work.
+    expect(within(rows[1]).getByText('Assist')).toBeInTheDocument();
+    expect(within(rows[1]).getByText('Project-wide')).toBeInTheDocument();
+    expect(within(rows[1]).queryByRole('link')).not.toBeInTheDocument();
     expect(within(rows[1]).getByText('claude-opus-4-7 · claude-code')).toBeInTheDocument();
   });
 
@@ -254,7 +253,7 @@ describe('Agent Sessions', () => {
       project_id: 1,
       summary: [{
         generated_by_model: 'claude-opus-4-7', generated_by_tool: 'claude-code',
-        project: 0, plan_generation: 0, execution: 1, assist: 0, total: 1,
+        project: 0, assist: 1, total: 1,
       }],
     });
     await user.click(screen.getByRole('button', { name: /Refresh agent sessions/i }));
@@ -275,16 +274,19 @@ describe('Agent Sessions', () => {
       if (filters.kind === 'project' && filters.status === 'active') {
         return { project_id: 1, sessions: [], total: 0 };
       }
-      if (filters.kind === 'execution') {
-        return { project_id: 1, sessions: [legacyRun({ id: 43, target_label: 'Newer filter' })], total: 1 };
+      if (filters.kind === 'assist') {
+        return { project_id: 1, sessions: [legacyRun({ id: 43, generated_by_model: 'Newer filter', generated_by_tool: null })], total: 1 };
       }
       await oldDone;
-      return { project_id: 1, sessions: [legacyRun({ target_label: 'Older filter' })], total: 1 };
+      return { project_id: 1, sessions: [legacyRun({ generated_by_model: 'Older filter', generated_by_tool: null })], total: 1 };
     });
     renderPage();
 
     await user.click(screen.getByLabelText('Filter sessions by kind'));
-    await user.click(await screen.findByRole('option', { name: 'Legacy execution' }));
+    const assistOption = await screen.findByRole('option', { name: 'Legacy assist' });
+    // The retired kinds are not offered (checked while the list is open).
+    expect(screen.queryByRole('option', { name: /Legacy (execution|plan generation)/ })).not.toBeInTheDocument();
+    await user.click(assistOption);
     expect(await screen.findByText('Newer filter')).toBeInTheDocument();
 
     releaseOld();
@@ -360,7 +362,7 @@ describe('Agent Sessions', () => {
       project_id: 1,
       summary: [{
         generated_by_model: null, generated_by_tool: null,
-        project: 5, plan_generation: 0, execution: 0, assist: 0, total: 5,
+        project: 5, assist: 0, total: 5,
       }],
     });
     renderPage();

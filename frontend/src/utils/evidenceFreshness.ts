@@ -123,14 +123,14 @@ export const freshnessFacts = (a: HostAssessment): FreshnessFact[] => {
           label: 'Tested',
           value: ago(a.last_tested_at) ?? `${a.tests_executed} result${a.tests_executed === 1 ? '' : 's'}`,
           tone: 'ok',
-          title: `${a.tests_executed} executed test result${a.tests_executed === 1 ? '' : 's'} on this host's plan entries.`,
+          title: `${a.tests_executed} evidence record${a.tests_executed === 1 ? '' : 's'} of a test that ran on this host (a finding, no finding, or inconclusive).`,
         }
       : {
           key: 'tested',
           label: 'Tested',
           value: 'never',
           tone: 'gap',
-          title: 'No test on a plan entry for this host has been executed.',
+          title: 'No evidence of a test that ran on this host has been recorded.',
         },
   );
   if (a.conflicts > 0) {

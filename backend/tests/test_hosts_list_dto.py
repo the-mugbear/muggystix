@@ -20,7 +20,6 @@ def test_list_windows_notes_and_discoveries(client, db_session, test_project, te
     for i in range(5):
         db_session.add(models.Annotation(
             host_id=host.id, user_id=test_user.id, body=f"note {i}",
-            status=models.NoteStatus.OPEN,
         ))
     # 9 distinct scans / history rows — discoveries cap at 6.
     for i in range(9):

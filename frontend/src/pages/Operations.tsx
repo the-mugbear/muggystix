@@ -41,7 +41,6 @@ import { buildHostsUrl } from '../utils/drilldownLinks';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
 import { agentInstruction, isStalledRun, sessionRowPath } from '../utils/agentRuns';
-import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 import { formatRelativeTime } from '../utils/relativeTime';
@@ -212,25 +211,25 @@ const ProjectStateSection: React.FC<{
                 hosts it counts. */}
             <div className="grid gap-y-md divide-border sm:grid-cols-3 sm:divide-x">
               <PostureMeasure
-                label="With plan entries"
-                info="Hosts that appear in at least one test plan, whatever its state. The line below opens the hosts in none."
+                label="With tests to do"
+                info="Hosts with at least one test that is proposed or in progress. A host whose tests are all done or dismissed is not counted. The line below opens the hosts with none."
                 value={coverage.hosts_with_plan_entry.toLocaleString()}
                 to={coverage.hosts_with_plan_entry > 0 ? buildHostsUrl({ q: 'has:planned' }) : undefined}
-                toLabel="With plan entries — view hosts"
+                toLabel="With tests to do — view hosts"
               >
                 <GapLine
                   text={coverage.hosts_no_plan > 0
-                    ? `${coverage.hosts_no_plan.toLocaleString()} not yet in any plan`
-                    : 'all hosts planned'}
+                    ? `${coverage.hosts_no_plan.toLocaleString()} with no test to do`
+                    : 'every host has a test to do'}
                   to={coverage.hosts_no_plan > 0 ? buildHostsUrl({ q: 'NOT has:planned' }) : undefined}
                 />
               </PostureMeasure>
               <PostureMeasure
-                label="With execution results"
-                info="Hosts an agent actually ran a planned test against (a recorded execution result). Planning alone does not count. The line below opens the hosts with none."
+                label="Tested"
+                info="Hosts with recorded evidence of a test that ran — a finding, no finding, or an inconclusive result. A proposed test alone does not count, nor does an attempt that could not run. The line below opens the hosts with none."
                 value={coverage.hosts_with_execution_result.toLocaleString()}
                 to={buildHostsUrl({ hasTestExecution: true })}
-                toLabel="With execution results — view hosts"
+                toLabel="Tested — view hosts"
               >
                 <GapLine
                   text={coverage.hosts_no_execution > 0
@@ -350,31 +349,18 @@ function Segmented<T extends string>({ label, value, onChange, options }: {
 
 const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) => {
   const navigate = useNavigate();
-  // v5.187.0 — prefer the declared target in words. "Scope #3" cannot tell a
-  // second analyst that a range is already being scanned, which is the whole
-  // reason a session declares one. Falls back to the id when a label can't be
-  // resolved (deleted scope, or a deployment mid-upgrade).
-  const subject =
-    session.target_label
-    || (session.kind === 'plan_generation' || session.kind === 'execution'
-      ? session.test_plan_id
-        ? `Plan #${session.test_plan_id}`
-        : '—'
-      // Assist is project-scoped — it has no plan or scope to name, which is
-      // the point of the workflow rather than missing data.
-      : session.kind === 'assist'
-      ? 'Project-wide'
-      // A unified session: what the operator said it was for.
-      : session.kind === 'project'
-      ? session.purpose || 'Project session'
-      : '—');
+  // A session says what it is for in the operator's own words; a legacy
+  // assist row is project-wide and has nothing to name.
+  const subject = session.kind === 'project'
+    ? session.purpose || 'Project session'
+    : 'Project-wide';
 
   // One rule for where a row opens (utils/agentRuns); a legacy row with no
   // page offers no Open.
   const openPath = sessionRowPath(session);
 
-  // 5.304.0 — "active" on a run no agent session can act on (a run from 17
-  // days ago read ACTIVE) is stalled: Agent Sessions' rule, not an age.
+  // 5.304.0 — "active" on a legacy row no agent session can act on is
+  // stalled: Agent Sessions' rule, not an age.
   const stalled = isStalledRun(session);
 
   return (
@@ -385,7 +371,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
         variant={stalled ? 'warning' : session.status === 'active' ? 'success' : 'muted'}
         className="normal-case tracking-normal"
         title={stalled
-          ? 'Still open, but no agent session can act on it — it will not move on its own. Open it to abandon it (its results are kept).'
+          ? 'Still open, but no agent session can act on it — it will not move on its own.'
           : undefined}
       >
         {stalled ? 'Stalled' : session.status.replace('_', ' ')}
@@ -475,7 +461,7 @@ const RunsSection: React.FC<{ refreshKey?: number }> = ({ refreshKey = 0 }) => {
   return (
     <PostureSection
       title={<span>Runs</span>}
-      description="Agent sessions on this project and the execution runs they opened."
+      description="Agent sessions on this project."
       actions={<>
           {/* A failed refetch keeps the previous rows under its error. */}
           <UpdatedAt at={runsLoadedAt} stale={!!error} hideWhenFresh />
@@ -626,8 +612,8 @@ const SinceLastVisitBanner: React.FC<{
 
 // ---------------------------------------------------------------------------
 // Blockers (v5.242.0) — work that has stopped and will not resume by itself:
-// imports that failed or finished partial, execution runs that are paused or
-// whose agent session ended.  Each says what is blocked and carries the one
+// imports that failed or finished partial (interrupted execution runs were a
+// second kind until 5.320.0).  Each says what is blocked and carries the one
 // action that unblocks it.  Renders nothing when nothing is blocked; says so
 // when it could not be checked (never "nothing blocked" on a failure).
 // ---------------------------------------------------------------------------
@@ -641,14 +627,14 @@ const BlockersStrip: React.FC<{
   if (unavailable) {
     return (
       <p role="status" className="text-caption text-muted-foreground">
-        Blocked work (failed imports, interrupted runs) could not be checked — this is not a
+        Blocked work (failed imports) could not be checked — this is not a
         confirmation that nothing is blocked.
       </p>
     );
   }
   if (!blockers) return null;
   const importCount = blockers.failed_import_count + blockers.partial_import_count;
-  if (importCount === 0 && blockers.interrupted_execution_count === 0) return null;
+  if (importCount === 0) return null;
 
   const importSummary = [
     blockers.failed_import_count > 0
@@ -658,7 +644,6 @@ const BlockersStrip: React.FC<{
       ? `${blockers.partial_import_count} finished partial`
       : null,
   ].filter(Boolean).join(' · ');
-  const moreRuns = blockers.interrupted_execution_count - blockers.executions.length;
 
   return (
     <div className="space-y-xs border-l-4 border-l-warning py-xs pl-md">
@@ -666,7 +651,7 @@ const BlockersStrip: React.FC<{
           <AlertTriangle className="size-4 shrink-0 text-warning" aria-hidden />
           <h2 className="text-metadata font-semibold text-foreground">Blocked</h2>
           <span className="text-caption text-muted-foreground"
-            title="Failed or partial imports nobody has dismissed, and execution runs that are paused or that no agent session can act on any more. Nothing here moves until someone acts.">
+            title="Failed or partial imports nobody has dismissed. Nothing here moves until someone acts.">
             waiting on someone — each line has the action that unblocks it
           </span>
         </div>
@@ -694,29 +679,6 @@ const BlockersStrip: React.FC<{
           </div>
         )}
 
-        {blockers.executions.map((run) => (
-          <div key={run.session_id} className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs">
-            <span className="shrink-0 text-metadata text-foreground">
-              Run #{run.session_id} {run.reason === 'paused' ? 'is paused' : 'lost its agent session'}
-            </span>
-            <span
-              className="min-w-0 flex-1 truncate text-caption text-muted-foreground"
-              title={run.plan_title ?? undefined}
-            >
-              {safeFallback(run.plan_title, `plan #${run.test_plan_id}`)} — open it to see where it
-              stopped; any agent session can run the plan again
-            </span>
-            <Button size="sm" variant="ghost" className="h-7 shrink-0 text-info"
-              onClick={() => navigate(`/executions/${run.session_id}`)}>
-              Open run
-            </Button>
-          </div>
-        ))}
-        {moreRuns > 0 && (
-          <Button size="sm" variant="ghost" className="text-caption" onClick={() => navigate('/executions')}>
-            +{moreRuns} more interrupted run{moreRuns === 1 ? '' : 's'}
-          </Button>
-        )}
     </div>
   );
 };
@@ -867,8 +829,7 @@ const Operations: React.FC = () => {
     // Only coverage is structural (it gates the whole page), so only its
     // failure raises the page-level error; stats degrade on their own.
     // (No scan-freshness fetch since 5.255.2: a project is one assessment
-    // window, so the age of a scan is not something Operations chases.
-    // No pending-plans fetch since 5.313.0: plans are not approved.)
+    // window, so the age of a scan is not something Operations chases.)
     const [coverageR, statsR] = await Promise.allSettled([
       getProjectCoverage(),
       getDashboardStats(),
@@ -965,7 +926,6 @@ const Operations: React.FC = () => {
   const workCardProps = {
     queue: workbench?.my_queue ?? null,
     tasks: workbench?.my_tasks ?? null,
-    notes: workbench?.my_notes ?? null,
     findings: workbench?.my_findings ?? null,
     investigate,
     investigateUnavailable,
@@ -992,7 +952,7 @@ const Operations: React.FC = () => {
           <h1 className="text-page-title font-semibold">Operations</h1>
           {!isBrandNewProject && (
             <p className="text-metadata text-muted-foreground">
-              Project-wide coordination view — coverage, queue, runs.
+              Project-wide coordination view — coverage, queue, agent sessions.
             </p>
           )}
         </div>
@@ -1179,21 +1139,17 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
 /**
  * The page's lead (v5.267.0): one sentence saying what is waiting on the
  * operator, from the same /workbench payload the sections below render — so
- * the sentence and the sections cannot disagree.  Blocked work and overdue
- * notes colour it; a queue alone does not (work is the page's normal state).
+ * the sentence and the sections cannot disagree.  Blocked work colours it; a queue alone does not (work is the page's normal state).
  */
 const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: number }> = ({
   workbench, worthALook,
 }) => {
-  const { total, overdue } = personalWorkCounts(
-    workbench.my_queue, workbench.my_tasks, workbench.my_notes, workbench.my_findings,
-  );
+  const { total } = personalWorkCounts(workbench.my_queue, workbench.my_tasks, workbench.my_findings);
   const b = workbench.blockers;
   const known = !workbench.blockers_unavailable && b;
   const failed = known ? b.failed_import_count : 0;
   const partial = known ? b.partial_import_count : 0;
-  const stalled = known ? b.interrupted_execution_count : 0;
-  const blocked = failed + partial + stalled;
+  const blocked = failed + partial;
   const followups = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
   // Loaded on its own request (5.304.1): 0 until it arrives, so the clause
   // appears when the count is known rather than as a guess.
@@ -1206,12 +1162,11 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: numbe
   // your queue, 29 reviewed hosts … and 114 untouched hosts …") mixed the
   // two and needed a second line to explain which was which.
   const mine = [
-    total > 0 ? `${s(total, 'item', 'items')} in your queue${overdue > 0 ? ` (${n(overdue)} overdue)` : ''}` : null,
+    total > 0 ? `${s(total, 'item', 'items')} in your queue` : null,
   ].filter((p): p is string => !!p);
   const team = [
     failed > 0 ? `${s(failed, 'import', 'imports')} failed` : null,
     partial > 0 ? `${s(partial, 'import', 'imports')} finished partial` : null,
-    stalled > 0 ? `${s(stalled, 'execution run is', 'execution runs are')} stalled` : null,
     followups > 0 ? `${s(followups, 'reviewed host needs', 'reviewed hosts need')} another look` : null,
     worth > 0 ? `${s(worth, 'unreviewed host is', 'unreviewed hosts are')} worth a look` : null,
   ].filter((p): p is string => !!p);
@@ -1219,12 +1174,12 @@ const OperationsLead: React.FC<{ workbench: WorkbenchResponse; worthALook: numbe
   const list = (parts: string[]) => (parts.length <= 1
     ? parts.join('')
     : `${parts.slice(0, -1).join(', ')} and ${parts[parts.length - 1]}`);
-  const tone: LeadTone = blocked > 0 || overdue > 0 ? 'critical' : mine.length || team.length ? 'neutral' : 'clear';
+  const tone: LeadTone = blocked > 0 ? 'critical' : mine.length || team.length ? 'neutral' : 'clear';
 
   return (
     <PostureLead
       tone={tone}
-      restsOn="Your queue: notes and plan steps assigned to you, hosts you have in review, and findings you own. Everything in the second sentence is team-wide — anyone can take it."
+      restsOn="Your queue: tests assigned to you, hosts you have in review, and findings you own. Everything in the second sentence is team-wide — anyone can take it."
     >
       {mine.length > 0 ? `You have ${list(mine)}.` : 'Nothing is waiting on you.'}
       {team.length > 0 && ` Across the team: ${list(team)}.`}

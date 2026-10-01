@@ -13,19 +13,6 @@ export const formatStatusLabel = (value: string | null | undefined, fallback = '
   return STATUS_LABELS[value] ?? value.replace(/_/g, ' ');
 };
 
-export const getNoteStatusChipColor = (status: string | null | undefined): ChipColor => {
-  switch (status) {
-    case 'open':
-      return 'info';
-    case 'in_progress':
-      return 'warning';
-    case 'resolved':
-      return 'success';
-    default:
-      return 'default';
-  }
-};
-
 export const getProjectStatusChipColor = (status: string | null | undefined): ChipColor => {
   switch (status) {
     case 'active':
@@ -35,23 +22,6 @@ export const getProjectStatusChipColor = (status: string | null | undefined): Ch
     case 'completed':
       return 'info';
     case 'archived':
-      return 'default';
-    default:
-      return 'default';
-  }
-};
-
-export const getTestPlanPriorityChipColor = (priority: string | null | undefined): ChipColor => {
-  switch (priority) {
-    case 'critical':
-      return 'error';
-    case 'high':
-      return 'warning';
-    case 'medium':
-      return 'info';
-    case 'low':
-      return 'success';
-    case 'info':
       return 'default';
     default:
       return 'default';

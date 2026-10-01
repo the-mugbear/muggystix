@@ -1,19 +1,11 @@
-import { formatDate } from '../../utils/relativeTime';
 import React, { useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { Flag, ImagePlus, Loader2, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
+import { ImagePlus, Loader2, Reply, SlidersHorizontal, Trash2 } from 'lucide-react';
 
-import type { Annotation, NoteStatus } from '../../services/api';
+import type { Annotation } from '../../services/api';
 import MessageBubble, { wasEdited } from '../MessageBubble';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '../ui/select';
 import MentionText from '../MentionText';
 import MentionTextarea from '../MentionTextarea';
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
@@ -31,7 +23,7 @@ const LONG_NOTE_LINES = 5;
 /**
  * A host's notes as conversations (v5.264.0; extracted from HostInspector in
  * v2.43.0).  Each top-level note starts a thread — it carries the thread's
- * status, type, pin and promotion — and its replies follow it in the order
+ * type and pin, and the finding it was once promoted to — and its replies follow it in the order
  * they were written, as message bubbles: the viewer's on the right, everyone
  * else's on the left (MessageBubble).  A reply to something other than the
  * thread's first note quotes what it answers, instead of indenting.
@@ -42,30 +34,11 @@ const LONG_NOTE_LINES = 5;
  * coordinated across the form, list, and create-note panel that share them.
  */
 
-export interface NoteStatusMeta {
-  label: string;
-  // Mirror the Badge variants HostInspector actually uses for note status
-  // chips.  Widened to include "info" (open notes) + the structural
-  // variants ("default", "destructive", "outline", "secondary") so the
-  // primitive doesn't constrain HostInspector's local map.
-  badgeVariant:
-    | 'default'
-    | 'destructive'
-    | 'outline'
-    | 'secondary'
-    | 'success'
-    | 'warning'
-    | 'info'
-    | 'muted';
-}
-
 export interface NoteThreadProps {
   /** Top-level notes (depth=0).  Each one starts its own thread. */
   topLevel: Annotation[];
   /** Map of parent_id → reply array, sorted oldest-first by the parent. */
   repliesByParent: Record<number, Annotation[]>;
-  /** Display metadata per note status — owned by HostInspector. */
-  noteStatusMeta: Record<NoteStatus, NoteStatusMeta>;
   /** Active reply target (which note is being replied to) + composed body. */
   replyTo: { id: number; author: string } | null;
   replyBody: string;
@@ -73,13 +46,10 @@ export interface NoteThreadProps {
   onReplyBodyChange: (body: string) => void;
   onSubmitReply: () => void;
   noteSubmitting: boolean;
-  /** Per-note disabled flag while a status update / delete is in flight. */
+  /** Per-note disabled flag while a delete is in flight. */
   noteActionId: number | null;
-  onUpdateNoteStatus: (noteId: number, status: NoteStatus) => void;
   onDeleteNote: (noteId: number) => void;
-  /** Promote a root note into a finding (omit to hide the affordance). */
-  onPromoteNote?: (noteId: number) => void;
-  /** Edit a root note's work fields (type/assignee/due/pin). Omit to hide. */
+  /** Edit a root note's type and pin. Omit to hide. */
   onEditDetails?: (note: Annotation) => void;
   /** Host id — needed to attach/serve note image evidence. */
   hostId: number;
@@ -102,7 +72,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
   note,
   isRoot,
   quoted,
-  noteStatusMeta,
   replyTo,
   replyBody,
   onReplyToChange,
@@ -110,9 +79,7 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
   onSubmitReply,
   noteSubmitting,
   noteActionId,
-  onUpdateNoteStatus,
   onDeleteNote,
-  onPromoteNote,
   onEditDetails,
   hostId,
   canManageNotes,
@@ -127,13 +94,9 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
   const authorLabel = note.author_name || 'Unknown analyst';
   const mine = currentUserId != null && note.author_id === currentUserId;
 
-  // The thread's own state lives on its first note: pinned, type, promoted
-  // (its status is the select).  A reply has no select, so it shows its
-  // status as a badge.
-  const statusMeta = noteStatusMeta[note.status];
-  const meta = !isRoot ? (
-    statusMeta ? <Badge variant={statusMeta.badgeVariant}>{statusMeta.label}</Badge> : undefined
-  ) : (
+  // The thread's own state lives on its first note: pinned, type, and the
+  // finding it was promoted to when notes still made findings.
+  const meta = isRoot ? (
     <>
       {note.pinned && <Badge variant="warning">Pinned</Badge>}
       {note.note_type && <Badge variant="outline" className="capitalize">{note.note_type}</Badge>}
@@ -143,23 +106,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         </Link>
       )}
     </>
-  );
-
-  const statusControl = isRoot ? (
-    <Select
-      value={note.status}
-      onValueChange={(value) => onUpdateNoteStatus(note.id, value as NoteStatus)}
-      disabled={noteActionId === note.id}
-    >
-      <SelectTrigger className="h-7 w-[9rem] text-caption" aria-label={`Update status for note by ${authorLabel}`}>
-        <SelectValue />
-      </SelectTrigger>
-      <SelectContent>
-        {(Object.entries(noteStatusMeta) as [NoteStatus, NoteStatusMeta][]).map(([value, m]) => (
-          <SelectItem key={value} value={value}>{m.label}</SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   ) : undefined;
 
   const actions = (
@@ -195,22 +141,11 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
         <Tooltip>
           <TooltipTrigger asChild>
             <Button variant="ghost" size="icon" className={ACTION_BUTTON} onClick={() => onEditDetails(note)}
-              aria-label="Edit note details (type, assignee, due date, pin)">
+              aria-label="Edit note details (type, pin)">
               <SlidersHorizontal className={ACTION_ICON} aria-hidden />
             </Button>
           </TooltipTrigger>
-          <TooltipContent>Type · assignee · due · pin</TooltipContent>
-        </Tooltip>
-      )}
-      {isRoot && onPromoteNote && !note.finding_id && (
-        <Tooltip>
-          <TooltipTrigger asChild>
-            <Button variant="ghost" size="icon" className={ACTION_BUTTON} onClick={() => onPromoteNote(note.id)}
-              aria-label="Promote note to finding">
-              <Flag className={ACTION_ICON} aria-hidden />
-            </Button>
-          </TooltipTrigger>
-          <TooltipContent>Promote to finding</TooltipContent>
+          <TooltipContent>Type · pin</TooltipContent>
         </Tooltip>
       )}
       <Tooltip>
@@ -240,7 +175,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
           excerpt: quoted.body ?? '',
         } : null}
         meta={meta}
-        metaControls={statusControl}
         actions={actions}
       >
         {/* v5.241.0 — a note body is unbounded (an agent's assessment runs to
@@ -266,21 +200,6 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
           canManage={canManageNotes}
           onChanged={onAttachmentsChanged}
         />
-        {/* Thread work-state (P3) — the first note only. */}
-        {isRoot && (note.assignee_name || note.due_at || note.resolution_summary) && (
-          <div className="mt-xs flex flex-col gap-xxs text-caption text-muted-foreground">
-            {note.assignee_name && (
-              <span>Assigned to <span className="font-medium text-foreground">{note.assignee_name}</span></span>
-            )}
-            {note.due_at && <span>Due {formatDate(note.due_at)}</span>}
-            {note.resolution_summary && (
-              <div className="rounded-control border border-success/30 bg-success/5 p-xs text-foreground">
-                <span className="font-medium">Resolution: </span>
-                {note.resolution_summary}
-              </div>
-            )}
-          </div>
-        )}
       </MessageBubble>
       {replyTo?.id === note.id && (
         <div className={cn('mt-sm flex flex-col', mine ? 'items-start' : 'items-end')}>

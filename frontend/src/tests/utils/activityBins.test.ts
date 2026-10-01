@@ -56,8 +56,8 @@ describe('binActivity', () => {
     const bins = binActivity(
       [
         item('scan', '2026-09-17T01:00:00Z'),
-        item('execution_session', '2026-09-17T01:30:00Z'),
-        item('test_result', '2026-09-18T05:00:00Z'),
+        item('evidence', '2026-09-17T01:30:00Z'),
+        item('evidence', '2026-09-18T05:00:00Z'),
         item('scan', '2026-09-10T00:00:00Z'), // before the window
         item('scan', 'not a date'),
       ],
@@ -68,9 +68,7 @@ describe('binActivity', () => {
     const totals = kindTotals(bins);
     expect(totals).toEqual({
       scan: 1,
-      execution_session: 1,
-      test_result: 1,
-      sanity_check: 0,
+      evidence: 2,
     });
   });
 

@@ -18,8 +18,48 @@ construction. That is a large mechanical refactor of every reader of `status`,
 `environment` and `generated_by_*`, and the consolidation has twice shown that
 removing a thing which was quietly carrying a second load is how regressions get
 in. This test costs nothing and catches the same class.
+
+v2.442.0 — ``plan_generation`` and ``execution`` stay on the enum only as
+LABELS on sessions minted before the consolidation: the tables their timeline
+rows were read from (test plans, execution runs) are gone, so there is nothing
+to list and the API refuses the kind.  They are named in ``RETIRED_LABELS``
+below — an explicit, checked list, so a NEW workflow still cannot go missing,
+and a retired one cannot quietly come back half-registered.
 """
 from app.db.models_agent import AgentSessionWorkflow
+
+#: Enum members that label pre-consolidation rows and have no timeline branch.
+RETIRED_LABELS = {"plan_generation", "execution"}
+
+
+def _listed_workflows():
+    declared = {w.value for w in AgentSessionWorkflow}
+    assert RETIRED_LABELS <= declared, (
+        "a retired label left the enum — drop it from RETIRED_LABELS too"
+    )
+    return declared - RETIRED_LABELS
+
+
+def test_a_retired_label_is_retired_everywhere(client, db_session, test_project, test_user):
+    """Not listed by the service, not accepted by the API, and a legacy row
+    carrying the label never surfaces as a ``project`` session."""
+    from typing import get_args
+
+    from app.api.v1.endpoints.agent_sessions import SessionKindLiteral
+    from app.db.models_agent import AgentSession
+    from app.services.agent_session_service import ALL_SESSION_KINDS, list_agent_sessions
+
+    assert not RETIRED_LABELS & set(ALL_SESSION_KINDS)
+    assert not RETIRED_LABELS & set(get_args(SessionKindLiteral))
+    for label in sorted(RETIRED_LABELS):
+        db_session.add(AgentSession(
+            workflow=label, project_id=test_project.id, started_by_id=test_user.id, status="ended",
+        ))
+    db_session.commit()
+    assert list_agent_sessions(db_session, test_project.id) == []
+    for label in sorted(RETIRED_LABELS):
+        r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions", params={"kind": label})
+        assert r.status_code == 422, (label, r.text)
 
 
 def test_every_workflow_appears_in_the_session_service():
@@ -30,7 +70,7 @@ def test_every_workflow_appears_in_the_session_service():
     """
     from app.services.agent_session_service import ALL_SESSION_KINDS
 
-    declared = {w.value for w in AgentSessionWorkflow}
+    declared = _listed_workflows()
     missing = declared - set(ALL_SESSION_KINDS)
     assert not missing, (
         f"workflows declared on AgentSessionWorkflow but absent from the agent-"
@@ -50,7 +90,7 @@ def test_every_workflow_appears_in_the_api_literal():
 
     from app.api.v1.endpoints.agent_sessions import SessionKindLiteral
 
-    declared = {w.value for w in AgentSessionWorkflow}
+    declared = _listed_workflows()
     accepted = set(get_args(SessionKindLiteral))
     missing = declared - accepted
     assert not missing, (

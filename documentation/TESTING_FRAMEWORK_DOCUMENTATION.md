@@ -35,7 +35,7 @@ Key behavior of the current backend harness:
   The Postgres path lets Postgres-only code (`pg_advisory_lock`, masscan batch-upserts, the raw `pg_catalog` SQL in `delete_scan`) actually run; the SQLite fallback skips those tests cleanly via `USING_POSTGRES`.
 - **Transactional isolation.** `conftest.py::db_session` uses the SQLAlchemy join-to-outer-transaction + nested-savepoint pattern so services that commit internally (integration credentials, LLM providers, the agent API log middleware) still leave the test in a clean state. The v2.24.0 middleware writes via its own `SessionLocal()`; the fixture rebinds that to the test connection so middleware-written rows roll back at teardown — no cross-test leakage.
 - **Auth.** `get_current_user` is overridden with a persisted admin row so protected JWT routes accept the test client without a real login flow.
-- **Coverage.** Covers parsers (every supported scanner), services (deduplication, subnet correlation, SBOM cache, posture, finding correlation, agent attribution), the agent surface (browse, plan registration, execution, scope reads and uploads, **assist incl. the query-DSL**, API audit log), upload flow, bundle import, prompt sanitisation, URL validation, and cross-user isolation invariants.
+- **Coverage.** Covers parsers (every supported scanner), services (deduplication, subnet correlation, SBOM cache, posture, finding correlation, agent attribution), the agent surface (browse, host tests and evidence, proposals, scope reads and uploads, **assist incl. the query-DSL**, API audit log), upload flow, prompt sanitisation, URL validation, and cross-user isolation invariants.
 
 Run locally after installing backend dependencies:
 
@@ -76,7 +76,7 @@ Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) 
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage (~150 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `ExecutionDetail`, `ExecutionsList`, `ReconRunDetail`, `ReconRunsList`, the compare views), shared components (`HostFilters`, `HostCommandBar`, `HostLineagePanel`, `ExecutionSession`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage (~140 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 
@@ -97,7 +97,7 @@ Strict-mode TypeScript is enforced; every PR should typecheck clean before merge
 
 ## Regression-pin file
 
-`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~69 tests covering: recon-session FK race, sanity-check uniqueness widening, cross-project plan visibility, brief-mode policy parity, multibyte byte-cap truncation, SBOM cache invalidation on app-version change, the `/complete` coverage gate (with `no_tests_run_reason` audit; the sanity-check gate it once pinned was retired in v2.433.0), the absence of the removed environment-probe fields (the probe and its round-trip tests went in v2.434.0), and the v2.24.0 agent API call log helpers + middleware + retention. Add to this file when fixing a regression so it can't silently come back.
+`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~39 tests (the plan, execution and sanity-check regressions went with those features in v2.442.0, or were rewritten onto host tests) covering: the content-detection module surface, cross-project host-test visibility (GET and PATCH 404), an unknown host-test status refused on both route families, SBOM cache invalidation on app-version change, the prompt-version floor, the v2.24.0 agent API call log helpers + middleware + retention, the agent rate limit, the unified agent-session timeline and the coverage summary's planned / tested definitions. Add to this file when fixing a regression so it can't silently come back.
 
 ## Docs-vs-code contract tests
 

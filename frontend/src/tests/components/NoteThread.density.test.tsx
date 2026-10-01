@@ -21,12 +21,6 @@ const note = (over: Partial<Annotation> = {}): Annotation => ({
   created_at: '2026-09-19T10:00:00Z', updated_at: null, attachments: [], ...over,
 } as unknown as Annotation);
 
-const META = {
-  open: { label: 'Open', badgeVariant: 'info' },
-  in_progress: { label: 'In Progress', badgeVariant: 'warning' },
-  resolved: { label: 'Resolved', badgeVariant: 'success' },
-} as const;
-
 const renderThread = (topLevel: Annotation[], replies: Record<number, Annotation[]> = {}, canManage = true) =>
   render(
     <MemoryRouter>
@@ -34,7 +28,6 @@ const renderThread = (topLevel: Annotation[], replies: Record<number, Annotation
         <NoteThread
           topLevel={topLevel}
           repliesByParent={replies}
-          noteStatusMeta={META as never}
           replyTo={null}
           replyBody=""
           onReplyToChange={vi.fn()}
@@ -42,7 +35,6 @@ const renderThread = (topLevel: Annotation[], replies: Record<number, Annotation
           onSubmitReply={vi.fn()}
           noteSubmitting={false}
           noteActionId={null}
-          onUpdateNoteStatus={vi.fn()}
           onDeleteNote={vi.fn()}
           hostId={1}
           canManageNotes={canManage}
@@ -124,11 +116,26 @@ describe('NoteThread — row density', () => {
     expect(screen.getByRole('button', { name: 'Show full note' })).toBeInTheDocument();
   });
 
-  it('a root note states its status once — in the select; a reply keeps its badge', () => {
-    renderThread([note()], { 1: [note({ id: 2, parent_id: 1, status: 'resolved', body: 'Patched.' })] });
-    expect(screen.getByRole('combobox', { name: /Update status for note by Ada/ })).toHaveTextContent('Open');
-    expect(screen.getAllByText('Open')).toHaveLength(1);
-    expect(screen.getByText('Resolved')).toBeInTheDocument();
+  // 5.325.0 — a note is discussion: it has no status to set, cannot be
+  // assigned or resolved, and is not a way to make a finding. (This replaces
+  // "a root note states its status once — in the select; a reply keeps its
+  // badge": the control it pinned is gone on purpose.)
+  it('offers no status control, no work fields and no promotion — even if an old payload carries them', () => {
+    renderThread(
+      [note({ status: 'open', assignee_name: 'Bo', due_at: '2026-10-01T00:00:00Z', resolution_summary: 'Patched.' } as never)],
+      { 1: [note({ id: 2, parent_id: 1, status: 'resolved', body: 'Patched it.' } as never)] },
+    );
+    expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
+    expect(screen.queryByText('Open')).not.toBeInTheDocument();
+    expect(screen.queryByText('Resolved')).not.toBeInTheDocument();
+    expect(screen.queryByText(/Assigned to/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Resolution:/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Promote note to finding/ })).not.toBeInTheDocument();
+  });
+
+  it('still says which finding an old thread was promoted to', () => {
+    renderThread([note({ finding_id: 9 } as Partial<Annotation>)]);
+    expect(screen.getByRole('link', { name: 'View the finding promoted from this note' })).toHaveAttribute('href', '/findings/9');
   });
 });
 
@@ -144,10 +151,10 @@ describe('NoteThread — conversation layout', () => {
       <MemoryRouter>
         <TooltipProvider>
           <NoteThread
-            topLevel={[root]} repliesByParent={{ 1: [r1], 2: [r2] }} noteStatusMeta={META as never}
+            topLevel={[root]} repliesByParent={{ 1: [r1], 2: [r2] }}
             replyTo={null} replyBody="" onReplyToChange={vi.fn()} onReplyBodyChange={vi.fn()}
             onSubmitReply={vi.fn()} noteSubmitting={false} noteActionId={null}
-            onUpdateNoteStatus={vi.fn()} onDeleteNote={vi.fn()} hostId={1} canManageNotes
+            onDeleteNote={vi.fn()} hostId={1} canManageNotes
             onAttachmentsChanged={vi.fn()} currentUserId={7}
           />
         </TooltipProvider>

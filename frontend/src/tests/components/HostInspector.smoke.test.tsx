@@ -25,16 +25,19 @@ vi.mock('../../services/api', () => ({
     first_seen: '2026-06-14T00:00:00Z', last_seen: '2026-06-14T00:00:00Z',
   }),
   getHostConflicts: vi.fn().mockResolvedValue([]),
-  getHostTestPlanEntries: vi.fn().mockResolvedValue([]),
+  listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listAssistSessions: vi.fn().mockResolvedValue([]),
+  listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getHostFollowers: vi.fn().mockResolvedValue([]),
   recordHostView: vi.fn().mockResolvedValue(undefined),
   listProjectMembers: vi.fn().mockResolvedValue([]),
   // Interaction-only handlers — present so the named imports resolve.
   followHost: vi.fn(), unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
-  uploadNoteAttachment: vi.fn(), promoteAnnotation: vi.fn(),
+  uploadNoteAttachment: vi.fn(),
   promoteVulnerability: vi.fn(), previewPromoteVulnerability: vi.fn(),
-  updateTestPlanEntry: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
+  updateHostTest: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
 }));
 
 // Stub the heavy child cards (each fetches its own data) so the test exercises
@@ -44,39 +47,37 @@ vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
-vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 // PortDetailsCard fetches web interfaces (getHostWebInterfaces) which the api
 // mock above doesn't provide; stub it like the other fetching child cards.
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));
-vi.mock('../../components/EntryResultsPanel', () => ({ default: () => <p>results panel</p> }));
 
 import HostInspector from '../../components/HostInspector';
 
 import * as api from '../../services/api';
 
 // v5.241.0 — a finished entry was dimmed but kept its full height, so done work
-// outweighed the work still to do.
-describe('HostInspector — proposed tests', () => {
-  it('a completed entry is one line until asked for; an open one shows its tests', async () => {
-    const entry = (over: Record<string, unknown>) => ({
-      id: 1, test_plan_id: 9, plan_title: 'Plan A', plan_status: 'in_progress', host_id: 1,
-      priority: 'high', test_phase: 'enumeration', proposed_tests: ['nmap -sV'], rationale: '',
-      status: 'proposed', created_at: '2026-06-14T00:00:00Z', updated_at: '2026-06-14T00:00:00Z', ...over,
+// outweighed the work still to do. 5.320.0 — the section lists host tests
+// (HostTestsSection, pinned in detail by HostTestsSection.test.tsx); this
+// proves the inspector mounts it for the host and with the caller's role.
+describe('HostInspector — tests on the host', () => {
+  it('asks for this host\'s tests and shows the one still to do open', async () => {
+    (api.listHostTests as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+      total: 1, has_more: false,
+      items: [{
+        id: 2, host_id: 1, host_ip: '10.0.0.1', tool: 'nmap', description: 'todo-test',
+        command: 'nmap -sV {ip}', rationale: 'because', expected_result: null, references: null,
+        target_fqdn: null, priority: 'high', label: null, status: 'proposed',
+        assigned_to_id: null, assigned_to: null, created_by: 'ann', source: 'person',
+        agent_session_id: null, agent_model: null, agent_client: null, tester_summary: null,
+        dismissed_reason: null, revision: 1, evidence_count: 0, created_at: '2026-06-14T00:00:00Z',
+      }],
     });
-    (api.getHostTestPlanEntries as ReturnType<typeof vi.fn>).mockResolvedValueOnce([
-      entry({ id: 1, status: 'completed', proposed_tests: ['done-test'], findings: 'All clear.' }),
-      entry({ id: 2, status: 'proposed', proposed_tests: ['todo-test'] }),
-    ]);
     render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
 
-    expect(await screen.findByText('todo-test')).toBeInTheDocument();
-    expect(screen.queryByText('done-test')).not.toBeInTheDocument();
-    expect(screen.queryByText('All clear.')).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole('button', { name: '1 test · summary · show' }));
-    expect(screen.getByText('done-test')).toBeInTheDocument();
-    expect(screen.getByText('All clear.')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'hide detail' })).toHaveAttribute('aria-expanded', 'true');
+    expect((await screen.findAllByText('todo-test')).length).toBeGreaterThan(0);
+    // The command is resolved against THIS host's address.
+    expect(screen.getByText('nmap -sV 10.0.0.1')).toBeInTheDocument();
+    expect(api.listHostTests).toHaveBeenCalledWith(expect.objectContaining({ host_id: 1 }));
   });
 });
 

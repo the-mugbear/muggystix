@@ -97,12 +97,17 @@ def test_delete_is_author_or_admin_and_leaves_the_evidence(client, db_session, t
     db_session.add(source_note)
     db_session.commit()
 
+    # A finding made from a note, when notes could be promoted (before
+    # v2.446.0): the link is what must survive the deletion.
+    legacy = Finding(project_id=test_project.id, title="Anon SMB", severity="high", status="confirmed",
+                     source="note", evidence_annotation_id=source_note.id, created_by_id=people["alice"].id)
+    db_session.add(legacy)
+    db_session.flush()
+    db_session.add(FindingHost(finding_id=legacy.id, host_id=host.id))
+    db_session.commit()
+    fid = legacy.id
+
     act_as(people["alice"])
-    promoted = client.post(
-        f"/api/v1/projects/{test_project.id}/annotations/{source_note.id}/promote", json={"severity": "high"},
-    )
-    assert promoted.status_code == 201, promoted.text
-    fid = promoted.json()["id"]
     base = f"/api/v1/projects/{test_project.id}/findings/{fid}"
     root = client.post(f"{base}/notes", json={"body": "repro"}).json()
     act_as(people["bob"])
@@ -120,12 +125,8 @@ def test_delete_is_author_or_admin_and_leaves_the_evidence(client, db_session, t
     assert db_session.query(FindingHost).filter_by(finding_id=fid).count() == 0
     assert db_session.query(FindingStatusHistory).filter_by(finding_id=fid).count() == 0
     assert db_session.query(Annotation).filter_by(finding_id=fid).count() == 0
-    # The source note survives and can be promoted again.
+    # The source note survives, on its host.
     assert db_session.get(Annotation, source_note.id) is not None
-    again = client.post(
-        f"/api/v1/projects/{test_project.id}/annotations/{source_note.id}/promote", json={"severity": "high"},
-    )
-    assert again.status_code == 201 and again.json()["id"] != fid
     # The deletion is on the audit log, since the finding's own history went with it.
     audit = db_session.query(AuditLog).filter_by(action="finding_deleted", resource_id=str(fid)).one()
     assert audit.user_id == people["alice"].id

@@ -10,7 +10,9 @@ describe('operationsQueue', () => {
     expect(hostIdOf('/hosts/42#note-17')).toBe(42);
     expect(hostIdOf('/hosts/42?from=hosts')).toBe(42);
     expect(hostIdOf('/findings/42')).toBeNull();
-    expect(hostIdOf('/test-plans/3#entry-9')).toBeNull();
+    // A task row opens its test on the host page (5.320.0).
+    expect(hostIdOf('/hosts/42#host-test-9')).toBe(42);
+    expect(hostIdOf('/agent-sessions/3')).toBeNull();
     expect(hostIdOf('/hosts/')).toBeNull();
     expect(hostIdOf('/hosts/42abc')).toBeNull();
   });

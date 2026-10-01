@@ -2,8 +2,9 @@
 
 The comprehensive report is host-first: one consolidated dossier per host that
 pulls together canonical findings (with their resolved source row + per-host
-status), untriaged scanner observations, execution findings, tester summaries,
-and notes.  These tests pin the assembly (``_build_export_context`` +
+status), untriaged scanner observations, test findings (evidence records whose
+outcome is ``finding`` — the dataset key is still ``execution_findings``),
+tester summaries (``HostTest.tester_summary``), and notes.  These tests pin the assembly (``_build_export_context`` +
 ``_build_host_export_record``) and the per-format caps.
 """
 
@@ -12,13 +13,8 @@ from unittest.mock import MagicMock
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 from app.db.models_findings import Finding, FindingHost
-# Aliased so pytest doesn't try to collect the ``Test*``-named ORM classes.
-from app.db.models_agent import (
-    TestPlan as PlanModel,
-    TestPlanEntry as PlanEntryModel,
-    ExecutionSession,
-    TestExecutionResult as ExecResultModel,
-)
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.api.v1.endpoints.reports import ReportGenerator
 
 
@@ -28,7 +24,7 @@ def _gen(db, project_id, user_id):
 
 def test_dossier_record_correlates_every_source(db_session, test_project, test_user):
     """One host with a promoted scanner finding, an untriaged scanner vuln, a
-    note, a tester summary, and an execution finding — the record carries all of
+    note, a tester summary, and a test finding — the record carries all of
     them, and untriaged vulns exclude the one already promoted."""
     host = models.Host(project_id=test_project.id, ip_address="10.55.0.5", state="up", os_name="Linux")
     db_session.add(host)
@@ -60,29 +56,34 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
 
     db_session.add(models.Annotation(
         host_id=host.id, user_id=test_user.id, body="left an SSH key",
-        note_type="finding", status="open",
+        note_type="finding",
     ))
 
-    plan = PlanModel(project_id=test_project.id, title="Web plan", status="draft",
-                    created_by_user_id=test_user.id)
-    db_session.add(plan)
-    db_session.flush()
-    entry = PlanEntryModel(
-        test_plan_id=plan.id, host_id=host.id, priority="high", test_phase="enumeration",
-        proposed_tests=[], rationale="x", status="completed", findings="Found admin panel",
+    test = HostTest(
+        project_id=test_project.id, host_id=host.id, tool="nmap", description="Version scan",
+        rationale="x", priority="high", status="done", label="Web review",
+        tester_summary="Found admin panel", source="person", created_by_user_id=test_user.id,
+        request_key="dossier-1", request_hash="0" * 64,
     )
-    db_session.add(entry)
+    # A test with no summary contributes no tester-summary row.
+    quiet = HostTest(
+        project_id=test_project.id, host_id=host.id, tool="curl", description="Headers",
+        rationale="x", priority="low", status="proposed", tester_summary="   ", source="person",
+        request_key="dossier-2", request_hash="1" * 64,
+    )
+    db_session.add_all([test, quiet])
     db_session.flush()
-
-    sess = ExecutionSession(test_plan_id=plan.id, started_by_id=test_user.id,
-                            status="active", mode="in_session")
-    db_session.add(sess)
-    db_session.flush()
-    db_session.add(ExecResultModel(
-        execution_session_id=sess.id, entry_id=entry.id, test_index=0,
-        is_finding=True, severity="high", findings_summary="popped a shell",
-        command_run="nmap -sV",
-    ))
+    db_session.add_all([
+        EvidenceRecord(
+            project_id=test_project.id, host_id=host.id, host_test_id=test.id, tool="nmap",
+            command="nmap -sV", outcome="finding", summary="popped a shell",
+        ),
+        # Only an outcome of ``finding`` is a test finding.
+        EvidenceRecord(
+            project_id=test_project.id, host_id=host.id, host_test_id=test.id, tool="nmap",
+            command="nmap -sC", outcome="no_finding", summary="nothing there",
+        ),
+    ])
     db_session.commit()
 
     gen = _gen(db_session, test_project.id, test_user.id)
@@ -102,8 +103,14 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
     assert "Promoted RCE" not in untriaged
 
     assert [t["findings"] for t in rec["tester_summaries"]] == ["Found admin panel"]
-    assert rec["execution_findings"][0]["findings_summary"] == "popped a shell"
-    assert rec["execution_findings"][0]["promoted"] is False
+    assert rec["tester_summaries"][0]["label"] == "Web review"
+    assert [x["findings_summary"] for x in rec["execution_findings"]] == ["popped a shell"]
+    ef = rec["execution_findings"][0]
+    assert (ef["tool"], ef["label"], ef["command"], ef["host_test_id"]) == (
+        "nmap", "Web review", "nmap -sV", test.id,
+    )
+    assert ef["promoted"] is False
+    assert gen._inventory_finding_counts([host.id])[host.id]["exec"] == 1
     assert rec["analyst_context"]["notes"], "host note should be present"
 
     summary = rec["dossier_summary"]
@@ -114,6 +121,78 @@ def test_dossier_record_correlates_every_source(db_session, test_project, test_u
     # Finding-severity and vuln-severity tallies are kept separate.
     assert summary["findings_by_severity"] == {"high": 1}
     assert summary["vulns_by_severity"]["high"] == 1
+
+
+def test_a_test_finding_cited_by_a_finding_is_marked_promoted(db_session, test_project, test_user):
+    """An evidence record that points at a canonical finding (``finding_id``)
+    is the finding's source detail and is marked ``promoted`` in the host's
+    test findings; an unrelated one is not.  (Until v2.442.0 the link was
+    ``findings.exec_result_id``.)"""
+    host = models.Host(project_id=test_project.id, ip_address="10.55.0.6", state="up")
+    db_session.add(host)
+    db_session.flush()
+    finding = Finding(project_id=test_project.id, title="Default creds", severity="high",
+                      status="confirmed", source="execution")
+    db_session.add(finding)
+    db_session.flush()
+    db_session.add(FindingHost(finding_id=finding.id, host_id=host.id, host_status="open"))
+    cited = EvidenceRecord(project_id=test_project.id, host_id=host.id, finding_id=finding.id,
+                           tool="hydra", command="hydra -l admin", outcome="finding",
+                           summary="admin/admin works")
+    loose = EvidenceRecord(project_id=test_project.id, host_id=host.id, tool="curl",
+                           command="curl -I", outcome="finding", summary="no HSTS")
+    db_session.add_all([cited, loose])
+    db_session.commit()
+
+    gen = _gen(db_session, test_project.id, test_user.id)
+    rec = gen._build_host_export_record(host, gen._build_export_context([host]), {})
+    detail = rec["canonical_findings"][0]["source_detail"]
+    assert (detail["kind"], detail["tool"], detail["command"], detail["findings_summary"]) == (
+        "execution", "hydra", "hydra -l admin", "admin/admin works",
+    )
+    promoted = {x["evidence_id"]: x["promoted"] for x in rec["execution_findings"]}
+    assert promoted == {cited.id: True, loose.id: False}
+    assert "exec_result_id" not in rec["canonical_findings"][0]
+
+
+def test_test_findings_csv_names_tool_and_label_and_neutralizes_formulas(
+    db_session, test_project, test_user,
+):
+    """``execution_findings.csv`` carries what an AGENT wrote (tool, command,
+    summary) and a person's label, so every cell goes through the formula
+    guard.  Replaces the execution-report CSV cases that went with
+    ``ExportService`` in v2.442.0."""
+    import csv
+    import io
+
+    host = models.Host(project_id=test_project.id, ip_address="10.55.0.7", state="up",
+                       hostname="=HYPERLINK(\"http://attacker.tld\")")
+    db_session.add(host)
+    db_session.flush()
+    test = HostTest(
+        project_id=test_project.id, host_id=host.id, tool="curl", description="d", rationale="r",
+        priority="high", status="done", label="@label", source="agent",
+        request_key="csv-1", request_hash="2" * 64,
+    )
+    db_session.add(test)
+    db_session.flush()
+    db_session.add(EvidenceRecord(
+        project_id=test_project.id, host_id=host.id, host_test_id=test.id, tool="=tool()",
+        command="+attacker_payload(1)", outcome="finding", summary="-malicious_thing()",
+    ))
+    db_session.commit()
+
+    gen = _gen(db_session, test_project.id, test_user.id)
+    rec = gen._build_host_export_record(host, gen._build_export_context([host]), {})
+    rows = list(csv.reader(io.StringIO(gen._generate_execution_findings_csv([rec]))))
+    assert rows[0] == ["IP Address", "Hostname", "Tool", "Label", "Promoted", "Command", "Summary"]
+    assert rows[1][0] == "10.55.0.7"
+    assert rows[1][1].startswith("'=")
+    assert rows[1][2].startswith("'=")
+    assert rows[1][3].startswith("'@")
+    assert rows[1][4] == "no"
+    assert rows[1][5].startswith("'+")
+    assert rows[1][6].startswith("'-")
 
 
 def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_project, test_user):

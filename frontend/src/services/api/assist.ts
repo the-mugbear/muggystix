@@ -2,7 +2,7 @@
  * Agent session start + the operator's session rows — operator-side calls.
  * The endpoints keep their v2.64.0 `/assist` names, but since v2.337.0 a
  * session started here is THE agent session: one project key that reads the
- * inventory, uploads scans, and opens plans and execution runs, within the
+ * inventory, uploads scans, proposes host tests and records evidence, within the
  * operator's project role. The agent-side (X-API-Key) surface lives at
  * /agent/* and is consumed by the agent directly, not by this client.
  */
@@ -108,7 +108,6 @@ export interface AssistSessionNote {
   host_ip: string | null;
   hostname: string | null;
   body: string;
-  status: string | null;
   created_at: string | null;
 }
 

@@ -248,7 +248,6 @@ def get_dashboard_stats(
                     host_id=item["host_id"],
                     ip_address=item["ip_address"],
                     hostname=item["hostname"],
-                    status=item["status"],
                     preview=item["preview"],
                     created_at=item["created_at"],
                     updated_at=item["updated_at"],

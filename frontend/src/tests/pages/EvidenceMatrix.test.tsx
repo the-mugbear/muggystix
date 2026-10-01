@@ -24,7 +24,7 @@ vi.mock('react-router-dom', async (importOriginal) => ({
   ...(await importOriginal<typeof import('react-router-dom')>()),
   useNavigate: () => navigateMock,
 }));
-// "Plan these" opens the Start Agent Session dialog, which reads the
+// "Propose tests" opens the Start Agent Session dialog, which reads the
 // operator's live sessions.
 vi.mock('../../hooks/useMyAssistSessions', () => ({
   useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
@@ -95,7 +95,7 @@ describe('Evidence — domain × segment matrix', () => {
     expect(await within(matrix).findByText('192.168.9.9')).toBeInTheDocument();
     expect(within(matrix).getByText(/18 of 18/)).toBeInTheDocument();
     // One host listed of 18: the buttons say what they act on.
-    expect(within(matrix).getByText(/Showing the first 1 of 18 — Copy and Plan act on these 1/)).toBeInTheDocument();
+    expect(within(matrix).getByText(/Showing the first 1 of 18 — Copy and Propose tests act on these 1/)).toBeInTheDocument();
 
     // The whole-project figure opens the domain without a segment.
     fireEvent.click(within(matrix).getByRole('button', { name: /Web \/ TLS, whole project: 9 of 30/ }));
@@ -107,7 +107,7 @@ describe('Evidence — domain × segment matrix', () => {
   // project with a declared scope that tells an analyst to scan hosts nobody
   // confirmed are authorized.
   // 2.374.4 review H8: the hand-off must name exactly the listed hosts —
-  // never an unrestricted plan over the whole project. 5.313.0 — the hosts go
+  // never an unrestricted task over the whole project. 5.313.0 — the hosts go
   // to the operator's agent session as a task, not to a generate dialog.
   it('hands exactly the listed hosts to your agent session', async () => {
     await renderPage();
@@ -116,9 +116,9 @@ describe('Evidence — domain × segment matrix', () => {
     await within(matrix).findByText('192.168.9.9');
 
     navigateMock.mockClear();
-    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
+    fireEvent.click(within(matrix).getByRole('button', { name: /Propose tests/ }));
     expect(await screen.findByText('Start Agent Session')).toBeInTheDocument();
-    expect(screen.getByText(/^Draft a test plan in BlueStick for these hosts only \(host ids\): 7\./)).toBeInTheDocument();
+    expect(screen.getByText(/^Propose tests in BlueStick for these hosts only \(host ids\): 7\./)).toBeInTheDocument();
     expect(navigateMock).not.toHaveBeenCalled();
   });
 
@@ -135,8 +135,8 @@ describe('Evidence — domain × segment matrix', () => {
 
   // 2.374.4 review H7: the SERVER decides, host by host, from the declared
   // scope (subnets and names); the panel shows its advice and caution, and
-  // the caution travels into the plan's rationale.
-  it('shows the server\'s scope advice — all outside, or a caution for some — and hands the caution to the plan', async () => {
+  // the caution travels into the task.
+  it('shows the server\'s scope advice — all outside, or a caution for some — and hands the caution to the agent task', async () => {
     const confirm = 'Outside every scoped subnet. Confirm these hosts are in scope before collecting anything more against them.';
     gapsMock.mockResolvedValueOnce({
       domain: 'web_tls', label: 'Web / TLS', segment: 'unmapped', segment_label: 'Outside scoped subnets', total: 18,
@@ -160,8 +160,8 @@ describe('Evidence — domain × segment matrix', () => {
     expect(await within(matrix).findByText(caution)).toBeInTheDocument();
     expect(within(matrix).getByText(/Probe these hosts with httpx/)).toBeInTheDocument();
 
-    fireEvent.click(within(matrix).getByRole('button', { name: /Plan these/ }));
-    const task = await screen.findByText(/^Draft a test plan in BlueStick for these hosts only/);
+    fireEvent.click(within(matrix).getByRole('button', { name: /Propose tests/ }));
+    const task = await screen.findByText(/^Propose tests in BlueStick for these hosts only/);
     expect(task.textContent).toContain(caution);
   });
 

@@ -619,7 +619,18 @@ def _b_has(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return or_(*preds)
 
 
+def _b_testlabel(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    from app.db.models_host_tests import HostTest
+    return models.Host.id.in_(ctx.db.query(HostTest.host_id).filter(
+        HostTest.project_id == ctx.project_id, HostTest.label.in_(values),
+    ))
+
+
 _FIELD_SPECS: List[FieldSpec] = [
+    FieldSpec("testlabel", _b_testlabel, value_source="testlabel",
+              description="Exact host-test label (the label a batch of proposed tests carries), "
+                          "including completed or dismissed tests."),
+
     FieldSpec("state", lambda c, v: P.state_predicate(v), value_source="enum",
               enum_values=["up", "down", "unknown"],
               description="Host up / down / unknown (any host/port scanner)."),
@@ -905,7 +916,7 @@ EXAMPLES: List[dict] = [
     {"label": "Port 22 recorded in any state", "q": "port:22@any"},
     {"label": "Critical observations, not tested", "q": "has:critical AND NOT has:tested"},
     # The /operations "not yet in any plan" coverage gap, as a query.
-    {"label": "Not in any test plan", "q": "NOT has:planned"},
+    {"label": "No active proposed tests", "q": "NOT has:planned"},
     # Provenance ("not registered to the client") is per project — see
     # ``provenance_examples``.  A fixed `NOT org:"Acme Corp"` matched every
     # host of every real project (v2.423.0).

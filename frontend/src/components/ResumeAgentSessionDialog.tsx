@@ -66,9 +66,11 @@ const fmtTime = (iso?: string | null): string => {
  *  which session and that work may be half-done. */
 export const resumePromptLine = (sessionId: number): string =>
   `Resume BlueStick agent session #${sessionId}. Call GET /agent/identity ` +
-  `(MCP agent_identity), read open_phases, check the working directory for ` +
-  `output a previous run left behind and upload anything that never landed, ` +
-  `then continue from where the record stops rather than repeating work.`;
+  `(MCP agent_identity), read the tests this session proposed ` +
+  `(host_tests_list with agent_session_id=${sessionId}) and the evidence it recorded, ` +
+  `check the working directory for output a previous run left behind and upload ` +
+  `anything that never landed, then continue from where the record stops rather ` +
+  `than repeating work.`;
 
 export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> = ({
   session,
@@ -139,8 +141,8 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
             Resume agent session #{session?.id ?? ''}
           </DialogTitle>
           <DialogDescription>
-            The session, its open phases and its audit trail continue. Only the
-            agent process is gone.
+            The session, the tests it proposed and its audit trail continue. Only
+            the agent process is gone.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="flex flex-col gap-md">
@@ -213,14 +215,6 @@ export const ResumeAgentSessionDialog: React.FC<ResumeAgentSessionDialogProps> =
                   Key rotated on agent session <strong>#{result.session_id}</strong> for
                   project <strong>{result.project_name}</strong>. The previous key is
                   revoked.
-                  {result.active_execution_session_ids.length > 0 && (
-                    <>
-                      {' '}Still open: execution run
-                      {result.active_execution_session_ids.length > 1 ? 's' : ''}{' '}
-                      {result.active_execution_session_ids.map((id) => `#${id}`).join(', ')}
-                      . The prompt tells the agent to read their progress first.
-                    </>
-                  )}
                 </AlertDescription>
               </Alert>
               <AgentSessionCredentials

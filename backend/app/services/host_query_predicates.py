@@ -37,7 +37,9 @@ from app.db import models
 from app.db.models import FollowStatus, HostFollow, Annotation as AnnotationModel
 from app.db.models_auth import User
 from app.services import smb_signing as smb_signing_states
-from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
+from app.services.host_test_queries import planned_host_ids, tested_host_ids
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_confidence import NetexecResult
 
@@ -666,30 +668,14 @@ def note_predicate(db: Session, values: Sequence[str], project_id: int) -> Colum
 
 
 def has_test_execution_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host has had at least one agentic test executed against it
-    (project-scoped).
-
-    "Executed" is the result's status, not the row's existence: a pending,
-    skipped, failed or not-applicable result is a record, not a test — the
-    same definition posture, evidence and the host assessment use.
-    """
-    _H = aliased(models.Host)
-    sub = (
-        db.query(TestPlanEntry.host_id)
-        .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-        .join(_H, _H.id == TestPlanEntry.host_id)
-        .filter(
-            _H.project_id == project_id,
-            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
-        )
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    """Executed testing is qualifying evidence, independent of task status."""
+    return models.Host.id.in_(tested_host_ids(project_id))
 
 
 def untouched_conditions(db: Session) -> List[ColumnElement]:
     """Nobody has touched the host: no review or assignment (any HostFollow),
-    no note, no test-plan entry, no finding endpoint.  The ONE definition —
+    no note, no host test that was not dismissed, no evidence record, no
+    finding endpoint.  The ONE definition —
     the "Worth a look" queue, ``has:untouched`` and the Operations terrain
     all use it (v2.426.0)."""
     from app.db.models_findings import FindingHost
@@ -697,7 +683,8 @@ def untouched_conditions(db: Session) -> List[ColumnElement]:
     return [
         ~models.Host.id.in_(db.query(HostFollow.host_id)),
         ~models.Host.id.in_(db.query(AnnotationModel.host_id).filter(AnnotationModel.host_id.isnot(None))),
-        ~models.Host.id.in_(db.query(TestPlanEntry.host_id)),
+        ~models.Host.id.in_(db.query(HostTest.host_id).filter(HostTest.status != "dismissed")),
+        ~models.Host.id.in_(db.query(EvidenceRecord.host_id)),
         ~models.Host.id.in_(db.query(FindingHost.host_id)),
     ]
 
@@ -707,22 +694,8 @@ def untouched_predicate(db: Session) -> ColumnElement:
 
 
 def has_plan_entry_predicate(db: Session, project_id: int) -> ColumnElement:
-    """Host appears in at least one test plan (project-scoped).
-
-    Deliberately NOT the same as :func:`has_test_execution_predicate`, which
-    joins through to ``TestExecutionResult`` and therefore answers "has been
-    *tested*". Plan membership is the earlier pipeline stage: /operations
-    reports "not yet in any plan" as a coverage gap, and without this the
-    number was unreachable — there was no way to list those hosts.
-    """
-    _H = aliased(models.Host)
-    sub = (
-        db.query(TestPlanEntry.host_id)
-        .join(_H, _H.id == TestPlanEntry.host_id)
-        .filter(_H.project_id == project_id)
-        .distinct()
-    )
-    return models.Host.id.in_(sub)
+    """Host has an active proposed or in-progress test."""
+    return models.Host.id.in_(planned_host_ids(project_id))
 
 
 # ---------------------------------------------------------------------------

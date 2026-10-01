@@ -21,7 +21,7 @@ describe('formatAuditDetails', () => {
   });
 
   it('shows unknown keys as key: value, lists capped, and marks client events', () => {
-    expect(formatAuditDetails({ plan_id: 4, sanity_checks_passed: false })).toBe('plan id: 4 · sanity checks passed: false');
+    expect(formatAuditDetails({ host_test_id: 4, evidence_recorded: false })).toBe('host test id: 4 · evidence recorded: false');
     expect(formatAuditDetails({ finding_ids: [1, 2, 3, 4, 5, 6, 7] })).toBe('finding ids: 1, 2, 3, 4, 5 +2 more');
     expect(formatAuditDetails({ source: 'client' })).toBe('reported by the client');
     expect(formatAuditDetails({ reason: null })).toBe('reason: —');

@@ -128,8 +128,17 @@ def promote_or_dismiss_vulnerability(
             vuln=vuln, project_id=project_id, actor_id=actor_id,
             severity=severity, owner_id=owner_id, summary=summary,
         )
-    return svc.promote_vulnerability(
+    finding = svc.promote_vulnerability(
         vuln=vuln, project_id=project_id, actor_id=actor_id,
         severity=severity, status=status, owner_id=owner_id, summary=summary,
         only_this_host=(scope == "host"),
     )
+    if not is_fp:
+        # v2.445.0 — the results of tests that confirmed this issue on this
+        # host go with it, so the finding shows what demonstrated it.
+        from app.services.agent_evidence_service import link_issue_evidence
+        from app.services.vuln_identity import issue_key_for
+
+        db.flush()
+        link_issue_evidence(db, host_id=vuln.host_id, issue_key=issue_key_for(vuln), finding_id=finding.id)
+    return finding

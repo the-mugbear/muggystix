@@ -30,7 +30,10 @@ const api = vi.hoisted(() => ({
 vi.mock('../../services/api', () => ({
   getHost: vi.fn().mockImplementation((id: number) => Promise.resolve(hostFixture(id))),
   getHostConflicts: vi.fn().mockResolvedValue([]),
-  getHostTestPlanEntries: vi.fn().mockResolvedValue([]),
+  listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listAssistSessions: vi.fn().mockResolvedValue([]),
+  listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getHostFollowers: vi.fn().mockResolvedValue([]),
   recordHostView: vi.fn().mockResolvedValue(undefined),
   listProjectMembers: vi.fn().mockResolvedValue([]),
@@ -38,9 +41,9 @@ vi.mock('../../services/api', () => ({
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
   createAnnotation: api.createAnnotation,
   uploadNoteAttachment: api.uploadNoteAttachment,
-  promoteAnnotation: vi.fn(),
+ 
   promoteVulnerability: vi.fn(), previewPromoteVulnerability: vi.fn(),
-  updateTestPlanEntry: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
+  updateHostTest: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
 }));
 
 const toastMock = vi.hoisted(() => ({
@@ -53,7 +56,6 @@ vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
-vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));
 
 import HostInspector from '../../components/HostInspector';
@@ -80,6 +82,21 @@ describe('HostInspector note composer — draft bound to host, recoverable attac
     createObjectURL.mockImplementation(() => `blob:img-${++n}`);
     Object.defineProperty(globalThis.URL, 'createObjectURL', { value: createObjectURL, configurable: true });
     Object.defineProperty(globalThis.URL, 'revokeObjectURL', { value: revokeObjectURL, configurable: true });
+  });
+
+  // 5.325.0 — notes are discussion: no status to choose, none sent.
+  it('the section is Discussion, and a note is saved with its text only', async () => {
+    api.createAnnotation.mockResolvedValue({ id: 78, body: 'who owns this box?', attachments: [] });
+    render(<MemoryRouter><HostInspector hostId={1} /></MemoryRouter>);
+    await waitFor(() => expect(screen.getByText('10.0.0.1')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: /Discussion/ })).toBeInTheDocument();
+
+    const textarea = screen.getByLabelText('Note');
+    fireEvent.focus(textarea);
+    fireEvent.change(textarea, { target: { value: 'who owns this box?' } });
+    expect(screen.queryByLabelText('Status')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /save note/i }));
+    await waitFor(() => expect(api.createAnnotation).toHaveBeenCalledWith(1, { body: 'who owns this box?' }));
   });
 
   it('C1: switching host clears pending screenshots and revokes their previews', async () => {

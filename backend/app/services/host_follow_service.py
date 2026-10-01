@@ -8,9 +8,8 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
-from app.services.status_history_service import record_status_transition
 from app.db.models import (
-    HostFollow, FollowStatus, Annotation, NoteStatus, AnnotationStatusHistory,
+    HostFollow, FollowStatus, Annotation,
 )
 
 logger = logging.getLogger(__name__)
@@ -27,9 +26,9 @@ class NoteHasRepliesError(Exception):
 
 # Thread-level work fields that any project member may edit (vs body /
 # delete, which stay author-only).
-VALID_NOTE_TYPES = {
-    "observation", "finding", "question", "decision", "action", "handoff",
-}
+# What a thread can be labelled.  "finding" and "action" went in v2.447.0 —
+# a note is neither; rows that already carry them keep the label.
+VALID_NOTE_TYPES = {"observation", "question", "decision", "handoff"}
 
 
 class HostFollowService:
@@ -175,7 +174,6 @@ class HostFollowService:
         host_id: int,
         user_id: int,
         body: str,
-        status: NoteStatus = NoteStatus.OPEN,
         parent_id: Optional[int] = None,
         actor_type: str = "user",
         agent_session_id: Optional[int] = None,
@@ -208,7 +206,6 @@ class HostFollowService:
             host_id=host_id,
             user_id=user_id,
             body=body,
-            status=status,
             parent_id=parent_id,
             actor_type=actor_type,
             agent_session_id=agent_session_id,
@@ -277,27 +274,14 @@ class HostFollowService:
         actor_id: int,
         host_id: Optional[int] = None,
         *,
-        status=_UNSET,
-        assignee_id=_UNSET,
-        due_at=_UNSET,
         note_type=_UNSET,
-        resolution_summary=_UNSET,
         pinned=_UNSET,
         commit: bool = True,
     ) -> Annotation:
-        """Update a thread's work-state — ANY project member (P3).
-
-        Operates on the thread ROOT (so replying never reopens, and a
-        teammate can resolve/reassign an abandoned thread).  Records a
-        ``AnnotationStatusHistory`` row on every status transition and
-        enforces resolve-requires-summary.  Fields left as ``_UNSET`` are
-        untouched; passing ``None`` clears a nullable field.
-
-        NOTE: ``assignee_id`` is NOT membership-validated here — the caller
-        (endpoint) must ensure the assignee is an active project member
-        (review #3), mirroring host assignment.  ``commit=False`` defers
-        the commit to the caller for one-transaction PATCHes (review #1).
-        """
+        """Set a thread's labels — its type and whether it is pinned — on the
+        thread ROOT; any analyst may.  Fields left as ``_UNSET`` are untouched;
+        ``note_type=None`` clears it.  ``commit=False`` defers the commit to
+        the caller for one-transaction PATCHes (review #1)."""
         target = self.db.query(Annotation).filter(Annotation.id == note_id).first()
         if not target:
             raise ValueError("Note not found")
@@ -307,59 +291,16 @@ class HostFollowService:
 
         if note_type is not _UNSET and note_type is not None and note_type not in VALID_NOTE_TYPES:
             raise ValueError(f"Invalid note_type; expected one of {sorted(VALID_NOTE_TYPES)}")
-
-        # Resolve-requires-summary: a thread can only be marked resolved
-        # when a summary exists — either supplied in this call or already
-        # recorded on the note.
-        if status is not _UNSET and status == NoteStatus.RESOLVED:
-            effective_summary = (
-                resolution_summary if resolution_summary is not _UNSET
-                else note.resolution_summary
-            )
-            if not (effective_summary and str(effective_summary).strip()):
-                raise ValueError("Resolving a thread requires a resolution summary")
-
-        if assignee_id is not _UNSET:
-            note.assignee_id = assignee_id
-        if due_at is not _UNSET:
-            note.due_at = due_at
         if note_type is not _UNSET:
             note.note_type = note_type
-        if resolution_summary is not _UNSET:
-            note.resolution_summary = resolution_summary
         if pinned is not _UNSET:
             note.pinned = bool(pinned)
-
-        if status is not _UNSET and status != note.status:
-            old_status = note.status
-            note.status = status
-            record_status_transition(
-                self.db,
-                history_model=AnnotationStatusHistory,
-                fk_field="note_id",
-                entity_id=note.id,
-                from_status=old_status,
-                to_status=status,
-                changed_by_id=actor_id,
-                summary=(
-                    note.resolution_summary if status == NoteStatus.RESOLVED else None
-                ),
-            )
 
         if commit:
             self.db.commit()
             self.db.refresh(note)
-            self.db.refresh(note, attribute_names=["author", "assignee"])
+            self.db.refresh(note, attribute_names=["author"])
         return note
-
-    def get_status_history(self, note_id: int) -> List[AnnotationStatusHistory]:
-        return (
-            self.db.query(AnnotationStatusHistory)
-            .filter(AnnotationStatusHistory.note_id == note_id)
-            .options(selectinload(AnnotationStatusHistory.changed_by))
-            .order_by(AnnotationStatusHistory.created_at.asc())
-            .all()
-        )
 
     def delete_note(self, note_id: int, user_id: int, host_id: Optional[int] = None) -> None:
         note = self.db.query(Annotation).filter(Annotation.id == note_id).first()
@@ -430,7 +371,6 @@ class HostFollowService:
                     "host_id": note.host_id,
                     "ip_address": host.ip_address if host else "unknown",
                     "hostname": host.hostname if host else None,
-                    "status": note.status,
                     "preview": (note.body[:140] + "…") if len(note.body) > 140 else note.body,
                     "created_at": note.created_at,
                     "updated_at": note.updated_at,

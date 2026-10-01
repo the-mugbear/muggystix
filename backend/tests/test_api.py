@@ -173,7 +173,7 @@ class TestHostsAPI:
         db_session.commit()
 
         noted_host = db_session.query(models.Host).filter(models.Host.ip_address == "192.168.1.1").first()
-        db_session.add(HostNoteModel(host_id=noted_host.id, user_id=1, body="Needs review", status="open"))
+        db_session.add(HostNoteModel(host_id=noted_host.id, user_id=1, body="Needs review"))
         db_session.commit()
 
         response = client.get(f"/api/v1/projects/{test_project.id}/hosts/?with_notes_only=true")

@@ -90,12 +90,12 @@ const catalog = (): McpCatalog => ({
       },
     },
     {
-      name: 'plan_add_entries',
-      description: 'Add entries to a test plan.',
+      name: 'host_tests_propose',
+      description: 'Propose tests on hosts.',
       kind: 'write',
       method: 'POST',
-      path: '/api/v1/agent/test-plans/{plan_id}/entries',
-      workflows: ['plan_generation'],
+      path: '/api/v1/agent/host-tests',
+      workflows: ['testing'],
       input_schema: { type: 'object', properties: {}, required: [] },
     },
     {
@@ -104,7 +104,7 @@ const catalog = (): McpCatalog => ({
       kind: 'write',
       method: 'POST',
       path: '/api/v1/agent/tool-suggestions',
-      workflows: ['assist', 'plan_generation', 'execution', 'scope'],
+      workflows: ['assist', 'testing', 'scope'],
       input_schema: {
         type: 'object',
         properties: { name: { type: 'string' }, rationale: { type: 'string' } },
@@ -153,18 +153,27 @@ describe('McpReference', () => {
     await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
 
     expect(screen.getByRole('heading', { name: 'Read the inventory and write notes' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Write test plans' })).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Session and catalogue' })).toBeInTheDocument();
-    // Capabilities with no tools in this catalog aren't advertised as empty.
-    expect(screen.queryByRole('heading', { name: 'Read a scope, upload scans' })).not.toBeInTheDocument();
-
-    // The cross-cutting tool is filed once — not repeated into each group.
-    expect(screen.getAllByText('suggest_tool')).toHaveLength(1);
+    // 5.320.0 — tests are proposed on hosts; there is no plan or run group.
+    const testing = screen.getByRole('heading', { name: 'Propose and work host tests' });
+    expect(testing).toBeInTheDocument();
+    expect(screen.getByText('host_tests_propose')).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: /Write test plans|Record test results/ })).not.toBeInTheDocument();
 
     expect(screen.getByRole('heading', { name: 'One session, one key' })).toBeInTheDocument();
     expect(screen.queryByText(/belongs to one workflow/)).toBeNull();
     expect(screen.queryByRole('img', { name: /pipeline/ })).toBeNull();
     expect(screen.queryByText(/approved plan|for approval|human approval/)).toBeNull();
+  });
+
+  // 5.320.0 — "every kind" follows the catalog's kinds (it was a literal 4).
+  it('files a cross-cutting tool once, under Session and catalogue', async () => {
+    renderPage();
+    await waitFor(() => expect(screen.getByText('assist_list_hosts')).toBeInTheDocument());
+    expect(screen.getByRole('heading', { name: 'Session and catalogue' })).toBeInTheDocument();
+    // Capabilities with no tools of their own aren't advertised as empty.
+    expect(screen.queryByRole('heading', { name: 'Read a scope, upload scans' })).not.toBeInTheDocument();
+    // The cross-cutting tool is filed once — not repeated into each group.
+    expect(screen.getAllByText('suggest_tool')).toHaveLength(1);
   });
 
   it('shows the transport facts the server reported', async () => {

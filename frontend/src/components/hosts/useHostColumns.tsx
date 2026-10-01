@@ -342,18 +342,25 @@ export const reviewStateText = (
 /**
  * The test-workflow state of a host, as a word beside its IP (v5.270.0 — was
  * a coloured left border on the row, explained only by a hover title).
- * Executed wins over planned.
+ * A tested host that still has a test to do says both (5.320.0): "Tested"
+ * alone hid the pending work.
  */
 export const testWorkState = (
   host: Pick<Host, 'test_execution_count' | 'test_plan_entry_count'>,
 ): { kind: 'tested' | 'planned'; label: string; title: string } | null => {
-  const n = host.test_execution_count ?? 0;
-  if (n > 0) {
-    return { kind: 'tested', label: 'Tested', title: `${n} agentic test result${n === 1 ? '' : 's'} recorded` };
+  // Evidence records of a test that ran / tests proposed or in progress (the
+  // field names date from test plans; the definitions are the backend's).
+  const tested = host.test_execution_count ?? 0;
+  const toDo = host.test_plan_entry_count ?? 0;
+  const pending = `${toDo} test${toDo === 1 ? '' : 's'} proposed or in progress`;
+  if (tested > 0) {
+    const results = `${tested} test result${tested === 1 ? '' : 's'} recorded`;
+    return toDo > 0
+      ? { kind: 'tested', label: `Tested · ${toDo} to do`, title: `${results}; ${pending}` }
+      : { kind: 'tested', label: 'Tested', title: results };
   }
-  const p = host.test_plan_entry_count ?? 0;
-  if (p > 0) {
-    return { kind: 'planned', label: 'Planned', title: `${p} test${p === 1 ? '' : 's'} planned but not yet executed` };
+  if (toDo > 0) {
+    return { kind: 'planned', label: 'Planned', title: `${pending}, none run yet` };
   }
   return null;
 };

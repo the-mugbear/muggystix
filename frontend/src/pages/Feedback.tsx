@@ -59,11 +59,13 @@ const STATUSES = [
 // unified sessions (v2.337.0) the agent picks this value itself, so it is a
 // hint about what the agent was doing, not a record of the session's phases.
 const SOURCE_LABELS: Record<string, string> = {
-  plan_generation: 'Plan generation',
+  testing: 'Testing',
   reconnaissance: 'Reconnaissance',
+  assist: 'Assist',
+  // Labels on rows filed before 5.320.0, when tests lived on plans.
+  plan_generation: 'Plan generation',
   in_session_execution: 'Execution',
   exported_execution: 'Exported execution',
-  assist: 'Assist',
 };
 
 type Content = '' | 'critiques' | 'suggestions';
@@ -106,7 +108,6 @@ const Feedback: React.FC = () => {
   const content = (params.get('content') ?? '') as Content;
   const minRating = params.get('rating') ?? '';
   const projectFilter = params.get('project') ?? '';
-  const testPlanFilter = params.get('test_plan_id') ?? '';
   const [search, setSearch] = useState(params.get('q') ?? '');
   const debouncedSearch = useDebouncedValue(search.trim(), 300);
 
@@ -143,10 +144,9 @@ const Feedback: React.FC = () => {
     if (content === 'critiques') q.has_api_critiques = true;
     if (content === 'suggestions') q.has_tool_suggestions = true;
     if (projectFilter) q.project_id = Number(projectFilter);
-    if (testPlanFilter) q.test_plan_id = Number(testPlanFilter);
     if (debouncedSearch) q.search = debouncedSearch;
     return q;
-  }, [status, source, minRating, content, projectFilter, testPlanFilter, debouncedSearch]);
+  }, [status, source, minRating, content, projectFilter, debouncedSearch]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -213,10 +213,7 @@ const Feedback: React.FC = () => {
 
   /** Open the page that lists this session's API calls — in its own project. */
   const openSession = (r: AgentFeedbackEntry) => {
-    const target = r.session_page_id != null
-      ? `/assist-sessions/${r.session_page_id}`
-      : r.test_plan_id != null ? `/test-plans/${r.test_plan_id}`
-        : r.execution_session_id != null ? `/executions/${r.execution_session_id}` : null;
+    const target = r.session_page_id != null ? `/assist-sessions/${r.session_page_id}` : null;
     if (!target) return;
     if (r.project_id != null && r.project_id !== currentProject?.id) {
       const proj = projects.find((p) => p.id === r.project_id);
@@ -239,7 +236,7 @@ const Feedback: React.FC = () => {
   const critiqueCount = stats?.with_api_critiques ?? 0;
   const suggestionCount = stats?.with_tool_suggestions ?? 0;
   const topTool = stats?.top_tool_suggestions?.[0];
-  const filtered = Boolean(status || source || content || minRating || projectFilter || testPlanFilter || debouncedSearch);
+  const filtered = Boolean(status || source || content || minRating || projectFilter || debouncedSearch);
   const projectOptions = useMemo(
     () => [...projects].sort((a, b) => a.name.localeCompare(b.name)),
     [projects],
@@ -352,11 +349,6 @@ const Feedback: React.FC = () => {
               {[5, 4, 3, 2, 1].map((r) => <SelectItem key={r} value={String(r)}>{r === 5 ? '5 only' : `${r} or more`}</SelectItem>)}
             </SelectContent>
           </Select>
-          {testPlanFilter && (
-            <Button variant="outline" size="sm" className="h-8" onClick={() => setParam('test_plan_id', '')}>
-              Test plan #{testPlanFilter} · clear
-            </Button>
-          )}
         </ListFilterBar>
 
         {loading && rows.length === 0 ? (
@@ -398,8 +390,7 @@ const Feedback: React.FC = () => {
                   const critiques = r.api_critiques?.length ?? 0;
                   const suggestions = r.tool_suggestions?.length ?? 0;
                   const client = clientOf(r);
-                  const canOpen = r.session_page_id != null || r.test_plan_id != null
-                    || r.execution_session_id != null;
+                  const canOpen = r.session_page_id != null;
                   return (
                     <React.Fragment key={r.id}>
                       <TableRow data-testid={`feedback-row-${r.id}`}>
@@ -573,8 +564,6 @@ const FeedbackDetails: React.FC<{ r: AgentFeedbackEntry }> = ({ r }) => {
       <dl className="grid min-w-0 grid-cols-[max-content_minmax(0,1fr)] gap-x-md gap-y-xxs text-caption lg:col-span-2">
         <dt className="text-muted-foreground">What it was doing</dt>
         <dd className="min-w-0 truncate">{SOURCE_LABELS[r.source] ?? r.source} <span className="text-muted-foreground">(the agent's own label)</span></dd>
-        {r.test_plan_id != null && (<><dt className="text-muted-foreground">Test plan</dt><dd>#{r.test_plan_id}</dd></>)}
-        {r.execution_session_id != null && (<><dt className="text-muted-foreground">Execution run</dt><dd>#{r.execution_session_id}</dd></>)}
         {r.reviewed_at && (<><dt className="text-muted-foreground">Last triaged</dt><dd><TimeAgo value={r.reviewed_at} /></dd></>)}
         {r.reviewer_notes && (<><dt className="text-muted-foreground">Reviewer note</dt><dd className="min-w-0 whitespace-pre-wrap break-words">{r.reviewer_notes}</dd></>)}
       </dl>

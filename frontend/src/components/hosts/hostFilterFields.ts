@@ -324,8 +324,8 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   },
   {
     kind: 'toggle', id: 'hasTestExecution', key: 'hasTestExecution', keys: ['hasTestExecution'], chipKey: 'hasTestExecution',
-    label: 'Tested by agent', category: 'work', keywords: ['test', 'plan', 'executed', 'agent'],
-    help: 'A test plan was actually executed against the host (not merely written). "Planned but never run" is the built-in view Planned, not tested.',
+    label: 'Tested', category: 'work', keywords: ['test', 'tested', 'evidence', 'executed', 'agent'],
+    help: 'Evidence of a test that ran is recorded for the host (a finding, no finding, or inconclusive) — not merely a proposed test. "Proposed but not run" is the built-in view Planned, not tested.',
   },
   {
     kind: 'query', id: 'note', token: 'note:', keys: [], chipKey: '',

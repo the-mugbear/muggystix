@@ -78,7 +78,7 @@ const PREVIEW_SIZE = 5;
 
 const REASON_LABEL: Record<string, string> = {
   critical: 'Critical', high: 'High',
-  blocked_session: 'Blocked run', no_admin: 'No project admin', quiet: 'No import in 14 days',
+  no_admin: 'No project admin', quiet: 'No import in 14 days',
   no_data: 'No inventory',
 };
 
@@ -261,7 +261,7 @@ const ProjectsTable: React.FC<{
               <span className="mt-xxs flex flex-wrap gap-xxs">
                 {/* "No project admin" is already the Project admins cell. */}
                 {r.attention_reasons.filter((code) => code !== 'no_admin').map((code) => (
-                  <Badge key={code} variant={code === 'critical' || code === 'blocked_session' ? 'destructive' : 'muted'}>
+                  <Badge key={code} variant={code === 'critical' ? 'destructive' : 'muted'}>
                     {REASON_LABEL[code] ?? code}
                   </Badge>
                 ))}
@@ -689,7 +689,6 @@ const Oversight: React.FC = () => {
                     project's activity (no import), never the age of evidence. */}
                 {[
                   { code: 'critical', value: data.attention.critical_projects, one: 'project', label: 'with a critical finding or critical scanner output not yet judged' },
-                  { code: 'blocked_session', value: data.attention.blocked_runs, one: 'run', label: 'blocked' },
                   { code: 'no_admin', value: data.attention.no_admin_projects, one: 'project', label: 'without a project admin' },
                   { code: 'quiet', value: data.attention.quiet_projects, one: 'active project', label: 'with no import in 14 days' },
                   { code: 'no_data', value: data.attention.no_inventory_projects, one: 'project', label: 'with no inventory' },

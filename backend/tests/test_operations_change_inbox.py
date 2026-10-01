@@ -9,15 +9,15 @@ Two gaps from the 2026-09-19 Operations review, closed together:
   new records and changes to existing targets are disjoint, and that severity
   and time are matched on the SAME observation row.
 * Work that has stopped was shown nowhere an analyst starts the day: failed /
-  partial imports nobody dismissed, and execution runs that are paused or
-  whose agent session ended.
+  partial imports nobody dismissed.  (Execution runs that were paused or whose
+  agent session had ended were the second kind until v2.442.0 removed runs.)
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
 from app.db import models
-from app.db.models_agent import AgentSession, ExecutionSession, TestPlan
+from app.db.models_agent import AgentSession
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, VulnerabilitySource
 
 
@@ -161,46 +161,38 @@ def test_blockers_list_stopped_imports_until_dismissed(client, db_session, test_
     assert "MISSING" in partial["message"] and "successfully" not in partial["message"]
 
 
-def test_blockers_list_runs_that_stopped_without_completing(client, db_session, test_project, test_agent):
+def test_an_ended_agent_session_is_not_a_blocker(client, db_session, test_project, test_agent):
+    """v2.442.0 — there are no execution runs to strand: a session that ended
+    (or whose key lapsed) leaves host tests and evidence, which anyone carries
+    on.  The blockers carry imports only, and an ended session with work still
+    proposed adds nothing to them.  (Until then: a paused run, or an active
+    run whose agent session had ended, was listed here.)"""
+    from app.db.models_host_tests import HostTest
+
     pid = test_project.id
-
-    versions = iter(range(1, 10))
-
-    def plan(title):
-        p = TestPlan(project_id=pid, version=next(versions), title=title, status="in_progress")
-        db_session.add(p)
-        db_session.flush()
-        return p
-
-    def agent_session(status):
-        s = AgentSession(workflow="execution", project_id=pid, agent_id=test_agent.id, status=status)
-        db_session.add(s)
-        db_session.flush()
-        return s
-
-    live, ended = agent_session("active"), agent_session("completed")
-    db_session.add_all([
-        ExecutionSession(test_plan_id=plan("Paused plan").id, status="paused"),
-        ExecutionSession(test_plan_id=plan("Orphaned plan").id, status="active", agent_session_id=ended.id),
-        ExecutionSession(test_plan_id=plan("Running plan").id, status="active", agent_session_id=live.id),
-        ExecutionSession(test_plan_id=plan("Done plan").id, status="completed", agent_session_id=ended.id),
-        # v2.424.0 — a legacy run (no parent session) whose agent holds no
-        # live key: the Runs list called it stalled; Blocked missed it.
-        ExecutionSession(test_plan_id=plan("Legacy plan").id, status="active", agent_id=test_agent.id),
-    ])
+    ended = AgentSession(workflow="project", project_id=pid, agent_id=test_agent.id, status="ended")
+    host = models.Host(project_id=pid, ip_address="10.6.6.6", state="up")
+    db_session.add_all([ended, host])
+    db_session.flush()
+    db_session.add(HostTest(
+        project_id=pid, host_id=host.id, tool="nmap", description="x", rationale="r",
+        priority="high", status="in_progress", source="agent", agent_session_id=ended.id,
+        request_key="left-behind", request_hash="0" * 64,
+    ))
     db_session.commit()
 
-    b = client.get(_wb(pid)).json()["blockers"]
-    assert b["interrupted_execution_count"] == 3
-    assert {e["plan_title"]: e["reason"] for e in b["executions"]} == {
-        "Paused plan": "paused", "Orphaned plan": "session_ended", "Legacy plan": "session_ended",
-    }
+    body = client.get(_wb(pid)).json()
+    b = body["blockers"]
+    assert body["blockers_unavailable"] is False
+    assert set(b) == {"failed_import_count", "partial_import_count", "imports"}
+    assert (b["failed_import_count"], b["partial_import_count"], b["imports"]) == (0, 0, [])
 
 
 def test_nothing_blocked_is_empty_not_unavailable(client, test_project):
     body = client.get(_wb(test_project.id)).json()
     assert body["blockers_unavailable"] is False
-    assert body["blockers"]["imports"] == [] and body["blockers"]["executions"] == []
+    assert body["blockers"]["imports"] == []
+    assert body["blockers"]["failed_import_count"] == 0 and body["blockers"]["partial_import_count"] == 0
 
 
 # --- the list the "Inspect import errors" button opens ----------------------

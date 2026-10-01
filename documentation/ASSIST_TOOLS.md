@@ -151,7 +151,7 @@ Largely done. This is the stage the surface was originally built for.
 | One host in detail | `assist_get_host` | **have** |
 | Scanner observations on a host / findings across the project | `assist_get_host_vulnerabilities` (raw scanner rows, not triaged findings — named `assist_get_host_findings` until the vocabulary was fixed), `assist_list_findings` | **have** |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
-| What the team tested, and what it showed | `assist_get_host_testing` (entries of every plan but an archived one, never `rejected` entries — since v2.433.0 there is no plan approval to filter on) | **have** |
+| What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back); `assist_get_host` → `assessment.tests_executed` / `last_tested_at`. `assist_get_host_testing` went with test plans in v2.442.0 | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |
 | Named assets (FQDNs), whether they are in scope, and what they resolve to | `assist_list_names` | **have** |
 | Which uploads failed to parse | `assist_list_ingestion_issues` | **have** (2.297.0) |
@@ -231,7 +231,7 @@ The template lives on the operator's machine and the agent fills it there
 | **Record what was run and what it showed** | `record_evidence` / `list_evidence` | **have** (2.436.0) |
 
 **`assist_get_finding`** is the tool the report stage turns on. A promoted
-finding carries an `evidence_annotation_id` (the note that justified promotion),
+finding made from a note before v2.446.0 carries an `evidence_annotation_id` (the note that justified it; notes can no longer be promoted),
 a comment thread, and note attachments — which is where screenshots live. Today
 an agent can list findings and read per-host notes, but cannot reach the
 evidence attached to a specific finding, which is precisely the material a
@@ -310,7 +310,7 @@ app; it could not. Ten tools, each wrapping the service its page uses (rule 3):
 `assist_get_image`. The rest was payload, not tools: context gained the
 engagement dates and members; host detail the inspector's fields (names — which
 had always been empty — tags, assignees, scope membership, assessment, weakness
-labels, certificates, NSE output, conflicts); notes their threads, assignee,
+labels, certificates, NSE output, conflicts); notes their threads, labels,
 attachments and targets; a finding its report text and status history. Read
 roles now equal the page's.
 
@@ -323,15 +323,16 @@ rebuilt; an attachment carries
 that observed it), `scan_id`, `observed_at` with `observed_at_basis` (`scan` =
 the scan's own time, `import` = the import time), `imported_at` and `is_latest`
 (false = an earlier scan's row of the same URL by the same tool — history, not
-current state). Reading a plan whose stored tests lack a description (an older
-or hand-made entry) no longer 500s — the stored-test schema accepts it.
+current state).
 
-The read surface is **33 `assist_*` reads** (36 `assist_*` tools with the
-three writes) inside a 66-tool catalogue (v2.433.0 removed `plan_submit`). Two of
+The read surface is **32 `assist_*` reads** (35 `assist_*` tools with the
+three writes) inside a 56-tool catalogue (v2.442.0 removed the plan and
+execution tools and `assist_get_host_testing`, and added four `host_tests_*`
+tools). Two of
 the three P2 items turned out not to be tools at all: one folded into an
 existing endpoint, one is a payload field plus a download. With the
 per-workflow filter gone there is no longer an "assist budget" to stay under —
-the ceiling is the whole catalogue, shared with recon, planning and execution.
+the ceiling is the whole catalogue, shared with scope reads, host tests, evidence and proposals.
 **P3 must not be another tool by reflex** — check first whether "what changed"
 belongs on `assist_get_posture` as a delta block.
 

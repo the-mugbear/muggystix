@@ -52,9 +52,9 @@ export function useAgentSessionControls(onChanged: () => void): AgentSessionCont
         <div className="flex flex-col gap-sm">
           <p>
             The agent’s API key is revoked immediately; any agent still running against it
-            gets 401s from its next call. Its open execution runs are marked abandoned with
-            their results kept (a new session can run the plan again from there), and draft
-            plans are kept. The session record stays for the audit trail.
+            gets 401s from its next call. The tests it proposed and the evidence it recorded
+            stay — another session, or a person, carries them on. The session record stays
+            for the audit trail.
           </p>
           {agentConnected(row) && (
             <div>

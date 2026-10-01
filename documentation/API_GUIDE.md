@@ -6,7 +6,7 @@ Base path: `/api/v1`
 
 BlueStick exposes two parallel REST surfaces under the same versioned base path:
 
-1. **JWT user API** — everything humans touch. Login, browse, upload, triage, export, manage. Nested under `/projects/{project_id}/...` for all data-bearing routes (scans, hosts, test plans, etc.).
+1. **JWT user API** — everything humans touch. Login, browse, upload, triage, export, manage. Nested under `/projects/{project_id}/...` for all data-bearing routes (scans, hosts, host tests, etc.).
 2. **Agent API (`/agent/*`)** — terminal-side agents. Authenticates with `X-API-Key: nm_agent_...` headers — one key per project-scoped agent SESSION (not per plan or per workflow). Separate dependency chain; fully isolated from the JWT surface.
 
 The live interactive spec is always at `GET /docs` (Swagger UI) and `GET /openapi.json`. Use this guide for architectural context and high-value shape references; use OpenAPI for field-level truth.
@@ -44,12 +44,12 @@ The **global** role is binary — `admin` (user management, system settings, aud
 
 An operator starts **one project-scoped agent session**; its key does whatever that operator's project role allows. There are no per-workflow keys (v2.337.0) and no capability grants (v2.309.0).
 
-There is ONE operator entry point (v2.433.0): `POST /api/v1/projects/{id}/assist/start` (floor `auditor`), the **Operations → Start Agent Session** dialog. Pages about one object (a scope, a plan, a host selection) open the same dialog with a one-line task to hand the agent; they mint nothing of their own. The per-object minting routes — `POST /scopes/{scope_id}/recon/start`, `POST /test-plans/generate`, `POST /test-plans/{plan_id}/execute`, `/rotate-key`, `/resume-generation` and the per-run resume routes — were removed with the "agent on rails" model.
+There is ONE operator entry point (v2.433.0): `POST /api/v1/projects/{id}/assist/start` (floor `auditor`), the **Operations → Start Agent Session** dialog. Pages about one object (a scope, a host, a host selection) open the same dialog with a one-line task to hand the agent; they mint nothing of their own. The per-object minting routes — `POST /scopes/{scope_id}/recon/start`, `POST /test-plans/generate`, `POST /test-plans/{plan_id}/execute`, `/rotate-key`, `/resume-generation` and the per-run resume routes — were removed with the "agent on rails" model.
 
-The agent opens whatever work it needs itself, with the same key and in whatever order the work needs: it reads a scope (`GET /agent/scopes`, `/agent/scopes/{scope_id}/subnets|domains` and the target files), uploads scanner output (`POST /agent/uploads`, no run required), registers a plan (`POST /agent/test-plans {title}`) and works it (`POST /agent/execution-sessions/start {plan_id}` — any draft or in-progress plan; nothing waits on approval). Operators list, end and resume sessions at `GET /projects/{id}/agent-sessions`, `POST …/agent-sessions/{sid}/end`, `POST …/agent-sessions/{sid}/resume` (resume rotates the key and re-issues the prompt; the previous key is revoked).
+The agent opens whatever work it needs itself, with the same key and in whatever order the work needs: it reads a scope (`GET /agent/scopes`, `/agent/scopes/{scope_id}/subnets|domains` and the target files), uploads scanner output (`POST /agent/uploads`, nothing to open first), proposes tests on hosts (`POST /agent/host-tests`) and records what it ran as evidence (`POST /agent/evidence`, with `host_test_id` when it answers a test) — nothing waits on approval. Test plans and execution runs were removed in v2.442.0 (§4.11). Operators list, end and resume sessions at `GET /projects/{id}/agent-sessions`, `POST …/agent-sessions/{sid}/end`, `POST …/agent-sessions/{sid}/resume` (resume rotates the key and re-issues the prompt; the previous key is revoked).
 
 - **Renew (agent-facing, v2.304.0)** — `POST /api/v1/agent/session/renew`, called by the agent with its **own** key. Same key, later deadline. It deliberately **accepts an already-expired key** while the session is active and under `AGENT_SESSION_MAX_LIFETIME_HOURS` (168h), because the failure it exists for is discovered late: an agent blocks for hours on nmap / masscan / Nessus and only learns its key lapsed when it tries to upload, with the scanning already done. No path parameter — the key identifies its own session.
-- **End (agent-facing)** — `POST /api/v1/agent/session/end {notes?, agent_model?}`. Revokes the key; `409` while an execution run it opened is still active. However a session ends — this call, the operator's End, or the hourly lapse sweep — `agent_session_service.end_agent_session` marks every execution run it still has open (active, or paused because another session took the plan over) `abandoned`, with its results kept; a later session opens a fresh run on the plan and continues from them. Draft plans stay drafts. Agents are told to call it only when the operator says they are finished (prompt 2.13.1, v2.430.0): an agent that ended its own session after setup left the operator's next question with an unrecoverable `401`.
+- **End (agent-facing)** — `POST /api/v1/agent/session/end {notes?, agent_model?}`. Revokes the key; `409` only when the session is not active. Nothing else needs closing, however a session ends (this call, the operator's End, or the hourly lapse sweep): the host tests it proposed and the evidence it recorded are project data, and another session or a person carries them on. Agents are told to call it only when the operator says they are finished (prompt 2.13.1, v2.430.0): an agent that ended its own session after setup left the operator's next question with an unrecoverable `401`.
 
 Keys are:
 - **Hashed at rest** in `api_keys` (`APIKey`, `app/db/models_auth.py`); the plaintext is returned to the operator **exactly once**, never stored.
@@ -57,7 +57,7 @@ Keys are:
 - **Bounded by their operator (v2.305.0)** — a key carries the permissions of the user who started its session, resolved **per request**. A role change, a removed project membership, or a deactivated account reaches keys already in the field immediately. Mutating routes require the operator to hold `analyst` on the project; an auditor's or viewer's agent is read-only. The exception is session-metadata writes (key renewal, session end, feedback, tool suggestions), which record something about the session rather than project data and stay open to any member.
 
   **Reads are not uniform (v2.308.0).** Most need only project membership, but bulk exports — `/assist/report-context.ndjson`, `/assist/hosts.ndjson`, `/scopes/{scope_id}/hosts.ndjson`, the scope target lists (`live-hosts.txt`, `web-targets.txt`, `named-targets.ndjson`), and evidence downloads — require `auditor`, the same floor `export.py` and `reports.py` place on their JWT equivalents.
-- **Bound to ONE session, not to a workflow, a plan or a scope.** A call about a run the session has not opened answers `409` (e.g. `no_active_execution_run`), not `403`; a `403` is always about the operator's standing.
+- **Bound to ONE session, not to a workflow or a scope.** What the session writes carries its id; a `403` is always about the operator's standing.
 
 A 401 from an expired key carries a **structured body**: `recoverable: true` means renew with the same key and retry the failed request, `false` means the session is finished and the output should be saved to a file. "Expired" and "revoked" are the same status code but opposite situations, and the caller is usually holding output it cannot cheaply reproduce.
 
@@ -201,7 +201,7 @@ The agent-facing `/agent/integrations` endpoint was **removed** in v2.9.5 (audit
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=plan_generation\|reconnaissance\|in_session_execution\|exported_execution\|assist`, plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `test_plan_id`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `client_name` (the MCP client the session connected with), `agent_session_id`, `session_page_id` (the `/assist-sessions/{id}` page listing the session's API calls) and `session_api_calls`. |
+| GET | `/feedback/` | admin | List all agent feedback rows. Supports `?status=new\|reviewed\|actioned\|dismissed`, `?source=assist\|reconnaissance\|testing` (rows filed before v2.442.0 may carry `plan_generation`, `in_session_execution` or `exported_execution`), plus `min_rating`, `has_tool_suggestions`, `has_api_critiques`, `search`, `project_id`, `skip`, `limit`. Returns the standard `Paginated` envelope (`{items, total, skip, limit, has_more}`; v2.428.2 — it was a bare array). Each row carries who and where: `project_name`, `agent_name`, `client_name` (the MCP client the session connected with), `agent_session_id`, `session_page_id` (the `/assist-sessions/{id}` page listing the session's API calls) and `session_api_calls`. |
 | GET | `/feedback/{id}` | admin | Feedback detail with `api_critiques`, `tool_suggestions`, `friction_notes`, `agent_metrics`, and the same who-and-where fields as the list. |
 | GET | `/feedback/stats` | admin | Aggregate counts by source, status and prompt version, average `overall_rating`, top tool suggestions, and `with_api_critiques` / `with_tool_suggestions`. |
 | PATCH | `/feedback/{id}` | admin | Update status + `reviewer_notes`. |
@@ -299,10 +299,10 @@ The `IngestionJobSchema` includes `retry_count` and `last_error` for dead-letter
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/hosts/{host_id}/notes` | List notes on a host. |
-| POST | `/hosts/{host_id}/notes` | Analyst+. Body: `{body, status?, parent_id?}`. `body` is capped at 16 KB. `@username` notifies that project member, then the thread's writers on a reply. Returns `mention_warning` if mention notification dispatch failed. |
-| PATCH | `/hosts/{host_id}/notes/{note_id}` | Analyst+. `body` is author-only; thread state (`status`, `assignee_id`, `due_at`) can be changed by any analyst. |
+| POST | `/hosts/{host_id}/notes` | Analyst+. Body: `{body, parent_id?}` (a note has no status since v2.446.0; a `status` sent by an old client is ignored). `body` is capped at 16 KB. `@username` notifies that project member, then the thread's writers on a reply. Returns `mention_warning` if mention notification dispatch failed. |
+| PATCH | `/hosts/{host_id}/notes/{note_id}` | Analyst+. `body` is author-only; the thread's labels `note_type` (`observation` \| `question` \| `decision` \| `handoff`, or `null` to clear; `finding` and `action` are refused since v2.447.0) and `pinned` (stored on the thread root) can be changed by any analyst. Notes are discussion: status, assignee, due date, resolution and the `/history` route were removed in v2.446.0 (work is a host test and its evidence). |
 | DELETE | `/hosts/{host_id}/notes/{note_id}` | Analyst+; author delete only. |
-| GET | `/hosts/notes/activity` | Activity-grouped feed for the Activity page with host enrichment. |
+| GET | `/hosts/notes/activity` | Activity-grouped feed for the Activity page with host enrichment. Filters: `author_id`, `search`. No note status since v2.446.0 (`status` filter, `status_counts` and `thread_root_status` are gone). |
 | GET | `/hosts/notes/unread-count` | Count of notes updated since `last_viewed_at`. |
 | POST | `/hosts/notes/mark-seen` | Mark all activity as seen. |
 
@@ -330,7 +330,6 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | PATCH · DELETE | `/findings/{finding_id}/endpoints/{finding_host_id}` | ONE endpoint row's own state (`open` / `remediated` / `retest` / `false_positive`). The finding's status is the ISSUE's; never read it as the state of a given host. Responses carry `endpoint_status_counts`. |
 | GET | `/vulnerabilities/{vuln_id}/promote-preview` | What promoting this scanner observation would do — the finding it would join, the hosts carrying the issue. |
 | POST | `/vulnerabilities/{vuln_id}/promote` | Promote or dismiss a scanner observation: `{vuln_id, status?, severity?, owner_id?, summary?, scope?}` — `vuln_id` is required and must equal the path id (400). **`scope: "host"`** acts on the inspected host only — a `false_positive` dismissal defaults to it; a promotion may use it (v2.366.0: the finding is still the issue's, one per `dedup_key`, but only this host is attached, so "confirmed" is never recorded for hosts nobody verified). `scope: "issue"` is every host carrying it, and is the API default for a promotion. `accepted_risk` is issue-wide only: with `scope: "host"` → **422**. |
-| POST | `/annotations/{annotation_id}/promote` | Promote a note thread to a finding (the note becomes its evidence). |
 | GET | `/findings/{finding_id}/history` · `GET`/`POST /findings/{finding_id}/notes` | Status history; the comment / evidence thread (terminal determinations need a justification). A same-status history row records a change that is not a disposition: an endpoint's state, added hosts, or report text from an accepted proposal. An accepted proposal names itself in the row's `summary` (2.439.1). |
 | POST | `/findings/bulk/status` · `/findings/bulk/assign` | Bulk transitions and assignment. |
 | GET | `/scanner-observations` | **v2.386.0** — scanner rows grouped by ISSUE (`Vulnerability.issue_key`) across the project's hosts, with `host_count` and `judged_host_count`. `search`, `severity`, `kind` (misconfiguration \| vulnerability \| informational), `include_judged`, `min_hosts`, `sort` (`severity` default \| `hosts` = most widespread first, v2.429.0), `skip`, `limit` (≤200). Drives the Findings page's *Scanner observations* view. |
@@ -346,7 +345,8 @@ Project-level finding records (the SPINE entity that correlates vulnerabilities 
 | POST | `/proposals/{id}/accept` | Analyst+. `{note?, edited_value?}` (`edited_value`: report text only — accept with your edit). Runs the SAME code as the equivalent click, as you: report text needs the finding's author or a project admin (403 otherwise, the proposal stays pending). Accepting report text marks that field's other pending proposals `superseded`. A refusal from the underlying action (e.g. the target changed) is kept on the proposal's `error` and the proposal stays pending; a decided one → 409. |
 | POST | `/proposals/{id}/reject` | Analyst+. `{note?}`. |
 | POST | `/proposals/bulk` | Analyst+. `{ids (≤200), action: accept|reject, note?}` — each decided on its own; returns `decided` and `failed` [{id, status_code, detail}]. An accept never chooses between several pending drafts of one finding's field in the same batch: those fail with 409 "choose one on the finding" (2.439.0). Deciding locks the proposal row, so two concurrent decisions on one proposal apply it once; the other gets 409. |
-| GET | `/evidence` · `/evidence/{id}/raw` | Evidence records an agent made (`host_id`, `finding_id`, `agent_session_id`, `limit`, `offset`) with a 2,000-character preview · the whole raw output (text). Any member. |
+| POST | `/evidence/{id}/finding` | Analyst (v2.443.0; joins the issue since v2.445.0). `{title?, severity?, status?: open\|confirmed (default confirmed)}` — makes a finding of an evidence record whose outcome is `finding`. **When the record's test names a scanner observation still on the host** (`issue_key`), this IS that observation's promotion on this host (`promote_or_dismiss_vulnerability`, `scope: host`): it joins the issue's finding if one exists, takes the issue's title and severity — the `severity` sent is ignored on this path (v2.445.1; it used to override the scanner's) — and returns `joined_issue: true`. **Otherwise** it creates a finding from `title` + `severity` (both then required, `422` without), attached to the record's host (at the name its test was aimed at). Either way the record is linked to the finding. `409` when the record already belongs to a finding, `422` for any other outcome. Returns `{finding_id, …}`. |
+| GET | `/evidence` · `/evidence/{id}/raw` | Evidence records (an agent's, or a person's test result) (`host_id`, `host_test_id`, `finding_id`, `agent_session_id`, `unlinked` — `true` keeps records that answer no test, the host page's "Other evidence" — `limit`, `offset`) with a 2,000-character preview · the whole raw output (text). Any member. |
 
 **Notifications (v2.437.0).** A proposal on a finding notifies its author and its owner (`type: "proposal"`), except the person whose agent or draft it is: ONE unread notification per person per agent session (per finding for an in-app draft), updated as the run proposes more. `finding_id` is set when it covers one finding; otherwise `source_type: "agent_session"` + `source_id` point at the session's proposals. The client report's summary carries `pending_proposals` [{id, ref, title, count}] and `agent_images` (images from agent-written notes) — warnings before issuing, never blocks.
 
@@ -427,8 +427,8 @@ Every `/parse-errors` route requires **analyst+**.
 
 There is no agent CRUD surface. The `/agents/*` routes (list, create, detail,
 update, delete, rotate-key, renew-key) existed to manage the **unscoped global
-agent key** — a credential bound to no session that reached every test plan in
-the project with full write authority.
+agent key** — a credential bound to no session that reached the whole
+project with full write authority.
 
 Agent rows are auto-provisioned by the session start endpoint, and every key it
 mints is bound to exactly one `AgentSession`. Get a key by starting a session:
@@ -438,28 +438,21 @@ mints is bound to exactly one `AgentSession`. Get a key by starting a session:
 binding is now **rejected at authentication** (403), so any credential predating
 the removal is inert.
 
-### 4.11 Test plans
+### 4.11 Host tests
 
-A plan is the record of what an agent (or a person) set out to test and what it found — there is no approval step (v2.433.0). Lifecycle: `draft` → `in_progress` (its first execution run, which writes a `status_changed` row to the plan's history) → `completed`, or `archived` at any point. Plan summaries and details carry `agent_session_id` (the agent session that drafted it, linking to `/agent-sessions/{id}`) and `is_stale` ("possibly interrupted"), which is true only for a `draft` with **no entries** and no agent activity for 15 minutes — a draft with entries is a finished plan waiting for its first run, never stale. `approved`/`proposed`/`rejected` plan states and the `approved_by`/`rejected_by` columns are gone (migration `c7d2e9f4a1b6`: approved/proposed plans became drafts, rejected ones archived; `rejection_reason` is now `archive_reason`); an entry's `proposed` means "not tested yet".
+A **host test** is one check proposed for one host — by a person or by an agent — and it is shown on that host's page (the Tests section). There is no plan to register, no run to open and no approval step. Test plans, plan entries and history, execution runs and their results, sanity checks, the offline execution bundle (`export-bundle` / `import-results`) and the plan execution report were **removed in v2.442.0**; every `/test-plans/*` and `/execution-sessions/*` route is gone. On upgrade, each proposed test of each plan entry became a host test (its `label` is the plan's title) and each execution result became an evidence record (migrations `d7e1a9c4b602`, then `f4b8d2a6c917`, which drops the old tables — back the database up first, see `README.md`).
+
+A test carries `tool`, `description`, `command` (may use `{ip}` / `{fqdn}`), `rationale`, `expected_result`, `references`, `priority` (`critical`…`info`), `label`, `target_fqdn` (optional — a name observed at the host), `status` (`proposed` → `in_progress` → `done`, or `dismissed`), `assigned_to_id`, `tester_summary`, `source` (`agent` \| `person`), the proposer's attribution (`created_by`, `agent_session_id`, `agent_model`, `agent_client`, `prompt_version`), `revision` and `evidence_count`. What a test **produced** is not written on the test: it is an evidence record that names it (`host_test_id`; §5.6a).
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/test-plans/` | Create an empty plan. Body: `{title, description?}`. |
-| POST | `/test-plans/from-hosts` | A plan (or a draft's new entries) from a FIXED host list (`source_kind='manual_hosts'`); `dry_run=true` previews exclusions. |
-| GET | `/test-plans/` | List plans visible to the user. Filterable by status. |
-| GET | `/test-plans/{plan_id}` | Plan detail with entries. |
-| POST | `/test-plans/{plan_id}/archive` | Abandon (archive) a plan, with an optional reason (`archive_reason`). |
-| PATCH | `/test-plans/{plan_id}` | Update title/description. |
-| PATCH | `/test-plans/{plan_id}/entries/{entry_id}` | Update an entry (status, rationale, findings, notes). Supports `expected_updated_at` for optimistic locking. |
-| GET | `/test-plans/{plan_id}/progress` | Progress rollup. |
-| GET | `/test-plans/{plan_id}/history` | Audit trail of plan changes. |
-| DELETE | `/test-plans/{plan_id}` | Analyst. Cascade-deletes the plan's entries and history — there is NO "no execution sessions" guard; the UI warns when dispositioned entries exist. |
-| GET | `/test-plans/{plan_id}/execution-sessions` · `/test-plans/{plan_id}/execution-sessions/{session_id}/all-entry-results` | The plan's execution runs (summaries with `is_stale`, environment and attribution) and one run's results for every entry. Both carry `agent_session_id` — the agent session that opened the run. |
-| GET | `/test-plans/{plan_id}/entries/{entry_id}/execution-results` | Per-entry test execution results + the target checks recorded (optional evidence) for the latest (or a specified `session_id`) session. |
-| GET | `/test-plans/{plan_id}/execution-report?format=html\|json\|csv` | Analyst+. Download an execution report (default `html`) from the latest (or a specified) session. `raw_output` trimmed to 16 KB per test result. |
-| POST | `/test-plans/{plan_id}/export-bundle` | Export a plan (not archived or completed) as an offline zip bundle. Creates an `ExecutionSession` in exported mode and transitions the plan to `in_progress`. Returns the zip bytes + `bundle_id` + `execution_session_id`. |
-| POST | `/test-plans/{plan_id}/import-results` | Import a results file from a terminal-run agent. JSON-depth-guarded, idempotent, cross-plan-safe. |
-| GET | `/test-plans/{plan_id}/api-activity` | **v2.24.0** — JWT-authenticated read of the agent API call log scoped to this plan. Filters: `method`, `status_min`, `status_max`, `host_id`, `target_ip`, `since`, `until`, `limit`, `offset`. Returns `{total, items[]}`. See §6.7. |
+| POST | `/host-tests` | Analyst. Body `{tests: [...]}` — 1–200 tests, each `{request_key, host_id, tool, description, rationale, command?, expected_result?, references?, priority?, label?, target_fqdn?, vulnerability_id?, assigned_to_id?}`. 201 `{items}`. `vulnerability_id` (v2.445.0) names the scanner observation the test confirms — it must be on the same host (`422`) — and is stored as the issue's identity (`issue_key`, `issue_title`), so the link survives a re-scan that replaces the row. The batch is validated as a whole (an unknown host is a 404 and nothing is written). `request_key` makes a retry safe: the same key with the same content returns the existing test; with different content it is a `409`. `target_fqdn` must be a name observed at that host (`422`); an assignee must be a project analyst or admin (`422`). |
+| GET | `/host-tests` | Any member. `host_id`, `status`, `label` (exact), `assigned_to_id`, `agent_session_id`, `mine` (assigned to the caller), `active_only` (proposed or in progress), `q` (a Hosts query — the tests on the hosts it matches), `limit` (≤200) / `offset`. Returns `{items, total, has_more}`, newest first. |
+| GET | `/host-tests/{test_id}` | Any member. One test; `404` for another project's. |
+| PATCH | `/host-tests/{test_id}` | Analyst. `{expected_revision, status?, assigned_to_id?, tester_summary?, dismissed_reason?}`. `expected_revision` is the revision the caller read: a stale write is a `409` and changes nothing. `status: "dismissed"` needs `dismissed_reason`; `status: "done"` needs an evidence record for the test or a `tester_summary` saying why none was run (`422` otherwise). `assigned_to_id: null` unassigns. |
+| POST | `/host-tests/{test_id}/result` | Analyst (v2.443.0) — a person's result for a test they ran, in one call: `{expected_revision, request_key, outcome: finding\|no_finding\|inconclusive\|failed, summary, command?, raw_output?, observed_ip?}`. Writes the evidence record (the same one `POST /agent/evidence` writes; `command` defaults to the test's with `{ip}`/`{fqdn}` filled) and moves the test: `finding` / `no_finding` → `done`, the others → `in_progress`. `409` on a stale revision (nothing is written). Every result takes the test's revision — one that leaves the status unchanged too (v2.445.1) — so a copy read before it is stale. A repeated `request_key` with the same result returns the stored record and writes nothing; the same key with a changed outcome, summary, output or author is a `409` (v2.445.1), never a success that kept the old record. Returns `{test, evidence}`. Page route only: an agent uses `POST /agent/evidence` then `PATCH`. |
+
+**Planned, tested, untouched — one definition each** (`host_test_queries`, `host_query_predicates.untouched_conditions`), used by the Hosts list, the DSL (`has:planned`, `has:tested`, `has:untouched`), `/coverage` and the Operations terrain: a host is *planned* while it has a test that is `proposed` or `in_progress`; *tested* once an evidence record with outcome `finding`, `no_finding` or `inconclusive` exists for it (a `failed` attempt or an `info` record is not a test); *untouched* when it has no follow, note, non-dismissed test, evidence record or finding endpoint. The DSL's `testlabel:"…"` matches hosts carrying a test with that label, whatever its status.
 
 ### 4.12 Scanning by agents
 
@@ -486,22 +479,22 @@ These mount under `/projects/{project_id}/...` alongside the above. Most are das
 | `/hosts/views`, `/hosts/views/{id}/promote` | Saved Hosts-page filter/view state per user (`host_filter_views`). |
 | `/hosts/query/schema`, `/hosts/query/validate`, `/hosts/query/history` | Boolean query-DSL catalogue, validate/match-count preview, and per-user query history (`host_queries`). |
 | `/scopes/subnet-labels`, `/scopes/subnets/{id}/labels` | Subnet labelling (`subnet_labels`; mounted before `scopes` so the static prefix wins route resolution). |
-| `/agent-sessions`, `/agent-sessions/by-model-tool`, `/agent-sessions/{sid}` | Unified agent-session timeline across workflows, plus by-(model, tool) aggregates (the Agent Sessions page). Since v2.432.0 a project session's row carries `phases` (the plans it drafted and the execution runs it opened, each `{kind: "plan"|"execution", id, status, label, scope_id (null), test_plan_id, started_at}` — they are not timeline rows of their own), `assist_session_id` (its detail row: notes and the API-call feed are keyed by it, a different id sequence), `last_activity_at`, `operator_role`, and the caller's `can_end` (owner or project admin) / `can_resume` (owner) on an active session. `GET /agent-sessions/{sid}` returns that row for one project session (404 for a legacy per-workflow row); the session page reads it. |
-| `/execution-sessions/{id}` | JWT-facing execution-session lookup by id (permalink for `/executions/:sessionId`). |
+| `/agent-sessions`, `/agent-sessions/by-model-tool`, `/agent-sessions/{sid}` | Unified agent-session timeline across workflows, plus by-(model, tool) aggregates (the Agent Sessions page). A row's `kind` is `project` (every session since v2.337.0) or a legacy `assist` row. A project session's row carries `host_test_count` and `evidence_count` (the host tests it proposed and the evidence records it wrote — v2.442.0; they replace `phases`), `assist_session_id` (its detail row: notes and the API-call feed are keyed by it, a different id sequence), `last_activity_at`, `operator_role`, and the caller's `can_end` (owner or project admin) / `can_resume` (owner) on an active session. `GET /agent-sessions/{sid}` returns that row for one project session (404 for a legacy row); the session page reads it. |
+| `/assist-sessions/{id}/api-activity` | The agent API-call log of one session, keyed by the session's detail row (`assist_session_id` on the session row). Filters: `method`, `status_min`, `status_max`, `host_id`, `target_ip`, `mine`, `limit`, `offset`. Returns `{total, items[]}`. See §6.7. |
 
 ---
 
 ## 5. Agent API (`/api/v1/agent/*`) — X-API-Key auth
 
-All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the request headers. Project scope is implicit from the key. Which execution run a call is about is resolved from the session — not from the key.
+All endpoints in this section require `X-API-Key: nm_agent_<plaintext>` in the request headers. Project scope is implicit from the key.
 
-**One key, one session, every surface.** The Swagger tags — `agent-plan-generation`, `agent-execution`, `agent-scope` (scope reads and uploads; `agent-recon` until v2.433.1), `agent-assist` — group the routes by kind of work; they are not scopes, and nothing is rejected for being "the wrong workflow" (that model ended in v2.337.0). There is no required order either (v2.433.0): the operator drives the agent, and the agent uploads, plans and executes as the work needs, within the operator's project role. No step waits on a human approval.
+**One key, one session, every surface.** The Swagger tags — `agent-browse`, `agent-host-tests`, `agent-proposals` (evidence and proposals), `agent-scope` (scope reads and uploads; `agent-recon` until v2.433.1), `agent-assist`, `agent-feedback` — group the routes by kind of work; they are not scopes, and nothing is rejected for being "the wrong workflow" (that model ended in v2.337.0). There is no required order either (v2.433.0): the operator drives the agent, and the agent uploads, proposes tests and records what it ran as the work needs, within the operator's project role. No step waits on a human approval.
 
-**Session lifecycle:** work, in whatever order it needs (there is no setup call — the environment probe was removed in v2.434.0): to read a scope, `GET /agent/scopes` then `/agent/scopes/{scope_id}/subnets|domains` or the target files; to add scanner output, `POST /agent/uploads` (no run needed) and poll `GET /agent/uploads/{job_id}`; to register and work a plan, `POST /agent/test-plans {title}` then `POST /agent/execution-sessions/start {plan_id}` (which returns its context plus a `read_back` of the run's concrete bounds) and `POST /agent/execution-sessions/{session_id}/complete` → `POST /agent/session/end` when the operator says they are finished (409 while an execution run is still active). `GET /agent/identity` reports `open_phases`, `can_write_project_data`, `key_expires_at` and `renew_path`. A call about a run that is not open answers **409**, not 403.
+**Session lifecycle:** work, in whatever order it needs (there is no setup call — the environment probe was removed in v2.434.0): to read a scope, `GET /agent/scopes` then `/agent/scopes/{scope_id}/subnets|domains` or the target files; to add scanner output, `POST /agent/uploads` (no run needed) and poll `GET /agent/uploads/{job_id}`; to propose tests, `POST /agent/host-tests {tests: [...]}`; to work one, `PATCH /agent/host-tests/{test_id}` to `in_progress`, run it, `POST /agent/evidence` with `host_test_id` and a `request_key`, then `PATCH` it to `done` → `POST /agent/session/end` when the operator says they are finished. `GET /agent/identity` reports `can_write_project_data`, `key_expires_at` and `renew_path`. The only read-back is the session prompt's (project, scope, working directory); the per-run read-back went with execution runs in v2.442.0.
 
 **The safety rules are the agent's, not the server's** (`agent_policy.SAFETY_RULES`): show the operator every command; the operator drives (propose next steps, don't take them unasked); stay inside the declared scope — a target outside it needs the operator's explicit go-ahead, and a name in scope does not scope its address; write output into the working directory — outside it, installing software, or changing settings/credentials needs explicit go-ahead; record every command and outcome verbatim and upload scanner output. There is no approved-tool allowlist, no approve-by-exception rule, no mandatory target check and no plan approval (all retired in v2.433.0, prompt 3.0.0). `/.well-known/networkmapper.json` publishes `command_approval: "operator_driven"` and no longer carries `plan_execution_requires_human_approval`. `backend/tests/test_well_known.py` pins its `safety_properties`: the server-enforced claims (`server_executes_commands: false`, `agent_authority`, `agent_key_binding`, time-limited renewable keys, persistent audit trail), the not-enforced ones (`command_approval`, `command_approval_enforced_by`), and the retired claims as absent.
 
-Most endpoints below — the assist, plan, execution and scope-read routes — are also **MCP tools** (§5.9): same key, same checks, same audit row. The §5.1 browse reads and the file downloads are not.
+Most endpoints below — the assist, host-test, evidence, proposal and scope-read routes — are also **MCP tools** (§5.9): same key, same checks, same audit row. The §5.1 browse reads and the file downloads are not.
 
 The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET /api/v1/agents-guide`.
 
@@ -511,7 +504,7 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 |---|---|---|
 | GET | `/agent/project` | Project metadata (name, description, status). |
 | GET | `/agent/dashboard` | Stats summary for the bound project. |
-| GET | `/agent/hosts` | Paginated host list. Supports `limit` (1–5000, default 500) / `offset`, `not_in_plan_id`, and the discrete filters (state, ports, services, subnets, `has_*_vulns`, search). |
+| GET | `/agent/hosts` | Paginated host list. Supports `limit` (1–5000, default 500) / `offset` and the discrete filters (state, ports, services, subnets, `has_*_vulns`, search). |
 | GET | `/agent/hosts/{host_id}` | Host detail with ports, services, vulns. |
 | PATCH | `/agent/hosts/{host_id}` | Correct hostname / OS (analyst operator); setting `os_name` re-derives `os_family`. |
 | GET | `/agent/scans` | Scan list. |
@@ -519,34 +512,18 @@ The contract agents follow is the [agent guide](AGENT_GUIDE.md), served at `GET 
 | GET · POST | `/agent/hosts/{host_id}/notes` | Read a host's notes; create one from the agent's identity. An `@username` in an agent's note notifies nobody. |
 | POST | `/agent/hosts/{host_id}/follow` | Follow a host. |
 
-### 5.2 Test plan CRUD
+### 5.2 Host tests
+
+The agent side of §4.11 — the same contract and the same service (`host_test_service`), authenticated by the session key. A test an agent proposes is `source: "agent"` and carries the session's id, model, client and prompt version. Writes need the operator to hold `analyst`; there is no approval step. Which hosts and which tests is the operator's request.
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/test-plans` | Register a new plan (a draft) in this session; optional `host_ids` or `q` for an exact host selection, and `agent_model` (§6.8). Executable as soon as it has entries. |
-| GET | `/agent/test-plans` | List the project's plans; `?mine=true` for the plans this session drafted. |
-| GET | `/agent/test-plans/{plan_id}` | Plan detail. |
-| PATCH | `/agent/test-plans/{plan_id}` | Update title/description. |
+| POST | `/agent/host-tests` | `{tests: [...], agent_model?}` — 1–200 tests in one validated batch (fields and refusals as in §4.11). 201 `{items}`. Each test needs its own `request_key`; a retry with the same key and content returns the existing test. MCP `host_tests_propose`. |
+| GET | `/agent/host-tests` | `host_id`, `status`, `label`, `assigned_to_id`, `agent_session_id`, `mine` (assigned to the session's operator), `active_only`, `q` (a Hosts query), `limit` / `offset` → `{items, total, has_more}`. MCP `host_tests_list`. |
+| GET | `/agent/host-tests/{test_id}` | One test. MCP `host_tests_get`. |
+| PATCH | `/agent/host-tests/{test_id}` | `{expected_revision, status?, assigned_to_id?, tester_summary?, dismissed_reason?}` — `409` when the revision is stale. MCP `host_tests_update`. The result of a test is recorded with `POST /agent/evidence` (§5.6a), not here. |
 
-### 5.3 Plan generation workflow
-
-| Method | Path | Notes |
-|---|---|---|
-| GET | `/agent/test-plans/{plan_id}/context` | Paginated candidate hosts. See §6.1 for the response shape. |
-| POST | `/agent/test-plans/{plan_id}/entries` | Batch-create entries. Wraps response as `{"entries": [...]}`. Up to 500 entries per call. |
-| PATCH | `/agent/test-plans/{plan_id}/entries/{entry_id}` | Update an entry. Supports optimistic locking via `expected_updated_at`. |
-| GET | `/agent/test-plans/{plan_id}/validate` | Advice, not a gate — gaps (no entries, no description, short rationale) + **v2.10.0 split-coverage** — see §6.2. (`POST …/submit` was removed in v2.433.0: nothing waits on approval.) |
-
-### 5.4 Execution workflow
-
-| Method | Path | Notes |
-|---|---|---|
-| POST | `/agent/execution-sessions/start` | **Open an execution run** on a plan (`{plan_id, agent_model?}` — see §6.8) that is `draft` or `in_progress` — 201, execution context + `read_back`. Reuses a run this session already has open; pauses another session's active run. 409 if the plan is archived/completed or has no entries, or if it is a `draft` whose drafting agent session is still active and is not the caller (starting a run freezes a draft's tests, so only its own session may start it until that session ends — `agent_session_service.open_execution_phase`). The draft → `in_progress` move writes a `status_changed` row to `test_plan_history`. |
-| GET | `/agent/test-plans/{plan_id}/execution-context` | Hosts + entries + tests with `{ip}` resolved. The agent translates each test's intent into the command for the operator's machine; nothing about that machine is recorded (the `environment` echo was removed in v2.434.0). |
-| POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check` | Record a target check (reverse DNS, banner, source address) — **optional evidence** since v2.433.0; nothing is refused for lacking one. |
-| POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/test-results` | Record test execution results (upserts by `test_index`). `sanity_override_reason` was removed. |
-| POST | `/agent/test-plans/{plan_id}/entries/{entry_id}/complete` | Close an entry. Every proposed test needs a terminal result, or the body carries `no_tests_run_reason` (audit-logged). `results_data` records `sanity_checks_passed`; the v2.22.0 sanity-check gate and its `override_reason` were removed in v2.433.0. |
-| GET | `/agent/test-plans/{plan_id}/execution-progress` | Execution rollup. |
+(§5.3 and §5.4 — the plan-generation and execution workflows — were removed with test plans in v2.442.0.)
 
 ### 5.5 Scope reads and uploads
 
@@ -565,14 +542,14 @@ There is no run to open (recon runs and the `/agent/recon/*` routes were removed
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/feedback` | Record structured feedback at the end of a run. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required; `test_plan_id` / `execution_session_id` / `assist_session_id` are optional body fields, checked against the project and against `source`; the project and session come from the key. |
+| POST | `/agent/feedback` | Record structured feedback, at the moment of friction. Body includes `source`, `prompt_version`, `overall_rating` (1–5), `api_critiques[]`, `tool_suggestions[]`, `friction_notes`, `agent_metrics{}`. `source` is required: `assist`, `reconnaissance` or `testing` (`plan_generation` and `in_session_execution` are still accepted from older clients; `exported_execution` is refused — it was for offline result bundles). `assist_session_id` is an optional body field for a pre-consolidation assist session; the project and session come from the key. |
 
 ### 5.6a Evidence and proposals (v2.436.0)
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/agent/evidence` | Record a command run against a host and its result: `host_id`, `tool`, `outcome` (`finding` · `no_finding` · `inconclusive` · `failed` · `info`), `summary`, optional `command`, `raw_output` (≤5 MB → 413; stored in the record — since 2.439.0, when it stopped being a file that outlived a deleted host; NUL characters are removed), `finding_id`, `finding_host_id`, `observed_ip`, `executed_at`, `agent_model`. Immutable — no update or delete route. |
-| GET | `/agent/evidence` · `/agent/evidence/{id}/raw` | This project's records (`host_id`, `finding_id`) · one record's raw output. |
+| POST | `/agent/evidence` | Record a command run against a host and its result: `host_id`, `tool`, `outcome` (`finding` · `no_finding` · `inconclusive` · `failed` · `info`), `summary`, optional `host_test_id` (the test it answers — the same host, and then `request_key` is required), `request_key` (re-sending it returns the record already stored; a different payload under the same key is a `409`), `command`, `raw_output` (≤5 MB → 413; stored in the record — since 2.439.0, when it stopped being a file that outlived a deleted host; NUL characters are removed), `finding_id`, `finding_host_id`, `observed_ip` (an IP literal), `executed_at`, `agent_model`. Immutable — no update or delete route. A record with outcome `finding`, `no_finding` or `inconclusive` is what makes its host *tested*; when it answers a test aimed at a name (`target_fqdn`) and carries `observed_ip`, it also writes that name's `TESTED` observation. |
+| GET | `/agent/evidence` · `/agent/evidence/{id}/raw` | This project's records (`host_id`, `host_test_id`, `finding_id`, `agent_session_id`, `limit`, `offset`) · one record's raw output. |
 | POST | `/agent/proposals/finding-text` | `{finding_id, fields: {field: text}, rationale?, evidence_ids?, agent_model?}` — one proposal per field (`description`, `impact`, `recommendation`, `references`, `steps_to_reproduce`, `cvss_vector` — validated now). Returns `{proposals: [...]}`. |
 | POST | `/agent/proposals/finding` | `{title, severity, host_ids, status? (open|confirmed), report_text?, …}` — a new finding, created by the person who accepts it. |
 | POST | `/agent/proposals/observation` | `{vulnerability_id, action (promote|dismiss), scope? (host|issue), severity?, summary?, …}` — accepted through the promote route's own logic. |
@@ -583,7 +560,7 @@ Writes need the operator's project write role. `evidence_ids` must name records 
 
 ### 5.7 Assist workflow (read-only Q&A — v2.64.0)
 
-For "ask questions about this project" agents. These reads are the DEFAULT surface of every session — no run, no special key (`require_assist_scope` is gone). Project membership is the floor, and a read needs the role its page needs (v2.428.0): the NDJSON exports and client reports require `auditor`, ingestion issues and uninterpreted lines `analyst`; attachments and screenshots any member. The table below is a sample. Since v2.428.0 the agent reads mirror the pages — `/assist/workbench`, `/assist/workbench/investigate`, `/assist/workbench/terrain`, `/assist/evidence/gaps`, `/assist/scans/compare`, `/assist/scanner-observations[/hosts]`, `/assist/client-reports[/{id}[/files/{fmt}]]`, each wrapping its page's service; the agent guide's assist table describes them. The router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/hosts/{id}/testing`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, `/assist/hosts/{id}/access` (NetExec / SMBMap results beside the raw line — which may carry credentials, shown as found), `/assist/uninterpreted-lines?job_id=` (redacted lines a parser did not read), `/assist/attachments/{id}` and `/assist/web-interfaces/{id}/screenshot`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
+For "ask questions about this project" agents. These reads are the DEFAULT surface of every session — no run, no special key (`require_assist_scope` is gone). Project membership is the floor, and a read needs the role its page needs (v2.428.0): the NDJSON exports and client reports require `auditor`, ingestion issues and uninterpreted lines `analyst`; attachments and screenshots any member. The table below is a sample. Since v2.428.0 the agent reads mirror the pages — `/assist/workbench`, `/assist/workbench/investigate`, `/assist/workbench/terrain`, `/assist/evidence/gaps`, `/assist/scans/compare`, `/assist/scanner-observations[/hosts]`, `/assist/client-reports[/{id}[/files/{fmt}]]`, each wrapping its page's service; the agent guide's assist table describes them. The router also serves `/assist/hosts/count`, `/assist/hosts/{id}/findings` (raw scanner observations), `/assist/hosts/{id}/web-interfaces`, `/assist/hosts/{id}/notes`, `/assist/findings[/{id}]`, `/assist/posture`, `/assist/patterns`, `/assist/segments`, `/assist/coverage`, `/assist/vocabulary`, `/assist/notes`, `/assist/names`, `/assist/ingestion-issues`, `/assist/hosts/{id}/access` (NetExec / SMBMap results beside the raw line — which may carry credentials, shown as found), `/assist/uninterpreted-lines?job_id=` (redacted lines a parser did not read), `/assist/attachments/{id}` and `/assist/web-interfaces/{id}/screenshot`, and the `hosts.ndjson` / `report-context.ndjson` downloads.
 
 | Method | Path | Notes |
 |---|---|---|
@@ -597,7 +574,7 @@ For "ask questions about this project" agents. These reads are the DEFAULT surfa
 
 **`q=` query DSL (the marquee assist feature).** `GET /agent/assist/hosts` accepts a `q=` parameter carrying the **same boolean query DSL as the Hosts page**: field predicates (`state:`, `ip:`, `hostname:` (alias `host:`), `port:`, `os:` (OS name or OS family), `service:`, `version:` (service product/version) — these three match **open ports only** unless the value names a state after `@`: `port:22@closed`, `service:ssh@filtered`, `port:22@any` (v2.403.0; a closed/filtered port's service name is nmap's guess from the port number); `portstate:` alone is a separate "has a port in this state" condition — `path:` (a content-discovery path), `subnet:`, `tag:`, `label:`, `site:` (`site:none` = inside a scoped subnet that carries no site), `conclusion:` (what a finished review concluded — e.g. `conclusion:needs_evidence`), `cve:`, `vuln:`, `issue:` (exactly one scanner-observation issue by its `issue_key` — `check:…`, `cve:…`, `title:…`), `kind:` (misconfiguration \| vulnerability \| informational), `check:` (a misconfiguration check id, e.g. `check:smb_signing_not_required`), `scope:` (subnet \| name \| none — the three scope-coverage states), `exploitport:`, `header:`, `webtitle:`, `tech:`, `org:`, `certorg:`, `asn:`, `country:`, `note:`, `scan:`, `firstseen:` / `changedsince:` / `vulnsince:` (time windows, (start, end]; quote the ISO value — `firstseen:"2026-09-19T20:00:00Z"`, `changedsince:"<start>..<end>"`, `vulnsince:"critical@<start>..<end>"` with severity and time matched on the same observation), `has:`, `follow:` (watching / in_review / reviewed / none / in_review_any, judged for the session's operator), `assigned:` (alias `assignee:`, taking `me` / `any` / `none` / a username / an id)), combined with `AND` / `OR` / `NOT` and parentheses (comma = OR within a field; a repeated field = AND). `has:` takes one of `eol` · `smb_unsigned` · `weak_auth` · `cert_issue` · `weak_tls` · `cleartext` · `critical`/`high`/`medium`/`low` · `local_admin` · `writable_share` · `exploit` · `critical_exploit` (a critical that is itself exploitable — same row) · `web` · `open_ports` · `tested` · `planned` · `untouched` (no review, note, plan entry or finding endpoint) · `notes` · `stale_review`. It is ANDed with the discrete filter params. `follow:` is judged for, and `assigned:me` resolves to, the **operator who started the session** (so `assigned:me` means "hosts assigned to that operator"); `assigned:`/`assignee:` also accept a **username** (case-insensitive; the value a user actually knows, since ids aren't surfaced) or a numeric user id. The DSL only filters; it never mutates follow/assignment state. A malformed query returns **400** (clean error, not a 500); any `q=` returns 400 if the session has no bound operator. Backed by `host_query_dsl.parse_query` / `evaluate`.
 
-The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once), with `agent_session_id` (the session's id — the one `/agent-sessions/{id}` takes) beside `assist_session_id` (its detail row, which the `/assist/sessions/*` routes below take; rows there carry `agent_session_id` too, set only for a project session — a pre-consolidation assist row has no session page, so it is null there); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its attribution (`agent_model`, `agent_tool`, `prompt_version` — §6.8), and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed, mirroring the plan one.
+The JWT side (operator) lives under `/projects/{id}/assist/*`: `POST /assist/start` opens a session and returns a fresh key + prompt + per-client MCP config (shown once), with `agent_session_id` (the session's id — the one `/agent-sessions/{id}` takes) beside `assist_session_id` (its detail row, which the `/assist/sessions/*` routes below take; rows there carry `agent_session_id` too, set only for a project session — a pre-consolidation assist row has no session page, so it is null there); `POST /assist/sessions/{session_id}/end` revokes the key (session row kept for audit); `GET /assist/sessions` lists sessions (`?status=active|ended`, `?mine=`, `limit`/`offset`) and `GET /assist/sessions/{id}` returns one with the notes it wrote, its attribution (`agent_model`, `agent_tool`, `prompt_version` — §6.8), and call/note/feedback counts. `GET /projects/{id}/assist-sessions/{sid}/api-activity` is the per-session audit feed (§6.7).
 
 Session status is **derived**: a session whose keys have all expired reports `ended` immediately, with an hourly sweep converging the stored column. Nothing accumulates as "active" waiting to be tidied up by hand.
 
@@ -605,7 +582,7 @@ Session status is **derived**: a session whose keys have all expired reports `en
 
 | Method | Path | Notes |
 |---|---|---|
-| GET | `/agent/identity` | **v2.278.0** — what this key is: its session, the phases it has open (`open_phases`), the operator it acts for — which since v2.309.0 *is* its authority, so v2.311.0 also returns that operator's `project_role` and a precomputed `can_write_project_data` rather than making the agent infer it or discover it from a 403 — when it expires (`key_expires_at`), and where to renew (`renew_path`). |
+| GET | `/agent/identity` | **v2.278.0** — what this key is: its session, the operator it acts for — which since v2.309.0 *is* its authority, so v2.311.0 also returns that operator's `project_role` and a precomputed `can_write_project_data` rather than making the agent infer it or discover it from a 403 — when it expires (`key_expires_at`), and where to renew (`renew_path`). |
 | POST | `/agent/tool-suggestions` | **v2.278.0** — propose a tool the catalogue does not have, with rationale. Lands as `suggested` for an admin to curate. Catalogue intake only — since v2.433.0 it neither grants nor withholds anything. Deliberately ungated. |
 
 ### 5.9 MCP transport (`POST /api/v1/mcp`)
@@ -614,7 +591,7 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
 
 * **Auth.** `initialize` / `tools/list` / `ping` need no key. `tools/call` reads `X-API-Key` **or** `Authorization: Bearer` and forwards it to the underlying endpoint in-process — so workflow scope, the operator's project role, and the audit log are unchanged. The MCP layer makes no authorization decision.
 * **401 vs. isError.** No usable credential answers a real **HTTP 401** with a plain RFC 6750 challenge (`WWW-Authenticate: Bearer realm="BlueStick assist"`, plus `error="invalid_token"` when a key was sent) (a fact about the connection, which a client can act on). A valid key that may not perform *this* call returns the endpoint's 403 as an `isError` tool result (a fact about one call, which the model should read and work around).
-* **Unfiltered listing.** `tools/list` returns the whole catalogue (68 tools at 2.436.0; `GET /references/mcp-tools` is the live count) to every session; each tool's `workflows` field (`assist`, `plan_generation`, `execution`, `scope` — the last was `recon` until recon runs were removed) is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
+* **Unfiltered listing.** `tools/list` returns the whole catalogue (56 tools at 2.442.0; `GET /references/mcp-tools` is the live count) to every session; each tool's `workflows` field (`assist`, `testing`, `scope` — `testing` replaced `plan_generation` and `execution` in v2.442.0; `scope` was `recon` until recon runs were removed) is a grouping for the reference page, not a filter. Listing was never authorisation — the endpoint behind a tool decides on every call.
 * **Ceilings (pre-auth).** 1 MiB request body read through a capped stream; JSON-RPC batches capped at 50 messages, and refused outright under protocol `2025-06-18` (which removed batching) — allowed only when `2025-03-26` is declared.
 * **Not tools:** the file-shaped endpoints (`report-context.ndjson`, `scopes/{scope_id}/hosts.ndjson`, `scopes/{scope_id}/live-hosts.txt`, `scopes/{scope_id}/web-targets.txt`, `scopes/{scope_id}/named-targets.ndjson`, `POST uploads`) stay `curl` — they belong on disk, not in a model's context.
 
@@ -624,71 +601,99 @@ JSON-RPC 2.0 over a single POST (Streamable HTTP, tools-only subset; protocol `2
 
 ## 6. Important response shapes
 
-### 6.1 `GET /agent/test-plans/{plan_id}/context`
+### 6.1 `POST /agent/host-tests` (request) and a host test (response)
+
+The JWT route `POST /projects/{id}/host-tests` takes the same body without `agent_model`.
 
 ```json
 {
-  "plan": { "id": 42, "status": "draft", "title": "...", ... },
-  "filter_criteria": null,
-  "agent_name": "codex",
-  "prioritization_advice": "Plan what the operator asked for. If they gave no direction, a default ranking (meets_policy): hosts with critical or high vulnerabilities first, then medium ones that expose several services or a high-value port (SMB, RDP, databases). It is advice — you need not follow it or justify a choice against it.",
-  "summary": {
-    "total_hosts": 412,
-    "matching_filter": 412,
-    "policy_match_count": 87,
-    "candidates_reviewed": 412,
-    "has_more": true,
-    "next_after_host_id": 1843
-  },
-  "candidate_hosts": [
+  "agent_model": "claude-opus-5-5",
+  "tests": [
     {
-      "id": 1842,
-      "ip_address": "10.0.1.5",
-      "hostname": "web01.example.com",
-      "os_name": "Linux",
-      "open_port_count": 6,
-      "vuln_summary": {"critical": 1, "high": 3, "medium": 2, "low": 0},
-      "top_vulnerabilities": [
-        {"title": "Apache Struts RCE", "severity": "critical", "cve_id": "CVE-2017-5638"}
-      ],
-      "services": ["http", "https", "ssh"],
-      "ports": [
-        {"port": 22, "protocol": "tcp", "state": "open", "service": "ssh", "product": "OpenSSH", "version": "8.0"},
-        {"port": 445, "protocol": "tcp", "state": "open", "service": null, "product": null, "version": null}
-      ],
-      "meets_policy": true,
-      "inferred_service_hints": [
-        {"port": 445, "protocol": "tcp", "inferred_service": "smb", "source": "port_number_heuristic"}
-      ]
+      "request_key": "smb-review-10.0.1.5-signing",
+      "host_id": 123,
+      "tool": "netexec",
+      "description": "Confirm SMB signing is not required",
+      "command": "nxc smb {ip} --gen-relay-list relay.txt",
+      "rationale": "Nessus reports signing not required; a relay needs it confirmed from this segment.",
+      "expected_result": "The host is listed in relay.txt",
+      "references": ["https://attack.mitre.org/techniques/T1557/001/"],
+      "priority": "high",
+      "label": "SMB review 2026-10-01"
     }
   ]
 }
 ```
 
-**v2.10.0 field:** `inferred_service_hints` — populated only when an open high-value port has a null/unknown service. `ports[].service` remains authoritative when it's present.
-
-### 6.2 `GET /agent/test-plans/{plan_id}/validate`
+`201 {"items": [ … ]}`; each item (also what `GET` and `PATCH` return):
 
 ```json
 {
-  "plan_id": 42,
-  "ready": true,
-  "total_entries": 87,
-  "by_priority": {"critical": 1, "high": 12, "medium": 48, "low": 26, "info": 0},
-  "by_phase": {"reconnaissance": 12, "enumeration": 60, "exploitation": 15},
-  "warnings": [],
-  "coverage": {
-    "entries_in_plan": 87,
-    "policy_matching_remaining": 0,
-    "non_policy_with_open_ports": 325,
-    "eligible_hosts_remaining": 325,
-    "coverage_pct": 21.1,
-    "note": "Plan covers 87 host(s); 325 other host(s) in its scope have open ports and no entry (0 of them rank high by the default prioritisation). Nothing to do unless the operator's request covers them."
-  }
+  "id": 501,
+  "project_id": 4,
+  "host_id": 123,
+  "host_ip": "10.0.1.5",
+  "name_id": null,
+  "target_fqdn": null,
+  "tool": "netexec",
+  "description": "Confirm SMB signing is not required",
+  "command": "nxc smb {ip} --gen-relay-list relay.txt",
+  "rationale": "Nessus reports signing not required; a relay needs it confirmed from this segment.",
+  "expected_result": "The host is listed in relay.txt",
+  "references": ["https://attack.mitre.org/techniques/T1557/001/"],
+  "priority": "high",
+  "label": "SMB review 2026-10-01",
+  "status": "proposed",
+  "assigned_to_id": null,
+  "assigned_to": null,
+  "tester_summary": null,
+  "source": "agent",
+  "agent_session_id": 88,
+  "created_by_user_id": 7,
+  "created_by": "Dana Analyst",
+  "agent_model": "claude-opus-5-5",
+  "agent_client": "claude-code 2.1.0",
+  "prompt_version": "4.0.0",
+  "dismissed_by_id": null,
+  "dismissed_at": null,
+  "dismissed_reason": null,
+  "revision": 1,
+  "issue_key": null,
+  "issue_title": null,
+  "evidence_count": 0,
+  "last_outcome": null,
+  "unpromoted_findings": 0,
+  "finding_ids": [],
+  "created_at": "2026-10-01T09:42:11Z",
+  "updated_at": "2026-10-01T09:42:11Z"
 }
 ```
 
-**Coverage is information (v2.438.0).** `policy_matching_remaining` counts hosts without an entry that the default ranking puts first, `non_policy_with_open_ports` the rest, `eligible_hosts_remaining` their sum. None of them is "missed scope": the operator's request decides what belongs in the plan. On a fixed host list the note says only how many chosen hosts have no entry. `selection_policy` was replaced by `prioritization_advice` in v2.438.0 — the ranking is advice, never a rule to follow or quote.
+`issue_key` / `issue_title` are the weakness the test confirms (set from `vulnerability_id` at proposal; null for a test about nothing scanned). `last_outcome`, `unpromoted_findings` (results that showed an issue and are on no finding yet) and `finding_ids` summarise its evidence so a list row can say where the test stands without a second request.
+
+- `{ip}` and `{fqdn}` in `command` are placeholders the reader resolves; they are stored as written.
+- `references` must be HTTP(S) URLs (at most 20); unknown fields are refused (`422`).
+- `assigned_to` / `created_by` are display names (full name, else username).
+- `revision` goes up by one on every `PATCH`; send the value you read as `expected_revision`.
+
+### 6.2 `POST /agent/evidence` for a test (request)
+
+```json
+{
+  "host_id": 123,
+  "host_test_id": 501,
+  "request_key": "smb-review-10.0.1.5-signing-run1",
+  "tool": "netexec",
+  "command": "nxc smb 10.0.1.5 --gen-relay-list relay.txt",
+  "outcome": "finding",
+  "summary": "Signing is not required; the host is in the relay list.",
+  "raw_output": "SMB  10.0.1.5  445  FS01  [*] Windows Server 2019 (signing:False)",
+  "observed_ip": "10.0.1.5",
+  "executed_at": "2026-10-01T10:02:00Z"
+}
+```
+
+`host_test_id` must be a test on the same host (`422` otherwise) and then `request_key` is required. The test's `evidence_count` rises; its `status` does not change — close it with `PATCH … {"status": "done"}`.
 
 ### 6.3 `POST /projects/{id}/assist/start` (response)
 
@@ -711,82 +716,20 @@ The one session start (v2.433.0 — the per-plan `/execute` start this section u
 
 Status **201**. `api_key` is the plaintext, shown exactly once — the caller must display/copy it before dismissing the response. The hash lives in `api_keys`; subsequent recovery is not possible.
 
-### 6.4 `POST /projects/{id}/test-plans/{plan_id}/export-bundle` (response)
+### 6.4, 6.5 — removed
 
-```
-Content-Type: application/zip
-Content-Disposition: attachment; filename="networkmapper_plan_42_v3_20260926_141500.zip"
-X-Bundle-Id: <uuid>
-X-Execution-Session-Id: 17
-```
-
-Body is the zip bytes. Zip contents:
-
-```
-manifest.json       bundle_id, plan_id, execution_session_id, prompt_version, entry_count
-plan.json           plan metadata + host-context snapshot
-instructions.md     markdown prompt (NO API key — offline bundles have no network identity)
-results_schema.json JSON Schema the agent's results file must conform to
-```
-
-### 6.5 `POST /projects/{id}/test-plans/{plan_id}/import-results` (request)
-
-Multipart upload, field `file`, containing this JSON (analyst+):
-
-```json
-{
-  "bundle_id": "<uuid from manifest>",
-  "plan_id": 42,
-  "execution_session_id": 17,
-  "is_final": false,
-  "results": [
-    {
-      "entry_id": 501,
-      "test_index": 0,
-      "status": "executed",
-      "command_run": "nmap -sV 10.0.1.5",
-      "raw_output": "...",
-      "findings_summary": "SSH exposed",
-      "severity": "medium",
-      "is_finding": true
-    }
-  ],
-  "sanity_checks": [
-    {
-      "entry_id": 501,
-      "method": "banner_grab",
-      "target_ip": "10.0.1.5",
-      "port_checked": 22,
-      "expected_value": "OpenSSH",
-      "actual_value": "OpenSSH 8.0",
-      "passed": true
-    }
-  ],
-  "feedback": { ... optional AgentFeedback payload ... }
-}
-```
-
-**Validation rules:**
-- Missing `bundle_id` → 400.
-- `plan_id` or `execution_session_id` mismatch → 400 with clear detail.
-- Unknown `bundle_id` → 400.
-- `is_final=true` with empty `results` → 400.
-- `is_final` must be a strict bool; the string `"true"` does NOT flip the flag.
-- `is_finding` must be a strict bool; `"false"` does NOT become `True`.
-- JSON depth > 20 levels → 400 (depth bomb guard).
-- File > configured max size → 413.
-- Re-importing the same file is idempotent — upserts on `(session, entry, test_index)` and `(session, entry)` keys; does not duplicate rows.
+The offline execution bundle (`POST …/test-plans/{plan_id}/export-bundle` and `…/import-results`) was removed with test plans in v2.442.0.
 
 ### 6.6 `POST /agent/feedback` (request)
 
 ```json
 {
-  "source": "plan_generation",
-  "prompt_version": "1.0.0",
+  "source": "testing",
+  "prompt_version": "4.0.0",
   "overall_rating": 4,
   "api_critiques": [
     {
-      "endpoint": "/agent/test-plans/{id}/validate",
+      "endpoint": "/agent/host-tests",
       "issue": "...",
       "suggestion": "..."
     }
@@ -810,9 +753,11 @@ Multipart upload, field `file`, containing this JSON (analyst+):
 }
 ```
 
-Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `project_id` and the session come from the API key; `source` is required in the body; `test_plan_id` / `execution_session_id` / `assist_session_id` are optional body fields, checked against the project and against `source`.
+Null metrics are acceptable — the guide explicitly notes that agents running in restricted sandboxes may not see their own token/cost/wall-clock numbers. `project_id` and the session come from the API key; `source` is required in the body (`assist` \| `reconnaissance` \| `testing`); `assist_session_id` is an optional body field for a pre-consolidation assist session.
 
-### 6.7 `GET /api/v1/projects/{project_id}/test-plans/{plan_id}/api-activity` (v2.24.0)
+### 6.7 `GET /api/v1/projects/{project_id}/assist-sessions/{assist_session_id}/api-activity`
+
+The agent API-call log of one session (the per-plan feed, v2.24.0, went with plans). `assist_session_id` is the session's detail row — the `assist_session_id` field on its `/agent-sessions` row, not the session id.
 
 ```json
 {
@@ -824,25 +769,22 @@ Null metrics are acceptable — the guide explicitly notes that agents running i
       "agent_id": 17,
       "api_key_prefix": "nm_agent_4f3a",
       "source_ip": "192.168.10.55",
-      "method": "POST",
-      "path": "/api/v1/agent/test-plans/42/entries/501/sanity-check",
-      "path_template": "/api/v1/agent/test-plans/{plan_id}/entries/{entry_id}/sanity-check",
-      "path_params": {"plan_id": 42, "entry_id": 501},
+      "method": "PATCH",
+      "path": "/api/v1/agent/host-tests/501",
+      "path_template": "/api/v1/agent/host-tests/{test_id}",
+      "path_params": {"test_id": 501},
       "query_params": null,
       "request_body_summary": {
-        "method": "banner_grab",
-        "target_ip": "10.0.1.5",
-        "passed": true
+        "expected_revision": 1,
+        "status": "in_progress"
       },
-      "status_code": 201,
-      "response_bytes": 184,
+      "status_code": 200,
+      "response_bytes": 912,
       "duration_ms": 22,
-      "test_plan_id": 42,
-      "execution_session_id": 17,
       "scope_id": null,
       "referenced_host_ids": [],
-      "referenced_entry_ids": [501],
-      "referenced_target_ips": ["10.0.1.5"]
+      "referenced_entry_ids": [],
+      "referenced_target_ips": []
     }
   ]
 }
@@ -861,13 +803,26 @@ The environment probe (`POST /agent/session/environment`, MCP `record_environmen
 |---|---|
 | `generated_by_tool` (the client / harness) | The MCP `initialize` handshake's `clientInfo` — `"<name> <version>"` — when the handshake carries a live key (`record_mcp_client`; it never fails the handshake). Otherwise the first authenticated call's `User-Agent` (a curl agent: `curl/8.5.0`), written once and replaced by a later handshake name, never the reverse. The MCP loopback forwards the client's own `User-Agent`; httpx's default is ignored. |
 | `prompt_version` | Set by the server at session start and at resume (`PROMPT_VERSION`). |
-| `generated_by_model` | Self-reported: optional `agent_model` (≤200 chars, cut to the column width) on `POST /agent/test-plans`, `POST /agent/execution-sessions/start` and `POST /agent/session/end` — MCP `create_test_plan`, `start_execution`, `end_session`. The session keeps the LAST value reported. |
+| `generated_by_model` | Self-reported: optional `agent_model` (≤200 chars, cut to the column width) on `POST /agent/host-tests`, `POST /agent/evidence`, the `POST /agent/proposals/*` routes and `POST /agent/session/end` — MCP `host_tests_propose`, `record_evidence`, the `propose_*` tools, `end_session`. The session keeps the LAST value reported. |
 
-A test plan and an execution run snapshot the session's `generated_by_model` / `generated_by_tool` / `prompt_version` when they are created; plan, run and agent-session responses on the JWT side carry them.
+A host test snapshots the session's model, client and prompt version when it is proposed (`agent_model`, `agent_client`, `prompt_version`), and an evidence record its model and client when it is recorded, so a session that switches models does not relabel earlier work.
 
 ---
 
 ## 7. Error shapes
+
+**An `/api/v1/agent/…` path that is not an endpoint (v2.444.0)** answers `404` with more than the framework's `{"detail": "Not Found"}`, because the caller is usually an agent that guessed a URL:
+
+```json
+{
+  "detail": "No agent endpoint at GET /api/v1/agent/recon/context.",
+  "hint": "The endpoints that exist are in the guide (GET /api/v1/agents-guide) and, over MCP, tools/list. If you expected this one to exist, say so: POST /api/v1/agent/feedback (MCP submit_feedback) with the path you tried and what you were trying to do.",
+  "guide": "/api/v1/agents-guide",
+  "feedback": "/api/v1/agent/feedback"
+}
+```
+
+The call is recorded in the session's API activity when its key is a real agent key (`path_template` null). A missing object on a real route keeps that route's own `404`.
 
 FastAPI returns Pydantic validation errors in the shape:
 
@@ -911,10 +866,10 @@ Callers should be aware of these enforced constraints — they're documented her
 - **Upload flow is async.** `POST /upload/` returns a queued `IngestionJob` — poll `GET /upload/jobs/{id}` for status. Don't expect a parsed scan in the upload response.
 - **API keys are shown once.** The `/assist/start` (and `/agent-sessions/{sid}/resume`) response includes the plaintext key exactly once. Store it or discard it immediately; recovery is not possible. The hash lives in `api_keys`.
 - **Orphan jobs get reaped.** Jobs stuck in `processing` with a heartbeat older than `INGESTION_JOB_TIMEOUT` × `INGESTION_ORPHAN_CUTOFF_MULTIPLIER` (default 1.5) are re-queued automatically by the worker's reaper, up to `INGESTION_MAX_RETRIES` while the file still exists; after that they are failed ("worker likely crashed") and admins are notified.
-- **Workflow-scoped agent guide** (`documentation/AGENT_GUIDE.md`). Agents should fetch `GET /api/v1/agents-guide?workflow=plan_generation` (or `execution`, `reconnaissance`, or `assist`) to get the workflow-sliced subset. The `workflow` enum now carries `assist` as a fourth value. The server parses HTML-comment section markers so one source file emits multiple slices — meaningful token savings (~35% on execution, ~24% on plan/recon).
+- **Workflow-scoped agent guide** (`documentation/AGENT_GUIDE.md`). Agents may fetch `GET /api/v1/agents-guide?workflow=testing` (or `reconnaissance`, or `assist`) to get the workflow-sliced subset; omitting `workflow` returns the whole guide. The older names `plan_generation` and `execution` resolve to `testing`. The server parses HTML-comment section markers so one source file emits multiple slices.
 - **Health probes.** nginx serves `/live` (liveness, static) and proxies `/health` and `/ready` to the backend's `/health` (5 s timeouts on purpose); the frontend container's Docker HEALTHCHECK requests `https://localhost/`.
 - **Version visibility.** `GET /` returns `{message, version, frontend_version, instance_id, cors_origins}`. The UI shows both versions in the user menu under **About BlueStick**. Backend and frontend stay in lockstep per-release; always update both.
 
 ---
 
-This document was last reconciled with the routers at v2.428.0 (frontend 5.309.1, 2026-09-26). **It is not an exhaustive route list and never stays one for long** — sections 4 and 5 give the shape and the contracts that matter; for every route, parameter and schema use the live OpenAPI at `https://<host>/docs` (Swagger UI), `/redoc`, or `/openapi.json`, all proxied by nginx (the backend's own :8000 is not published). Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.
+This document was last reconciled with the routers at v2.428.0 (frontend 5.309.1, 2026-09-26); the agent, host-test and session sections were brought up to v2.442.0 (2026-10-01). **It is not an exhaustive route list and never stays one for long** — sections 4 and 5 give the shape and the contracts that matter; for every route, parameter and schema use the live OpenAPI at `https://<host>/docs` (Swagger UI), `/redoc`, or `/openapi.json`, all proxied by nginx (the backend's own :8000 is not published). Use `/docs` (Swagger UI) for interactive exploration and field-level schemas — this guide is architectural context and high-signal shape references, not a replacement for OpenAPI.

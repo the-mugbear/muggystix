@@ -21,7 +21,7 @@ import {
 
 const ROLES: { role: string; desc: string }[] = [
   { role: 'Admin', desc: 'Full access. Manage users, projects, system settings. Can manage any agent.' },
-  { role: 'Analyst', desc: 'Upload scans, manage scopes, write and work test plans, create notes, review hosts, start agent sessions.' },
+  { role: 'Analyst', desc: 'Upload scans, manage scopes, propose and work tests on hosts, create notes, review hosts, start agent sessions.' },
   { role: 'Auditor', desc: 'Read-only access with audit-log visibility.' },
   { role: 'Viewer', desc: 'Read-only access to scans, hosts, and dashboards.' },
 ];
@@ -119,7 +119,7 @@ const sections: GuideSection[] = [
         <UnorderedList>
           <li><strong>Tool-ready output</strong> (Hosts page) — export the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query.</li>
           <li><strong>Reports</strong> — generate filtered host reports with selectable columns in CSV, HTML, or JSON.</li>
-          <li><strong>Comprehensive report</strong> — a host-dossier-first export correlating each host's findings with their source, execution evidence, tester notes, and untriaged items.</li>
+          <li><strong>Comprehensive report</strong> — a host-dossier-first export correlating each host's findings with their source, test findings (evidence records), tester summaries, and untriaged items.</li>
           <li><strong>Scope export</strong> — scope coverage data and per-subnet host lists.</li>
         </UnorderedList>
         <Para>

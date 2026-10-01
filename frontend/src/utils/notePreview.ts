@@ -58,8 +58,6 @@ export interface NotePreview {
   visible: Annotation[];
   /** Roots behind "Show earlier threads". */
   hidden: number;
-  /** …of which not resolved — hidden open work must not be silent. */
-  hiddenOpen: number;
 }
 
 export function previewThreads(
@@ -67,7 +65,7 @@ export function previewThreads(
   repliesByParent: Record<number, Annotation[]>,
   options: { limit: number; keepIds?: Array<number | null | undefined>; showAll?: boolean },
 ): NotePreview {
-  if (options.showAll) return { visible: topLevel, hidden: 0, hiddenOpen: 0 };
+  if (options.showAll) return { visible: topLevel, hidden: 0 };
 
   const keep = new Set<number>();
   for (const id of options.keepIds ?? []) if (id != null) keep.add(id);
@@ -88,6 +86,5 @@ export function previewThreads(
   return {
     visible,
     hidden: hiddenRoots.length,
-    hiddenOpen: hiddenRoots.filter((r) => r.status !== 'resolved').length,
   };
 }

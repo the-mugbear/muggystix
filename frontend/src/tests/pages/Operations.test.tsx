@@ -24,7 +24,6 @@ vi.mock('react-router-dom', async () => {
 
 vi.mock('../../services/api', () => ({
   getProjectCoverage: vi.fn(),
-  getTestPlans: vi.fn(),
   listAgentSessions: vi.fn(),
   // v4.59.0 (NEW I) — Operations.reload Promise.all also awaits
   // getDashboardStats().  Pre-fix the mock
@@ -122,7 +121,7 @@ const baseCoverage = {
 };
 
 const baseSession = {
-  kind: 'execution' as const,
+  kind: 'project' as const,
   id: 99,
   project_id: 1,
   agent_id: null,
@@ -135,8 +134,7 @@ const baseSession = {
   generated_by_model: 'claude-opus-4-7',
   generated_by_tool: 'claude-code',
   prompt_version: '1.13.0',
-  scope_id: null,
-  test_plan_id: 11,
+  purpose: 'SMB review',
 };
 
 beforeEach(() => {
@@ -144,20 +142,6 @@ beforeEach(() => {
   navigateSpy.mockReset();
   localStorage.removeItem('nm.operations.scopeView');
   mockedApi.getProjectCoverage.mockResolvedValue(baseCoverage);
-  mockedApi.getTestPlans.mockResolvedValue([
-    {
-      id: 5,
-      project_id: 1,
-      version: 1,
-      title: 'Pending plan',
-      status: 'proposed',
-      entry_count: 8,
-      completion_pct: 0,
-      generated_by_model: 'claude-opus-4-7',
-      created_at: '2026-05-15T10:00:00Z',
-      updated_at: '2026-05-15T10:30:00Z',
-    },
-  ]);
   // First call: ?status=active (active runs).
   // Second call: no status (recent runs).
   mockedApi.listAgentSessions.mockResolvedValue({
@@ -211,12 +195,16 @@ describe('Operations page', () => {
     expect(screen.queryByText('Internal /24')).not.toBeInTheDocument();
   });
 
-  // 5.313.0 — plans are not approved: there is no approvals queue, and the
-  // page never asks for plans waiting on one.
-  it('has no approvals queue and never fetches plans awaiting approval', async () => {
+  // 5.313.0 — nothing waits on an approval. 5.320.0 — and there are no plans:
+  // the coverage strip counts hosts with tests to do and hosts tested.
+  it('has no approvals queue, and coverage speaks of tests, not plans', async () => {
     renderPage();
     await screen.findByText('My work');
-    expect(mockedApi.getTestPlans).not.toHaveBeenCalled();
+    expect(await screen.findByText('With tests to do')).toBeInTheDocument();
+    expect(screen.getByText('Tested')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'With tests to do — view hosts' }))
+      .toHaveAttribute('href', expect.stringContaining('has%3Aplanned'));
+    expect(screen.queryByText(/plan entr|execution result|in any plan/i)).toBeNull();
     expect(screen.queryByRole('heading', { name: /Needs your approval|Pending approvals/ })).toBeNull();
     expect(screen.queryByText(/approv/i)).toBeNull();
   });
@@ -418,8 +406,6 @@ describe('Operations page', () => {
           { job_id: 4, filename: 'broken.xml', kind: 'failed', message: 'not well-formed' },
           { job_id: 5, filename: 'half.nessus', kind: 'partial', message: '3 hosts skipped' },
         ],
-        interrupted_execution_count: 1,
-        executions: [{ session_id: 31, test_plan_id: 7, plan_title: 'External sweep', reason: 'session_ended' }],
       };
 
       it('names what is blocked and carries the recovery action', async () => {
@@ -429,16 +415,15 @@ describe('Operations page', () => {
         expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
         expect(navigateSpy).toHaveBeenCalledWith('/parse-errors?status=needs_attention');
-
-        expect(screen.getByText('Run #31 lost its agent session')).toBeInTheDocument();
-        fireEvent.click(screen.getByRole('button', { name: 'Open run' }));
-        expect(navigateSpy).toHaveBeenCalledWith('/executions/31');
+        // 5.320.0 — imports are the only blocked work: no run rows.
+        expect(screen.queryByText(/Run #|interrupted run/)).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'Open run' })).not.toBeInTheDocument();
       });
 
       it('renders nothing when nothing is blocked', async () => {
         mockedApi.getWorkbench.mockResolvedValue({
           ...workbench(since),
-          blockers: { failed_import_count: 0, partial_import_count: 0, imports: [], interrupted_execution_count: 0, executions: [] },
+          blockers: { failed_import_count: 0, partial_import_count: 0, imports: [] },
         });
         renderPage();
         await screen.findByText('Since your last visit');
@@ -458,6 +443,7 @@ describe('Operations page', () => {
     const wb = (extra: Record<string, unknown>) => ({
       my_queue: { items: [], in_review_count: 2, watching_count: 0 },
       my_tasks: { items: [], total_open: 0, reason_counts: { assigned: 0, in_review: 0, triage: 0 } },
+      // An older server may still send assigned notes; they are not work (5.325.0).
       my_notes: { items: [], total_open: 1, overdue_count: 1 },
       my_findings: { items: [], total_open: 3 },
       since_last_visit: { is_first_visit: true, as_of: null },
@@ -470,8 +456,9 @@ describe('Operations page', () => {
       mockedApi.getInvestigationQueue.mockResolvedValueOnce({ items: [], queue_total: 4, untouched_total: 9, tiers: [] });
       renderPage();
       expect(await screen.findByText(
-        'You have 6 items in your queue (1 overdue). Across the team: 4 unreviewed hosts are worth a look.',
+        'You have 5 items in your queue. Across the team: 4 unreviewed hosts are worth a look.',
       )).toBeInTheDocument();
+      expect(screen.getByText(/Your queue: tests assigned to you, hosts you have in review, and findings you own\./)).toBeInTheDocument();
     });
 
     it('says nothing is waiting when nothing is, and never counts an unavailable queue', async () => {

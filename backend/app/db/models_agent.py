@@ -1,11 +1,13 @@
 """
-AI Agent and Test Plan Models
+AI Agent Models
 
-Models for AI agent identity, authentication, test plan management,
-and test execution sessions.  Agents are project-scoped entities that
-authenticate via API key and propose structured test plans for host-
-level security testing.  Execution sessions track per-test results
-when an agent (or human) runs the approved tests and records findings.
+Models for AI agent identity, sessions, feedback and the API-call audit log.
+Agents are project-scoped entities that authenticate via API key.
+
+The test plan, plan entry, plan history, execution session, execution result,
+sanity check and imported-result-file models lived here until v2.442.0, when
+host tests (``models_host_tests``) and evidence records (``models_proposals``)
+replaced them (migration ``f4b8d2a6c917`` drops the tables).
 """
 
 import enum
@@ -24,70 +26,9 @@ from app.db.session import Base
 # Enums
 # ---------------------------------------------------------------------------
 
-class TestPlanStatus(str, enum.Enum):
-    # v2.433.0 — no approval states.  A plan is the record of what an agent
-    # (or a person) set out to test and what it found; nothing waits on a
-    # human approving it.  draft → in_progress (first execution run) →
-    # completed, or archived at any point.
-    DRAFT = "draft"
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    ARCHIVED = "archived"
-
-
-# A host is "planned" when an entry for it sits in a plan in one of these
-# states — every plan except an archived one.  The one definition for the
-# host page, the DSL's has:planned, the workbench and the engagement counts.
-PLANNED_PLAN_STATUSES = (
-    TestPlanStatus.DRAFT.value,
-    TestPlanStatus.IN_PROGRESS.value,
-    TestPlanStatus.COMPLETED.value,
-)
-
-
-class TestEntryStatus(str, enum.Enum):
-    PROPOSED = "proposed"  # not tested yet
-    IN_PROGRESS = "in_progress"
-    COMPLETED = "completed"
-    REJECTED = "rejected"  # terminal "not tested" — replaces former "skipped"
-
-
-class TestEntryPriority(str, enum.Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
-
-
-class TestPhase(str, enum.Enum):
-    RECONNAISSANCE = "reconnaissance"
-    ENUMERATION = "enumeration"
-    EXPLOITATION = "exploitation"
-    POST_EXPLOITATION = "post_exploitation"
-    REPORTING = "reporting"
-
-
 class ActorType(str, enum.Enum):
     USER = "user"
     AGENT = "agent"
-
-
-class TestPlanSourceKind(str, enum.Enum):
-    """Discriminator for ``TestPlan.source_kind`` (v3 alpha.3).
-
-    Tells the UI + the plan-generation flow what the plan was scoped
-    against.  Only one of the four payload columns is populated per
-    plan; the application layer (not the DB) enforces that.
-
-    UNSPECIFIED is applied to all pre-alpha.3 rows by the
-    ``c7e3f491a5d2`` migration and to any plan created without an
-    explicit source — the UI renders it as "(provenance not recorded)".
-    """
-    MANUAL_HOSTS = "manual_hosts"
-    FILTER_SET = "filter_set"
-    INHERITED = "inherited"
-    UNSPECIFIED = "unspecified"
 
 
 # ---------------------------------------------------------------------------
@@ -128,337 +69,10 @@ class Agent(Base):
     # Relationships
     project = relationship("Project", foreign_keys=[project_id])
     owner = relationship("User", foreign_keys=[owner_id])
-    test_plans = relationship("TestPlan", back_populates="agent", cascade="all, delete-orphan")
 
     __table_args__ = (
         UniqueConstraint("project_id", "owner_id", name="uq_agent_per_user_project"),
     )
-
-
-# ---------------------------------------------------------------------------
-# Test Plan
-# ---------------------------------------------------------------------------
-
-class TestPlan(Base):
-    """A structured test plan for a project.
-
-    May be created by an AI agent (agent_id set) or directly by a user
-    (created_by_user_id set).  At least one of the two should be populated.
-    """
-    __tablename__ = "test_plans"
-
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(
-        Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    agent_id = Column(
-        Integer,
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    created_by_user_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    # v2.337.0 — the agent session that drafted this plan, when an agent did.
-    # Plan drafting is a phase of a project session rather than a session of
-    # its own, and this is the phase record.  SET NULL: deleting a session
-    # must not delete the plan it produced (the plan is project data; the
-    # session is provenance).
-    agent_session_id = Column(
-        Integer,
-        ForeignKey("agent_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    version = Column(Integer, nullable=False, default=1)
-    title = Column(String(200), nullable=False)
-    description = Column(Text)
-    status = Column(
-        String(20),
-        nullable=False,
-        default=TestPlanStatus.DRAFT.value,
-    )
-
-    # Why the plan was archived (who/when/from-status is in plan history).
-    archive_reason = Column(Text)
-    filter_criteria = Column(JSON, nullable=True)
-
-    # Generation provenance (v2.19.0).  Stamped by the agent during the
-    # PATCH step of plan generation so a human reviewer can later see
-    # *which* model / harness produced the plan and against which version
-    # of the agent prompt.  All nullable — plans created before this and
-    # plans where the agent skips the PATCH carry NULLs and the UI shows
-    # "not recorded".
-    generated_by_model = Column(String(100), nullable=True)
-    generated_by_tool = Column(String(100), nullable=True)
-    prompt_version = Column(String(20), nullable=True)
-
-    # Source provenance (v3 alpha.3).  Tells the UI what the plan was
-    # scoped against — a hand-picked host set, a filter
-    # expression, or an earlier plan.  ``source_kind`` discriminates
-    # which of the payload columns is populated.  See
-    # ``TestPlanSourceKind`` for the enumerated values and the
-    # ``c7e3f491a5d2`` migration for the contract.  The four payload
-    # columns are mutually exclusive at the application layer.
-    source_kind = Column(
-        String(30),
-        nullable=False,
-        default=TestPlanSourceKind.UNSPECIFIED.value,
-        server_default=TestPlanSourceKind.UNSPECIFIED.value,
-    )
-    # JSON rather than postgresql.ARRAY(Integer) so SQLite test runs
-    # work transparently and the column is portable.  Postgres ARRAY
-    # gives no extra integrity (FKs aren't enforced on array elements
-    # there either) — the application layer validates the IDs.
-    source_host_ids = Column(JSON, nullable=True)
-    source_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    # Lifecycle
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    completed_at = Column(DateTime(timezone=True))
-
-    # Relationships
-    project = relationship("Project", foreign_keys=[project_id])
-    agent = relationship("Agent", back_populates="test_plans")
-    agent_session = relationship(
-        "AgentSession", back_populates="drafted_plans",
-        foreign_keys=[agent_session_id],
-    )
-    created_by_user = relationship("User", foreign_keys=[created_by_user_id])
-    # ``remote_side`` makes the self-FK unambiguous: source_plan_id
-    # points at the parent's id, not its own row.
-    source_plan = relationship(
-        "TestPlan", remote_side="TestPlan.id", foreign_keys=[source_plan_id]
-    )
-    entries = relationship(
-        "TestPlanEntry", back_populates="test_plan", cascade="all, delete-orphan",
-    )
-    history = relationship(
-        "TestPlanHistory", back_populates="test_plan", cascade="all, delete-orphan",
-    )
-
-    __table_args__ = (
-        Index("idx_test_plan_project_status", "project_id", "status"),
-        # Per-project version is monotonic and unique.  TestPlanService
-        # .create_plan() retries on the unique violation if two callers
-        # race to compute max(version)+1.
-        UniqueConstraint("project_id", "version", name="uq_test_plan_project_version"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test Plan Entry (per-host)
-# ---------------------------------------------------------------------------
-
-class TestPlanEntry(Base):
-    """A single host-level entry within a test plan."""
-    __tablename__ = "test_plan_entries"
-
-    id = Column(Integer, primary_key=True, index=True)
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    host_id = Column(
-        Integer,
-        ForeignKey("hosts_v2.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-
-    # v2.323.0 — the NAMED endpoint this entry targets, when the tests are
-    # against a name rather than the bare address (web tests behind a load
-    # balancer need the Host header / SNI).  Must be a name bound to
-    # ``host_id`` by observation at draft time (the "target in inventory"
-    # guardrail applied to names).  Entries are unique per (plan, host, name)
-    # — uq_plan_host_name — so each vhost on a shared address is its own entry.
-    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), nullable=True, index=True)
-
-    # Test specification
-    priority = Column(String(20), nullable=False)          # critical/high/medium/low/info
-    test_phase = Column(String(30), nullable=False)        # reconnaissance/enumeration/...
-    proposed_tests = Column(JSON, nullable=False)           # list of technique names
-    rationale = Column(Text, nullable=False)
-
-    # Status and results
-    status = Column(
-        String(20),
-        nullable=False,
-        default=TestEntryStatus.PROPOSED.value,
-    )
-    findings = Column(Text)
-    results_data = Column(JSON)                             # structured results
-    notes = Column(Text)
-
-    # Assignment
-    assigned_to_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-
-    # Lifecycle
-    started_at = Column(DateTime(timezone=True))
-    completed_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    # Relationships
-    test_plan = relationship("TestPlan", back_populates="entries")
-    host = relationship("Host", foreign_keys=[host_id])
-    target_name = relationship("DNSName", foreign_keys=[name_id])
-    assigned_to = relationship("User", foreign_keys=[assigned_to_id])
-
-    __table_args__ = (
-        # v2.324.0 — one entry per (plan, host, named target).  A load
-        # balancer's vhosts are distinct test targets on one address; the
-        # bare-address entry (name_id NULL) stays unique per host thanks to
-        # NULLS NOT DISTINCT (Postgres; SQLite test fallback ignores it).
-        UniqueConstraint(
-            "test_plan_id", "host_id", "name_id",
-            name="uq_plan_host_name", postgresql_nulls_not_distinct=True,
-        ),
-        Index("idx_entry_plan_status", "test_plan_id", "status"),
-        # v2.85.0 — the host-detail "tests against this host" panel
-        # filters by host_id then status.  The existing
-        # (test_plan_id, status) composite doesn't cover that query;
-        # this one does.
-        Index("idx_entry_host_status", "host_id", "status"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Test Plan History (audit trail)
-# ---------------------------------------------------------------------------
-
-class TestPlanHistory(Base):
-    """Audit trail for changes to test plans and their entries."""
-    __tablename__ = "test_plan_history"
-
-    id = Column(Integer, primary_key=True, index=True)
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    entry_id = Column(
-        Integer,
-        ForeignKey("test_plan_entries.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    # Actor (polymorphic: agent or user)
-    actor_type = Column(String(10), nullable=False)         # 'agent' or 'user'
-    actor_id = Column(Integer, nullable=False)               # agents.id or users.id
-
-    # Change details
-    action = Column(String(30), nullable=False)             # created/updated/approved/rejected/status_changed
-    field_changed = Column(String(50))
-    old_value = Column(Text)
-    new_value = Column(Text)
-
-    timestamp = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Relationships
-    test_plan = relationship("TestPlan", back_populates="history")
-
-    __table_args__ = (
-        Index("idx_history_plan_time", "test_plan_id", "timestamp"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Execution Sessions + Per-Test Results + Sanity Checks
-# ---------------------------------------------------------------------------
-#
-# These three tables record agent-driven test execution.  An agent opens
-# an execution run on a plan from its session (POST
-# /agent/execution-sessions/start), then records a result per test and,
-# when it has one, a target check per host (evidence, not a gate).
-#
-# Design decision (confirmed 2026-04-10): control over what runs lives at
-# the operator's terminal (Claude Code / Codex tool approval, or the user
-# manually running commands).  BlueStick's role is the instructions
-# template + recording the audit trail.
-#
-# Results from abandoned / interrupted sessions are KEPT and annotated
-# with the session's terminal status so consumers know the data came
-# from an incomplete pass.
-
-class ExecutionSessionStatus(str, enum.Enum):
-    ACTIVE = "active"
-    PAUSED = "paused"
-    COMPLETED = "completed"
-    # v2.43.3 (AUD-N1): added FAILED to the enum so the contract matches
-    # reality.  The column is a free string and execution_sessions.py was
-    # already accepting "failed" as a terminal value (with a comment
-    # noting it wasn't enum-defined); declaring it here makes the value
-    # discoverable to docs, frontend filters, and external API consumers.
-    FAILED = "failed"
-    ABANDONED = "abandoned"
-
-
-class ExecutionSessionMode(str, enum.Enum):
-    """Distinguishes live in-session execution from offline bundle export.
-
-    ``in_session`` — the agent runs live against ``/agent/`` endpoints with
-    a time-limited API key.  Results flow in as the agent works.
-    ``exported`` — the plan was packaged into a ZIP bundle and handed off
-    to a remote agent.  Results come back via ``/test-plans/{id}/import-results``
-    (offline import), not via the live API.  No API key is minted.
-    """
-    IN_SESSION = "in_session"
-    EXPORTED = "exported"
-
-
-class TestExecutionStatus(str, enum.Enum):
-    PENDING = "pending"
-    PENDING_APPROVAL = "pending_approval"
-    EXECUTED = "executed"
-    SKIPPED = "skipped"
-    FAILED = "failed"
-    NOT_APPLICABLE = "not_applicable"
-
-
-# A result that is done: completion (online and offline import) requires every
-# recorded row of an entry to be one of these.
-TERMINAL_RESULT_STATUSES = frozenset({
-    TestExecutionStatus.EXECUTED.value,
-    TestExecutionStatus.SKIPPED.value,
-    TestExecutionStatus.FAILED.value,
-    TestExecutionStatus.NOT_APPLICABLE.value,
-})
-
-
-# The severity vocabulary for a TestExecutionResult — DISTINCT from the Finding
-# spine's FindingSeverity (models_findings): an execution result can be
-# informational with NO severity ("none"), whereas a Finding always has one.
-# Renamed off the old "FindingSeverity" name (which collided with the spine
-# enum) so the two domains can't be imported by mistake.
-class ExecutionResultSeverity(str, enum.Enum):
-    CRITICAL = "critical"
-    HIGH = "high"
-    MEDIUM = "medium"
-    LOW = "low"
-    INFO = "info"
-    NONE = "none"
-
-
-class SanityCheckMethod(str, enum.Enum):
-    BANNER_GRAB = "banner_grab"
-    REVERSE_DNS = "reverse_dns"
-    PING = "ping"
-    NETWORK_CONTEXT = "network_context"
 
 
 class AgentSessionWorkflow(str, enum.Enum):
@@ -466,8 +80,8 @@ class AgentSessionWorkflow(str, enum.Enum):
 
     v2.337.0 — ``PROJECT`` is the only kind new sessions get.  One
     project-scoped session lets the same key query the inventory, upload
-    scanner output, register plans and execute them; the plans and execution
-    runs it opens link back to it (v2.433.0 removed recon runs).  The legacy values remain as
+    scanner output, propose host tests and record evidence (v2.433.0 removed
+    recon runs; v2.442.0 plans and execution runs).  The legacy values remain as
     LABELS on rows minted before the consolidation so history still reads
     correctly — nothing gates on them any more (see ``deps.get_current_agent``).
     """
@@ -495,29 +109,26 @@ class AgentSessionWorkflow(str, enum.Enum):
 
 
 class AgentSession(Base):
-    """The operator's agent session — one key, one project, any phase (v2.337.0).
+    """The operator's agent session — one key, one project (v2.337.0).
 
     An agent API key points at exactly one ``AgentSession``
     (``api_keys.agent_session_id``).  The session is bound to a project and
     to the operator who started it; everything the key may do is that
     operator's project role, checked per request (``enforce_agent_operator_access``).
 
-    What the agent is *working on* is recorded per phase, not per key:
-
-    * an upload is an ``IngestionJob`` (``ingestion_jobs.agent_session_id``),
-    * a drafted plan is a :class:`TestPlan` (``test_plans.agent_session_id``),
-    * an execution run is an :class:`ExecutionSession` (bound to a plan),
-
-    each linked back here through ``agent_session_id`` — one session may open
-    several of each over its life.  ``workflow`` is ``project`` for every
-    session minted since the consolidation; the legacy per-workflow values
-    survive on older rows as labels, with their single detail row
-    (:class:`AssistSession` included) still attached.
+    What the agent *did* is recorded on the rows it wrote, each linked back
+    here through ``agent_session_id``: an upload is an ``IngestionJob``, a
+    proposed test a ``HostTest``, what it ran an ``EvidenceRecord``, a change
+    it suggests an ``AgentProposal``, a note an ``Annotation``.  ``workflow``
+    is ``project`` for every session minted since the consolidation; the
+    legacy per-workflow values survive on older rows as labels (an
+    :class:`AssistSession` detail row still attached where there was one).
 
     Shared lifecycle state (status, timestamps, the agent/model attribution,
-    the operator's stated purpose, notes) lives here.  An execution run keeps
-    its own copy of the attribution, snapshotted when it opens (a session can
-    switch models).  The environment probe columns went in v2.434.0.
+    the operator's stated purpose, notes) lives here.  A host test and an
+    evidence record keep their own copy of the attribution, snapshotted when
+    written (a session can switch models).  The environment probe columns
+    went in v2.434.0.
     """
     __tablename__ = "agent_sessions"
 
@@ -575,284 +186,11 @@ class AgentSession(Base):
     project = relationship("Project")
     agent = relationship("Agent")
     started_by = relationship("User", foreign_keys=[started_by_id])
-    # The phases this session opened.  Ordered oldest-first so "what did this
-    # session do" reads as a timeline.
-    execution_sessions = relationship(
-        "ExecutionSession", back_populates="agent_session",
-        order_by="ExecutionSession.id", foreign_keys="ExecutionSession.agent_session_id",
-    )
-    drafted_plans = relationship(
-        "TestPlan", back_populates="agent_session",
-        order_by="TestPlan.id", foreign_keys="TestPlan.agent_session_id",
-    )
 
     __table_args__ = (
         Index("idx_agent_session_project", "project_id"),
         Index("idx_agent_session_workflow_status", "workflow", "status"),
     )
-
-
-class ExecutionSession(Base):
-    """One run of test execution against a plan.
-
-    Opened by an agent session (``POST /agent/execution-sessions/start``)
-    or by an offline bundle export.  At most one run per plan may be
-    `active` at a time — opening a new one pauses the old.
-    """
-    __tablename__ = "execution_sessions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    agent_id = Column(
-        Integer,
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    started_by_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    status = Column(
-        String(20),
-        nullable=False,
-        default=ExecutionSessionStatus.ACTIVE.value,
-    )
-    mode = Column(
-        String(20),
-        nullable=False,
-        default=ExecutionSessionMode.IN_SESSION.value,
-    )
-    bundle_id = Column(String(64), nullable=True, index=True)
-    # The operator session this run belongs to.  v2.337.0 — one session may
-    # open several execution runs (one per plan it works through), so this is
-    # a plain many-to-one, no longer 1:1.  Nullable only for rows that predate
-    # the unified session row.
-    agent_session_id = Column(
-        Integer,
-        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
-    completed_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Executing-agent attribution (v2.28.0).  Snapshotted from the session
-    # when the run opens (v2.434.0) so users can
-    # compare runs across agents/models on the same plan — e.g. the
-    # same TestPlan executed by claude-opus-4-7 (claude-code) vs
-    # gpt-5-codex.  Plan-generation provenance already lives on
-    # ``TestPlan`` (v2.19.0); this is the symmetric session-level
-    # surface.  All three nullable because pre-2.28 sessions and
-    # bundle-exported runs never report them.
-    generated_by_model = Column(String(100), nullable=True)
-    generated_by_tool = Column(String(100), nullable=True)
-    prompt_version = Column(String(20), nullable=True)
-
-    # Free-form notes — written by the operator-driven Abandon endpoint
-    # (v4 beta.7) so the audit line "[Abandoned by <user> on <ts>]: ..."
-    # lives with the row.
-    notes = Column(Text, nullable=True)
-
-    # Relationships
-    test_plan = relationship("TestPlan")
-    agent = relationship("Agent")
-    started_by = relationship("User", foreign_keys=[started_by_id])
-    agent_session = relationship(
-        "AgentSession", back_populates="execution_sessions",
-        foreign_keys=[agent_session_id],
-    )
-    test_results = relationship(
-        "TestExecutionResult",
-        back_populates="execution_session",
-        cascade="all, delete-orphan",
-    )
-    sanity_checks = relationship(
-        "HostSanityCheck",
-        back_populates="execution_session",
-        cascade="all, delete-orphan",
-    )
-
-    __table_args__ = (
-        Index("idx_exec_session_plan", "test_plan_id"),
-    )
-
-
-class TestExecutionResult(Base):
-    """One test's execution output within an execution session.
-
-    Each row corresponds to one entry in the `proposed_tests` JSON
-    array on a TestPlanEntry, identified by `test_index`.  The agent
-    records the result after the user approves and runs the command.
-
-    `raw_output` is capped to `TEST_OUTPUT_MAX_BYTES` (default 100KB,
-    configurable via .env) to prevent unbounded storage growth from
-    verbose tools.
-
-    Results from abandoned sessions are kept — the `execution_session`
-    relationship gives consumers access to the session's terminal
-    status so they can distinguish complete from incomplete passes.
-    """
-    __tablename__ = "test_execution_results"
-
-    id = Column(Integer, primary_key=True, index=True)
-    execution_session_id = Column(
-        Integer,
-        ForeignKey("execution_sessions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    entry_id = Column(
-        Integer,
-        ForeignKey("test_plan_entries.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    test_index = Column(Integer, nullable=False)
-
-    status = Column(
-        String(20),
-        nullable=False,
-        default=TestExecutionStatus.PENDING.value,
-    )
-    command_run = Column(Text)          # actual command (may differ from proposed)
-    raw_output = Column(Text)           # capped to TEST_OUTPUT_MAX_BYTES
-    findings_summary = Column(Text)
-    severity = Column(String(20))       # ExecutionResultSeverity value or null
-    is_finding = Column(Boolean, nullable=False, default=False)
-
-    executed_at = Column(DateTime(timezone=True))
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-
-    # ``sanity_override_reason`` (v2.91.0) is gone (v2.433.1): target checks
-    # are evidence, not a gate, so there is nothing to override.
-
-    # v2.323.0 — the address the command actually hit, as the agent observed
-    # it when the test ran.  Execution EVIDENCE references the particular
-    # binding; the finding itself anchors to the entry's named endpoint, so a
-    # later DNS move doesn't orphan it.  Null when the agent didn't report one
-    # (the entry's host address is the default assumption).  Also recorded as
-    # a TESTED observation on the entry's target name.
-    observed_ip = Column(String(45), nullable=True)
-
-    # Relationships
-    execution_session = relationship("ExecutionSession", back_populates="test_results")
-    entry = relationship("TestPlanEntry")
-
-    __table_args__ = (
-        UniqueConstraint(
-            "execution_session_id", "entry_id", "test_index",
-            name="uq_exec_result_session_entry_test",
-        ),
-        Index("idx_test_result_entry", "entry_id"),
-    )
-
-
-class HostSanityCheck(Base):
-    """Per-host target verification before test execution begins.
-
-    The agent performs a sanity check (reverse DNS, banner grab, etc.)
-    on each host before running any tests, and records the result here.
-    If `passed` is False, the agent should stop and ask the user for
-    guidance rather than proceeding against a potentially wrong target.
-    """
-    __tablename__ = "host_sanity_checks"
-
-    id = Column(Integer, primary_key=True, index=True)
-    execution_session_id = Column(
-        Integer,
-        ForeignKey("execution_sessions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    entry_id = Column(
-        Integer,
-        ForeignKey("test_plan_entries.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    host_id = Column(
-        Integer,
-        ForeignKey("hosts_v2.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-
-    method = Column(String(30), nullable=False)   # SanityCheckMethod value
-    target_ip = Column(String(45), nullable=False)
-    port_checked = Column(Integer)
-    expected_value = Column(Text)
-    actual_value = Column(Text)
-    source_ip = Column(String(45))
-    dns_result = Column(String(255))
-    passed = Column(Boolean, nullable=False)
-    details = Column(Text)
-
-    checked_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    # Relationships
-    execution_session = relationship("ExecutionSession", back_populates="sanity_checks")
-    entry = relationship("TestPlanEntry")
-    host = relationship("Host", foreign_keys=[host_id])
-
-    __table_args__ = (
-        # One row per (session, entry, method).  The execution workflow
-        # explicitly records multiple verification methods per host
-        # (network_context, reverse_dns, banner_grab, ...), so the unique
-        # key MUST include ``method`` — a (session, entry)-only constraint
-        # would 500 the second method recorded for any host.
-        UniqueConstraint(
-            "execution_session_id", "entry_id", "method",
-            name="uq_sanity_check_session_entry_method",
-        ),
-        Index("idx_sanity_check_session", "execution_session_id"),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Imported Result Files (offline bundle execution)
-# ---------------------------------------------------------------------------
-
-class ImportedResultFile(Base):
-    """Audit row for each results file imported from a remote agent.
-
-    When a test plan is exported as a bundle, the remote agent runs the
-    tests offline and returns a results JSON file.  The user uploads it
-    via ``POST /test-plans/{id}/import-results``; this table records who
-    uploaded it, the bundle id it claimed, and the parse outcome.
-    """
-    __tablename__ = "imported_result_files"
-
-    id = Column(Integer, primary_key=True, index=True)
-    execution_session_id = Column(
-        Integer,
-        ForeignKey("execution_sessions.id", ondelete="CASCADE"),
-        nullable=False,
-        index=True,
-    )
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    bundle_id = Column(String(64), nullable=False, index=True)
-    imported_by_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    filename = Column(String(255))
-    file_sha256 = Column(String(64))
-    results_count = Column(Integer, nullable=False, default=0)
-    sanity_checks_count = Column(Integer, nullable=False, default=0)
-    feedback_extracted = Column(Boolean, nullable=False, default=False)
-    parse_errors = Column(JSON, nullable=True)
-    is_final = Column(Boolean, nullable=False, default=False)
 
 
 # ---------------------------------------------------------------------------
@@ -871,6 +209,10 @@ class AgentFeedbackSource(str, enum.Enum):
     # AgentFeedback carries assist_session_id, the assist prompt closes
     # the same way the others do.
     ASSIST = "assist"
+    # v2.442.0 — proposing tests on hosts and recording their evidence.  It
+    # replaces PLAN_GENERATION / IN_SESSION_EXECUTION for new feedback; those
+    # (and EXPORTED_EXECUTION) stay so earlier rows keep their label.
+    TESTING = "testing"
 
 
 class AgentFeedbackStatus(str, enum.Enum):
@@ -885,10 +227,9 @@ class AgentFeedback(Base):
 
     Every agent-facing prompt ends with a feedback-request block asking
     the agent to POST one of these.  The record stamps the prompt_version
-    so we can compare feedback across prompt revisions.  Entries are
-    also extracted from imported bundle result files — in that case
-    ``source = exported_execution`` and the record is created during
-    import, not by a live ``/agent/feedback`` call.
+    so we can compare feedback across prompt revisions.  (Rows with
+    ``source = exported_execution`` were extracted from offline result
+    bundles, which went with test plans in v2.442.0.)
     """
     __tablename__ = "agent_feedback"
 
@@ -904,18 +245,9 @@ class AgentFeedback(Base):
         ForeignKey("agents.id", ondelete="SET NULL"),
         nullable=True,
     )
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    execution_session_id = Column(
-        Integer,
-        ForeignKey("execution_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    # v2.85.0 — assist linkage.  Nullable — plan feedback uses test_plan_id,
-    # execution uses execution_session_id, assist uses assist_session_id.
+    # v2.85.0 — assist linkage (pre-consolidation assist sessions).  The
+    # ``test_plan_id`` / ``execution_session_id`` columns went with their
+    # tables in v2.442.0.
     assist_session_id = Column(
         Integer,
         ForeignKey("assist_sessions.id", ondelete="SET NULL"),
@@ -923,7 +255,7 @@ class AgentFeedback(Base):
         index=True,
     )
     # v2.337.0 — the session the feedback came from, stamped from the key
-    # rather than the body.  The per-phase ids above stay optional context.
+    # rather than the body.
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="SET NULL"),
@@ -954,8 +286,6 @@ class AgentFeedback(Base):
     # Relationships
     project = relationship("Project", foreign_keys=[project_id])
     agent = relationship("Agent", foreign_keys=[agent_id])
-    test_plan = relationship("TestPlan", foreign_keys=[test_plan_id])
-    execution_session = relationship("ExecutionSession", foreign_keys=[execution_session_id])
     assist_session = relationship("AssistSession", foreign_keys=[assist_session_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
@@ -1027,7 +357,7 @@ class AssistSession(Base):
     )
 
     # v2.116.0 — 1:1 link to the unified AgentSession base (see
-    # ExecutionSession.agent_session_id).  Nullable during the expand phase.
+    # AgentSession).  Nullable during the expand phase.
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),
@@ -1088,8 +418,8 @@ class AssistSession(Base):
 class AgentApiCall(Base):
     """One inbound agent API request, captured for audit + debug review.
 
-    Indexed by (agent_id, created_at), (test_plan_id, created_at), and
-    (execution_session_id, created_at) for fast per-workflow timelines.
+    Indexed by (agent_id, created_at), (agent_session_id, created_at) and
+    (project_id, created_at) for fast timelines.
     """
     __tablename__ = "agent_api_calls"
 
@@ -1132,18 +462,8 @@ class AgentApiCall(Base):
         ForeignKey("agent_sessions.id", ondelete="SET NULL"),
         nullable=True,
     )  # indexed via idx_agent_api_call_session_created
-    test_plan_id = Column(
-        Integer,
-        ForeignKey("test_plans.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
-    execution_session_id = Column(
-        Integer,
-        ForeignKey("execution_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
+    # (``test_plan_id`` / ``execution_session_id`` went with their tables in
+    # v2.442.0; the path and its parameters still say what a call was about.)
     scope_id = Column(
         Integer,
         ForeignKey("scopes.id", ondelete="SET NULL"),
@@ -1208,8 +528,6 @@ class AgentApiCall(Base):
 
     __table_args__ = (
         Index("idx_agent_api_call_agent_created", "agent_id", "created_at"),
-        Index("idx_agent_api_call_plan_created", "test_plan_id", "created_at"),
-        Index("idx_agent_api_call_exec_created", "execution_session_id", "created_at"),
         Index("idx_agent_api_call_project_created", "project_id", "created_at"),
         # assist_session_id folds into this composite (it's the leading column),
         # so the column itself drops `index=True` to avoid a redundant index.

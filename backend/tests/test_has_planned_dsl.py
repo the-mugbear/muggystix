@@ -1,29 +1,32 @@
 """
-`has:planned` — plan membership, distinct from `has:tested` (v2.234.0).
+`has:planned`, `has:tested` and `has:untouched` over host tests and evidence.
 
-/operations reports "not yet in any plan" as a coverage gap, but that
-population was unreachable: `has:tested` joins TestPlanEntry through to
-TestExecutionResult, so it answers "has been *executed against*", and there
-was no predicate for the earlier pipeline stage. The gap count was a number
-with no way to see what was behind it.
+`has:planned` (v2.234.0) exists because /operations reported "not yet planned"
+as a coverage gap that nothing could list: `has:tested` answers "has been
+*tested*", and there was no predicate for the earlier stage.
 
-The crux below is host B: planned but never executed. It must match
-`has:planned` and NOT `has:tested`, or the new predicate is just an alias.
+Since v2.442.0 the two are defined on host tests and evidence records
+(``host_test_queries``), not on test plans:
+
+* planned  — the host has a test that is proposed or in progress;
+* tested   — the host has an evidence record whose outcome is finding,
+             no_finding or inconclusive (a failed attempt or an informational
+             record is not a test);
+* untouched — no follow, note, finding endpoint, evidence, or test that was
+             not dismissed (``host_query_predicates.untouched_conditions``).
+
+The crux is host B: a test is proposed on it and nothing has run.  It must
+match `has:planned` and NOT `has:tested`, or the predicate is just an alias.
 """
 
+import uuid
 from datetime import datetime, timezone
 
 import pytest
 
 from app.db.models import Host
-from app.db.models_agent import (
-    TestPlan,
-    TestPlanEntry,
-    TestPlanStatus,
-    TestExecutionResult,
-    ExecutionSession,
-    ExecutionSessionStatus,
-)
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.services.host_query_dsl import BuildCtx, evaluate, parse_query
 
 
@@ -38,54 +41,42 @@ def _host(db, project_id, ip):
     return h
 
 
+def _test(db, project_id, host, status="proposed"):
+    key = str(uuid.uuid4())
+    row = HostTest(
+        project_id=project_id, host_id=host.id, tool="nmap", description="nmap -sV",
+        rationale="coverage fixture", priority="medium", status=status, source="person",
+        request_key=key, request_hash=key,
+        dismissed_reason="not this engagement" if status == "dismissed" else None,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
+def _evidence(db, project_id, host, outcome, test=None):
+    row = EvidenceRecord(
+        project_id=project_id, host_id=host.id, tool="nmap", outcome=outcome,
+        summary="coverage fixture", host_test_id=test.id if test is not None else None,
+    )
+    db.add(row)
+    db.commit()
+    return row
+
+
 @pytest.fixture
-def coverage_hosts(db_session, test_project, test_agent, test_user):
-    """A = planned AND executed, B = planned only, C = neither."""
-    a = _host(db_session, test_project.id, "10.44.0.1")
-    b = _host(db_session, test_project.id, "10.44.0.2")
-    c = _host(db_session, test_project.id, "10.44.0.3")
-
-    plan = TestPlan(
-        project_id=test_project.id, agent_id=test_agent.id, version=1,
-        title="coverage plan", status=TestPlanStatus.DRAFT.value,
-    )
-    db_session.add(plan)
-    db_session.commit()
-    db_session.refresh(plan)
-
-    def _entry(host):
-        return TestPlanEntry(
-            test_plan_id=plan.id, host_id=host.id, priority="medium",
-            test_phase="enumeration", proposed_tests=["nmap -sV"],
-            rationale="coverage fixture",
-        )
-
-    entry_a = _entry(a)
-    entry_b = _entry(b)
-    db_session.add_all([entry_a, entry_b])
-    db_session.commit()
-    db_session.refresh(entry_a)
-
-    session = ExecutionSession(
-        test_plan_id=plan.id, agent_id=test_agent.id,
-        started_by_id=test_user.id, status=ExecutionSessionStatus.ACTIVE.value,
-    )
-    db_session.add(session)
-    db_session.commit()
-    db_session.refresh(session)
-
-    # Only host A actually got executed against.
-    db_session.add(
-        TestExecutionResult(
-            entry_id=entry_a.id, execution_session_id=session.id,
-            test_index=0, status="executed",
-        )
-    )
-    db_session.commit()
-    return {
-        "planned_and_tested": a, "planned_only": b, "neither": c,
-        "entry_b": entry_b, "session": session,
-    }
+def coverage_hosts(db_session, test_project):
+    """A = a test in progress AND a real result, B = a proposed test only,
+    C = neither."""
+    pid = test_project.id
+    a = _host(db_session, pid, "10.44.0.1")
+    b = _host(db_session, pid, "10.44.0.2")
+    c = _host(db_session, pid, "10.44.0.3")
+    test_a = _test(db_session, pid, a, status="in_progress")
+    test_b = _test(db_session, pid, b)
+    # Only host A actually got tested.
+    _evidence(db_session, pid, a, "no_finding", test_a)
+    return {"planned_and_tested": a, "planned_only": b, "neither": c, "test_b": test_b}
 
 
 def _matching_ips(db, project_id, user, q):
@@ -98,10 +89,11 @@ def _matching_ips(db, project_id, user, q):
     }
 
 
-def test_planned_includes_hosts_never_executed(
+def test_planned_includes_hosts_never_tested(
     db_session, test_project, test_user, coverage_hosts
 ):
-    """The whole point — a host in a plan but never run counts as planned."""
+    """The whole point — a host with a proposed test that nobody ran counts
+    as planned."""
     ips = _matching_ips(db_session, test_project.id, test_user, "has:planned")
     assert ips == {"10.44.0.1", "10.44.0.2"}
 
@@ -119,35 +111,48 @@ def test_tested_is_stricter_than_planned(
 def test_not_planned_is_the_operations_coverage_gap(
     db_session, test_project, test_user, coverage_hosts
 ):
-    """This is the query the /operations 'not yet in any plan' count links to."""
+    """This is the query the /operations 'not yet planned' count links to."""
     ips = _matching_ips(db_session, test_project.id, test_user, "NOT has:planned")
     assert ips == {"10.44.0.3"}
 
 
-def test_not_tested_keeps_planned_but_unexecuted_hosts(
+def test_not_tested_keeps_planned_but_untested_hosts(
     db_session, test_project, test_user, coverage_hosts
 ):
-    """The 'not yet tested' gap must include hosts that were planned but never
-    run — those are exactly the ones an operator needs to chase."""
+    """The 'not yet tested' gap must include hosts with a proposed test nobody
+    ran — those are exactly the ones an operator needs to chase."""
     ips = _matching_ips(db_session, test_project.id, test_user, "NOT has:tested")
     assert ips == {"10.44.0.2", "10.44.0.3"}
 
 
-@pytest.mark.parametrize("status", ["pending", "pending_approval", "skipped", "failed", "not_applicable"])
-def test_a_result_row_that_was_not_executed_is_not_a_test(
-    client, db_session, test_project, test_user, coverage_hosts, status
+@pytest.mark.parametrize("status", ["done", "dismissed"])
+def test_a_finished_or_dismissed_test_is_no_longer_planned(
+    db_session, test_project, test_user, coverage_hosts, status
 ):
-    """A recorded result is not an executed test.  Counting any row let
-    /operations say "all hosts tested" over hosts whose only result was a
-    skip; the tile and the `has:tested` list it links to must agree."""
-    db_session.add(
-        TestExecutionResult(
-            entry_id=coverage_hosts["entry_b"].id,
-            execution_session_id=coverage_hosts["session"].id,
-            test_index=0, status=status,
-        )
-    )
+    """"Planned" is work still to do.  Closing or dismissing a host's only
+    test takes the host out of it — and does not, by itself, make it tested."""
+    test_b = coverage_hosts["test_b"]
+    test_b.status = status
     db_session.commit()
+
+    planned = _matching_ips(db_session, test_project.id, test_user, "has:planned")
+    assert planned == {"10.44.0.1"}
+    tested = _matching_ips(db_session, test_project.id, test_user, "has:tested")
+    assert tested == {"10.44.0.1"}
+
+
+@pytest.mark.parametrize("outcome", ["failed", "info"])
+def test_a_record_that_is_not_a_test_result_does_not_make_a_host_tested(
+    client, db_session, test_project, test_user, coverage_hosts, outcome
+):
+    """An evidence record is not necessarily a test.  Counting any row let
+    /operations say "all hosts tested" over hosts whose only record was an
+    attempt that could not run; the tile and the `has:tested` list it links
+    to must agree."""
+    _evidence(
+        db_session, test_project.id, coverage_hosts["planned_only"], outcome,
+        coverage_hosts["test_b"],
+    )
 
     tested = _matching_ips(db_session, test_project.id, test_user, "has:tested")
     assert tested == {"10.44.0.1"}
@@ -155,3 +160,40 @@ def test_a_result_row_that_was_not_executed_is_not_a_test(
     body = client.get(f"/api/v1/projects/{test_project.id}/coverage/").json()
     assert body["hosts_with_execution_result"] == 1
     assert body["hosts_no_execution"] == 2
+
+
+@pytest.mark.parametrize("outcome", ["finding", "no_finding", "inconclusive"])
+def test_each_real_outcome_makes_a_host_tested_with_or_without_a_test(
+    client, db_session, test_project, test_user, coverage_hosts, outcome
+):
+    """Evidence need not answer a proposed test: an agent that ran something
+    against host C and recorded what came back has tested it."""
+    _evidence(db_session, test_project.id, coverage_hosts["neither"], outcome)
+
+    tested = _matching_ips(db_session, test_project.id, test_user, "has:tested")
+    assert tested == {"10.44.0.1", "10.44.0.3"}
+    # …and that does not make C planned.
+    planned = _matching_ips(db_session, test_project.id, test_user, "has:planned")
+    assert "10.44.0.3" not in planned
+
+    body = client.get(f"/api/v1/projects/{test_project.id}/coverage/").json()
+    assert body["hosts_with_execution_result"] == 2
+    assert body["hosts_with_plan_entry"] == 2
+
+
+def test_untouched_follows_tests_and_evidence(
+    db_session, test_project, test_user, coverage_hosts
+):
+    """A proposed test or any evidence record is somebody touching the host.
+    A test that was DISMISSED is not: the host goes back to "worth a look"."""
+    pid = test_project.id
+    assert _matching_ips(db_session, pid, test_user, "has:untouched") == {"10.44.0.3"}
+
+    test_b = coverage_hosts["test_b"]
+    test_b.status = "dismissed"
+    db_session.commit()
+    assert _matching_ips(db_session, pid, test_user, "has:untouched") == {"10.44.0.2", "10.44.0.3"}
+
+    # Even a record that is not a test result (info) is contact with the host.
+    _evidence(db_session, pid, coverage_hosts["neither"], "info")
+    assert _matching_ips(db_session, pid, test_user, "has:untouched") == {"10.44.0.2"}

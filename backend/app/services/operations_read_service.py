@@ -2,7 +2,7 @@
 
 The personal-work aggregations — **My Queue** (In Review hosts), **Team
 Review** (the project review roster), and **My Tasks** (assigned +
-in-review + triage test-plan entries) — used to live as route handlers in
+in-review + triage host tests) — used to live as route handlers in
 ``dashboard.py`` and were reused by ``workbench.py`` by *calling those
 route functions directly*.  That made a service (the workbench composer)
 depend on routers, and a router call another router's handler — FastAPI
@@ -28,8 +28,9 @@ from sqlalchemy import and_, case, desc, distinct, false, func, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models import Annotation, FollowStatus, HostFollow, NoteStatus
-from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
+from app.db.models import Annotation, FollowStatus, HostFollow
+from app.db.models_agent import AgentSession
+from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project
@@ -389,8 +390,8 @@ def compute_investigation_queue(
     relevant change — "what should I investigate next?" before anyone has
     created work for it.
 
-    Untouched = no HostFollow (review or assignment), no note, no test-plan
-    entry, no finding.  Reasons come from what the inventory already knows:
+    Untouched = ``host_query_predicates.untouched_conditions``: no HostFollow
+    (review or assignment), note, host test, evidence or finding.  Reasons come from what the inventory already knows:
     vulnerability severity and exploitability, high-value open ports, a
     host first seen this week or changed at its latest scan, and conflicts
     between scans.  Every row carries its reasons, its evidence (which tools
@@ -827,33 +828,29 @@ def compute_team_review(
 # ---------------------------------------------------------------------------
 # Personal "My Tasks" — the authoritative personal work queue.
 #
-# The UNION of three buckets, each a non-terminal entry on an accepted
-# plan in this project, tagged with WHY it's in your queue:
-#   - "assigned"  — TestPlanEntry.assigned_to_id == me (authoritative).
-#   - "in_review" — entry sits on a host I marked In Review (my implicit
+# The UNION of three buckets, each a host test still to do (proposed or in
+# progress) in this project, tagged with WHY it's in your queue:
+#   - "assigned"  — HostTest.assigned_to_id == me (authoritative).
+#   - "in_review" — the test is on a host I marked In Review (my implicit
 #                   investigation scope).
-#   - "triage"    — UNASSIGNED critical/high entry; a shared triage queue
+#   - "triage"    — UNASSIGNED critical/high test; a shared triage queue
 #                   so high-severity work nobody owns is still visible.
-# A single entry can carry multiple reasons (e.g. assigned AND in_review).
+# A single test can carry multiple reasons (e.g. assigned AND in_review).
+# (Until v2.442.0 these were entries on test plans.)
 # ---------------------------------------------------------------------------
 
 class MyTaskItem(BaseModel):
-    """One row of the dashboard's personal task list — a single test
-    plan entry, tagged with the reason(s) it lands in the caller's queue."""
-    entry_id: int
-    plan_id: int
-    plan_title: str
-    plan_status: str
+    test_id: int
+    description: str
+    label: Optional[str] = None
+    revision: int
     host_id: int
     host_ip: str
     host_hostname: Optional[str] = None
     priority: str
-    test_phase: str
-    entry_status: str  # proposed | in_progress
-    proposed_test_count: int
+    status: str
     rationale: Optional[str] = None
     updated_at: Optional[datetime] = None
-    # Why this entry is in your queue: subset of {assigned, in_review, triage}.
     reasons: List[str] = Field(default_factory=list)
     assigned_to_id: Optional[int] = None
 
@@ -878,9 +875,8 @@ def compute_my_tasks(
 ) -> MyTasksResponse:
     """Return the caller's authoritative personal task queue.
 
-    Every row is a non-terminal entry (proposed/in_progress) on a plan that
-    is not archived (PLANNED_PLAN_STATUSES) in this project, matching at
-    least one of:
+    Every row is a host test still to do (``ACTIVE_TEST_STATUSES``) in this
+    project, matching at least one of:
       - assigned to the caller (`assigned_to_id`),
       - on a host the caller marked In Review,
       - unassigned and critical/high (shared triage).
@@ -904,20 +900,19 @@ def compute_my_tasks(
         )
     }
 
-    assigned_cond = TestPlanEntry.assigned_to_id == current_user.id
+    assigned_cond = HostTest.assigned_to_id == current_user.id
     in_review_cond = (
-        TestPlanEntry.host_id.in_(in_review_host_ids) if in_review_host_ids
+        HostTest.host_id.in_(in_review_host_ids) if in_review_host_ids
         else false()
     )
     triage_cond = and_(
-        TestPlanEntry.assigned_to_id.is_(None),
-        TestPlanEntry.priority.in_(("critical", "high")),
+        HostTest.assigned_to_id.is_(None),
+        HostTest.priority.in_(("critical", "high")),
     )
 
     base_filters = (
-        TestPlan.project_id == project.id,
-        TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-        TestPlanEntry.status.in_(("proposed", "in_progress")),
+        HostTest.project_id == project.id,
+        HostTest.status.in_(("proposed", "in_progress")),
     )
 
     # Rank in SQL so the LIMIT keeps the TRUE top rows.  CASE order matches
@@ -929,24 +924,23 @@ def compute_my_tasks(
         else_=2,
     )
     priority_rank_case = case(
-        (TestPlanEntry.priority == "critical", 0),
-        (TestPlanEntry.priority == "high", 1),
-        (TestPlanEntry.priority == "medium", 2),
-        (TestPlanEntry.priority == "low", 3),
-        (TestPlanEntry.priority == "info", 4),
+        (HostTest.priority == "critical", 0),
+        (HostTest.priority == "high", 1),
+        (HostTest.priority == "medium", 2),
+        (HostTest.priority == "low", 3),
+        (HostTest.priority == "info", 4),
         else_=5,
     )
 
     ordered = (
-        db.query(TestPlanEntry, TestPlan, models.Host)
-        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
-        .join(models.Host, TestPlanEntry.host_id == models.Host.id)
+        db.query(HostTest, models.Host)
+        .join(models.Host, HostTest.host_id == models.Host.id)
         .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
         .order_by(
             reason_rank_case,
             priority_rank_case,
-            desc(TestPlanEntry.updated_at.is_(None)),  # NULLs last
-            desc(TestPlanEntry.updated_at),
+            desc(HostTest.updated_at.is_(None)),  # NULLs last
+            desc(HostTest.updated_at),
         )
         .limit(limit)
         .all()
@@ -964,23 +958,18 @@ def compute_my_tasks(
 
     items = [
         MyTaskItem(
-            entry_id=entry.id,
-            plan_id=plan.id,
-            plan_title=plan.title,
-            plan_status=plan.status,
+            test_id=entry.id, description=entry.description, label=entry.label, revision=entry.revision,
             host_id=host.id,
             host_ip=host.ip_address,
             host_hostname=host.hostname,
             priority=entry.priority,
-            test_phase=entry.test_phase,
-            entry_status=entry.status,
-            proposed_test_count=len(entry.proposed_tests or []),
+            status=entry.status,
             rationale=entry.rationale,
             updated_at=entry.updated_at,
             reasons=reasons_for(entry),
             assigned_to_id=entry.assigned_to_id,
         )
-        for entry, plan, host in ordered
+        for entry, host in ordered
     ]
 
     # Deduped union total + per-bucket counts in ONE query via conditional
@@ -988,12 +977,11 @@ def compute_my_tasks(
     # ids per bucket (case → NULL when false; count ignores NULLs).
     counts_row = (
         db.query(
-            func.count(distinct(TestPlanEntry.id)).label("total"),
-            func.count(distinct(case((assigned_cond, TestPlanEntry.id)))).label("assigned"),
-            func.count(distinct(case((in_review_cond, TestPlanEntry.id)))).label("in_review"),
-            func.count(distinct(case((triage_cond, TestPlanEntry.id)))).label("triage"),
+            func.count(distinct(HostTest.id)).label("total"),
+            func.count(distinct(case((assigned_cond, HostTest.id)))).label("assigned"),
+            func.count(distinct(case((in_review_cond, HostTest.id)))).label("in_review"),
+            func.count(distinct(case((triage_cond, HostTest.id)))).label("triage"),
         )
-        .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
         .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
         .one()
     )
@@ -1006,114 +994,6 @@ def compute_my_tasks(
 
     return MyTasksResponse(
         items=items, total_open=total_open, reason_counts=reason_counts,
-    )
-
-
-# ---------------------------------------------------------------------------
-# My Notes — annotation threads assigned to the caller
-# ---------------------------------------------------------------------------
-
-class MyNoteItem(BaseModel):
-    """One assigned note thread — a durable unit of work the caller owns.
-
-    ``host_id`` is the thread's target host (notes are host-scoped in the
-    UI); the client deep-links to ``/hosts/{host_id}#note-{note_id}`` so the
-    analyst lands back in the exact discussion."""
-    note_id: int
-    host_id: Optional[int] = None
-    host_ip: Optional[str] = None
-    host_hostname: Optional[str] = None
-    body_preview: str
-    note_type: Optional[str] = None  # observation|finding|question|decision|action|handoff
-    status: str
-    due_at: Optional[datetime] = None
-    is_overdue: bool = False
-    updated_at: Optional[datetime] = None
-
-
-class MyNotesResponse(BaseModel):
-    items: List[MyNoteItem] = Field(default_factory=list)
-    total_open: int = 0
-    handoff_count: int = 0
-    overdue_count: int = 0
-
-
-def compute_my_assigned_notes(
-    db: Session, current_user: User, project: Project, limit: int = 15,
-) -> MyNotesResponse:
-    """Return the caller's assigned, unresolved note threads in this project.
-
-    Scoped to host-targeted thread roots (``parent_id IS NULL`` — the work
-    fields assignee/due/type live on the root): notes are assigned via the
-    host inspector, so host-scoping covers the real workflow.  Ordered
-    overdue-first, then by soonest due date (nulls last), then most recently
-    updated — the resume signal an analyst actually triages on.
-    """
-    now = datetime.now(timezone.utc)
-    base = (
-        db.query(Annotation, models.Host)
-        .join(models.Host, Annotation.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            Annotation.parent_id.is_(None),
-            Annotation.assignee_id == current_user.id,
-            Annotation.status != NoteStatus.RESOLVED,
-        )
-    )
-
-    overdue_cond = and_(Annotation.due_at.isnot(None), Annotation.due_at < now)
-    # Compute is_overdue in the DB (not Python) so it's dialect-correct and
-    # consistent with the ordering/counts — and so a tz-naive value stored by
-    # SQLite doesn't blow up a naive-vs-aware Python comparison.
-    rows = (
-        base.add_columns(overdue_cond.label("is_overdue"))
-        .order_by(
-            desc(overdue_cond),                         # overdue first
-            Annotation.due_at.is_(None),                # then dated before undated
-            Annotation.due_at.asc(),                    # soonest due first
-            desc(Annotation.updated_at),
-        )
-        .limit(limit)
-        .all()
-    )
-
-    items = [
-        MyNoteItem(
-            note_id=note.id,
-            host_id=host.id,
-            host_ip=host.ip_address,
-            host_hostname=host.hostname,
-            body_preview=(note.body or "").strip().splitlines()[0][:120] if (note.body or "").strip() else "",
-            note_type=note.note_type,
-            status=getattr(note.status, "value", note.status),
-            due_at=note.due_at,
-            is_overdue=bool(is_overdue),
-            updated_at=note.updated_at,
-        )
-        for note, host, is_overdue in rows
-    ]
-
-    # Totals (independent of limit) in one grouped pass.
-    counts = (
-        db.query(
-            func.count(Annotation.id).label("total"),
-            func.count(case((Annotation.note_type == "handoff", Annotation.id))).label("handoff"),
-            func.count(case((overdue_cond, Annotation.id))).label("overdue"),
-        )
-        .join(models.Host, Annotation.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            Annotation.parent_id.is_(None),
-            Annotation.assignee_id == current_user.id,
-            Annotation.status != NoteStatus.RESOLVED,
-        )
-        .one()
-    )
-    return MyNotesResponse(
-        items=items,
-        total_open=counts.total or 0,
-        handoff_count=counts.handoff or 0,
-        overdue_count=counts.overdue or 0,
     )
 
 
@@ -1139,11 +1019,8 @@ def compute_my_recent_notes(
     db: Session, current_user: User, project: Project, limit: int = 8,
 ) -> MyRecentNotesResponse:
     """The caller's most recently authored notes in this project — a "what was
-    I just working on?" view, independent of assignment/status/resolution.
-
-    Distinct from ``compute_my_assigned_notes`` (the work *queue*): this is the
-    analyst's latest *activity*, so it includes thread replies and resolved
-    notes, ordered newest-first by authorship time.  Host-targeted only (the
+    I just working on?" view: the analyst's latest *activity*, so it includes
+    thread replies, ordered newest-first by authorship time.  Host-targeted only (the
     dominant case); ``user_id`` is the author column.
     """
     rows = (
@@ -1255,16 +1132,12 @@ def compute_my_findings(
 # ---------------------------------------------------------------------------
 # Blockers (v2.363.0) — work that has STOPPED and will not resume by itself.
 #
-# Two kinds of stopped work were recorded and shown nowhere an analyst starts
-# their day (plan approval, once a third, no longer exists — v2.433.0):
+# One kind of stopped work (plan approval went in v2.433.0, interrupted
+# execution runs with the runs themselves in v2.442.0):
 #
 #   * an import that FAILED (nothing from that file is in the inventory) or
 #     finished PARTIAL (some of it is, and the rest silently is not) — until
-#     someone dismisses it on Ingestion Results;
-#   * an execution run that is no longer running but never completed: paused,
-#     or still "active" though the agent session driving it has ended.  Its
-#     plan is locked to that run (one active run per plan) until someone
-#     resumes its agent session or abandons the run.
+#     someone dismisses it on Ingestion Results.
 #
 # Project-wide, not personal: these block the engagement, and who can act is
 # governed by role at the destination.  Counts + the few newest rows only —
@@ -1278,21 +1151,10 @@ class BlockedImport(BaseModel):
     at: Optional[datetime] = None
 
 
-class InterruptedExecution(BaseModel):
-    session_id: int
-    test_plan_id: int
-    plan_title: Optional[str] = None
-    # "paused" | "session_ended" (run still active, its agent session is not)
-    reason: str
-    started_at: Optional[datetime] = None
-
-
 class OperationsBlockers(BaseModel):
     failed_import_count: int = 0
     partial_import_count: int = 0
     imports: List[BlockedImport] = Field(default_factory=list)
-    interrupted_execution_count: int = 0
-    executions: List[InterruptedExecution] = Field(default_factory=list)
 
 
 def blocked_import_condition():
@@ -1315,8 +1177,6 @@ def blocked_import_condition():
 
 
 def compute_blockers(db: Session, project: Project, limit: int = 3) -> OperationsBlockers:
-    from app.db.models_agent import ExecutionSession
-
     Job = models.IngestionJob
     job_rows = (
         db.query(
@@ -1330,32 +1190,6 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
     )
     failed = next((int(r.n) for r in job_rows if r.status == "failed"), 0)
     partial = next((int(r.n) for r in job_rows if r.status != "failed"), 0)
-
-    # Paused runs, and active runs nothing can act on any more — by the Runs
-    # list's own rule (agent_session_service.runs_session_live), so Blocked
-    # and the "stalled" badge cannot disagree (v2.424.0: a legacy run with
-    # no parent session, and one whose session key had run out, were listed
-    # as active runs and counted nowhere).
-    from app.services.agent_session_service import runs_session_live
-
-    candidate_rows = (
-        db.query(
-            ExecutionSession.id, ExecutionSession.test_plan_id, ExecutionSession.status,
-            ExecutionSession.started_at, TestPlan.title,
-            ExecutionSession.agent_session_id, ExecutionSession.agent_id,
-        )
-        .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-        .filter(
-            TestPlan.project_id == project.id,
-            ExecutionSession.status.in_(("paused", "active")),
-        )
-        .order_by(ExecutionSession.started_at.desc())
-        .all()
-    )
-    active_rows = [r for r in candidate_rows if r.status == "active"]
-    liveness = runs_session_live(db, [(r.agent_session_id, r.agent_id) for r in active_rows])
-    stalled_ids = {r.id for r, live in zip(active_rows, liveness) if live is False}
-    run_rows = [r for r in candidate_rows if r.status == "paused" or r.id in stalled_ids]
 
     return OperationsBlockers(
         failed_import_count=failed,
@@ -1373,15 +1207,6 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
                 at=r.created_at,
             )
             for r in job_rows[:limit]
-        ],
-        interrupted_execution_count=len(run_rows),
-        executions=[
-            InterruptedExecution(
-                session_id=r.id, test_plan_id=r.test_plan_id, plan_title=r.title,
-                reason="paused" if r.status == "paused" else "session_ended",
-                started_at=r.started_at,
-            )
-            for r in run_rows[:limit]
         ],
     )
 
@@ -1412,53 +1237,13 @@ class MyActivityResponse(BaseModel):
 
 ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed", "session"}
 
-# Agent-run workflows surfaced in the activity feed, with their summary verb.
-# assist is omitted (no detail page).  v2.340.1 — the deep link is resolved
-# from the phase tables in ``_session_links`` rather than off the session row:
-# the previous lambdas read ``s.plan_id`` (a column ``agent_sessions`` never
-# had — every legacy plan-generation session 500'd the whole feed) and used the
-# session id where the recon-run / execution-run detail pages take the run id.
-# ``project`` sessions (every session since v2.337.0) were not listed at all.
+# Agent sessions surfaced in the activity feed.  Every session since v2.337.0
+# is a ``project`` session and links to its own page; the legacy per-workflow
+# sessions (recon, plan generation, execution) have no page left to link to
+# and are not listed (v2.442.0).
 _SESSION_WORKFLOWS = {
-    "recon": "Ran a recon session",
-    "execution": "Ran an execution",
-    "plan_generation": "Generated a test plan",
     "project": "Ran an agent session",
 }
-
-
-def _session_links(db: Session, sessions: list) -> Dict[int, Optional[str]]:
-    """``{agent_session_id: in-app path}`` for the sessions given.
-
-    A session's run / plan lives in its phase table, linked back through
-    ``agent_session_id``.  A legacy per-workflow session has exactly one; a
-    project session may have several, so it links to the Agent Runs timeline
-    where all of them are listed.  Three grouped queries, no per-row lookups.
-    """
-    from app.db.models_agent import ExecutionSession
-    ids_by_kind: Dict[str, List[int]] = {}
-    for s in sessions:
-        ids_by_kind.setdefault(s.workflow, []).append(s.id)
-    links: Dict[int, Optional[str]] = {s.id: None for s in sessions}
-    for sid in ids_by_kind.get("project", []):
-        links[sid] = "/agent-activity"
-    lookups = (
-        ("execution", ExecutionSession, "/executions/{}"),
-        ("plan_generation", TestPlan, "/test-plans/{}"),
-    )
-    for kind, model, pattern in lookups:
-        ids = ids_by_kind.get(kind)
-        if not ids:
-            continue
-        rows = (
-            db.query(model.agent_session_id, func.min(model.id))
-            .filter(model.agent_session_id.in_(ids))
-            .group_by(model.agent_session_id)
-            .all()
-        )
-        for sid, detail_id in rows:
-            links[sid] = pattern.format(detail_id)
-    return links
 
 
 def compute_my_activity(
@@ -1572,7 +1357,7 @@ def compute_my_activity(
                 summary=f"Reviewed {host.ip_address}", host_id=host.id,
             ))
 
-    # Agent runs the caller started (recon / execution / plan generation).
+    # Agent sessions the caller started.
     # No free-text title, so they're omitted from a `search` query.
     if "session" in want and needle is None:
         session_ts = func.coalesce(AgentSession.started_at, AgentSession.created_at)
@@ -1587,12 +1372,11 @@ def compute_my_activity(
         if cutoff is not None:
             q = q.filter(session_ts >= cutoff)
         sessions = q.order_by(desc(session_ts)).limit(limit).all()
-        links = _session_links(db, sessions)
         for s in sessions:
             events.append(ActivityEvent(
                 kind="session", at=(s.started_at or s.created_at),
                 summary=f"{_SESSION_WORKFLOWS[s.workflow]} ({s.status})",
-                link=links.get(s.id),
+                link=f"/agent-sessions/{s.id}",
             ))
 
     events = [e for e in events if e.at is not None]

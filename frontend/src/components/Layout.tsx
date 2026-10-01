@@ -291,7 +291,7 @@ export default function Layout({ children }: LayoutProps) {
     '?': () => setShortcutsOpen(true),
     '/': () => window.dispatchEvent(new CustomEvent('nm:focus-search')),
     'g h': () => navigate('/hosts'),
-    'g p': () => navigate('/test-plans'),
+    'g p': () => navigate('/proposals'),
     'g s': () => navigate('/scans'),
     'g i': () => navigate('/inventory'),
     'g o': () => navigate('/operations'),

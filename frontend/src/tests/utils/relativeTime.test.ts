@@ -65,7 +65,7 @@ describe('formatRelativeTime', () => {
     const old = formatRelativeTime(ago(60 * DAY), opts);
     expect(old).not.toContain('ago');
     // The one date format ("Jun 20, 2026"), as formatDate prints it — not the
-    // locale's numeric "6/20/2026" (Test Plans' Created column showed that).
+    // locale's numeric "6/20/2026" (a Created column showed that).
     expect(old).toBe(formatDate(NOW - 60 * DAY));
   });
 

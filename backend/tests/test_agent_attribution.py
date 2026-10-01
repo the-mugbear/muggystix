@@ -6,11 +6,16 @@ The environment probe used to carry this; it is gone.  Now:
   MCP client names itself — or, for a curl agent, the first call's User-Agent;
 * the PROMPT VERSION is recorded by the server, which issued the prompt;
 * the MODEL is an optional self-report (``agent_model``) on the writes where it
-  matters — registering a plan, opening a run, ending the session.  The
-  session keeps the latest; a run snapshots it when it opens, so a session
-  that switches models does not relabel earlier work.
+  matters — proposing host tests, recording evidence, ending the session.
+  The session keeps the latest; a host test and an evidence record snapshot
+  it when written, so a session that switches models does not relabel
+  earlier work.  (Until v2.442.0 the snapshots were on plans and runs.)
 """
-from app.db.models_agent import AgentSession, ExecutionSession, TestPlan
+import uuid
+
+from app.db.models_agent import AgentSession
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.services.agent_prompt_history import PROMPT_VERSION
 
 
@@ -76,59 +81,81 @@ def test_the_mcp_loopbacks_default_user_agent_names_nothing(client, db_session, 
     assert _session(db_session, sid).generated_by_tool is None
 
 
-def test_the_model_is_reported_on_plan_run_and_end_and_a_run_keeps_its_own(
+def _test_item(host, **extra):
+    return dict(request_key=str(uuid.uuid4()), host_id=host.id, tool="curl",
+                description="Check response headers", rationale="Observed web service", **extra)
+
+
+def test_the_model_is_reported_on_tests_evidence_and_end_and_each_keeps_its_own(
     client, db_session, test_project,
 ):
     from app.db import models
-    from app.db.models_agent import TestPlanEntry
 
     key, sid = _start(client, test_project)
     hdr = {"X-API-Key": key}
     _initialize(client, key, {"name": "claude-code", "version": "2.1.0"})
-
-    plan = client.post("/api/v1/agent/test-plans", headers=hdr,
-                       json={"title": "p", "agent_model": "claude-opus-5-5"})
-    assert plan.status_code == 201, plan.text
-    plan_id = plan.json()["id"]
-    db_session.expire_all()
-    row = db_session.get(TestPlan, plan_id)
-    assert (row.generated_by_model, row.generated_by_tool, row.prompt_version) == (
-        "claude-opus-5-5", "claude-code 2.1.0", PROMPT_VERSION,
-    )
-
     host = models.Host(project_id=test_project.id, ip_address="10.0.0.7", state="up")
     db_session.add(host)
-    db_session.flush()
-    db_session.add(TestPlanEntry(
-        test_plan_id=plan_id, host_id=host.id, priority="high", test_phase="enumeration",
-        proposed_tests=[{"name": "t0", "command": "true"}], rationale="x",
-    ))
     db_session.commit()
 
-    # The operator switched models in the same session before opening the run.
-    run = client.post("/api/v1/agent/execution-sessions/start", headers=hdr,
-                      json={"plan_id": plan_id, "agent_model": "gpt-5.5"})
-    assert run.status_code == 201, run.text
-    run_id = run.json()["session_id"]
+    proposed = client.post("/api/v1/agent/host-tests", headers=hdr,
+                           json={"tests": [_test_item(host)], "agent_model": "claude-opus-5-5"})
+    assert proposed.status_code == 201, proposed.text
+    test_id = proposed.json()["items"][0]["id"]
     db_session.expire_all()
-    assert db_session.get(ExecutionSession, run_id).generated_by_model == "gpt-5.5"
-    assert db_session.get(TestPlan, plan_id).generated_by_model == "claude-opus-5-5"
+    row = db_session.get(HostTest, test_id)
+    assert (row.agent_model, row.agent_client, row.prompt_version) == (
+        "claude-opus-5-5", "claude-code 2.1.0", PROMPT_VERSION,
+    )
+    assert (row.source, row.agent_session_id) == ("agent", sid)
+
+    # The operator switched models in the same session before running it.
+    ev = client.post("/api/v1/agent/evidence", headers=hdr, json={
+        "host_id": host.id, "host_test_id": test_id, "request_key": "run-1", "tool": "curl",
+        "outcome": "no_finding", "summary": "Headers present", "agent_model": "gpt-5.5",
+    })
+    assert ev.status_code == 201, ev.text
+    db_session.expire_all()
+    record = db_session.get(EvidenceRecord, ev.json()["id"])
+    assert (record.agent_model, record.agent_client) == ("gpt-5.5", "claude-code 2.1.0")
+    assert db_session.get(HostTest, test_id).agent_model == "claude-opus-5-5"
     assert _session(db_session, sid).generated_by_model == "gpt-5.5"
 
-    client.post(f"/api/v1/agent/execution-sessions/{run_id}/complete", headers=hdr, json={})
     end = client.post("/api/v1/agent/session/end", headers=hdr,
                       json={"agent_model": "claude-sonnet-5-5"})
     assert end.status_code == 200, end.text
     assert _session(db_session, sid).generated_by_model == "claude-sonnet-5-5"
-    # A run keeps the model it opened with.
-    assert db_session.get(ExecutionSession, run_id).generated_by_model == "gpt-5.5"
+    # Earlier work keeps the model it was written with.
+    assert db_session.get(EvidenceRecord, ev.json()["id"]).agent_model == "gpt-5.5"
+    assert db_session.get(HostTest, test_id).agent_model == "claude-opus-5-5"
 
 
 def test_the_model_is_optional(client, db_session, test_project):
+    from app.db import models
+
     key, sid = _start(client, test_project)
-    r = client.post("/api/v1/agent/test-plans", headers={"X-API-Key": key}, json={"title": "p"})
+    host = models.Host(project_id=test_project.id, ip_address="10.0.0.8", state="up")
+    db_session.add(host)
+    db_session.commit()
+    r = client.post("/api/v1/agent/host-tests", headers={"X-API-Key": key},
+                    json={"tests": [_test_item(host)]})
     assert r.status_code == 201, r.text
+    assert r.json()["items"][0]["agent_model"] is None
     assert _session(db_session, sid).generated_by_model is None
+
+
+def test_a_person_s_test_carries_no_agent_attribution(client, db_session, test_project):
+    from app.db import models
+
+    host = models.Host(project_id=test_project.id, ip_address="10.0.0.9", state="up")
+    db_session.add(host)
+    db_session.commit()
+    r = client.post(f"/api/v1/projects/{test_project.id}/host-tests", json={"tests": [_test_item(host)]})
+    assert r.status_code == 201, r.text
+    row = r.json()["items"][0]
+    assert (row["source"], row["agent_session_id"], row["agent_model"], row["agent_client"]) == (
+        "person", None, None, None,
+    )
 
 
 def test_the_probe_route_is_gone(client, test_project):

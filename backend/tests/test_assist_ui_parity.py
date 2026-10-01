@@ -122,7 +122,7 @@ def _seed_inspector_host(db_session, project, user):
         cert_not_after=datetime.now(timezone.utc) + timedelta(days=9),
     ))
     db_session.add(models.Annotation(
-        host_id=host.id, user_id=user.id, body="Looked at SMB", status=models.NoteStatus.OPEN,
+        host_id=host.id, user_id=user.id, body="Looked at SMB",
     ))
     finding = Finding(
         project_id=project.id, title="SMB signing not required", severity="medium",
@@ -244,7 +244,7 @@ def test_assist_context_carries_engagement_dates_and_members(
 # Notes
 # ---------------------------------------------------------------------------
 
-def test_assist_notes_carry_threads_assignees_and_attachments(
+def test_assist_notes_carry_threads_labels_and_attachments(
     client, db_session, test_project, test_user
 ):
     host = models.Host(project_id=test_project.id, ip_address="10.46.0.3", state="up")
@@ -252,15 +252,13 @@ def test_assist_notes_carry_threads_assignees_and_attachments(
     db_session.flush()
     root = models.Annotation(
         host_id=host.id, user_id=test_user.id, body="Default creds on the admin panel",
-        status=models.NoteStatus.OPEN, note_type="question",
-        assignee_id=test_user.id, due_at=datetime(2026, 10, 1, tzinfo=timezone.utc),
+        note_type="question", pinned=True,
     )
     db_session.add(root)
     db_session.flush()
     root.thread_root_id = root.id
     reply = models.Annotation(
-        host_id=host.id, user_id=test_user.id, body="Confirmed, screenshot attached",
-        status=models.NoteStatus.OPEN, parent_id=root.id, thread_root_id=root.id,
+        host_id=host.id, user_id=test_user.id, body="Confirmed, screenshot attached", parent_id=root.id, thread_root_id=root.id,
     )
     db_session.add(reply)
     db_session.flush()
@@ -275,9 +273,9 @@ def test_assist_notes_carry_threads_assignees_and_attachments(
     page = client.get(f"/api/v1/agent/assist/hosts/{host.id}/notes", headers=headers).json()
     by_id = {n["id"]: n for n in page["items"]}
     assert by_id[root.id]["parent_id"] is None
-    assert by_id[root.id]["assignee"] == test_user.username
-    assert by_id[root.id]["note_type"] == "question"
-    assert by_id[root.id]["due_at"].startswith("2026-10-01")
+    assert (by_id[root.id]["note_type"], by_id[root.id]["pinned"]) == ("question", True)
+    # A note is discussion: no work state is offered to an agent either.
+    assert not {"status", "assignee", "due_at", "resolution_summary"} & set(by_id[root.id])
     assert by_id[reply.id]["parent_id"] == root.id
     assert by_id[reply.id]["thread_root_id"] == root.id
     att = by_id[reply.id]["attachments"][0]
@@ -299,7 +297,6 @@ def test_recent_notes_name_a_non_host_target(client, db_session, test_project, t
     db_session.flush()
     db_session.add(models.Annotation(
         finding_id=finding.id, user_id=test_user.id, body="Client asked for a retest",
-        status=models.NoteStatus.OPEN,
     ))
     db_session.commit()
 

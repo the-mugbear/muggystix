@@ -31,7 +31,7 @@ def record_status_transition(
     """Append one transition row (added + flushed, not committed).  Returns
     the row, or ``None`` when from == to (a no-op transition is not recorded).
 
-    ``history_model`` is e.g. ``AnnotationStatusHistory`` or
+    ``history_model`` is e.g.
     ``FindingStatusHistory``; ``fk_field`` is its entity FK column name
     (``"note_id"`` / ``"finding_id"``).
     """

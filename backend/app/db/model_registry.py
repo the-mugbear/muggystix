@@ -32,6 +32,7 @@ from app.db import (  # noqa: F401
     models_auth,
     models_confidence,
     models_findings,
+    models_host_tests,
     models_integrations,
     models_llm,
     models_project,

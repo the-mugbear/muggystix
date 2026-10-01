@@ -331,7 +331,7 @@ const Legend: React.FC<{ palette: TerrainPalette }> = ({ palette }) => {
       <span className="flex items-center gap-xxs">
         <Swatch colour={palette.beacon} shape="diamond" /> Untouched critical exposure
       </span>
-      <InfoTip text="Height is the block's host count. Bands from the ground up: tested (a planned test was executed), planned (in a test plan, not tested), someone has it (reviewed, assigned, noted or in a finding), untouched. A diamond floats over a block whose untouched hosts carry a critical scanner observation — bigger for more of them. Each /16 is a district holding its blocks in address order; consecutive blocks stay neighbours. Exact addresses are in the readout and the Table view." />
+      <InfoTip text="Height is the block's host count. Bands from the ground up: tested (evidence of a test that ran is recorded), planned (a test is proposed or in progress, none has run), someone has it (reviewed, assigned, noted or in a finding), untouched. A diamond floats over a block whose untouched hosts carry a critical scanner observation — bigger for more of them. Each /16 is a district holding its blocks in address order; consecutive blocks stay neighbours. Exact addresses are in the readout and the Table view." />
     </div>
   );
 };

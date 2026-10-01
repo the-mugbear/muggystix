@@ -97,8 +97,7 @@ class User(Base):
     # project annotations; preserving them as "by deleted user" matches
     # the policy of every other audit-shape column in v2.86.2.  DB FK
     # is SET NULL + nullable=True (see host_notes.user_id).
-    # foreign_keys pins this to Annotation.user_id — Annotation also has
-    # assignee_id (a second FK to users), so the path must be explicit.
+    # foreign_keys names Annotation.user_id explicitly.
     annotations = relationship(
         "Annotation", back_populates="author", foreign_keys="Annotation.user_id",
     )

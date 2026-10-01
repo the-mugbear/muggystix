@@ -449,15 +449,15 @@ def delete_name(
     """Deletes the name row; its observations cascade.  Hosts are untouched —
     an address is never removed because a name was.
 
-    v2.325.0 — a name that plan entries or finding-hosts still reference is
-    NOT deletable (409).  Those rows are unique per (…, host, name) and
-    ``SET NULL`` on delete would collapse a named endpoint onto the unnamed
-    row for the same host — a constraint violation at best, silent loss of a
-    reviewed association at worst.  Detach the references first (remove the
-    entry / detach the endpoint from the finding); web-interface and
-    scanner rows are plain evidence pointers and simply lose the link.
+    v2.325.0 — a name that finding-hosts still reference is NOT deletable
+    (409).  Those rows are unique per (finding, host, name) and ``SET NULL``
+    on delete would collapse a named endpoint onto the unnamed row for the
+    same host — a constraint violation at best, silent loss of a reviewed
+    association at worst.  Detach the endpoint from the finding first;
+    web-interface and scanner rows are plain evidence pointers and simply
+    lose the link.  A host test aimed at the name keeps its ``target_fqdn``
+    snapshot (v2.442.0), so it does not block the deletion.
     """
-    from app.db.models_agent import TestPlanEntry
     from app.db.models_findings import FindingHost
 
     name = (
@@ -467,14 +467,13 @@ def delete_name(
     )
     if not name:
         raise HTTPException(status_code=404, detail="Name not found")
-    entry_refs = db.query(func.count(TestPlanEntry.id)).filter(TestPlanEntry.name_id == name.id).scalar() or 0
     finding_refs = db.query(func.count(FindingHost.id)).filter(FindingHost.name_id == name.id).scalar() or 0
-    if entry_refs or finding_refs:
+    if finding_refs:
         raise HTTPException(
             status_code=409,
             detail=(
-                f"{name.fqdn} is still referenced by {entry_refs} plan entr{'y' if entry_refs == 1 else 'ies'} "
-                f"and {finding_refs} finding endpoint{'' if finding_refs == 1 else 's'}. Detach those first; "
+                f"{name.fqdn} is still referenced by {finding_refs} finding "
+                f"endpoint{'' if finding_refs == 1 else 's'}. Detach those first; "
                 "a named endpoint is never merged into the unnamed record for its host."
             ),
         )

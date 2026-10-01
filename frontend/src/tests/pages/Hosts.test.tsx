@@ -701,9 +701,24 @@ describe('Hosts — streamlined table', () => {
   it('names the test-workflow state instead of colouring the row border', async () => {
     const { container } = renderHosts();
     await screen.findByText('10.9.0.41');
-    expect(screen.getByText('Planned')).toHaveAttribute('title', '2 tests planned but not yet executed');
-    expect(screen.getByText('Tested')).toBeInTheDocument();
+    // 5.320.0 — "planned" is a test proposed or in progress; "tested" is a
+    // recorded result.
+    expect(screen.getByText('Planned')).toHaveAttribute('title', '2 tests proposed or in progress, none run yet');
+    expect(screen.getByText('Tested')).toHaveAttribute('title', '3 test results recorded');
     expect(container.querySelector('tr.border-l-warning, tr.border-l-info')).toBeNull();
+  });
+
+  // A tested host that still has a test to do says both — "Tested" alone hid
+  // the pending work.
+  it('says a tested host still has tests to do', async () => {
+    mockedApi.getHosts.mockResolvedValue({
+      items: [makeHost(44, { ip_address: '10.9.0.44', test_execution_count: 1, test_plan_entry_count: 2 })],
+      total: 1, skip: 0, limit: 25, sort_by: 'critical_vulns', sort_order: 'desc',
+    });
+    renderHosts();
+    await screen.findByText('10.9.0.44');
+    const state = screen.getByText('Tested · 2 to do');
+    expect(state.getAttribute('title')).toMatch(/^1 test result recorded; 2 tests proposed or in progress/);
   });
 
   it('one attention line, the other reasons spelled out rather than "+N"', async () => {

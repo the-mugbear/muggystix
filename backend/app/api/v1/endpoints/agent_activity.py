@@ -6,7 +6,7 @@ row to ``agent_api_calls`` per inbound /agent/* request that
 authenticated as an agent.  This module exposes those rows to authorised
 users so they can audit what their agent actually did.
 
-Scoped to a project + (optionally) a test_plan / recon_session.
+Scoped to a project and (optionally) one agent session.
 Authenticates as a regular BlueStick user (JWT or session), not as
 the agent — agents must not be able to read their own audit log.
 """
@@ -56,8 +56,6 @@ class AgentApiCallRow(BaseModel):
     response_bytes: Optional[int] = None
     duration_ms: int
 
-    test_plan_id: Optional[int] = None
-    execution_session_id: Optional[int] = None
     scope_id: Optional[int] = None
 
     referenced_host_ids: Optional[List[int]] = None
@@ -73,7 +71,6 @@ class AgentApiCallListResponse(BaseModel):
 def _base_query(
     db: Session,
     project_id: int,
-    test_plan_id: Optional[int],
     method: Optional[str],
     status_min: Optional[int],
     status_max: Optional[int],
@@ -90,8 +87,6 @@ def _base_query(
             Agent.project_id == project_id, Agent.owner_id == mine_owner_id
         )
         q = q.filter(AgentApiCall.agent_id.in_(owned))
-    if test_plan_id is not None:
-        q = q.filter(AgentApiCall.test_plan_id == test_plan_id)
     if method:
         q = q.filter(AgentApiCall.method == method.upper())
     if status_min is not None:
@@ -154,45 +149,6 @@ def _serialize_rows(db: Session, rows: List[AgentApiCall]) -> List[AgentApiCallR
     return items
 
 
-@router.get(
-    "/test-plans/{plan_id}/api-activity",
-    response_model=AgentApiCallListResponse,
-    summary="List the agent's API calls for this plan",
-)
-def list_plan_activity(
-    project_id: int = Path(..., gt=0),
-    plan_id: int = Path(..., gt=0),
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
-    method: Optional[str] = Query(None, description="Filter by HTTP method (GET/POST/...)."),
-    status_min: Optional[int] = Query(None, ge=100, le=599),
-    status_max: Optional[int] = Query(None, ge=100, le=599),
-    host_id: Optional[int] = Query(None, description="Only rows that referenced this host."),
-    target_ip: Optional[str] = Query(None, description="Only rows that referenced this IP."),
-    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
-    since: Optional[datetime] = None,
-    until: Optional[datetime] = None,
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    # get_current_project enforces ProjectMembership for the path project_id
-    # (a non-member gets 403).  Without it any authenticated user could read
-    # another tenant's agent audit log via the path param alone.
-    q = _base_query(
-        db, project_id=project.id, test_plan_id=plan_id,
-        method=method, status_min=status_min, status_max=status_max,
-        host_id=host_id, target_ip=target_ip, since=since, until=until,
-        mine_owner_id=current_user.id if mine else None,
-    )
-    total = q.count()
-    rows = (
-        q.order_by(AgentApiCall.created_at.desc())
-        .offset(offset).limit(limit).all()
-    )
-    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
-
-
 # ---------------------------------------------------------------------------
 # Project-level analytics summary — aggregates across ALL agent workflows,
 # unlike the per-plan / per-recon list endpoints above.  Reads the same
@@ -208,7 +164,7 @@ class AgentActivityStatusBreakdown(BaseModel):
 
 
 class AgentActivityWorkflowCount(BaseModel):
-    workflow: str          # plan | execution | recon | assist | other
+    workflow: str          # session | assist | other
     calls: int
 
 
@@ -284,16 +240,13 @@ def _session_hygiene(db: Session, project_id: int, window_start: datetime) -> Ag
     )
 
 
-# Priority-ordered workflow label.  A row can carry several session FKs
-# (an execution call also references its test_plan_id); pick the most
-# specific so each call counts once.  v2.338.2 — a unified project session's
-# plain reads (inventory queries, identity, the probe) carry only
-# ``agent_session_id``; they are "session" work, not "other".
+# Priority-ordered workflow label, so each call counts once.  v2.338.2 — a
+# unified project session's calls carry only ``agent_session_id``: "session"
+# work, not "other".  (The "execution" and "plan" labels went with execution
+# runs and test plans in v2.442.0.)
 def _workflow_case():
     return case(
-        (AgentApiCall.execution_session_id.isnot(None), "execution"),
         (AgentApiCall.assist_session_id.isnot(None), "assist"),
-        (AgentApiCall.test_plan_id.isnot(None), "plan"),
         (AgentApiCall.agent_session_id.isnot(None), "session"),
         else_="other",
     )
@@ -408,9 +361,7 @@ def get_agent_activity_summary(
     busiest: List[AgentActivitySessionRow] = []
     for col, label in (
         (AgentApiCall.agent_session_id, "session"),
-        (AgentApiCall.execution_session_id, "execution"),
         (AgentApiCall.assist_session_id, "assist"),
-        (AgentApiCall.test_plan_id, "plan"),
     ):
         for sid, count, last in (
             base.with_entities(col, func.count(AgentApiCall.id), func.max(AgentApiCall.created_at))
@@ -490,7 +441,7 @@ def list_assist_session_activity(
     if assist.agent_session_id is not None:
         owner = owner | (AgentApiCall.agent_session_id == assist.agent_session_id)
     q = _base_query(
-        db, project_id=project.id, test_plan_id=None,
+        db, project_id=project.id,
         method=method, status_min=status_min, status_max=status_max,
         host_id=host_id, target_ip=target_ip, since=since, until=until,
         mine_owner_id=current_user.id if mine else None,

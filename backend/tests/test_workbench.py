@@ -90,7 +90,9 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     finally:
         event.remove(Engine, "after_cursor_execute", _count)
 
-    # Bound is a regression guard, not a target — currently 25: ~17 for the
+    # Bound is a regression guard, not a target — 27 measured at v2.442.0
+    # (bound 30; it was 31 while the interrupted-runs statement existed).
+    # How it got there: ~17 for the
     # personal sections, plus five grouped statements for the investigation
     # queue (v2.347.0: untouched hosts, vulns, high-value ports, conflicts,
     # sources; the changed-since-scan window runs only when a tier-4
@@ -98,9 +100,10 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # reviewed follows, ports first seen after the review, critical/high
     # observations recorded after it), plus three more in v2.363.0 (hosts
     # changed in the since-last-visit window; blocked imports; interrupted
-    # execution runs — each ONE grouped statement).  Flag a fan-out blow-up
+    # execution runs — each ONE grouped statement; the interrupted-runs one
+    # went with execution runs in v2.442.0).  Flag a fan-out blow-up
     # (e.g. an N+1 creeping into a section), not a fixed additive cost.
-    assert counter["n"] <= 31, (
+    assert counter["n"] <= 30, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
@@ -398,79 +401,65 @@ def test_my_activity_filters(client, db_session, test_project, test_user):
     assert client.get(f"{base}?search=zzznomatch").json()["items"] == []
 
 
-def test_my_activity_includes_agent_runs(client, db_session, test_project, test_user):
-    """§27 — recon/execution/plan-generation runs the caller started appear as
-    'session' events with a deep-link; they're excluded from a text search."""
-    from app.db.models_agent import (
-        AgentSession, ExecutionSession, ExecutionSessionStatus, TestPlan, TestPlanStatus,
-    )
+def test_my_activity_includes_agent_sessions(client, db_session, test_project, test_user):
+    """§27 — the agent sessions the caller started appear as 'session' events
+    with a deep-link to the session's own page; they're excluded from a text
+    search.  (v2.442.0: the link was the execution run's page — which took
+    the RUN id, not the session id, v2.340.1 — until runs were removed.)"""
+    from app.db.models_agent import AgentSession
 
-    plan = TestPlan(project_id=test_project.id, version=1, title="p",
-                    status=TestPlanStatus.IN_PROGRESS.value)
-    db_session.add(plan)
-    db_session.flush()
-    s = AgentSession(
-        workflow="execution", project_id=test_project.id,
-        started_by_id=test_user.id, status="completed",
+    mine = AgentSession(
+        workflow="project", project_id=test_project.id,
+        started_by_id=test_user.id, status="ended",
     )
-    db_session.add(s)
-    db_session.flush()
-    # v2.340.1 — the deep link must carry the RUN id (what /executions/{id}
-    # takes), not the session id; the two only coincide by accident.
-    run = ExecutionSession(
-        test_plan_id=plan.id, agent_session_id=s.id,
-        started_by_id=test_user.id, status=ExecutionSessionStatus.COMPLETED.value,
+    someone_elses = AgentSession(
+        workflow="project", project_id=test_project.id,
+        started_by_id=None, status="active",
     )
-    db_session.add(run)
+    db_session.add_all([mine, someone_elses])
     db_session.commit()
 
     base = _url(test_project.id, "/my-activity")
     sessions = [e for e in client.get(base).json()["items"] if e["kind"] == "session"]
     assert len(sessions) == 1
-    assert sessions[0]["link"] == f"/executions/{run.id}"
+    assert sessions[0]["link"] == f"/agent-sessions/{mine.id}"
+    assert sessions[0]["summary"] == "Ran an agent session (ended)"
 
     # kinds filter isolates them; a text search excludes them (no title).
     assert all(e["kind"] == "session" for e in client.get(f"{base}?kinds=session").json()["items"])
     assert client.get(f"{base}?search=anything").json()["items"] == []
 
 
-def test_my_activity_survives_legacy_plan_sessions_and_lists_project_sessions(
+def test_my_activity_survives_legacy_sessions_and_lists_project_sessions(
     client, db_session, test_project, test_user,
 ):
     """v2.340.1 — a legacy plan-generation session 500'd the whole feed (the
     link builder read a ``plan_id`` attribute the session row never had), and
-    project sessions — every session since the consolidation — were omitted."""
-    from app.db.models_agent import AgentSession, TestPlan
+    project sessions — every session since the consolidation — were omitted.
 
-    legacy_plan = AgentSession(
-        workflow="plan_generation", project_id=test_project.id,
-        started_by_id=test_user.id, status="completed",
-    )
-    orphan_plan = AgentSession(
-        workflow="plan_generation", project_id=test_project.id,
-        started_by_id=test_user.id, status="completed",
-    )
+    v2.442.0 — the legacy per-workflow rows (recon, plan generation,
+    execution) have no page left to link to, so they are not listed; they
+    must still not break the feed."""
+    from app.db.models_agent import AgentSession
+
+    legacy = [
+        AgentSession(workflow=wf, project_id=test_project.id,
+                     started_by_id=test_user.id, status="completed")
+        for wf in ("plan_generation", "execution", "recon")
+    ]
     project = AgentSession(
         workflow="project", project_id=test_project.id,
         started_by_id=test_user.id, status="active",
     )
-    db_session.add_all([legacy_plan, orphan_plan, project])
-    db_session.flush()
-    plan = TestPlan(
-        project_id=test_project.id, title="legacy", status="draft",
-        agent_session_id=legacy_plan.id, created_by_user_id=test_user.id,
-    )
-    db_session.add(plan)
+    db_session.add_all([*legacy, project])
     db_session.commit()
 
     r = client.get(_url(test_project.id, "/my-activity?kinds=session"))
     assert r.status_code == 200, r.text
-    by_summary = {e["summary"]: e["link"] for e in r.json()["items"]}
-    links = {e["link"] for e in r.json()["items"]}
-    assert len(r.json()["items"]) == 3
-    assert f"/test-plans/{plan.id}" in links          # legacy plan session → its plan
-    assert None in links                               # a plan session with no plan links nowhere, and does not 500
-    assert by_summary.get("Ran an agent session (active)") == "/agent-activity"
+    items = r.json()["items"]
+    assert [(e["summary"], e["link"]) for e in items] == [
+        ("Ran an agent session (active)", f"/agent-sessions/{project.id}"),
+    ]
 
 
 # v2.424.1 — Operations loads the "Worth a look" queue on its own request so

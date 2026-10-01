@@ -16,8 +16,8 @@ export type TerrainStage = 'tested' | 'planned' | 'worked' | 'untouched';
 
 /** Bottom to top on a tower, and the legend's order. */
 export const TERRAIN_STAGES: Array<{ key: TerrainStage; label: string; description: string }> = [
-  { key: 'tested', label: 'Tested', description: 'A planned test was executed against it.' },
-  { key: 'planned', label: 'Planned', description: 'In a test plan, not tested yet.' },
+  { key: 'tested', label: 'Tested', description: 'Evidence of a test that ran is recorded for it.' },
+  { key: 'planned', label: 'Planned', description: 'A test is proposed or in progress; none has run yet.' },
   { key: 'worked', label: 'Someone has it', description: 'Reviewed, assigned, noted or in a finding — not planned.' },
   { key: 'untouched', label: 'Untouched', description: 'Nobody has reviewed, assigned, noted, planned or reported it.' },
 ];
@@ -147,7 +147,8 @@ export const terrainBlockQuery = (cidr: string, part?: TerrainStage | 'critical_
   switch (part) {
     case 'tested': return `${b} has:tested`;
     case 'planned': return `${b} has:planned AND NOT has:tested`;
-    case 'worked': return `${b} AND NOT has:untouched AND NOT has:planned`;
+    // Tested no longer implies planned (5.320.0), so both are excluded.
+    case 'worked': return `${b} AND NOT has:untouched AND NOT has:planned AND NOT has:tested`;
     case 'untouched': return `${b} has:untouched`;
     case 'critical_untouched': return `${b} has:untouched has:critical`;
     default: return b;

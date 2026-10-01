@@ -99,7 +99,7 @@ async def test_body_is_never_pre_read_even_without_a_content_length():
     logger = AgentApiCallLogger(MagicMock())
 
     request = MagicMock()
-    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.url.path = f"{AGENT_API_PREFIX}/evidence"
     request.method = "POST"
     request.headers = {"content-type": "application/json"}  # no content-length
     request.body = AsyncMock(return_value=b"NEVER READ")
@@ -120,7 +120,7 @@ async def test_body_is_never_pre_read_with_a_malformed_content_length():
     logger = AgentApiCallLogger(MagicMock())
 
     request = MagicMock()
-    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.url.path = f"{AGENT_API_PREFIX}/evidence"
     request.method = "POST"
     request.headers = {"content-type": "application/json", "content-length": "not-a-number"}
     request.body = AsyncMock(return_value=b"NEVER READ")
@@ -155,7 +155,7 @@ async def test_capture_is_bounded_when_a_chunked_body_exceeds_the_cap():
         return next(sent)
 
     request = MagicMock()
-    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.url.path = f"{AGENT_API_PREFIX}/evidence"
     request.method = "POST"
     request.headers = {"content-type": "application/json"}
     request.receive = _receive
@@ -191,7 +191,7 @@ async def test_small_json_agent_request_still_captures_body():
     logger = AgentApiCallLogger(MagicMock())
 
     request = MagicMock()
-    request.url.path = f"{AGENT_API_PREFIX}/test-plans/1/entries/1/test-results"
+    request.url.path = f"{AGENT_API_PREFIX}/evidence"
     request.method = "POST"
     request.headers = {
         "content-type": "application/json",

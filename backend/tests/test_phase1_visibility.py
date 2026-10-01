@@ -147,11 +147,11 @@ def test_scan_compare_missing_scan_returns_404(client, db_session, test_project)
 # Agent-activity analytics summary
 # ---------------------------------------------------------------------------
 
-def _api_call(db, *, project_id, agent_id, status, created_at, test_plan_id=None):
+def _api_call(db, *, project_id, agent_id, status, created_at, agent_session_id=None):
     db.add(AgentApiCall(
         agent_id=agent_id,
         project_id=project_id,
-        test_plan_id=test_plan_id,
+        agent_session_id=agent_session_id,
         method="GET",
         path="/api/v1/agent/x",
         status_code=status,
@@ -160,19 +160,28 @@ def _api_call(db, *, project_id, agent_id, status, created_at, test_plan_id=None
     ))
 
 
-def test_agent_activity_summary_aggregates(client, db_session, test_project, test_agent, test_plan):
+def test_agent_activity_summary_aggregates(client, db_session, test_project, test_agent):
+    from app.db.models_agent import AgentSession, AgentSessionWorkflow
+
     pid = test_project.id
     now = datetime.now(timezone.utc)
     yesterday = now - timedelta(days=1)
+    session = AgentSession(
+        workflow=AgentSessionWorkflow.PROJECT.value, project_id=pid,
+        agent_id=test_agent.id, started_by_id=test_agent.owner_id, status="active",
+    )
+    db_session.add(session)
+    db_session.flush()
 
-    # 4 "plan" calls (have a test_plan_id) + 1 "other" call (no session FK).
-    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=yesterday, test_plan_id=test_plan.id)
-    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=yesterday, test_plan_id=test_plan.id)
-    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=404, created_at=yesterday, test_plan_id=test_plan.id)
-    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=500, created_at=now, test_plan_id=test_plan.id)
+    # 4 "session" calls (made under an agent session) + 1 "other" call (no
+    # session FK).  Until v2.442.0 the first bucket was "plan" calls.
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=yesterday, agent_session_id=session.id)
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=yesterday, agent_session_id=session.id)
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=404, created_at=yesterday, agent_session_id=session.id)
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=500, created_at=now, agent_session_id=session.id)
     _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=now)
     # Out of window — must be excluded.
-    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=now - timedelta(days=120))
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=now - timedelta(days=120), agent_session_id=session.id)
     db_session.commit()
 
     resp = client.get(f"/api/v1/projects/{pid}/agent-activity/summary")
@@ -188,17 +197,16 @@ def test_agent_activity_summary_aggregates(client, db_session, test_project, tes
     assert sb["server_error"] == 1
 
     by_wf = {row["workflow"]: row["calls"] for row in body["by_workflow"]}
-    assert by_wf.get("plan") == 4
-    assert by_wf.get("other") == 1
+    assert by_wf == {"session": 4, "other": 1}
 
     assert sum(d["calls"] for d in body["daily"]) == 5
     assert sum(d["errors"] for d in body["daily"]) == 2
 
     busiest = body["busiest_sessions"]
-    assert busiest, "expected at least one busiest session"
+    assert len(busiest) == 1
     top = busiest[0]
-    assert top["workflow"] == "plan"
-    assert top["session_id"] == test_plan.id
+    assert top["workflow"] == "session"
+    assert top["session_id"] == session.id
     assert top["calls"] == 4
 
 

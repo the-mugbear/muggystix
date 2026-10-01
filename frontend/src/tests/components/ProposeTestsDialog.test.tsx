@@ -1,0 +1,116 @@
+import React from 'react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+
+import ProposeTestsDialog, { AGENT_TASK_MAX_HOSTS } from '../../components/hosts/ProposeTestsDialog';
+import { describeSelection } from '../../utils/hostSelection';
+import { agentInstruction } from '../../utils/agentRuns';
+
+// The hand-off opens the Start Agent Session dialog, which reads the
+// operator's live sessions.
+vi.mock('../../hooks/useMyAssistSessions', () => ({
+  useMyAssistSessions: () => ({ sessions: [], loading: false, failed: false, refresh: vi.fn() }),
+}));
+vi.mock('../../services/api', () => ({}));
+
+const canStart = vi.hoisted(() => ({ value: true }));
+vi.mock('../../hooks/useCanStartAgentSession', () => ({
+  useCanStartAgentSession: () => canStart.value,
+}));
+
+// The real dialog mints a session; here it only has to show the task it was given.
+vi.mock('../../components/StartAssistDialog', () => ({
+  default: ({ instruction }: { instruction?: string }) => <div data-testid="agent-task">{instruction}</div>,
+}));
+
+const renderDialog = (over: Partial<React.ComponentProps<typeof ProposeTestsDialog>> = {}) =>
+  render(
+    <MemoryRouter>
+      <ProposeTestsDialog
+        open
+        onOpenChange={() => {}}
+        resolveIds={() => Promise.resolve([1, 2, 3])}
+        selectionSummary="3 hosts checked on the Hosts page"
+        sampleIps={['10.0.0.1', '10.0.0.2', '10.0.0.3']}
+        {...over}
+      />
+    </MemoryRouter>,
+  );
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  canStart.value = true;
+});
+
+describe('ProposeTestsDialog', () => {
+  it('shows the fixed list it resolved, and says tests land on the host page', async () => {
+    renderDialog();
+    await waitFor(() => expect(screen.getByText(/^3 hosts/)).toBeInTheDocument());
+    expect(screen.getByText(/3 hosts checked on the Hosts page/)).toBeInTheDocument();
+    expect(screen.getByText(/10\.0\.0\.1, 10\.0\.0\.2, 10\.0\.0\.3/)).toBeInTheDocument();
+    expect(screen.getByText(/they appear on the host's page/i)).toBeInTheDocument();
+    // Nothing about plans, drafts or approval is left.
+    expect(screen.queryByText(/draft/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/approv/i)).not.toBeInTheDocument();
+  });
+
+  it('hands exactly the resolved ids, and what to test, to the agent', async () => {
+    renderDialog({ resolveIds: () => Promise.resolve([11, 12, 13]) });
+    await waitFor(() => expect(screen.getByText(/^3 hosts/)).toBeInTheDocument());
+    fireEvent.change(screen.getByLabelText(/What to test/), { target: { value: 'SMB signing' } });
+    fireEvent.click(screen.getByRole('button', { name: /Hand to your agent/ }));
+    const task = (await screen.findByTestId('agent-task')).textContent ?? '';
+    expect(task).toContain('host ids): 11, 12, 13.');
+    expect(task).toContain('What to test: SMB signing');
+    expect(task).toContain('host_tests_propose');
+    expect(task).toContain('Do not run anything yet');
+  });
+
+  it('does not hand over a selection larger than the cap, and says what to do instead', async () => {
+    const many = Array.from({ length: AGENT_TASK_MAX_HOSTS + 1 }, (_, i) => i + 1);
+    renderDialog({ resolveIds: () => Promise.resolve(many), sampleIps: [] });
+    await waitFor(() => expect(screen.getByText(/^201 hosts/)).toBeInTheDocument());
+    expect(screen.getByRole('alert')).toHaveTextContent(/at most 200 hosts/);
+    expect(screen.getByRole('alert')).toHaveTextContent(/Narrow it on the Hosts page/);
+    expect(screen.getByRole('button', { name: /Hand to your agent/ })).toBeDisabled();
+  });
+
+  it('reports a selection that could not be resolved instead of offering an empty hand-off', async () => {
+    renderDialog({ resolveIds: () => Promise.reject(new Error('boom')) });
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Could not resolve the selection|boom/);
+    expect(screen.getByRole('button', { name: /Hand to your agent/ })).toBeDisabled();
+  });
+
+  it('tells a viewer why there is no hand-off', async () => {
+    canStart.value = false;
+    renderDialog();
+    await waitFor(() => expect(screen.getByText(/^3 hosts/)).toBeInTheDocument());
+    expect(screen.getByText(/needs the auditor role/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Hand to your agent/ })).not.toBeInTheDocument();
+  });
+});
+
+describe('agentInstruction.proposeTests', () => {
+  it('names the hosts and omits the focus when none was given', () => {
+    const task = agentInstruction.proposeTests([4, 5]);
+    expect(task).toContain('(host ids): 4, 5.');
+    expect(task).not.toContain('What to test:');
+  });
+
+  it('ends the operator\'s words as a sentence so the next one does not run on', () => {
+    expect(agentInstruction.proposeTests([4], 'Confirm the TLS weaknesses'))
+      .toContain('What to test: Confirm the TLS weaknesses. Read what each host exposes');
+    expect(agentInstruction.proposeTests([4], 'Is SMB signing required?'))
+      .toContain('What to test: Is SMB signing required? Read what');
+  });
+});
+
+describe('describeSelection', () => {
+  it('names a checked selection and a resolved all-matching query differently', () => {
+    expect(describeSelection(3, false, {})).toBe('3 hosts checked on the Hosts page');
+    expect(describeSelection(41, true, { subnet: '10.1.0.0/16', q: 'has:weak_tls', state: undefined }))
+      .toBe('all 41 hosts matching subnet=10.1.0.0/16 q=has:weak_tls, resolved to a fixed list');
+    expect(describeSelection(9, true, {})).toBe('all 9 hosts in the project, resolved to a fixed list');
+  });
+});

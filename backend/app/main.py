@@ -91,8 +91,8 @@ X-API-Key: nm_agent_abc123...
 
 Keys are minted by an operator UI action and bind to one **unified project
 session**, acting as the operator who started it. The same key can query the
-inventory, upload scanner output, register and execute test plans, and record
-findings. Default TTL is 24h (`AGENT_KEY_TTL_HOURS`). The surface is
+inventory, upload scanner output, propose tests on hosts, record what it ran
+as evidence, and propose findings. Default TTL is 24h (`AGENT_KEY_TTL_HOURS`). The surface is
 intentionally narrow — it cannot manage users or other projects; the
 operator's project role is enforced by every endpoint. See the agent guide (`GET /api/v1/agents-guide`) for the full integration contract.
 
@@ -133,8 +133,9 @@ Top-level endpoints (no project scope): `/auth/`, `/users/`, `/audit/`, `/projec
 
 1. **My queue** — `GET /projects/{id}/dashboard/my-attention` returns hosts you've
    personally marked `in_review` via `POST /projects/{id}/hosts/{host_id}/follow`.
-2. **My tasks** — `GET /projects/{id}/dashboard/my-tasks` returns non-terminal
-   test plan entries on hosts in your in-review queue.
+2. **My tasks** — `GET /projects/{id}/dashboard/my-tasks` returns the host
+   tests still to do that are assigned to you, on hosts in your in-review
+   queue, or unassigned and critical/high.
 3. **New scans alert** — `GET /projects/{id}/dashboard/new-scans-since?since=<iso>`
    counts scans uploaded since your last visit (the frontend tracks the cursor in
    localStorage).
@@ -151,15 +152,16 @@ approval step, approved-tool list or required sequence):
   `/domains` and the target files (`hosts.ndjson`, `live-hosts.txt`,
   `web-targets.txt`); `POST /agent/uploads` (multipart), poll
   `GET /agent/uploads/{job_id}` (tag `agent-scope`).
-- **Register and work a test plan** — `POST /agent/test-plans`, `.../entries`
-  (tag `agent-plan-generation`), then `POST /agent/execution-sessions/start` and
-  record each test's command, output and finding (tag `agent-execution`).
-  Target checks (`POST .../sanity-check`) are optional evidence.
+- **Propose tests on hosts and record what they produced** —
+  `POST /agent/host-tests` (a batch of individual tests, shown on each host's
+  page; tag `agent-host-tests`), `PATCH /agent/host-tests/{id}` for status, and
+  `POST /agent/evidence` with `host_test_id` for the result (tag
+  `agent-proposals`). Test plans and execution runs were removed in v2.442.0.
 - **Query and annotate the inventory** — tag `agent-assist`, below.
 
 #### Inventory assist — tag `agent-assist`
 
-The default, no-phase-open surface of every session. The session acts with
+The read surface of every session. The session acts with
 the **operator's own project permissions**, re-checked on every call.
 
 1. **Agent queries project state** to answer ad-hoc questions —
@@ -174,10 +176,10 @@ the **operator's own project permissions**, re-checked on every call.
    first. These reads generate no target traffic.
 
 Agent keys are project-scoped and time-limited (default 24h, `AGENT_KEY_TTL_HOURS`)
-and bound to **one** session; the phases a session opens link back to it, and
-every phase write resolves its run or plan through the caller's session. The
-`agent-browse` tag below documents the host/scope/dashboard surface shared by
-every phase (reads, plus the three assist writes).
+and bound to **one** session; what the session writes (host tests, evidence,
+proposals, notes, uploads) carries its id. The `agent-browse` tag below
+documents the host/scope/dashboard surface (reads, plus the three assist
+writes).
 
 ## Error conventions
 
@@ -266,20 +268,16 @@ _OPENAPI_TAGS = [
     # nothing to provision: agent rows are created by each workflow's own start
     # endpoint, and every key is bound to one session.
     {
-        "name": "test-plans",
-        "description": "Human-facing test plan management — list, view, create, edit entries, archive, delete. The agent-facing side is documented under `agent-plan-generation` and `agent-execution`. Lifecycle: draft → in_progress (first execution run) → completed, or archived.",
+        "name": "host-tests",
+        "description": "Tests proposed on a host, by a person or an agent (v2.442.0; they replace test plans). `POST /host-tests` takes a batch (each test: host, tool, description, command, rationale, priority, `request_key`); `GET /host-tests` filters by host, status, label, assignee; `PATCH /host-tests/{id}` changes status, assignee or the tester's summary under `expected_revision` (409 when stale). A host is *planned* while it has a test that is proposed or in progress, and *tested* once an evidence record with outcome finding / no_finding / inconclusive exists for it.",
     },
     {
         "name": "agent-browse",
-        "description": "Browse surface shared by the plan, execution, recon, and assist agent workflows: hosts, scans, scopes, dashboard, notes, follows. Mostly reads, plus three project writes an assist agent may make when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
+        "description": "Browse surface every agent session shares: hosts, scans, scopes, dashboard, notes, follows. Mostly reads, plus three project writes an assist agent may make when the operator's role permits (analyst+): notes (`POST /agent/hosts/{id}/notes`), review status (`POST .../follow`), and hostname/OS (`PATCH /agent/hosts/{id}`) — otherwise 403. Authenticated via `X-API-Key`; data is automatically scoped to the agent's project.",
     },
     {
-        "name": "agent-plan-generation",
-        "description": "An agent registers a test plan — the record of what it sets out to test: `POST /agent/test-plans` → `GET /agent/test-plans/{id}/context` → `PATCH /agent/test-plans/{id}` (description) → `POST /agent/test-plans/{id}/entries` → optionally `GET .../validate` (advice). Nothing waits on approval.",
-    },
-    {
-        "name": "agent-execution",
-        "description": "An agent works a plan (draft or in progress) and records what it ran.  `POST /agent/execution-sessions/start` → `GET /agent/test-plans/{id}/execution-context` → per test `POST .../test-results` (upserts by `test_index`) → `POST .../complete` per entry. `POST .../sanity-check` records an optional target check as evidence. Humans watch progress via `GET .../execution-progress`.",
+        "name": "agent-host-tests",
+        "description": "The agent side of host tests — the same contract as `host-tests`, authenticated by the session key and attributed to the session: `POST /agent/host-tests`, `GET /agent/host-tests`, `GET`/`PATCH /agent/host-tests/{id}`. Nothing waits on approval; the result of a test is an evidence record (`POST /agent/evidence` with `host_test_id`).",
     },
     {
         "name": "agent-proposals",
@@ -347,13 +345,10 @@ app.add_middleware(
     allow_headers=["*"],
     # Explicit allowlist instead of "*": with allow_credentials=True a
     # wildcard expose is over-broad, and only these response headers are
-    # actually read by the frontend (download filename + bundle export
-    # correlation ids + partial-report flag + tool-ready counts — see
-    # services/api/test-plans.ts and services/api.ts).
+    # actually read by the frontend (download filename, the
+    # partial-report flag and the tool-ready counts — see services/api.ts).
     expose_headers=[
         "Content-Disposition",
-        "X-Bundle-Id",
-        "X-Execution-Session-Id",
         "X-Report-Truncated",
         "X-Tool-Ready-Total",
         "X-Tool-Ready-Returned",

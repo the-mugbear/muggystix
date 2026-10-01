@@ -1,24 +1,21 @@
 """v2.432.0 — the agent session is a page of its own.
 
-A consolidated session's recon / plan / execution rows are left off the
-unified timeline (the session row represents them), and nothing else listed
-them with the session — so an execution a session opened was reachable only
-from /executions. The session row now carries its ``phases``; the detail read
+The session row says what the session did; the detail read
 ``GET /agent-sessions/{id}`` returns that row; and the caller's End / Resume
 rights come with it instead of being guessed from the global role.
+
+v2.442.0 — a session no longer opens "phases" (plans, execution runs): the row
+carries ``host_test_count`` and ``evidence_count``, the host tests it proposed
+and the evidence records it wrote, counted for THAT session only.
 
 The detail row (``assist_sessions``) has its own id sequence: session #72's
 notes live under assist #52. The row names it, and the assist row names its
 session back, so the two ids are never compared with each other again.
 """
 from app.db import models
-from app.db.models_agent import (
-    AgentSession,
-    AssistSession,
-    ExecutionSession,
-    ExecutionSessionStatus,
-    TestPlan,
-)
+from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_auth import User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
 from app.main import app
@@ -35,28 +32,34 @@ def _session_id(db, assist_id):
     return db.query(AssistSession.agent_session_id).filter(AssistSession.id == assist_id).scalar()
 
 
-def _open_work(db, project, agent, user, session_id):
-    plan = TestPlan(
-        project_id=project.id, title="SMB signing sweep", status="draft",
-        agent_id=agent.id, created_by_user_id=user.id, agent_session_id=session_id,
-    )
-    db.add(plan)
+def _do_work(db, project, user, session_id, *, tests=2, evidence=3, ip="10.71.0.1"):
+    host = models.Host(project_id=project.id, ip_address=ip, state="up")
+    db.add(host)
     db.flush()
-    run = ExecutionSession(
-        test_plan_id=plan.id, agent_id=agent.id, started_by_id=user.id,
-        status=ExecutionSessionStatus.PAUSED, agent_session_id=session_id,
-    )
-    db.add(run)
+    for i in range(tests):
+        db.add(HostTest(
+            project_id=project.id, host_id=host.id, tool="nxc", description=f"t{i}", rationale="r",
+            priority="medium", status="proposed", source="agent", agent_session_id=session_id,
+            created_by_user_id=user.id, request_key=f"detail-{session_id}-{i}", request_hash="0" * 64,
+        ))
+    for i in range(evidence):
+        db.add(EvidenceRecord(
+            project_id=project.id, host_id=host.id, tool="nxc", outcome="info",
+            summary=f"e{i}", agent_session_id=session_id,
+        ))
     db.commit()
-    return plan, run
 
 
 def test_the_detail_read_returns_the_sessions_work_and_detail_row(
-    client, db_session, test_project, test_agent, test_user
+    client, db_session, test_project, test_user
 ):
     assist_id = _start(client, test_project)
     sid = _session_id(db_session, assist_id)
-    plan, run = _open_work(db_session, test_project, test_agent, test_user, sid)
+    other_sid = _session_id(db_session, _start(client, test_project, purpose="another"))
+    _do_work(db_session, test_project, test_user, sid, tests=2, evidence=3)
+    # Another session's work, and a person's, are not this session's.
+    _do_work(db_session, test_project, test_user, other_sid, tests=5, evidence=1, ip="10.71.0.2")
+    _do_work(db_session, test_project, test_user, None, tests=1, evidence=1, ip="10.71.0.3")
 
     r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}")
     assert r.status_code == 200, r.text
@@ -64,28 +67,28 @@ def test_the_detail_read_returns_the_sessions_work_and_detail_row(
     assert body["kind"] == "project" and body["id"] == sid
     assert body["purpose"] == "map the DMZ"
     assert body["assist_session_id"] == assist_id
-    by_kind = {p["kind"]: p for p in body["phases"]}
-    assert by_kind["plan"]["id"] == plan.id and by_kind["plan"]["label"] == "SMB signing sweep"
-    assert by_kind["plan"]["status"] == "draft"
-    assert by_kind["execution"]["id"] == run.id
-    assert by_kind["execution"]["test_plan_id"] == plan.id
-    assert by_kind["execution"]["status"] == "paused"
+    assert (body["host_test_count"], body["evidence_count"]) == (2, 3)
+    for retired in ("phases", "test_plan_id", "target_label"):
+        assert retired not in body
 
 
-def test_the_list_row_carries_the_same_phases(
-    client, db_session, test_project, test_agent, test_user
-):
+def test_the_list_row_carries_the_same_counts(client, db_session, test_project, test_user):
     assist_id = _start(client, test_project)
     sid = _session_id(db_session, assist_id)
-    _open_work(db_session, test_project, test_agent, test_user, sid)
+    idle = _session_id(db_session, _start(client, test_project, purpose="idle"))
+    _do_work(db_session, test_project, test_user, sid, tests=4, evidence=1)
 
     rows = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()["sessions"]
-    row = next(r for r in rows if r["kind"] == "project" and r["id"] == sid)
+    by_id = {r["id"]: r for r in rows if r["kind"] == "project"}
     detail = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}").json()
-    assert row["phases"] == detail["phases"]
-    assert len(row["phases"]) == 2
-    # The runs themselves stay off the timeline: the session row represents them.
-    assert not [r for r in rows if r["kind"] == "execution" and r["agent_session_id"] == sid]
+    assert (by_id[sid]["host_test_count"], by_id[sid]["evidence_count"]) == (4, 1)
+    assert (detail["host_test_count"], detail["evidence_count"]) == (4, 1)
+    assert (by_id[idle]["host_test_count"], by_id[idle]["evidence_count"]) == (0, 0)
+    # The retired run kinds are not timeline rows, and cannot be asked for.
+    assert {r["kind"] for r in rows} <= {"project", "assist"}
+    assert client.get(
+        f"/api/v1/projects/{test_project.id}/agent-sessions", params={"kind": "execution"},
+    ).status_code == 422
 
 
 def test_the_owner_may_end_and_resume_their_active_session(client, db_session, test_project):

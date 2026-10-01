@@ -15,13 +15,15 @@ import {
 
 /**
  * Agents guide — rewritten for the unified session (v2.337.0+, v5.218.0), and
- * again for 5.313.0: you drive your agent, and it executes its own plans.
+ * again for 5.313.0: you drive your agent — and for 5.320.0: tests are
+ * proposed on hosts and shown on each host's page; there are no test plans
+ * and no execution runs.
  *
  * Gone since 5.313.0: the per-object buttons that minted a key for one kind of
  * work, the "approved set" of tools, plan approval, and the sanity check as a
  * gate. One session per operator (Start Agent Session) is the way an agent
- * starts; the agent opens plans and execution runs itself (5.313.1: recon
- * runs are gone — it reads a scope and uploads to its session). Kept:
+ * starts (5.313.1: recon runs are gone — it reads a scope and uploads to its
+ * session). Kept:
  * the key is your role, renewal, ending and resuming, every command shown,
  * the declared scope, the working directory and the audit trail.
  */
@@ -45,15 +47,15 @@ const sections: GuideSection[] = [
           session is bound to <strong>one project</strong> and mints <strong>one API key</strong>{' '}
           (<Mono>X-API-Key: nm_agent_…</Mono>). The same session answers questions about the
           inventory and, when you ask, <strong>scans a scope</strong> and uploads the output,
-          writes a <strong>test plan</strong>, or opens an <strong>execution run</strong> to work a
-          plan — in whatever order the engagement needs. Each upload, plan and run is linked back
-          to the session that made it.
+          <strong>proposes tests</strong> on hosts, or <strong>runs them</strong> and records what
+          came back — in whatever order the engagement needs. Each upload, test and evidence
+          record is linked back to the session that made it.
         </Para>
         <Para>
-          Pages that deal with one object — a scope, a plan, a host selection — have a button such
-          as <em>Scan with your agent</em>, <em>Work with your agent</em> or{' '}
-          <em>Have your agent draft it</em>. It opens the same start dialog with a one-line task to
-          copy (for example <Mono>Work test plan #12 in BlueStick.</Mono>); if your session is
+          Pages that deal with one object — a scope, a host, a host selection — have a button such
+          as <em>Scan with your agent</em>, <em>Propose tests</em> or <em>Run these</em>. It opens
+          the same start dialog with a one-line task to copy (for example{' '}
+          <Mono>Propose tests in BlueStick for these hosts only (host ids): 12, 14.</Mono>); if your session is
           already live, the dialog says so and you paste the task to that agent instead of
           starting another.
         </Para>
@@ -73,15 +75,14 @@ const sections: GuideSection[] = [
         <UnorderedList>
           <li><strong>Reads</strong> need current project membership — a viewer's agent sees what a viewer sees.</li>
           <li><strong>Bulk exports</strong> (the whole-project dossier, host dumps, target lists, evidence files) need <strong>auditor</strong>, the same floor the Reports and Export pages have.</li>
-          <li><strong>Writes</strong> to project data — uploads, execution runs, plans and their entries, test results, notes, corrections — need <strong>analyst</strong>. A 403 on a write is the guardrail working, not a fault.</li>
+          <li><strong>Writes</strong> to project data — uploads, host tests, evidence records, notes, corrections — need <strong>analyst</strong>. A 403 on a write is the guardrail working, not a fault.</li>
           <li>Renewing its key and filing feedback are about the session, not the project, so any member's agent can do them.</li>
         </UnorderedList>
         <Para>Treat the key like a password with an expiry date. It is exactly as capable as you are.</Para>
         <Subhead>The bounds, and what BlueStick can and cannot enforce</Subhead>
         <Para>
           Before the agent acts, it <strong>says the bounds back</strong> in its own words — which
-          project, which scope or plan, which working directory — and it gets a concrete read-back
-          when it opens a run (the scope's CIDRs, the plan's hosts). It shows you every command it
+          project, which scope (its CIDRs and in-scope domains), which working directory. It shows you every command it
           runs, keeps to hosts in the inventory or names a declared in-scope domain covers (an
           address a name resolves to is not thereby in scope), and writes its output to the
           session's working directory.
@@ -99,16 +100,16 @@ const sections: GuideSection[] = [
         <Para>
           The client (Claude Code, Codex, VS Code…) is recorded from the MCP handshake, and the
           prompt version by the server. The model is the agent's own report: it may pass{' '}
-          <Mono>agent_model</Mono> when it registers a plan, opens a run or ends the session.
+          <Mono>agent_model</Mono> when it proposes tests, records evidence, proposes a change or ends the session.
         </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
             Every <Mono>/agent/*</Mono> call is logged. <strong>Workflows → Agent Sessions</strong> shows
-            what is live, each session with the runs it opened, and what an ended session left
-            open; a session's own page shows what it read and wrote, and has its Resume and End
-            controls; <strong>Workflows → Tool Activity</strong> answers
-            "which agent touched this host"; a plan's <em>API activity</em> tab filters by host,
-            target IP and status code. Agents never reach user or admin surfaces.
+            what is live and each session with the tests it proposed and the evidence it recorded;
+            a session's own page shows what it read and wrote — its API activity filters by host,
+            target IP and status code — and has its Resume and End controls;{' '}
+            <strong>Workflows → Tool Activity</strong> answers "which agent touched this host".
+            Agents never reach user or admin surfaces.
           </AlertDescription>
         </Alert>
       </div>
@@ -142,23 +143,17 @@ const sections: GuideSection[] = [
           past it. A session does not end on its own until the lifetime cap:
         </Para>
         <UnorderedList>
-          <li><strong>The agent ends it</strong> when you tell it the work is done — its contract makes <Mono>POST /agent/session/end</Mono> (MCP <Mono>end_session</Mono>) the last step, after closing any execution run it has open.</li>
+          <li><strong>The agent ends it</strong> when you tell it the work is done — its contract makes <Mono>POST /agent/session/end</Mono> (MCP <Mono>end_session</Mono>) the last step. The tests it proposed and the evidence it recorded stay.</li>
           <li><strong>You end it</strong> — <em>End</em> on the session under Workflows → Agent Sessions or on its own page, or from the sessions panel in the start dialog. The session's owner or a project admin can end it; peers cannot cut off each other's agents.</li>
         </UnorderedList>
         <Subhead>Resuming after the agent process dies</Subhead>
         <Para>
           If the terminal closes or the agent hangs, the session is still open. <em>Resume</em> on
           the session under Agent Sessions (or on its page) <strong>rotates the key</strong> — the
-          previous one is revoked, the same session and its open runs are kept — and hands you the
+          previous one is revoked, the same session is kept — and hands you the
           prompt and MCP setup again, with a notice telling the new agent to check the working
-          directory for output the old one never uploaded and to read each open run's progress
-          before continuing. Resuming is always done on the session: a plan or execution run links
-          to its session rather than carrying a key of its own.
-        </Para>
-        <Para>
-          A run that is genuinely dead can be marked <em>Abandoned</em> from its own page (analyst) —
-          every run is linked from its session, and runs an ended session left open are listed
-          under <em>Left open</em> on Agent Sessions; results already submitted stay.
+          directory for output the old one never uploaded and to read the tests and evidence the
+          session already recorded before continuing.
         </Para>
       </div>
     ),
@@ -192,45 +187,75 @@ const sections: GuideSection[] = [
     ),
   },
   {
-    id: 'plans',
-    title: 'Test plans',
+    id: 'tests',
+    title: 'Tests on hosts',
     Icon: ClipboardCheck,
-    summary: 'A record of what you or your agent intend to test and what came of it. Nothing waits on an approval.',
+    summary: 'Individual tests proposed for a host, shown on its page, with the evidence of what they produced. Nothing waits on an approval.',
     content: (
       <div>
         <Para>
-          A <strong>test plan</strong> is a prioritised, per-host list of validation and
-          exploitation tests against already-known services — written by you, or by your agent, and
-          kept for posterity with the results recorded against it. A plan is{' '}
-          <strong>draft</strong> while it is written, <strong>in progress</strong> once a run works
-          it, then <strong>completed</strong>; <em>Abandon</em> archives one you no longer want.
+          A <strong>test</strong> is one check on one host: the tool, what it establishes, the
+          exact command, and why it is worth running. Tests belong to the host — open a host and
+          its <strong>Tests</strong> section lists them. There is no test plan to open and no run
+          to start: a test is <strong>proposed</strong>, then <strong>in progress</strong>, then{' '}
+          <strong>done</strong>, or <strong>dismissed</strong> with a reason.
         </Para>
-        <Subhead>Writing a plan</Subhead>
+        <Subhead>Proposing tests</Subhead>
         <Para>
-          Ask your agent to draft one (<strong>Test Plans → <em>Draft with your agent</em></strong>,
-          or <em>Have your agent draft it</em> from a host selection on the Hosts page, which names
-          exactly those hosts). It reviews candidate hosts and adds entries — each with a host,
-          priority, test phase, and structured proposed tests (tool, command, expected result,
-          references). You can also build a plan by hand from a host selection, or add hosts to a
-          draft.
+          Write one yourself: <strong><em>Add test</em></strong> in a host's Tests section, or{' '}
+          <strong><em>Add a test</em></strong> on an open weakness (the test is then tied to that
+          weakness). Say what to check and with which tool; the command, what counts as a finding
+          and the reason are optional when a weakness is named. It is the same test an agent
+          proposes, and you record its result the same way.
         </Para>
-        <Subhead>Working a plan</Subhead>
         <Para>
-          A draft with entries can be worked straight away: <strong><em>Work with your agent</em></strong>{' '}
-          on the plan hands it to your session, and the agent opens an execution run, which moves
-          the plan to in progress. <em>Export Bundle</em> does the same for an offline agent whose
-          results you import later.
+          Or ask your agent: <strong><em>Ask agent</em></strong> in a host's Tests section, or{' '}
+          <strong><em>Propose tests</em></strong> on the Hosts page for a selection (which names
+          exactly those hosts, up to 200), or on the Evidence page for the hosts in a gap. With a
+          session already running the task is copied for you to paste; otherwise the Start Agent
+          Session dialog opens with it. Say what you want tested — for example "the critical
+          vulnerabilities" or "SMB signing and anonymous shares" — or leave it open and the agent
+          proposes from what each host exposes. The tests appear on the hosts at once; an agent
+          gives a batch one label so you can find it again (<Mono>testlabel:"…"</Mono> on the
+          Hosts page).
+        </Para>
+        <Subhead>Tests that confirm a weakness</Subhead>
+        <Para>
+          Open a weakness on a host and <strong><em>Add a test</em></strong> or{' '}
+          <strong><em>Ask agent to propose a test</em></strong>:
+          the test is tied to that weakness. Its row then says where its tests stand
+          ("1 test to do", "test showed it · no finding yet", "tested · not present"), and
+          opening it lists them with <strong><em>Record result</em></strong> beside each. A
+          result that shows the issue is promoted as that weakness — it joins the finding the
+          issue already has, on this host, rather than starting a second one.
+        </Para>
+        <Subhead>Working them</Subhead>
+        <Para>
+          Each test is one row: its status and priority, what it checks, where it stands, and its
+          command with a copy button. <strong><em>Ask agent → Run the tests to do</em></strong>{' '}
+          hands them to your agent, which shows you each command before running it and records
+          what came back. To work a test yourself, copy its command, run it, and press{' '}
+          <strong><em>Record result</em></strong>: a panel opens beside the page with the command
+          and what counts as a finding still in view. Choose what it showed (finding, no finding,
+          inconclusive, could not run), write one line, and paste the output if you want it kept.
+          Either way the result is <strong>evidence</strong> — the command as run, the outcome,
+          the output — listed under the test. A finding or no-finding result closes the test; the
+          other two leave it open. A test whose result showed an issue stays under{' '}
+          <strong>To do</strong>, open, until someone makes a finding of it:{' '}
+          <strong><em>Promote to finding</em></strong> when the test confirms a weakness,{' '}
+          <strong><em>Create finding</em></strong> (title and severity) when it does not. The
+          confirmation offers <strong><em>Write it up</em></strong>, which opens the new finding
+          with its report text ready to type. Claim,
+          Dismiss and Reopen are in the row's menu. Commands recorded against the host that
+          answer no test are under <strong>Other evidence</strong>.
         </Para>
         <UnorderedList>
-          <li><strong>Every command shown</strong> — the agent shows each command before it runs it.</li>
-          <li><strong>Sanity checks as evidence</strong> — before testing a host the agent can verify the target (a reverse-DNS lookup plus a banner grab on one known-open port, never a re-scan) and record what it saw. The record is shown beside the results; nothing waits on it.</li>
-          <li><strong>Audit trail</strong> — every attempt, sanity check and result is recorded against the run and the session that made it; progress is live under <strong>Executions</strong> and on the plan's Runs tab.</li>
+          <li><strong>Planned</strong> — a host with a test that is proposed or in progress (<Mono>has:planned</Mono>). <strong>Tested</strong> — a host with evidence of a test that ran: a finding, no finding, or inconclusive (<Mono>has:tested</Mono>). An attempt that could not run does not count.</li>
+          <li><strong>A test is closed by its result</strong>, not by a "done" button — a test nobody ran is dismissed with a reason instead.</li>
+          <li><strong>Two people, one test</strong> — a change made on an out-of-date copy is refused, and the list is read again, rather than one overwriting the other.</li>
+          <li><strong>Your queue</strong> — tests assigned to you, tests on hosts you have in review, and unassigned critical or high tests anyone may claim are on Operations under My work.</li>
+          <li><strong>A finding</strong> an agent believes its evidence shows is a <em>proposal</em> for a person to accept — see Proposals.</li>
         </UnorderedList>
-        <Para>
-          Once a run has started, a plan's proposed-test list is <strong>locked</strong> — results
-          reference tests by position, so changing the list would mis-attribute evidence. Revise
-          while it is still a draft with no run, or clone the plan for a fresh revision.
-        </Para>
       </div>
     ),
   },
@@ -243,8 +268,8 @@ const sections: GuideSection[] = [
       <div>
         <Para>
           Until you ask for more, a session's agent answers questions by querying BlueStick's
-          already-ingested data and citing what it read. If you ask it to scan, draft a plan or work
-          one, it opens the matching run itself (within your role) rather than telling you to use
+          already-ingested data and citing what it read. If you ask it to scan, propose tests or
+          run them, it does so itself (within your role) rather than telling you to use
           another screen.
         </Para>
         <Subhead>What you can ask</Subhead>
@@ -263,7 +288,7 @@ const sections: GuideSection[] = [
         </UnorderedList>
         <Subhead>What it can write</Subhead>
         <UnorderedList>
-          <li><strong>Notes</strong> on a host — attributed to you and marked with an <em>Agent</em> badge, so "did a person assert this?" stays answerable when notes feed findings and reports.</li>
+          <li><strong>Notes</strong> on a host — attributed to you and marked with an <em>Agent</em> badge, so "did a person assert this?" stays answerable. A note is discussion; what the agent ran is recorded as evidence.</li>
           <li><strong>Review status</strong> — it may move a host you are following, but never marks a host <em>reviewed</em> on its own initiative.</li>
           <li><strong>Hostname / OS corrections</strong> — only when its investigation established the real value, with a note citing the evidence.</li>
         </UnorderedList>
@@ -319,8 +344,8 @@ const AgentsGuide: React.FC = () => (
         <span>
           You drive your AI of choice; BlueStick gives it the project's data, a key that carries your
           own role, and an audit trail of everything it does. One project session covers everything
-          — from asking questions about the data to populating it, writing test plans and working
-          them.
+          — from asking questions about the data to populating it, proposing tests on hosts and
+          running them.
         </span>
       }
       sections={sections}

@@ -56,19 +56,19 @@ def test_finding_detail_carries_the_evidence_thread_with_attachments_and_authors
     host = Host(project_id=test_project.id, ip_address="10.99.0.3", state="up")
     db_session.add(host)
     db_session.flush()
-    root = Annotation(host_id=host.id, user_id=test_user.id, body="root observation", status="open")
+    root = Annotation(host_id=host.id, user_id=test_user.id, body="root observation")
     db_session.add(root)
     db_session.flush()
     root.thread_root_id = root.id
     reply_human = Annotation(
         host_id=host.id, user_id=test_user.id, body="only on the staging vhost",
-        parent_id=root.id, thread_root_id=root.id, status="open",
+        parent_id=root.id, thread_root_id=root.id,
     )
     reply_agent = Annotation(
         host_id=host.id, user_id=test_user.id, body="agent re-checked the banner",
-        parent_id=root.id, thread_root_id=root.id, status="open", actor_type="agent",
+        parent_id=root.id, thread_root_id=root.id, actor_type="agent",
     )
-    unrelated = Annotation(host_id=host.id, user_id=test_user.id, body="different thread", status="open")
+    unrelated = Annotation(host_id=host.id, user_id=test_user.id, body="different thread")
     db_session.add_all([reply_human, reply_agent, unrelated])
     db_session.flush()
     db_session.add(NoteAttachment(
@@ -139,7 +139,7 @@ def test_host_notes_page_reports_total_and_continues_with_offset(client, db_sess
     db_session.add(host)
     db_session.flush()
     db_session.add_all([
-        Annotation(host_id=host.id, user_id=test_user.id, body=f"n{i}", status="open") for i in range(7)
+        Annotation(host_id=host.id, user_id=test_user.id, body=f"n{i}") for i in range(7)
     ])
     db_session.commit()
     h = _start(client, test_project)

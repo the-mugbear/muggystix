@@ -15,7 +15,7 @@
  * from ``../services/api`` — the barrel re-exports this module.
  */
 import { api, p } from './client';
-import type { FollowStatus, NoteStatus, NoteType } from './shared';
+import type { FollowStatus, NoteType } from './shared';
 import { asAxiosError } from '../../utils/apiErrors';
 
 // --- BODY APPENDED BELOW (moved verbatim from api.ts) ---
@@ -315,23 +315,19 @@ export interface HostFollowInfo {
 export interface Annotation {
   id: number;
   body: string;
-  status: NoteStatus;
   author_id: number;
   author_name: string | null;
   parent_id?: number | null;
-  // Thread-level work fields (P3) — populated on the root note.
-  assignee_id?: number | null;
-  assignee_name?: string | null;
-  due_at?: string | null;
+  // Labels on a thread's root note. (A note is discussion: status, assignee,
+  // due date and resolution went in 5.325.0.)
   note_type?: NoteType | null;
-  resolution_summary?: string | null;
   pinned?: boolean;
   // 'user' (typed by a person) or 'agent' (written by an AI assist session on
   // the operator's behalf). author_id/author_name are the operator either way,
   // so this is the only signal that a machine wrote it — badge on it.
   actor_type?: 'user' | 'agent';
-  // Set when this thread root has been promoted to a finding — drives the
-  // "Promoted" badge/link and guards a duplicate promote.
+  // Set when this thread root was promoted to a finding, while notes could be
+  // (until 5.325.0) — drives the "Promoted" badge/link.
   finding_id?: number | null;
   // Image/screenshot attachments (evidence). Fetch each via getNoteAttachmentBlob.
   attachments?: NoteAttachment[];
@@ -559,7 +555,7 @@ export const recordHostView = async (hostId: number): Promise<void> => {
 
 export const createAnnotation = async (
   hostId: number,
-  payload: { body: string; status?: NoteStatus; parent_id?: number },
+  payload: { body: string; parent_id?: number; note_type?: NoteType },
 ): Promise<Annotation> => {
   const response = await api.post(`${p()}/hosts/${hostId}/notes`, payload);
   return response.data;
@@ -567,13 +563,8 @@ export const createAnnotation = async (
 
 export interface AnnotationUpdatePayload {
   body?: string;
-  status?: NoteStatus;
-  // Thread-level work fields (P3). Sending `null` clears a nullable field;
-  // omitting a field leaves it unchanged.
-  assignee_id?: number | null;
-  due_at?: string | null;
+  // Sending `null` clears the type; omitting a field leaves it unchanged.
   note_type?: NoteType | null;
-  resolution_summary?: string | null;
   pinned?: boolean;
 }
 
@@ -642,16 +633,12 @@ export interface NoteActivityItem {
   ip_address: string | null;
   hostname: string | null;
   body: string;
-  status: NoteStatus;
   author_name: string | null;
   author_id: number;
   // See Annotation.actor_type — 'agent' notes get a badge in the feed.
   actor_type?: 'user' | 'agent';
   parent_id?: number | null;
   thread_root_id?: number | null;
-  // Status of the thread's ROOT note — use this for the thread-level badge,
-  // not `status` (which is the per-message status; a reply is always "open").
-  thread_root_status?: NoteStatus | null;
   thread_note_count?: number;
   created_at: string;
   updated_at: string | null;
@@ -668,12 +655,10 @@ export interface NoteActivityAuthor {
 export interface NoteActivityResponse {
   notes: NoteActivityItem[];
   total_notes: number;
-  status_counts: { open: number; in_progress: number; resolved: number };
   authors: NoteActivityAuthor[];
 }
 
 export const getNoteActivity = async (params?: {
-  status?: string;
   author_id?: number;
   search?: string;
   skip?: number;
@@ -967,42 +952,10 @@ export const getMatchingHostIds = async (
   return response.data;
 };
 
-export interface HostLineagePlanRow {
-  plan_id: number;
-  title: string;
-  status: string;
-  version: number;
-  entry_id: number;
-  entry_status: string;
-  created_at: string;
-  generated_by_model?: string | null;
-  source_kind?: string | null;
-}
 
-export interface HostLineageExecutionRow {
-  execution_session_id: number;
-  plan_id: number;
-  plan_title: string;
-  status: string;
-  started_at?: string | null;
-  completed_at?: string | null;
-  generated_by_model?: string | null;
-  started_by_username?: string | null;
-  test_count: number;
-  finding_count: number;
-}
 
-export interface HostLineageResponse {
-  host_id: number;
-  ip_address: string;
-  plan_entries: HostLineagePlanRow[];
-  execution_sessions: HostLineageExecutionRow[];
-}
 
-export const getHostLineage = async (hostId: number): Promise<HostLineageResponse> => {
-  const response = await api.get<HostLineageResponse>(`${p()}/hosts/${hostId}/lineage`);
-  return response.data;
-};
+
 
 // ---------------------------------------------------------------------------
 // Web interfaces (v2.12.0) — unified view of httpx / eyewitness / nikto

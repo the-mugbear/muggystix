@@ -13,14 +13,32 @@ from __future__ import annotations
 from app.db import models
 
 
-def test_execution_sessions_envelope_shape(client, db_session, test_project):
-    r = client.get(f"/api/v1/projects/{test_project.id}/execution-sessions/")
-    assert r.status_code == 200, r.text
-    body = r.json()
-    assert set(body.keys()) >= {"items", "total", "skip", "limit", "has_more"}
-    assert body["items"] == []
-    assert body["total"] == 0
-    assert body["has_more"] is False
+def test_host_tests_envelope_shape_and_has_more_boundary(client, db_session, test_project):
+    """The execution-sessions list this pinned went with execution runs
+    (v2.442.0); the host-tests list is the paged list that replaced the plan
+    and run pages, for people and agents.  ``total`` is the whole match and
+    ``has_more`` is server-computed, false exactly on the last page."""
+    url = f"/api/v1/projects/{test_project.id}/host-tests"
+    empty = client.get(url)
+    assert empty.status_code == 200, empty.text
+    assert empty.json() == {"items": [], "total": 0, "has_more": False}
+
+    host = models.Host(project_id=test_project.id, ip_address="10.9.0.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    created = client.post(url, json={"tests": [
+        {"request_key": f"env-{i}", "host_id": host.id, "tool": "curl",
+         "description": f"t{i}", "rationale": "r"} for i in range(3)
+    ]})
+    assert created.status_code == 201, created.text
+
+    first = client.get(url, params={"limit": 2}).json()
+    assert (len(first["items"]), first["total"], first["has_more"]) == (2, 3, True)
+    last = client.get(url, params={"limit": 2, "offset": 2}).json()
+    assert (len(last["items"]), last["total"], last["has_more"]) == (1, 3, False)
+    exact = client.get(url, params={"limit": 3}).json()
+    assert (len(exact["items"]), exact["has_more"]) == (3, False)
+    assert {t["id"] for t in first["items"]}.isdisjoint({t["id"] for t in last["items"]})
 
 
 def test_scope_host_mappings_envelope_has_more_boundary(
@@ -81,7 +99,10 @@ def test_envelope_no_x_total_count_header_anymore(client, test_project):
     """v2.86.13 retired the ``X-Total-Count`` header on the recon /
     execution endpoints — the in-body ``total`` field is the only
     source of truth now.  This guards against accidentally
-    reintroducing the dual-source pattern."""
-    r = client.get(f"/api/v1/projects/{test_project.id}/recon-sessions/")
+    reintroducing the dual-source pattern.  (Those endpoints are gone; the
+    lists that replaced them are checked — a 404 has no such header either
+    way, which is what this asserted against after recon runs went.)"""
+    r = client.get(f"/api/v1/projects/{test_project.id}/host-tests")
+    assert r.status_code == 200, r.text
     assert "x-total-count" not in {k.lower() for k in r.headers.keys()}, \
         "X-Total-Count header should be gone; total lives in the body now"

@@ -97,7 +97,6 @@ export const PRIORITY_KIND: Record<string, { label: string; severity: Severity }
   ownership: { label: 'Assignment', severity: 'high' },
   systemic: { label: 'Systemic', severity: 'critical' },
   site: { label: 'Site', severity: 'critical' },
-  blocked: { label: 'Blocked run', severity: 'high' },
   coverage: { label: 'Coverage', severity: 'medium' },
   triage: { label: 'Triage', severity: 'medium' },
   onboard: { label: 'Onboard', severity: 'medium' },

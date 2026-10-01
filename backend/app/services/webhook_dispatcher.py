@@ -77,9 +77,12 @@ logger = logging.getLogger(__name__)
 # UI offers exactly this set.  An empty config event list means "all".
 WEBHOOK_EVENTS = {
     "note_mention": "Someone @mentioned a teammate on a host note",
-    "note_status_change": "A host note's status changed",
     "host_assigned": "A host was assigned to someone",
 }
+
+# Events that no longer exist.  A stored configuration may still list one: saving
+# that configuration again is not refused over it (it simply never fires).
+RETIRED_WEBHOOK_EVENTS = {"note_status_change"}  # notes lost their status in v2.446.0
 
 # Bounded delivery queue + daemon worker threads.  ``_QUEUE_MAX`` is
 # generous enough for normal bursts (200 mention notifications during

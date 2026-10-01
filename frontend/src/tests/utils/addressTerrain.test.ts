@@ -77,7 +77,7 @@ describe('terrainBlockQuery', () => {
   it('opens exactly the hosts each count counts (AND before NOT: implicit AND does not reach a NOT)', () => {
     expect(terrainBlockQuery('10.0.0.0/24')).toBe('subnet:"10.0.0.0/24"');
     expect(terrainBlockQuery('10.0.0.0/24', 'planned')).toBe('subnet:"10.0.0.0/24" has:planned AND NOT has:tested');
-    expect(terrainBlockQuery('10.0.0.0/24', 'worked')).toBe('subnet:"10.0.0.0/24" AND NOT has:untouched AND NOT has:planned');
+    expect(terrainBlockQuery('10.0.0.0/24', 'worked')).toBe('subnet:"10.0.0.0/24" AND NOT has:untouched AND NOT has:planned AND NOT has:tested');
     expect(terrainBlockQuery('10.0.0.0/24', 'critical_untouched')).toBe('subnet:"10.0.0.0/24" has:untouched has:critical');
   });
 });

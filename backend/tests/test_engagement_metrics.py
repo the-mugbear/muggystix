@@ -230,3 +230,46 @@ def test_finding_states_add_up_to_the_findings_and_false_positives_stand_apart(d
     assert e.finding_states.as_dict() == {"under_investigation": 2, "confirmed": 1, "closed": 2}
     assert sum(e.finding_states.as_dict().values()) == e.findings.high == 5
     assert e.findings_false_positive == 2
+
+
+def test_tasks_and_contributions_come_from_host_tests(db_session, test_project):
+    """v2.442.0 — a tester's open tasks are the host tests assigned to them
+    that are still to do, and proposing a test is a contribution only when a
+    PERSON proposed it: an agent's 200 proposed tests are not 200
+    contributions by its operator.  (Both read test-plan entries until then.)"""
+    from app.db.models_host_tests import HostTest
+    from app.services.engagement_metrics_service import period_activity
+
+    host = models.Host(project_id=test_project.id, ip_address="10.9.6.1", state="up")
+    db_session.add(host)
+    db_session.flush()
+    u = _user(db_session, 7301, "host-test-worker")
+    db_session.add(HostFollow(user_id=u.id, host_id=host.id, status=FollowStatus.IN_REVIEW))
+
+    def test(key, status, source, assigned=None):
+        return HostTest(
+            project_id=test_project.id, host_id=host.id, tool="nmap", description="d", rationale="r",
+            priority="medium", status=status, source=source, created_by_user_id=u.id,
+            assigned_to_id=assigned, request_key=key, request_hash="0" * 64,
+        )
+
+    db_session.add_all([
+        test("agent-1", "proposed", "agent", assigned=u.id),
+        test("agent-2", "in_progress", "agent", assigned=u.id),
+        test("agent-3", "done", "agent", assigned=u.id),        # finished: not an open task
+        test("agent-4", "dismissed", "agent", assigned=u.id),   # dropped: not an open task
+        test("agent-5", "proposed", "agent"),                   # nobody's
+    ])
+    db_session.flush()
+
+    row = next(r for r in tester_rows(db_session, [test_project.id], Window()) if r.user_id == u.id)
+    assert row.open_tasks == 2
+
+    # Only the agent proposed tests so far: its operator has contributed nothing by that.
+    activity, contributors, _ = period_activity(db_session, [test_project.id], Window())
+    assert activity[test_project.id].contributors == 0 and contributors == 0
+
+    db_session.add(test("person-1", "proposed", "person"))
+    db_session.flush()
+    activity, contributors, _ = period_activity(db_session, [test_project.id], Window())
+    assert activity[test_project.id].contributors == 1 and contributors == 1

@@ -14,8 +14,6 @@ type Variant = React.ComponentProps<typeof Badge>['variant'];
 
 const KINDS: Record<string, { label: string; variant: Variant }> = {
   project: { label: 'Session', variant: 'default' },
-  plan_generation: { label: 'Plan generation', variant: 'info' },
-  execution: { label: 'Execution', variant: 'success' },
   assist: { label: 'Assist', variant: 'warning' },
 };
 

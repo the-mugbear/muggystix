@@ -25,21 +25,16 @@ missing end_time carry ``has_end_time=False`` so the UI can badge
 them.
 
 Kinds (``kinds=`` CSV, default all): ``scan`` (uploaded scanner output,
-anchored on the scanner's own timestamps), ``recon_session`` and
-``execution_session`` (the runs a session opened — containers, not
-individual tool executions), and — v2.339.0 — ``test_result`` (one
-command an executing agent reported running, with the tool it used and
-the host it ran against) and ``sanity_check`` (one target-verification
-probe).  The last two are the per-command, per-target record: they are
-what answers "was THIS signature against THIS host at THIS time ours?".
+anchored on the scanner's own timestamps) and ``evidence`` (v2.442.0 — one
+command an agent reported running against a host, with the tool, the
+address it reached and the outcome).  The second is the per-command,
+per-target record: it is what answers "was THIS signature against THIS
+host at THIS time ours?".  Until v2.442.0 that record was a test-plan
+execution result or a sanity check, and execution runs were a kind too.
 
-Attribution filters (v2.339.0): ``tool=`` matches the tool name (scan
-tool, the proposed test's tool, the sanity method) or the command line,
-case-insensitively; ``target=`` is one IP and keeps the rows that touched
-it (a scan that observed the host, a command or probe against it, a
-recon run whose scope contains it, an execution run whose plan lists it).
-With ``tool=`` set the two container kinds are omitted — a run is where
-tools ran, not a tool.
+Attribution filters (v2.339.0): ``tool=`` matches the tool name or the
+command line, case-insensitively; ``target=`` is one IP and keeps the rows
+that touched it (a scan that observed the host, a command against it).
 """
 
 from __future__ import annotations
@@ -57,13 +52,7 @@ from sqlalchemy.orm import Session
 from app.api.v1.endpoints.auth import get_current_user
 from app.db import models
 from app.services.host_query_common import escape_like
-from app.db.models_agent import (
-    ExecutionSession,
-    HostSanityCheck,
-    TestExecutionResult,
-    TestPlan,
-    TestPlanEntry,
-)
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
 from app.db.session import get_db
@@ -89,29 +78,29 @@ MAX_TOLERANCE_SECONDS = 3600
 class ActivityItem(BaseModel):
     """One activity row whose time window overlapped the query window.
 
-    Unified shape across scan / recon_session / execution_session.  The
+    Unified shape across scan / evidence.  The
     ``kind`` discriminator tells the UI which icon / label set to use.
     """
 
-    kind: str  # "scan" | "recon_session" | "execution_session"
-    # Reference id — scan_id for scans, session_id for recon/execution.
+    kind: str  # "scan" | "evidence"
+    # Reference id — the scan's id, or the evidence record's.
     # Kept as a single field so the table can render uniformly; the UI
     # builds the deep-link URL from (kind, id, project_id).
     ref_id: int
     project_id: int
     project_name: str
-    # Human-readable primary label.  Scan: tool_name.  Recon: scope
-    # name.  Execution: plan title.
+    # Human-readable primary label: the tool (a scan's, or the one the
+    # agent says it ran).
     label: str
-    # Optional secondary string for tooltip / details pane.  Scan:
-    # truncated command_line.  Recon: notes summary.  Execution: mode.
+    # Optional secondary string for tooltip / details pane: the command
+    # line, truncated.
     secondary_label: Optional[str] = None
     start_time: datetime
     end_time: Optional[datetime] = None
     # v2.60.0 — `Scan.created_at` for scans only (sessions don't carry
     # a separate ingestion timestamp; their `started_at` already is the
-    # row-creation time).  Always populated for scans; null for recon /
-    # execution sessions.  The timeline anchor is still `start_time`;
+    # row-creation time).  Always populated for scans; null for evidence.
+    # The timeline anchor is still `start_time`;
     # this is metadata that lets the UI show "uploaded at X" alongside
     # the execution timestamp.
     recorded_time: Optional[datetime] = None
@@ -123,19 +112,16 @@ class ActivityItem(BaseModel):
     # so the analyst doesn't read upload time as execution time.
     start_time_is_fallback: bool = False
     has_end_time: bool
-    # Host count for scans + recon_sessions; null for execution_sessions
-    # (which don't directly map to host count).
+    # Host count for scans; null for evidence (one host, in ``target``).
     host_count: Optional[int] = None
-    # Status string when kind in (recon_session, execution_session);
-    # null for scans.
+    # An evidence record's outcome (finding, no_finding, inconclusive,
+    # failed, info); null for scans.
     status: Optional[str] = None
-    # v2.339.0 — the IP this row acted on, when it is one: the host a
-    # command ran against (test_result), the probed address
-    # (sanity_check).  Null for scans and runs, which cover many.
+    # v2.339.0 — the IP this row acted on, when it is one: the address an
+    # agent's command reached (evidence).  Null for scans, which cover many.
     target: Optional[str] = None
-    # v2.339.0 — for the per-command kinds, the execution run the row
-    # belongs to (``ref_id`` is the row's own id there); the deep link
-    # goes to the run.  Null otherwise.
+    # For evidence, the agent session that recorded it (``ref_id`` is the
+    # record's own id); the deep link goes to the session.  Null otherwise.
     parent_id: Optional[int] = None
 
 
@@ -220,12 +206,8 @@ def _to_utc(value: Optional[datetime], *, allow_none: bool = False) -> Optional[
 
 
 KIND_SCAN = "scan"
-KIND_EXECUTION = "execution_session"
-KIND_TEST_RESULT = "test_result"
-KIND_SANITY = "sanity_check"
-ALL_KINDS = {KIND_SCAN, KIND_EXECUTION, KIND_TEST_RESULT, KIND_SANITY}
-#: The kinds that are containers for tool runs rather than tool runs.
-CONTAINER_KINDS = {KIND_EXECUTION}
+KIND_EVIDENCE = "evidence"
+ALL_KINDS = {KIND_SCAN, KIND_EVIDENCE}
 
 
 def _parse_target(raw: Optional[str]) -> Optional[str]:
@@ -457,86 +439,7 @@ def _scope_contains(db: Session, scope_ids: Set[int], target: str) -> Set[int]:
     return hits
 
 
-def _query_execution_sessions(
-    db: Session,
-    project_ids: List[int],
-    window_start: datetime,
-    window_end: datetime,
-    *,
-    target: Optional[str] = None,
-) -> List[ActivityItem]:
-    """ExecutionSession rows.  Project is reached via TestPlan.  With
-    ``target`` set, only runs whose plan lists a host at that address."""
-    effective_end = func.coalesce(
-        ExecutionSession.completed_at, ExecutionSession.started_at
-    )
-    q = (
-        db.query(
-            ExecutionSession.id,
-            TestPlan.project_id,
-            Project.name,
-            TestPlan.title,
-            ExecutionSession.mode,
-            ExecutionSession.started_at,
-            ExecutionSession.completed_at,
-            ExecutionSession.status,
-        )
-        .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-        .join(Project, Project.id == TestPlan.project_id)
-        .filter(
-            ExecutionSession.started_at.isnot(None),
-            TestPlan.project_id.in_(project_ids),
-            ExecutionSession.started_at <= window_end,
-            effective_end >= window_start,
-        )
-    )
-    if target:
-        q = q.filter(exists().where(and_(
-            TestPlanEntry.test_plan_id == TestPlan.id,
-            TestPlanEntry.host_id == models.Host.id,
-            models.Host.ip_address == target,
-        )))
-    rows = q.order_by(ExecutionSession.started_at.desc()).limit(MAX_RESULTS + 1).all()
-    return [
-        ActivityItem(
-            kind=KIND_EXECUTION,
-            ref_id=row[0],
-            project_id=row[1],
-            project_name=row[2],
-            label=f"execution: {row[3]}" if row[3] else "execution",
-            secondary_label=row[4],
-            start_time=row[5],
-            end_time=row[6],
-            has_end_time=row[6] is not None,
-            host_count=None,
-            status=row[7],
-        )
-        for row in rows
-    ]
-
-
-#: Leading command tokens that wrap the real tool rather than being it.
-_COMMAND_WRAPPERS = {"sudo", "doas", "proxychains", "proxychains4"}
-
-
-def _tool_of(proposed_tests, test_index: int, command_run: Optional[str]) -> str:
-    """The tool a recorded result used: the proposed test's ``tool``, else
-    the first non-wrapper token of the command actually run (``sudo nmap``
-    is nmap), else ``unknown``."""
-    try:
-        t = (proposed_tests or [])[test_index]
-        if isinstance(t, dict) and t.get("tool"):
-            return str(t["tool"])
-    except (IndexError, TypeError):
-        pass
-    for token in (command_run or "").split():
-        name = token.rsplit("/", 1)[-1]
-        if name not in _COMMAND_WRAPPERS:
-            return name
-    return "unknown"
-
-
-def _query_test_results(
+def _query_evidence(
     db: Session,
     project_ids: List[int],
     window_start: datetime,
@@ -545,76 +448,40 @@ def _query_test_results(
     tool: Optional[str] = None,
     target: Optional[str] = None,
 ) -> List[ActivityItem]:
-    """One row per command an executing agent reported (v2.339.0) — the
-    per-target, per-tool record.  A result is a point event at
-    ``executed_at`` (the agent's own timestamp) or ``created_at``.
-
-    The row's ``target`` is the address the command actually hit
-    (``observed_ip`` when the agent reported one, else the entry's host),
-    and ``target=`` matches either — a command that reached a different
-    binding of a named endpoint is still attributable by the address it hit.
-
-    Both filters are settled entirely in SQL so the LIMIT and the filter
-    agree: a Python post-filter after the LIMIT would spend the row budget
-    on rows it then drops and report ``truncated=False`` over the ones it
-    never fetched.
-
-    Note on cost: the window predicate is on a COALESCE, which no index
-    serves, so this is a sequential scan of ``test_execution_results``
-    per call.  Fine at the 10^4–10^5 rows a deployment accumulates; if
-    this endpoint ever shows in latency, the first thing to change is the
-    whole-table ``host_scan_history`` aggregate in ``_query_scans``, not
-    this.
-    """
-    when = func.coalesce(TestExecutionResult.executed_at, TestExecutionResult.created_at)
-    hit = func.coalesce(TestExecutionResult.observed_ip, models.Host.ip_address)
+    """Agent evidence records: one command an agent reported running against
+    a host — the per-command, per-target record that answers "was THIS
+    signature against THIS host at THIS time ours?" (v2.442.0; until then
+    that was a test-plan execution result or a sanity check).  Anchored on
+    when the command ran (``executed_at``), else when it was recorded; the
+    address is the one the agent says it reached, else the host's."""
+    when = func.coalesce(EvidenceRecord.executed_at, EvidenceRecord.created_at)
+    hit = func.coalesce(EvidenceRecord.observed_ip, models.Host.ip_address)
     q = (
         db.query(
-            TestExecutionResult.id,
-            TestPlan.project_id,
-            Project.name,
-            TestExecutionResult.test_index,
-            TestExecutionResult.command_run,
-            TestExecutionResult.status,
-            when.label("when"),
-            hit.label("hit"),
-            TestExecutionResult.execution_session_id,
-            TestPlanEntry.proposed_tests,
+            EvidenceRecord.id, EvidenceRecord.project_id, Project.name,
+            EvidenceRecord.tool, EvidenceRecord.command, EvidenceRecord.outcome,
+            when, hit, EvidenceRecord.agent_session_id,
         )
-        .join(TestPlanEntry, TestPlanEntry.id == TestExecutionResult.entry_id)
-        .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)
-        .join(Project, Project.id == TestPlan.project_id)
-        .join(models.Host, models.Host.id == TestPlanEntry.host_id)
+        .join(Project, Project.id == EvidenceRecord.project_id)
+        .join(models.Host, models.Host.id == EvidenceRecord.host_id)
         .filter(
-            TestPlan.project_id.in_(project_ids),
+            EvidenceRecord.project_id.in_(project_ids),
             when >= window_start,
             when <= window_end,
         )
     )
     if target:
-        q = q.filter(or_(
-            models.Host.ip_address == target,
-            TestExecutionResult.observed_ip == target,
-        ))
+        q = q.filter(or_(EvidenceRecord.observed_ip == target, models.Host.ip_address == target))
     if tool:
-        # The command line is the record of what ran; the plan's proposed
-        # tests are the fallback only when no command was reported (the
-        # JSON text covers every test on the entry, not just this index).
-        q = q.filter(or_(
-            _contains(TestExecutionResult.command_run, tool),
-            and_(
-                TestExecutionResult.command_run.is_(None),
-                _contains(cast(TestPlanEntry.proposed_tests, String), tool),
-            ),
-        ))
+        q = q.filter(or_(_contains(EvidenceRecord.tool, tool), _contains(EvidenceRecord.command, tool)))
     rows = q.order_by(when.desc()).limit(MAX_RESULTS + 1).all()
     return [
         ActivityItem(
-            kind=KIND_TEST_RESULT,
+            kind=KIND_EVIDENCE,
             ref_id=row[0],
             project_id=row[1],
             project_name=row[2],
-            label=_tool_of(row[9], row[3], row[4]),
+            label=row[3],
             secondary_label=(row[4][:200] + "…") if (row[4] and len(row[4]) > 200) else row[4],
             start_time=_to_utc(row[6], allow_none=True),
             end_time=None,
@@ -622,64 +489,6 @@ def _query_test_results(
             host_count=None,
             status=row[5],
             target=row[7],
-            parent_id=row[8],
-        )
-        for row in rows
-    ]
-
-
-def _query_sanity_checks(
-    db: Session,
-    project_ids: List[int],
-    window_start: datetime,
-    window_end: datetime,
-    *,
-    tool: Optional[str] = None,
-    target: Optional[str] = None,
-) -> List[ActivityItem]:
-    """One row per target-verification probe (v2.339.0): a ping, banner
-    grab or reverse lookup the agent ran against a host before testing
-    it.  Point event at ``checked_at``."""
-    q = (
-        db.query(
-            HostSanityCheck.id,
-            TestPlan.project_id,
-            Project.name,
-            HostSanityCheck.method,
-            HostSanityCheck.target_ip,
-            HostSanityCheck.port_checked,
-            HostSanityCheck.passed,
-            HostSanityCheck.checked_at,
-            HostSanityCheck.execution_session_id,
-        )
-        .join(ExecutionSession, ExecutionSession.id == HostSanityCheck.execution_session_id)
-        .join(TestPlan, TestPlan.id == ExecutionSession.test_plan_id)
-        .join(Project, Project.id == TestPlan.project_id)
-        .filter(
-            TestPlan.project_id.in_(project_ids),
-            HostSanityCheck.checked_at >= window_start,
-            HostSanityCheck.checked_at <= window_end,
-        )
-    )
-    if target:
-        q = q.filter(HostSanityCheck.target_ip == target)
-    if tool:
-        q = q.filter(_contains(HostSanityCheck.method, tool))
-    rows = q.order_by(HostSanityCheck.checked_at.desc()).limit(MAX_RESULTS + 1).all()
-    return [
-        ActivityItem(
-            kind=KIND_SANITY,
-            ref_id=row[0],
-            project_id=row[1],
-            project_name=row[2],
-            label=f"sanity: {row[3]}",
-            secondary_label=(f"port {row[5]}" if row[5] else None),
-            start_time=_to_utc(row[7], allow_none=True),
-            end_time=None,
-            has_end_time=False,
-            host_count=None,
-            status="passed" if row[6] else "failed",
-            target=row[4],
             parent_id=row[8],
         )
         for row in rows
@@ -701,23 +510,13 @@ def _query_in_window(
     union is then re-sorted and clipped to MAX_RESULTS + 1 so the
     caller-level truncation flag still has correct semantics.
 
-    A ``tool`` filter drops the container kinds (a run is where tools
-    ran, not a tool); a ``target`` filter narrows every kind to rows that
-    touched that address.
+    ``tool`` and ``target`` narrow both kinds to rows that match.
     """
-    if tool:
-        kinds = kinds - CONTAINER_KINDS
     items: List[ActivityItem] = []
     if KIND_SCAN in kinds:
         items.extend(_query_scans(db, project_ids, window_start, window_end, tool=tool, target=target))
-    if KIND_EXECUTION in kinds:
-        items.extend(
-            _query_execution_sessions(db, project_ids, window_start, window_end, target=target)
-        )
-    if KIND_TEST_RESULT in kinds:
-        items.extend(_query_test_results(db, project_ids, window_start, window_end, tool=tool, target=target))
-    if KIND_SANITY in kinds:
-        items.extend(_query_sanity_checks(db, project_ids, window_start, window_end, tool=tool, target=target))
+    if KIND_EVIDENCE in kinds:
+        items.extend(_query_evidence(db, project_ids, window_start, window_end, tool=tool, target=target))
     items.sort(key=lambda i: i.start_time, reverse=True)
     return items[: MAX_RESULTS + 1]
 
@@ -725,15 +524,12 @@ def _query_in_window(
 _TOOL_PARAM = Query(
     None, max_length=100,
     description="Attribution filter: keep rows whose tool name or command line "
-    "contains this text (case-insensitive). Drops the recon/execution run "
-    "kinds, which are containers rather than tools; asking for only those "
-    "kinds together with a tool is a 400.",
+    "contains this text (case-insensitive).",
 )
 _TARGET_PARAM = Query(
     None, max_length=45,
     description="Attribution filter: one IP address; keep rows that touched it "
-    "(a scan that observed the host, a command or probe against it, a recon "
-    "run whose scope contains it, an execution run whose plan lists it).",
+    "(a scan that observed the host, an agent's command against it).",
 )
 
 
@@ -754,18 +550,6 @@ def _respond(
     kinds_set = _parse_kinds(kinds_csv)
     tool = _parse_tool(tool_raw)
     target = _parse_target(target_raw)
-    if tool and kinds_csv and not (kinds_set - CONTAINER_KINDS):
-        # Same philosophy as _parse_kinds: a request that can only ever be
-        # empty is a 400, not a silent "nothing ran".
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "tool= applies to scan / test_result / sanity_check rows; the "
-                f"requested kinds {sorted(kinds_set)!r} are runs, which are "
-                "containers rather than tools."
-            ),
-        )
-
     accessible = _accessible_project_ids(db, current_user)
     requested = _parse_project_ids_csv(project_ids_csv)
     if requested is not None:
@@ -814,8 +598,7 @@ def scans_at(
     kinds: Optional[str] = Query(
         None,
         description="Optional CSV of activity kinds to include: "
-        "`scan`, `execution_session`, `test_result`, "
-        "`sanity_check`. Omit for all.",
+        "`scan`, `evidence`. Omit for all.",
     ),
     tool: Optional[str] = _TOOL_PARAM,
     target: Optional[str] = _TARGET_PARAM,

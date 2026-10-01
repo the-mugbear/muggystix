@@ -46,6 +46,8 @@ def _who(db: Session, request: Request, agent_model: Optional[str]) -> proposals
 # ---------------------------------------------------------------------------
 
 class EvidenceCreate(BaseModel):
+    host_test_id: Optional[int] = Field(None, gt=0)
+    request_key: Optional[str] = Field(None, min_length=1, max_length=100, description="Stable retry key; required for host-test evidence.")
     host_id: int = Field(..., gt=0)
     finding_id: Optional[int] = Field(None, gt=0, description="The finding this bears on, if any.")
     finding_host_id: Optional[int] = Field(None, gt=0, description="The finding endpoint (vhost) it was run against, if any.")
@@ -79,6 +81,7 @@ def record_evidence(
         executed_at=body.executed_at, finding_id=body.finding_id,
         finding_host_id=body.finding_host_id, agent_session_id=who.session.id,
         recorded_by_user_id=who.user_id, agent_model=who.model, agent_client=who.client,
+        host_test_id=body.host_test_id, request_key=body.request_key,
     )
     db.commit()
     db.refresh(record)
@@ -88,15 +91,21 @@ def record_evidence(
 @router.get("/evidence", summary="List evidence records (newest first)")
 def list_evidence(
     request: Request,
+    host_test_id: Optional[int] = Query(None, gt=0),
     host_id: Optional[int] = Query(None, gt=0),
     finding_id: Optional[int] = Query(None, gt=0),
+    agent_session_id: Optional[int] = Query(
+        None, gt=0, description="Only what this agent session recorded.",
+    ),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
     rows, total = evidence.list_evidence(
-        db, agent.project_id, host_id=host_id, finding_id=finding_id, limit=limit, offset=offset,
+        db, agent.project_id, host_id=host_id, finding_id=finding_id,
+        host_test_id=host_test_id, agent_session_id=agent_session_id,
+        limit=limit, offset=offset,
     )
     return {"total": total, "items": [evidence.serialize_evidence(r) for r in rows],
             "has_more": offset + len(rows) < total}

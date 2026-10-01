@@ -216,18 +216,22 @@ const sections: GuideSection[] = [
     id: 'notes',
     title: 'Notes & collaboration',
     Icon: MessagesSquare,
-    summary: 'Threaded notes, @mentions, and the project-wide Activity feed.',
+    summary: 'Threaded discussion on hosts and findings, @mentions, and the project-wide Activity feed.',
     content: (
       <div>
         <Para>
-          Notes attach to hosts (and findings) and are how a team documents findings, coordinates,
-          and tracks remediation. The <strong>Activity</strong> page (Collaboration hub) shows all
-          notes across the project, grouped by host with threading.
+          Notes are discussion: a host's <strong>Discussion</strong> section and a finding's
+          comments are where the team asks, answers and hands over. They are not the record of
+          work. Work is a <strong>test</strong> on the host and the result recorded on it; a
+          finding is made by promoting a weakness or a test result that showed an issue. The{' '}
+          <strong>Activity</strong> page (Collaboration hub) shows every discussion in the
+          project, latest first.
         </Para>
         <UnorderedList>
           <li><strong>Threading</strong> — reply to notes to build a conversation.</li>
           <li><strong>@Mentions</strong> — tag teammates with <Mono>@username</Mono> to notify them; the bell icon shows your unread mention count.</li>
-          <li><strong>Status</strong> — notes carry Open / In Progress / Resolved.</li>
+          <li><strong>Type and pin</strong> — label a thread (question, decision, handoff…) and pin the ones that must stay at the top.</li>
+          <li><strong>Screenshots for the report</strong> — put them on the finding: <em>Attach image</em> on one of its comments, then mark the image for the report. An image is left out until it is marked.</li>
           <li><strong>Markdown</strong> — headers, lists, and bold render in the UI.</li>
         </UnorderedList>
       </div>

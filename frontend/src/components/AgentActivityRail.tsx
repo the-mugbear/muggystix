@@ -54,8 +54,6 @@ const KIND_LABEL: Record<string, string> = {
   // 5.312.0 — the unified session, the row every new session is; it read as
   // the raw "project #72" and opened the list, not the session.
   project: 'Session',
-  plan_generation: 'Plan generation',
-  execution: 'Execution',
   assist: 'Assist',
 };
 

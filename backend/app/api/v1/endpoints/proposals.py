@@ -151,25 +151,56 @@ def bulk_decide(
 
 
 # ---------------------------------------------------------------------------
-# Evidence records (read; agents write them)
+# Evidence records (agents write them; a person records a test's result
+# through POST /host-tests/{id}/result)
 # ---------------------------------------------------------------------------
 
 @router.get("/evidence", summary="Agent evidence records (newest first)")
 def list_evidence(
+    host_test_id: Optional[int] = Query(None, gt=0),
     host_id: Optional[int] = Query(None, gt=0),
     finding_id: Optional[int] = Query(None, gt=0),
     agent_session_id: Optional[int] = Query(None, gt=0),
+    unlinked: bool = Query(False, description="Only records that answer no host test."),
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     rows, total = evidence.list_evidence(
-        db, project.id, host_id=host_id, finding_id=finding_id,
-        agent_session_id=agent_session_id, limit=limit, offset=offset,
+        db, project.id, host_id=host_id, finding_id=finding_id, host_test_id=host_test_id,
+        agent_session_id=agent_session_id, unlinked=unlinked, limit=limit, offset=offset,
     )
     return {"total": total, "items": [evidence.serialize_evidence(r) for r in rows],
             "has_more": offset + len(rows) < total}
+
+
+class _FindingFromEvidence(BaseModel):
+    # Ignored when the record's test confirms a scanner observation: that is
+    # the observation's promotion and the issue names and rates the finding.
+    title: Optional[str] = Field(None, max_length=500)
+    severity: Optional[Literal["critical", "high", "medium", "low", "info"]] = None
+    status: Literal["open", "confirmed"] = "confirmed"
+
+
+@router.post("/evidence/{evidence_id}/finding", status_code=201,
+             summary="Create a finding from an evidence record that showed an issue")
+def finding_from_evidence(
+    body: _FindingFromEvidence,
+    evidence_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    user: User = Depends(require_project_role(ProjectRole.ANALYST)),
+):
+    finding, joined = evidence.create_finding_from_evidence(
+        db, project.id, evidence_id, title=body.title, severity=body.severity,
+        status=body.status, actor_id=user.id,
+    )
+    db.commit()
+    # ``joined_issue``: the record's test confirmed a scanner observation, so
+    # this was that observation's promotion (the issue's finding, not a new one).
+    return {"finding_id": finding.id, "title": finding.title, "severity": finding.severity,
+            "status": finding.status, "evidence_id": evidence_id, "joined_issue": joined}
 
 
 @router.get("/evidence/{evidence_id}/raw", response_class=PlainTextResponse, summary="An evidence record's raw output")

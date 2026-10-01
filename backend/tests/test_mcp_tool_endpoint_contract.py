@@ -166,12 +166,14 @@ import re as _re
 # is either a field name (listed below, on purpose) or a wrong tool name.
 _TOOLISH = _re.compile(
     r"\b(?:assist|plan|execution|recon|start|session|list|get|submit|create|"
-    r"read|record|suggest|end)_[a-z_]+\b"
+    r"read|record|suggest|end|propose|host_tests)_[a-z_]+\b"
 )
 # Field / value names that look tool-shaped. Add to this only for a real
 # payload word — never for a mistyped tool.
 _NOT_TOOLS = {
-    "read_back", "end_date", "plan_generation", "execution_evidence",
+    "read_back", "end_date", "plan_generation",
+    # v2.442.0: a retired tool name and a retired value, each named once in a
+    # description that says it is gone / still accepted.
 }
 _FIELD_SUFFIXES = ("_id", "_ids", "_at", "_count", "_total", "_path")
 

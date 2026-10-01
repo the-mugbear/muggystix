@@ -614,124 +614,129 @@ class TestNamedEndpoints:
         db_session.flush()
         assert [fh.name.fqdn for fh in finding.hosts] == ["portal.example.com"]
 
-    def test_plan_entry_target_fqdn_must_be_bound_to_the_host(self, db_session, test_project, test_plan):
-        from app.services.test_plan_service import TestPlanService
+    # --- host tests aimed at a name (v2.442.0; plan entries until then) -----
+    def _bound_host(self, db_session, test_project, *fqdns):
         scan = _scan(db_session, test_project)
         host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
         db_session.add(host)
         db_session.flush()
-        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
-                               record_type="A", value="203.0.113.20", scan_id=scan.id)
+        for fq in fqdns:
+            svc.record_observation(db_session, project_id=test_project.id, name=fq,
+                                   record_type="A", value="203.0.113.20", scan_id=scan.id)
+        db_session.commit()
+        return host
+
+    @staticmethod
+    def _spec(host, key, **extra):
+        return {"request_key": key, "host_id": host.id, "tool": "curl", "description": "x",
+                "command": "curl https://{fqdn}/", "rationale": "r", "priority": "high", **extra}
+
+    def test_host_test_target_fqdn_must_be_bound_to_the_host(self, client, db_session, test_project):
+        host = self._bound_host(db_session, test_project, "portal.example.com")
         svc.get_or_create_name(db_session, test_project.id, "elsewhere.example.com")
-        plan_svc = TestPlanService(db_session)
-        base = {"host_id": host.id, "priority": "high", "test_phase": "enumeration",
-                "proposed_tests": [{"tool": "curl", "description": "x", "command": "curl https://{fqdn}/"}],
-                "rationale": "r"}
-        with pytest.raises(ValueError, match="never been observed"):
-            plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "elsewhere.example.com"}], "user", 1)
-        with pytest.raises(ValueError, match="not a name"):
-            plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "unknown.example.org"}], "user", 1)
-        created = plan_svc.add_entries(test_plan, [{**base, "target_fqdn": "Portal.Example.com"}], "user", 1)
-        assert created[0].target_name.fqdn == "portal.example.com"
+        db_session.commit()
+        url = f"/api/v1/projects/{test_project.id}/host-tests"
+        # A name of the project that was never observed at this host …
+        r = client.post(url, json={"tests": [self._spec(host, "k1", target_fqdn="elsewhere.example.com")]})
+        assert r.status_code == 422 and "observed at this host" in r.text
+        # … and one the project does not know at all.
+        r = client.post(url, json={"tests": [self._spec(host, "k2", target_fqdn="unknown.example.org")]})
+        assert r.status_code == 422 and "observed at this host" in r.text
+        r = client.post(url, json={"tests": [self._spec(host, "k3", target_fqdn="Portal.Example.com")]})
+        assert r.status_code == 201, r.text
+        row = r.json()["items"][0]
+        name = db_session.query(models.DNSName).filter_by(fqdn="portal.example.com").one()
+        assert row["target_fqdn"] == "portal.example.com"
+        from app.db.models_host_tests import HostTest
+        assert db_session.query(HostTest).filter_by(id=row["id"]).one().name_id == name.id
 
-    def _named_entry(self, db_session, test_project, test_plan):
-        from app.db.models_agent import TestPlanEntry
-        scan = _scan(db_session, test_project)
-        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
-        db_session.add(host)
-        db_session.flush()
-        svc.record_observation(db_session, project_id=test_project.id, name="portal.example.com",
-                               record_type="A", value="203.0.113.20", scan_id=scan.id)
-        name = db_session.query(models.DNSName).one()
-        entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id, name_id=name.id, priority="high",
-                              test_phase="enumeration", proposed_tests=[], rationale="r")
-        db_session.add(entry)
-        db_session.flush()
-        db_session.refresh(entry)
-        return host, name, entry
+    def _named_test(self, client, db_session, test_project):
+        from app.db.models_host_tests import HostTest
+        host = self._bound_host(db_session, test_project, "portal.example.com")
+        r = client.post(f"/api/v1/projects/{test_project.id}/host-tests",
+                        json={"tests": [self._spec(host, "named", target_fqdn="portal.example.com")]})
+        assert r.status_code == 201, r.text
+        name = db_session.query(models.DNSName).filter_by(fqdn="portal.example.com").one()
+        return host, name, db_session.query(HostTest).filter_by(id=r.json()["items"][0]["id"]).one()
 
-    def _result(self, db_session, entry, status, observed_ip, test_index=0):
-        from app.db.models_agent import ExecutionSession, TestExecutionResult
-        session = db_session.query(ExecutionSession).filter_by(test_plan_id=entry.test_plan_id).first()
-        if session is None:
-            session = ExecutionSession(test_plan_id=entry.test_plan_id, status="active")
-            db_session.add(session)
-            db_session.flush()
-        row = TestExecutionResult(
-            execution_session_id=session.id, entry_id=entry.id, test_index=test_index, status=status,
-            observed_ip=observed_ip, executed_at=datetime.now(timezone.utc) if status == "executed" else None,
+    def _evidence(self, db_session, test_project, host, test, key, outcome, observed_ip):
+        from app.services.agent_evidence_service import record_evidence
+        return record_evidence(
+            db_session, project_id=test_project.id, host_id=host.id, tool="curl", outcome=outcome,
+            summary="s", observed_ip=observed_ip, host_test_id=test.id, request_key=key,
+            executed_at=datetime(2026, 9, 1, 12, 0, tzinfo=timezone.utc),
         )
-        db_session.add(row)
-        db_session.flush()
-        return row
 
-    def test_observed_ip_is_validated(self):
-        from app.api.v1.endpoints.agent_execution import _validate_observed_ip
+    def test_observed_ip_is_validated(self, client, db_session, test_project):
         from fastapi import HTTPException
-        assert _validate_observed_ip(" 203.0.113.21 ") == "203.0.113.21"
-        assert _validate_observed_ip(None) is None
-        with pytest.raises(HTTPException):
-            _validate_observed_ip("portal.example.com")
+        host, _name, test = self._named_test(client, db_session, test_project)
+        with pytest.raises(HTTPException) as exc:
+            self._evidence(db_session, test_project, host, test, "bad", "finding", "portal.example.com")
+        assert exc.value.status_code == 422
+        ok = self._evidence(db_session, test_project, host, test, "ok", "finding", "203.0.113.21")
+        assert ok.observed_ip == "203.0.113.21"
 
-    def test_tested_binding_only_for_executed_results_with_an_observed_address(
-        self, db_session, test_project, test_plan,
+    def test_tested_binding_only_for_test_outcomes_with_an_observed_address(
+        self, client, db_session, test_project,
     ):
-        """Review C3: a skipped result, or one with no observed address, must
-        not manufacture TESTED evidence — and the inventory IP is never
-        assumed.  A correction replaces the result's observation."""
+        """Review C3: an attempt that did not test anything (failed / info), or
+        one with no observed address, must not manufacture TESTED evidence —
+        and the inventory IP is never assumed.  The observation is keyed by
+        the evidence record, so a retry of the same record adds nothing."""
         from app.db.models import DNS_OBS_TESTED
-        from app.api.v1.endpoints.agent_execution import _record_tested_binding
-        host, name, entry = self._named_entry(db_session, test_project, test_plan)
+        host, name, test = self._named_test(client, db_session, test_project)
         tested = lambda: db_session.query(models.DNSRecord).filter_by(record_type=DNS_OBS_TESTED).all()  # noqa: E731
 
-        skipped = self._result(db_session, entry, "skipped", None)
-        _record_tested_binding(db_session, entry, skipped)
+        self._evidence(db_session, test_project, host, test, "failed", "failed", "203.0.113.21")
+        self._evidence(db_session, test_project, host, test, "info", "info", "203.0.113.21")
         assert tested() == []
 
-        no_ip = self._result(db_session, entry, "executed", None, test_index=1)
-        _record_tested_binding(db_session, entry, no_ip)
+        self._evidence(db_session, test_project, host, test, "no-ip", "no_finding", None)
         assert tested() == []  # unknown stays unknown
 
-        no_ip.observed_ip = "203.0.113.21"
-        db_session.flush()
-        _record_tested_binding(db_session, entry, no_ip)
+        rec = self._evidence(db_session, test_project, host, test, "seen", "no_finding", "203.0.113.21")
         rows = tested()
-        assert [(r.name_id, r.value, r.exec_result_id) for r in rows] == [(name.id, "203.0.113.21", no_ip.id)]
+        assert [(r.name_id, r.value, r.evidence_record_id) for r in rows] == [(name.id, "203.0.113.21", rec.id)]
 
-        # Re-recording the same result replaces, never piles up …
-        no_ip.observed_ip = "203.0.113.22"
-        db_session.flush()
-        _record_tested_binding(db_session, entry, no_ip)
-        assert [r.value for r in tested()] == ["203.0.113.22"]
-        # … and downgrading it to skipped withdraws the evidence.
-        no_ip.status = "skipped"
-        db_session.flush()
-        _record_tested_binding(db_session, entry, no_ip)
-        assert tested() == []
+        # The same record again (a retry) is the same record and the same observation.
+        again = self._evidence(db_session, test_project, host, test, "seen", "no_finding", "203.0.113.21")
+        assert again.id == rec.id and len(tested()) == 1
 
-    def test_two_named_targets_on_one_host_are_two_entries(self, db_session, test_project, test_plan):
-        """Review C2: the shared-address use case — two vhosts, two entries."""
-        from app.services.test_plan_service import TestPlanService
-        scan = _scan(db_session, test_project)
-        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up")
-        db_session.add(host)
-        db_session.flush()
-        for fq in ("a.example.com", "b.example.com"):
-            svc.record_observation(db_session, project_id=test_project.id, name=fq, record_type="A",
-                                   value="203.0.113.20", scan_id=scan.id)
-        base = {"host_id": host.id, "priority": "high", "test_phase": "enumeration",
-                "proposed_tests": [{"tool": "curl", "description": "x", "command": "curl https://{fqdn}/"}],
-                "rationale": "r"}
-        created = TestPlanService(db_session).add_entries(
-            test_plan,
-            [{**base, "target_fqdn": "a.example.com"}, {**base, "target_fqdn": "b.example.com"}, dict(base)],
-            "user", 1,
-        )
-        targets = sorted(((e.target_name.fqdn if e.target_name else "") for e in created))
-        assert targets == ["", "a.example.com", "b.example.com"]
-        # A true duplicate (same host, same name) is still skipped.
-        again = TestPlanService(db_session).add_entries(test_plan, [{**base, "target_fqdn": "a.example.com"}], "user", 1)
-        assert again == []
+        # A second run that reached another address is a second observation.
+        rec2 = self._evidence(db_session, test_project, host, test, "seen-2", "inconclusive", "203.0.113.22")
+        assert sorted((r.value, r.evidence_record_id) for r in tested()) == [
+            ("203.0.113.21", rec.id), ("203.0.113.22", rec2.id),
+        ]
+
+    def test_evidence_without_a_named_test_records_no_binding(self, client, db_session, test_project):
+        """Only a test aimed at a name says which name the address was reached as."""
+        from app.db.models import DNS_OBS_TESTED
+        from app.services.agent_evidence_service import record_evidence
+        host = self._bound_host(db_session, test_project, "portal.example.com")
+        r = client.post(f"/api/v1/projects/{test_project.id}/host-tests",
+                        json={"tests": [self._spec(host, "unnamed")]})
+        assert r.status_code == 201, r.text
+        record_evidence(db_session, project_id=test_project.id, host_id=host.id, tool="curl",
+                        outcome="finding", summary="s", observed_ip="203.0.113.21",
+                        host_test_id=r.json()["items"][0]["id"], request_key="u1")
+        record_evidence(db_session, project_id=test_project.id, host_id=host.id, tool="curl",
+                        outcome="finding", summary="s", observed_ip="203.0.113.21")
+        assert db_session.query(models.DNSRecord).filter_by(record_type=DNS_OBS_TESTED).count() == 0
+
+    def test_two_named_targets_on_one_host_are_separate_tests(self, client, db_session, test_project):
+        """Review C2: the shared-address use case — two vhosts and the bare
+        address are three tests on one host, each keeping its own target."""
+        host = self._bound_host(db_session, test_project, "a.example.com", "b.example.com")
+        url = f"/api/v1/projects/{test_project.id}/host-tests"
+        r = client.post(url, json={"tests": [
+            self._spec(host, "a", target_fqdn="a.example.com"),
+            self._spec(host, "b", target_fqdn="b.example.com"),
+            self._spec(host, "bare"),
+        ]})
+        assert r.status_code == 201, r.text
+        assert sorted((t["target_fqdn"] or "") for t in r.json()["items"]) == ["", "a.example.com", "b.example.com"]
+        listed = client.get(url, params={"host_id": host.id}).json()
+        assert listed["total"] == 3
 
     def test_vulnerabilities_on_two_vhosts_stay_distinct_and_promotion_keeps_both(
         self, db_session, test_project, tmp_path,
@@ -757,32 +762,6 @@ class TestNamedEndpoints:
         assert f1.id == f2.id  # same issue → one umbrella finding …
         db_session.refresh(f1)
         assert sorted(fh.name.fqdn for fh in f1.hosts) == ["a.example.com", "b.example.com"]  # … both endpoints
-
-    def test_bundle_snapshot_carries_target_and_resolved_commands(self, db_session, test_project, test_plan, test_user):
-        """Review C4: the offline executor must see the approved vhost, not
-        just the host's display name, and no literal placeholders."""
-        import io, zipfile
-        from app.services.bundle_service import build_export_bundle
-        from app.db.models_agent import TestPlanEntry
-        scan = _scan(db_session, test_project)
-        host = models.Host(ip_address="203.0.113.20", project_id=test_project.id, state="up",
-                           hostname="lb.example.com")
-        db_session.add(host)
-        db_session.flush()
-        svc.record_observation(db_session, project_id=test_project.id, name="a.example.com", record_type="A",
-                               value="203.0.113.20", scan_id=scan.id)
-        name = db_session.query(models.DNSName).one()
-        db_session.add(TestPlanEntry(
-            test_plan_id=test_plan.id, host_id=host.id, name_id=name.id, priority="high", test_phase="enumeration",
-            proposed_tests=[{"tool": "curl", "description": "x", "command": "curl -k https://{fqdn}/ --resolve {fqdn}:443:{ip}"}],
-            rationale="r",
-        ))
-        db_session.commit()
-        bundle = build_export_bundle(db=db_session, request=None, plan=test_plan, started_by_id=test_user.id, agent_id=None)
-        plan_json = json.loads(zipfile.ZipFile(io.BytesIO(bundle["zip_bytes"])).read("plan.json"))
-        entry = plan_json["entries"][0]
-        assert entry["target_fqdn"] == "a.example.com" and entry["host_hostname"] == "lb.example.com"
-        assert entry["proposed_tests"][0]["command"] == "curl -k https://a.example.com/ --resolve a.example.com:443:203.0.113.20"
 
     def test_first_time_import_query_budget(self, db_session, test_project, test_engine):
         """Review refactor 1: a fresh import of 100 names is bulk work, not
@@ -823,25 +802,36 @@ class TestReviewRound3:
         by_fqdn = {n.fqdn: n for n in db_session.query(models.DNSName).all()}
         return host, by_fqdn
 
-    def test_deleting_a_referenced_name_is_refused(self, client, db_session, test_project, test_plan):
-        """C1: a named entry + an unnamed entry on one host; deleting the name
-        would collapse both onto the NULL key.  Refuse with 409 instead."""
-        from app.services.test_plan_service import TestPlanService
+    def test_deleting_a_referenced_name_is_refused(self, client, db_session, test_project):
+        """C1: a named endpoint + an unnamed one of a finding on one host;
+        deleting the name would collapse both onto the NULL key.  Refuse with
+        409 instead.  A host test aimed at the name does NOT block (v2.442.0):
+        it keeps its ``target_fqdn`` and only loses the link."""
+        from app.db.models_host_tests import HostTest
+        from app.services.finding_service import FindingService
         host, names_by = self._lb_with_two_vhosts(db_session, test_project)
-        base = {"host_id": host.id, "priority": "high", "test_phase": "enumeration",
-                "proposed_tests": [{"tool": "curl", "description": "x", "command": "curl {fqdn}"}], "rationale": "r"}
-        TestPlanService(db_session).add_entries(
-            test_plan, [{**base, "target_fqdn": "a.example.com"}, dict(base)], "user", 1,
-        )
+        a, b = names_by["a.example.com"], names_by["b.example.com"]
+        fsvc = FindingService(db_session)
+        finding = fsvc.create_finding(project_id=test_project.id, title="XFO missing", severity="low", actor_id=None)
+        fsvc.restore_endpoint(finding=finding, host_id=host.id, name_id=a.id, host_status="open")
+        fsvc.restore_endpoint(finding=finding, host_id=host.id, name_id=None, host_status="open")
         db_session.commit()
-        a = names_by["a.example.com"]
+        created = client.post(f"/api/v1/projects/{test_project.id}/host-tests", json={"tests": [{
+            "request_key": "b-test", "host_id": host.id, "tool": "curl", "description": "x",
+            "command": "curl {fqdn}", "rationale": "r", "target_fqdn": "b.example.com",
+        }]})
+        assert created.status_code == 201, created.text
+        test_id = created.json()["items"][0]["id"]
+
         r = client.delete(f"/api/v1/projects/{test_project.id}/names/{a.id}")
         assert r.status_code == 409, r.text
-        assert "1 plan entry" in r.json()["detail"]
+        assert "1 finding endpoint" in r.json()["detail"]
         assert db_session.query(models.DNSName).filter_by(id=a.id).count() == 1
-        # An unreferenced name still deletes.
-        b = names_by["b.example.com"]
+        # A name only a host test points at still deletes; the test keeps its intent.
         assert client.delete(f"/api/v1/projects/{test_project.id}/names/{b.id}").status_code == 204
+        db_session.expire_all()
+        test = db_session.query(HostTest).filter_by(id=test_id).one()
+        assert test.name_id is None and test.target_fqdn == "b.example.com"
 
     def test_detach_one_endpoint_keeps_sibling_and_undo_restores_name_and_status(
         self, client, db_session, test_project,
@@ -882,43 +872,6 @@ class TestReviewRound3:
         # The legacy "detach every endpoint on this host" route still does exactly that.
         r = client.delete(f"/api/v1/projects/{test_project.id}/findings/{finding.id}/hosts/{host.id}")
         assert r.json()["hosts"] == []
-
-    def test_offline_import_syncs_tested_evidence(self, db_session, test_project, test_plan):
-        """C3: results arriving through the bundle importer produce, correct
-        and withdraw TESTED evidence exactly like the online endpoint."""
-        from app.db.models import DNS_OBS_TESTED
-        from app.db.models_agent import ExecutionSession, TestPlanEntry
-        from app.services.bundle_import_service import _ingest_results
-        host, names_by = self._lb_with_two_vhosts(db_session, test_project)
-        entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id, name_id=names_by["a.example.com"].id,
-                              priority="high", test_phase="enumeration",
-                              proposed_tests=[{"tool": "curl", "description": "x", "command": "curl {fqdn}"}],
-                              rationale="r")
-        db_session.add(entry)
-        session = ExecutionSession(test_plan_id=test_plan.id, status="active", mode="offline_bundle")
-        db_session.add(session)
-        db_session.flush()
-        db_session.refresh(entry)
-        tested = lambda: [(r.value, r.exec_result_id) for r in  # noqa: E731
-                          db_session.query(models.DNSRecord).filter_by(record_type=DNS_OBS_TESTED).all()]
-
-        def ingest(item):
-            errors: list = []
-            n, _ = _ingest_results(db_session, session=session, entry_map={entry.id: entry}, items=[item], errors=errors)
-            assert n == 1, errors
-            db_session.flush()
-
-        ingest({"entry_id": entry.id, "test_index": 0, "status": "skipped"})
-        assert tested() == []
-        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed"})   # no observed_ip → nothing
-        assert tested() == []
-        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed", "observed_ip": "203.0.113.21"})
-        rows = tested()
-        assert len(rows) == 1 and rows[0][0] == "203.0.113.21"
-        ingest({"entry_id": entry.id, "test_index": 0, "status": "executed", "observed_ip": "203.0.113.22"})
-        assert [v for v, _ in tested()] == ["203.0.113.22"]      # correction replaces
-        ingest({"entry_id": entry.id, "test_index": 0, "status": "skipped"})
-        assert tested() == []                                     # withdrawal
 
 
 # ---------------------------------------------------------------------------

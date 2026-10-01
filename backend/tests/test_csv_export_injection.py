@@ -1,11 +1,13 @@
 """Regression tests for CSV formula-injection hardening (v2.86.4).
 
-ExportService._format_csv_report previously wrote raw scanner / agent
-strings through csv.writer directly, bypassing the _csv_safe guard
-defined in reports.py.  This test pins the new shared
-``app.services.csv_utils.safe_csv_row`` behaviour for its one report,
-``test_plan_execution`` (the scope / scan / out-of-scope branches were never
-reached and were removed in v2.395.0).
+Pins the shared ``app.services.csv_utils`` guard (``csv_safe`` /
+``safe_csv_row``) and the ``/export`` CSV routes that write through it.
+
+``ExportService._format_csv_report`` — the test-plan execution report, whose
+raw agent strings prompted the guard — went with test plans in v2.442.0, and
+its two cases with it.  The agent-written cells that remain in a CSV export
+are the host report's ``execution_findings.csv`` (evidence records), pinned in
+``test_report_dossier.py::test_test_findings_csv_names_tool_and_label_and_neutralizes_formulas``.
 """
 from __future__ import annotations
 
@@ -15,7 +17,6 @@ import io
 import pytest
 
 from app.services.csv_utils import csv_safe
-from app.services.export_service import ExportService
 
 
 # ---------------------------------------------------------------------------
@@ -55,8 +56,8 @@ def test_csv_safe_none_becomes_empty_string():
 
 # ---------------------------------------------------------------------------
 # Endpoint-level — the three lightweight CSV branches in export.py that the
-# v2.86.4 hardening missed (third code review #1).  ExportService is
-# covered above; these tests cover the routes that hand-roll csv.writer.
+# v2.86.4 hardening missed (third code review #1): the routes that hand-roll
+# csv.writer.
 # ---------------------------------------------------------------------------
 
 
@@ -166,72 +167,5 @@ def test_scan_hosts_csv_neutralizes_malicious_hostname(
     )
 
 
-# ---------------------------------------------------------------------------
-# Endpoint-level — ExportService._format_csv_report branches.
-# ---------------------------------------------------------------------------
-
-
 def _parse_csv(payload: str) -> list[list[str]]:
     return list(csv.reader(io.StringIO(payload)))
-
-
-def test_test_plan_execution_csv_neutralizes_hostname_command_and_findings():
-    """The original field this fix targets — the test-plan-execution
-    branch was the only writer that the previous v2.85.0 guard
-    explicitly skipped, so cover every untrusted column in one test."""
-    svc = ExportService(db=None)
-    data = {
-        "report_type": "test_plan_execution",
-        "entries": [
-            {
-                "host_ip": "10.0.0.5",
-                "host_hostname": "=HYPERLINK(\"http://attacker.tld\",\"click\")",
-                "priority": "high",
-                "test_phase": "exploit",
-                "status": "completed",
-                "results": [
-                    {
-                        "test_index": 0,
-                        "status": "passed",
-                        "severity": "high",
-                        "is_finding": True,
-                        "command_run": "+attacker_payload(1)",
-                        "findings_summary": "-malicious_thing()",
-                        "executed_at": "2026-06-03T00:00:00Z",
-                    },
-                ],
-            },
-        ],
-    }
-    result = svc._format_csv_report(data)
-    rows = _parse_csv(result["data"])
-    # Header at row 0; one data row at row 1.
-    # Columns: 0=Host IP, 1=Hostname, 2=Priority, 3=Phase, 4=Entry Status,
-    # 5=Test Index, 6=Test Status, 7=Severity, 8=Is Finding, 9=Command,
-    # 10=Findings Summary, 11=Executed At.
-    assert rows[1][1].startswith("'="), f"hostname not neutralized: {rows[1][1]!r}"
-    assert rows[1][9].startswith("'+"), f"command_run not neutralized: {rows[1][9]!r}"
-    assert rows[1][10].startswith("'-"), f"findings_summary not neutralized: {rows[1][10]!r}"
-
-
-def test_test_plan_execution_csv_empty_results_row_is_neutralized_too():
-    """The 'no results' branch writes a row with just entry fields and
-    empty placeholders — make sure the hostname there is also neutralized."""
-    svc = ExportService(db=None)
-    data = {
-        "report_type": "test_plan_execution",
-        "entries": [
-            {
-                "host_ip": "10.0.0.5",
-                "host_hostname": "=BAD()",
-                "priority": "medium",
-                "test_phase": "discovery",
-                "status": "skipped",
-                "results": [],  # triggers the empty-row branch
-            },
-        ],
-    }
-    result = svc._format_csv_report(data)
-    rows = _parse_csv(result["data"])
-    assert rows[1][1].startswith("'="), \
-        f"empty-results hostname not neutralized: {rows[1][1]!r}"

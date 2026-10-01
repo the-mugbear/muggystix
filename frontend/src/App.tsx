@@ -16,7 +16,7 @@ import NotFound, { ProjectsRedirect } from './pages/NotFound';
 /**
  * Route-aware Suspense fallback (audit H16 + PRF·H2).  Pre-audit every
  * lazy route used ListPageSkeleton, which is table-shaped.  Detail
- * pages (`/scopes/:id`, `/hosts/:id`, `/test-plans/:id/*`) flashed a
+ * pages (`/scopes/:id`, `/hosts/:id`, `/findings/:id`) flashed a
  * table skeleton then reflowed into a header+content layout,
  * displacing scroll-anchor targets and sticky action bars.
  *
@@ -31,8 +31,8 @@ type RouteSkeletonKind = 'list' | 'detail' | 'cards';
 
 // matchPath patterns + their skeleton shape.  Order matters — the
 // first match wins.  Detail patterns precede the static list /cards
-// patterns so e.g. `/test-plans/:id` resolves to detail before
-// `/test-plans` would resolve to list.
+// patterns so e.g. `/scans/:id` resolves to detail before
+// `/scans` would resolve to list.
 const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   // detail
   // v4.50.0 — ScopeDetail retired; /scopes/:id redirects to /scopes
@@ -43,8 +43,6 @@ const ROUTE_SKELETON: Array<{ pattern: string; kind: RouteSkeletonKind }> = [
   // card skeleton rather than the detail skeleton.
   { pattern: '/scans/compare', kind: 'cards' },
   { pattern: '/scans/:id', kind: 'detail' },
-  { pattern: '/test-plans/:id/*', kind: 'detail' },
-  { pattern: '/executions/:id', kind: 'detail' },
   { pattern: '/agent-sessions/:id', kind: 'detail' },
   { pattern: '/findings/:id', kind: 'detail' },
   { pattern: '/profile', kind: 'detail' },
@@ -112,13 +110,6 @@ const ProjectSettings = lazy(() => import('./pages/ProjectSettings'));
 const AllProjects = lazy(() => import('./pages/AllProjects'));
 const PortfolioDashboard = lazy(() => import('./pages/PortfolioDashboard'));
 const Oversight = lazy(() => import('./pages/Oversight'));
-const TestPlans = lazy(() => import('./pages/TestPlans'));
-const TestPlanLayout = lazy(() => import('./pages/test-plan/TestPlanLayout'));
-const TestPlanPlanTab = lazy(() => import('./pages/test-plan/PlanTab'));
-const TestPlanRunsTab = lazy(() => import('./pages/test-plan/RunsTab'));
-const TestPlanActivityTab = lazy(() => import('./pages/test-plan/ActivityTab'));
-const TestPlanApiCallsTab = lazy(() => import('./pages/test-plan/ApiCallsTab'));
-const TestPlanDangerTab = lazy(() => import('./pages/test-plan/DangerTab'));
 const Reference = lazy(() => import('./pages/Reference'));
 // User Guide — multi-page under /reference/user-guide/* (see pages/userguide/).
 const GettingStartedGuide = lazy(() => import('./pages/userguide/GettingStartedGuide'));
@@ -142,15 +133,11 @@ const ProjectActivity = lazy(() => import('./pages/ProjectActivity'));
 // agent timeline): asks "what tools ran across all my projects at
 // time X" for correlating against SOC alerts.
 const ToolActivity = lazy(() => import('./pages/ToolActivity'));
-const TestPlanCompare = lazy(() => import('./pages/TestPlanCompare'));
 const Operations = lazy(() => import('./pages/Operations'));
 const Findings = lazy(() => import('./pages/Findings'));
 const FindingDetail = lazy(() => import('./pages/FindingDetail'));
 const Reports = lazy(() => import('./pages/Reports'));
 const ReportDetail = lazy(() => import('./pages/ReportDetail'));
-const ExecutionDetail = lazy(() => import('./pages/ExecutionDetail'));
-const ExecutionsList = lazy(() => import('./pages/ExecutionsList'));
-const PlanCompare = lazy(() => import('./pages/PlanCompare'));
 
 /** A renamed path: go to the new one with the same query string and hash. */
 function RedirectKeepingQuery({ to }: { to: string }) {
@@ -304,28 +291,13 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      {/* v3 alpha.12 — Executions list.  Static path
-                          registered before /executions/:sessionId. */}
-                      <Route
-                        path="/executions"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <ExecutionsList />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v3 alpha.7 — Execution Detail permalink.
-                          Standalone view of one execution session,
-                          addressable without knowing the plan id.
-                          Composed from alpha.4 primitives. */}
-                      <Route
-                        path="/executions/:sessionId"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <ExecutionDetail />
-                          </ProtectedRoute>
-                        }
-                      />
+                      {/* 5.320.0 — test plans and execution runs are gone:
+                          tests are proposed on hosts and shown on each
+                          host's page.  Old links (bookmarks, earlier
+                          notifications) land on the hosts that have tests
+                          still to do. */}
+                      <Route path="/test-plans/*" element={<Navigate to="/hosts?q=has%3Aplanned" replace />} />
+                      <Route path="/executions/*" element={<Navigate to="/agent-activity" replace />} />
                       <Route
                         path="/scans"
                         element={
@@ -467,30 +439,6 @@ function App() {
                         element={
                           <ProtectedRoute requiredRole="viewer">
                             <ToolActivity />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v3 alpha.8.1 — Plan-vs-plan comparison.  Compares
-                          two DIFFERENT plans (different intent from
-                          /test-plans/:planId/compare which compares two
-                          executions of ONE plan).  Registered before the
-                          dynamic /test-plans/:planId routes so React Router
-                          ranks the static path first regardless. */}
-                      <Route
-                        path="/test-plans/compare"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <PlanCompare />
-                          </ProtectedRoute>
-                        }
-                      />
-                      {/* v3 — Cross-execution comparison (alpha.2).  Reads
-                          ?a=<session_id>&b=<session_id> from the URL. */}
-                      <Route
-                        path="/test-plans/:planId/compare"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <TestPlanCompare />
                           </ProtectedRoute>
                         }
                       />
@@ -664,29 +612,6 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
-                      <Route
-                        path="/test-plans"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <TestPlans />
-                          </ProtectedRoute>
-                        }
-                      />
-                      <Route
-                        path="/test-plans/:planId"
-                        element={
-                          <ProtectedRoute requiredRole="viewer">
-                            <TestPlanLayout />
-                          </ProtectedRoute>
-                        }
-                      >
-                        <Route index element={<Navigate to="plan" replace />} />
-                        <Route path="plan" element={<TestPlanPlanTab />} />
-                        <Route path="runs" element={<TestPlanRunsTab />} />
-                        <Route path="activity" element={<TestPlanActivityTab />} />
-                        <Route path="api-calls" element={<TestPlanApiCallsTab />} />
-                        <Route path="danger" element={<TestPlanDangerTab />} />
-                      </Route>
                       <Route
                         path="/reference"
                         element={

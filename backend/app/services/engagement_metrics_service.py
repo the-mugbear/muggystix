@@ -53,7 +53,7 @@ from sqlalchemy.orm import Session
 from app.db.models import (
     Annotation, FollowStatus, Host, HostFollow, Port, Scan, Scope,
 )
-from app.db.models_agent import TestPlan, TestPlanEntry, PLANNED_PLAN_STATUSES
+from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.db.models_auth import User
 from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingSource, FindingStatus,
@@ -454,13 +454,16 @@ def contribution_events(project_ids: List[int]):
            lambda q: q.join(Port, Port.id == A.port_id).join(Host, Host.id == Port.host_id)),
         ev(A.user_id, A.project_id, A.created_at),
         ev(A.user_id, Finding.project_id, A.created_at, lambda q: q.join(Finding, Finding.id == A.finding_id)),
-        ev(A.user_id, TestPlan.project_id, A.created_at, lambda q: q.join(TestPlan, TestPlan.id == A.plan_id)),
         ev(A.user_id, Scan.project_id, A.created_at, lambda q: q.join(Scan, Scan.id == A.scan_id)),
         ev(A.user_id, Scope.project_id, A.created_at, lambda q: q.join(Scope, Scope.id == A.scope_id)),
         ev(Finding.created_by_id, Finding.project_id, Finding.created_at),
         ev(FindingStatusHistory.changed_by_id, Finding.project_id, FindingStatusHistory.created_at,
            lambda q: q.join(Finding, Finding.id == FindingStatusHistory.finding_id)),
-        ev(TestPlan.created_by_user_id, TestPlan.project_id, TestPlan.created_at),
+        # A test a PERSON put on a host (v2.442.0; it was "a plan created").  An
+        # agent's proposals carry its operator's id but are the agent's work:
+        # 200 proposed tests are not 200 contributions by that person.
+        ev(HostTest.created_by_user_id, HostTest.project_id, HostTest.created_at,
+           lambda q: q.where(HostTest.source == "person")),
         ev(HostFollow.user_id, Host.project_id, HostFollow.reviewed_at,
            lambda q: q.join(Host, Host.id == HostFollow.host_id)),
     ]
@@ -738,15 +741,13 @@ def tester_rows(db: Session, project_ids: Iterable[int], window: Window) -> List
         .filter(ProjectMembership.user_id.in_(user_ids), ProjectMembership.project_id.in_(ids)).all()
     }
     tasks = dict(
-        db.query(TestPlanEntry.assigned_to_id, func.count(TestPlanEntry.id))
-        .join(TestPlan, TestPlan.id == TestPlanEntry.test_plan_id)
+        db.query(HostTest.assigned_to_id, func.count(HostTest.id))
         .filter(
-            TestPlan.project_id.in_(ids),
-            TestPlan.status.in_(PLANNED_PLAN_STATUSES),
-            TestPlanEntry.status.in_(("proposed", "in_progress")),
-            TestPlanEntry.assigned_to_id.in_(user_ids),
+            HostTest.project_id.in_(ids),
+            HostTest.status.in_(ACTIVE_TEST_STATUSES),
+            HostTest.assigned_to_id.in_(user_ids),
         )
-        .group_by(TestPlanEntry.assigned_to_id).all()
+        .group_by(HostTest.assigned_to_id).all()
     )
     events = contribution_events(ids)
     last = dict(

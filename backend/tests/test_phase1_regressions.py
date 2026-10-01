@@ -3,217 +3,108 @@
 Each test pins a bug found in the backend code review so it can't
 silently come back:
 
-- B1  recon upload attribution race  — create_job stamps recon_session_id
-- B2  sanity-check unique-constraint 500 — (session, entry, method) key
-- B4  test-plan cross-project visibility — actionable 404
+- B4  cross-project visibility — a record is readable only through its own
+      project's URL
 
-(B3, the recon port-overcount fix, went with recon runs in v2.433.0.)
+(B1, the recon upload attribution race, and B3, the recon port-overcount fix,
+went with recon runs in v2.433.0.  B2, the sanity-check uniqueness key, and
+every test here that pinned test plans, plan entries, execution runs, sanity
+checks or the execution report went with those in v2.442.0; the ones whose
+behaviour survives were rewritten against host tests and evidence records.)
 """
 from __future__ import annotations
 
-import io
+import uuid
 
 import pytest
-from fastapi import UploadFile
-from sqlalchemy.exc import IntegrityError
 
 
 # ---------------------------------------------------------------------------
-# B1 — IngestionService.create_job stamps recon_session_id in the row-creation
-# transaction (previously a second commit, leaving a worker-race window).
+# Shared helpers: a host, a host test created through the real route, and an
+# agent session + key minted through the one start endpoint.
 # ---------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-# B2 — host_sanity_checks uniqueness widened to (session, entry, method) so
-# the execution workflow can record multiple verification methods per host.
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def execution_target(db_session, test_plan):
-    """A persisted (ExecutionSession, TestPlanEntry, Host) graph so
-    HostSanityCheck rows have real foreign keys to point at."""
+def _mk_host(db_session, project_id: int, ip: str):
     from app.db import models
-    from app.db.models_agent import (
-        TestPlanEntry, ExecutionSession, ExecutionSessionStatus,
-    )
-    host = models.Host(
-        ip_address="10.0.0.5", state="up", project_id=test_plan.project_id,
-    )
+    host = models.Host(ip_address=ip, state="up", project_id=project_id)
     db_session.add(host)
-    db_session.flush()
-    # proposed_tests=[] is the canonical "no work in plan" shape; the
-    # /complete endpoint gates on this AND on the sanity-check
-    # signal.  The two regression tests below exercise the
-    # sanity-check gate; each one passes `no_tests_run_reason` in its
-    # payload to satisfy the empty-tests gate, leaving the
-    # sanity-check assertion the actual test point.
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id,
-        host_id=host.id,
-        priority="high",
-        test_phase="enumeration",
-        proposed_tests=[],
-        rationale="regression-test fixture",
-    )
-    db_session.add(entry)
-    session = ExecutionSession(
-        test_plan_id=test_plan.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-    )
-    db_session.add(session)
-    db_session.flush()
-    return {"session": session, "entry": entry, "host": host}
-
-
-def test_sanity_check_allows_multiple_methods_per_entry(db_session, execution_target):
-    """Two different methods for the same (session, entry) must both
-    persist — the old (session, entry)-only constraint 500'd the second."""
-    from app.db.models_agent import HostSanityCheck
-
-    t = execution_target
-    common = dict(
-        execution_session_id=t["session"].id,
-        entry_id=t["entry"].id,
-        host_id=t["host"].id,
-        target_ip="10.0.0.5",
-        passed=True,
-    )
-    db_session.add(HostSanityCheck(method="network_context", **common))
-    db_session.add(HostSanityCheck(method="reverse_dns", **common))
-    db_session.commit()  # must NOT raise
-
-    rows = (
-        db_session.query(HostSanityCheck)
-        .filter(HostSanityCheck.entry_id == t["entry"].id)
-        .all()
-    )
-    assert {r.method for r in rows} == {"network_context", "reverse_dns"}
-
-
-def test_sanity_check_still_unique_per_method(db_session, execution_target):
-    """Uniqueness is still enforced — *per method*. Recording the same
-    method twice for one entry collides."""
-    from app.db.models_agent import HostSanityCheck
-
-    t = execution_target
-    common = dict(
-        execution_session_id=t["session"].id,
-        entry_id=t["entry"].id,
-        host_id=t["host"].id,
-        target_ip="10.0.0.6",
-        passed=True,
-        method="banner_grab",
-    )
-    db_session.add(HostSanityCheck(**common))
     db_session.commit()
+    db_session.refresh(host)
+    return host
 
-    db_session.add(HostSanityCheck(**common))
-    with pytest.raises(IntegrityError):
-        db_session.commit()
-    db_session.rollback()
+
+def _test_payload(host_id: int, **extra) -> dict:
+    return dict(
+        request_key=str(uuid.uuid4()), host_id=host_id, tool="nmap",
+        description="Service detection", rationale="regression-test fixture",
+        **extra,
+    )
+
+
+def _create_host_test(client, project_id: int, host_id: int, **extra) -> dict:
+    resp = client.post(
+        f"/api/v1/projects/{project_id}/host-tests",
+        json={"tests": [_test_payload(host_id, **extra)]},
+    )
+    assert resp.status_code == 201, resp.text
+    return resp.json()["items"][0]
 
 
 # ---------------------------------------------------------------------------
-# B4 — get_test_plan distinguishes "doesn't exist" from "exists in another
-# project" so a plan generated under a different project context is no
-# longer a silent dead end.
+# B4 — a record reached through the WRONG project's URL is a 404, never the
+# other project's data.  (Pinned on test plans until v2.442.0, where the 404
+# also named the owning project; a host test's 404 does not say where it is.)
 # ---------------------------------------------------------------------------
 
-def _make_plan_in_project(db_session, project_id: int):
-    from app.db.models_agent import TestPlan, TestPlanStatus
-    plan = TestPlan(
-        project_id=project_id,
-        agent_id=None,
-        version=1,
-        title="cross-project fixture plan",
-        status=TestPlanStatus.DRAFT.value,
-    )
-    db_session.add(plan)
-    db_session.commit()
-    db_session.refresh(plan)
-    return plan
-
-
-def test_get_test_plan_in_wrong_project_returns_actionable_404(
-    client, db_session, test_project
-):
+def test_get_host_test_in_wrong_project_returns_404(client, db_session, test_project):
     from app.db.models_project import Project
 
     other = Project(name="other-project", slug="other-project", description="x")
     db_session.add(other)
     db_session.commit()
     db_session.refresh(other)
+    host = _mk_host(db_session, other.id, "10.0.9.1")
+    row = _create_host_test(client, other.id, host.id)
 
-    plan = _make_plan_in_project(db_session, other.id)
-
-    # Ask for the plan from the WRONG project's URL scope.
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan.id}"
-    )
+    # Ask for it — and try to change it — from the WRONG project's URL scope.
+    url = f"/api/v1/projects/{test_project.id}/host-tests/{row['id']}"
+    resp = client.get(url)
     assert resp.status_code == 404
-    detail = resp.json()["detail"]
-    assert "different project" in detail
-    assert f"#{other.id}" in detail  # tells the user where it actually lives
+    assert "Service detection" not in resp.text
+    patched = client.patch(url, json={"expected_revision": row["revision"], "status": "in_progress"})
+    assert patched.status_code == 404
+    # Nor does the wrong project's list carry it.
+    listed = client.get(f"/api/v1/projects/{test_project.id}/host-tests")
+    assert listed.status_code == 200
+    assert row["id"] not in [t["id"] for t in listed.json()["items"]]
+    # It is untouched where it lives.
+    own = client.get(f"/api/v1/projects/{other.id}/host-tests/{row['id']}")
+    assert own.status_code == 200
+    assert own.json()["status"] == "proposed"
 
 
-def test_get_test_plan_truly_missing_returns_plain_404(client, test_project):
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/999999"
-    )
+def test_get_host_test_truly_missing_returns_plain_404(client, test_project):
+    resp = client.get(f"/api/v1/projects/{test_project.id}/host-tests/999999")
     assert resp.status_code == 404
-    assert resp.json()["detail"] == "Test plan not found"
+    assert resp.json()["detail"] == "Host test not found in this project"
 
 
-def test_get_test_plan_in_correct_project_succeeds(client, db_session, test_project):
-    plan = _make_plan_in_project(db_session, test_project.id)
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{plan.id}"
-    )
+def test_get_host_test_in_correct_project_succeeds(client, db_session, test_project):
+    host = _mk_host(db_session, test_project.id, "10.0.9.2")
+    row = _create_host_test(client, test_project.id, host.id)
+    resp = client.get(f"/api/v1/projects/{test_project.id}/host-tests/{row['id']}")
     assert resp.status_code == 200
     body = resp.json()
-    assert body["id"] == plan.id
-    assert body["project_id"] == test_project.id  # new field exposed by B4
+    assert body["id"] == row["id"]
+    assert body["host_id"] == host.id
 
 
 # ---------------------------------------------------------------------------
-# Batch B regressions — sanity-check enforcement on /complete, byte-cap
-# truncation, brief-mode policy parity, SBOM cache invalidation.
+# Batch B regressions — SBOM cache invalidation.  (Its sanity-check
+# enforcement, byte-cap truncation and brief-mode policy tests went with
+# execution runs and plan context in v2.442.0; evidence output size is
+# measured in bytes in test_agent_proposals.py.)
 # ---------------------------------------------------------------------------
-
-def test_evaluate_host_policy_high_value_port_medium_vuln():
-    """The brief-mode bug (#1 from the v2.21.0 review): a host with a
-    medium vuln + a single service + a high-value port (SMB, RDP, ...)
-    qualifies for inclusion.  Brief mode used to pass an empty port set
-    and got False here; fixed version passes the real set and gets True."""
-    from app.api.v1.endpoints.agent_test_plans import _evaluate_host_policy
-    vc = {"critical": 0, "high": 0, "medium": 1, "low": 0}
-    svcs = ["smb"]  # single service — only the high-value port can save it
-    assert _evaluate_host_policy(vc, svcs, {445}) is True       # post-fix
-    assert _evaluate_host_policy(vc, svcs, set()) is False      # pre-fix brief mode
-    # Sanity: a critical vuln always qualifies regardless of ports.
-    assert _evaluate_host_policy({"critical": 1, "high": 0, "medium": 0, "low": 0}, [], set()) is True
-
-
-def test_truncate_to_byte_cap_respects_multibyte():
-    """#3 from the review: pre-fix code measured bytes but sliced by chars,
-    so a multi-byte string with byte length above the cap still wrote past
-    it after re-encoding.  Result must always fit in ``cap`` bytes."""
-    from app.api.v1.endpoints.agent_execution import _truncate_to_byte_cap
-
-    # "✓" is 3 UTF-8 bytes.  60_000 chars × 3 = 180_000 bytes > 100_000 cap.
-    text = "✓" * 60_000
-    cap = 100_000
-    out = _truncate_to_byte_cap(text, cap)
-    assert len(out.encode("utf-8")) <= cap
-    assert out.endswith("--- OUTPUT TRUNCATED ---")
-
-    # Under-cap input is returned unchanged.
-    short = "abc"
-    assert _truncate_to_byte_cap(short, cap) == short
-
-    # Empty input is a no-op.
-    assert _truncate_to_byte_cap("", cap) == ""
-
 
 def test_sbom_cache_invalidates_on_app_version_change(monkeypatch, tmp_path):
     """#4: the cache used to key only on manifest mtimes, so an
@@ -236,245 +127,32 @@ def test_sbom_cache_invalidates_on_app_version_change(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# #2 — completion now requires either a passing sanity check OR an explicit
-# override_reason.  Visibility-only mode (v2.17.1) just annotated the
-# omission; v2.22.0 enforces the audit-trail invariant.
+# An agent session + key, shared by the audit-log, rate-limit and
+# activity-stamp regressions below.  Minted through the one start endpoint
+# (``POST /projects/{id}/assist/start``) so the key, its session and the
+# session's detail row are exactly what an operator's agent holds.  (Until
+# v2.442.0 this was an execution run with a plan-scoped key.)
 # ---------------------------------------------------------------------------
 
-@pytest.fixture
-def plan_agent_key(db_session, test_agent, test_plan):
-    """Mint a plan-scoped APIKey so the agent endpoints accept us."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey
-    raw = "nm_agent_complete_test_" + "z" * 24
-    from app.db.models_agent import AgentSession, AgentSessionWorkflow
-    session = AgentSession(
-        workflow=AgentSessionWorkflow.PLAN_GENERATION.value,
-        project_id=test_plan.project_id, agent_id=test_agent.id,
-        started_by_id=test_agent.owner_id, status="active",
-    )
-    db_session.add(session)
-    db_session.flush()
-    test_plan.agent_session_id = session.id
-    api_key = APIKey(
-        agent_id=test_agent.id,
-        agent_session_id=session.id,
-        name=f"plan-{test_plan.id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    )
-    db_session.add(api_key)
-    db_session.commit()
-    return {"raw": raw, "row": api_key}
+AGENT_READ = "/api/v1/agent/host-tests"
 
 
 @pytest.fixture
-def owned_execution_target(db_session, execution_target, plan_agent_key):
-    """``execution_target`` whose run belongs to ``plan_agent_key``'s session.
+def agent_session_with_key(client, db_session, test_project):
+    """``{key, headers, agent, agent_session_id, assist_session_id}`` for a
+    live project session started by the ``client`` fixture's user."""
+    from app.db.models_agent import Agent
 
-    v2.338.0 — execution writes resolve the run through the caller's session,
-    so a run nobody's session opened is unreachable by design; the completion
-    tests below are about the sanity-check gate, not about ownership."""
-    execution_target["session"].agent_session_id = plan_agent_key["row"].agent_session_id
-    db_session.commit()
-    return execution_target
-
-
-def test_planning_context_with_candidates_returns_sample_host(client, db_session, test_project, test_plan, plan_agent_key):
-    """Regression: GET /agent/test-plans/{id}/context 500'd when the plan
-    had >=1 candidate host — the entry-template builder read
-    ``candidates[0].host_id``, but CandidateHost's field is ``id``.  With
-    a candidate present (a host with an open port) the endpoint must 200
-    and the sample host id must be the real host id."""
-    from app.db import models
-    host = models.Host(project_id=test_project.id, ip_address="10.6.0.1", state="up")
-    db_session.add(host)
-    db_session.flush()
-    # Zero-port hosts are excluded from candidates by default — give it an open port.
-    db_session.add(models.Port(host_id=host.id, port_number=445, protocol="tcp", state="open"))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/context",
-        headers={"X-API-Key": plan_agent_key["raw"]},
-    )
-    assert resp.status_code == 200, resp.text
+    resp = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
+    assert resp.status_code == 201, resp.text
     body = resp.json()
-    assert body["entry_template"]["host_id"] == host.id
-
-
-def _mint_workflow_key(db_session, test_agent, test_plan, workflow):
-    """An APIKey bound to an AgentSession of the given workflow, on test_plan."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey
-    from app.db.models_agent import AgentSession
-    session = AgentSession(
-        workflow=workflow,
-        project_id=test_plan.project_id,
-        agent_id=test_agent.id,
-        started_by_id=test_agent.owner_id,
-        status="active",
-    )
-    db_session.add(session)
-    db_session.flush()
-    test_plan.agent_session_id = session.id
-    raw = f"nm_agent_{workflow}_" + "q" * 24
-    key = APIKey(
-        agent_id=test_agent.id,
-        agent_session_id=session.id,
-        name=f"{workflow}-{test_plan.id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    )
-    db_session.add(key)
-    db_session.commit()
-    return raw
-
-
-def test_execution_key_cannot_draft_plan_entries(db_session, client, test_agent, test_plan):
-    """v2.318.0 — the plan-DRAFTING writes require the plan_generation workflow.
-    An execution-session key records results against an approved plan; it must
-    not add/modify entries. The service allows add_entries on an approved/
-    in_progress plan (the operator's UI path), so before this an execution agent
-    could inject un-vetted entries into the plan it was executing — which the
-    _EXEC tool list implies it cannot. A plan_generation key is still accepted."""
-    entry_payload = {"entries": [{
-        "host_id": 1, "priority": "low", "test_phase": "enumeration",
-        "rationale": "x" * 40,
-        "proposed_tests": [{"tool": "nmap", "description": "svc"}],
-    }]}
-
-    # v2.337.0 — the plan_generation-vs-execution key boundary is gone: one
-    # project session both drafts and executes. Any session key reaches the
-    # entries endpoint (not a 403-by-workflow); authorization is the operator's
-    # role, checked per request.
-    raw = _mint_workflow_key(db_session, test_agent, test_plan, "project")
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries",
-        headers={"X-API-Key": raw}, json=entry_payload,
-    )
-    assert resp.status_code != 403, resp.text
-
-
-def test_archive_plan_abandons_non_terminal(client, test_project, test_plan):
-    """A non-terminal (approved) plan can be abandoned → ARCHIVED; a second
-    abandon of the now-terminal plan is rejected with 400."""
-    base = f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}/archive"
-    resp = client.post(base, json={"reason": "client descoped this segment"})
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["status"] == "archived"
-    # Already terminal → 400.
-    assert client.post(base, json={}).status_code == 400
-
-
-def test_complete_needs_no_sanity_check(client, owned_execution_target, plan_agent_key, test_plan, db_session):
-    execution_target = owned_execution_target
-    """v2.433.0 — a target check is evidence, not a gate: an entry completes
-    without one.  Closing it with no test results still needs (and
-    audit-logs) no_tests_run_reason."""
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
-        headers={"X-API-Key": plan_agent_key["raw"]},
-        json={
-            "findings_summary": "host offline",
-            "overall_status": "completed",
-            "no_tests_run_reason": "fixture entry has no proposed tests",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["sanity_checks_passed"] == 0
-    assert "override_reason" not in body
-
-    from app.db.models_auth import AuditLog
-    event = (
-        db_session.query(AuditLog)
-        .filter(AuditLog.action == "execution_entry_completion_override")
-        .order_by(AuditLog.id.desc())
-        .first()
-    )
-    assert event is not None, "closing without evidence was not audit-logged"
-    assert event.details["entry_id"] == execution_target["entry"].id
-    assert "fixture entry has no proposed tests" in event.details["no_tests_run_reason"]
-
-
-def test_complete_accepts_with_passing_sanity_check(client, owned_execution_target, plan_agent_key, test_plan, db_session):
-    execution_target = owned_execution_target
-    """A passing target check on the entry is counted as evidence."""
-    from app.db.models_agent import HostSanityCheck
-    db_session.add(HostSanityCheck(
-        execution_session_id=execution_target["session"].id,
-        entry_id=execution_target["entry"].id,
-        host_id=execution_target["host"].id,
-        method="banner_grab",
-        target_ip="10.0.0.5",
-        passed=True,
-    ))
-    db_session.commit()
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{execution_target['entry'].id}/complete",
-        headers={"X-API-Key": plan_agent_key["raw"]},
-        json={
-            "findings_summary": "host verified, no findings",
-            "overall_status": "completed",
-            # The fixture entry's proposed_tests=[] needs the empty-tests
-            # gate satisfied so the evidence count is the test point.
-            "no_tests_run_reason": "fixture entry has no proposed tests",
-        },
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["sanity_checks_passed"] == 1
-
-
-# ---------------------------------------------------------------------------
-# An active execution run + key, shared by the execution-path regressions
-# below. (Its v2.23.0 environment-probe tests went with the probe; cross-
-# session isolation of execution writes is pinned in test_agent_execution.py
-# and test_unified_session_review_fixes.py.)
-# ---------------------------------------------------------------------------
-
-@pytest.fixture
-def execution_session_with_key(db_session, test_agent, test_plan):
-    """An active ExecutionSession + plan-scoped APIKey pair."""
-    import hashlib
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
-    from app.db.models_auth import APIKey
-    from app.db.models_agent import AgentSessionWorkflow
-    from app.services.agent_session_service import create_agent_session
-    base = create_agent_session(
-        db_session,
-        workflow=AgentSessionWorkflow.EXECUTION.value,
-        project_id=test_plan.project_id,
-        agent_id=test_agent.id,
-        started_by_id=None,
-    )
-    session = ExecutionSession(
-        test_plan_id=test_plan.id,
-        agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        agent_session_id=base.id,
-    )
-    db_session.add(session)
-    db_session.flush()
-    raw = "nm_agent_exec_envprobe_" + "e" * 24
-    api_key = APIKey(
-        agent_id=test_agent.id,
-        agent_session_id=base.id,
-        name=f"plan-{test_plan.id}",
-        key_hash=hashlib.sha256(raw.encode()).hexdigest(),
-        key_prefix=raw[:14],
-        expires_at=datetime.now(timezone.utc) + timedelta(hours=24),
-    )
-    db_session.add(api_key)
-    db_session.commit()
-    db_session.refresh(session)
-    return {"session": session, "key": raw}
+    return {
+        "key": body["api_key"],
+        "headers": {"X-API-Key": body["api_key"]},
+        "agent": db_session.get(Agent, body["agent_id"]),
+        "agent_session_id": body["agent_session_id"],
+        "assist_session_id": body["assist_session_id"],
+    }
 
 
 def test_prompt_version_bumped_for_environment_probe():
@@ -490,8 +168,9 @@ def test_prompt_version_bumped_for_environment_probe():
 # ---------------------------------------------------------------------------
 # v2.24.0 — agent API call log.  Middleware writes one row per inbound
 # /agent/* request that authenticated as an agent; the human-facing
-# /projects/{id}/test-plans/{plan_id}/api-activity endpoint serves them
-# back so a user can audit "did the agent query the right hosts?".
+# /projects/{id}/assist-sessions/{id}/api-activity endpoint serves them
+# back so a user can audit "did the agent query the right hosts?".  (The
+# per-plan api-activity endpoint these used went with plans in v2.442.0.)
 # ---------------------------------------------------------------------------
 
 def test_middleware_helpers_extract_host_ids_and_target_ips():
@@ -544,96 +223,69 @@ def test_middleware_helpers_extract_host_ids_and_target_ips():
     assert summarised["_multipart"] is True
 
 
-def test_middleware_records_agent_request_against_plan(
-    client, execution_session_with_key, test_plan, db_session, test_project,
+def _activity_url(project_id: int, assist_session_id: int) -> str:
+    return f"/api/v1/projects/{project_id}/assist-sessions/{assist_session_id}/api-activity"
+
+
+def test_middleware_records_agent_request_against_session(
+    client, agent_session_with_key, db_session, test_project,
 ):
-    """End-to-end: an agent calls /agent/test-plans/{id}/execution-context
-    with an API key, the middleware writes one row, the human-facing
-    list endpoint returns it.  Verifies wiring + the cross-cut: a real
-    request stamps agent_id, test_plan_id, execution_session_id,
-    project_id, response status, method, path, duration."""
+    """End-to-end: an agent calls GET /agent/host-tests with its key, the
+    middleware writes one row, the human-facing list endpoint returns it.
+    Verifies wiring + the cross-cut: a real request stamps agent_id,
+    agent_session_id, project_id, response status, method, path, duration."""
     from app.db.models_agent import AgentApiCall
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
+    s = agent_session_with_key
 
-    # Approve the plan so /execution-context is willing to serve.
-    test_plan.status = "draft"
-    db_session.commit()
-
-    # An agent-side call goes through the middleware.
     resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key, "User-Agent": "fixture-agent/1.0"},
+        AGENT_READ, headers={**s["headers"], "User-Agent": "fixture-agent/1.0"},
     )
     assert resp.status_code == 200, resp.text
 
     # Middleware wrote one row.
     rows = (
         db_session.query(AgentApiCall)
-        .filter(AgentApiCall.test_plan_id == test_plan.id)
+        .filter(AgentApiCall.agent_session_id == s["agent_session_id"])
         .all()
     )
     assert len(rows) == 1
     row = rows[0]
     assert row.method == "GET"
-    assert row.path.endswith(f"/agent/test-plans/{test_plan.id}/execution-context")
+    assert row.path.endswith("/agent/host-tests")
     assert row.status_code == 200
-    assert row.test_plan_id == test_plan.id
-    assert row.execution_session_id == es.id
-    assert row.project_id == test_plan.project_id
+    assert row.agent_id == s["agent"].id
+    assert row.project_id == test_project.id
     assert row.user_agent == "fixture-agent/1.0"
     assert row.duration_ms is not None
     # Path-template captured for grouping.
-    assert "{plan_id}" in (row.path_template or "")
+    assert (row.path_template or "").endswith("/host-tests")
 
     # Human-facing endpoint surfaces it.
-    list_resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}/api-activity"
-    )
+    list_resp = client.get(_activity_url(test_project.id, s["assist_session_id"]))
     assert list_resp.status_code == 200, list_resp.text
     body = list_resp.json()
-    assert body["total"] >= 1
-    assert any(
-        item["path_template"] and "{plan_id}" in item["path_template"]
-        for item in body["items"]
-    )
+    assert body["total"] == 1
+    assert body["items"][0]["path_template"].endswith("/host-tests")
 
 
 def test_middleware_captures_mutation_body_and_references_hosts(
-    client, execution_session_with_key, test_plan, db_session, test_project,
+    client, agent_session_with_key, db_session, test_project,
 ):
     """A POST (mutation) gets its body summarised and any host_id / IP
-    references parsed out so the host-filter on the activity endpoint
-    works."""
+    references parsed out so the host and target filters on the activity
+    endpoint work."""
     from app.db.models_agent import AgentApiCall
-    from app.db import models
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    # An entry + host so the sanity-check endpoint accepts the call.
-    host = models.Host(
-        ip_address="10.0.0.42", state="up", project_id=test_plan.project_id,
-    )
-    db_session.add(host)
-    db_session.flush()
-    from app.db.models_agent import TestPlanEntry
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration", proposed_tests=[], rationale="fixture",
-    )
-    db_session.add(entry)
-    test_plan.status = "draft"
-    db_session.commit()
-    db_session.refresh(entry)
+    s = agent_session_with_key
+    host = _mk_host(db_session, test_project.id, "10.0.0.42")
+    other = _mk_host(db_session, test_project.id, "10.0.0.43")
 
     resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{entry.id}/sanity-check",
-        headers={"X-API-Key": key},
+        "/api/v1/agent/evidence",
+        headers=s["headers"],
         json={
-            "method": "banner_grab",
-            "target_ip": "10.0.0.42",
-            "passed": True,
-            "details": "ok",
+            "host_id": host.id, "tool": "nc", "command": "nc -v 10.0.0.42 22",
+            "outcome": "info", "summary": "banner matched",
+            "observed_ip": "10.0.0.42",
         },
     )
     assert resp.status_code == 201, resp.text
@@ -641,40 +293,41 @@ def test_middleware_captures_mutation_body_and_references_hosts(
     row = (
         db_session.query(AgentApiCall)
         .filter(AgentApiCall.method == "POST",
-                AgentApiCall.test_plan_id == test_plan.id)
+                AgentApiCall.agent_session_id == s["agent_session_id"])
         .order_by(AgentApiCall.created_at.desc())
         .first()
     )
     assert row is not None
     # Body summary captured (mutation body, under the cap, JSON parsed).
-    assert row.request_body_summary["method"] == "banner_grab"
-    assert row.request_body_summary["target_ip"] == "10.0.0.42"
-    # Host-reference index populated from path + body.
-    assert row.referenced_entry_ids == [entry.id]
+    assert row.request_body_summary["tool"] == "nc"
+    assert row.request_body_summary["observed_ip"] == "10.0.0.42"
+    # Host-reference index populated from the body.
+    assert row.referenced_host_ids == [host.id]
     assert "10.0.0.42" in (row.referenced_target_ips or [])
 
-    # Host-id filter on the activity endpoint returns this row.
-    filtered = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}/api-activity",
-        params={"target_ip": "10.0.0.42"},
-    )
+    url = _activity_url(test_project.id, s["assist_session_id"])
+    # The target filter returns this row, and only rows naming that address.
+    filtered = client.get(url, params={"target_ip": "10.0.0.42"})
     assert filtered.status_code == 200
-    assert filtered.json()["total"] >= 1
+    assert filtered.json()["total"] == 1
     assert all(
         "10.0.0.42" in (item.get("referenced_target_ips") or [])
         for item in filtered.json()["items"]
     )
+    # The host filter finds it by id, and a host the call never named does not.
+    assert client.get(url, params={"host_id": host.id}).json()["total"] == 1
+    assert client.get(url, params={"host_id": other.id}).json()["total"] == 0
 
 
 def test_api_activity_endpoints_enforce_project_membership(
-    client, test_plan, test_project, db_session,
+    client, agent_session_with_key, test_project, db_session,
 ):
-    """Cross-tenant IDOR regression: the per-plan and per-recon-session
-    api-activity list endpoints must authorise via project membership
-    (get_current_project), not merely authenticate.  A non-admin user who
-    is not a member of the project must get 403; previously they could read
-    another tenant's agent audit log (target IPs, request bodies) using the
-    path project_id alone.  A member of the same project still gets 200.
+    """Cross-tenant IDOR regression: the per-session api-activity list
+    endpoint must authorise via project membership (get_current_project),
+    not merely authenticate.  A non-admin user who is not a member of the
+    project must get 403; previously they could read another tenant's agent
+    audit log (target IPs, request bodies) using the path project_id alone.
+    A member of the same project still gets 200.
     """
     from datetime import datetime, timezone
     from app.main import app
@@ -699,35 +352,33 @@ def test_api_activity_endpoints_enforce_project_membership(
     db_session.commit()
     db_session.refresh(outsider)
 
+    url = _activity_url(test_project.id, agent_session_with_key["assist_session_id"])
     app.dependency_overrides[get_current_user] = lambda: outsider
 
-    plan_url = (
-        f"/api/v1/projects/{test_project.id}"
-        f"/test-plans/{test_plan.id}/api-activity"
-    )
     # Non-member → 403.
-    assert client.get(plan_url).status_code == 403
+    assert client.get(url).status_code == 403
 
     # Grant membership → the same user now passes the authz gate (200).
     db_session.add(ProjectMembership(
         project_id=test_project.id, user_id=outsider.id, role="viewer",
     ))
     db_session.commit()
-    assert client.get(plan_url).status_code == 200
+    assert client.get(url).status_code == 200
 
 
 def test_api_activity_owner_attribution_and_mine_filter(
-    client, test_plan, test_project, test_agent, db_session,
+    client, agent_session_with_key, test_project, db_session,
 ):
     """Each activity row carries owner/agent attribution (joined from
     Agent.owner), and ?mine=true restricts to the current user's own
     agents — so one operator's calls aren't lost in a project-wide
-    firehose.  The client fixture authenticates as test-admin, who owns
-    test_agent; a second agent owned by another user must be excluded
+    firehose.  The client fixture authenticates as test-admin, who owns the
+    session's agent; a second agent owned by another user must be excluded
     under mine=true but visible (attributed) in the default 'all' view."""
     from datetime import datetime, timezone
     from app.db.models_agent import Agent, AgentApiCall
     from app.db.models_auth import User, UserRole
+    s = agent_session_with_key
 
     other = User(
         id=7777, username="other-owner", email="other-owner@example.com",
@@ -743,19 +394,16 @@ def test_api_activity_owner_attribution_and_mine_filter(
     db_session.add(other_agent)
     db_session.flush()
 
-    for ag in (test_agent, other_agent):
+    for ag in (s["agent"], other_agent):
         db_session.add(AgentApiCall(
             agent_id=ag.id, project_id=test_project.id,
-            test_plan_id=test_plan.id, method="GET", path="/x",
+            agent_session_id=s["agent_session_id"], method="GET", path="/x",
             status_code=200, duration_ms=1,
             created_at=datetime.now(timezone.utc),
         ))
     db_session.commit()
 
-    url = (
-        f"/api/v1/projects/{test_project.id}"
-        f"/test-plans/{test_plan.id}/api-activity"
-    )
+    url = _activity_url(test_project.id, s["assist_session_id"])
 
     # Default 'all' view: both rows, each attributed to its owner + agent.
     allr = client.get(url).json()
@@ -763,29 +411,26 @@ def test_api_activity_owner_attribution_and_mine_filter(
     assert {i["owner_username"] for i in allr["items"]} == {"test-admin", "other-owner"}
     assert all(i["agent_name"] for i in allr["items"])
 
-    # mine=true (caller is test-admin): only test_agent's row.
+    # mine=true (caller is test-admin): only their own agent's row.
     mine = client.get(url, params={"mine": "true"}).json()
     assert mine["total"] == 1
     assert mine["items"][0]["owner_username"] == "test-admin"
 
 
-def test_middleware_skips_unauthenticated_agent_requests(
-    client, test_plan, db_session,
-):
+def test_middleware_skips_unauthenticated_agent_requests(client, db_session):
     """A bad API key gets a 401 — and crucially produces NO log row.
     The audit log must only reflect successful agent attribution."""
     from app.db.models_agent import AgentApiCall
     before = db_session.query(AgentApiCall).count()
     resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": "nm_agent_definitely_not_real_key"},
+        AGENT_READ, headers={"X-API-Key": "nm_agent_definitely_not_real_key"},
     )
     assert resp.status_code == 401
     db_session.expire_all()
     assert db_session.query(AgentApiCall).count() == before
 
 
-def test_purge_older_than_drops_old_rows(db_session, execution_session_with_key, test_plan):
+def test_purge_older_than_drops_old_rows(db_session, test_agent, test_project):
     """The retention helper deletes rows older than the cutoff and
     returns the count.  Manually-aged rows simulate days-old activity
     so the test runs in milliseconds."""
@@ -797,10 +442,9 @@ def test_purge_older_than_drops_old_rows(db_session, execution_session_with_key,
     new = datetime.now(timezone.utc) - timedelta(days=5)
     for ts in (old, old, new):
         db_session.add(AgentApiCall(
-            agent_id=execution_session_with_key["session"].agent_id,
-            project_id=test_plan.project_id,
-            test_plan_id=test_plan.id,
-            method="GET", path="/api/v1/agent/test-plans/x",
+            agent_id=test_agent.id,
+            project_id=test_project.id,
+            method="GET", path="/api/v1/agent/host-tests",
             status_code=200, duration_ms=10,
             created_at=ts,
         ))
@@ -810,7 +454,7 @@ def test_purge_older_than_drops_old_rows(db_session, execution_session_with_key,
     assert deleted == 2
     remaining = (
         db_session.query(AgentApiCall)
-        .filter(AgentApiCall.test_plan_id == test_plan.id)
+        .filter(AgentApiCall.project_id == test_project.id)
         .count()
     )
     assert remaining == 1  # the 5-day-old row survives
@@ -839,262 +483,45 @@ def test_purge_runs_in_batches_until_nothing_old_is_left(db_session, test_user):
 # finding from the cross-functional code review so it can't drift back.
 # ---------------------------------------------------------------------------
 
-def test_complete_rejects_unknown_overall_status(
-    client, db_session, test_plan, execution_session_with_key,
+def test_host_test_update_rejects_unknown_status(
+    client, db_session, test_project, agent_session_with_key,
 ):
-    """Critical #2: overall_status was `str = "completed"` so a typo or
-    arbitrary value would land in the DB and disappear from progress
-    queries that only recognise canonical terminal states.  Now a
-    strict enum; unknown values → 422."""
-    from app.db import models
-    from app.db.models_agent import TestPlanEntry, HostSanityCheck
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
+    """Critical #2 (then on a plan entry's completion): a status was a bare
+    string, so a typo or arbitrary value landed in the DB and disappeared
+    from every query that only recognises the canonical states.  A host
+    test's status is a strict enum on both surfaces; unknown values → 422
+    and the row is unchanged."""
+    from app.db.models_host_tests import HostTest
+    host = _mk_host(db_session, test_project.id, "10.0.0.99")
+    row = _create_host_test(client, test_project.id, host.id)
+    body = {"expected_revision": row["revision"], "status": "definitely-not-a-real-status"}
 
-    host = models.Host(ip_address="10.0.0.99", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id,
-                         priority="high", test_phase="enumeration",
-                         proposed_tests=[], rationale="fixture")
-    db_session.add(entry)
-    db_session.flush()  # populate entry.id before referencing it
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="banner_grab", target_ip="10.0.0.99", passed=True,
-    ))
-    test_plan.status = "draft"
-    db_session.commit()
-
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{entry.id}/complete",
-        headers={"X-API-Key": key},
-        json={"overall_status": "definitely-not-a-real-status",
-              "findings_summary": "test"},
+    resp = client.patch(
+        f"/api/v1/agent/host-tests/{row['id']}",
+        headers=agent_session_with_key["headers"], json=body,
+    )
+    assert resp.status_code == 422, resp.text
+    resp = client.patch(
+        f"/api/v1/projects/{test_project.id}/host-tests/{row['id']}", json=body,
     )
     assert resp.status_code == 422, resp.text
 
-
-def test_complete_rejects_when_proposed_tests_have_zero_results(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """Critical #3: completion accepted an entry with proposed tests
-    but zero TestExecutionResult rows — silently dropping the
-    documented per-test workflow.  Now refused unless the caller
-    passes ``no_tests_run_reason``."""
-    from app.db import models
-    from app.db.models_agent import TestPlanEntry, HostSanityCheck
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    host = models.Host(ip_address="10.0.0.77", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    # An entry WITH proposed tests but no results recorded.
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[{"tool": "nmap", "description": "service scan",
-                        "command": "nmap -sV {ip}"}],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()  # populate entry.id before referencing it
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="banner_grab", target_ip="10.0.0.77", passed=True,
-    ))
-    test_plan.status = "draft"
-    db_session.commit()
-
-    # Without the override → 400.
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{entry.id}/complete",
-        headers={"X-API-Key": key},
-        json={"findings_summary": "no tests run"},
-    )
-    assert resp.status_code == 400, resp.text
-    assert "no_tests_run_reason" in resp.json()["detail"]
-
-    # With the override → 200, reason echoed in the audit body.
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{entry.id}/complete",
-        headers={"X-API-Key": key},
-        json={"findings_summary": "host went offline before any test ran",
-              "no_tests_run_reason": "target stopped responding mid-run"},
-    )
-    assert resp.status_code == 200, resp.text
-    assert "stopped responding" in resp.json()["no_tests_run_reason"]
-
-
-def test_execution_context_sanity_check_uses_any_passed(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """Critical #4: with multiple sanity-check rows per entry (different
-    methods), the old dict comprehension overwrote nondeterministically.
-    A host with one passing + one failing check now consistently reports
-    sanity_check_passed=True under the "any passed" rule."""
-    from app.db import models
-    from app.db.models_agent import TestPlanEntry, HostSanityCheck
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    host = models.Host(ip_address="10.0.0.33", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(test_plan_id=test_plan.id, host_id=host.id,
-                         priority="high", test_phase="enumeration",
-                         proposed_tests=[], rationale="fixture")
-    db_session.add(entry)
-    db_session.flush()  # populate entry.id before referencing it
-    # Two checks, different methods, mixed pass/fail.  Any-passed rule
-    # → True; all-passed rule would be False; last-row-wins would be
-    # nondeterministic.
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="banner_grab", target_ip="10.0.0.33", passed=True,
-    ))
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="reverse_dns", target_ip="10.0.0.33", passed=False,
-    ))
-    test_plan.status = "draft"
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
-    assert resp.status_code == 200, resp.text
-    host_block = next(
-        h for h in resp.json()["hosts"] if h["entry_id"] == entry.id
-    )
-    assert host_block["sanity_check_passed"] is True
-
-
-def test_execution_context_coerces_string_proposed_tests(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """Critical #5: proposed_tests historically accepted Union[str,
-    ProposedTest], but the renderer dropped every non-dict item.  Old
-    plans with bare-string tests appeared to have zero executable tests.
-    Now strings are coerced to a structured shape with the index
-    preserved."""
-    from app.db import models
-    from app.db.models_agent import TestPlanEntry
-    key = execution_session_with_key["key"]
-
-    host = models.Host(ip_address="10.0.0.55", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    # Mixed-shape proposed_tests: one bare string (legacy), one
-    # structured dict (current contract).  Both must appear in the
-    # execution context with correct test_index values.
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[
-            "nmap -sV {ip}",   # legacy bare-string form
-            {"tool": "nmap", "description": "deep scan",
-             "command": "nmap -p- {ip}"},
-        ],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    test_plan.status = "draft"
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
-    assert resp.status_code == 200, resp.text
-    host_block = next(
-        h for h in resp.json()["hosts"] if h["entry_id"] == entry.id
-    )
-    assert len(host_block["tests"]) == 2
-    # The legacy string came through as a coerced dict at index 0,
-    # with the {ip} placeholder resolved.
-    assert host_block["tests"][0]["test_index"] == 0
-    assert host_block["tests"][0]["command"] == "nmap -sV 10.0.0.55"
-    # The structured dict kept its tool field at index 1.
-    assert host_block["tests"][1]["test_index"] == 1
-    assert host_block["tests"][1]["tool"] == "nmap"
-
-
-def test_execution_progress_aggregates_full_status_enum(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """Optimisation #7: ``tests_pending`` was ``total - executed -
-    skipped``, which silently counted FAILED / NOT_APPLICABLE /
-    PENDING_APPROVAL as still pending.  Now derived from
-    "proposed - any-row-exists" so a future enum addition doesn't
-    silently rejoin the pending bucket."""
-    from app.db import models
-    from app.db.models_agent import (
-        TestPlanEntry, TestExecutionResult, TestExecutionStatus,
-    )
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    host = models.Host(ip_address="10.0.0.22", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[
-            {"tool": "nmap", "description": "t1"},
-            {"tool": "nmap", "description": "t2"},
-            {"tool": "nmap", "description": "t3"},
-            {"tool": "nmap", "description": "t4"},
-        ],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()
-    for idx, status in enumerate([
-        TestExecutionStatus.EXECUTED.value,
-        TestExecutionStatus.FAILED.value,
-        TestExecutionStatus.NOT_APPLICABLE.value,
-    ]):
-        db_session.add(TestExecutionResult(
-            execution_session_id=es.id, entry_id=entry.id,
-            test_index=idx, status=status, is_finding=False,
-        ))
-    test_plan.status = "draft"
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-progress",
-        headers={"X-API-Key": key},
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["total_tests"] == 4
-    assert body["tests_executed"] == 1
-    assert body["tests_failed"] == 1
-    assert body["tests_not_applicable"] == 1
-    # Only the one test with no row at all is genuinely pending.
-    assert body["tests_pending"] == 1
+    db_session.expire_all()
+    stored = db_session.get(HostTest, row["id"])
+    assert stored.status == "proposed"
+    assert stored.revision == row["revision"]
 
 
 # ---------------------------------------------------------------------------
-# v2.26.0 — execution-path state-machine + auth-path infrastructure cleanup.
-# 1. Rate limiter now reads from agent_api_calls (global across workers).
+# v2.26.0 — auth-path infrastructure cleanup.
+# 1. Rate limiter enforced from shared state (global across workers).
 # 2. Activity stamping debounced to once per 60s.
-# 3. Completion routes through TestPlanService.update_entry so history is
-#    recorded and the lifecycle-timestamp path is shared with every other
-#    entry update.
+# (3, a plan entry's completion recording plan history, went with plan
+#  history in v2.442.0.)
 # ---------------------------------------------------------------------------
 
 def test_rate_limit_is_enforced_from_shared_state_not_the_audit_log(
-    client, db_session, test_plan, execution_session_with_key, test_agent,
+    client, db_session, test_project, agent_session_with_key,
 ):
     """v2.300.0 — the limit is enforced from ``agent_rate_buckets``.
 
@@ -1108,45 +535,44 @@ def test_rate_limit_is_enforced_from_shared_state_not_the_audit_log(
     from datetime import datetime, timezone, timedelta
     from app.db.models_agent import AgentApiCall
 
-    key = execution_session_with_key["key"]
-    test_plan.status = "draft"
-    test_agent.rate_limit_rpm = 3
+    s = agent_session_with_key
+    agent = s["agent"]
+    agent.rate_limit_rpm = 3
     db_session.commit()
 
     # Audit rows at the limit. Under the old limiter this alone caused a 429.
     now = datetime.now(timezone.utc)
     for _ in range(5):
         db_session.add(AgentApiCall(
-            agent_id=test_agent.id, project_id=test_plan.project_id,
-            test_plan_id=test_plan.id,
-            method="GET", path="/api/v1/agent/test-plans/x",
+            agent_id=agent.id, project_id=test_project.id,
+            agent_session_id=s["agent_session_id"],
+            method="GET", path=AGENT_READ,
             status_code=200, duration_ms=10,
             created_at=now - timedelta(seconds=5),
         ))
     db_session.commit()
 
-    url = f"/api/v1/agent/test-plans/{test_plan.id}/execution-context"
     # The audit log is not the limiter's input, so this passes.
-    assert client.get(url, headers={"X-API-Key": key}).status_code == 200
+    assert client.get(AGENT_READ, headers=s["headers"]).status_code == 200
 
     # Actual requests are what count. Two more reach the limit of 3...
     for _ in range(2):
-        assert client.get(url, headers={"X-API-Key": key}).status_code == 200
+        assert client.get(AGENT_READ, headers=s["headers"]).status_code == 200
     # ...and the next is refused.
-    assert client.get(url, headers={"X-API-Key": key}).status_code == 429
+    assert client.get(AGENT_READ, headers=s["headers"]).status_code == 429
 
 
 def test_rate_limit_does_not_count_a_previous_window(
-    client, db_session, test_plan, execution_session_with_key, test_agent,
+    client, db_session, agent_session_with_key,
 ):
     """A spent window must not hold the agent down forever — otherwise the
     count would only ever climb and the limit would become a permanent ban."""
-    from datetime import datetime, timedelta, timezone
+    from datetime import datetime, timezone
     from app.db.models_agent import AgentRateBucket
 
-    key = execution_session_with_key["key"]
-    test_plan.status = "draft"
-    test_agent.rate_limit_rpm = 3
+    s = agent_session_with_key
+    agent = s["agent"]
+    agent.rate_limit_rpm = 3
     db_session.commit()
 
     # A full bucket belonging to an EARLIER window.
@@ -1154,14 +580,11 @@ def test_rate_limit_does_not_count_a_previous_window(
     epoch = int(now.timestamp()) // 60 * 60
     previous = datetime.fromtimestamp(epoch - 60, tz=timezone.utc)
     db_session.add(AgentRateBucket(
-        agent_id=test_agent.id, window_start=previous, count=999,
+        agent_id=agent.id, window_start=previous, count=999,
     ))
     db_session.commit()
 
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
+    resp = client.get(AGENT_READ, headers=s["headers"])
     assert resp.status_code == 200, resp.text
 
 
@@ -1288,148 +711,69 @@ def test_audit_log_redacts_value_shaped_secrets():
     assert cleaned["host_id"] == 5
 
 
-def test_activity_stamp_debounced(
-    client, db_session, test_plan, execution_session_with_key, test_agent,
-):
+def _key_row(db_session, raw_key: str):
+    import hashlib
+    from app.db.models_auth import APIKey
+    return db_session.query(APIKey).filter(
+        APIKey.key_hash == hashlib.sha256(raw_key.encode()).hexdigest()
+    ).first()
+
+
+def test_activity_stamp_debounced(client, db_session, agent_session_with_key):
     """v2.26.0 — last_used / last_activity_at only updates when the
     persisted value is older than the debounce window.  A request that
     follows a recent one must NOT advance the timestamp."""
-    import hashlib
     from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey
-    key = execution_session_with_key["key"]
-    test_plan.status = "draft"
-    db_session.commit()
+    s = agent_session_with_key
+    agent = s["agent"]
 
     # Stamp both as "just used now" — well inside the debounce window.
     fresh = datetime.now(timezone.utc) - timedelta(seconds=5)
-    api_key_row = db_session.query(APIKey).filter(
-        APIKey.key_hash == hashlib.sha256(key.encode()).hexdigest()
-    ).first()
+    api_key_row = _key_row(db_session, s["key"])
     api_key_row.last_used = fresh
-    test_agent.last_activity_at = fresh
+    agent.last_activity_at = fresh
     db_session.commit()
     captured_key_ts = api_key_row.last_used
-    captured_agent_ts = test_agent.last_activity_at
+    captured_agent_ts = agent.last_activity_at
 
     # Drive a request that should NOT advance either timestamp.
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
+    resp = client.get(AGENT_READ, headers=s["headers"])
     assert resp.status_code == 200, resp.text
 
     db_session.refresh(api_key_row)
-    db_session.refresh(test_agent)
+    db_session.refresh(agent)
     assert api_key_row.last_used == captured_key_ts, (
         "api_key.last_used must NOT be re-stamped within the debounce window"
     )
-    assert test_agent.last_activity_at == captured_agent_ts, (
+    assert agent.last_activity_at == captured_agent_ts, (
         "agent.last_activity_at must NOT be re-stamped within the debounce window"
     )
 
 
-def test_activity_stamp_writes_when_stale(
-    client, db_session, test_plan, execution_session_with_key, test_agent,
-):
+def test_activity_stamp_writes_when_stale(client, db_session, agent_session_with_key):
     """Conversely, a stale (or null) timestamp must be advanced on the
     next request — otherwise the value is never written at all."""
-    import hashlib
     from datetime import datetime, timezone, timedelta
-    from app.db.models_auth import APIKey
-    key = execution_session_with_key["key"]
-    test_plan.status = "draft"
-    db_session.commit()
+    s = agent_session_with_key
+    agent = s["agent"]
 
     stale = datetime.now(timezone.utc) - timedelta(seconds=300)
-    api_key_row = db_session.query(APIKey).filter(
-        APIKey.key_hash == hashlib.sha256(key.encode()).hexdigest()
-    ).first()
+    api_key_row = _key_row(db_session, s["key"])
     api_key_row.last_used = stale
-    test_agent.last_activity_at = stale
+    agent.last_activity_at = stale
     db_session.commit()
 
-    resp = client.get(
-        f"/api/v1/agent/test-plans/{test_plan.id}/execution-context",
-        headers={"X-API-Key": key},
-    )
+    resp = client.get(AGENT_READ, headers=s["headers"])
     assert resp.status_code == 200, resp.text
 
     db_session.refresh(api_key_row)
-    db_session.refresh(test_agent)
+    db_session.refresh(agent)
     assert api_key_row.last_used > stale, (
         "api_key.last_used must be advanced once the persisted value is stale"
     )
-    assert test_agent.last_activity_at > stale, (
+    assert agent.last_activity_at > stale, (
         "agent.last_activity_at must be advanced once the persisted value is stale"
     )
-
-
-def test_completion_records_history_via_service(
-    client, db_session, test_plan, execution_session_with_key,
-):
-    """v2.26.0 — completion now routes through TestPlanService.update_entry,
-    which writes a TestPlanHistory row for each changed field.  Previously
-    the route handler wrote entry.status / .findings / .results_data
-    inline and skipped history entirely, making "what closed this entry?"
-    untraceable in the audit log."""
-    from app.db import models
-    from app.db.models_agent import (
-        TestPlanEntry, TestExecutionResult, TestExecutionStatus,
-        HostSanityCheck, TestPlanHistory,
-    )
-    es = execution_session_with_key["session"]
-    key = execution_session_with_key["key"]
-
-    host = models.Host(ip_address="10.0.0.66", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[{"tool": "nmap", "description": "service scan"}],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="banner_grab", target_ip="10.0.0.66", passed=True,
-    ))
-    db_session.add(TestExecutionResult(
-        execution_session_id=es.id, entry_id=entry.id,
-        test_index=0, status=TestExecutionStatus.EXECUTED.value,
-        is_finding=False,
-    ))
-    test_plan.status = "draft"
-    db_session.commit()
-    initial_completed_at = entry.completed_at
-
-    resp = client.post(
-        f"/api/v1/agent/test-plans/{test_plan.id}/entries/{entry.id}/complete",
-        headers={"X-API-Key": key},
-        json={"findings_summary": "all clear",
-              "overall_status": "completed"},
-    )
-    assert resp.status_code == 200, resp.text
-
-    # History rows recorded for the status + findings + results_data
-    # transitions.  Pre-fix the audit log was silent on completion.
-    history = (
-        db_session.query(TestPlanHistory)
-        .filter(TestPlanHistory.entry_id == entry.id)
-        .all()
-    )
-    fields_changed = {h.field_changed for h in history if h.field_changed}
-    assert "status" in fields_changed
-    actions = {h.action for h in history}
-    assert "status_changed" in actions
-
-    # completed_at is now set via the service's lifecycle path.
-    db_session.refresh(entry)
-    assert entry.completed_at is not None
-    assert entry.completed_at != initial_completed_at
 
 
 # ---------------------------------------------------------------------------
@@ -1597,64 +941,6 @@ def test_legacy_openvas_xml_still_detected():
     )
 
 
-def test_v2_45_2_plan_generation_status_mapping():
-    """Activity-timeline plan_generation rows show GENERATION-bounded
-    status, not the plan's full lifecycle.  Pre-fix a plan that had
-    moved to execution still showed plan_generation = 'in_progress',
-    confusing operators into thinking the agent never finished.
-    """
-    from app.services.agent_session_service import _plan_generation_status
-    # Agent still filling entries — in-flight.
-    assert _plan_generation_status("draft") == "in_progress"
-    # Post-generation states all collapse to "completed" from the
-    # plan-generation timeline's perspective — execution is tracked
-    # separately by its own session row.
-    assert _plan_generation_status("in_progress") == "completed"
-    assert _plan_generation_status("completed") == "completed"
-    # Archival passes through under its own label.
-    assert _plan_generation_status("archived") == "archived"
-    # Unknown enum values pass through unchanged so a future
-    # TestPlanStatus addition doesn't silently become "in_progress".
-    assert _plan_generation_status("brand_new_state") == "brand_new_state"
-
-
-def test_v2_45_2_execution_complete_endpoint_exists():
-    """The agent surface must expose a /complete endpoint for
-    execution sessions.  Pre-fix the model had ExecutionSessionStatus.
-    COMPLETED but no code path wrote it — sessions stayed ACTIVE
-    forever after the agent submitted the last entry's results."""
-    from app.api.v1.endpoints import agent_execution
-    # Walk the router's registered routes; complete_execution_session
-    # must be registered against the POST path.
-    paths = {
-        (route.path, frozenset(route.methods or set()))
-        for route in agent_execution.router.routes
-    }
-    assert (
-        "/execution-sessions/{session_id}/complete",
-        frozenset({"POST"}),
-    ) in paths, (
-        f"POST /execution-sessions/{{session_id}}/complete is missing "
-        f"from the agent_execution router.  Routes registered: "
-        f"{sorted(p for p, m in paths)}"
-    )
-
-
-def test_v2_45_2_execution_prompt_includes_session_complete_step():
-    """The execution agent prompt must instruct agents to call the new
-    /complete endpoint.  Pre-fix, sessions stayed ACTIVE because no
-    step in the prompt told the agent to close them."""
-    # v2.337.0 — the per-workflow prompts collapsed into one session prompt;
-    # the step-by-step execution protocol (including the /complete call) lives
-    # in the workflow-sliced guide now. Assert the execution guide slice
-    # carries the complete step and the terminal-status distinction.
-    from app.services.agents_guide_service import read_agent_guide, slice_agents_md
-    text = read_agent_guide() or ""
-    execution_slice = slice_agents_md(text, workflow="execution")
-    assert "execution-sessions/{session_id}/complete" in execution_slice
-    assert "overall_status" in execution_slice
-
-
 def test_xml_root_element_skips_real_nmap_prolog_with_comment():
     """v2.49.5 regression: the prolog skipper must handle the
     decl -> PI -> COMMENT -> root order that real ``nmap -oX``
@@ -1727,306 +1013,10 @@ def test_ingestion_dispatcher_puts_nmap_first_for_nmap_root():
     )
 
 
-# ---------------------------------------------------------------------------
-# v2.28.0 — execution results panel.  Three new surfaces: per-entry
-# execution-results endpoint, latest_execution_session on TestPlanDetail,
-# and test_plan_id filter on /feedback.
-# ---------------------------------------------------------------------------
-
-def test_entry_execution_results_empty_for_unrun_plan(
-    client, db_session, test_plan, test_project,
-):
-    """An entry with no execution session must return the stable empty
-    shape — entry_id, null session_id/status, empty arrays.  The UI
-    relies on this so it can render "no results yet" without branching."""
-    from app.db import models
-    from app.db.models_agent import TestPlanEntry
-    host = models.Host(ip_address="10.0.0.11", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration", proposed_tests=[], rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-        f"/entries/{entry.id}/execution-results"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["entry_id"] == entry.id
-    assert body["execution_session_id"] is None
-    assert body["tests"] == []
-    assert body["sanity_checks"] == []
-
-
-def test_entry_execution_results_returns_rows_for_active_session(
-    client, db_session, test_plan, test_project, execution_session_with_key,
-):
-    """When an active execution session exists with recorded results,
-    the endpoint returns them ordered by test_index + checked_at, with
-    every column the UI renders (command_run, raw_output, severity,
-    is_finding, executed_at)."""
-    from datetime import datetime, timezone
-    from app.db import models
-    from app.db.models_agent import (
-        TestPlanEntry, TestExecutionResult, TestExecutionStatus,
-        HostSanityCheck,
-    )
-    es = execution_session_with_key["session"]
-    host = models.Host(ip_address="10.0.0.12", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[{"tool": "nmap", "description": "t1"}],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()
-    db_session.add(HostSanityCheck(
-        execution_session_id=es.id, entry_id=entry.id, host_id=host.id,
-        method="banner_grab", target_ip="10.0.0.12", passed=True,
-        details="banner matched expected",
-    ))
-    # Two tests, reverse order to verify the endpoint sorts by test_index.
-    for idx in (1, 0):
-        db_session.add(TestExecutionResult(
-            execution_session_id=es.id, entry_id=entry.id,
-            test_index=idx, status=TestExecutionStatus.EXECUTED.value,
-            command_run=f"nmap test{idx}",
-            raw_output=f"output {idx}",
-            severity="medium", is_finding=(idx == 1),
-            executed_at=datetime.now(timezone.utc),
-        ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-        f"/entries/{entry.id}/execution-results"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["execution_session_id"] == es.id
-    assert body["execution_session_status"] == "active"
-    assert len(body["sanity_checks"]) == 1
-    assert body["sanity_checks"][0]["method"] == "banner_grab"
-    assert body["sanity_checks"][0]["passed"] is True
-    assert [t["test_index"] for t in body["tests"]] == [0, 1]
-    assert body["tests"][0]["command_run"] == "nmap test0"
-    assert body["tests"][1]["is_finding"] is True
-
-
-def test_plan_detail_carries_latest_execution_session(
-    client, db_session, test_plan, test_project, execution_session_with_key,
-):
-    """TestPlanDetail now includes latest_execution_session for the
-    UI's session-summary card.  An active session must surface there.
-    (The environment-probe fields it used to carry went with the probe.)"""
-    es = execution_session_with_key["session"]
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["latest_execution_session"] is not None
-    assert body["latest_execution_session"]["id"] == es.id
-    assert body["latest_execution_session"]["status"] == "active"
-    for gone in ("environment", "environment_os_family", "environment_shell",
-                 "environment_probed_at"):
-        assert gone not in body["latest_execution_session"], gone
-
-
-def test_feedback_test_plan_id_filter(client, db_session, test_plan, test_project, test_agent):
-    """Admin /feedback?test_plan_id=N filters down to feedback rows
-    attributed to that plan — the deep-link from TestPlanDetail relies
-    on this so opening it from a plan only shows that plan's
-    feedback."""
-    from app.db.models_agent import AgentFeedback, AgentFeedbackStatus
-
-    # Two feedback rows: one attributed to test_plan, one to a different
-    # plan_id so we can be sure the filter is doing something.
-    for plan_id_value, note in ((test_plan.id, "this plan"), (99999, "other plan")):
-        db_session.add(AgentFeedback(
-            project_id=test_project.id,
-            agent_id=test_agent.id,
-            test_plan_id=plan_id_value if plan_id_value == test_plan.id else None,
-            source="in_session_execution",
-            prompt_version="1.10.0",
-            overall_rating=4,
-            friction_notes=note,
-            status=AgentFeedbackStatus.NEW.value,
-        ))
-    db_session.commit()
-
-    # Unfiltered should return at least both rows.
-    resp = client.get("/api/v1/feedback/")
-    assert resp.status_code == 200, resp.text
-    # v2.428.2 — the standard Paginated envelope.
-    assert resp.json()["total"] >= 2
-
-    # Filtered to this plan: only the row we attributed.
-    resp = client.get(f"/api/v1/feedback/?test_plan_id={test_plan.id}")
-    assert resp.status_code == 200, resp.text
-    rows = resp.json()["items"]
-    assert len(rows) == 1
-    assert rows[0]["test_plan_id"] == test_plan.id
-    assert rows[0]["friction_notes"] == "this plan"
-
-
-# ---------------------------------------------------------------------------
-# v2.28.0 — multi-execution comparison surface.  A plan can be executed
-# many times (different users, agents, models); these tests pin the
-# session listing endpoint, the session-id query param on
-# execution-results, and the agent-attribution columns.
-# ---------------------------------------------------------------------------
-
-def test_execution_session_list_orders_active_first(
-    client, db_session, test_plan, test_project, test_agent,
-):
-    """The list endpoint returns active sessions first, then most-
-    recent started.  Picker UI relies on this ordering."""
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
-    # Three sessions: one paused (older), one paused (newer), one active.
-    base = datetime.now(timezone.utc)
-    for offset, status in (
-        (-3600, ExecutionSessionStatus.PAUSED.value),
-        (-1800, ExecutionSessionStatus.PAUSED.value),
-        (-60, ExecutionSessionStatus.ACTIVE.value),
-    ):
-        db_session.add(ExecutionSession(
-            test_plan_id=test_plan.id, agent_id=test_agent.id,
-            status=status, started_at=base + timedelta(seconds=offset),
-        ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}/execution-sessions"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["total"] == 3
-    statuses = [s["status"] for s in body["sessions"]]
-    # Active first, then PAUSED in newest-started order.
-    assert statuses[0] == "active"
-    started = [s["started_at"] for s in body["sessions"][1:]]
-    assert started == sorted(started, reverse=True)
-
-
-def test_entry_execution_results_session_id_param(
-    client, db_session, test_plan, test_project, test_agent,
-):
-    """``session_id`` query param picks a specific session's results.
-    Two sessions on the same plan, each with distinct results — the
-    endpoint must return the right one based on the param.  Validates
-    the cross-execution comparison path."""
-    from app.db import models
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        TestPlanEntry, TestExecutionResult, TestExecutionStatus,
-    )
-    host = models.Host(ip_address="10.0.0.55", state="up",
-                      project_id=test_plan.project_id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id, priority="high",
-        test_phase="enumeration",
-        proposed_tests=[{"tool": "nmap", "description": "t1"}],
-        rationale="fixture",
-    )
-    db_session.add(entry)
-    db_session.flush()
-
-    # Two sessions, attributed to different models.
-    s1 = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.PAUSED.value,
-        generated_by_model="claude-opus-4-7", generated_by_tool="claude-code",
-    )
-    s2 = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        generated_by_model="gpt-5-codex", generated_by_tool="codex",
-    )
-    db_session.add_all([s1, s2])
-    db_session.flush()
-
-    db_session.add(TestExecutionResult(
-        execution_session_id=s1.id, entry_id=entry.id, test_index=0,
-        status=TestExecutionStatus.EXECUTED.value,
-        command_run="run from claude", is_finding=False,
-    ))
-    db_session.add(TestExecutionResult(
-        execution_session_id=s2.id, entry_id=entry.id, test_index=0,
-        status=TestExecutionStatus.EXECUTED.value,
-        command_run="run from codex", is_finding=True, severity="high",
-    ))
-    db_session.commit()
-
-    # No session_id → defaults to the active session (s2).
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-        f"/entries/{entry.id}/execution-results"
-    )
-    assert resp.status_code == 200
-    assert resp.json()["execution_session_id"] == s2.id
-    assert resp.json()["tests"][0]["command_run"] == "run from codex"
-
-    # Explicit session_id=s1 → the older paused session.
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-        f"/entries/{entry.id}/execution-results?session_id={s1.id}"
-    )
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body["execution_session_id"] == s1.id
-    assert body["tests"][0]["command_run"] == "run from claude"
-
-    # Wrong-plan session_id → 404 with a clear message.
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}"
-        f"/entries/{entry.id}/execution-results?session_id=99999"
-    )
-    assert resp.status_code == 404
-    assert "different plan" in resp.json()["detail"] or "not found" in resp.json()["detail"].lower()
-
-
-def test_session_summary_carries_agent_attribution(
-    client, db_session, test_plan, test_project, test_agent,
-):
-    """The session listing surfaces generated_by_model / _tool /
-    prompt_version on each row so the picker can label runs by
-    "claude-opus-4-7 (claude-code)" vs "gpt-5-codex (codex)"."""
-    from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
-    db_session.add(ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        generated_by_model="claude-opus-4-7",
-        generated_by_tool="claude-code",
-        prompt_version="1.12.0",
-    ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/test-plans/{test_plan.id}/execution-sessions"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    assert body["total"] == 1
-    s = body["sessions"][0]
-    assert s["generated_by_model"] == "claude-opus-4-7"
-    assert s["generated_by_tool"] == "claude-code"
-    assert s["prompt_version"] == "1.12.0"
-
+# (v2.28.0's execution results panel and multi-execution comparison tests —
+# per-entry execution results, latest_execution_session on the plan detail,
+# the /feedback test_plan_id filter, the per-plan run list — went with test
+# plans and execution runs in v2.442.0.)
 
 # ---------------------------------------------------------------------------
 # v2.28.1 — Nessus upload regression.  The v2.22.0 parse-stats plumbing
@@ -2146,64 +1136,93 @@ def test_looks_like_httpx_still_accepts_str_for_back_compat():
 
 # ---------------------------------------------------------------------------
 # v2.30.0 — symmetric attribution + unified agent_sessions timeline.
-# Backend prep for the v3 UI overhaul.
+# (The timeline's rows were recon / plan-generation / execution runs until
+# the consolidation; they are project sessions plus legacy assist rows now.)
 # ---------------------------------------------------------------------------
 
-def test_agent_sessions_unified_timeline(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """The unified /agent-sessions endpoint UNION-ALLs recon, plan-
-    generation, and execution into one timeline ordered newest-first.
-    Drives the v3 Project Activity surface."""
+def _mk_agent_session(db_session, project_id, agent, *, model=None, tool=None,
+                      status="active", hours_ago=1):
     from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
+    from app.db.models_agent import AgentSession, AgentSessionWorkflow
+    row = AgentSession(
+        workflow=AgentSessionWorkflow.PROJECT.value, project_id=project_id,
+        agent_id=agent.id, started_by_id=agent.owner_id, status=status,
+        started_at=datetime.now(timezone.utc) - timedelta(hours=hours_ago),
+        generated_by_model=model, generated_by_tool=tool,
     )
+    db_session.add(row)
+    db_session.commit()
+    db_session.refresh(row)
+    return row
 
-    # The existing test_plan (plan_generation) plus an execution session.
-    now = datetime.now(timezone.utc)
-    es = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        started_at=now - timedelta(hours=1),
-        generated_by_model="gpt-5-codex",
-        generated_by_tool="codex",
+
+def test_agent_sessions_unified_timeline(
+    client, db_session, test_project, test_agent,
+):
+    """The unified /agent-sessions endpoint returns project sessions and
+    legacy assist rows in one timeline ordered newest-first, each carrying
+    its attribution and the work it left behind (the host tests it proposed
+    and the evidence it recorded)."""
+    from app.db.models_agent import AssistSession
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
+
+    older = _mk_agent_session(
+        db_session, test_project.id, test_agent,
+        model="claude-opus-4-7", tool="claude-code", hours_ago=3,
     )
-    db_session.add(es)
+    newer = _mk_agent_session(
+        db_session, test_project.id, test_agent,
+        model="gpt-5-codex", tool="codex", hours_ago=1,
+    )
+    # A pre-consolidation assist session: no parent project session.
+    db_session.add(AssistSession(
+        project_id=test_project.id, agent_id=test_agent.id,
+        started_by_id=test_agent.owner_id, status="ended",
+    ))
+    host = _mk_host(db_session, test_project.id, "10.0.3.1")
+    for i in range(2):
+        db_session.add(HostTest(
+            project_id=test_project.id, host_id=host.id, description=f"t{i}",
+            rationale="fixture", priority="medium", status="proposed",
+            source="agent", agent_session_id=newer.id,
+            request_key=f"timeline-{i}", request_hash="x" * 64,
+        ))
+    db_session.add(EvidenceRecord(
+        project_id=test_project.id, host_id=host.id, tool="nmap",
+        outcome="no_finding", summary="nothing", agent_session_id=newer.id,
+    ))
     db_session.commit()
 
     resp = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # Should include all three kinds.
+    assert body["total"] == 3
     kinds = [s["kind"] for s in body["sessions"]]
-    assert "plan_generation" in kinds  # test_plan from the fixture
-    assert "execution" in kinds
-    exec_row = next(s for s in body["sessions"] if s["kind"] == "execution")
-    assert exec_row["generated_by_model"] == "gpt-5-codex"
-    assert exec_row["generated_by_tool"] == "codex"
+    assert kinds.count("project") == 2
+    assert "assist" in kinds
+    projects = [s for s in body["sessions"] if s["kind"] == "project"]
+    # Newest-started first.
+    assert [s["id"] for s in projects] == [newer.id, older.id]
+    assert projects[0]["generated_by_model"] == "gpt-5-codex"
+    assert projects[0]["generated_by_tool"] == "codex"
+    assert projects[0]["host_test_count"] == 2
+    assert projects[0]["evidence_count"] == 1
+    assert projects[1]["host_test_count"] == 0
+    assert projects[1]["evidence_count"] == 0
 
 
 def test_agent_sessions_filter_by_model(
-    client, db_session, test_project, test_agent, test_plan,
+    client, db_session, test_project, test_agent,
 ):
     """``?model=...`` narrows to sessions attributed to one model.
-    Critical for the v3 "compare runs by model" workflow."""
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-    )
-    now = datetime.now(timezone.utc)
-    # Two execution sessions, two different models.
-    for model_id, hours_ago in (("claude-opus-4-7", 2), ("gpt-5-codex", 1)):
-        db_session.add(ExecutionSession(
-            test_plan_id=test_plan.id, agent_id=test_agent.id,
-            status=ExecutionSessionStatus.COMPLETED.value,
-            started_at=now - timedelta(hours=hours_ago),
-            generated_by_model=model_id,
-            generated_by_tool="claude-code" if "claude" in model_id else "codex",
-        ))
-    db_session.commit()
+    Critical for the "compare runs by model" workflow."""
+    _mk_agent_session(db_session, test_project.id, test_agent,
+                      model="claude-opus-4-7", tool="claude-code", status="ended", hours_ago=2)
+    codex = _mk_agent_session(db_session, test_project.id, test_agent,
+                              model="gpt-5-codex", tool="codex", status="ended", hours_ago=1)
+    # And one with no attribution, which must fall out of the filter.
+    _mk_agent_session(db_session, test_project.id, test_agent, hours_ago=4)
 
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/agent-sessions"
@@ -2211,38 +1230,26 @@ def test_agent_sessions_filter_by_model(
     )
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    # Only the codex recon session should appear.  (The fixture
-    # test_plan has no attribution; it falls out of this filter.)
+    assert body["total"] == 1
     assert len(body["sessions"]) == 1
+    assert body["sessions"][0]["id"] == codex.id
     assert body["sessions"][0]["generated_by_model"] == "gpt-5-codex"
-    assert body["sessions"][0]["kind"] == "execution"
+    assert body["sessions"][0]["kind"] == "project"
 
 
 def test_agent_sessions_by_model_tool_summary(
-    client, db_session, test_project, test_agent, test_plan,
+    client, db_session, test_project, test_agent,
 ):
     """The summary endpoint groups by (model, tool) and counts kinds.
-    Drives the v3 "compare models on this project" rollup card."""
-    from datetime import datetime, timezone, timedelta
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-    )
-    now = datetime.now(timezone.utc)
-    # Two claude-opus execution runs, one codex execution run.
-    for spec in [
+    Drives the "compare models on this project" rollup card."""
+    # Two claude-opus sessions, one codex session.
+    for model_id, tool_id in [
         ("claude-opus-4-7", "claude-code"),
         ("claude-opus-4-7", "claude-code"),
         ("gpt-5-codex", "codex"),
     ]:
-        model_id, tool_id = spec
-        db_session.add(ExecutionSession(
-            test_plan_id=test_plan.id, agent_id=test_agent.id,
-            status=ExecutionSessionStatus.PAUSED.value,
-            started_at=now - timedelta(hours=1),
-            generated_by_model=model_id,
-            generated_by_tool=tool_id,
-        ))
-    db_session.commit()
+        _mk_agent_session(db_session, test_project.id, test_agent,
+                          model=model_id, tool=tool_id, status="ended")
 
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/agent-sessions/by-model-tool"
@@ -2253,109 +1260,89 @@ def test_agent_sessions_by_model_tool_summary(
         for r in resp.json()["summary"]
     }
     claude = summary[("claude-opus-4-7", "claude-code")]
-    assert claude["execution"] == 2
+    assert claude["project"] == 2
     assert claude["total"] == 2
     codex = summary[("gpt-5-codex", "codex")]
-    assert codex["execution"] == 1
+    assert codex["project"] == 1
     assert codex["total"] == 1
+    # The retired kinds are not reported at all.
+    assert "execution" not in claude and "plan_generation" not in claude
 
 
 # ---------------------------------------------------------------------------
-# v3 alpha.3 — typed source-provenance on TestPlan + status filter on
-# /agent-sessions + project coverage endpoint.
+# v3 alpha.3 — status filter on /agent-sessions + project coverage endpoint.
 # ---------------------------------------------------------------------------
 
 def test_agent_sessions_status_filter_narrows_to_active(
-    client, db_session, test_project, test_agent, test_plan,
+    client, db_session, test_project, test_agent,
 ):
-    """v3 alpha.3 — ``?status=active`` returns only active sessions
-    across kinds.  Drives the in-flight-runs banner."""
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-    )
-
-    db_session.add(ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-    ))
-    db_session.add(ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-    ))
-    db_session.commit()
+    """``?status=active`` returns only active sessions.  Drives the
+    in-flight banner."""
+    live = _mk_agent_session(db_session, test_project.id, test_agent, status="active")
+    _mk_agent_session(db_session, test_project.id, test_agent, status="ended", hours_ago=2)
 
     resp = client.get(
         f"/api/v1/projects/{test_project.id}/agent-sessions?status=active"
     )
     assert resp.status_code == 200, resp.text
-    sessions = resp.json()["sessions"]
-    # Every returned row must be active, across all kinds.
-    assert all(s["status"] == "active" for s in sessions)
-    kinds = {s["kind"] for s in sessions}
-    assert "execution" in kinds
+    body = resp.json()
+    assert body["total"] == 1
+    assert [s["id"] for s in body["sessions"]] == [live.id]
+    assert all(s["status"] == "active" for s in body["sessions"])
 
 
 def test_coverage_summary_counts_hosts_by_pipeline_stage(
-    client, db_session, test_project, test_plan,
+    client, db_session, test_project,
 ):
     """Project coverage reports per-stage host counts and gap counts.
 
-    The gap counts (hosts_no_plan, hosts_no_execution) are sticky
-    fields — the UI relies on them being non-negative and consistent
-    with the totals.
+    Planned = the host has a test still to do (proposed / in progress);
+    tested = the host has an evidence record whose outcome is finding,
+    no_finding or inconclusive.  A finished or dismissed test does not keep
+    a host planned, and a failed attempt or an informational record does
+    not make it tested.  (``hosts_with_plan_entry`` /
+    ``hosts_with_execution_result`` keep their names from test plans.)
     """
-    from app.db import models
-    from app.db.models_agent import (
-        TestPlanEntry, TestExecutionResult, TestExecutionStatus,
-    )
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
 
-    # Three hosts.  One has a plan entry, one has a plan entry +
-    # execution result, one has neither (universe baseline).
-    hosts = []
-    for i, ip in enumerate(["10.0.1.10", "10.0.1.11", "10.0.1.12"]):
-        h = models.Host(
-            ip_address=ip, state="up", project_id=test_project.id,
-        )
-        db_session.add(h)
-        hosts.append(h)
-    db_session.flush()
+    hosts = [
+        _mk_host(db_session, test_project.id, f"10.0.1.{10 + i}") for i in range(6)
+    ]
 
-    from app.db.models_agent import ExecutionSession, ExecutionSessionStatus
-    entry1 = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=hosts[0].id,
-        priority="high", test_phase="enumeration",
-        proposed_tests=[], rationale="cov-entry-1",
-    )
-    entry2 = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=hosts[1].id,
-        priority="medium", test_phase="enumeration",
-        proposed_tests=[], rationale="cov-entry-2",
-    )
-    db_session.add(entry1)
-    db_session.add(entry2)
-    es = ExecutionSession(
-        test_plan_id=test_plan.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-    )
-    db_session.add(es)
-    db_session.flush()
+    def _test(host, status, key):
+        db_session.add(HostTest(
+            project_id=test_project.id, host_id=host.id, description="cov",
+            rationale="cov", priority="medium", status=status, source="person",
+            request_key=key, request_hash="x" * 64,
+            dismissed_reason="descoped" if status == "dismissed" else None,
+        ))
 
-    # Only entry2's host gets an execution result.
-    db_session.add(TestExecutionResult(
-        execution_session_id=es.id,
-        entry_id=entry2.id, test_index=0,
-        status=TestExecutionStatus.EXECUTED.value,
-    ))
+    def _evidence(host, outcome):
+        db_session.add(EvidenceRecord(
+            project_id=test_project.id, host_id=host.id, tool="nmap",
+            outcome=outcome, summary="cov",
+        ))
+
+    _test(hosts[0], "proposed", "cov-0")          # planned
+    _test(hosts[1], "in_progress", "cov-1")       # planned…
+    _evidence(hosts[1], "no_finding")             # …and tested
+    _test(hosts[2], "done", "cov-2")              # not planned any more
+    _evidence(hosts[2], "inconclusive")           # tested
+    _test(hosts[3], "dismissed", "cov-3")         # never planned
+    _evidence(hosts[4], "failed")                 # an attempt is not a test
+    _evidence(hosts[4], "info")
+    # hosts[5] has neither (universe baseline).
     db_session.commit()
 
     resp = client.get(f"/api/v1/projects/{test_project.id}/coverage/")
     assert resp.status_code == 200, resp.text
     body = resp.json()
-    assert body["total_hosts"] == 3
+    assert body["total_hosts"] == 6
     assert body["hosts_with_plan_entry"] == 2
-    assert body["hosts_with_execution_result"] == 1
-    assert body["hosts_no_plan"] == 1
-    assert body["hosts_no_execution"] == 2
+    assert body["hosts_with_execution_result"] == 2
+    assert body["hosts_no_plan"] == 4
+    assert body["hosts_no_execution"] == 4
 
 
 def test_coverage_summary_reports_scope_breakdown(
@@ -2402,221 +1389,5 @@ def test_coverage_summary_reports_scope_breakdown(
     assert sc["coverage_percent"] == 50.0
 
 
-# ---------------------------------------------------------------------------
-# v3 alpha.6 — JWT-facing recon-session detail endpoint
-# ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# v3 alpha.7 — JWT-facing execution-session lookup by id
-# ---------------------------------------------------------------------------
-
-def test_execution_session_lookup_returns_bundle(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """``GET /projects/{id}/execution-sessions/{session_id}`` returns
-    the same payload shape as the plan-scoped all-entry-results endpoint
-    but addressable without knowing the plan id — drives the v3 alpha.7
-    /executions/:sessionId permalink page."""
-    from app.db import models
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        TestPlanEntry,
-    )
-
-    host = models.Host(ip_address="10.0.2.5", state="up", project_id=test_project.id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id,
-        priority="high", test_phase="enumeration",
-        proposed_tests=[], rationale="alpha.7 fixture",
-    )
-    db_session.add(entry)
-    es = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        generated_by_model="claude-opus-4-7",
-        generated_by_tool="claude-code",
-    )
-    db_session.add(es)
-    db_session.commit()
-    db_session.refresh(es)
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/{es.id}"
-    )
-    assert resp.status_code == 200, resp.text
-    body = resp.json()
-    # Top-level matches the AllEntryResultsResponse shape.
-    assert body["plan_id"] == test_plan.id
-    assert body["execution_session_id"] == es.id
-    assert body["execution_session_status"] == "active"
-    assert body["generated_by_model"] == "claude-opus-4-7"
-    # Entries surface even with no results yet.
-    assert len(body["entries"]) == 1
-    assert body["entries"][0]["entry_id"] == entry.id
-    assert body["entries"][0]["host_ip"] == "10.0.2.5"
-
-
-def test_execution_session_lookup_404_for_cross_project(
-    client, db_session, test_project, test_agent,
-):
-    """A session belonging to a plan in another project must 404 with
-    the actionable cross-project detail."""
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        TestPlan, TestPlanStatus,
-    )
-    from app.db.models_project import Project
-
-    other = Project(name="other-exec", slug="other-exec", description="x")
-    db_session.add(other)
-    db_session.commit()
-    db_session.refresh(other)
-
-    other_plan = TestPlan(
-        project_id=other.id, agent_id=test_agent.id,
-        version=1, title="other plan",
-        status=TestPlanStatus.DRAFT.value,
-    )
-    db_session.add(other_plan)
-    db_session.flush()
-    es = ExecutionSession(
-        test_plan_id=other_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-    )
-    db_session.add(es)
-    db_session.commit()
-    db_session.refresh(es)
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/{es.id}"
-    )
-    assert resp.status_code == 404
-    detail = resp.json()["detail"]
-    assert "different project" in detail
-    assert f"#{other.id}" in detail
-
-
-def test_execution_session_lookup_404_for_missing(client, test_project):
-    """A session id that doesn't exist anywhere returns a plain 404."""
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/999999"
-    )
-    assert resp.status_code == 404
-    assert resp.json()["detail"] == "Execution session not found"
-
-
-# ---------------------------------------------------------------------------
-# v3 alpha.9 — host workflow lineage
-# ---------------------------------------------------------------------------
-
-def test_host_lineage_404_for_missing_host(client, test_project):
-    """A host id that doesn't exist returns 404."""
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/hosts/999999/lineage"
-    )
-    assert resp.status_code == 404
-
-
-# ---------------------------------------------------------------------------
-# v3 alpha.12 — execution-session list endpoint
-# ---------------------------------------------------------------------------
-
-def test_execution_session_list_returns_per_project_rows(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """``GET /projects/{id}/execution-sessions/`` returns project-wide
-    rows with per-session result + finding counts so the v3 alpha.12
-    list page can render without N+1."""
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-        TestExecutionResult, TestExecutionStatus,
-        TestPlanEntry,
-    )
-    from app.db import models
-
-    # Plan + entry + two sessions: one with results (one a finding,
-    # one not), one with no results.
-    host = models.Host(ip_address="10.0.4.5", state="up", project_id=test_project.id)
-    db_session.add(host)
-    db_session.flush()
-    entry = TestPlanEntry(
-        test_plan_id=test_plan.id, host_id=host.id,
-        priority="high", test_phase="enumeration",
-        proposed_tests=[], rationale="alpha.12 fixture",
-    )
-    db_session.add(entry)
-    es1 = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-        generated_by_model="claude-opus-4-7",
-    )
-    es2 = ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-        generated_by_model="gpt-5-codex",
-    )
-    db_session.add(es1)
-    db_session.add(es2)
-    db_session.flush()
-    db_session.add(TestExecutionResult(
-        execution_session_id=es1.id, entry_id=entry.id, test_index=0,
-        status=TestExecutionStatus.EXECUTED.value, is_finding=True,
-    ))
-    db_session.add(TestExecutionResult(
-        execution_session_id=es1.id, entry_id=entry.id, test_index=1,
-        status=TestExecutionStatus.EXECUTED.value, is_finding=False,
-    ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/"
-    )
-    assert resp.status_code == 200, resp.text
-    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
-    rows = resp.json()["items"]
-    assert len(rows) == 2
-    by_id = {r["id"]: r for r in rows}
-    assert by_id[es1.id]["result_count"] == 2
-    assert by_id[es1.id]["finding_count"] == 1
-    assert by_id[es1.id]["generated_by_model"] == "claude-opus-4-7"
-    assert by_id[es1.id]["plan_title"] == "contract test plan"
-    # Empty session still surfaces, with zero counts.
-    assert by_id[es2.id]["result_count"] == 0
-    assert by_id[es2.id]["finding_count"] == 0
-
-
-def test_execution_session_list_filters_by_status_and_plan(
-    client, db_session, test_project, test_agent, test_plan,
-):
-    """The filters apply independently and AND together — drives the
-    alpha.12 filter chip strip."""
-    from app.db.models_agent import (
-        ExecutionSession, ExecutionSessionStatus,
-    )
-    db_session.add(ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.ACTIVE.value,
-    ))
-    db_session.add(ExecutionSession(
-        test_plan_id=test_plan.id, agent_id=test_agent.id,
-        status=ExecutionSessionStatus.COMPLETED.value,
-    ))
-    db_session.commit()
-
-    resp = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/?status=active"
-    )
-    assert resp.status_code == 200
-    # v2.86.10 — list endpoints return a Paginated envelope {items,total,…}.
-    rows = resp.json()["items"]
-    assert all(r["status"] == "active" for r in rows)
-    assert len(rows) == 1
-
-    # ?test_plan_id= filter — same plan, both rows back.
-    resp2 = client.get(
-        f"/api/v1/projects/{test_project.id}/execution-sessions/?test_plan_id={test_plan.id}"
-    )
-    assert resp2.status_code == 200
-    assert all(r["test_plan_id"] == test_plan.id for r in resp2.json()["items"])
+# (v3 alpha.7's execution-session lookup, alpha.9's host workflow lineage and
+# alpha.12's execution-session list went with execution runs in v2.442.0.)

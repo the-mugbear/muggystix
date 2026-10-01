@@ -1,15 +1,19 @@
-"""MCP across the three agentic workflows (v2.278.0).
+"""MCP across the kinds of agent work (v2.278.0; one session since v2.337.0).
 
 Before this, MCP covered the assist surface only: an operator running recon or
-working a plan had an MCP client connected to a server that offered
-them nothing they could use, and every tool it *did* list 403'd on their key.
+testing hosts had an MCP client connected to a server that offered them
+nothing they could use.
 
-What these tests pin is the part that makes three entry points work over one
-endpoint — the caller's key decides which workflow's tools exist, and the
-arguments that key already answers (which plan, which session) are filled in
-server-side rather than guessed by a model. Plus the two properties that keep
-the split honest: hiding a tool is presentation, not authorisation (the
-endpoint still decides).
+What these tests pin: one session lists the whole catalogue; hiding or listing
+a tool is presentation, not authorisation (the endpoint still decides); and
+the testing loop — propose tests on hosts, run one, record its evidence —
+works end to end as tool calls.
+
+v2.442.0 — test plans and execution runs are gone, and with them the
+``plan_*`` / ``execution_*`` tools and the ``plan_id`` the server filled in
+from the key (``test_plan_id_is_filled_from_the_key``,
+``test_an_explicit_argument_beats_the_auto_filled_one``: no tool has a plan to
+address).  The one auto-filled argument left is the guide's ``workflow``.
 """
 from __future__ import annotations
 
@@ -58,15 +62,9 @@ def _call(client, headers, name, arguments=None):
 
 
 def _plan_key(client, test_project, title="MCP plan"):
-    """v2.433.0 — one agent session, and the AGENT registers the plan in it
-    (the operator-side "Generate with AI" mint is gone)."""
-    session = _assist_key(client, test_project)
-    resp = client.post(
-        "/api/v1/agent/test-plans", json={"title": title},
-        headers={"X-API-Key": session["api_key"]},
-    )
-    assert resp.status_code == 201, resp.text
-    return {**session, "plan_id": resp.json()["id"]}
+    """A project session.  (It used to register a plan too; the name is kept so
+    the multi-session tests below still read as "several sessions".)"""
+    return _assist_key(client, test_project)
 
 
 def _recon_key(client, test_project, scope):
@@ -102,15 +100,17 @@ def test_identity_classifies_each_workflow_key(client, test_project, scope_with_
         assert resp.status_code == 200, resp.text
         return resp.json()
 
-    # v2.337.0 — every start mints one project session; what it opened shows in
-    # open_phases, not in a per-key workflow.
+    # v2.337.0 — every start mints one project session.  v2.442.0 — and a
+    # session has no phases: identity names the session, nothing it "opened".
     plan_id = identity(plan["api_key"])
     assert plan_id["workflow"] == "project"
-    assert plan_id["open_phases"]["plan_id"] == plan["plan_id"]
+    assert plan_id["session_id"] == plan["agent_session_id"]
+    for retired in ("open_phases", "plan_id", "execution_session_id"):
+        assert retired not in plan_id
 
     recon_id = identity(recon["api_key"])
     assert recon_id["workflow"] == "project"
-    assert recon_id["execution_session_id"] is None
+    assert recon_id["session_id"] == recon["agent_session_id"] != plan_id["session_id"]
 
     assist_id = identity(assist["api_key"])
     assert assist_id["workflow"] == "project"
@@ -135,15 +135,17 @@ def test_each_key_sees_only_its_own_workflows_tools(
     assist = _assist_key(client, test_project)
 
     # v2.337.0 — one project session does everything, so every key lists the
-    # FULL catalogue (plan + recon + assist + the phase-start tools). Whether a
-    # call succeeds is the operator's role + the phase state, decided at the
-    # endpoint — the list is presentation.
+    # FULL catalogue (testing + scope + assist). Whether a call succeeds is
+    # the operator's role, decided at the endpoint — the list is presentation.
     for body in (plan, recon, assist):
         tools = _tool_names(client, {"X-API-Key": body["api_key"]})
-        assert {"plan_add_entries", "plan_validate", "scope_list_subnets",
-                "assist_list_hosts", "start_execution",
-                "create_test_plan", "agent_identity", "suggest_tool"} <= tools
+        assert {"host_tests_propose", "host_tests_list", "host_tests_get",
+                "host_tests_update", "record_evidence", "scope_list_subnets",
+                "assist_list_hosts", "agent_identity", "suggest_tool"} <= tools
         assert "start_recon" not in tools
+        # v2.442.0 — no plan or execution-run tool survives under any name.
+        assert not [t for t in tools if t.startswith(("plan_", "execution_"))]
+        assert not {"create_test_plan", "start_execution"} & tools
 
 
 def test_unauthenticated_list_is_the_documentation_view(client):
@@ -151,9 +153,10 @@ def test_unauthenticated_list_is_the_documentation_view(client):
     degrading to an empty list would make the server look broken to a client
     that hasn't been given a key yet."""
     tools = _tool_names(client)
-    assert {"assist_list_hosts", "plan_add_entries", "scope_list_subnets",
-            "execution_get_progress", "get_upload_job"} <= tools
+    assert {"assist_list_hosts", "host_tests_propose", "scope_list_subnets",
+            "list_evidence", "get_upload_job"} <= tools
     assert "plan_submit" not in tools  # v2.433.0 — no approval step
+    assert "plan_add_entries" not in tools  # v2.442.0 — no plans
 
 
 def test_hiding_a_tool_is_presentation_not_authorisation(
@@ -166,110 +169,136 @@ def test_hiding_a_tool_is_presentation_not_authorisation(
     headers = {"X-API-Key": recon["api_key"]}
 
     # Every tool is listed now; the endpoint is still the decider. Reading a
-    # plan that does not exist reaches the real route and fails there.
-    result = _call(client, headers, "plan_get", {"plan_id": 999999})
+    # host test that does not exist reaches the real route and fails there.
+    result = _call(client, headers, "host_tests_get", {"test_id": 999999})
     assert result["isError"] is True
 
 
-# ---------------------------------------------------------------------------
-# Arguments the key already answers
-# ---------------------------------------------------------------------------
-
-def test_plan_id_is_filled_from_the_key(client, test_project):
-    """A plan key is bound to exactly one plan. Making the model carry the id
-    means the model can get it wrong; filling it server-side means it can't."""
-    plan = _plan_key(client, test_project, title="auto-filled plan")
-    headers = {"X-API-Key": plan["api_key"]}
-
-    result = _call(client, headers, "plan_get")
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["id"] == plan["plan_id"]
-
-
-def test_an_explicit_argument_beats_the_auto_filled_one(client, test_project):
-    """Auto-fill is a default, not an override — otherwise a caller could never
-    address anything but its own binding, and the 403 it should see for trying
-    would be silently replaced by a success against the wrong plan."""
-    first = _plan_key(client, test_project, title="first plan")
-    second = _plan_key(client, test_project, title="second plan")
-    headers = {"X-API-Key": first["api_key"]}
-
-    # v2.337.0 — a project session reads any plan in its project, so an explicit
-    # plan_id is honoured (auto-fill is a default, not a lock to one plan).
-    result = _call(client, headers, "plan_get", {"plan_id": second["plan_id"]})
-    assert result["isError"] is False, result
-    assert result["structuredContent"]["id"] == second["plan_id"]
-
-
-# ---------------------------------------------------------------------------
-# Plan generation over MCP, end to end
-# ---------------------------------------------------------------------------
-
-def test_plan_generation_workflow_over_mcp(client, test_project, db_session):
-    """The loop an agent actually runs: read context, propose tests, validate,
-    then work its own plan — every step a tool call, no curl, and nothing
-    waits on approval (v2.433.0)."""
+def test_a_listed_write_tool_still_answers_with_the_operators_role(
+    client, db_session, test_project, test_user
+):
+    """``host_tests_propose`` is listed for every session; an auditor's session
+    calling it gets the endpoint's 403 and nothing is written."""
+    from app.api.v1.endpoints.auth import get_current_user
     from app.db.models import Host
+    from app.db.models_auth import User, UserRole
+    from app.db.models_host_tests import HostTest
+    from app.db.models_project import ProjectMembership, ProjectRole
+    from app.main import app
+
+    host = Host(ip_address="10.77.1.20", project_id=test_project.id, state="up")
+    auditor = User(id=4343, username="mcp-auditor", email="mcp-auditor@example.com",
+                   hashed_password="x", role=UserRole.MEMBER)
+    db_session.add_all([host, auditor])
+    db_session.flush()
+    db_session.add(ProjectMembership(project_id=test_project.id, user_id=auditor.id,
+                                     role=ProjectRole.AUDITOR.value))
+    db_session.commit()
+
+    original = app.dependency_overrides.get(get_current_user)
+    app.dependency_overrides[get_current_user] = lambda: auditor
+    try:
+        session = _assist_key(client, test_project)
+    finally:
+        app.dependency_overrides[get_current_user] = original
+    headers = {"X-API-Key": session["api_key"]}
+    assert "host_tests_propose" in _tool_names(client, headers)
+
+    result = _call(client, headers, "host_tests_propose", {"tests": [{
+        "request_key": "auditor-1", "host_id": host.id, "tool": "nmap",
+        "description": "d", "rationale": "r",
+    }]})
+    assert result["isError"] is True, result
+    assert db_session.query(HostTest).count() == 0
+    # The read is the auditor's to make.
+    assert _call(client, headers, "host_tests_list")["isError"] is False
+
+
+# ---------------------------------------------------------------------------
+# Testing over MCP, end to end
+# ---------------------------------------------------------------------------
+
+def test_testing_workflow_over_mcp(client, test_project, db_session):
+    """The loop an agent actually runs: see what is already proposed, propose
+    tests on hosts, take one, record what it produced, close it — every step a
+    tool call, no curl, and nothing waits on approval."""
+    from app.db.models import Host
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import EvidenceRecord
 
     host = Host(ip_address="10.77.1.10", project_id=test_project.id, state="up")
     db_session.add(host)
     db_session.commit()
     db_session.refresh(host)
 
-    plan = _plan_key(client, test_project, title="stage 2 over mcp")
-    headers = {"X-API-Key": plan["api_key"]}
+    session = _assist_key(client, test_project)
+    headers = {"X-API-Key": session["api_key"]}
 
-    context = _call(client, headers, "plan_get_context")
-    assert context["isError"] is False, context
+    before = _call(client, headers, "host_tests_list", {"host_id": host.id})
+    assert before["isError"] is False, before
+    assert before["structuredContent"]["total"] == 0
 
-    described = _call(
-        client,
-        headers,
-        "plan_update",
-        {
-            "description": "Scope: one host. Prioritised by exposure. Methodology: manual.",
-            "generated_by_model": "test-model",
-        },
-    )
-    assert described["isError"] is False, described
+    spec = {
+        "request_key": "mcp-ftp-1",
+        "host_id": host.id,
+        "tool": "nmap",
+        "description": "Confirm the FTP service and its version.",
+        "command": "nmap -p21 -sV -oX ftp.xml {ip}",
+        "rationale": "FTP banner suggests an anonymous-login check is worth doing.",
+        "priority": "high",
+        "label": "FTP review",
+    }
+    proposed = _call(client, headers, "host_tests_propose",
+                     {"tests": [spec], "agent_model": "test-model"})
+    assert proposed["isError"] is False, proposed
+    test = proposed["structuredContent"]["items"][0]
+    assert (test["status"], test["source"], test["label"]) == ("proposed", "agent", "FTP review")
+    assert test["agent_session_id"] == session["agent_session_id"]
 
-    added = _call(
-        client,
-        headers,
-        "plan_add_entries",
-        {
-            "entries": [
-                {
-                    "host_id": host.id,
-                    "priority": "high",
-                    "test_phase": "enumeration",
-                    "rationale": "FTP banner suggests an anonymous-login check is worth doing.",
-                    "proposed_tests": [
-                        {
-                            "tool": "nmap",
-                            "description": "Confirm the FTP service and its version.",
-                            "command": "nmap -p21 -sV -oX ftp.xml 10.77.1.10",
-                        }
-                    ],
-                }
-            ]
-        },
-    )
-    assert added["isError"] is False, added
+    # A retry with the same key and content is the same test, not a second one.
+    again = _call(client, headers, "host_tests_propose", {"tests": [spec]})
+    assert again["structuredContent"]["items"][0]["id"] == test["id"]
 
-    validated = _call(client, headers, "plan_validate")
-    assert validated["isError"] is False, validated
+    got = _call(client, headers, "host_tests_get", {"test_id": test["id"]})
+    assert got["structuredContent"]["command"] == spec["command"]
 
-    started = _call(client, headers, "start_execution", {"plan_id": plan["plan_id"]})
-    assert started["isError"] is False, started
+    taken = _call(client, headers, "host_tests_update", {
+        "test_id": test["id"], "expected_revision": test["revision"], "status": "in_progress",
+    })
+    assert taken["isError"] is False, taken
+    revision = taken["structuredContent"]["revision"]
+    assert revision == test["revision"] + 1
 
-    from app.db.models_agent import TestPlan
+    # A write from the revision read before the claim is stale.
+    stale = _call(client, headers, "host_tests_update", {
+        "test_id": test["id"], "expected_revision": test["revision"], "status": "done",
+    })
+    assert stale["isError"] is True
+
+    recorded = _call(client, headers, "record_evidence", {
+        "host_id": host.id, "host_test_id": test["id"], "request_key": "mcp-ftp-1-run",
+        "tool": "nmap", "command": "nmap -p21 -sV -oX ftp.xml 10.77.1.10",
+        "outcome": "no_finding", "summary": "vsftpd 3.0.5, anonymous login refused",
+    })
+    assert recorded["isError"] is False, recorded
+
+    listed = _call(client, headers, "list_evidence", {"host_test_id": test["id"]})
+    assert [e["id"] for e in listed["structuredContent"]["items"]] == [
+        recorded["structuredContent"]["id"]
+    ]
+
+    done = _call(client, headers, "host_tests_update", {
+        "test_id": test["id"], "expected_revision": revision, "status": "done",
+    })
+    assert done["isError"] is False, done
 
     db_session.expire_all()
-    stored = db_session.get(TestPlan, plan["plan_id"])
-    # The agent's own draft went straight to work.
-    assert stored.status == "in_progress"
-    assert stored.entries and stored.entries[0].host_id == host.id
+    stored = db_session.query(HostTest).one()
+    assert (stored.status, stored.host_id, stored.agent_model) == ("done", host.id, "test-model")
+    assert db_session.query(EvidenceRecord).filter_by(host_test_id=stored.id).count() == 1
+    # The person's page reads the same row.
+    row = client.get(f"/api/v1/projects/{test_project.id}/host-tests", params={"host_id": host.id}).json()
+    assert [(t["id"], t["status"], t["evidence_count"]) for t in row["items"]] == [(stored.id, "done", 1)]
 
 
 def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
@@ -291,8 +320,37 @@ def test_the_guide_is_reachable_over_mcp_and_sliced_to_the_caller(
     # v2.337.0 — a project session does every kind of work, so it gets the WHOLE
     # guide, not one slice.
     for text in (recon_text, plan_text):
-        assert "Workflow A — Build a Test Plan" in text
         assert "Say the rules back before you start" in text
+        # The whole guide: the reconnaissance-only and assist-only sections
+        # are both in it.
+        assert "/agent/uploads" in text and "/agent/assist/" in text
+    assert recon_text == plan_text
+
+
+def test_an_explicit_guide_slice_beats_the_auto_filled_one(client, test_project):
+    """Auto-fill is a default, not an override: the session's ``project``
+    workflow means "the whole guide", and naming a slice gets that slice."""
+    from app.services.agents_guide_service import read_agent_guide, slice_agents_md
+
+    full_text = read_agent_guide()
+    if full_text is None:
+        pytest.skip("the agent guide is not mounted in this environment")
+    session = _assist_key(client, test_project)
+    headers = {"X-API-Key": session["api_key"]}
+
+    sliced = _call(client, headers, "read_agent_guide", {"workflow": "assist"})
+    assert sliced["isError"] is False, sliced
+    # The served text stamps the prompt version into the header, so compare
+    # the slice by size rather than byte for byte.
+    expected = slice_agents_md(full_text, "assist")
+    assert abs(len(sliced["content"][0]["text"]) - len(expected)) < 40
+    assert len(expected) < len(full_text)
+    whole = _call(client, headers, "read_agent_guide")["content"][0]["text"]
+    assert len(whole) > len(sliced["content"][0]["text"])
+    # A retired slice name is not an advertised value any more.
+    refused = _rpc(client, {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {
+        "name": "read_agent_guide", "arguments": {"workflow": "plan_generation"}}}, headers=headers)
+    assert "error" in refused.json() or refused.json()["result"]["isError"] is True
 
 
 def test_the_tool_catalogue_is_readable_over_mcp(
@@ -393,13 +451,13 @@ def test_sandbox_guidance_rides_with_the_workflows_that_run_commands(
 ):
     """The working-directory boundary is enforced by the client, not by us — so
     the flags that set it belong in the recipe for the workflows that actually
-    execute things. Attaching them to plan generation, which only calls the API,
-    would train operators to ignore them. v2.337.0: any session can run commands, so the flags ride every recipe."""
+    execute things. v2.337.0: any session can run commands, so the flags ride
+    every recipe."""
     recon = _recon_key(client, test_project, scope_with_subnets)
     plan = _plan_key(client, test_project)
 
-    # v2.337.0 — any session can open a recon/execution run that shells out, so
-    # the client-sandbox flags ride EVERY recipe now (not just recon/exec).
+    # v2.337.0 — any session can run a scanner or a host test, so the
+    # client-sandbox flags ride EVERY recipe.
     for body in (recon, plan):
         codex = next(c for c in body["mcp_clients"] if c["id"] == "codex")
         assert "--sandbox workspace-write" in codex["hint"]

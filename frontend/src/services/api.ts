@@ -38,7 +38,6 @@ export * from './api/assist';
 export * from './api/client-reports';
 export * from './api/coverage';
 export * from './api/dashboard';
-export * from './api/execution-sessions';
 export * from './api/feedback';
 export * from './api/findings';
 export * from './api/hosts';
@@ -59,7 +58,8 @@ export * from './api/scopes';
 export * from './api/shared';
 export * from './api/sites';
 export * from './api/system';
-export * from './api/test-plans';
+export * from './api/host-tests';
+export * from './api/agent-activity';
 export * from './api/uploads';
 
 export interface DNSRecord {
@@ -362,13 +362,6 @@ export const getAuditStats = async (): Promise<AuditStats> => {
   const response = await api.get('/audit/stats');
   return response.data;
 };
-
-// ---------------------------------------------------------------------------
-// Host workflow lineage (v3 alpha.9) — plan entries referencing this
-// host + execution sessions that have run results against any of
-// those entries.  One round trip;
-// drives the HostDetail "Workflow lineage" panel.
-// ---------------------------------------------------------------------------
 
 export interface CommandExplanation {
   has_command: boolean;

@@ -101,7 +101,7 @@ describe('Collaboration — one feed', () => {
     await waitFor(() => expect(container.querySelectorAll('[title="Mentions eval-ana"]')).toHaveLength(2));
   });
 
-  it('the header counts finding discussions too, and the status counts say they are about host notes', async () => {
+  it('the header counts finding discussions too', async () => {
     getNoteActivity.mockResolvedValue(payload([note({})]));
     getFindingDiscussions.mockResolvedValue({ total: 1, items: [discussion({})] });
     render(<MemoryRouter><Activity /></MemoryRouter>);
@@ -109,19 +109,22 @@ describe('Collaboration — one feed', () => {
     await waitFor(() => expect(screen.getByLabelText('Discussions in view')).toHaveTextContent(
       '1 host-note thread on 1 host · 1 finding discussion in view',
     ));
-    expect(screen.getByLabelText('Host notes by status')).toHaveTextContent(/^Host notes:/);
   });
 
-  it('a note status leaves finding discussions out, and says so with a way back', async () => {
+  // 5.325.0 — a host note has no status: nothing filters by one, so finding
+  // discussions are never left out of the feed. (Replaces "a note status
+  // leaves finding discussions out, and says so with a way back".)
+  it('has no note-status filter or counts, and a note row carries no status chip', async () => {
     getNoteActivity.mockResolvedValue(payload([note({})]));
     getFindingDiscussions.mockResolvedValue({ total: 1, items: [discussion({})] });
     const { container } = render(<MemoryRouter><Activity /></MemoryRouter>);
     await waitFor(() => expect(rowsIn(container)).toHaveLength(2));
-    fireEvent.click(screen.getByRole('button', { name: '1 open' }));
-    await waitFor(() => expect(container.querySelector('a[data-discussion]')).toBeNull());
-    expect(screen.getByText(/finding comments are hidden while a note status is chosen/)).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Show all' }));
-    await waitFor(() => expect(container.querySelector('a[data-discussion]')).not.toBeNull());
+    expect(screen.queryByRole('combobox', { name: 'Host note status' })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Host notes by status')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /\d+ (open|resolved|in progress)$/ })).not.toBeInTheDocument();
+    const noteRow = container.querySelector('a[data-thread]') as HTMLElement;
+    expect(noteRow).not.toHaveTextContent(/Open|Resolved|In Progress/);
+    expect(getNoteActivity.mock.calls.every(([params]) => !('status' in (params ?? {})))).toBe(true);
   });
 
   it('while notes remain to load, an older finding discussion waits instead of jumping the queue', async () => {

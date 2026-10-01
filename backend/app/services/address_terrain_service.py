@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import Annotation, HostFollow
-from app.db.models_agent import TestExecutionResult, TestExecutionStatus, TestPlanEntry
+from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTCOMES
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_findings import FindingHost
 from app.db.models_project import Project
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
@@ -87,17 +88,16 @@ def compute_address_terrain(db: Session, project: Project) -> AddressTerrainResp
     host = models.Host
     in_project = db.query(host.id).filter(host.project_id == project.id)
     tested = (
-        db.query(TestPlanEntry.host_id.label("hid"))
-        .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
+        db.query(EvidenceRecord.host_id.label("hid"))
         .filter(
-            TestExecutionResult.status == TestExecutionStatus.EXECUTED.value,
-            TestPlanEntry.host_id.in_(in_project),
+            EvidenceRecord.outcome.in_(TESTED_OUTCOMES),
+            EvidenceRecord.host_id.in_(in_project),
         )
         .distinct().subquery("tested")
     )
     planned = (
-        db.query(TestPlanEntry.host_id.label("hid"))
-        .filter(TestPlanEntry.host_id.in_(in_project))
+        db.query(HostTest.host_id.label("hid"))
+        .filter(HostTest.host_id.in_(in_project), HostTest.status.in_(ACTIVE_TEST_STATUSES))
         .distinct().subquery("planned")
     )
     worked = (
@@ -105,6 +105,8 @@ def compute_address_terrain(db: Session, project: Project) -> AddressTerrainResp
         .union(
             db.query(Annotation.host_id).filter(Annotation.host_id.in_(in_project)),
             db.query(FindingHost.host_id).filter(FindingHost.host_id.in_(in_project)),
+            db.query(HostTest.host_id).filter(HostTest.host_id.in_(in_project), HostTest.status != "dismissed"),
+            db.query(EvidenceRecord.host_id).filter(EvidenceRecord.host_id.in_(in_project)),
         )
         .subquery("worked")
     )

@@ -1,15 +1,20 @@
 """End-to-end proof of the v2.337.0 unified agent session.
 
-One project-scoped session + key does every kind of work — query, recon,
-plan, execute — chosen by opening a phase rather than by minting a different
-key.  This replaces the four per-workflow entry points (assist / recon /
-plan generation / execution) whose isolation these tests' predecessors pinned.
+One project-scoped session + key does every kind of work — query, read a
+scope, propose tests on hosts, record what it ran — with nothing to open
+first.  This replaces the four per-workflow entry points (assist / recon /
+plan generation / execution) whose isolation these tests' predecessors pinned;
+since v2.442.0 there are no plans or execution runs either.
 """
-from app.db.models_agent import AgentSession, TestPlan, TestPlanEntry, TestPlanStatus
+import uuid
+
+from app.db import models
+from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 
 
 def _scope_with_subnet(db, project):
-    from app.db import models
     scope = models.Scope(project_id=project.id, name="s1", description="")
     db.add(scope)
     db.flush()
@@ -26,31 +31,46 @@ def _start_session(client, project):
     return body["api_key"], body["assist_session_id"]
 
 
+def _session_id(db, assist_session_id):
+    return (
+        db.query(AssistSession.agent_session_id)
+        .filter(AssistSession.id == assist_session_id).scalar()
+    )
+
+
 def _hdr(key):
     return {"X-API-Key": key}
 
 
-def test_one_key_reaches_identity_scope_and_plan(client, test_project, db_session):
+def _host(db, project, ip="10.0.0.5"):
+    host = models.Host(project_id=project.id, ip_address=ip, state="up")
+    db.add(host)
+    db.commit()
+    return host
+
+
+def _spec(host, **extra):
+    return dict(request_key=str(uuid.uuid4()), host_id=host.id, tool="nmap",
+                description="Service detection", rationale="Open ports, no versions", **extra)
+
+
+def test_one_key_reaches_identity_scope_and_host_tests(client, test_project, db_session):
     key, assist_session_id = _start_session(client, test_project)
     # The start endpoint returns the AssistSession id; the unified session is
     # the AgentSession it links to.
-    from app.db.models_agent import AssistSession
-    session_id = (
-        db_session.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id).scalar()
-    )
+    session_id = _session_id(db_session, assist_session_id)
 
     # The session is a PROJECT session and the key resolves to it.
     row = db_session.query(AgentSession).filter(AgentSession.id == session_id).first()
     assert row is not None and row.workflow == "project"
 
-    # identity: one key, project-scoped, no phase open yet.
+    # identity: one key, project-scoped.
     r = client.get("/api/v1/agent/identity", headers=_hdr(key))
     assert r.status_code == 200, r.text
     ident = r.json()
     assert ident["workflow"] == "project"
     assert ident["project_id"] == test_project.id
-    assert ident["open_phases"]["active_execution_session_ids"] == []
+    assert ident["session_id"] == session_id
     assert ident["can_write_project_data"] is True  # admin operator
 
     # read a scope — same key, no new credential.
@@ -59,12 +79,12 @@ def test_one_key_reaches_identity_scope_and_plan(client, test_project, db_sessio
     assert r.status_code == 200, r.text
     assert "10.0.0.0/24" in r.json()["subnets"]
 
-    # the SAME key drafts a plan.
-    r = client.post("/api/v1/agent/test-plans", headers=_hdr(key), json={"title": "p1"})
+    # the SAME key proposes a test on a host, attributed to this session.
+    host = _host(db_session, test_project)
+    r = client.post("/api/v1/agent/host-tests", headers=_hdr(key), json={"tests": [_spec(host)]})
     assert r.status_code == 201, r.text
-    plan_id = r.json()["id"]
-    plan = db_session.query(TestPlan).filter(TestPlan.id == plan_id).first()
-    assert plan.agent_session_id == session_id
+    test = db_session.get(HostTest, r.json()["items"][0]["id"])
+    assert test.agent_session_id == session_id and test.source == "agent"
 
 
 def test_mcp_guidance_describes_the_unified_session():
@@ -87,73 +107,63 @@ def test_agent_guide_does_not_describe_inventory_assistance_as_a_separate_sessio
     from tests.test_docs_contract import _load_agents_md
 
     guide = _load_agents_md()
-    assert "Inventory-assist phase" in guide
     assert "You are in an **assist session**" not in guide
     assert "Scanning, plan creation, and execution are refused for every assist session" not in guide
 
 
-def test_an_agent_executes_its_own_draft(client, test_project, db_session):
-    """v2.433.0 — no approval gate: a draft with entries opens a run straight
-    away and moves to in_progress; an archived plan does not."""
+def test_an_agent_works_its_own_test_with_no_approval_step(client, test_project, db_session):
+    """No approval gate (v2.433.0) and nothing to open (v2.442.0): a test the
+    agent proposes is on the host at once, and the same key takes it through
+    in_progress → evidence → done.  A person sees it without accepting
+    anything."""
     key, _ = _start_session(client, test_project)
+    host = _host(db_session, test_project)
 
-    from app.db.models_agent import TestPlan, TestPlanEntry, TestPlanStatus
-    from app.db import models
-    host = models.Host(project_id=test_project.id, ip_address="10.0.0.5", state="up")
-    db_session.add(host)
-    db_session.flush()
-    plan = TestPlan(project_id=test_project.id, version=1, title="draft", status=TestPlanStatus.DRAFT.value)
-    db_session.add(plan)
-    db_session.flush()
-    db_session.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high", test_phase="enumeration", proposed_tests=[], rationale="x"))
-    db_session.commit()
-
-    # An archived plan is not worked.
-    plan.status = TestPlanStatus.ARCHIVED.value
-    db_session.commit()
-    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
-    assert r.status_code == 409, r.text
-
-    # A draft is.
-    plan.status = TestPlanStatus.DRAFT.value
-    db_session.commit()
-    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    r = client.post("/api/v1/agent/host-tests", headers=_hdr(key),
+                    json={"tests": [_spec(host, command="nmap -sV {ip}")]})
     assert r.status_code == 201, r.text
-    body = r.json()
-    assert body["read_back"] and "10.0.0.5" in body["read_back"]
-    assert body["plan"]["status"] == "in_progress"
+    test = r.json()["items"][0]
+    assert test["status"] == "proposed"
+
+    # The operator's own view lists it straight away.
+    seen = client.get(f"/api/v1/projects/{test_project.id}/host-tests", params={"host_id": host.id})
+    assert [t["id"] for t in seen.json()["items"]] == [test["id"]]
+
+    url = f"/api/v1/agent/host-tests/{test['id']}"
+    r = client.patch(url, headers=_hdr(key),
+                     json={"expected_revision": test["revision"], "status": "in_progress"})
+    assert r.status_code == 200, r.text
+    r2 = client.post("/api/v1/agent/evidence", headers=_hdr(key), json={
+        "host_id": host.id, "host_test_id": test["id"], "request_key": "run-1",
+        "tool": "nmap", "command": "nmap -sV 10.0.0.5", "outcome": "no_finding",
+        "summary": "Only the expected services answer",
+    })
+    assert r2.status_code == 201, r2.text
+    done = client.patch(url, headers=_hdr(key),
+                        json={"expected_revision": r.json()["revision"], "status": "done"})
+    assert done.status_code == 200, done.text
+    assert done.json()["status"] == "done" and done.json()["evidence_count"] == 1
 
 
-def test_timeline_shows_one_row_per_session_not_per_phase(client, test_project, db_session):
-    """v2.337.0 — a project session that opens an execution run must appear
-    ONCE on the unified timeline (its own row, phases named in target_label),
-    not twice (once as 'project' and again as its 'execution' phase)."""
+def test_timeline_shows_one_row_per_session_whatever_it_did(client, test_project, db_session):
+    """v2.337.0 — a project session appears ONCE on the unified timeline.  The
+    work it did (tests proposed, evidence recorded) is counted on that row;
+    it never becomes rows of its own, and the detail row the start endpoint
+    made is not listed beside it."""
     key, assist_session_id = _start_session(client, test_project)
-    from app.db import models
-    host = models.Host(project_id=test_project.id, ip_address="10.0.0.5", state="up")
-    db_session.add(host)
-    db_session.flush()
-    plan = TestPlan(project_id=test_project.id, version=1, title="DMZ sweep",
-                    status=TestPlanStatus.DRAFT.value)
-    db_session.add(plan)
-    db_session.flush()
-    db_session.add(TestPlanEntry(test_plan_id=plan.id, host_id=host.id, priority="high",
-                                 test_phase="enumeration", proposed_tests=[], rationale="x"))
-    db_session.commit()
-    r = client.post("/api/v1/agent/execution-sessions/start", headers=_hdr(key), json={"plan_id": plan.id})
+    base_id = _session_id(db_session, assist_session_id)
+    host = _host(db_session, test_project)
+    test = client.post("/api/v1/agent/host-tests", headers=_hdr(key),
+                       json={"tests": [_spec(host)]}).json()["items"][0]
+    r = client.post("/api/v1/agent/evidence", headers=_hdr(key), json={
+        "host_id": host.id, "host_test_id": test["id"], "request_key": "tl-1",
+        "tool": "nmap", "outcome": "finding", "summary": "Telnet is open",
+    })
     assert r.status_code == 201, r.text
-
-    from app.db.models_agent import AssistSession
-    base_id = (
-        db_session.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id).scalar()
-    )
+    assert db_session.query(EvidenceRecord).count() == 1
 
     listing = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()
     rows = listing["sessions"]
-    mine = [s for s in rows if s["kind"] == "project" and s["id"] == base_id]
-    assert len(mine) == 1, rows
-    # The execution run it opened is NOT separately listed (it is subsumed).
-    exec_rows = [s for s in rows if s["kind"] == "execution"]
-    assert exec_rows == [], f"execution phase double-listed: {exec_rows}"
-    assert "DMZ sweep" in (mine[0]["target_label"] or "")
+    assert listing["total"] == len(rows) == 1, rows
+    assert rows[0]["kind"] == "project" and rows[0]["id"] == base_id
+    assert rows[0]["host_test_count"] == 1 and rows[0]["evidence_count"] == 1

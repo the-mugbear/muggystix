@@ -142,7 +142,7 @@ describe('StartAssistDialog', () => {
 
   // 5.313.0 — the per-object entry points hand a task to the one session.
   it('shows a task to copy before and after starting', async () => {
-    const task = 'Work test plan #12 in BlueStick.';
+    const task = 'Propose tests in BlueStick for these hosts only (host ids): 12, 14.';
     render(
       <MemoryRouter>
         <TooltipProvider>

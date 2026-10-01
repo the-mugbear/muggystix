@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.db.models import Annotation, Host, NoteStatus
+from app.db.models import Annotation, Host
 from app.db.models_agent import AgentApiCall, AssistSession
 
 
@@ -50,7 +50,6 @@ def _agent_note(db_session, *, session, host, body="vsftpd 2.3.4 on 21"):
         project_id=session.project_id,
         user_id=session.started_by_id,
         body=body,
-        status=NoteStatus.OPEN,
         actor_type="agent",
         agent_session_id=session.agent_session_id,
     )

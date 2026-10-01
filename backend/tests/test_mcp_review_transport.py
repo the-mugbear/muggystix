@@ -111,9 +111,12 @@ def test_session_end_is_on_the_metadata_write_allowlist():
 #: Tools whose retry creates a second row.  Every additive tool is here by
 #: construction; the creators are the ones the inference used to get wrong.
 _CREATES_A_ROW = {
-    "create_test_plan", "start_execution",
-    "submit_feedback", "suggest_tool", "assist_add_note", "plan_add_entries",
-    "execution_record_sanity_check", "execution_record_test_result",
+    "submit_feedback", "suggest_tool", "assist_add_note",
+    # v2.442.0 (replaces create_test_plan / start_execution / plan_add_entries
+    # / the execution_record_* tools).  A retry with the SAME request_key
+    # returns the existing test, but a caller that mints a new key per attempt
+    # creates a second one, so the hint stays the conservative "not idempotent".
+    "host_tests_propose",
     # v2.436.0: each call records a new evidence row / proposal.
     "record_evidence", "propose_finding_text", "propose_finding",
     "propose_observation", "propose_endpoint_status",
@@ -121,8 +124,10 @@ _CREATES_A_ROW = {
 #: Writes that converge on retry.
 _CONVERGES = {
     "session_renew", "end_session",
-    "execution_complete_session", "execution_complete_entry",
-    "assist_set_follow", "assist_patch_host", "plan_update", "plan_update_entry",
+    "assist_set_follow", "assist_patch_host",
+    # v2.442.0: guarded by ``expected_revision`` — a retry of an applied change
+    # is refused (409) rather than applied twice.
+    "host_tests_update",
 }
 
 
@@ -148,10 +153,20 @@ def test_idempotent_hint_matches_retry_semantics():
     assert not unclassified, f"classify these write tools' retry semantics: {unclassified}"
 
 
-def test_destructive_hint_unchanged_for_the_creators():
-    """The creators keep asking for approval: fixing idempotentHint must not
-    have flipped the flag clients gate auto-approval on."""
+def test_destructive_hint_follows_what_a_write_replaces():
+    """destructiveHint is the flag clients gate auto-approval on, and it is
+    decided by whether the write REPLACES a stored value — never by the
+    idempotency fix.  Until v2.442.0 this pinned create_test_plan and
+    start_execution (non-additive creators); the writes that replace a value
+    today are the host-test update and the two host corrections."""
     tools = {t["name"]: t["annotations"] for t in tool_list_payload()}
-    for name in ("create_test_plan", "start_execution"):
+    for name in ("host_tests_update", "assist_set_follow", "assist_patch_host"):
         assert tools[name]["destructiveHint"] is True, name
         assert tools[name]["readOnlyHint"] is False, name
+    # Appends are not destructive, and are still writes.
+    for name in ("host_tests_propose", "record_evidence", "assist_add_note"):
+        assert tools[name]["destructiveHint"] is False, name
+        assert tools[name]["readOnlyHint"] is False, name
+    # Every read is read-only: nothing else may be auto-approved as one.
+    for name, spec in TOOLS.items():
+        assert tools[name]["readOnlyHint"] is (spec["method"] == "GET"), name

@@ -21,7 +21,6 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 const api = vi.hoisted(() => ({
   getHosts: vi.fn(),
   getScans: vi.fn(),
-  getTestPlans: vi.fn(),
   listFindings: vi.fn(),
   getFinding: vi.fn(),
 }));
@@ -60,7 +59,6 @@ describe('CommandPalette finding search', () => {
     vi.clearAllMocks();
     api.getHosts.mockResolvedValue({ items: [] });
     api.getScans.mockResolvedValue([]);
-    api.getTestPlans.mockResolvedValue([]);
     api.listFindings.mockResolvedValue({ items: [], total: 0 });
     api.getFinding.mockRejectedValue(new Error('404'));
   });

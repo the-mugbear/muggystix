@@ -284,7 +284,6 @@ class AssistSessionNote(BaseModel):
     host_ip: Optional[str] = None
     hostname: Optional[str] = None
     body: str
-    status: Optional[str] = None
     created_at: Optional[datetime] = None
 
 
@@ -852,7 +851,6 @@ def get_assist_session(
                 host_ip=ip,
                 hostname=hostname,
                 body=a.body,
-                status=a.status.value if hasattr(a.status, "value") else a.status,
                 created_at=a.created_at,
             )
             for a, ip, hostname in (

@@ -34,16 +34,19 @@ vi.mock('../../services/api', () => ({
     first_seen: '2026-06-14T00:00:00Z', last_seen: '2026-06-14T00:00:00Z',
   })),
   getHostConflicts: vi.fn().mockResolvedValue([]),
-  getHostTestPlanEntries: vi.fn().mockResolvedValue([]),
+  listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  listAssistSessions: vi.fn().mockResolvedValue([]),
+  listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getHostFollowers: vi.fn().mockResolvedValue([]),
   recordHostView: vi.fn().mockResolvedValue(undefined),
   listProjectMembers: vi.fn().mockResolvedValue([]),
   followHost: vi.fn(), unfollowHost: vi.fn(), assignHost: vi.fn(), unassignHost: vi.fn(),
   createNote: vi.fn(), updateAnnotation: vi.fn(), deleteAnnotation: vi.fn(),
   createAnnotation: vi.fn(), uploadNoteAttachment: vi.fn(), deleteNoteAttachment: vi.fn(),
-  getNoteAttachmentObjectUrl: vi.fn(), promoteAnnotation: vi.fn(),
+  getNoteAttachmentObjectUrl: vi.fn(),
   promoteVulnerability: vi.fn(), previewPromoteVulnerability: vi.fn(),
-  updateTestPlanEntry: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
+  updateHostTest: vi.fn(), getHostNotes: vi.fn().mockResolvedValue([]),
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
@@ -54,7 +57,6 @@ vi.mock('../../components/NseScriptsCard', () => ({ default: () => null }));
 vi.mock('../../components/NetExecCard', () => ({ default: () => null }));
 vi.mock('../../components/HostFindingsCard', () => ({ default: () => null }));
 vi.mock('../../components/HostNamesCard', () => ({ default: () => null }));
-vi.mock('../../components/HostLineagePanel', () => ({ default: () => null }));
 vi.mock('../../components/host-inspector/PortDetailsCard', () => ({ default: () => null }));
 
 import HostInspector from '../../components/HostInspector';

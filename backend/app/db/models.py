@@ -773,13 +773,11 @@ class DNSRecord(Base):
     # rows with no project (a name needs a project); every new row sets it.
     name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="CASCADE"), nullable=True, index=True)
     observed_at = Column(DateTime(timezone=True), server_default=func.now())
-    # v2.324.0 — TESTED observations are evidence OF one execution result
-    # (the binding a recorded, executed command actually reached).  Keyed to
-    # the result so a correction replaces rather than piles up, and CASCADE:
-    # if the result is deleted, so is the evidence that only it supported.
-    exec_result_id = Column(
-        Integer, ForeignKey("test_execution_results.id", ondelete="CASCADE"), nullable=True, index=True,
-    )
+    # v2.324.0 — TESTED observations are evidence OF one recorded command
+    # (the binding it actually reached).  Keyed to the evidence record (a
+    # plan's execution result until v2.442.0), and CASCADE: if the record is
+    # deleted, so is the observation that only it supported.
+    evidence_record_id = Column(Integer, ForeignKey("evidence_records.id", ondelete="CASCADE"), nullable=True, index=True)
     # RV-1 — provenance: which scan produced this DNS row, so a scan can
     # report its dns_record_count instead of looking "empty" when it only
     # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
@@ -810,8 +808,8 @@ class DNSRecord(Base):
         #       WHERE scan_id IS NOT NULL
         #   uq_dns_record_import_observation
         #       (name_id, record_type, value) WHERE scan_id IS NULL AND record_type='IMPORT'
-        #   uq_dns_record_result_observation
-        #       (name_id, record_type, value, exec_result_id) WHERE exec_result_id IS NOT NULL
+        #   uq_dns_record_evidence_observation
+        #       (name_id, record_type, value, evidence_record_id) WHERE evidence_record_id IS NOT NULL
         # Split on purpose (v2.323.0 review): scan_id is SET NULL when a scan
         # is deleted, so a single NULLS-NOT-DISTINCT index made deleting the
         # second of two scans that held the same answer fail on the orphaned
@@ -1259,19 +1257,15 @@ class ActivityCursor(Base):
     )
 
 
-class NoteStatus(str, enum.Enum):
-    OPEN = "open"
-    IN_PROGRESS = "in_progress"
-    RESOLVED = "resolved"
-
-
 class Annotation(Base):
     __tablename__ = "annotations"
 
     id = Column(Integer, primary_key=True, index=True)
     # Foundation phase 2 — Annotation generalized beyond hosts.  An
     # annotation targets exactly ONE entity (host / port / scan / scope /
-    # plan / project); the other target columns are null.  host_id is now
+    # project / finding); the other target columns are null.  (A test plan
+    # was a target until v2.442.0; migration f4b8d2a6c917 moved those notes
+    # to their project.)  host_id is now
     # nullable (was NOT NULL) so non-host annotations are possible.
     # "Exactly one target" is enforced by a DB CHECK (num_nonnulls = 1)
     # added in the migration — kept OUT of __table_args__ so the SQLite
@@ -1281,7 +1275,6 @@ class Annotation(Base):
     port_id = Column(Integer, ForeignKey("ports_v2.id", ondelete="CASCADE"), nullable=True, index=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=True, index=True)
     scope_id = Column(Integer, ForeignKey("scopes.id", ondelete="CASCADE"), nullable=True, index=True)
-    plan_id = Column(Integer, ForeignKey("test_plans.id", ondelete="CASCADE"), nullable=True, index=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=True, index=True)
     # A finding's own comment/evidence thread (notes→findings→reports): a note
     # can target a Finding directly, regardless of how the finding was created
@@ -1299,17 +1292,11 @@ class Annotation(Base):
     # history by root — without an ancestor walk per request.
     thread_root_id = Column(Integer, ForeignKey("annotations.id", ondelete="SET NULL"), nullable=True, index=True)
     body = Column(Text, nullable=False)
-    status = Column(SQLEnum(NoteStatus), nullable=False, default=NoteStatus.OPEN)
-    # Thread-level work fields (P3) — semantically belong to the ROOT note
-    # of a thread (parent_id IS NULL); replies leave them null.  They turn
-    # a note thread into a durable unit of work (owner, deadline, kind,
-    # resolution) rather than just a discussion.  Unlike body/status,
-    # these are editable by any project member, not only the author.
-    assignee_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    due_at = Column(DateTime(timezone=True), nullable=True)
-    # observation | finding | question | decision | action | handoff
+    # Thread labels, meaningful on the ROOT note of a thread.  A note is
+    # discussion: the work fields (status, assignee, due date, resolution)
+    # were dropped in v2.447.0 (migration c2e6a4f8d103).
+    # observation | question | decision | handoff  (older rows: finding | action)
     note_type = Column(String(20), nullable=True)
-    resolution_summary = Column(Text, nullable=True)
     pinned = Column(Boolean, nullable=False, default=False)
     # Who actually authored this note: 'user' (a human typed it) or 'agent'
     # (an AI assist session wrote it on the operator's behalf).  ``user_id``
@@ -1335,7 +1322,6 @@ class Annotation(Base):
     port = relationship("Port")
     scan = relationship("Scan")
     scope = relationship("Scope")
-    plan = relationship("TestPlan")
     project = relationship("Project")
     # foreign_keys pinned: findings.evidence_annotation_id is a SECOND
     # annotations<->findings path, so this join must be explicit.
@@ -1348,9 +1334,7 @@ class Annotation(Base):
     promoted_findings = relationship(
         "Finding", foreign_keys="Finding.evidence_annotation_id", viewonly=True,
     )
-    # Two FKs to users.id now (user_id + assignee_id) — disambiguate.
     author = relationship("User", foreign_keys=[user_id], back_populates="annotations")
-    assignee = relationship("User", foreign_keys=[assignee_id])
     # foreign_keys pinned to parent_id — there are two self-FKs now
     # (parent_id + thread_root_id), so the parent/replies join must be
     # explicit or SQLAlchemy can't pick one.
@@ -1400,23 +1384,3 @@ class NoteAttachment(Base):
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])
 
 
-class AnnotationStatusHistory(Base):
-    """Audit trail of note-thread status transitions (P3).
-
-    One row per transition (open → in_progress → resolved, etc.), so the
-    thread's lifecycle is reconstructable and a resolution summary is
-    captured at the moment of resolving.  ``changed_by_id`` SET NULL on
-    user delete preserves the history with an anonymous actor.
-    """
-    __tablename__ = "annotation_status_history"
-
-    id = Column(Integer, primary_key=True, index=True)
-    note_id = Column(Integer, ForeignKey("annotations.id", ondelete="CASCADE"), nullable=False, index=True)
-    from_status = Column(String(20), nullable=True)
-    to_status = Column(String(20), nullable=False)
-    changed_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
-    # Resolution summary or transition note captured at the change.
-    summary = Column(Text, nullable=True)
-    created_at = Column(DateTime(timezone=True), server_default=func.now())
-
-    changed_by = relationship("User", foreign_keys=[changed_by_id])

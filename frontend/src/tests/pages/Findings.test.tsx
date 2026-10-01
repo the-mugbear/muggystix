@@ -46,7 +46,6 @@ const makeFinding = (id: number, over: Record<string, unknown> = {}) => ({
   owner_name: null,
   evidence_annotation_id: null,
   vuln_id: null,
-  exec_result_id: null,
   host_count: 1,
   hosts: [],
   created_at: '2026-08-01T00:00:00Z',

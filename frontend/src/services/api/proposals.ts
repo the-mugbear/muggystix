@@ -118,6 +118,7 @@ export type EvidenceOutcome = 'finding' | 'no_finding' | 'inconclusive' | 'faile
 
 export interface EvidenceRecord {
   id: number;
+  host_test_id?: number | null;
   host_id: number;
   host_ip: string | null;
   finding_id: number | null;
@@ -145,10 +146,18 @@ export interface EvidenceList {
 }
 
 export const listEvidenceRecords = async (
-  query: { host_id?: number; finding_id?: number; agent_session_id?: number; limit?: number; offset?: number } = {},
+  query: { host_id?: number; host_test_id?: number; finding_id?: number; agent_session_id?: number; unlinked?: boolean; limit?: number; offset?: number } = {},
 ): Promise<EvidenceList> =>
   (await api.get<EvidenceList>(`${p()}/evidence`, { params: query })).data;
 
 /** The whole raw output (the list carries a 2,000-character preview). */
 export const getEvidenceRawOutput = async (id: number): Promise<string> =>
   (await api.get<string>(`${p()}/evidence/${id}/raw`, { responseType: 'text' })).data;
+
+/** Promote an evidence record whose outcome is a finding (409 when it already
+ *  belongs to one, 422 for any other outcome). */
+export const createFindingFromEvidence = async (
+  evidenceId: number,
+  body: { title?: string; severity?: 'critical' | 'high' | 'medium' | 'low' | 'info'; status?: 'open' | 'confirmed' },
+): Promise<{ finding_id: number; joined_issue?: boolean }> =>
+  (await api.post<{ finding_id: number; joined_issue?: boolean }>(`${p()}/evidence/${evidenceId}/finding`, body)).data;

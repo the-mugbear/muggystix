@@ -6,14 +6,14 @@ from app.api.v1.endpoints import (
     scopes, subnet_labels, export, parse_errors, reports, report_drafts, client_reports,
     auth, two_factor,
     audit, users, projects, notifications,
-    portfolio, oversight, test_plans, test_plan_bundles, feedback, llm_providers,
+    portfolio, oversight, feedback, llm_providers,
     integrations,
     # Per-workflow agent routers (split out of agent_api.py in v2.16.0).
     # Mounted individually below so each gets its own Swagger/Redoc tag —
     # the old single "agent-api" tag made the agent surface unscannable.
-    agent_browse, agent_test_plans, agent_execution, agent_recon,
+    agent_browse, agent_recon,
     # v2.436.0 — agent evidence records + proposals (agent side / reviewer side).
-    agent_proposals, proposals,
+    agent_proposals, proposals, host_tests,
     # v2.64.0 — fourth agent surface: read-only interactive assist.
     # `agent_assist` = X-API-Key surface (agent calls these).
     # `assist` = JWT surface (operator starts/ends sessions, lists them).
@@ -47,7 +47,7 @@ from app.api.v1.endpoints import (
     # v3 alpha.6 — JWT-facing recon-session detail (drives v3 Recon Run Detail).
     # v3 alpha.7 — JWT-facing execution-session lookup by id (drives v3
     # ExecutionDetail page; permalink for /executions/:sessionId).
-    execution_sessions,
+    
     # v2.42.0 — public reference docs + agents-guide endpoints, extracted
     # from main.py.  No auth; same stance as the prior @app.get versions.
     references,
@@ -103,6 +103,7 @@ api_router.include_router(system_metrics.router, prefix="/system", tags=["system
 # uses. Applied here rather than on 19 individual routes so it covers the whole
 # surface and cannot be forgotten on a new endpoint.
 _agent_operator_access = [Depends(enforce_agent_operator_access)]
+api_router.include_router(host_tests.agent_router, prefix="/agent", tags=["agent-host-tests"], dependencies=_agent_operator_access)
 
 api_router.include_router(
     agent_browse.router, prefix="/agent", tags=["agent-browse"],
@@ -113,14 +114,6 @@ api_router.include_router(
 # entire point of this route. It does its own checks and grants no authority.
 api_router.include_router(
     agent_browse.renewal_router, prefix="/agent", tags=["agent-browse"],
-)
-api_router.include_router(
-    agent_test_plans.router, prefix="/agent", tags=["agent-plan-generation"],
-    dependencies=_agent_operator_access,
-)
-api_router.include_router(
-    agent_execution.router, prefix="/agent", tags=["agent-execution"],
-    dependencies=_agent_operator_access,
 )
 api_router.include_router(
     agent_recon.router, prefix="/agent", tags=["agent-scope"],
@@ -219,6 +212,7 @@ project_router.include_router(host_notes.router, prefix="/hosts", tags=["host-no
 project_router.include_router(findings_bulk.router, prefix="", tags=["findings-bulk"])
 project_router.include_router(findings.router, prefix="", tags=["findings"])
 project_router.include_router(proposals.router, prefix="", tags=["proposals"])
+project_router.include_router(host_tests.router, prefix="", tags=["host-tests"])
 # v2.386.0 — scanner observations by issue, and their bulk promotion.
 project_router.include_router(scanner_observations.router, prefix="", tags=["scanner-observations"])
 project_router.include_router(host_tags.router, prefix="/hosts", tags=["host-tags"])
@@ -258,14 +252,9 @@ project_router.include_router(client_reports.router, prefix="/client-reports", t
 # each workflow's own start endpoint, and every key those mint is bound to one
 # AgentSession, so nothing here was load-bearing.  Unscoped keys are now
 # rejected at authentication (see deps.py).
-project_router.include_router(test_plans.router, prefix="/test-plans", tags=["test-plans"])
-# Offline-bundle sub-surface carved out of test_plans.py — same prefix so the
-# export-bundle / import-results paths are unchanged.
-project_router.include_router(test_plan_bundles.router, prefix="/test-plans", tags=["test-plans"])
 project_router.include_router(agent_activity.router, tags=["agent-activity"])
 project_router.include_router(agent_sessions.router, tags=["agent-sessions"])
 project_router.include_router(coverage.router, prefix="/coverage", tags=["coverage"])
-project_router.include_router(execution_sessions.router, prefix="/execution-sessions", tags=["execution-sessions"])
 # v2.64.0 — operator-side assist session lifecycle.  Mints the
 # X-API-Key consumed by /agent/assist/*; not to be confused with
 # `agent_assist.router` above.

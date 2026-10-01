@@ -59,10 +59,6 @@ class PosturePriority(_Loose):
     link: Optional[str] = None
 
 
-class PostureDecisions(_Loose):
-    blocked_sessions: int
-
-
 class PostureEvidence(_Loose):
     scan_count: int
     scan_staleness_days: Optional[int] = None
@@ -81,7 +77,6 @@ class PostureResponse(_Loose):
     heatmap: Optional[Dict[str, Any]] = None
     headline: Dict[str, Any]
     priorities: List[PosturePriority]
-    decisions: PostureDecisions
     sites: Dict[str, Any]
     systemic: Dict[str, Any]
     disposition: Dict[str, Any]

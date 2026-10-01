@@ -30,7 +30,7 @@ from app.db import models
 from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_confidence import NetexecResult
-from app.db.models_agent import TestPlanEntry, TestExecutionResult, TestExecutionStatus
+from app.services.host_test_queries import tested_host_ids
 from app.schemas.metric import ratio_metric
 from app.services import scope_coverage
 
@@ -207,14 +207,7 @@ def assessed_host_ids(
         ))
 
     def validated() -> Set[int]:
-        return _ids(db, (
-            db.query(TestPlanEntry.host_id)
-            .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-            .join(models.Host, TestPlanEntry.host_id == models.Host.id)
-            .filter(models.Host.project_id == project_id,
-                    TestExecutionResult.status == TestExecutionStatus.EXECUTED.value)
-            .distinct()
-        ))
+        return {row[0] for row in db.execute(tested_host_ids(project_id)).all()}
 
     builders = {
         "port_discovery": lambda: _host_ids(db, project_id, models.Port),
@@ -243,7 +236,7 @@ GAP_ACTIONS: Dict[str, Dict[str, str]] = {
     "vuln_assessment": {"kind": "collect", "text": "Run a vulnerability scan (Nessus / OpenVAS) against these hosts and upload the export."},
     "web_tls": {"kind": "collect", "text": "Probe these hosts' web ports with httpx and testssl.sh and upload the JSON."},
     "auth_smb_ad": {"kind": "collect", "text": "Enumerate these hosts with netexec (SMB signing, shares) and upload the output."},
-    "validation": {"kind": "plan", "text": "These hosts carry findings nobody has tested — put them on a test plan."},
+    "validation": {"kind": "plan", "text": "These hosts carry findings nobody has tested — propose tests on them."},
 }
 
 

@@ -1,6 +1,6 @@
 /**
  * One agent session's page (`/agent-sessions/:sessionId`, v5.312.0): where it
- * stands, its controls, the work it opened, the notes it wrote and its calls —
+ * stands, its controls, the tests it proposed, the notes it wrote and its calls —
  * keyed by the session id, reading notes by the detail row's id it names.
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
@@ -20,13 +20,14 @@ vi.mock('react-router-dom', async () => {
 const getAgentSession = vi.fn();
 const getAssistSession = vi.fn();
 const endAgentSession = vi.fn();
+const listHostTests = vi.fn();
 vi.mock('../../services/api', () => ({
   getAgentSession: (...a: unknown[]) => getAgentSession(...a),
   getAssistSession: (...a: unknown[]) => getAssistSession(...a),
   endAgentSession: (...a: unknown[]) => endAgentSession(...a),
   resumeAgentSession: vi.fn(),
   getAssistSessionApiActivity: vi.fn().mockResolvedValue({ total: 0, items: [] }),
-  getPlanApiActivity: vi.fn(),
+  listHostTests: (...a: unknown[]) => listHostTests(...a),
 }));
 
 vi.mock('../../contexts/ToastContext', () => ({
@@ -59,14 +60,20 @@ const row = (over: Record<string, unknown> = {}) => ({
   last_activity_at: ago(60 * 1000),
   operator_role: 'analyst',
   assist_session_id: 52,
-  phases: [
-    { kind: 'plan', id: 17, status: 'completed', label: 'SMB sweep', scope_id: null, test_plan_id: 17, started_at: ago(HOUR) },
-    { kind: 'execution', id: 46, status: 'paused', label: 'SMB sweep', scope_id: null, test_plan_id: 17, started_at: ago(HOUR / 2) },
-  ],
+  host_test_count: 1,
+  evidence_count: 4,
   can_end: true,
   can_resume: true,
   ...over,
 });
+
+const sessionTest = {
+  id: 31, host_id: 5, host_ip: '10.0.0.5', tool: 'netexec', description: 'SMB signing',
+  command: 'nxc smb {ip}', rationale: 'r', expected_result: null, references: null, target_fqdn: null,
+  priority: 'high', label: 'SMB sweep', status: 'in_progress', assigned_to_id: null, assigned_to: null,
+  created_by: 'Alice Analyst', source: 'agent', agent_session_id: 72, agent_model: null, agent_client: null,
+  tester_summary: null, dismissed_reason: null, revision: 2, evidence_count: 4, created_at: ago(HOUR),
+};
 
 const review = {
   id: 52,
@@ -90,7 +97,7 @@ const review = {
   feedback_count: 1,
   notes: [{
     id: 501, host_id: 88, host_ip: '10.0.0.9', hostname: 'ftp01',
-    body: 'Anonymous FTP login accepted on 21.', status: 'open', created_at: ago(HOUR),
+    body: 'Anonymous FTP login accepted on 21.', created_at: ago(HOUR),
   }],
 };
 
@@ -110,6 +117,7 @@ describe('AgentSessionDetail', () => {
     getAgentSession.mockReset().mockResolvedValue(row());
     getAssistSession.mockReset().mockResolvedValue(review);
     endAgentSession.mockReset().mockResolvedValue(undefined);
+    listHostTests.mockReset().mockResolvedValue({ items: [sessionTest], total: 1, has_more: false });
   });
 
   it('reads the session by its id and its notes by the detail row it names', async () => {
@@ -136,12 +144,17 @@ describe('AgentSessionDetail', () => {
     expect(screen.queryByText(/Operator’s machine/)).not.toBeInTheDocument();
   });
 
-  it('lists the work it opened, each linking to its page', async () => {
+  // 5.320.0 — the work a session leaves is the tests it proposed (each on
+  // its host's page) and the evidence it recorded; it opened runs and plans
+  // before.
+  it('lists the tests it proposed, each opening the test on its host', async () => {
     renderAt('72');
-    const table = await screen.findByTestId('session-phases');
-    expect(within(table).getByRole('link', { name: 'Plan #17' })).toHaveAttribute('href', '/test-plans/17');
-    expect(within(table).getByRole('link', { name: 'Execution #46' })).toHaveAttribute('href', '/executions/46');
-    expect(within(table).getAllByText('SMB sweep')).toHaveLength(2);
+    const table = await screen.findByTestId('session-tests');
+    expect(listHostTests).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 72 }));
+    expect(within(table).getByRole('link', { name: '10.0.0.5' })).toHaveAttribute('href', '/hosts/5#host-test-31');
+    expect(within(table).getByText('SMB signing')).toBeInTheDocument();
+    expect(within(table).getByText('In progress')).toBeInTheDocument();
+    expect(screen.getByText(/It recorded 4 evidence records\./)).toBeInTheDocument();
   });
 
   it('ends the session from its own page', async () => {
@@ -163,28 +176,25 @@ describe('AgentSessionDetail', () => {
     expect(screen.queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
   });
 
-  it('says an ended session left work open', async () => {
+  it('reads an ended session as ended, with how long it ran', async () => {
     getAgentSession.mockResolvedValue(row({
       status: 'ended', end_reason: 'operator', key_expires_at: null,
       completed_at: ago(HOUR), can_end: false, can_resume: false,
     }));
     renderAt('72');
-    expect(await screen.findByText(/an execution run it opened is still open/)).toBeInTheDocument();
-    expect(screen.getByText('Ran for')).toBeInTheDocument();
+    expect(await screen.findByText('Ran for')).toBeInTheDocument();
     expect(screen.getByText('ended by operator · 1 feedback')).toBeInTheDocument();
+    // Nothing is "left open" by an ended session any more: its tests and
+    // evidence are project data, not stranded runs.
+    expect(screen.queryByText(/still open|abandon/i)).not.toBeInTheDocument();
   });
 
-  // 5.314.1 — seen in the walkthrough: session #73 left a draft plan and the
-  // page called it stranded work to abandon. A draft is a resting state.
-  it('does not call a draft plan left by an ended session stranded', async () => {
-    getAgentSession.mockResolvedValue(row({
-      status: 'ended', end_reason: 'agent', key_expires_at: null,
-      completed_at: ago(HOUR), can_end: false, can_resume: false,
-      phases: [{ kind: 'plan', id: 63, status: 'draft', label: 'draft', scope_id: null, test_plan_id: 63, started_at: ago(HOUR) }],
-    }));
+  it('says so when the session proposed nothing', async () => {
+    getAgentSession.mockResolvedValue(row({ host_test_count: 0, evidence_count: 0 }));
+    listHostTests.mockResolvedValue({ items: [], total: 0, has_more: false });
     renderAt('72');
-    expect(await screen.findByText('The plans and execution runs this session opened, each on its own page.')).toBeInTheDocument();
-    expect(screen.queryByText(/still open/)).not.toBeInTheDocument();
+    expect(await screen.findByText(/this session has proposed no tests so far/)).toBeInTheDocument();
+    expect(screen.getByText(/It recorded 0 evidence records\./)).toBeInTheDocument();
   });
 
   it('never presents the agent’s name as its model', async () => {

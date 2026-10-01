@@ -21,6 +21,7 @@ from app.api.v1.endpoints.auth import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.services.llm_provider_service import encrypt_secret
 from app.services.webhook_dispatcher import (
+    RETIRED_WEBHOOK_EVENTS,
     WEBHOOK_EVENTS,
     WebhookDispatcher,
     is_valid_webhook_url,
@@ -75,7 +76,7 @@ def _serialize(cfg: WebhookConfig) -> WebhookResponse:
 
 
 def _validate_events(events: List[str]) -> None:
-    unknown = [e for e in events if e not in WEBHOOK_EVENTS]
+    unknown = [e for e in events if e not in WEBHOOK_EVENTS and e not in RETIRED_WEBHOOK_EVENTS]
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown event(s): {', '.join(unknown)}")
 

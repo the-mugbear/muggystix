@@ -26,7 +26,6 @@ from app.services import host_query_predicates as P
 from app.services.operations_read_service import (
     compute_my_attention_queue,
     compute_my_tasks,
-    compute_my_assigned_notes,
     compute_my_recent_notes,
     compute_my_findings,
     compute_team_review,
@@ -38,7 +37,6 @@ from app.services.operations_read_service import (
     ReviewFollowupsResponse,
     MyAttentionResponse,
     MyTasksResponse,
-    MyNotesResponse,
     MyRecentNotesResponse,
     MyFindingsResponse,
     TeamReviewResponse,
@@ -86,12 +84,8 @@ class SinceLastVisit(BaseModel):
 class WorkbenchResponse(BaseModel):
     my_queue: MyAttentionResponse = Field(default_factory=MyAttentionResponse)
     my_tasks: MyTasksResponse = Field(default_factory=MyTasksResponse)
-    # P0 — My Work resume pass: assigned note threads + owned findings, so the
-    # card surfaces the annotation/finding work an analyst owns, not just
-    # in-review hosts and plan steps.
-    my_notes: MyNotesResponse = Field(default_factory=MyNotesResponse)
-    # "What was I just doing?" — the caller's latest authored notes, distinct
-    # from my_notes (the assigned-work queue).
+    # "What was I just doing?" — the caller's latest authored notes.  (Notes
+    # are discussion; the assigned-note queue ``my_notes`` went in v2.446.0.)
     recent_notes: MyRecentNotesResponse = Field(default_factory=MyRecentNotesResponse)
     my_findings: MyFindingsResponse = Field(default_factory=MyFindingsResponse)
     team_review: TeamReviewResponse = Field(default_factory=TeamReviewResponse)
@@ -212,7 +206,6 @@ def compute_workbench(
     ``*_unavailable`` rather than rendered as an empty (``nothing to do``) one."""
     my_queue = compute_my_attention_queue(db, current_user, project, limit=10)
     my_tasks = compute_my_tasks(db, current_user, project, limit=15)
-    my_notes = compute_my_assigned_notes(db, current_user, project, limit=15)
     recent_notes = compute_my_recent_notes(db, current_user, project, limit=8)
     my_findings = compute_my_findings(db, current_user, project, limit=15)
     team_review = compute_team_review(db, current_user, project, limit=500)
@@ -250,7 +243,6 @@ def compute_workbench(
     return WorkbenchResponse(
         my_queue=my_queue,
         my_tasks=my_tasks,
-        my_notes=my_notes,
         recent_notes=recent_notes,
         my_findings=my_findings,
         team_review=team_review,

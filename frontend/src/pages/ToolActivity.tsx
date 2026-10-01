@@ -9,10 +9,10 @@
  * single target IP, applied to the focused query AND the past-7-day
  * snapshot, so "when did nmap run this week?" is one filter away.
  *
- * Kinds: uploaded scans (scanner timestamps), execution runs
- * (containers), and the per-command record — `test_result` (a command an
- * agent reported, with its tool and target host) and `sanity_check` (a
- * target-verification probe).
+ * Kinds: uploaded scans (scanner timestamps) and `evidence` — the
+ * per-command record: a command an agent recorded, with its tool, the
+ * address it reached and the outcome (5.320.0; it was a test plan's
+ * execution result or target probe).
  *
  * Screenshot review 2026-09-23: the page leads with its cross-project scope;
  * the snapshot is a fixed-height binned chart (ActivityHistogram) rather than
@@ -126,25 +126,19 @@ function kindBadgeVariant(kind: ActivityKind): BadgeVariant {
   switch (kind) {
     case 'scan':
       return 'secondary';
-    case 'execution_session':
-      return 'success';
-    case 'test_result':
-      return 'destructive';
-    case 'sanity_check':
-      return 'muted';
+    case 'evidence':
+      return 'info';
   }
 }
 
 const KIND_LABEL: Record<ActivityKind, string> = {
   scan: 'scan upload',
-  execution_session: 'execution run',
-  test_result: 'command run',
-  sanity_check: 'target probe',
+  evidence: 'command recorded',
 };
 
 type QueryMode = 'at' | 'between';
 
-// v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/executions/:id`).  There is no `/projects/:id/...` nested route
+// v4.27.0 — routes are TOP-LEVEL (`/scans/:id`, `/agent-sessions/:id`).  There is no `/projects/:id/...` nested route
 // surface — the API client reads the active project from
 // `getCurrentProjectId()` and prefixes API calls with it.  Earlier
 // versions of this helper assembled `/projects/${item.project_id}/…`
@@ -155,16 +149,13 @@ function deepLinkFor(item: ActivityItem): string {
   switch (item.kind) {
     case 'scan':
       return `/scans/${item.ref_id}`;
-    case 'execution_session':
-      return `/executions/${item.ref_id}`;
-    case 'test_result':
-    case 'sanity_check':
-      // Per-command rows belong to an execution run; that is the page
-      // with the command, its output and the sanity checks around it.
-      // `parent_id` is always set for these kinds (the run FK is NOT
-      // NULL) — there is no sensible fallback: `ref_id` is the row's own
-      // id, which is not an execution id.
-      return `/executions/${String(item.parent_id)}`;
+    case 'evidence':
+      // An evidence record lives on its host's page (under the test it
+      // answers). The row carries the address, not the host id, so it opens
+      // the Hosts list narrowed to that address; without one, the agent
+      // session that recorded it.
+      if (item.target) return `/hosts?search=${encodeURIComponent(item.target)}`;
+      return item.parent_id != null ? `/agent-sessions/${item.parent_id}` : '/agent-activity';
   }
 }
 
@@ -431,11 +422,11 @@ export const ToolActivity: React.FC = () => {
               </button>
             </TooltipTrigger>
             <TooltipContent className="max-w-sm">
-              Scan uploads (at the scanner&rsquo;s own timestamps), execution
-              runs, and the per-command record: commands an agent
-              reported running and the target probes before them, each with its
-              host. The tool / target filters also narrow the past-7-day
-              snapshot, so it shows when that tool ran.
+              Scan uploads (at the scanner&rsquo;s own timestamps) and the
+              per-command record: each command an agent recorded as evidence,
+              with its tool, the address it reached and its outcome. The tool /
+              target filters also narrow the past-7-day snapshot, so it shows
+              when that tool ran.
             </TooltipContent>
           </Tooltip>
         </p>
@@ -735,7 +726,7 @@ export const ToolActivity: React.FC = () => {
               {filteredItems.length === 0 ? (
                 <p className="text-caption text-muted-foreground">
                   {attributionActive
-                    ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent reported a command or probe against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
+                    ? 'Nothing recorded for that tool / target in this window: no scan observed the host, no agent recorded a command against it, and no run covered it. If a scan ran but was never uploaded, BlueStick cannot know about it.'
                     : 'No activity in this window. Widen the tolerance, pick a different time, or switch to a range.'}
                 </p>
               ) : (
@@ -825,7 +816,7 @@ export const ToolActivity: React.FC = () => {
                         </TableCell>
                         <TableCell className="min-w-0 truncate" title={item.label}>
                           {item.label}
-                          {item.status && (item.kind === 'test_result' || item.kind === 'sanity_check') && (
+                          {item.status && item.kind === 'evidence' && (
                             <span className="ml-xxs text-caption text-muted-foreground">{item.status}</span>
                           )}
                         </TableCell>

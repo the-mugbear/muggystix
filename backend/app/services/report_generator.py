@@ -24,7 +24,8 @@ from app.services.host_query import build_filtered_host_query as _build_filtered
 from app.db.models import HostFollow
 from app.db.models_confidence import HostConfidence, PortConfidence, ConflictHistory
 from app.db.models_findings import Finding, FindingHost, INACTIVE_ENDPOINT_STATES
-from app.db.models_agent import TestPlan, TestPlanEntry, TestExecutionResult
+from app.db.models_host_tests import HostTest
+from app.db.models_proposals import EvidenceRecord
 from app.services.csv_utils import safe_csv_row as _safe_csv_row
 import base64
 import io
@@ -258,8 +259,10 @@ class ReportGenerator:
         # Triaged-record columns (the dossier rolled up to counts) so the
         # inventory can be filtered/sorted on what was actually concluded, not
         # just raw scan vulns: active canonical findings, critical findings,
-        # execution findings, open notes, and scanner vulns not yet triaged.
-        'Active Findings', 'Critical Findings', 'Execution Findings',
+        # test results that found something (evidence records with outcome
+        # "finding"; "Execution Findings" until v2.442.0), open notes, and
+        # scanner vulns not yet triaged.
+        'Active Findings', 'Critical Findings', 'Test Findings',
         'Open Notes', 'Untriaged Vulns',
         'Tags', 'Notes', 'Last Seen', 'Scan File', 'Scan Date',
     ]
@@ -317,10 +320,13 @@ class ReportGenerator:
             for host_id, vuln_ids in self._judged_vuln_ids(chunk).items():
                 _slot(host_id)["promoted_vuln_ids"] |= vuln_ids
             for host_id, count in (
-                self.db.query(TestPlanEntry.host_id, func.count(TestExecutionResult.id))
-                .join(TestExecutionResult, TestExecutionResult.entry_id == TestPlanEntry.id)
-                .filter(TestPlanEntry.host_id.in_(chunk), TestExecutionResult.is_finding.is_(True))
-                .group_by(TestPlanEntry.host_id)
+                self.db.query(EvidenceRecord.host_id, func.count(EvidenceRecord.id))
+                .filter(
+                    EvidenceRecord.host_id.in_(chunk),
+                    EvidenceRecord.project_id == self.project_id,
+                    EvidenceRecord.outcome == "finding",
+                )
+                .group_by(EvidenceRecord.host_id)
                 .all()
             ):
                 _slot(host_id)["exec"] = count
@@ -1005,7 +1011,7 @@ class ReportGenerator:
             '<div class="dossier-glance">'
             f'<span>Findings <strong>{summary["active_findings"]}</strong>/{summary["total_findings"]}: {finding_chips}</span>'
             f'<span>Vulns: {e(vuln_line)} · untriaged {summary["untriaged_vulns"]}</span>'
-            f'<span>Exec {summary["execution_findings"]} · Tester {summary["tester_summaries"]} · Notes {summary["open_notes"]}/{summary["total_notes"]}</span>'
+            f'<span>Tests {summary["execution_findings"]} · Tester {summary["tester_summaries"]} · Notes {summary["open_notes"]}/{summary["total_notes"]}</span>'
             '</div>'
             '</div>'
         )
@@ -1070,22 +1076,21 @@ class ReportGenerator:
             for x in execf:
                 items.append(
                     '<div class="dfinding"><div class="dfinding-head">'
-                    f'<span class="dsev dsev-{e(x.get("severity") or "info")}">{e(x.get("severity") or "—")}</span> '
-                    f'<strong>{e(x.get("plan_title") or "")}</strong> '
-                    f'<span class="muted">{e(x.get("test_phase") or "")}</span> '
+                    f'<strong>{e(x.get("tool") or "")}</strong> '
+                    f'<span class="muted">{e(x.get("label") or "")}</span> '
                     + ('<span class="dpill">promoted</span>' if x.get("promoted") else "")
                     + '</div>'
                     + (f'<div class="dfinding-detail">cmd <code>{e((x.get("command") or "")[:160])}</code></div>' if x.get("command") else "")
                     + (f'<div class="dfinding-detail">{e((x.get("findings_summary") or "")[:300])}</div>' if x.get("findings_summary") else "")
                     + '</div>'
                 )
-            blocks.append(self._dossier_block("Execution findings", len(execf), "".join(items), det))
+            blocks.append(self._dossier_block("Test findings", len(execf), "".join(items), det))
 
         if tester:
             items = "".join(
                 '<div class="dfinding"><div class="dfinding-head">'
-                f'<strong>{e(t.get("plan_title") or "")}</strong> '
-                f'<span class="muted">{e(t.get("test_phase") or "")} · {e(str(t.get("status") or ""))}</span></div>'
+                f'<strong>{e(t.get("tool") or t.get("description") or "")}</strong> '
+                f'<span class="muted">{e(t.get("label") or "")} · {e(str(t.get("status") or ""))}</span></div>'
                 f'<div class="dfinding-detail">{e(t.get("findings") or "").replace(nl, "<br/>")}</div></div>'
                 for t in tester
             )
@@ -1094,7 +1099,6 @@ class ReportGenerator:
         if notes:
             items = "".join(
                 '<div class="dnote"><div class="dfinding-head">'
-                f'<span class="dpill">{e(str(n.get("status") or ""))}</span> '
                 f'<span class="muted">{e(str(n.get("note_type") or n.get("type") or ""))}</span></div>'
                 f'<div class="dfinding-detail">{e(str(n.get("body") or "")).replace(nl, "<br/>")}</div></div>'
                 for n in notes
@@ -1212,17 +1216,19 @@ class ReportGenerator:
     # Three host-keyed maps, each built from a fixed number of batched queries
     # (no N+1) so they're viable for a chunk of hosts at a time in the streamed
     # HTML and for the capped in-memory formats: canonical findings (with the
-    # per-host FindingHost.host_status + resolved source row), execution
-    # findings (TestExecutionResult.is_finding, reached via its TestPlanEntry),
-    # and tester summaries (TestPlanEntry.findings).
+    # per-host FindingHost.host_status + resolved source row), test findings
+    # (evidence records whose outcome is "finding") and tester summaries
+    # (HostTest.tester_summary).  The dataset keys keep the name
+    # ``execution_findings``; until v2.442.0 they were test-plan execution
+    # results.
 
     def _canonical_findings_by_host(
         self, host_ids: List[int]
     ) -> Tuple[Dict[int, List[Dict[str, Any]]], Dict[int, set], set]:
         """``host_id -> [canonical finding dicts]`` with per-host status and the
         resolved source row, plus ``(per-host promoted vuln-id set, global
-        promoted exec-result-id set)`` so the dossier can label scanner vulns /
-        execution results already represented by a canonical finding.
+        promoted evidence-id set)`` so the dossier can label scanner vulns /
+        test results already represented by a canonical finding.
 
         Queries: 1 (FindingHost⨝Finding) + ≤1 each to resolve the scanner /
         execution / note source rows + 1 (finding comment threads)."""
@@ -1244,7 +1250,6 @@ class ReportGenerator:
         finding_list = list({fh.finding_id: fh.finding for fh in fh_rows if fh.finding}.values())
 
         vuln_ids = {f.vuln_id for f in finding_list if f.source == "scanner" and f.vuln_id}
-        exec_ids = {f.exec_result_id for f in finding_list if f.source == "execution" and f.exec_result_id}
         note_ids = {f.evidence_annotation_id for f in finding_list if f.source == "note" and f.evidence_annotation_id}
 
         vuln_map: Dict[int, Vulnerability] = {}
@@ -1254,10 +1259,21 @@ class ReportGenerator:
                 .filter(Vulnerability.id.in_(vuln_ids)).all()
             ):
                 vuln_map[v.id] = v
-        exec_map: Dict[int, TestExecutionResult] = {}
-        if exec_ids:
-            for r in self.db.query(TestExecutionResult).filter(TestExecutionResult.id.in_(exec_ids)).all():
-                exec_map[r.id] = r
+        # The evidence behind each finding (EvidenceRecord.finding_id is the
+        # link; the earliest record is the one the finding was raised from).
+        evidence_map: Dict[int, EvidenceRecord] = {}
+        promoted_evidence_ids: set = set()
+        for r in (
+            self.db.query(EvidenceRecord)
+            .filter(
+                EvidenceRecord.project_id == self.project_id,
+                EvidenceRecord.finding_id.in_([f.id for f in finding_list]),
+            )
+            .order_by(EvidenceRecord.created_at, EvidenceRecord.id)
+            .all()
+        ):
+            evidence_map.setdefault(r.finding_id, r)
+            promoted_evidence_ids.add(r.id)
         note_map: Dict[int, models.Annotation] = {}
         if note_ids:
             for a in self.db.query(models.Annotation).filter(models.Annotation.id.in_(note_ids)).all():
@@ -1283,14 +1299,14 @@ class ReportGenerator:
                     "protocol": v.port.protocol if v.port else None,
                     "service_name": v.port.service_name if v.port else None,
                 }
-            elif f.source == "execution" and f.exec_result_id in exec_map:
-                r = exec_map[f.exec_result_id]
+            elif f.source == "execution" and f.id in evidence_map:
+                r = evidence_map[f.id]
                 detail = {
                     "kind": "execution",
-                    "command": r.command_run,
-                    "findings_summary": r.findings_summary,
-                    "severity": r.severity,
-                    "status": r.status,
+                    "tool": r.tool,
+                    "command": r.command,
+                    "findings_summary": r.summary,
+                    "outcome": r.outcome,
                 }
             elif f.source == "note" and f.evidence_annotation_id in note_map:
                 a = note_map[f.evidence_annotation_id]
@@ -1307,16 +1323,12 @@ class ReportGenerator:
                 "source": f.source,
                 "owner": (f.owner.full_name or f.owner.username) if f.owner else None,
                 "vuln_id": f.vuln_id,
-                "exec_result_id": f.exec_result_id,
                 "source_detail": detail,
                 "comments": comments_by_finding.get(f.id, []),
             }
 
         by_host: Dict[int, List[Dict[str, Any]]] = {}
         promoted_vuln_ids: Dict[int, set] = {}
-        promoted_exec_ids: set = {
-            f.exec_result_id for f in finding_list if f.source == "execution" and f.exec_result_id
-        }
         for fh in fh_rows:
             if not fh.finding:
                 continue
@@ -1327,43 +1339,39 @@ class ReportGenerator:
         promoted_vuln_ids.update(self._judged_vuln_ids(host_ids))
         for recs in by_host.values():
             recs.sort(key=lambda r: self.SEVERITY_ORDER.get(r["severity"], 5))
-        return by_host, promoted_vuln_ids, promoted_exec_ids
+        return by_host, promoted_vuln_ids, promoted_evidence_ids
 
     def _execution_findings_by_host(
-        self, host_ids: List[int], promoted_exec_ids: set
+        self, host_ids: List[int], promoted_evidence_ids: set
     ) -> Dict[int, List[Dict[str, Any]]]:
-        """``host_id -> [execution findings]`` — every ``TestExecutionResult``
-        flagged ``is_finding`` for the host (reached via its ``TestPlanEntry``),
-        marked ``promoted`` when already represented by a canonical finding."""
+        """``host_id -> [test findings]`` — every evidence record on the host
+        whose outcome is ``finding``, with the label of the test it answers
+        (when it answers one), marked ``promoted`` when a canonical finding
+        already cites it."""
         out: Dict[int, List[Dict[str, Any]]] = {}
         if not host_ids:
             return out
         rows = (
-            self.db.query(
-                TestExecutionResult,
-                TestPlanEntry.host_id,
-                TestPlanEntry.test_phase,
-                TestPlan.title,
-            )
-            .join(TestPlanEntry, TestExecutionResult.entry_id == TestPlanEntry.id)
-            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+            self.db.query(EvidenceRecord, HostTest.label)
+            .outerjoin(HostTest, HostTest.id == EvidenceRecord.host_test_id)
             .filter(
-                TestPlanEntry.host_id.in_(host_ids),
-                TestExecutionResult.is_finding.is_(True),
+                EvidenceRecord.host_id.in_(host_ids),
+                EvidenceRecord.project_id == self.project_id,
+                EvidenceRecord.outcome == "finding",
             )
+            .order_by(EvidenceRecord.created_at, EvidenceRecord.id)
             .all()
         )
-        for r, host_id, phase, plan_title in rows:
-            out.setdefault(host_id, []).append({
-                "exec_result_id": r.id,
-                "plan_title": plan_title,
-                "test_phase": phase,
-                "severity": r.severity,
-                "status": r.status,
-                "command": r.command_run,
-                "findings_summary": r.findings_summary,
-                "promoted": r.id in promoted_exec_ids,
-                "executed_at": self._iso(r.executed_at),
+        for r, label in rows:
+            out.setdefault(r.host_id, []).append({
+                "evidence_id": r.id,
+                "host_test_id": r.host_test_id,
+                "label": label,
+                "tool": r.tool,
+                "command": r.command,
+                "findings_summary": r.summary,
+                "promoted": r.id in promoted_evidence_ids,
+                "executed_at": self._iso(r.executed_at or r.created_at),
             })
         return out
 
@@ -1402,27 +1410,30 @@ class ReportGenerator:
         return out
 
     def _tester_summaries_by_host(self, host_ids: List[int]) -> Dict[int, List[Dict[str, Any]]]:
-        """``host_id -> [tester summaries]`` — the analyst's per-host
-        ``TestPlanEntry.findings`` narrative (skipping empty ones)."""
+        """``host_id -> [tester summaries]`` — what the analyst wrote on each
+        of the host's tests (``HostTest.tester_summary``, skipping empty ones)."""
         out: Dict[int, List[Dict[str, Any]]] = {}
         if not host_ids:
             return out
         rows = (
-            self.db.query(TestPlanEntry, TestPlan.title)
-            .join(TestPlan, TestPlanEntry.test_plan_id == TestPlan.id)
+            self.db.query(HostTest)
             .filter(
-                TestPlanEntry.host_id.in_(host_ids),
-                TestPlanEntry.findings.isnot(None),
-                func.length(func.trim(TestPlanEntry.findings)) > 0,
+                HostTest.host_id.in_(host_ids),
+                HostTest.project_id == self.project_id,
+                HostTest.tester_summary.isnot(None),
+                func.length(func.trim(HostTest.tester_summary)) > 0,
             )
+            .order_by(HostTest.id)
             .all()
         )
-        for entry, plan_title in rows:
-            out.setdefault(entry.host_id, []).append({
-                "plan_title": plan_title,
-                "test_phase": entry.test_phase,
-                "status": entry.status,
-                "findings": entry.findings,
+        for t in rows:
+            out.setdefault(t.host_id, []).append({
+                "host_test_id": t.id,
+                "label": t.label,
+                "tool": t.tool,
+                "description": t.description,
+                "status": t.status,
+                "findings": t.tester_summary,
             })
         return out
 
@@ -2249,10 +2260,10 @@ class ReportGenerator:
             }
 
         # Per-host dossier correlation (canonical findings + their resolved
-        # sources, execution findings, tester summaries) — batched, so a chunk
+        # sources, test findings, tester summaries) — batched, so a chunk
         # of hosts at a time stays viable in the streamed HTML.
-        canonical_by_host, promoted_vuln_ids, promoted_exec_ids = self._canonical_findings_by_host(host_ids)
-        execution_findings_map = self._execution_findings_by_host(host_ids, promoted_exec_ids)
+        canonical_by_host, promoted_vuln_ids, promoted_evidence_ids = self._canonical_findings_by_host(host_ids)
+        execution_findings_map = self._execution_findings_by_host(host_ids, promoted_evidence_ids)
         tester_summaries_map = self._tester_summaries_by_host(host_ids)
         names_map = self._names_by_host(host_ids)
 
@@ -2697,27 +2708,28 @@ class ReportGenerator:
                     )
 
             if host.get("execution_findings"):
-                lines.extend(["", "#### Execution Findings"])
+                lines.extend(["", "#### Test Findings"])
                 for x in host["execution_findings"]:
                     promoted = " (promoted)" if x.get("promoted") else ""
                     lines.append(
-                        f"- [{x.get('severity') or '—'}] {x.get('plan_title') or ''} / "
-                        f"{x.get('test_phase') or ''}{promoted}: {(x.get('findings_summary') or '').strip()}"
+                        f"- {x.get('tool') or ''}"
+                        + (f" / {x['label']}" if x.get('label') else "")
+                        + f"{promoted}: {(x.get('findings_summary') or '').strip()}"
                     )
 
             if host.get("tester_summaries"):
                 lines.extend(["", "#### Tester Summaries"])
                 for t in host["tester_summaries"]:
                     lines.append(
-                        f"- {t.get('plan_title') or ''} ({t.get('test_phase') or ''}, "
-                        f"{t.get('status') or ''}): {(t.get('findings') or '').strip()}"
+                        f"- {t.get('tool') or t.get('description') or ''} "
+                        f"({t.get('status') or ''}): {(t.get('findings') or '').strip()}"
                     )
 
             lines.extend(["", "#### Analyst Context"])
             lines.append(f"- Follow status: {host['analyst_context'].get('follow_status') or 'none'}")
             if host["analyst_context"]["notes"]:
                 for note in host["analyst_context"]["notes"]:
-                    lines.append(f"- Note ({note['status']}): {note['body']}")
+                    lines.append(f"- Note: {note['body']}")
             else:
                 lines.append("- Notes: none")
             lines.extend([
@@ -2811,20 +2823,19 @@ class ReportGenerator:
         return output.getvalue()
 
     def _generate_execution_findings_csv(self, hosts: List[Dict[str, Any]]) -> str:
-        """Execution findings (``TestExecutionResult.is_finding``), one row per
-        host×result, with the plan, phase, severity, and whether it was promoted
-        to a canonical finding."""
+        """Test findings (evidence records whose outcome is ``finding``), one
+        row per host×record, with the tool, the test's label and whether a
+        canonical finding cites it.  The file keeps its name."""
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["IP Address", "Hostname", "Plan", "Phase", "Severity", "Promoted", "Command", "Summary"])
+        writer.writerow(["IP Address", "Hostname", "Tool", "Label", "Promoted", "Command", "Summary"])
         for host in hosts:
             for x in host.get("execution_findings") or []:
                 _safe_csv_row(writer, [
                     host["identity"]["ip_address"],
                     host["identity"].get("hostname") or "",
-                    x.get("plan_title") or "",
-                    x.get("test_phase") or "",
-                    x.get("severity") or "",
+                    x.get("tool") or "",
+                    x.get("label") or "",
                     "yes" if x.get("promoted") else "no",
                     x.get("command") or "",
                     x.get("findings_summary") or "",
@@ -2832,17 +2843,16 @@ class ReportGenerator:
         return output.getvalue()
 
     def _generate_notes_csv(self, hosts: List[Dict[str, Any]]) -> str:
-        """Host notes, one row per note — type, status, author, and body."""
+        """Host notes, one row per note — type, author, and body."""
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow(["IP Address", "Hostname", "Type", "Status", "Author", "Body"])
+        writer.writerow(["IP Address", "Hostname", "Type", "Author", "Body"])
         for host in hosts:
             for note in host["analyst_context"].get("notes") or []:
                 _safe_csv_row(writer, [
                     host["identity"]["ip_address"],
                     host["identity"].get("hostname") or "",
                     note.get("note_type") or note.get("type") or "",
-                    note.get("status") or "",
                     note.get("author") or note.get("created_by") or "",
                     note.get("body") or "",
                 ])

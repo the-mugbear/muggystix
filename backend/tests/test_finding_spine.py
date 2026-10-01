@@ -26,27 +26,27 @@ def _make_note(db_session, host_id: int, user_id: int, body: str) -> Annotation:
     return note
 
 
-def test_promote_creates_finding_and_is_idempotent(client, db_session, test_project, test_user):
-    """Promoting a note yields a finding from the note's first line; a second
-    promote (double-click / retry) returns the SAME finding, never a dup."""
+def test_a_note_cannot_be_promoted_to_a_finding(client, db_session, test_project, test_user):
+    """Removed v2.446.0: a finding is made by promoting a scanner observation
+    or a test result, or written directly — never from a note.  (What the old
+    route guaranteed — one finding per note thread, titled from its first
+    line — went with it.)  A finding made from a note BEFORE that keeps its
+    link, which the note still reports."""
     host = _make_host(db_session, test_project.id, "10.10.0.5")
     note = _make_note(db_session, host.id, test_user.id, "SMB signing disabled\nanon enum works")
     db_session.commit()
 
-    url = f"/api/v1/projects/{test_project.id}/annotations/{note.id}/promote"
-    r1 = client.post(url, json={"severity": "high"})
-    assert r1.status_code == 201, r1.text
-    body1 = r1.json()
-    assert body1["title"] == "SMB signing disabled"
-    assert body1["severity"] == "high"
-    assert body1["status"] == "confirmed"   # classifying a note = a confirmation
-    assert body1["source"] == "note"
-    assert host.id in [h["host_id"] for h in body1["hosts"]]
+    r = client.post(f"/api/v1/projects/{test_project.id}/annotations/{note.id}/promote", json={"severity": "high"})
+    assert r.status_code in (404, 405), r.text
+    assert db_session.query(Finding).count() == 0
 
-    r2 = client.post(url, json={"severity": "low"})  # different severity, same note
-    assert r2.status_code == 201, r2.text
-    assert r2.json()["id"] == body1["id"]            # idempotent — same finding
-    assert db_session.query(Finding).filter_by(source="note").count() == 1
+    legacy = Finding(project_id=test_project.id, title="SMB signing disabled", severity="high",
+                     status="confirmed", source="note", evidence_annotation_id=note.id)
+    db_session.add(legacy)
+    db_session.commit()
+    notes = client.get(f"/api/v1/projects/{test_project.id}/hosts/{host.id}/notes").json()
+    assert notes[0]["finding_id"] == legacy.id
+    assert client.get(f"/api/v1/projects/{test_project.id}/findings/{legacy.id}").json()["evidence_annotation_id"] == note.id
 
 
 def test_finding_cross_tenant_host_attach_rejected(client, db_session, test_project, test_user):

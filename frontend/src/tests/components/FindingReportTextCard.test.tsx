@@ -183,3 +183,49 @@ describe('FindingReportTextCard — 5.317.0 work on this with your agent', () =>
     expect(agentInstruction.reviewFinding(42)).not.toMatch(/Still empty/);
   });
 });
+
+// 5.323.0 — a first-time user promoted a finding and landed on a page of
+// "Not written yet" behind an Edit button. A finding with nothing written
+// opens ready to write; an empty section of a partly written one is itself
+// the way in.
+describe('FindingReportTextCard — a new finding is ready to write', () => {
+  const blank = {
+    id: 43, title: 'New',
+    report_text: {
+      description: null, impact: '  ', recommendation: null, references: null,
+      steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+    },
+  } as never;
+
+  it('opens in the editor when nothing the report needs is written', () => {
+    render(<FindingReportTextCard finding={blank} canEdit onSaved={vi.fn()} />);
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save report text' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Edit$/ })).not.toBeInTheDocument();
+    // Drafting stays on offer while the editor is open.
+    expect(screen.getByRole('button', { name: /Draft empty sections/ })).toBeInTheDocument();
+  });
+
+  it('stays read-only for someone who may not edit it', () => {
+    render(<FindingReportTextCard finding={blank} canEdit={false} canPropose={false} onSaved={vi.fn()} />);
+    expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
+    expect(screen.getAllByText('Not written yet').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: /Write it/ })).not.toBeInTheDocument();
+  });
+
+  it('a partly written finding reads first, and an empty section opens the editor there', async () => {
+    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} />);
+    expect(screen.queryByLabelText('Impact')).not.toBeInTheDocument();
+    expect(screen.getByText('TLS 1.0 is accepted.')).toBeInTheDocument();
+    fireEvent.click(within(screen.getByTestId('report-text-impact')).getByRole('button', { name: /Not written yet\. Write it/ }));
+    const impact = await screen.findByLabelText('Impact');
+    await waitFor(() => expect(impact).toHaveFocus());
+  });
+
+  it('Cancel returns to reading', () => {
+    render(<FindingReportTextCard finding={blank} canEdit onSaved={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Edit$/ })).toBeInTheDocument();
+  });
+});

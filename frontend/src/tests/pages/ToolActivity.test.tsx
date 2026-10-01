@@ -17,6 +17,12 @@ vi.mock('../../services/api', () => ({
   getScansBetween: (...a: unknown[]) => getScansBetween(...a),
 }));
 
+const navigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => navigate };
+});
+
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({
     projects: [{ id: 1, name: 'Acme internal' }, { id: 2, name: 'Other' }],
@@ -70,10 +76,10 @@ describe('ToolActivity', () => {
   beforeEach(() => {
     getScansAt.mockReset();
     getScansBetween.mockReset();
-    // 60 scans inside one hour plus one execution run: the burst that used
-    // to stack into a ~1100px column of dots.
+    // 60 scans inside one hour plus one recorded command: the burst that
+    // used to stack into a ~1100px column of dots.
     const burst = Array.from({ length: 60 }, (_, i) => item('scan', recent(180 + (i % 30)), i));
-    getScansBetween.mockResolvedValue(week([...burst, item('execution_session', recent(60 * 30), 999)]));
+    getScansBetween.mockResolvedValue(week([...burst, item('evidence', recent(60 * 30), 999)]));
   });
 
   it('leads with the cross-project scope', async () => {
@@ -105,12 +111,22 @@ describe('ToolActivity', () => {
     expect(heights.length).toBe(2);
     expect(heights.reduce((a, h) => a + h, 0)).toBeLessThanOrEqual(200);
     const kinds = Array.from(chart.querySelectorAll('[data-kind]')).map((g) => g.getAttribute('data-kind'));
-    expect(kinds).toEqual(['scan', 'execution_session']);
-    // Each row is named and counted; absent kinds are said to be absent.
+    // The two kinds there are (5.320.0): scan uploads and recorded commands.
+    expect(kinds).toEqual(['scan', 'evidence']);
+    // Each row is named and counted.
     expect(chart).toHaveTextContent('Scan uploads 60');
-    expect(screen.getByText(/None in this window: commands run, target probes/)).toBeInTheDocument();
+    expect(chart).toHaveTextContent(/Commands recorded\s*1/i);
+    expect(screen.queryByText(/None in this window/)).not.toBeInTheDocument();
     // The Correlate window (now ± 5 min) is inside the week: its band shows.
     expect(chart.querySelector('.activity-focus-band')).not.toBeNull();
+  });
+
+  it('says which kind is absent when only scans are in the window', async () => {
+    getScansBetween.mockResolvedValue(week([item('scan', recent(200), 1)]));
+    renderPage();
+    const chart = await screen.findByTestId('activity-histogram');
+    await waitFor(() => expect(chart.querySelectorAll('[data-kind]').length).toBe(1));
+    expect(screen.getByText(/None in this window: commands recorded/)).toBeInTheDocument();
   });
 
   it('correlates a chosen chart bin as a range query', async () => {
@@ -125,6 +141,36 @@ describe('ToolActivity', () => {
     expect(new Date(to).getTime()).toBeGreaterThanOrEqual(Date.now() - 60_000);
     expect(getScansAt).not.toHaveBeenCalled();
     expect(await screen.findByText(/activities matched/)).toBeInTheDocument();
+  });
+
+  // 5.320.0 — the per-command record is an evidence record: it reads
+  // "command recorded", shows its outcome and the address it reached, and
+  // opens the host (the record lives on the host's page).
+  it('lists a recorded command with its outcome and opens its host', async () => {
+    navigate.mockReset();
+    getScansAt.mockResolvedValue(week([{
+      ...item('evidence', recent(2), 41),
+      label: 'curl', secondary_label: 'curl -sI https://10.0.0.9/', status: 'finding',
+      target: '10.0.0.9', parent_id: 7,
+    }]));
+    renderPage();
+    await screen.findByTestId('activity-histogram');
+    fireEvent.click(screen.getByRole('button', { name: /Correlate/ }));
+    expect(await screen.findByText('command recorded')).toBeInTheDocument();
+    expect(screen.getByText('finding')).toBeInTheDocument();
+    expect(screen.getByText('10.0.0.9')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open detail' }));
+    expect(navigate).toHaveBeenCalledWith('/hosts?search=10.0.0.9');
+  });
+
+  it('opens the recording session when a command has no address', async () => {
+    navigate.mockReset();
+    getScansAt.mockResolvedValue(week([{ ...item('evidence', recent(2), 42), parent_id: 7 }]));
+    renderPage();
+    await screen.findByTestId('activity-histogram');
+    fireEvent.click(screen.getByRole('button', { name: /Correlate/ }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Open detail' }));
+    expect(navigate).toHaveBeenCalledWith('/agent-sessions/7');
   });
 
   it('runs the focused query when the analyst asks', async () => {

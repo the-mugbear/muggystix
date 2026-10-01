@@ -37,30 +37,32 @@ decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
 
 ---
 
-## 2. One endpoint, one session, four kinds of work (v2.337.0)
+## 2. One endpoint, one session, every kind of work (v2.337.0)
 
 `tools/list` returns the **whole** tool catalogue: a key binds to one
 project-scoped `AgentSession` that does every kind of work, so there is no
 per-workflow filtering any more (it was always presentation — the endpoint
 behind each tool is the decider). The kinds of work are not a sequence
-(v2.433.0): the operator drives the agent, and the agent registers and executes
-its own plans — there is no approval step, approved-tool list or required order.
+(v2.433.0): the operator drives the agent — there is no approval step,
+approved-tool list or required order. Test plans and execution runs were
+removed in v2.442.0: the agent proposes tests on hosts and records what it ran
+as evidence.
 
 | Work | Opened by | Tools |
 |---|---|---|
-| Query / report | (default — no phase) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Scope reads, scanning and uploads | (default — no phase) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`, and `named-targets.ndjson` for name scope) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
-| Test plan | `create_test_plan {title, agent_model?}` | entry drafting, validation (advice, not a gate) |
-| Execution | `start_execution {plan_id, agent_model?}` (a draft or in-progress plan) | execution context, optional target checks (evidence), test results, completion |
+| Query / report | (nothing to open) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
+| Scope reads, scanning and uploads | (nothing to open) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`, and `named-targets.ndjson` for name scope) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
+| Host tests | (nothing to open) | `host_tests_list` (read first — do not duplicate), `host_tests_propose {tests: [...], agent_model?}` (up to 200 individual tests, each with its own `request_key` and, when it confirms one scanner observation, that observation's `vulnerability_id`; they appear on each host's page at once), `host_tests_get`, `host_tests_update {test_id, expected_revision, status?, …}` (409 when the revision is stale) |
+| Running a test | (nothing to open) | `host_tests_update` → `in_progress`, run it, `record_evidence {host_id, host_test_id, request_key, tool, outcome, summary, …}`, then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
 
 There is no setup call: the environment probe (`record_environment`) was
 removed in v2.434.0. The session records its **client** from the `initialize`
 handshake — `clientInfo` name and version, when the handshake carries the key
 (curl agents: the first call's `User-Agent`) — and its prompt version at start
 or resume. The **model** is the agent's own report: an optional `agent_model`
-argument on `create_test_plan`, `start_execution` and `end_session`; the
-session keeps the last one, and a plan or run snapshots the session's
-attribution when it is created (`API_GUIDE.md` §6.8).
+argument on `host_tests_propose`, `record_evidence`, the `propose_*` tools and
+`end_session`; the session keeps the last one, and a host test or evidence
+record snapshots the attribution when it is written (`API_GUIDE.md` §6.8).
 
 ### Assist: answering questions, and filling in a report
 
@@ -78,7 +80,7 @@ What that takes, beyond "which hosts match X":
 | "Which lines did BlueStick not read?" | `assist_list_uninterpreted_lines` — per import, as redacted shapes (v2.418.0); see `documentation/PARSE_AUDIT_BRIEF.md` |
 | "Which tags/sites/people exist here?" | `assist_get_vocabulary` |
 | "How much of this did we actually assess?" | `assist_get_coverage` |
-| "Has anyone tested this host, and what happened?" | `assist_get_host_testing` |
+| "Has anyone tested this host, and what happened?" | `host_tests_list {host_id}` (the tests and their status), `list_evidence {host_id}` (what was run and what came back) |
 | "Which segment is worst?" | `assist_list_segments` — ranked worst-first |
 | "What has the team been working on?" | `assist_list_recent_notes` (`status=open` = outstanding work) |
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
@@ -139,9 +141,9 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (61 tools at v2.434.0, as `tools/list`
+Every session sees the WHOLE catalogue (56 tools at v2.442.0, as `tools/list`
 returns it) — nothing is filtered by workflow since
-v2.337.0. Eight of those belong to the session rather than to any phase:
+v2.337.0. Eight of those belong to the session rather than to any kind of work:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
 **`session_renew`** (same key, later deadline), **`end_session`** (only when
 the operator says they are finished — it revokes the key; takes an optional
@@ -153,24 +155,28 @@ an upload's parse) and **`submit_feedback`**.
 
 **Evidence and proposals (v2.436.0).** `record_evidence` / `list_evidence`
 record and read what the agent ran against a host and what came back (the full
-raw output is a file: `curl` `GET /agent/evidence/{id}/raw`). A change to what
+raw output: `curl` `GET /agent/evidence/{id}/raw`). `record_evidence` takes
+`host_test_id` (with a `request_key`) when the record answers a proposed test;
+`list_evidence` filters by `host_id`, `host_test_id`, `finding_id` and
+`agent_session_id`. A change to what
 the team concluded is a proposal a person accepts or rejects in the app:
 `propose_finding_text`, `propose_finding`, `propose_observation`,
 `propose_endpoint_status`; `list_proposals` shows the decisions. Each creates a
 row per call, so none is marked idempotent.
 
-Each tool also carries a `workflows` grouping tag — `assist`, `plan_generation`,
-`execution` or `scope` (scope reads and uploads; it was `recon` until the recon
+Each tool also carries a `workflows` grouping tag — `assist`, `testing` (the
+`host_tests_*` tools; it replaced `plan_generation` and `execution` in
+v2.442.0) or `scope` (scope reads and uploads; it was `recon` until the recon
 runs were removed) — which the tool reference page groups by. It is
 presentation, never a filter.
 
 **The MCP layer makes no authorisation decision.** A `tools/call` loops back
 into the real `/agent/*` route forwarding the caller's key; that endpoint
-decides, checked against the operator's project role and the run state.
+decides, checked against the operator's project role.
 v2.337.0 removed the per-workflow `tools/list` filter entirely — one project
 session does everything, so the whole catalogue is listed and whether a given
-call succeeds is settled at the endpoint (a plan you have not opened an
-execution run on, a write your role does not allow).
+call succeeds is settled at the endpoint (a write your role does not allow, a
+host test whose revision has moved on).
 
 **Bulk data is deliberately not a tool.** `report-context.ndjson`,
 `scopes/{scope_id}/hosts.ndjson`, `scopes/{scope_id}/live-hosts.txt`,
@@ -287,9 +293,10 @@ Entries carry MCP **annotations** (`readOnlyHint`, `destructiveHint`,
 operator classifying them by hand. `destructiveHint` follows the spec's meaning:
 false only for genuinely additive writes (a note, a test result), true for ones
 that replace stored values. `idempotentHint` answers "is a retry safe?": true
-for writes that converge (set follow, patch a host, complete a run), false for anything that creates a row per call — every additive
-tool, and the creators `create_test_plan`, `start_execution` and
-`submit_feedback`, which say so explicitly with `"idempotent": False`
+for writes that converge (set follow, patch a host, update a host test), false for anything that creates a row per call — every additive
+tool (`host_tests_propose` among them — conservatively: a retry with the same
+`request_key` is in fact safe), and the appenders that say so explicitly with
+`"idempotent": False`, `submit_feedback` among them
 (v2.343.2; the inferred value had advertised them as safe to retry).
 
 The transport validates `tools/call` arguments against the advertised schema
@@ -351,8 +358,8 @@ the client's sandbox — `codex --sandbox workspace-write --ask-for-approval
 on-request`, or Claude Code's default prompting — and every connect recipe the
 session dialog emits carries those flags.
 
-What the server contributes is the record, and one requirement: **every
-workflow's prompt opens with a mandatory read-back**, where the agent states the
+What the server contributes is the record, and one requirement: **the session
+prompt opens with a mandatory read-back**, where the agent states the
 bounds of the session in its own words before its first call. That is the one
 moment a human sees the agent's *understanding* rather than its output, and it
 makes the agent's own words part of the audit trail.
@@ -362,15 +369,14 @@ makes the agent's own words part of the audit trail.
 ## 7. Reviewing what happened
 
 * **Workflows → Agent Sessions** (`/agent-activity`) — what is live (with the
-  plans and execution runs each session opened, and Resume / End) and every
-  session in the project. Ending a session — End here, the agent's
-  `end_session`, or the hourly lapse sweep — marks its open execution runs
-  (active or paused) `abandoned` with their results kept, so nothing is "left
-  open" behind an ended session. **A session's page**
+  tests each session proposed and the evidence it recorded, and Resume / End)
+  and every session in the project. Ending a session — End here, the agent's
+  `end_session`, or the hourly lapse sweep — revokes its key; its tests and
+  evidence stay, for another session or a person to carry on. **A session's page**
   (`/agent-sessions/{id}`, by the session id; the older `/assist-sessions/{id}`
   links redirect there) has its controls, its work, the notes it wrote (the
   durable output) and its API-call feed (the read trail).
-* **Agent API activity** — per plan and per session.
+* **Agent API activity** — per session, on its page.
 * **`GET /api/v1/mcp-telemetry/summary`** (admin) — per-tool call counts,
   outcomes, and `unknown_tools_called`, which is how a client calling a tool
   this deployment doesn't serve becomes visible.
