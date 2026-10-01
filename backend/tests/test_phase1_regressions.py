@@ -139,8 +139,8 @@ AGENT_READ = "/api/v1/agent/host-tests"
 
 @pytest.fixture
 def agent_session_with_key(client, db_session, test_project):
-    """``{key, headers, agent, agent_session_id, assist_session_id}`` for a
-    live project session started by the ``client`` fixture's user."""
+    """``{key, headers, agent, agent_session_id}`` for a live project session
+    started by the ``client`` fixture's user."""
     from app.db.models_agent import Agent
 
     resp = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={})
@@ -151,7 +151,6 @@ def agent_session_with_key(client, db_session, test_project):
         "headers": {"X-API-Key": body["api_key"]},
         "agent": db_session.get(Agent, body["agent_id"]),
         "agent_session_id": body["agent_session_id"],
-        "assist_session_id": body["assist_session_id"],
     }
 
 
@@ -168,7 +167,7 @@ def test_prompt_version_bumped_for_environment_probe():
 # ---------------------------------------------------------------------------
 # v2.24.0 — agent API call log.  Middleware writes one row per inbound
 # /agent/* request that authenticated as an agent; the human-facing
-# /projects/{id}/assist-sessions/{id}/api-activity endpoint serves them
+# /projects/{id}/agent-sessions/{id}/api-activity endpoint serves them
 # back so a user can audit "did the agent query the right hosts?".  (The
 # per-plan api-activity endpoint these used went with plans in v2.442.0.)
 # ---------------------------------------------------------------------------
@@ -223,8 +222,8 @@ def test_middleware_helpers_extract_host_ids_and_target_ips():
     assert summarised["_multipart"] is True
 
 
-def _activity_url(project_id: int, assist_session_id: int) -> str:
-    return f"/api/v1/projects/{project_id}/assist-sessions/{assist_session_id}/api-activity"
+def _activity_url(project_id: int, agent_session_id: int) -> str:
+    return f"/api/v1/projects/{project_id}/agent-sessions/{agent_session_id}/api-activity"
 
 
 def test_middleware_records_agent_request_against_session(
@@ -261,7 +260,7 @@ def test_middleware_records_agent_request_against_session(
     assert (row.path_template or "").endswith("/host-tests")
 
     # Human-facing endpoint surfaces it.
-    list_resp = client.get(_activity_url(test_project.id, s["assist_session_id"]))
+    list_resp = client.get(_activity_url(test_project.id, s["agent_session_id"]))
     assert list_resp.status_code == 200, list_resp.text
     body = list_resp.json()
     assert body["total"] == 1
@@ -305,7 +304,7 @@ def test_middleware_captures_mutation_body_and_references_hosts(
     assert row.referenced_host_ids == [host.id]
     assert "10.0.0.42" in (row.referenced_target_ips or [])
 
-    url = _activity_url(test_project.id, s["assist_session_id"])
+    url = _activity_url(test_project.id, s["agent_session_id"])
     # The target filter returns this row, and only rows naming that address.
     filtered = client.get(url, params={"target_ip": "10.0.0.42"})
     assert filtered.status_code == 200
@@ -352,7 +351,7 @@ def test_api_activity_endpoints_enforce_project_membership(
     db_session.commit()
     db_session.refresh(outsider)
 
-    url = _activity_url(test_project.id, agent_session_with_key["assist_session_id"])
+    url = _activity_url(test_project.id, agent_session_with_key["agent_session_id"])
     app.dependency_overrides[get_current_user] = lambda: outsider
 
     # Non-member → 403.
@@ -403,7 +402,7 @@ def test_api_activity_owner_attribution_and_mine_filter(
         ))
     db_session.commit()
 
-    url = _activity_url(test_project.id, s["assist_session_id"])
+    url = _activity_url(test_project.id, s["agent_session_id"])
 
     # Default 'all' view: both rows, each attributed to its owner + agent.
     allr = client.get(url).json()
@@ -1163,7 +1162,7 @@ def test_agent_sessions_unified_timeline(
     legacy assist rows in one timeline ordered newest-first, each carrying
     its attribution and the work it left behind (the host tests it proposed
     and the evidence it recorded)."""
-    from app.db.models_agent import AssistSession
+    from app.db.models_agent import AgentSession
     from app.db.models_host_tests import HostTest
     from app.db.models_proposals import EvidenceRecord
 
@@ -1175,9 +1174,9 @@ def test_agent_sessions_unified_timeline(
         db_session, test_project.id, test_agent,
         model="gpt-5-codex", tool="codex", hours_ago=1,
     )
-    # A pre-consolidation assist session: no parent project session.
-    db_session.add(AssistSession(
-        project_id=test_project.id, agent_id=test_agent.id,
+    # A pre-consolidation assist session.
+    db_session.add(AgentSession(
+        workflow="assist", project_id=test_project.id, agent_id=test_agent.id,
         started_by_id=test_agent.owner_id, status="ended",
     ))
     host = _mk_host(db_session, test_project.id, "10.0.3.1")

@@ -9,13 +9,15 @@ per-workflow entry points.  This module owns:
   "phases" — the recon and execution runs it opened — until v2.433.0 and
   v2.442.0; it now simply proposes host tests and records evidence.)
 * **The timeline**: the unified list the Agent Sessions page and Operations
-  read — consolidated ``project`` sessions plus legacy assist sessions, which
-  still surface from their detail table so history keeps its ids.
+  read — consolidated ``project`` sessions plus legacy ``assist`` sessions.
 
-A SQL view would also work for the timeline but adds a schema artifact that
-has to move with column changes.  A Python UNION is cheaper to evolve at the
-current scale (O(10s) sessions per project) and lets the service add
-cross-kind logic without DDL.
+**One table, one id** (v2.449.0).  Both kinds are rows of ``agent_sessions``
+and every route, page and link is keyed by that row's id.  Until then each
+start also wrote an ``assist_sessions`` row with a second id, and this module
+translated between the two; ``assist_session_service`` (its key-expiry and
+derived-status helpers) was folded in here when the table was dropped
+(migration ``b8e2a5c7d1f3``).  :func:`agent_session_for_legacy_assist_id` is
+all that is left of the second id: it sends an old link to its session.
 """
 from __future__ import annotations
 
@@ -27,29 +29,29 @@ from datetime import datetime, timezone
 from typing import List, Literal, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func
+from sqlalchemy import case, func
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.db.models import Annotation
 from app.db.models_agent import (
     Agent,
+    AgentApiCall,
     AgentFeedback,
     AgentSession,
     AgentSessionWorkflow,
-    AssistSession,
 )
-from app.db.models_auth import APIKey, User
-from app.db.models_project import ProjectMembership
+from app.db.models_auth import APIKey, User, UserRole
+from app.db.models_project import ProjectMembership, ProjectRole
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.agent_key_ttl import resolve_expires_at, session_renewal_deadline
-from app.services.assist_session_service import operator_role
 
 logger = logging.getLogger(__name__)
 
 
 # v2.337.0 — ``project`` is the consolidated kind every new session gets; the
 # legacy ``assist`` kind remains so sessions started before the consolidation
-# keep showing up (sourced from its detail table, keyed by those ids).  The
+# keep showing up.  A row's kind is its ``agent_sessions.workflow``.  The
 # legacy plan-generation and execution kinds went with their tables (v2.442.0).
 SessionKind = Literal["project", "assist"]
 
@@ -314,17 +316,98 @@ def feedback_counts_for_agent_sessions(db: Session, session_ids: List[int]) -> d
     return {sid: int(n) for sid, n in rows}
 
 
-def _assist_ids_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
-    """``{agent_session_id: assist_sessions.id}`` — each consolidated session's
-    detail row (notes and the API-call feed are keyed by it), one query."""
+def operator_role(global_role, membership_role: Optional[str]) -> Optional[str]:
+    """The authority a session's operator carries in this project (v2.402.0).
+
+    Mirrors ``enforce_agent_operator_access``: a global admin passes whatever
+    their membership says, so unless that membership already reads admin the
+    honest label is ``global_admin``; otherwise the membership role; otherwise
+    None (not a member — the key's next call is refused).
+    """
+    is_global_admin = global_role in (UserRole.ADMIN, UserRole.ADMIN.value)
+    if is_global_admin and membership_role != ProjectRole.ADMIN.value:
+        return "global_admin"
+    return membership_role or None
+
+
+def agent_session_for_legacy_assist_id(
+    db: Session, project_id: int, legacy_id: int,
+) -> Optional[AgentSession]:
+    """The session an old ``/assist-sessions/{id}`` link meant, or None.
+
+    Only sessions started before v2.449.0 have such an id.  Scoped to the
+    path's project: another project's id must read as not found.
+    """
+    return (
+        db.query(AgentSession)
+        .filter(
+            AgentSession.legacy_assist_session_id == legacy_id,
+            AgentSession.project_id == project_id,
+        )
+        .first()
+    )
+
+
+@dataclass
+class SessionActivity:
+    """What the audit log says about one session."""
+    call_count: int = 0
+    via_mcp: bool = False
+    first_call_at: Optional[datetime] = None
+
+    @property
+    def connection(self) -> str:
+        """How the agent reached the session, from observed calls (v2.331.0):
+        ``none`` — no authenticated call yet; ``mcp`` — at least one arrived
+        through the MCP transport; ``curl`` — calls arrived, all by direct
+        HTTP.  Not a liveness claim: a past call says the client connected,
+        not that it is still running."""
+        if self.call_count == 0:
+            return "none"
+        return "mcp" if self.via_mcp else "curl"
+
+
+def activity_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
+    """``{agent_session_id: SessionActivity}`` — audited call count, transport
+    and first-call time per session, one grouped query.
+
+    Every audited row is an authenticated call (the middleware writes nothing
+    for a request that never authenticated), so one row is proof the key was
+    accepted, and ``via_mcp`` on any of them proof the MCP transport carried it.
+    Rides ``idx_agent_api_call_session_created``.
+    """
     if not session_ids:
         return {}
-    return dict(
-        db.query(AssistSession.agent_session_id, func.min(AssistSession.id))
-        .filter(AssistSession.agent_session_id.in_(session_ids))
-        .group_by(AssistSession.agent_session_id)
-        .all()
-    )
+    mcp_seen = func.max(case((AgentApiCall.via_mcp.is_(True), 1), else_=0))
+    return {
+        sid: SessionActivity(call_count=int(count), via_mcp=bool(via_mcp), first_call_at=first_at)
+        for sid, count, via_mcp, first_at in (
+            db.query(
+                AgentApiCall.agent_session_id,
+                func.count(AgentApiCall.id),
+                mcp_seen,
+                func.min(AgentApiCall.created_at),
+            )
+            .filter(AgentApiCall.agent_session_id.in_(session_ids))
+            .group_by(AgentApiCall.agent_session_id)
+            .all()
+        )
+    }
+
+
+def note_counts_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
+    """``{agent_session_id: notes it wrote}``, one grouped query."""
+    if not session_ids:
+        return {}
+    return {
+        sid: int(n)
+        for sid, n in (
+            db.query(Annotation.agent_session_id, func.count(Annotation.id))
+            .filter(Annotation.agent_session_id.in_(session_ids))
+            .group_by(Annotation.agent_session_id)
+            .all()
+        )
+    }
 
 
 def _operator_roles(db: Session, project_id: int, user_ids: set) -> dict:
@@ -348,14 +431,26 @@ def _operator_roles(db: Session, project_id: int, user_ids: set) -> dict:
 def get_agent_session_row(
     db: Session, project_id: int, session_id: int,
 ) -> Optional[AgentSessionRow]:
-    """One consolidated session as the list shows it (work counts, key state,
-    feedback, operator role), or None when it is not this project's."""
-    rows = list_agent_sessions(db, project_id, kinds=["project"], session_id=session_id, limit=1)
+    """One session as the list shows it (work counts, key state, activity,
+    feedback, operator role), or None when it is not this project's.
+
+    A ``project`` session or a legacy ``assist`` one: both are the same table
+    since v2.449.0, so a session from before the consolidation has the same
+    page (its calls, notes and feedback) instead of none.
+    """
+    rows = list_agent_sessions(db, project_id, session_id=session_id, limit=1)
     return rows[0] if rows else None
 
 
 def key_expiry_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
-    """``{agent_session_id: max(expires_at)}`` over active keys, one query."""
+    """``{agent_session_id: max(expires_at)}`` over active keys, one query.
+
+    Scoped to the page's ids rather than the deployment's history.  MAX because
+    a session can hold more than one key row (a re-mint on resume) and access
+    stops when the LAST one dies — the earliest would call a usable session
+    dead.  The one key-expiry read (``assist_session_service`` had a second,
+    keyed by the pointer row's id).
+    """
     if not session_ids:
         return {}
     return {
@@ -448,13 +543,6 @@ def close_agent_session_from_agent(
         )
     reason = "closed by the agent" + (f": {notes.strip()}" if notes and notes.strip() else "")
     end_agent_session(db, session, ended_by=None, reason=reason, end_reason=END_REASON_AGENT)
-    db.query(AssistSession).filter(
-        AssistSession.agent_session_id == session.id,
-        AssistSession.status == "active",
-    ).update(
-        {"status": "ended", "ended_at": session.completed_at},
-        synchronize_session=False,
-    )
 
 
 def lapse_expired_agent_sessions(db: Session) -> int:
@@ -495,21 +583,11 @@ def lapse_expired_agent_sessions(db: Session) -> int:
             reason="keys expired past the renewal window",
             end_reason=END_REASON_LAPSED,
         )
-        # The truthful timestamp is when access actually stopped.
+        # The truthful timestamp is when access actually stopped (the key's
+        # expiry), not when the sweep happened to run.
         session.completed_at = expires_at or session.completed_at
         lapsed.append(session)
-    # Assist detail rows mirror the status so their review page agrees, dated
-    # to when access actually stopped (the session's completed_at — the key's
-    # expiry), not to when the sweep happened to run.
     if lapsed:
-        for s in lapsed:
-            db.query(AssistSession).filter(
-                AssistSession.agent_session_id == s.id,
-                AssistSession.status == "active",
-            ).update(
-                {"status": "ended", "ended_at": s.completed_at or now},
-                synchronize_session=False,
-            )
         db.commit()
         logger.info(
             "Lapsed %d agent session(s) whose keys had expired: %s",
@@ -555,29 +633,29 @@ class AgentSessionRow:
     # v2.402.0 — the operator's display name (users.full_name), shown in
     # preference to the username; None when the account has none.
     user_full_name: Optional[str] = None
-    # v2.402.0 — the agent session a legacy assist row belongs to, and whether
-    # that session can still act.  The row keeps its own
-    # status ("active") after the session whose key drove it has ended or its
-    # key has run out — the run outlives the session.  ``session_live`` says
-    # which: True = the session is active and holds a live or renewable key;
-    # False = it has ended or can no longer be renewed, so nothing will move
-    # this run on its own; None = not computed (project rows, or a run that is
-    # not in progress).  Workflow state, not evidence freshness.
-    agent_session_id: Optional[int] = None
+    # v2.402.0 — legacy assist rows still stored as ``active``: whether the
+    # session can still act.  True = it holds a live or renewable key; False =
+    # nothing will move it on its own; None = not computed (project rows, or a
+    # row that is not in progress).  Workflow state, not evidence freshness.
     session_live: Optional[bool] = None
-    # v2.432.0 — project sessions only.  ``assist_session_id`` is the
-    # session's detail row, whose id the notes and the API-call feed are keyed
-    # by; ``last_activity_at`` is its most recent authenticated call;
-    # ``operator_role`` the authority it acts with
-    # (``assist_session_service.operator_role``).
+    # v2.432.0 — ``last_activity_at`` is the session's most recent
+    # authenticated call; ``operator_role`` the authority it acts with
+    # (:func:`operator_role`).
     # v2.442.0 — ``host_test_count`` / ``evidence_count``: the host tests the
     # session proposed and the evidence records it wrote (the work a session
     # leaves behind; they replace ``phases``, the runs it used to open).
     host_test_count: int = 0
     evidence_count: int = 0
-    assist_session_id: Optional[int] = None
     last_activity_at: Optional[datetime] = None
     operator_role: Optional[str] = None
+    # v2.449.0 — how much the session did, from the audit log and its notes
+    # (they were on the pointer row's review routes): a session that made no
+    # call is the common dead end (key minted, prompt never pasted) and must be
+    # tellable from one that did the work without opening each.
+    call_count: int = 0
+    note_count: int = 0
+    connection: str = "none"   # none | mcp | curl — see SessionActivity
+    first_call_at: Optional[datetime] = None
 
     def to_dict(self) -> dict:
         return {
@@ -600,13 +678,15 @@ class AgentSessionRow:
             "end_reason": self.end_reason,
             "feedback_count": self.feedback_count,
             "user_full_name": self.user_full_name,
-            "agent_session_id": self.agent_session_id,
             "session_live": self.session_live,
             "host_test_count": self.host_test_count,
             "evidence_count": self.evidence_count,
-            "assist_session_id": self.assist_session_id,
             "last_activity_at": self.last_activity_at,
             "operator_role": self.operator_role,
+            "call_count": self.call_count,
+            "note_count": self.note_count,
+            "connection": self.connection,
+            "first_call_at": self.first_call_at,
         }
 
 
@@ -618,9 +698,8 @@ _RUN_IN_PROGRESS = {"active", "in_progress"}
 def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None:
     """Set ``session_live`` on in-progress run rows (v2.402.0).
 
-    Two grouped queries whatever the page size: the parent sessions (status +
-    renewal deadline) and their live keys.  A legacy run with no parent
-    session falls back to its agent's keys — that is what authenticated it.
+    Two grouped queries whatever the page size: the sessions (status +
+    renewal deadline) and their live keys.
     """
     runs = [
         r for r in rows
@@ -628,7 +707,7 @@ def _attach_session_liveness(db: Session, rows: "List[AgentSessionRow]") -> None
     ]
     if not runs:
         return
-    liveness = runs_session_live(db, [(r.agent_session_id, r.agent_id) for r in runs])
+    liveness = runs_session_live(db, [(r.id, r.agent_id) for r in runs])
     for r, live in zip(runs, liveness):
         r.session_live = live
 
@@ -691,41 +770,36 @@ def runs_session_live(
     return out
 
 
-def _not_a_project_child(detail_agent_session_col):
-    """True for a legacy detail row: it has no parent project AgentSession, so
-    it earns its own timeline row. New (project-session) detail rows are
-    represented by their session's row and are excluded here (v2.337.0)."""
-    from sqlalchemy import exists, and_
-    return ~exists().where(
-        and_(
-            AgentSession.id == detail_agent_session_col,
-            AgentSession.workflow == AgentSessionWorkflow.PROJECT.value,
+#: Timeline kind → the ``agent_sessions.workflow`` it is stored as.  The other
+#: legacy workflow labels (recon / plan_generation / execution rows from
+#: before v2.337.0) are on no timeline.
+_KIND_WORKFLOW = {
+    "project": AgentSessionWorkflow.PROJECT.value,
+    "assist": AgentSessionWorkflow.ASSIST.value,
+}
+
+
+def sessions_with_a_page(db: Session, session_ids) -> set:
+    """Which of these session ids the timeline lists — the ones
+    ``/agent-sessions/{id}`` answers for.  A link to a session should be
+    offered only for these (a pre-v2.337.0 recon / plan / execution row has
+    no page).  One query."""
+    ids = [i for i in session_ids if i is not None]
+    if not ids:
+        return set()
+    return {
+        sid
+        for (sid,) in db.query(AgentSession.id).filter(
+            AgentSession.id.in_(ids),
+            AgentSession.workflow.in_(sorted(_KIND_WORKFLOW.values())),
         )
-    )
+    }
 
 
-def _apply_assist_filters(q, *, agent_id, model, tool, user_id, status):
-    """Legacy assist rows come from ``AssistSession``, not from the unified
-    ``AgentSession`` base row: the detail table is where that workflow's own
-    lifecycle lives.
-    """
-    if agent_id is not None:
-        q = q.filter(AssistSession.agent_id == agent_id)
-    if model is not None:
-        q = q.filter(AssistSession.generated_by_model == model)
-    if tool is not None:
-        q = q.filter(AssistSession.generated_by_tool == tool)
-    if user_id is not None:
-        q = q.filter(AssistSession.started_by_id == user_id)
-    if status is not None:
-        q = q.filter(AssistSession.status == status)
-    return q.filter(_not_a_project_child(AssistSession.agent_session_id))
-
-
-
-def _apply_project_filters(q, *, agent_id, model, tool, user_id, status):
-    """Consolidated sessions come straight off ``agent_sessions``."""
-    q = q.filter(AgentSession.workflow == AgentSessionWorkflow.PROJECT.value)
+def _apply_session_filters(q, *, kinds, agent_id, model, tool, user_id, status):
+    """Both kinds come straight off ``agent_sessions``; one filter set."""
+    want = set(kinds) if kinds is not None else set(ALL_SESSION_KINDS)
+    q = q.filter(AgentSession.workflow.in_(sorted(_KIND_WORKFLOW[k] for k in want)))
     if agent_id is not None:
         q = q.filter(AgentSession.agent_id == agent_id)
     if model is not None:
@@ -750,33 +824,15 @@ def count_agent_sessions(
     user_id: Optional[int] = None,
     status: Optional[str] = None,
 ) -> int:
-    """v2.43.3 (AUD-O1): count matching sessions across the three kinds
-    via three SELECT COUNT(*) queries.  Cheap (uses each table's
-    project_id index) and — unlike the old approach of fetching up to
-    10_000 rows and computing ``len()`` in Python — never silently
-    under-reports the total on long-lived projects.
-    """
-    from sqlalchemy import func as _func
-
-    total = 0
-    want = set(kinds) if kinds is not None else set(ALL_SESSION_KINDS)
-
-    if "project" in want:
-        q = db.query(_func.count(AgentSession.id)).filter(
-            AgentSession.project_id == project_id
-        )
-        q = _apply_project_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        total += q.scalar() or 0
-
-
-    if "assist" in want:
-        q = db.query(_func.count(AssistSession.id)).filter(
-            AssistSession.project_id == project_id
-        )
-        q = _apply_assist_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        total += q.scalar() or 0
-
-    return total
+    """The number of sessions the same filters would list, as one
+    ``SELECT COUNT(*)`` — never ``len()`` of a fetched page, which silently
+    under-reports on a long-lived project (v2.43.3, AUD-O1)."""
+    q = db.query(func.count(AgentSession.id)).filter(AgentSession.project_id == project_id)
+    q = _apply_session_filters(
+        q, kinds=kinds, agent_id=agent_id, model=model, tool=tool,
+        user_id=user_id, status=status,
+    )
+    return int(q.scalar() or 0)
 
 
 def _status_value(status) -> str:
@@ -832,121 +888,83 @@ def list_agent_sessions(
 ) -> List[AgentSessionRow]:
     """Return the unified agent-session list for a project.
 
-    ``session_id`` narrows the project kind to that one session — the detail
-    page's read (``get_agent_session_row``), so it is built by this path and
-    cannot drift from the list row.
+    ``session_id`` narrows the list to that one session — the detail page's
+    read (``get_agent_session_row``), so it is built by this path and cannot
+    drift from the list row.
 
-    Filters are AND'd.  Ordering is started_at DESC (most recent first)
-    with ``id`` + ``kind`` as deterministic tiebreakers.
+    Filters are AND'd.  Ordering is started_at DESC (most recent first, nulls
+    last) with kind then ``id`` as deterministic tiebreakers.
 
-    ``status`` matches each kind's native status column ('active' / 'ended'
-    for a project session).  Pass 'active' for the in-flight banner.
+    ``status`` matches the stored status column ('active' / 'ended'; a legacy
+    assist row may also read 'expired').  Pass 'active' for the in-flight
+    banner.
 
-    The query strategy is one query per kind, each pre-filtered +
-    pre-sorted, merged + sorted + sliced in Python.
-
-    v2.43.3 (AUD-O1): each per-kind SQL query is bounded by
-    ``offset + limit`` (instead of fetching every matching row), so a
-    project with thousands of sessions doesn't materialize all of them
-    in Python.  For accurate ``total``, the
-    endpoint calls ``count_agent_sessions()`` separately.
+    One query, ordered and paged in SQL (v2.449.0: both kinds are the same
+    table; it used to be a query per table, merged and sliced in Python), then
+    one grouped query per derived value for the page's ids — never per row.
+    For ``total`` the endpoint calls ``count_agent_sessions()``.
     """
-    rows: List[AgentSessionRow] = []
-    want = set(kinds) if kinds is not None else set(ALL_SESSION_KINDS)
-    # Each per-kind query needs at least (offset + limit) rows so that
-    # after merge-sort we can correctly slice the requested page; the
-    # discarded slop is small relative to fetching the whole table.
-    per_kind_cap = max(offset + limit, 1)
-
-    if "project" in want:
-        q = db.query(AgentSession).filter(AgentSession.project_id == project_id)
-        q = _apply_project_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        if session_id is not None:
-            q = q.filter(AgentSession.id == session_id)
-        for s in q.order_by(AgentSession.started_at.desc()).limit(per_kind_cap).all():
-            rows.append(AgentSessionRow(
-                kind="project",
-                id=s.id,
-                project_id=s.project_id,
-                agent_id=s.agent_id,
-                user_id=s.started_by_id,
-                status=s.status,
-                started_at=s.started_at,
-                completed_at=s.completed_at,
-                generated_by_model=s.generated_by_model,
-                generated_by_tool=s.generated_by_tool,
-                prompt_version=s.prompt_version,
-                agent_name=s.agent.name if s.agent else None,
-                user_username=s.started_by.username if s.started_by else None,
-                user_full_name=(s.started_by.full_name or None) if s.started_by else None,
-                purpose=s.purpose,
-                renewable_until=session_renewal_deadline(s),
-                end_reason=s.end_reason,
-                last_activity_at=s.last_activity_at,
-            ))
-        # v2.340.0 — one grouped query for the live key's expiry on every
-        # project row on the page, so the UI can tell "active, agent alive"
-        # from "active, key lapsed, resumable until <deadline>".
-        project_ids = [r.id for r in rows if r.kind == "project"]
-        expiry = key_expiry_for_agent_sessions(db, project_ids)
-        # v2.343.0 — and one for feedback submissions, so the page can show
-        # which sessions said anything on the way out.
-        feedback = feedback_counts_for_agent_sessions(db, project_ids)
-        # v2.432.0 — and one each for the detail row's id and the operator's
-        # authority (the role the key is checked against on every call).
-        assist_ids = _assist_ids_for_agent_sessions(db, project_ids)
-        roles = _operator_roles(db, project_id, {r.user_id for r in rows if r.kind == "project"})
-        for r in rows:
-            if r.kind == "project":
-                exp = expiry.get(r.id)
-                if exp is not None and exp.tzinfo is None:
-                    exp = exp.replace(tzinfo=timezone.utc)
-                r.key_expires_at = exp
-                r.feedback_count = feedback.get(r.id, 0)
-                r.assist_session_id = assist_ids.get(r.id)
-                r.operator_role = roles.get(r.user_id)
-
-
-    if "assist" in want:
-        # v2.303.0 — legacy assist sessions (project-scoped).
-        q = db.query(AssistSession).filter(AssistSession.project_id == project_id)
-        q = _apply_assist_filters(q, agent_id=agent_id, model=model, tool=tool, user_id=user_id, status=status)
-        for a in q.order_by(AssistSession.started_at.desc()).limit(per_kind_cap).all():
-            rows.append(AgentSessionRow(
-                kind="assist",
-                id=a.id,
-                project_id=a.project_id,
-                agent_id=a.agent_id,
-                user_id=a.started_by_id,
-                # AssistSessionStatus is an enum column; the other three kinds
-                # store plain strings, and the row shape is a string.
-                status=a.status.value if hasattr(a.status, "value") else str(a.status),
-                started_at=a.started_at,
-                # Assist calls its completion `ended_at`; the timeline calls it
-                # completed_at. Same event.
-                completed_at=a.ended_at,
-                generated_by_model=a.generated_by_model,
-                generated_by_tool=a.generated_by_tool,
-                prompt_version=a.prompt_version,
-                agent_name=a.agent.name if a.agent else None,
-                user_username=a.started_by.username if a.started_by else None,
-                user_full_name=(a.started_by.full_name or None) if a.started_by else None,
-                agent_session_id=a.agent_session_id,
-            ))
-
-
-    # Stable ordering: most-recent started_at first; nulls last;
-    # then by (kind, id) so two rows with identical timestamps
-    # don't flip-flop between calls.
-    rows.sort(
-        key=lambda r: (
-            r.started_at is None,  # nulls last
-            -(r.started_at.timestamp() if r.started_at else 0),
-            r.kind,
-            r.id,
-        )
+    kind_of = {workflow: kind for kind, workflow in _KIND_WORKFLOW.items()}
+    q = db.query(AgentSession).filter(AgentSession.project_id == project_id)
+    q = _apply_session_filters(
+        q, kinds=kinds, agent_id=agent_id, model=model, tool=tool,
+        user_id=user_id, status=status,
     )
-    page = rows[offset : offset + limit]
+    if session_id is not None:
+        q = q.filter(AgentSession.id == session_id)
+    sessions = (
+        q.order_by(
+            AgentSession.started_at.desc().nulls_last(),
+            AgentSession.workflow,
+            AgentSession.id,
+        )
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+    page = [
+        AgentSessionRow(
+            kind=kind_of[s.workflow],
+            id=s.id,
+            project_id=s.project_id,
+            agent_id=s.agent_id,
+            user_id=s.started_by_id,
+            status=_status_value(s.status),
+            started_at=s.started_at,
+            completed_at=s.completed_at,
+            generated_by_model=s.generated_by_model,
+            generated_by_tool=s.generated_by_tool,
+            prompt_version=s.prompt_version,
+            agent_name=s.agent.name if s.agent else None,
+            user_username=s.started_by.username if s.started_by else None,
+            user_full_name=(s.started_by.full_name or None) if s.started_by else None,
+            purpose=s.purpose,
+            renewable_until=session_renewal_deadline(s),
+            end_reason=s.end_reason,
+            last_activity_at=s.last_activity_at,
+        )
+        for s in sessions
+    ]
+    ids = [r.id for r in page]
+    # v2.340.0 — the live key's expiry, so the UI can tell "active, agent
+    # alive" from "active, key lapsed, resumable until <deadline>".
+    expiry = key_expiry_for_agent_sessions(db, ids)
+    # v2.343.0 — feedback submissions: which sessions said anything on the way out.
+    feedback = feedback_counts_for_agent_sessions(db, ids)
+    # v2.432.0 — the operator's authority (the role the key is checked against).
+    roles = _operator_roles(db, project_id, {r.user_id for r in page})
+    # v2.449.0 — what the audit log and the notes say the session did.
+    activity = activity_for_agent_sessions(db, ids)
+    notes = note_counts_for_agent_sessions(db, ids)
+    for r in page:
+        r.key_expires_at = _aware_utc(expiry.get(r.id))
+        r.feedback_count = feedback.get(r.id, 0)
+        r.operator_role = roles.get(r.user_id)
+        seen = activity.get(r.id) or SessionActivity()
+        r.call_count = seen.call_count
+        r.connection = seen.connection
+        r.first_call_at = seen.first_call_at
+        r.note_count = notes.get(r.id, 0)
     _attach_work_counts(db, page)
     _attach_session_liveness(db, page)
     return page
@@ -970,8 +988,6 @@ def summarise_by_model_tool(
     rollups.  Four small GROUP BY queries with the same project_id
     filter are cheap (each table has the index) and complete.
     """
-    from sqlalchemy import func as _func
-
     counts: dict[tuple, dict] = {}
 
     def _bucket(model, tool, kind, n):
@@ -986,36 +1002,30 @@ def summarise_by_model_tool(
         bucket[kind] += int(n)
         bucket["total"] += int(n)
 
-    project_rows = (
+    # Every timeline kind in one GROUP BY (v2.449.0 — they are one table).
+    # Assist counts here too (v2.303.0), or the rollup silently under-reports
+    # what a given model/tool has been doing on the project.
+    kind_of = {workflow: kind for kind, workflow in _KIND_WORKFLOW.items()}
+    grouped = (
         db.query(
+            AgentSession.workflow,
             AgentSession.generated_by_model,
             AgentSession.generated_by_tool,
-            _func.count(AgentSession.id),
+            func.count(AgentSession.id),
         )
         .filter(
             AgentSession.project_id == project_id,
-            AgentSession.workflow == AgentSessionWorkflow.PROJECT.value,
+            AgentSession.workflow.in_(sorted(kind_of)),
         )
-        .group_by(AgentSession.generated_by_model, AgentSession.generated_by_tool)
+        .group_by(
+            AgentSession.workflow,
+            AgentSession.generated_by_model,
+            AgentSession.generated_by_tool,
+        )
         .all()
     )
-    for model, tool, n in project_rows:
-        _bucket(model, tool, "project", n)
-
-    # v2.303.0 — assist counts here too, or the rollup card silently
-    # under-reports what a given model/tool has been doing on the project.
-    assist_rows = (
-        db.query(
-            AssistSession.generated_by_model,
-            AssistSession.generated_by_tool,
-            _func.count(AssistSession.id),
-        )
-        .filter(AssistSession.project_id == project_id)
-        .group_by(AssistSession.generated_by_model, AssistSession.generated_by_tool)
-        .all()
-    )
-    for model, tool, n in assist_rows:
-        _bucket(model, tool, "assist", n)
+    for workflow, model, tool, n in grouped:
+        _bucket(model, tool, kind_of[workflow], n)
 
     # Sort: tuples with reported attribution first, total DESC.
     out = sorted(

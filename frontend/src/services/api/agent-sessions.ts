@@ -45,31 +45,83 @@ export interface AgentSessionRow {
   feedback_count?: number;
   /** v5.288.0 — the operator's display name; shown before the username. */
   user_full_name?: string | null;
-  /** v5.288.0 — legacy assist rows only: the agent session the row belongs
-   *  to, and whether it can still act. Null/absent when not computed. */
-  agent_session_id?: number | null;
+  /** v5.288.0 — legacy assist rows still stored as active: whether the session
+   *  can still act. Null/absent when not computed. */
   session_live?: boolean | null;
   /** 5.320.0 — project sessions only: the host tests the session proposed
    *  and the evidence records it wrote (they replace `phases`, the runs and
    *  plans a session used to open). */
   host_test_count?: number;
   evidence_count?: number;
-  /** v5.312.0 — project sessions only: its detail row's id (notes and the
-   *  API-call feed are keyed by it — NOT the session id), its last
-   *  authenticated call, and the authority it acts with. */
-  assist_session_id?: number | null;
+  /** v5.312.0 — its last authenticated call, and the authority it acts with:
+   *  the operator's CURRENT project role ('admin' | 'analyst' | 'auditor' |
+   *  'viewer'), 'global_admin' for a global admin without an admin membership,
+   *  null when the operator is no longer a member. */
   last_activity_at?: string | null;
   operator_role?: string | null;
+  /** 5.328.0 — how much the session did (a session with zero calls is the
+   *  common dead end: key minted, prompt never pasted) and how the agent
+   *  reached it, from observed calls: 'none' = no authenticated call yet;
+   *  'mcp' = at least one call through the MCP transport; 'curl' = direct HTTP
+   *  only. A past call proves the client connected, not that it is still
+   *  running — read it with last_activity_at.
+   *  `id` is the session's ONLY id: these, its notes and its API-call feed are
+   *  all read by it (they were keyed by a second `assist_session_id`). */
+  call_count?: number;
+  note_count?: number;
+  connection?: 'none' | 'mcp' | 'curl';
+  first_call_at?: string | null;
   /** v5.312.0 — what the CALLER may do to this active session: owner or
    *  project admin may end it, only the owner may resume it. */
   can_end?: boolean;
   can_resume?: boolean;
 }
 
-/** v5.312.0 — one project session as the list shows it; 404 for a legacy
- *  per-workflow row. */
+/** v5.312.0 — one session as the list shows it (a project session or a legacy
+ *  assist one); 404 for any other legacy per-workflow row. */
 export const getAgentSession = async (sessionId: number): Promise<AgentSessionRow> => {
   const response = await api.get<AgentSessionRow>(`${p()}/agent-sessions/${sessionId}`);
+  return response.data;
+};
+
+/** A note this session's agent wrote. */
+export interface AgentSessionNote {
+  id: number;
+  host_id: number | null;
+  host_ip: string | null;
+  hostname: string | null;
+  body: string;
+  created_at: string | null;
+}
+
+export interface AgentSessionNotes {
+  /** Every note the session wrote; `items` is the newest `limit` of them. */
+  total: number;
+  items: AgentSessionNote[];
+}
+
+/** 5.328.0 — the notes a session wrote, newest first, by the session id. */
+export const getAgentSessionNotes = async (
+  sessionId: number,
+  limit = 50,
+): Promise<AgentSessionNotes> => {
+  const response = await api.get<AgentSessionNotes>(
+    `${p()}/agent-sessions/${sessionId}/notes`,
+    { params: { limit } },
+  );
+  return response.data;
+};
+
+/** 5.328.0 — the session an old `/assist-sessions/:id` link meant. Until
+ *  2.449.0 a session had a second id (its `assist_sessions` row) and its page
+ *  was addressed by that; only sessions from before then have one. 404 when
+ *  nothing had the id. */
+export const getAgentSessionByLegacyAssistId = async (
+  legacyAssistSessionId: number,
+): Promise<AgentSessionRow> => {
+  const response = await api.get<AgentSessionRow>(
+    `${p()}/assist-sessions/${legacyAssistSessionId}`,
+  );
   return response.data;
 };
 

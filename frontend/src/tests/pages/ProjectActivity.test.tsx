@@ -69,7 +69,6 @@ const session = (overrides: Record<string, unknown> = {}) => ({
   feedback_count: 0,
   last_activity_at: ago(5 * 60 * 1000),
   operator_role: 'analyst',
-  assist_session_id: 52,
   host_test_count: 3,
   evidence_count: 1,
   can_end: true,
@@ -213,7 +212,7 @@ describe('Agent Sessions', () => {
     expect(screen.getByText('No agent has run against this project yet.')).toBeInTheDocument();
   });
 
-  it('lists one history row per session that opens the session page; a legacy row has no page', async () => {
+  it('lists one history row per session that opens the session page, a legacy row included', async () => {
     const ended = session({
       id: 60,
       status: 'ended',
@@ -235,10 +234,14 @@ describe('Agent Sessions', () => {
     expect(within(rows[0]).getByText('Ended')).toBeInTheDocument();
     expect(within(rows[0]).getByRole('link', { name: '3 tests proposed · 1 evidence record' }))
       .toHaveAttribute('href', '/agent-sessions/60');
-    // Legacy assist: its kind badge, no page of its own (so no link), no work.
+    // Legacy assist: its kind badge, and (5.328.0) the same page — it is the
+    // same kind of record now, so its calls and notes can be read. It had no
+    // page, and so no link, before.
     expect(within(rows[1]).getByText('Assist')).toBeInTheDocument();
     expect(within(rows[1]).getByText('Project-wide')).toBeInTheDocument();
-    expect(within(rows[1]).queryByRole('link')).not.toBeInTheDocument();
+    const legacyLinks = within(rows[1]).getAllByRole('link');
+    expect(legacyLinks.length).toBeGreaterThan(0);
+    for (const link of legacyLinks) expect(link).toHaveAttribute('href', '/agent-sessions/42');
     expect(within(rows[1]).getByText('claude-opus-4-7 · claude-code')).toBeInTheDocument();
   });
 

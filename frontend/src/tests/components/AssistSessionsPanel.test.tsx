@@ -4,7 +4,7 @@ import { MemoryRouter } from 'react-router-dom';
 
 import AssistSessionsPanel from '../../components/AssistSessionsPanel';
 import { TooltipProvider } from '../../components/ui/tooltip';
-import type { AssistSessionRow } from '../../services/api';
+import type { AgentSessionRow } from '../../services/api';
 
 // End goes through useAgentSessionControls — the SESSION id's end route.
 const endAgentSession = vi.fn();
@@ -18,16 +18,17 @@ vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success, error, info: vi.fn(), warning: vi.fn() }),
 }));
 
-const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
-  id: over.id ?? 12,
-  agent_session_id: over.id ?? 12,
+// The panel shows the session list's own rows (5.328.0): one id per session.
+const session = (over: Partial<AgentSessionRow> = {}): AgentSessionRow => ({
+  kind: 'project',
+  id: 12,
   project_id: 1,
   purpose: 'Looking for FTP exposure',
   status: 'active',
-  started_by_id: 7,
-  started_by_username: 'alice',
+  user_id: 7,
+  user_username: 'alice',
   started_at: new Date(Date.now() - 40 * 60_000).toISOString(),
-  ended_at: null,
+  completed_at: null,
   last_activity_at: new Date(Date.now() - 5 * 60_000).toISOString(),
   key_expires_at: new Date(Date.now() + 3 * 3_600_000).toISOString(),
   call_count: 3,
@@ -37,7 +38,7 @@ const session = (over: Partial<AssistSessionRow> = {}): AssistSessionRow => ({
   ...over,
 });
 
-const renderPanel = (sessions: AssistSessionRow[], onChanged = vi.fn(), onNavigate = vi.fn()) =>
+const renderPanel = (sessions: AgentSessionRow[], onChanged = vi.fn(), onNavigate = vi.fn()) =>
   render(
     <MemoryRouter>
       <TooltipProvider>
@@ -164,12 +165,11 @@ describe('AssistSessionsPanel', () => {
   });
 
   // 5.312.1 — a session shown here is one click from its controls, and is
-  // numbered like everywhere else (the SESSION id, not its detail row's).
+  // numbered like everywhere else.
   it('opens each session on its page and links to the full list, closing the dialog', () => {
     const onNavigate = vi.fn();
-    renderPanel([session({ id: 52, agent_session_id: 72 })], vi.fn(), onNavigate);
+    renderPanel([session({ id: 72 })], vi.fn(), onNavigate);
     expect(screen.getByText('#72')).toBeInTheDocument();
-    expect(screen.queryByText('#52')).not.toBeInTheDocument();
     const open = screen.getByRole('link', { name: 'Open agent session 72' });
     expect(open).toHaveAttribute('href', '/agent-sessions/72');
     expect(screen.getByRole('button', { name: /end agent session 72/i })).toBeInTheDocument();
@@ -180,19 +180,27 @@ describe('AssistSessionsPanel', () => {
   });
 
   // R3 — the panel's End is the one End path (useAgentSessionControls): the
-  // SESSION id, not the detail row's, and the wrap-up prompt while connected.
+  // wrap-up prompt while the agent is still connected.
   it('ends by the session id, offering the wrap-up prompt while the key is live', async () => {
-    renderPanel([session({ id: 52, agent_session_id: 72 })]);
+    renderPanel([session({ id: 72 })]);
     fireEvent.click(screen.getByRole('button', { name: /end agent session 72/i }));
     expect(await screen.findByText(/Paste this to it first/)).toBeInTheDocument();
     fireEvent.click(await screen.findByRole('button', { name: /^end session$/i }));
     await waitFor(() => expect(endAgentSession).toHaveBeenCalledWith(72));
   });
 
-  it('offers no End for a detail row without a session id', () => {
-    renderPanel([session({ id: 52, agent_session_id: null })]);
-    expect(screen.getByText('#52')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /end agent session/i })).toBeNull();
+  it('every row can be opened and ended: a session has one id, so none lacks it', () => {
+    // There used to be rows with a detail id and no session id, which got no
+    // Open and no End (5.328.0).
+    renderPanel([session({ id: 52 }), session({ id: 53 })]);
+    expect(screen.getAllByRole('link', { name: /Open agent session/ })).toHaveLength(2);
+    expect(screen.getAllByRole('button', { name: /end agent session/i })).toHaveLength(2);
+  });
+
+  it('reads a row with no activity fields as not yet connected', () => {
+    // `connection` is optional on the shared row type (older payloads).
+    renderPanel([session({ connection: undefined, last_activity_at: undefined })]);
+    expect(screen.getByText('Waiting for client')).toBeInTheDocument();
   });
 
   it('marks an already-expired key rather than showing negative time', () => {

@@ -4,9 +4,10 @@
  * only, headings as bold paragraphs.
  */
 import { render } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import SafeMarkdown from '../../components/SafeMarkdown';
+import type { EvidenceResolver } from '../../utils/reportImages';
 
 const md = (text: string) => render(<SafeMarkdown text={text} />).container;
 
@@ -109,5 +110,69 @@ describe('SafeMarkdown', () => {
   it('honours a hard line break', () => {
     const c = md('one  \ntwo');
     expect(c.querySelector('br')).not.toBeNull();
+  });
+});
+
+describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
+  // The finding's ticked images: 57 (bytes loaded) and 58 (still loading).
+  const resolver = (): EvidenceResolver & { ensure: ReturnType<typeof vi.fn> } => ({
+    lookup: (id) => (id === 57 ? { caption: 'Stored caption', src: 'blob:fifty-seven' }
+      : id === 58 ? { caption: null } : null),
+    ensure: vi.fn(),
+  });
+  const withImages = (text: string, evidence = resolver()) => ({
+    c: render(<SafeMarkdown text={text} evidence={evidence} />).container, evidence,
+  });
+
+  it('shows a reference to one of the finding’s images as that image, from the resolver’s URL', () => {
+    const { c, evidence } = withImages('Before\n\n![The relayed session](evidence:57)\n\nAfter ![](evidence:57)');
+    const imgs = Array.from(c.querySelectorAll('img'));
+    expect(imgs.map((i) => i.getAttribute('src'))).toEqual(['blob:fifty-seven', 'blob:fifty-seven']);
+    // The alt text is the caption for that place; empty, the stored caption.
+    expect(imgs.map((i) => i.getAttribute('alt'))).toEqual(['The relayed session', 'Stored caption']);
+    expect(c.textContent).toContain('Figure: The relayed session');
+    expect(c.textContent).toContain('Figure: Stored caption');
+    expect(evidence.ensure).toHaveBeenCalledWith(57);
+  });
+
+  it('asks for the bytes of a known image and waits without a broken picture', () => {
+    const { c, evidence } = withImages('![](evidence:58)');
+    expect(c.querySelector('img')).toBeNull();
+    expect(c.textContent).toContain('Loading image 58');
+    expect(c.textContent).toContain('no caption');
+    expect(evidence.ensure).toHaveBeenCalledWith(58);
+  });
+
+  it('says so when a reference is not one of the finding’s “In report” images', () => {
+    const { c, evidence } = withImages('![gone](evidence:999)');
+    expect(c.querySelector('img')).toBeNull();
+    const note = c.querySelector('[role="note"]');
+    expect(note?.textContent).toContain('Image not available: evidence:999');
+    expect(note?.textContent).toContain('“gone” as text');
+    expect(evidence.ensure).not.toHaveBeenCalled();
+  });
+
+  it('still reduces every OTHER image to its alt text and loads nothing', () => {
+    const { c } = withImages(
+      '![web](https://example.com/x.png) ![js](javascript:alert(1)) ![data](data:image/png;base64,AAAA) '
+      + '![path](../../etc/passwd) ![near](evidence:57.png) ![also](https://evil.example/evidence:57)\n\n'
+      + '<img src="evidence:57" onerror="alert(1)">',
+    );
+    expect(c.querySelector('img')).toBeNull();
+    expect(c.querySelector('[role="note"]')).toBeNull();
+    expect(c.textContent).toContain('web js data path near also');
+    expect(c.textContent).toContain('<img src="evidence:57" onerror="alert(1)">');
+  });
+
+  it('renders a reference inside a table cell and a list item', () => {
+    const { c } = withImages('| a | b |\n|---|---|\n| x | ![cell](evidence:57) |\n\n- item ![in list](evidence:57)');
+    expect(c.querySelector('td img')?.getAttribute('src')).toBe('blob:fifty-seven');
+    expect(c.querySelector('li img')?.getAttribute('alt')).toBe('in list');
+  });
+
+  it('without a resolver, marks the reference as text and loads nothing', () => {
+    const c = md('See ![The relayed session](evidence:57) and ![](evidence:9).');
+    expect(c.querySelector('img')).toBeNull();
+    expect(c.textContent).toBe('See [image 57: The relayed session] and [image 9].');
   });
 });

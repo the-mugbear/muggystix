@@ -678,7 +678,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 path_params, query_params, body_for_id_scan,
             )
 
-            assist_session_id = None
             # v2.433.1 — the scope reads name their scope in the path
             # (/agent/scopes/{scope_id}/…).  Only on success: a refused id may
             # name no scope at all, and the column is a foreign key.
@@ -725,7 +724,6 @@ class AgentApiCallLogger(BaseHTTPMiddleware):
                 project_id=project_id,
                 agent_session_id=agent_session_id,
                 scope_id=scoped_scope_id,
-                assist_session_id=assist_session_id,
                 method=request.method,
                 path=request.url.path,
                 path_template=_path_template_from_route(request),

@@ -42,6 +42,7 @@ from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_actions import (
     apply_report_text, finding_actor, promote_or_dismiss_vulnerability,
 )
+from app.services import report_images
 from app.services.finding_service import FindingService, validate_severity
 from app.services.report_text import REPORT_TEXT_FIELDS, REPORT_TEXT_MAX
 
@@ -289,14 +290,22 @@ def propose_finding_text(
     evidence_ids: Optional[Iterable[int]] = None,
 ) -> List[AgentProposal]:
     """One proposal per field.  A CVSS vector is validated now, so a malformed
-    one is refused at once rather than at accept."""
-    _finding(db, project_id, finding_id)
+    one is refused at once rather than at accept — and so is a section that
+    places an image (``![…](evidence:<id>)``) which is not this finding's."""
+    finding = _finding(db, project_id, finding_id)
     if not fields:
         raise HTTPException(status_code=422, detail="Propose at least one field.")
     unknown = sorted(set(fields) - set(TEXT_FIELDS))
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown fields {unknown}; allowed: {list(TEXT_FIELDS)}")
     ev = _check_evidence(db, project_id, evidence_ids)
+    # A proposed section may keep, move or drop the images the current text
+    # places (a dropped one prints under Evidence again); it may not reference
+    # anything that is not an image of this finding.  Whether each is ticked
+    # "In report" is checked when the proposal is accepted.
+    report_images.check_references(
+        db, finding, {f: v for f, v in fields.items() if f in REPORT_TEXT_FIELDS}, require_marked=False,
+    )
     out = []
     for field, value in fields.items():
         value = (value or "").strip()
@@ -350,6 +359,8 @@ def propose_finding(
     for field, value in text.items():
         if len(value) > REPORT_TEXT_MAX:
             raise HTTPException(status_code=422, detail=f"{field}: longer than {REPORT_TEXT_MAX} characters.")
+    # A finding that does not exist yet has no images to place.
+    report_images.check_references(db, None, text, require_marked=False)
     proposal = _add(
         db, project_id, ProposalKind.FINDING_CREATE.value, who,
         payload={"title": title[:500], "severity": severity, "status": status,
@@ -477,6 +488,11 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
         finding = _finding(db, project_id, proposal.finding_id)
         value = edited_value if edited_value is not None else payload.get("value")
         sent = {proposal.field: value}
+        if proposal.field in REPORT_TEXT_FIELDS:
+            # Checked again now: an image may have been deleted since the
+            # proposal was made, and one that nobody ticked "In report" is
+            # never ticked by an accept — the refusal says what to do.
+            report_images.check_references(db, finding, {proposal.field: value}, require_marked=True)
         if proposal.field == "cvss_vector":
             # A 3.x / 2.0 vector computes its score; a 4.0 one keeps the score
             # it is given, and the old score belonged to the old vector.

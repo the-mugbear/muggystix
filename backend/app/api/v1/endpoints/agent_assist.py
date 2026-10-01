@@ -1584,6 +1584,9 @@ class AssistAttachment(BaseModel):
     created_at: Optional[datetime] = None
     # Whether the image is marked to appear in the client report (opt-in).
     include_in_report: bool = False
+    # What the image shows, as its author wrote it — the figure caption in the
+    # client report.  None: the report prints the file name.
+    caption: Optional[str] = None
 
 
 def _assist_attachment(a, uploader_names: Dict[int, str]) -> AssistAttachment:
@@ -1597,6 +1600,7 @@ def _assist_attachment(a, uploader_names: Dict[int, str]) -> AssistAttachment:
         uploaded_by=uploader_names.get(a.uploaded_by_id),
         created_at=a.created_at,
         include_in_report=bool(getattr(a, "include_in_report", False)),
+        caption=getattr(a, "caption", None),
     )
 
 
@@ -2794,6 +2798,15 @@ class AssistFindingDetail(BaseModel):
     # What the client report says about the issue (Markdown), exactly as the
     # finding page's report-text editor holds it.
     report_text: Dict[str, Any] = {}
+    # The finding's images as the client report sees them (the finding page's
+    # list, from the same service): ``id``, ``caption``, ``filename``,
+    # ``in_report`` (ticked for the report), ``printable`` (a format the
+    # report prints), ``placed_in`` (the report-text fields whose Markdown
+    # places it with ``![caption](evidence:<id>)``) and ``download_path``.  A
+    # ticked image no field places prints under Evidence.  When proposing a
+    # rewrite of a field, keep the references it holds unless the image should
+    # move back under Evidence; reference only ids listed here.
+    images: List[Dict[str, Any]] = []
     # The disposition trail, newest first: who changed the status, when,
     # from what to what, and the justification they gave.
     status_history: List[Dict[str, Any]] = []
@@ -3013,10 +3026,25 @@ def get_assist_finding(
         )
     ]
 
+    # The images as the report sees them — the finding page's list
+    # (``GET /findings/{id}/images``), from the same service.
+    from app.services import report_images
+
+    images = [
+        {
+            "id": img["id"], "caption": img["caption"], "filename": img["filename"],
+            "in_report": img["in_report"], "printable": img["printable"],
+            "placed_in": img["placed_in"],
+            "download_path": f"/api/v1/agent/assist/attachments/{img['id']}",
+        }
+        for img in report_images.finding_images(db, finding)
+    ]
+
     return AssistFindingDetail(
         updated_at=finding.updated_at,
         endpoint_status_counts=endpoint_status_counts,
         report_text=report_text_of(finding),
+        images=images,
         status_history=status_history,
         id=finding.id,
         title=finding.title,

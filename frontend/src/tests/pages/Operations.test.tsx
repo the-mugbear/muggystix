@@ -151,6 +151,13 @@ beforeEach(() => {
   });
 });
 
+/** The Runs section's fetches of the session list. The page reads that list a
+ *  second time for "my live sessions" (the count on Start Agent Session),
+ *  which always names `kind: 'project'` — 5.328.0, when the separate
+ *  `/assist/sessions` list it used went. */
+const runsFetches = (): any[] =>
+  mockedApi.listAgentSessions.mock.calls.map((c) => c[0]).filter((f: any) => f?.kind === undefined);
+
 describe('Operations page', () => {
   it('opens the Start Agent Session dialog when linked with ?start=agent-session', async () => {
     // The Agent Sessions page links here as "where a session is started".
@@ -245,14 +252,13 @@ describe('Operations page', () => {
       expect(screen.getByRole('heading', { name: /^Runs$/ })).toBeInTheDocument();
     });
     // Initial: All — no user_id filter on Runs fetch.
-    const firstCallArgs = mockedApi.listAgentSessions.mock.calls.map((c) => c[0]);
-    expect(firstCallArgs.every((c: any) => c?.user_id === undefined)).toBe(true);
+    expect(runsFetches().length).toBeGreaterThan(0);
+    expect(runsFetches().every((c: any) => c?.user_id === undefined)).toBe(true);
 
     // Click Mine — RunsSection re-fetches with user_id=7.
     fireEvent.click(screen.getByRole('button', { name: 'Mine' }));
     await waitFor(() => {
-      const allCalls = mockedApi.listAgentSessions.mock.calls.map((c) => c[0]);
-      expect(allCalls.some((c: any) => c?.user_id === 7)).toBe(true);
+      expect(runsFetches().some((c: any) => c?.user_id === 7)).toBe(true);
     });
     expect(localStorage.getItem('nm.operations.scopeView')).toBe('mine');
   });
@@ -491,11 +497,11 @@ describe('Operations page', () => {
   it('page Refresh also refetches the self-fetching Runs and Recent activity panels', async () => {
     renderPage();
     await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(runsFetches()).toHaveLength(1));
     const refresh = await screen.findByRole('button', { name: 'Refresh Operations' });
     await waitFor(() => expect(refresh).not.toBeDisabled());
     fireEvent.click(refresh);
     await waitFor(() => expect(mockedApi.getMyActivity).toHaveBeenCalledTimes(2));
-    await waitFor(() => expect(mockedApi.listAgentSessions).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(runsFetches()).toHaveLength(2));
   });
 });

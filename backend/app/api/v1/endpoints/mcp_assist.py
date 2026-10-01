@@ -591,6 +591,13 @@ def _validate_arguments(name: str, spec: Dict[str, Any], arguments: Dict[str, An
     (external review, finding 1).  A value that does not fit the advertised
     schema is a protocol error (-32602), and never reaches URL construction.
     """
+    # v2.449.0 — an argument a tool USED to take (`retired_params`) is dropped
+    # here, in place, before anything else sees it: a client holding the older
+    # tool list must not have its call refused over a field nobody reads
+    # (submit_feedback's `assist_session_id` — feedback must never fail).  It
+    # is not advertised, so the tool/endpoint contract tests are unaffected.
+    for retired in spec.get("retired_params", ()):
+        arguments.pop(retired, None)
     schema = spec["input_schema"]
     props = schema.get("properties", {})
     allowed = set(props)

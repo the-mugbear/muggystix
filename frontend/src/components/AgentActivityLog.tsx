@@ -3,7 +3,7 @@ import { ChevronDown, ChevronUp, Loader2, RefreshCw } from 'lucide-react';
 import {
   AgentApiCallRow,
   AgentActivityFilters,
-  getAssistSessionApiActivity,
+  getAgentSessionApiActivity,
 } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
@@ -30,9 +30,10 @@ import {
 } from './ui/table';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
 
-// The feed is keyed by the session's detail row (v5.173.0). A test plan was a
-// second source until 5.320.0.
-type Source = { kind: 'assist'; assistSessionId: number };
+// The feed is one agent session's, by the session id (5.328.0 — it was keyed
+// by a second id, the session's detail row). A test plan was a second source
+// until 5.320.0.
+type Source = { kind: 'session'; sessionId: number };
 
 interface AgentActivityLogProps {
   source: Source;
@@ -53,7 +54,7 @@ interface AgentActivityLogProps {
 }
 
 const SOURCE_LABEL: Record<Source['kind'], string> = {
-  assist: 'session',
+  session: 'session',
 };
 
 const STATUS_PRESETS: Array<{ label: string; min?: number; max?: number }> = [
@@ -288,7 +289,7 @@ const AgentActivityLog: React.FC<AgentActivityLogProps> = ({
     setLoading(true);
     setError(null);
     try {
-      const result = await getAssistSessionApiActivity(source.assistSessionId, filters);
+      const result = await getAgentSessionApiActivity(source.sessionId, filters);
       setRows(result.items);
       setTotal(result.total);
     } catch (e: unknown) {

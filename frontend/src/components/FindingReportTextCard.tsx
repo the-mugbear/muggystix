@@ -32,6 +32,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { announceProposalsChanged } from '../utils/proposalEvents';
+import type { MarkdownImages } from '../utils/reportImages';
 import { Button } from './ui/button';
 import PostureSection from './posture/PostureSection';
 import { Input } from './ui/input';
@@ -89,10 +90,13 @@ interface Props {
   /** 5.317.0 — "Work on this with your agent" (the page supplies it, so the
    *  card stays free of the session hooks). Shown beside the draft button. */
   agentAction?: React.ReactNode;
+  /** The finding's images (the page loads them once, `useFindingImages`):
+   *  the editor's "Insert image" and the images placed in the text. */
+  images?: MarkdownImages;
 }
 
 const FindingReportTextCard: React.FC<Props> = ({
-  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction,
+  finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction, images,
 }) => {
   const toast = useToast();
   const text = finding.report_text;
@@ -181,6 +185,7 @@ const FindingReportTextCard: React.FC<Props> = ({
         title={<span>Report text</span>}
         description={<>
           What the client report says about this finding. Written in Markdown; shown as the report prints it.
+          {images && ' An image ticked “In report” can be placed in a section (Insert image); the rest print under Evidence.'}
           {missing.length > 0 && (
             <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
           )}
@@ -217,6 +222,7 @@ const FindingReportTextCard: React.FC<Props> = ({
                   value={draft[f.key]}
                   onChange={(v) => setDraft((d) => (d ? { ...d, [f.key]: v } : d))}
                   disabled={saving}
+                  images={images}
                 />
               </div>
             ))}
@@ -266,7 +272,7 @@ const FindingReportTextCard: React.FC<Props> = ({
                 <dt className="text-caption font-medium text-muted-foreground">{f.label}</dt>
                 <dd className="min-w-0 break-words text-body" data-testid={`report-text-${f.key}`}>
                   {text?.[f.key]?.trim()
-                    ? <SafeMarkdown text={text[f.key] as string} />
+                    ? <SafeMarkdown text={text[f.key] as string} evidence={images?.resolver} />
                     : canEdit ? (
                       <button
                         type="button"

@@ -30,7 +30,9 @@ from app.schemas.client_reports import (
     ReportTemplateProblemOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
-from app.services.client_report_service import ClientReportService, ReportStateError, stored_file_path
+from app.services.client_report_service import (
+    ClientReportService, ReportStateError, discard_report_images, stored_file_path,
+)
 from app.services.client_report_views import (
     load_report,
     role_allows as _is,
@@ -567,20 +569,27 @@ def issue_report(
     # to be three commits (log_audit_event and create_job each committed): a
     # failure after the first left a PENDING report with no job, which
     # nothing could recover (review 2026-09-23 C4).
-    log_audit_event(
-        db, user_id=current_user.id, action="report_issued", resource_type="report",
-        resource_id=str(report.id),
-        details={
-            "project_id": project.id, "number": report.number, "kind": report.kind,
-            "title": report.title, "template": report.template,
-            "template_fingerprint": report.template_fingerprint,
-            "revision_of_id": report.revision_of_id, "baseline_report_id": report.baseline_report_id,
-        },
-        commit=False,
-    )
-    job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,
-                   commit=False)
-    db.commit()
+    try:
+        log_audit_event(
+            db, user_id=current_user.id, action="report_issued", resource_type="report",
+            resource_id=str(report.id),
+            details={
+                "project_id": project.id, "number": report.number, "kind": report.kind,
+                "title": report.title, "template": report.template,
+                "template_fingerprint": report.template_fingerprint,
+                "revision_of_id": report.revision_of_id, "baseline_report_id": report.baseline_report_id,
+            },
+            commit=False,
+        )
+        job = _enqueue(db, project=project, user=current_user, fmt="report-issue", report_id=report.id,
+                       commit=False)
+        db.commit()
+    except Exception:
+        # The issue did not happen: its copies of the evidence images
+        # (``freeze_report_images``) must not outlive it.
+        db.rollback()
+        discard_report_images(project.id, report_id)
+        raise
     ReportJobService().enqueue_job(job.id, db=db)
     db.expire_all()
     return _serialize(db, _load(db, project, report_id), _role(db, project, current_user), with_summary=True)

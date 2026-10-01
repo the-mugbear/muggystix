@@ -20,7 +20,7 @@ These pin:
 """
 from datetime import datetime, timedelta, timezone
 
-from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_agent import AgentSession
 from app.db.models_auth import APIKey
 
 
@@ -38,14 +38,13 @@ def _start_session(client, project):
     r = client.post(f"/api/v1/projects/{project.id}/assist/start", json={"purpose": "feedback"})
     assert r.status_code == 201, r.text
     body = r.json()
-    return body["api_key"], body["assist_session_id"]
+    return body["api_key"], body["agent_session_id"]
 
 
-def _agent_session_id(db, assist_session_id):
-    return (
-        db.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id).scalar()
-    )
+def _agent_session_id(db, session_id):
+    """The session id IS the id the start returned (v2.449.0); until then the
+    start returned a pointer row's id and this looked the session up."""
+    return session_id
 
 
 def _hdr(key):
@@ -236,7 +235,7 @@ def test_assist_panel_end_is_an_operator_end_in_the_metrics(client, test_project
     ended session reported sessions_active: 1 and ended_by_operator: 0."""
     _key, assist_id = _start_session(client, test_project)
     sid = _agent_session_id(db_session, assist_id)
-    r = client.post(f"/api/v1/projects/{test_project.id}/assist/sessions/{assist_id}/end")
+    r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/end")
     assert r.status_code == 204, r.text
 
     db_session.expire_all()

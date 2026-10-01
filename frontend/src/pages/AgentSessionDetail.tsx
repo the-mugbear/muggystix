@@ -5,21 +5,20 @@
  * and every call it made.
  *
  * Keyed by the SESSION id — the one Agent Sessions, End, Resume and the agent
- * itself use. The review page it replaces (`/assist-sessions/:id`) was keyed
- * by the session's detail row, a second id sequence (session #72 = detail
- * #52), and had no controls and none of the session's work; that path now
- * redirects here. Notes and the API-call feed are still read by the detail
- * row's id, which the session row names (`assist_session_id`).
+ * itself use, and (5.328.0) the session's only id: the row, its notes and its
+ * API-call feed are all read by it. The review page this replaces
+ * (`/assist-sessions/:id`) was keyed by a second id sequence (session #72 =
+ * detail #52); that path now redirects here.
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { Link, useParams } from 'react-router-dom';
 import { ArrowLeft, Loader2, StickyNote } from 'lucide-react';
 
 import {
+  AgentSessionNotes,
   AgentSessionRow,
-  AssistSessionDetail,
   getAgentSession,
-  getAssistSession,
+  getAgentSessionNotes,
 } from '../services/api';
 import AgentActivityLog from '../components/AgentActivityLog';
 import {
@@ -86,21 +85,23 @@ const AgentSessionDetail: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const id = Number(sessionId);
   const [row, setRow] = useState<AgentSessionRow | null>(null);
-  const [review, setReview] = useState<AssistSessionDetail | null>(null);
-  const [reviewError, setReviewError] = useState<string | null>(null);
+  const [notes, setNotes] = useState<AgentSessionNotes | null>(null);
+  const [notesError, setNotesError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
   const [nonce, setNonce] = useState(0);
   const refresh = useCallback(() => setNonce((n) => n + 1), []);
   const controls = useAgentSessionControls(refresh);
+  // Stable per session: the log refetches when its source object changes.
+  const activitySource = useMemo(() => ({ kind: 'session' as const, sessionId: id }), [id]);
 
   // Another session (Back/Forward reuses this element): drop the previous
   // one's data, so its notes never show under this session's header.
   useEffect(() => {
     setRow(null);
-    setReview(null);
-    setReviewError(null);
+    setNotes(null);
+    setNotesError(null);
     setError(null);
   }, [id]);
 
@@ -119,19 +120,17 @@ const AgentSessionDetail: React.FC = () => {
         setRow(next);
         setError(null);
         setLastFetched(new Date());
-        if (next.assist_session_id != null) {
-          try {
-            const detail = await getAssistSession(next.assist_session_id);
-            if (!cancelled) { setReview(detail); setReviewError(null); }
-          } catch (e) {
-            // No notes from an earlier read beside the error.
-            if (!cancelled) {
-              setReview(null);
-              setReviewError(formatApiError(e, 'Could not load the session’s notes and calls.'));
-            }
+        // The notes are their own read: when it fails, the session, its
+        // controls and its calls still show.
+        try {
+          const written = await getAgentSessionNotes(next.id);
+          if (!cancelled) { setNotes(written); setNotesError(null); }
+        } catch (e) {
+          // No notes from an earlier read beside the error.
+          if (!cancelled) {
+            setNotes(null);
+            setNotesError(formatApiError(e, 'Could not load the session’s notes.'));
           }
-        } else {
-          setReview(null);
         }
       } catch (e) {
         if (!cancelled) setError(formatApiError(e, 'Could not load this agent session.'));
@@ -176,7 +175,7 @@ const AgentSessionDetail: React.FC = () => {
 
   const operator = rowOperatorName(row);
   // The agent's client, recorded from its MCP handshake.
-  const clientName = row.generated_by_tool ?? review?.agent_tool ?? null;
+  const clientName = row.generated_by_tool ?? null;
   const testCount = row.host_test_count ?? 0;
   const evidenceCount = row.evidence_count ?? 0;
   const ended = row.status !== 'active';
@@ -202,7 +201,7 @@ const AgentSessionDetail: React.FC = () => {
         <div className="flex flex-wrap items-center gap-xs">
           <SessionStateBadge row={row} />
           <AuthorityBadge role={row.operator_role} operator={operator} />
-          {review && <ConnectionBadge connection={review.connection} />}
+          {row.connection && <ConnectionBadge connection={row.connection} />}
           <StateLineText line={sessionStateLine(row)} className="min-w-0" />
         </div>
         <SessionActions row={row} controls={controls} labelled />
@@ -219,14 +218,14 @@ const AgentSessionDetail: React.FC = () => {
           <Fact label="Last call">{row.last_activity_at ? formatTimestamp(row.last_activity_at) : 'none yet'}</Fact>
           <Fact
             label="Model"
-            title={review?.prompt_version ? `Prompt ${review.prompt_version}` : undefined}
+            title={row.prompt_version ? `Prompt ${row.prompt_version}` : undefined}
           >
             {/* The agent's own report; never its name (5.314.1: "admin-agent"
                 read as a model). */}
-            {safeFallback(row.generated_by_model ?? review?.agent_model, 'not reported')}
+            {safeFallback(row.generated_by_model, 'not reported')}
           </Fact>
           <Fact label="Client" title={clientName ?? undefined}>{safeFallback(clientName, '—')}</Fact>
-          <Fact label="API calls">{review ? review.call_count.toLocaleString() : '—'}</Fact>
+          <Fact label="API calls">{row.call_count != null ? row.call_count.toLocaleString() : '—'}</Fact>
           <Fact label="Feedback left">{(row.feedback_count ?? 0).toLocaleString()}</Fact>
         </dl>
       </section>
@@ -241,23 +240,23 @@ const AgentSessionDetail: React.FC = () => {
         <SessionTests sessionId={row.id} ended={ended} />
       </PostureSection>
 
-      {reviewError && (
+      {notesError && (
         <Alert variant="destructive">
-          <AlertDescription>{reviewError}</AlertDescription>
+          <AlertDescription>{notesError}</AlertDescription>
         </Alert>
       )}
 
-      {review && (
+      {notes && (
         <PostureSection
           title={(
             <span className="flex items-center gap-xs">
               <StickyNote className="size-4 text-primary" aria-hidden />
-              Notes written <SectionCount>{review.note_count}</SectionCount>
+              Notes written <SectionCount>{notes.total}</SectionCount>
             </span>
           )}
           description="The session’s durable output on hosts. These appear under the operator’s name with an agent badge — the answer to “what did it put my name on?”"
         >
-          {review.notes.length === 0 ? (
+          {notes.items.length === 0 ? (
             <p className="text-metadata text-muted-foreground">This session wrote no notes.</p>
           ) : (
             <Table style={{ tableLayout: 'fixed' }}>
@@ -269,7 +268,7 @@ const AgentSessionDetail: React.FC = () => {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {review.notes.map((note) => (
+                {notes.items.map((note) => (
                   <TableRow key={note.id}>
                     <TableCell className="align-top">
                       {note.host_id ? (
@@ -295,22 +294,20 @@ const AgentSessionDetail: React.FC = () => {
               </TableBody>
             </Table>
           )}
-          {review.note_count > review.notes.length && (
+          {notes.total > notes.items.length && (
             <p className="mt-xxs text-caption text-muted-foreground">
-              Showing the {review.notes.length} most recent of {review.note_count}.
+              Showing the {notes.items.length} most recent of {notes.total}.
             </p>
           )}
         </PostureSection>
       )}
 
-      {row.assist_session_id != null && (
-        <AgentActivityLog
-          source={{ kind: 'assist', assistSessionId: row.assist_session_id }}
-          title="API activity"
-          subtitle="Every request this session's agent made, in order. Filter by host or IP to answer 'did it look at the right things?'"
-          defaultMineOnly={false}
-        />
-      )}
+      <AgentActivityLog
+        source={activitySource}
+        title="API activity"
+        subtitle="Every request this session's agent made, in order. Filter by host or IP to answer 'did it look at the right things?'"
+        defaultMineOnly={false}
+      />
     </div>
   );
 };

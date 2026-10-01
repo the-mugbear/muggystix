@@ -251,6 +251,22 @@ through the same download routes so role, scope and audit are unchanged. The
 token cost is real, which is why it is a separate call and never inlined into
 `assist_get_finding` or `assist_get_host`.
 
+**Images in report text.** `assist_get_finding` also returns `images`: the
+finding's images as the client report sees them — `id`, `caption` (what the
+report prints under it), `in_report`, `printable` and `placed_in`, the
+report-text fields whose Markdown places the image with
+`![caption](evidence:<id>)`. It wraps the service the finding page's own list
+uses (`report_images.finding_images`, `GET /findings/{id}/images`), so the two
+cannot disagree. An agent that rewrites a section with `propose_finding_text`
+keeps the references that section holds (a dropped one moves the image back
+under Evidence) and may reference only ids from that list: any other id is a
+422 naming it, and a reference to an image nobody ticked "In report" is refused
+at accept until a person ticks it. The agent's report read
+(`assist_get_client_report`) lists each finding's `images` (with `placed_in`)
+beside `evidence`, which is now only the images no section places. There is no
+agent write for a caption or the tick: both are decisions of the person who
+attached the image.
+
 `GET /agent/assist/attachments/{id}` is that download, and it exists because the
 operator-facing equivalent under `/projects/...` requires a JWT — an agent has a
 key, not a session. It is project-scoped and path-checked against the
@@ -320,7 +336,7 @@ roles now equal the page's.
 — fields, not tools: a finding comment in `assist_get_finding` carries
 `parent_id` / `thread_root_id`, as host notes already did, so its thread can be
 rebuilt; an attachment carries
-`include_in_report` (the operator's opt-in for report images); a web interface
+`include_in_report` (the operator's opt-in for report images) and its `caption`; a web interface
 (`assist_get_host`, `assist_list_host_web_interfaces`) carries `source` (the tool
 that observed it), `scan_id`, `observed_at` with `observed_at_basis` (`scan` =
 the scan's own time, `import` = the import time), `imported_at` and `is_latest`

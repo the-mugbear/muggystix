@@ -51,14 +51,14 @@ export interface AgentActivityFilters {
   offset?: number;
 }
 
-/** The audit feed for one agent session (v5.173.0), keyed by the session's
- *  detail row (`assist_session_id` on the session). */
-export const getAssistSessionApiActivity = async (
-  assistSessionId: number,
+/** The audit feed for one agent session (v5.173.0), by the session id
+ *  (5.328.0 — it was keyed by a second id, the session's detail row). */
+export const getAgentSessionApiActivity = async (
+  sessionId: number,
   filters: AgentActivityFilters = {},
 ): Promise<AgentApiCallListResponse> => {
   const response = await api.get<AgentApiCallListResponse>(
-    `${p()}/assist-sessions/${assistSessionId}/api-activity`,
+    `${p()}/agent-sessions/${sessionId}/api-activity`,
     { params: filters },
   );
   return response.data;

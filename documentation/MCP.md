@@ -85,7 +85,7 @@ What that takes, beyond "which hosts match X":
 | "What has the team been working on?" | `assist_list_recent_notes` (discussion; outstanding work is `host_tests_list` with `active_only`) |
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
-| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history, and up to 100 scanner rows (`scanner_evidence_total` / `scanner_evidence_truncated` say when there are more); `assist_get_image` to look at one |
+| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history, the finding's `images` (caption, whether each is in the report, and the report-text fields that place it), and up to 100 scanner rows (`scanner_evidence_total` / `scanner_evidence_truncated` say when there are more); `assist_get_image` to look at one |
 | "What's worth a look? What's mine? What changed since I was last here?" | `assist_list_worth_a_look` · `assist_get_workbench` (v2.428.0) |
 | "Which ranges has nobody touched?" | `assist_get_terrain` |
 | "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
@@ -164,7 +164,11 @@ raw output: `curl` `GET /agent/evidence/{id}/raw`). `record_evidence` takes
 the team concluded is a proposal a person accepts or rejects in the app:
 `propose_finding_text`, `propose_finding`, `propose_observation`,
 `propose_endpoint_status`; `list_proposals` shows the decisions. Each creates a
-row per call, so none is marked idempotent.
+row per call, so none is marked idempotent. A report-text section may place one
+of the finding's own images with `![caption](evidence:<id>)`:
+`assist_get_finding` lists them under `images` (`id`, `caption`, `in_report`,
+`placed_in`), and `propose_finding_text` refuses (422) an id that is not on
+that list.
 
 Each tool also carries a `workflows` grouping tag — `assist`, `testing` (the
 `host_tests_*` tools; it replaced `plan_generation` and `execution` in
@@ -375,9 +379,11 @@ makes the agent's own words part of the audit trail.
   and every session in the project. Ending a session — End here, the agent's
   `end_session`, or the hourly lapse sweep — revokes its key; its tests and
   evidence stay, for another session or a person to carry on. **A session's page**
-  (`/agent-sessions/{id}`, by the session id; the older `/assist-sessions/{id}`
-  links redirect there) has its controls, its work, the notes it wrote (the
-  durable output) and its API-call feed (the read trail).
+  (`/agent-sessions/{id}`, by the session id — its only id, the one
+  `agent_identity` reports as `session_id`; an older `/assist-sessions/{id}`
+  link, which named a second id sessions had until v2.449.0, redirects there)
+  has its controls, its work, the notes it wrote (the durable output) and its
+  API-call feed (the read trail).
 * **Agent API activity** — per session, on its page.
 * **`GET /api/v1/mcp-telemetry/summary`** (admin) — per-tool call counts,
   outcomes, and `unknown_tools_called`, which is how a client calling a tool

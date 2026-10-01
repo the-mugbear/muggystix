@@ -68,6 +68,22 @@ describe('ReportDetail — the scope file', () => {
     await waitFor(() => expect(downloadClientReportScope).toHaveBeenCalledWith(12, 'scope-acme-report-3.csv'));
   });
 
+  it('says how many images are placed in text and how many print under Evidence', async () => {
+    const withImages = report(null);
+    Object.assign(withImages.summary, { images: 5, images_placed: 3, images_unplaced: 2, images_skipped: 1 });
+    getClientReport.mockResolvedValue(withImages);
+    show();
+    expect(await screen.findByText('3 placed in text, 2 under Evidence · 1 skipped (WebP)')).toBeInTheDocument();
+  });
+
+  it('a report issued before images could be placed keeps the old line', async () => {
+    const before = report(null);
+    Object.assign(before.summary, { images: 2 });
+    getClientReport.mockResolvedValue(before);
+    show();
+    expect(await screen.findByText('Ticked “In report” on the findings')).toBeInTheDocument();
+  });
+
   it('under the cutoff there is no scope file to send', async () => {
     getClientReport.mockResolvedValue(report(null));
     show();

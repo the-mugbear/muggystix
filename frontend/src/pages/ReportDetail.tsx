@@ -431,10 +431,17 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {s.missing_text?.length ? 'Listed below' : 'Every finding has its text'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
-            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. WebP images cannot be placed in every format and are skipped.">
-            {s.images_skipped ? `${s.images_skipped} skipped (WebP)`
-              : s.images ? 'Ticked “In report” on the findings'
-                : 'Tick “In report” on a finding’s image to include it'}
+            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. An image its author placed in a written section (Insert image, in the report text editor) prints there; the rest print under the finding's Evidence. WebP images cannot be placed in every format and are skipped.">
+            {s.images ? (
+              // A report issued before images could be placed has no split.
+              <>
+                {s.images_placed != null && s.images_unplaced != null
+                  ? `${s.images_placed} placed in text, ${s.images_unplaced} under Evidence`
+                  : 'Ticked “In report” on the findings'}
+                {s.images_skipped ? ` · ${s.images_skipped} skipped (WebP)` : ''}
+              </>
+            ) : s.images_skipped ? `${s.images_skipped} skipped (WebP)`
+              : 'Tick “In report” on a finding’s image to include it'}
           </PostureMeasure>
         </div>
       )}

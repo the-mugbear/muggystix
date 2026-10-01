@@ -10,14 +10,13 @@ import { ImagePlus, Loader2, Send, CornerDownRight, Pencil, RefreshCw, Trash2, X
 
 import {
   Annotation,
-  NoteAttachment,
   getFindingNotes,
   createFindingNote,
   updateFindingNote,
   deleteFindingNote,
   uploadFindingNoteAttachment,
 } from '../services/api';
-import NoteAttachments, { type NoteAttachmentsHandle } from './host-inspector/NoteAttachments';
+import NoteAttachments, { type NoteAttachmentsHandle, type ReportMarking } from './host-inspector/NoteAttachments';
 import MentionText from './MentionText';
 import MentionTextarea from './MentionTextarea';
 import { Button } from './ui/button';
@@ -34,7 +33,7 @@ interface FindingCommentThreadProps {
   /** Analyst+ — gates the compose/reply/attach affordances. */
   canManage: boolean;
   /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
-  reportMarking?: { canMark: (attachment: NoteAttachment) => boolean };
+  reportMarking?: ReportMarking;
 }
 
 /** A file waiting to be attached. `error` is set when its upload against

@@ -33,8 +33,6 @@ from app.db.models_agent import (
     Agent,
     AgentSession,
     AgentSessionWorkflow,
-    AssistSession,
-    AssistSessionStatus,
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
@@ -132,13 +130,6 @@ def viewer_key(db_session, test_project):
         started_by_id=user.id, status="active",
     )
     db_session.add(base)
-    db_session.flush()
-    detail = AssistSession(
-        project_id=test_project.id, agent_id=agent.id, started_by_id=user.id,
-        status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
-        purpose="write-route sweep",
-    )
-    db_session.add(detail)
     db_session.flush()
     raw = "nm_agent_" + secrets.token_urlsafe(32)
     db_session.add(APIKey(

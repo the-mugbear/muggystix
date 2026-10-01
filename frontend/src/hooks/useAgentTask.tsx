@@ -11,7 +11,8 @@ import React, { useCallback, useState } from 'react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
-import { listAssistSessions, type AssistSessionRow } from '../services/api';
+import { listAgentSessions, type AgentSessionRow } from '../services/api';
+import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
 import { copyToClipboard } from '../utils/clipboard';
 import { useCanStartAgentSession } from './useCanStartAgentSession';
 
@@ -27,12 +28,15 @@ export const useAgentTask = (): AgentTask => {
   const { user } = useAuth();
   const toast = useToast();
   const [instruction, setInstruction] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<AssistSessionRow[]>([]);
+  const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
 
-  const mine = useCallback(async (): Promise<AssistSessionRow[]> => {
+  /** This operator's sessions whose key still works (as `useMyAssistSessions`). */
+  const mine = useCallback(async (): Promise<AgentSessionRow[]> => {
+    if (user?.id == null) return [];
     try {
-      const rows = await listAssistSessions();
-      return rows.filter((s) => s.status === 'active' && s.started_by_id === user?.id);
+      const { sessions: rows } = await listAgentSessions(myActiveSessionFilters(user.id));
+      const now = Date.now();
+      return rows.filter((s) => hasLiveKey(s, now));
     } catch {
       return [];
     }
@@ -42,8 +46,7 @@ export const useAgentTask = (): AgentTask => {
     const live = await mine();
     setSessions(live);
     if (live.length > 0 && await copyToClipboard(task)) {
-      const id = live[0].agent_session_id ?? live[0].id;
-      toast.success(`Task copied — paste it to your agent (session #${id} is live).`, { autoHideMs: 6000 });
+      toast.success(`Task copied — paste it to your agent (session #${live[0].id} is live).`, { autoHideMs: 6000 });
       return;
     }
     setInstruction(task);

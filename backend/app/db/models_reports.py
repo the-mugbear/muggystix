@@ -120,6 +120,10 @@ class Report(Base):
         "ReportFile", back_populates="report", cascade="all, delete-orphan",
         order_by="ReportFile.format",
     )
+    images = relationship(
+        "ReportImage", back_populates="report", cascade="all, delete-orphan",
+        order_by="ReportImage.attachment_id",
+    )
 
     __table_args__ = (
         UniqueConstraint("project_id", "number", name="uq_report_project_number"),
@@ -144,4 +148,34 @@ class ReportFile(Base):
 
     __table_args__ = (
         UniqueConstraint("report_id", "format", name="uq_report_file_format"),
+    )
+
+
+class ReportImage(Base):
+    """An ISSUED report's own copy of an evidence image.
+
+    Issuing copies the bytes of every image the report's data names into
+    ``REPORT_FILES_DIR/<project>/<report>/evidence/`` and records each here,
+    so the issued report renders from what was signed off whatever happens to
+    the finding's attachment afterwards (it may be deleted, or un-ticked).
+
+    ``attachment_id`` is the ``note_attachments.id`` the frozen dataset names
+    (``evidence/<id>.png``) — deliberately NOT a foreign key: it is the key
+    the snapshot is read by, and must survive the attachment's deletion.
+    """
+    __tablename__ = "report_images"
+
+    id = Column(Integer, primary_key=True, index=True)
+    report_id = Column(Integer, ForeignKey("reports.id", ondelete="CASCADE"), nullable=False, index=True)
+    attachment_id = Column(Integer, nullable=False)
+    content_type = Column(String(100), nullable=False)
+    size_bytes = Column(BigInteger, nullable=False)
+    sha256 = Column(String(64), nullable=False)
+    storage_path = Column(String, nullable=False)        # relative to REPORT_FILES_DIR
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    report = relationship("Report", back_populates="images")
+
+    __table_args__ = (
+        UniqueConstraint("report_id", "attachment_id", name="uq_report_image_attachment"),
     )

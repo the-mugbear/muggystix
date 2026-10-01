@@ -20,7 +20,7 @@ These pin:
 """
 from datetime import datetime, timedelta, timezone
 
-from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_agent import AgentSession
 from app.db.models_auth import APIKey, User
 
 
@@ -38,14 +38,13 @@ def _start_session(client, project):
     r = client.post(f"/api/v1/projects/{project.id}/assist/start", json={"purpose": "resume me"})
     assert r.status_code == 201, r.text
     body = r.json()
-    return body["api_key"], body["assist_session_id"]
+    return body["api_key"], body["agent_session_id"]
 
 
-def _agent_session_id(db, assist_session_id):
-    return (
-        db.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id).scalar()
-    )
+def _agent_session_id(db, session_id):
+    """The session id IS the id the start returned (v2.449.0); until then the
+    start returned a pointer row's id and this looked the session up."""
+    return session_id
 
 
 def _hdr(key):
@@ -89,9 +88,10 @@ def test_agent_ends_its_own_session_and_the_key_dies_with_it(client, test_projec
     row = db_session.query(AgentSession).filter(AgentSession.id == sid).first()
     assert row.status == "ended" and row.completed_at is not None
     assert "closed by the agent: all done" in (row.notes or "")
-    # The assist detail row the review page is keyed on agrees.
-    assist = db_session.query(AssistSession).filter(AssistSession.id == assist_id).first()
-    assert str(getattr(assist.status, "value", assist.status)) == "ended"
+    # The session's page reads that same row (it used to read a second one,
+    # which had to be mirrored).
+    page = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}").json()
+    assert page["status"] == "ended" and page["end_reason"] == "agent"
 
     # Nothing further authenticates — the end was the last call.
     r = client.get("/api/v1/agent/identity", headers=_hdr(key))

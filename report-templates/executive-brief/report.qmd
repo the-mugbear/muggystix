@@ -144,7 +144,10 @@ No findings above informational severity.
 *<< f.status_note >>.*
 
 <% endif %>
-<< md(f, "recommendation", todo="Say what to change to fix it.") >>
+<# images=False: this brief prints no evidence, so a screenshot the author
+   placed in the recommendation is left out here (it prints in the
+   Penetration test report). #>
+<< md(f, "recommendation", todo="Say what to change to fix it.", images=False) >>
 
 <% else %>
 Nothing to action above informational severity.

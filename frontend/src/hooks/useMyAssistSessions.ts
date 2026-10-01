@@ -1,33 +1,35 @@
 /**
- * The operator's own live assist sessions.
+ * The operator's own live agent sessions.
  *
- * An active assist session is a live agent API key sitting on someone's
- * laptop, and until now nothing in the UI acknowledged that it existed: the
- * start dialog minted a key and forgot it. Two consequences an operator hit
+ * An active session is a live agent API key sitting on someone's laptop, and
+ * for a long time nothing in the UI acknowledged that it existed: the start
+ * dialog minted a key and forgot it. Two consequences an operator hit
  * routinely — starting a second session without realising the first was still
- * valid (there is no one-active-session constraint on assist, unlike
- * execution), and having no way to revoke a key early when they were done.
+ * valid (there is no one-active-session constraint), and having no way to
+ * revoke a key early when they were done.
  *
  * Deliberately scoped to the current user. Colleagues' sessions are not shown:
- * assist reads cost nothing, rate limiting is per-agent, and where an assist
- * agent writes, the note itself carries the operator's name and an "Agent"
- * badge — so a session roster would tell a teammate nothing the artifacts
- * don't already say. Project-wide oversight is an admin concern and belongs on
- * an admin surface, not here.
+ * reads cost nothing, rate limiting is per-agent, and where an agent writes,
+ * the note itself carries the operator's name and an "Agent" badge — so a
+ * session roster would tell a teammate nothing the artifacts don't already
+ * say. Every session in the project is on Agent Sessions.
  *
- * NOTE: ``GET /assist/sessions`` currently returns every session in the
- * project (Viewer-gated, metadata only, no key material), so the self-filter
- * happens here. Narrowing it server-side is tracked separately; doing it there
- * would let this hook drop the filter, not change its contract.
+ * 5.328.0 — reads the one session list (`GET /agent-sessions`, narrowed on the
+ * server to this operator's active project sessions) and keeps the ones whose
+ * key still works (`hasLiveKey`). It read `GET /assist/sessions`, a second
+ * list keyed by a second id, and filtered the whole project's rows here. The
+ * hook keeps its name: it is what the Start Agent Session ("assist") dialog
+ * and its callers use.
  */
 import { useCallback, useEffect, useState } from 'react';
 
-import { listAssistSessions, type AssistSessionRow } from '../services/api';
+import { listAgentSessions, type AgentSessionRow } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
+import { hasLiveKey, myActiveSessionFilters } from '../utils/agentRuns';
 
 export interface UseMyAssistSessions {
-  /** Active sessions started by the current user, newest first. */
-  sessions: AssistSessionRow[];
+  /** Live sessions started by the current user, newest first. */
+  sessions: AgentSessionRow[];
   loading: boolean;
   /** True when the list could not be loaded — callers render nothing rather
    *  than claiming "no active sessions", which would be a wrong answer. */
@@ -40,7 +42,7 @@ export const useMyAssistSessions = (
 ): UseMyAssistSessions => {
   const { user } = useAuth();
   const userId = user?.id;
-  const [sessions, setSessions] = useState<AssistSessionRow[]>([]);
+  const [sessions, setSessions] = useState<AgentSessionRow[]>([]);
   const [loading, setLoading] = useState(false);
   const [failed, setFailed] = useState(false);
 
@@ -48,10 +50,9 @@ export const useMyAssistSessions = (
     if (!enabled || userId == null) return;
     setLoading(true);
     try {
-      const rows = await listAssistSessions();
-      setSessions(
-        rows.filter((s) => s.status === 'active' && s.started_by_id === userId),
-      );
+      const { sessions: rows } = await listAgentSessions(myActiveSessionFilters(userId));
+      const now = Date.now();
+      setSessions(rows.filter((s) => hasLiveKey(s, now)));
       setFailed(false);
     } catch {
       // A failed lookup must not render as "you have no sessions" — that's

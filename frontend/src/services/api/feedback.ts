@@ -29,11 +29,12 @@ export interface AgentFeedbackEntry {
   reviewed_at: string | null;
   reviewer_notes: string | null;
   created_at: string;
-  /** v2.428.2 — who and where: the unified session, the page showing its
-   *  API calls (`/assist-sessions/{session_page_id}`), and its call count. */
-  assist_session_id?: number | null;
+  /** v2.428.2 — who and where: the session (its page, with its API calls, is
+   *  `/agent-sessions/{agent_session_id}`), whether that page exists (false
+   *  for a recon / plan / execution row from before the unified session), and
+   *  its call count. */
   agent_session_id?: number | null;
-  session_page_id?: number | null;
+  session_has_page?: boolean | null;
   session_api_calls?: number | null;
   project_name?: string | null;
   agent_name?: string | null;

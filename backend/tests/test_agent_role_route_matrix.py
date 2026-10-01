@@ -23,8 +23,6 @@ from app.db.models_agent import (
     Agent,
     AgentSession,
     AgentSessionWorkflow,
-    AssistSession,
-    AssistSessionStatus,
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
@@ -81,13 +79,6 @@ def _key_for(db, project, user):
         status="active",
     )
     db.add(base)
-    db.flush()
-    detail = AssistSession(
-        project_id=project.id, agent_id=agent.id, started_by_id=user.id,
-        status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
-        purpose="role matrix",
-    )
-    db.add(detail)
     db.flush()
     raw = "nm_agent_" + secrets.token_urlsafe(32)
     db.add(APIKey(

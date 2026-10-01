@@ -29,6 +29,7 @@ from app.schemas.schemas import (
     Annotation, AnnotationCreate, AnnotationUpdate,
     NoteAttachmentOut,
 )
+from app.services import report_images
 from app.services.notification_service import NotificationService
 from app.services.webhook_dispatcher import stage_dispatch
 from app.services.host_follow_service import (
@@ -680,6 +681,11 @@ def delete_note_attachment(
         if not role or not check_permissions(role, ProjectRole.ADMIN.value):
             raise HTTPException(status_code=403, detail="Only the uploader or a project admin can delete this attachment.")
 
+    # An image a finding's report text places stays until the reference is
+    # removed: deleting it would leave the section pointing at nothing.  (An
+    # ISSUED report is unaffected either way — it holds its own copy.)
+    report_images.refuse_if_placed(db, [att.id], action="delete this image", then="delete it")
+
     storage_path = att.storage_path
     db.delete(att)
     db.commit()
@@ -698,13 +704,19 @@ def delete_note_attachment(
 
 
 class AttachmentReportFlag(BaseModel):
-    include_in_report: bool
+    """What the client report does with an image.  Send either field or both;
+    one that is left out is unchanged."""
+    include_in_report: Optional[bool] = None
+    # The figure caption wherever the report prints the image; null or ""
+    # clears it (the report then falls back to the file name).  The length is
+    # checked in the route so the refusal says what the limit is.
+    caption: Optional[str] = None
 
 
 @router.patch(
     "/notes/attachments/{attachment_id:int}",
     response_model=NoteAttachmentOut,
-    summary="Mark an image for the client report (uploader or project admin)",
+    summary="Mark an image for the client report, or caption it (uploader or project admin)",
     dependencies=[Depends(require_project_role(ProjectRole.ANALYST))],
 )
 def set_note_attachment_report_flag(
@@ -717,7 +729,13 @@ def set_note_attachment_report_flag(
     """v2.379.0 — images are opt-in for the client report: a screenshot often
     shows more than a client should see, so nothing goes in unless someone
     marks it.  The person who attached it decides, or a project admin (the
-    same people who may delete it)."""
+    same people who may delete it).  The caption — what the report prints
+    under the image — is theirs by the same rule."""
+    sent = body.model_fields_set
+    if not sent & {"include_in_report", "caption"}:
+        raise HTTPException(status_code=422, detail="Send include_in_report, caption, or both.")
+    if "include_in_report" in sent and body.include_in_report is None:
+        raise HTTPException(status_code=422, detail="include_in_report must be true or false.")
     att = _resolve_attachment(db, attachment_id, project)
     if att.uploaded_by_id not in (None, current_user.id) and current_user.role != UserRole.ADMIN:
         role = (
@@ -731,9 +749,22 @@ def set_note_attachment_report_flag(
         if not role or not check_permissions(role, ProjectRole.ADMIN.value):
             raise HTTPException(
                 status_code=403,
-                detail="Only the person who attached this image or a project admin can choose whether it goes in the report.",
+                detail="Only the person who attached this image or a project admin can choose whether it "
+                       "goes in the report, or caption it.",
             )
-    att.include_in_report = body.include_in_report
+    if "caption" in sent:
+        try:
+            att.caption = report_images.clean_caption(body.caption)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc))
+    if "include_in_report" in sent:
+        if att.include_in_report and not body.include_in_report:
+            # Un-ticking an image the text places would leave a hole, exactly
+            # as deleting it would.
+            report_images.refuse_if_placed(
+                db, [att.id], action="take this image out of the report", then='un-tick "In report"',
+            )
+        att.include_in_report = body.include_in_report
     db.commit()
     db.refresh(att)
     return att

@@ -81,7 +81,7 @@ const statusIcon = (row: AgentSessionRow) => {
 const fmtAgo = (iso?: string | null): string =>
   formatRelativeTime(iso, { withSeconds: true });
 
-/** A row with no page of its own (a legacy assist row) opens the list. */
+/** Where a row opens; the list, should a row ever have no page. */
 const detailPath = (row: AgentSessionRow): string =>
   sessionRowPath(row) ?? SESSIONS_LIST_PATH;
 

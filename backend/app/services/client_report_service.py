@@ -40,7 +40,10 @@ or superseded report would re-list findings the client already has.
 """
 from __future__ import annotations
 
+import hashlib
+import os
 import re
+import shutil
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,10 +61,10 @@ from app.db.models_findings import (
 from app.db.models_project import Project
 from app.db.models_proposals import EvidenceRecord
 from app.db.models_reports import (
-    RenderStatus, Report, ReportKind, ReportProfile, ReportStatus,
+    RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
-from app.services import proposal_service, report_scope, report_template_service
+from app.services import proposal_service, report_images, report_scope, report_template_service
 
 SCHEMA_VERSION = 1
 
@@ -108,7 +111,7 @@ REQUIRED_DETAILS = (
 # the role line they start with (editable per report).
 TEAM_ROLES = {"admin": "Engagement lead", "analyst": "Tester"}
 # Formats every renderer can place (Word and HTML alike).
-REPORT_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif"}
+REPORT_IMAGE_TYPES = report_images.REPORT_IMAGE_TYPES
 
 # How a finding was confirmed (review 2026-10-01 B8): its linked evidence
 # records whose outcome is ``finding``.  There is no per-record "in report"
@@ -177,6 +180,105 @@ def stored_file_path(storage_path: str) -> Path:
     if not target.is_file():
         raise FileNotFoundError("The file is missing from report storage.")
     return target
+
+
+def report_image_dir(project_id: int, report_id: int) -> Path:
+    """Where an issued report keeps its own copies of its evidence images:
+    beside its rendered files, under ``REPORT_FILES_DIR`` (so the uploads
+    backup takes them with the report)."""
+    return Path(settings.REPORT_FILES_DIR) / str(project_id) / str(report_id) / "evidence"
+
+
+def discard_report_images(project_id: int, report_id: int) -> None:
+    """Remove the copies ``freeze_report_images`` made — for an issue that did
+    not commit.  Never called for a report that was issued."""
+    shutil.rmtree(report_image_dir(project_id, report_id), ignore_errors=True)
+
+
+def discard_project_report_files(project_id: int) -> None:
+    """Remove a DELETED project's report storage: every issued report's
+    rendered files and image copies.  Confined to ``REPORT_FILES_DIR``."""
+    root = Path(settings.REPORT_FILES_DIR).resolve()
+    try:
+        target = (root / str(int(project_id))).resolve()
+        target.relative_to(root)
+    except (ValueError, OSError):
+        return
+    if target != root:
+        shutil.rmtree(target, ignore_errors=True)
+
+
+def freeze_report_images(db: Session, report: Report, dataset: dict) -> int:
+    """Copy the bytes of every image the dataset names into the report's own
+    storage and record each (``report_images``).  Called while issuing, in
+    the issue's transaction: from then on the report renders from these
+    copies, whatever happens to the attachments (before this, an image
+    deleted between the issue and a successful render failed that render for
+    good).  Returns the number copied.
+
+    Raises ``ReportStateError`` — nothing copied, nothing issued — when an
+    image's file is not in storage: a report must not be signed off with a
+    figure it cannot print."""
+    wanted: Dict[int, Tuple[dict, dict]] = {}
+    for finding in dataset.get("findings") or []:
+        for img in finding.get("images") or []:
+            wanted.setdefault(img["attachment_id"], (img, finding))
+    if not wanted:
+        return 0
+    attachments = {
+        att.id: att for att in
+        db.query(NoteAttachment).filter(
+            NoteAttachment.id.in_(list(wanted)), NoteAttachment.project_id == report.project_id,
+        )
+    }
+    base = (Path(settings.UPLOAD_DIR) / "note_attachments").resolve()
+    sources: Dict[int, Path] = {}
+    missing = []
+    for att_id, (img, finding) in wanted.items():
+        att = attachments.get(att_id)
+        source = None
+        if att is not None:
+            try:
+                candidate = (base / att.storage_path).resolve()
+                candidate.relative_to(base)
+                source = candidate if candidate.is_file() else None
+            except (ValueError, OSError):
+                source = None
+        if source is None:
+            missing.append(f"{finding.get('ref')} \"{str(img.get('caption') or '')[:60]}\" (image {att_id})")
+        else:
+            sources[att_id] = source
+    if missing:
+        raise ReportStateError(
+            "The file of an evidence image is missing from storage, so the report cannot print it: "
+            f"{'; '.join(missing[:10])}{' …' if len(missing) > 10 else ''}. Attach the image again "
+            "(or un-tick \"In report\" and remove it from the text), then issue."
+        )
+    root = Path(settings.REPORT_FILES_DIR)
+    target_dir = report_image_dir(report.project_id, report.id)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        for att_id, source in sources.items():
+            img, _finding = wanted[att_id]
+            target = target_dir / Path(img["file"]).name
+            data = source.read_bytes()
+            target.write_bytes(data)
+            try:
+                os.chmod(target, 0o600)
+            except OSError:
+                pass
+            db.add(ReportImage(
+                report_id=report.id, attachment_id=att_id,
+                content_type=attachments[att_id].content_type, size_bytes=len(data),
+                sha256=hashlib.sha256(data).hexdigest(),
+                storage_path=str(target.relative_to(root)),
+            ))
+    except OSError as exc:
+        discard_report_images(report.project_id, report.id)
+        raise ReportStateError(
+            f"The report's evidence images could not be copied into report storage ({exc.strerror or 'error'})."
+        ) from exc
+    return len(sources)
 
 
 def _severity_value(value) -> Optional[str]:
@@ -442,33 +544,38 @@ class ClientReportService:
                 str(name), str(name).capitalize()))
         return {fid: sorted(names) for fid, names in out.items()}
 
-    def _evidence(self, findings: List[Finding]) -> Tuple[Dict[int, List[dict]], int, int]:
+    def _evidence(self, findings: List[Finding]) -> Tuple[Dict[int, dict], int, int]:
         """Images MARKED for the report, from the finding's source-note thread
         and its own comments.  Returns (by finding, count skipped for format,
         count attached to an agent-written note — v2.437.0, a warning before
-        issuing, never a block)."""
-        by_finding: Dict[int, List[dict]] = defaultdict(list)
+        issuing, never a block).
+
+        Per finding: ``images`` (every marked image, with its caption — the
+        author's, else the file name — and the sections that place it),
+        ``placed`` (section → the images its text references: the only ones
+        the renderer shows there) and ``evidence`` (the images no section
+        places: the trailing evidence block).  ``report_images`` decides."""
+        by_finding: Dict[int, dict] = {}
         skipped = by_agent = 0
         counted = set()
         attached = finding_image_attachments(
             self.db, [(f.id, f.evidence_annotation_id) for f in findings], marked_only=True,
         )
+        by_id = {f.id: f for f in findings}
         for fid, rows in attached.items():
+            ticked = []
             for att, actor_type in rows:
                 first = att.id not in counted
                 counted.add(att.id)
-                ext = REPORT_IMAGE_TYPES.get(att.content_type)
-                if ext is None:
+                if not report_images.printable(att):
                     skipped += first
                     continue
                 if actor_type == "agent":
                     by_agent += first
-                by_finding[fid].append({
-                    "attachment_id": att.id,
-                    "file": f"evidence/{att.id}.{ext}",
-                    "caption": att.filename,
-                })
-        return dict(by_finding), skipped, by_agent
+                ticked.append(att)
+            images, placed, unplaced = report_images.report_placement(by_id[fid], ticked)
+            by_finding[fid] = {"images": images, "placed": placed, "evidence": unplaced}
+        return by_finding, skipped, by_agent
 
     def _records_in_report(self, template_name: Optional[str]) -> bool:
         """Whether the report's template prints how findings were confirmed:
@@ -793,7 +900,11 @@ class ClientReportService:
                 "previous_severity_label": (
                     SEVERITY_LABEL.get(previous_severity, previous_severity) if previous_severity else None
                 ),
-                "evidence": evidence.get(f.id, []),
+                # Every image marked "In report"; the ones each written
+                # section places; and the rest — the trailing evidence block.
+                "images": evidence.get(f.id, {}).get("images", []),
+                "placed": evidence.get(f.id, {}).get("placed", {}),
+                "evidence": evidence.get(f.id, {}).get("evidence", []),
                 # How it was confirmed (B8): each entry has its own data path
                 # so the template's code() can name its command and output.
                 "confirmations": [
@@ -876,7 +987,11 @@ class ClientReportService:
                 [f"a full name on the account of {', '.join(no_full_name)} (the report shows the username)"]
                 if no_full_name else []
             ),
-            "images": sum(len(i["evidence"]) for i in items),
+            "images": sum(len(i["images"]) for i in items),
+            # Of those: placed inside a written section by its author, and
+            # left for the trailing evidence block.
+            "images_placed": sum(1 for i in items for img in i["images"] if img["placed_in"]),
+            "images_unplaced": sum(len(i["evidence"]) for i in items),
             "images_skipped": skipped_images,
             # v2.437.0 — warnings before issuing, never blocks.
             "agent_images": agent_images,
@@ -1086,17 +1201,25 @@ class ClientReportService:
         ) + 1
         now = datetime.now(timezone.utc)
         dataset, reported, summary = self.build(report, number=number, issued_at=now)
-        report.snapshot = {
-            "schema": SCHEMA_VERSION, "dataset": dataset, "reported": reported, "summary": summary,
-        }
-        report.number = number
-        report.status = ReportStatus.ISSUED
-        report.issued_at = now
-        report.issued_by_id = user_id
-        report.template_fingerprint = fingerprint
-        report.render_status = RenderStatus.PENDING
-        report.render_error = None
-        if original is not None:
-            original.status = ReportStatus.SUPERSEDED
-        self.db.flush()
+        # The report's own copies of its images, before anything is marked
+        # issued: a missing file refuses the issue.  The caller removes the
+        # copies if the transaction does not commit (``discard_report_images``).
+        freeze_report_images(self.db, report, dataset)
+        try:
+            report.snapshot = {
+                "schema": SCHEMA_VERSION, "dataset": dataset, "reported": reported, "summary": summary,
+            }
+            report.number = number
+            report.status = ReportStatus.ISSUED
+            report.issued_at = now
+            report.issued_by_id = user_id
+            report.template_fingerprint = fingerprint
+            report.render_status = RenderStatus.PENDING
+            report.render_error = None
+            if original is not None:
+                original.status = ReportStatus.SUPERSEDED
+            self.db.flush()
+        except Exception:
+            discard_report_images(project_id, report_id)
+            raise
         return report

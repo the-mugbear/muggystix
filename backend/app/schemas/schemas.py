@@ -112,6 +112,9 @@ class NoteAttachmentOut(BaseModel):
     size_bytes: int
     created_at: datetime
     include_in_report: bool = False
+    # What the image shows — the figure caption in the client report.  None:
+    # the report prints the file name.
+    caption: Optional[str] = None
     # Who attached it — the report opt-in is theirs (or a project admin's).
     uploaded_by_id: Optional[int] = None
 

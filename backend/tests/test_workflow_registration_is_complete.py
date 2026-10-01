@@ -127,35 +127,29 @@ def test_the_model_tool_rollup_buckets_every_kind(db_session, test_project, test
         ALL_SESSION_KINDS,
         summarise_by_model_tool,
     )
-    from app.db.models_agent import (
-        Agent,
-        AgentSession,
-        AssistSession,
-        AssistSessionStatus,
-    )
+    from app.db.models_agent import Agent, AgentSession
 
-    # One row so the rollup has something to bucket; the assertion is about the
-    # shape of every bucket, which is created per (model, tool) pair.
+    # A session of every kind under one (model, tool) pair: each must be
+    # counted once, under its own kind.
     agent = Agent(
         name="rollup-probe", project_id=test_project.id, owner_id=test_user.id,
     )
     db_session.add(agent)
     db_session.flush()
-    base = AgentSession(
-        workflow=AgentSessionWorkflow.ASSIST.value,
-        project_id=test_project.id, agent_id=agent.id, status="active",
-    )
-    db_session.add(base)
-    db_session.flush()
-    db_session.add(AssistSession(
-        project_id=test_project.id, agent_id=agent.id,
-        status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
-        generated_by_model="probe-model", generated_by_tool="probe-tool",
-    ))
+    for workflow in (AgentSessionWorkflow.ASSIST.value, AgentSessionWorkflow.PROJECT.value):
+        db_session.add(AgentSession(
+            workflow=workflow,
+            project_id=test_project.id, agent_id=agent.id, status="active",
+            generated_by_model="probe-model", generated_by_tool="probe-tool",
+        ))
     db_session.commit()
 
     rows = summarise_by_model_tool(db_session, test_project.id)
     assert rows, "expected at least one (model, tool) bucket"
+    probe = next(r for r in rows if r["generated_by_model"] == "probe-model")
+    # One each: a project session used to be counted a second time as
+    # "assist", through the pointer row every start wrote (fixed v2.449.0).
+    assert (probe["project"], probe["assist"], probe["total"]) == (1, 1, 2)
     for row in rows:
         missing = set(ALL_SESSION_KINDS) - set(row)
         assert not missing, (

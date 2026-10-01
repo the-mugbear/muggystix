@@ -20,7 +20,7 @@ its evidence is attributed to the session that recorded it — is pinned in
 import uuid
 
 from app.db import models
-from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_agent import AgentSession
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 
@@ -35,12 +35,9 @@ def _start_session(client, project, purpose="review"):
     return r.json()
 
 
-def _base_session_id(db, assist_session_id):
-    return (
-        db.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id)
-        .scalar()
-    )
+def _base_session_id(db, started_id):
+    """The session id IS the id the start returned (v2.449.0)."""
+    return started_id
 
 
 def _host(db, project, ip="10.0.0.5"):
@@ -66,7 +63,7 @@ def _propose(client, key, host):
 def test_identity_carries_the_session_and_no_phase_ids(client, test_project, db_session):
     body = _start_session(client, test_project)
     key = body["api_key"]
-    session_id = _base_session_id(db_session, body["assist_session_id"])
+    session_id = _base_session_id(db_session, body["agent_session_id"])
     # Work in flight must not bring a phase block back.
     _propose(client, key, _host(db_session, test_project))
 
@@ -84,15 +81,16 @@ def test_identity_carries_the_session_and_no_phase_ids(client, test_project, db_
 
 def test_assist_sessions_page_reflects_activity(client, test_project, db_session):
     body = _start_session(client, test_project)
-    key, assist_id = body["api_key"], body["assist_session_id"]
+    key, assist_id = body["api_key"], body["agent_session_id"]
     assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 200
 
-    rows = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions").json()
+    rows = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions").json()["sessions"]
     mine = next(s for s in rows if s["id"] == assist_id)
     assert mine["last_activity_at"] is not None
     assert mine["purpose"] == "review"
     assert mine["call_count"] >= 1
-    detail = client.get(f"/api/v1/projects/{test_project.id}/assist/sessions/{assist_id}")
+    assert mine["connection"] == "curl" and mine["first_call_at"] is not None
+    detail = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{assist_id}")
     assert detail.status_code == 200, detail.text
     assert detail.json()["last_activity_at"] is not None
 
@@ -107,7 +105,7 @@ def test_operator_can_end_a_session_and_its_work_stays(client, test_project, db_
     nor closed, so a person or a later session carries them on."""
     body = _start_session(client, test_project)
     key = body["api_key"]
-    session_id = _base_session_id(db_session, body["assist_session_id"])
+    session_id = _base_session_id(db_session, body["agent_session_id"])
     host = _host(db_session, test_project)
     test = _propose(client, key, host)
     client.patch(
@@ -157,7 +155,7 @@ def test_operator_can_end_a_session_and_its_work_stays(client, test_project, db_
 def test_last_activity_is_not_rewritten_on_every_call(client, test_project, db_session):
     body = _start_session(client, test_project)
     key = body["api_key"]
-    session_id = _base_session_id(db_session, body["assist_session_id"])
+    session_id = _base_session_id(db_session, body["agent_session_id"])
 
     assert client.get("/api/v1/agent/identity", headers=_hdr(key)).status_code == 200
     db_session.expire_all()

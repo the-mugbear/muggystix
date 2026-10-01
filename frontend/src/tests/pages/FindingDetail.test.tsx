@@ -28,6 +28,12 @@ vi.mock('../../services/api', () => ({
   getFindingNotes: vi.fn(),
   createFindingNote: vi.fn(),
   uploadFindingNoteAttachment: vi.fn(),
+  // The finding's images (caption, "In report", where the text places each).
+  getFindingImages: vi.fn().mockResolvedValue({ items: [], caption_max: 2000 }),
+  getNoteAttachmentObjectUrl: vi.fn().mockResolvedValue('blob:img'),
+  setNoteAttachmentCaption: vi.fn(),
+  setNoteAttachmentInReport: vi.fn(),
+  deleteNoteAttachment: vi.fn(),
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
@@ -473,6 +479,62 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Save report text' }));
     await waitFor(() => expect(mocked.updateFinding).toHaveBeenCalledWith(7, { impact: 'Traffic can be read.' }));
     expect(await screen.findByText('Traffic can be read.')).toBeInTheDocument();
+  });
+
+  const image57 = {
+    id: 57, note_id: 3, filename: 'relay.png', caption: 'The relayed session', content_type: 'image/png',
+    size_bytes: 10, in_report: true, printable: true, placed_in: ['description'], uploaded_by_id: 1,
+    by_agent: false, created_at: null, can_edit: true,
+  };
+  const comment = {
+    id: 3, host_id: null, finding_id: 7, body: 'proof', author_id: 1, author_name: 'tester', actor_type: 'user',
+    parent_id: null, thread_root_id: 3, created_at: '2026-09-01T00:00:00Z', updated_at: null,
+    attachments: [{
+      id: 57, filename: 'relay.png', content_type: 'image/png', size_bytes: 10, created_at: '2026-09-01T00:00:00Z',
+      include_in_report: true, caption: 'The relayed session', uploaded_by_id: 1,
+    }],
+  };
+
+  it('shows an image the text places, where it is placed, and offers it in the editor', async () => {
+    URL.revokeObjectURL = vi.fn();
+    mocked.getFindingImages.mockResolvedValue({ items: [image57], caption_max: 2000 });
+    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFinding.mockResolvedValue(finding({
+      can_modify: true,
+      report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)\n\n![x](evidence:999)' }),
+    }));
+    renderAt('/findings/7');
+    await waitFor(() => expect(mocked.getFindingImages).toHaveBeenCalledWith(7));
+    // The section shows the picture (fetched through the attachment route for
+    // an id on the finding's list) and says so for a reference that is not one.
+    const placed = await screen.findByTestId('evidence-image-57');
+    await waitFor(() => expect(placed.querySelector('img')?.getAttribute('src')).toBe('blob:img'));
+    expect(placed).toHaveTextContent('Figure: The relayed session');
+    expect(screen.getByTestId('evidence-missing-999')).toHaveTextContent('Image not available');
+    // The comment's image row says where it prints.
+    expect(await screen.findByTestId('placement-57')).toHaveTextContent('In: Description');
+    expect(screen.getByTestId('caption-57')).toHaveTextContent('The relayed session');
+    // The editor offers it (opened from an empty section; the comment has an
+    // Edit button of its own).
+    fireEvent.click(screen.getAllByRole('button', { name: 'Not written yet. Write it' })[0]);
+    expect(screen.getAllByRole('button', { name: 'Insert image' })[0]).toBeEnabled();
+  });
+
+  it('a reader sees the placed image and its caption, and no way to change either', async () => {
+    URL.revokeObjectURL = vi.fn();
+    projectRole.value = 'viewer';
+    mocked.getFindingImages.mockResolvedValue({ items: [{ ...image57, can_edit: false }], caption_max: 2000 });
+    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFinding.mockResolvedValue(finding({
+      can_modify: false, report_text: reportText({ description: '![](evidence:57)' }),
+    }));
+    renderAt('/findings/7');
+    expect(await screen.findByTestId('evidence-image-57')).toBeInTheDocument();
+    expect(await screen.findByTestId('caption-57')).toHaveTextContent('The relayed session');
+    expect(screen.queryByRole('button', { name: 'Insert image' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /caption for/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /in the report/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete relay.png' })).not.toBeInTheDocument();
   });
 
   it('refuses an out-of-range score before sending', async () => {

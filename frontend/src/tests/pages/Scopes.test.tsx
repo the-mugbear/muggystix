@@ -266,8 +266,8 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
 
   it('points to a live agent session instead of starting another', async () => {
     mySessions.sessions = [{
-      id: 3, agent_session_id: 72, project_id: 1, purpose: null, status: 'active',
-      started_by_id: 1, started_by_username: 'me', started_at: '2026-09-29T10:00:00Z', ended_at: null,
+      kind: 'project', id: 72, project_id: 1, purpose: null, status: 'active',
+      user_id: 1, user_username: 'me', started_at: '2026-09-29T10:00:00Z', completed_at: null,
       last_activity_at: null,
       key_expires_at: new Date(Date.now() + 3_600_000).toISOString(),
       call_count: 4, note_count: 0, connection: 'mcp', first_call_at: null,

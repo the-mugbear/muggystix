@@ -33,9 +33,8 @@ def test_it_is_recorded_against_the_session_with_no_route_template(client, db_se
     session_id = client.get("/api/v1/agent/identity", headers={"X-API-Key": started["api_key"]}).json()["session_id"]
     assert row.agent_session_id == session_id
     # … and the session's API activity shows it.
-    feed = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions/{session_id}").json()
     activity = client.get(
-        f"/api/v1/projects/{test_project.id}/assist-sessions/{feed['assist_session_id']}/api-activity",
+        f"/api/v1/projects/{test_project.id}/agent-sessions/{session_id}/api-activity",
         params={"mine": False},
     ).json()
     assert any(i["path"] == "/api/v1/agent/recon/context" and i["status_code"] == 404 for i in activity["items"])

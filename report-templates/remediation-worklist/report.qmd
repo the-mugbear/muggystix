@@ -133,6 +133,11 @@ Nothing to fix: no confirmed finding has an open affected system in this report.
 <% for f in fixes %>
 ## << f.ref >> — << f.title >> (<< f.severity_label >>) {#fix-<< f.id >>}
 
+<# A screenshot the author placed in the recommendation (an "evidence:" image
+   reference in its Markdown) prints here as a numbered figure — "Figure 1:
+   caption" — and nothing else needs doing.  Pass images=False to leave
+   placed images out; a full evidence block is a loop over f.evidence with
+   image(e), as in pentest/partials/_finding.qmd. #>
 << md(f, "recommendation", todo="Say what to change to fix it.") >>
 
 <% endfor %>

@@ -1,10 +1,15 @@
 /**
- * Agent session start + the operator's session rows — operator-side calls.
- * The endpoints keep their v2.64.0 `/assist` names, but since v2.337.0 a
- * session started here is THE agent session: one project key that reads the
- * inventory, uploads scans, proposes host tests and records evidence, within the
+ * Starting an agent session — the operator-side call.
+ * The endpoint keeps its v2.64.0 `/assist` name, but since v2.337.0 a session
+ * started here is THE agent session: one project key that reads the inventory,
+ * uploads scans, proposes host tests and records evidence, within the
  * operator's project role. The agent-side (X-API-Key) surface lives at
  * /agent/* and is consumed by the agent directly, not by this client.
+ *
+ * 5.328.0 — everything that reads or ends a session is in `agent-sessions.ts`,
+ * keyed by the session id this call returns. The session rows, detail and
+ * list that lived here were keyed by a second id (the session's
+ * `assist_sessions` row), which no longer exists.
  */
 import { api, p } from './client';
 
@@ -27,10 +32,10 @@ export interface McpClientSetup {
 }
 
 export interface StartAssistResponse {
-  assist_session_id: number;
-  /** v5.312.1 — the SESSION id (the one the agent reports, Agent Sessions lists
-   *  and `/agent-sessions/:id` opens); `assist_session_id` is its detail row. */
-  agent_session_id?: number;
+  /** The session's id — its only one: the id the agent reports, Agent
+   *  Sessions lists and `/agent-sessions/:id` opens. (The response also
+   *  repeats it as a deprecated `assist_session_id`; do not read that.) */
+  agent_session_id: number;
   project_id: number;
   project_name: string;
   agent_id: number;
@@ -56,102 +61,12 @@ export interface StartAssistRequest {
   // session's authority is the operator's project role, decided per request.
 }
 
-export interface AssistSessionRow {
-  id: number;
-  project_id: number;
-  /** v5.312.0 — the unified session this detail row belongs to (the id Agent
-   *  Sessions, End and Resume use); `/assist-sessions/:id` redirects through it. */
-  agent_session_id?: number | null;
-  purpose: string | null;
-  status: string;
-  started_by_id: number | null;
-  started_by_username: string | null;
-  /** The operator's display name (null when the account has none) — shown in
-   *  preference to the username. Optional so older fixtures still type-check. */
-  started_by_full_name?: string | null;
-  /** v5.288.0 — the authority the session acts with: the operator's CURRENT
-   *  project role ('admin' | 'analyst' | 'auditor' | 'viewer'), 'global_admin'
-   *  for a global admin without an admin membership, null when the operator is
-   *  no longer a member. The role at start is not recorded; the agent gate
-   *  re-reads the role on every call. */
-  operator_role?: string | null;
-  started_at: string | null;
-  ended_at: string | null;
-  last_activity_at: string | null;
-  /** When the session's agent key stops working — the field that answers
-   *  "end it now, or let it lapse?". This is the KEY's expiry, not the
-   *  session's: the session row has no lifetime of its own and can outlive
-   *  its key. Null means no active key remains, i.e. the session is dead in
-   *  practice even though `status` still reads 'active'.
-   *  Never derive this from started_at + 4h — AGENT_KEY_TTL_HOURS and the
-   *  per-start ttl_hours both move it. */
-  key_expires_at: string | null;
-  /** How much the session actually did. A session with zero calls is the
-   *  common dead end — key minted, prompt never pasted — and reads identically
-   *  to a busy one without these. */
-  call_count: number;
-  note_count: number;
-  /** v5.203.0 — how the agent reached this session, from observed calls:
-   *  'none' = no authenticated call yet; 'mcp' = at least one call arrived
-   *  through the MCP transport; 'curl' = calls arrived, all by direct HTTP.
-   *  A past call proves the client connected, not that it is still running —
-   *  read it with last_activity_at. */
-  connection: 'none' | 'mcp' | 'curl';
-  first_call_at: string | null;
-}
-
-/** A note this session's agent wrote — its only durable output; everything
- *  else it did was a read. */
-export interface AssistSessionNote {
-  id: number;
-  host_id: number | null;
-  host_ip: string | null;
-  hostname: string | null;
-  body: string;
-  created_at: string | null;
-}
-
-export interface AssistSessionDetail extends AssistSessionRow {
-  /** The model as the agent reported it (optional self-report). */
-  agent_model: string | null;
-  /** The agent's client, from the MCP handshake. */
-  agent_tool: string | null;
-  prompt_version: string | null;
-  notes: AssistSessionNote[];
-  feedback_count: number;
-}
-
-export interface AssistSessionFilters {
-  status?: string;
-  mine?: boolean;
-  limit?: number;
-  offset?: number;
-}
-
 export const startAssistSession = async (
   body: StartAssistRequest,
 ): Promise<StartAssistResponse> => {
   const res = await api.post<StartAssistResponse>(
     `${p()}/assist/start`,
     body,
-  );
-  return res.data;
-};
-
-export const listAssistSessions = async (
-  filters: AssistSessionFilters = {},
-): Promise<AssistSessionRow[]> => {
-  const res = await api.get<AssistSessionRow[]>(`${p()}/assist/sessions`, {
-    params: filters,
-  });
-  return res.data;
-};
-
-export const getAssistSession = async (
-  sessionId: number,
-): Promise<AssistSessionDetail> => {
-  const res = await api.get<AssistSessionDetail>(
-    `${p()}/assist/sessions/${sessionId}`,
   );
   return res.data;
 };

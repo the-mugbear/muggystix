@@ -131,6 +131,11 @@ export interface ReportSummary {
   /** v5.263.0 — report details still empty (printed as a highlighted TODO). */
   missing_details?: string[];
   images?: number;
+  /** Of `images`: placed inside a finding's written section by its author,
+   *  and left for the trailing evidence block. Absent on a report issued
+   *  before images could be placed. */
+  images_placed?: number;
+  images_unplaced?: number;
   images_skipped?: number;
   /** v5.316.0 — images in the report attached to an agent-written note. A warning, never a block. */
   agent_images?: number;

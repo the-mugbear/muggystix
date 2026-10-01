@@ -104,16 +104,12 @@ def test_an_agent_reading_a_public_reference_lands_in_its_session_log(
     that records the row but leaves the session view filtering it out still
     fails.
     """
-    from app.db.models_agent import AgentApiCall, AssistSession
+    from app.db.models_agent import AgentApiCall
 
     started = _start_assist(client, test_project.id)
     key = started["api_key"]
-    sid = started["assist_session_id"]
-    # v2.337.0 — durable attribution is the unified agent_session_id.
-    agent_session_id = (
-        db_session.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == sid).scalar()
-    )
+    # The session's id — the one attribution a call carries.
+    agent_session_id = started["agent_session_id"]
 
     before = (
         db_session.query(AgentApiCall)
@@ -137,6 +133,12 @@ def test_an_agent_reading_a_public_reference_lands_in_its_session_log(
     assert row.path == path
     assert row.project_id == test_project.id
     assert row.agent_id is not None
+    # … and through the endpoint the session page reads.
+    feed = client.get(
+        f"/api/v1/projects/{test_project.id}/agent-sessions/{agent_session_id}/api-activity"
+    )
+    assert feed.status_code == 200, feed.text
+    assert path in {item["path"] for item in feed.json()["items"]}
 
 
 @pytest.mark.parametrize(

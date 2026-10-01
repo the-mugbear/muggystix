@@ -352,6 +352,9 @@ export interface NoteAttachment {
   created_at: string;
   /** v5.260.0 — marked for the client report (opt-in). */
   include_in_report?: boolean;
+  /** What the image shows — the figure caption in the client report. Empty:
+   *  the report prints the file name. */
+  caption?: string | null;
   /** Who attached it — the report opt-in is theirs or a project admin's. */
   uploaded_by_id?: number | null;
 }
@@ -623,6 +626,19 @@ export const setNoteAttachmentInReport = async (
   const response = await api.patch<NoteAttachment>(
     `${p()}/hosts/notes/attachments/${attachmentId}`,
     { include_in_report: includeInReport },
+  );
+  return response.data;
+};
+
+/** The image's caption in the client report (the uploader or a project admin
+ *  writes it); empty clears it. At most 2,000 characters — the server says so. */
+export const setNoteAttachmentCaption = async (
+  attachmentId: number,
+  caption: string,
+): Promise<NoteAttachment> => {
+  const response = await api.patch<NoteAttachment>(
+    `${p()}/hosts/notes/attachments/${attachmentId}`,
+    { caption },
   );
   return response.data;
 };

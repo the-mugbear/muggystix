@@ -39,7 +39,6 @@ const URL = 'https://bluestick.example/api/v1/mcp';
 const entry = { 'bluestick-assist': { type: 'http', url: URL, headers: { 'X-API-Key': KEY } } };
 
 const result = (): StartAssistResponse => ({
-  assist_session_id: 3,
   agent_session_id: 21,
   project_id: 1,
   project_name: 'engagement',

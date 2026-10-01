@@ -40,6 +40,7 @@ Every issued report records a fingerprint of the template folder, so its history
 | `template.json` | yes | The manifest (below). |
 | `report.qmd` | yes | The report: Quarto Markdown filled in by Jinja. The name is set by `entry`. |
 | `sample-data.json` | for `make` and the tests | An example of the data a template receives. |
+| `sample-evidence/*.png` | no | The images `sample-data.json` refers to, so `make` shows figures. Not part of a rendered report or its source zip. |
 | `partials/*.qmd` | no | Reusable pieces, pulled in with `include`. |
 | `reference.docx` | no | Word styles: fonts, headings, tables, title page, header and footer. Without it, Quarto's default Word styles are used. |
 | `filters/*.lua` | no | The template's own Pandoc Lua filters, listed under `filters:` in the front matter after `_bluestick/fields.lua` (see `pentest/filters/spacers.lua`). |
@@ -101,7 +102,7 @@ A template receives one object. `sample-data.json` is a complete example.
 | `scope` | `subnets` (`cidr`, `site`, `description`), `domains` (`domain`, `include_subdomains`). Since v2.441.0 also: `totals` (`networks`, `ipv4_addresses`, `ipv6_networks`, `domains`, `sites`), `by_site` (`site`, `networks`, `addresses`; at most 15 rows plus "Other sites (n)"), `inline_max` / `domains_inline_max` (the cutoffs), `subnets_inline` / `domains_inline` (whether to list each), `external` (either is not listed), and `file` (`name`, `sha256`, `bytes`; `null` when nothing is external). Reports issued before v2.441.0 carry only the two lists, so test with `scope.get("totals")`. Numbers print with separators via `"{:,}".format(n)`. |
 | `counts` | `critical`, `high`, `medium`, `low`, `info`, `total` |
 | `severity_order`, `severity_labels` | `["critical", …, "info"]` and their display labels |
-| `findings` | Worst first (severity, then CVSS score). Each has `id`, `_path` (its data path, which `md()` uses), `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `evidence` (`file`, `caption`), `confirmations` and `confirmations_omitted` (below), `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references`. In an addendum also `previous_severity` / `previous_severity_label` when the finding was re-rated since the baseline (else `null`). |
+| `findings` | Worst first (severity, then CVSS score). Each has `id`, `_path` (its data path, which `md()` uses), `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `images`, `placed` and `evidence` (see Images below), `confirmations` and `confirmations_omitted` (below), `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references`. In an addendum also `previous_severity` / `previous_severity_label` when the finding was re-rated since the baseline (else `null`). |
 | `delta` | Addenda only: `new_findings`, `findings_with_new_endpoints`, `findings_with_changed_severity`, `withdrawn` (`ref`, `title`, `severity_label`, `reason`, `endpoints`). In an addendum, each finding's `change` is `new`, `new_hosts` or `severity_changed`, and `new_affected` lists the new systems. |
 
 What a report includes: findings that are confirmed, accepted risk or remediated. False positives are dropped entirely. Open and retest findings are counted, never shown.
@@ -126,15 +127,32 @@ Helpers:
 
 - `md(f, "recommendation", todo="…")`: a finding's written Markdown. `md("executive_summary")` works the same for a top-level field. When the field is empty, the `todo` text is printed as a highlighted **TODO** instead.
 - `todo("…")`: a highlighted, searchable "TODO: …" for anything the report still needs.
-- `image(e, width="6in", number=None)`: an evidence image (`e` from `f.evidence`). With `number=`, it prints a numbered "Figure N: caption"; see pentest's `counter` namespace in `report.qmd` and `partials/_table_caption.qmd` for numbered table captions.
+- `md(f, "description", images=False)` leaves out the images an author placed in that field (see Images below); `image_width="5in"` sets their width (default `6in`).
+- `image(e, width="6in")`: an evidence image (`e` from `f.evidence`) as a figure. Like `md()` it prints only a placeholder: the filter builds the figure, taking the caption from `data.json`. Every figure is captioned "Figure N: caption", numbered by the filter in the order a reader meets them (see Images below). A template written when Jinja counted the figures (`image(e, number=counter.figure)`) keeps rendering: `number` is accepted and ignored. Table captions are still numbered by the template: see pentest's `counter` namespace in `report.qmd` and `partials/_table_caption.qmd`.
 - `code(c, "command")`: a command line or a tool's output, verbatim (`c` from `f.confirmations`; `"command"` or `"output"`). Like `md()` it prints only a placeholder: the filter builds one code block from the string in `data.json`, which is never parsed, so a fence, a backtick or a shortcode in it is text. Nothing is printed for an empty value.
 - `asset("logo")`: the path of an installed template image, or an empty string.
 - `plain(v)`: a date, number or reference printed unescaped. It refuses anything that would need escaping.
 
+**Images.** An image attached to a finding goes in the report when it is ticked "In report". Its author writes its caption on the finding's page, and may place it inside one of that finding's written sections by writing `![caption](evidence:<id>)` in the Markdown (the editor's Insert image button does it). What a template gets, per finding:
+
+| Key | What it holds |
+|---|---|
+| `images` | Every image marked for the report: `attachment_id`, `file` (`evidence/57.png`), `caption` (the author's, else the file name) and `placed_in` (the fields that place it). |
+| `placed` | Per field, the images its text places: `{"description": {"57": {"attachment_id", "file", "caption"}}}`. `md()` reads it; a template never needs to. |
+| `evidence` | The images no field places, for a trailing evidence block: loop over it with `image(e)`. Empty when every image is placed. |
+
+- A placed image prints inside its `md()` field as a figure. In a paragraph it splits the paragraph; in a list item it stays in the item; from a table cell it moves to just after the table (a figure in a cell is not framed in Word). The text in the brackets is the caption for that place; left empty, the image's own caption prints. The same image may be placed more than once; each place is its own figure.
+- A reference to anything else (another finding's image, one that is not ticked, an id that does not exist, a web address) prints as its alt text, like any other image in written text.
+- Figures are numbered "Figure 1, 2, 3…" through the report in the order a reader meets them, placed and trailing alike. The filter does it, because Jinja never sees a placed image.
+- A template that prints a field but no evidence passes `images=False` (`executive-brief` does). A template with no trailing block (`remediation-worklist`) prints only placed images, in the fields it prints.
+- Top-level text (`md("executive_summary")`) takes no images.
+- A report issued before images could be placed has `evidence` alone. Read the others with `f.get("images")`.
+- `make` uses the template's `sample-evidence/` folder for the sample's images when it has one (`pentest` does): files named as in the data (`1.png` for `evidence/1.png`). Pass `--evidence DIR` to the renderer for another folder. Without the files, a draft render leaves the images out.
+
 **The rules** that keep a report safe. The renderer enforces them, and `test_hostile_text_stays_text_in_every_format` checks every template in this folder against them:
 
 1. **Every printed value is escaped.** A title of `*bold*` prints as those characters. So no data can become Markdown, a Quarto shortcode or HTML.
-2. **Written text only through `md()`.** It is inserted after Quarto's own filters, with raw HTML, images, non-web links, headings and attributes removed. Never print written text as a value.
+2. **Written text only through `md()`.** It is inserted after Quarto's own filters, with raw HTML, images, non-web links, headings and attributes removed. Never print written text as a value. The one image that survives is a reference to one of that finding's own images marked "In report" (`![caption](evidence:57)`), and only when the data's `placed` map lists it for that field. The filter decides from the data, never from the text.
 3. **Never print data in the YAML front matter.** Quarto expands shortcodes in metadata even when they are escaped. Name the data with `bluestick-meta` instead, as the shipped templates do for `title` and `subtitle`.
 4. **Never print a value inside `` `code` `` or a code block.** Escapes are not undone there. A command line or tool output goes through `code()`, the one way to print either.
 5. **Reusable parts are includes, not macros.** A macro's output is printed like a value and so escaped. Use `<% include "partials/_x.qmd" %>` with `<% with … %>` to pass it variables.
@@ -150,7 +168,7 @@ Things to handle in every template:
 
 - `make` renders `sample-data.json`. Try `make DATA=other.json` with a dataset saved from a real report. Keep such datasets out of the repository: a saved report is client data, and `.gitignore` covers `sample-data-*.json` and `data-*.json` in a template folder. The scope-over-the-cutoff case is built in `test_report_templates_shipped.py` (`_with_scope`), not shipped as a file.
 - `backend/tests/test_report_templates_shipped.py` checks that every shipped template is offered with no problems, and what each one prints for a full report and an addendum. Add a test there for yours. `test_report_templates_escaping.py` and `test_report_template_assets.py` cover escaping and the `assets` manifest.
-- `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary, the written fields and a test result's command and output. Quarto only exists in the report-worker image, so run it there:
+- `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary, the written fields (hostile image references included), an image's caption and a test result's command and output. It also pins how many figures each shipped template prints for that data (the `expected` map in `test_hostile_text_stays_text_in_every_format`); a template that is not in the map is held to everything else. Quarto only exists in the report-worker image, so run it there:
   ```bash
   docker compose run --rm --no-deps -v "$PWD/backend:/app" report-worker \
     sh -c "cd /tmp && python -m pytest /app/tests/test_quarto_render.py -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"

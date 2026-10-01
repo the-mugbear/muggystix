@@ -355,8 +355,7 @@ const SessionRowDisplay: React.FC<{ session: AgentSessionRow }> = ({ session }) 
     ? session.purpose || 'Project session'
     : 'Project-wide';
 
-  // One rule for where a row opens (utils/agentRuns); a legacy row with no
-  // page offers no Open.
+  // One rule for where a row opens (utils/agentRuns).
   const openPath = sessionRowPath(session);
 
   // 5.304.0 — "active" on a legacy row no agent session can act on is

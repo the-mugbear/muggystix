@@ -22,9 +22,12 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, get_current_user
 from app.db.session import get_db
-from app.db.models_agent import AgentApiCall, Agent, AgentFeedback, AgentSession, AssistSession
+from app.db.models_agent import (
+    AgentApiCall, Agent, AgentFeedback, AgentSession, AgentSessionWorkflow,
+)
 from app.db.models_auth import User
 from app.db.models_project import Project
+from app.services.agent_session_service import agent_session_for_legacy_assist_id
 
 router = APIRouter()
 
@@ -240,15 +243,17 @@ def _session_hygiene(db: Session, project_id: int, window_start: datetime) -> Ag
     )
 
 
-# Priority-ordered workflow label, so each call counts once.  v2.338.2 — a
-# unified project session's calls carry only ``agent_session_id``: "session"
-# work, not "other".  (The "execution" and "plan" labels went with execution
-# runs and test plans in v2.442.0.)
+# One label per call, from the session it belongs to: "assist" for a legacy
+# assist session (``agent_sessions.workflow``), "session" for any other, and
+# "other" for a call with no session.  Needs the outer join to
+# ``agent_sessions`` — the summary's ``labelled`` query.  (v2.449.0: the label used to be
+# read from ``agent_api_calls.assist_session_id``; the "execution" and "plan"
+# labels went with execution runs and test plans in v2.442.0.)
 def _workflow_case():
     return case(
-        (AgentApiCall.assist_session_id.isnot(None), "assist"),
-        (AgentApiCall.agent_session_id.isnot(None), "session"),
-        else_="other",
+        (AgentApiCall.agent_session_id.is_(None), "other"),
+        (AgentSession.workflow == AgentSessionWorkflow.ASSIST.value, "assist"),
+        else_="session",
     )
 
 
@@ -271,9 +276,18 @@ def get_agent_activity_summary(
     payload is bounded regardless of how many calls were logged.
     """
     window_start = datetime.now(timezone.utc) - timedelta(days=window_days)
-    base = db.query(AgentApiCall).filter(
+    in_window = (
         AgentApiCall.project_id == project.id,
         AgentApiCall.created_at >= window_start,
+    )
+    base = db.query(AgentApiCall).filter(*in_window)
+    # The same calls beside their session, for the two aggregates that label a
+    # call by its session's kind.  An outer join on the session's primary key:
+    # it adds no rows, and a call with no session keeps its place.
+    labelled = (
+        db.query(AgentApiCall)
+        .outerjoin(AgentSession, AgentSession.id == AgentApiCall.agent_session_id)
+        .filter(*in_window)
     )
 
     total_calls = base.count()
@@ -323,7 +337,7 @@ def get_agent_activity_summary(
     by_workflow = [
         AgentActivityWorkflowCount(workflow=label, calls=int(count))
         for label, count in (
-            base.with_entities(wf.label("wf"), func.count(AgentApiCall.id))
+            labelled.with_entities(wf.label("wf"), func.count(AgentApiCall.id))
             .group_by(wf)
             .all()
         )
@@ -354,28 +368,28 @@ def get_agent_activity_summary(
         )
     ]
 
-    # Busiest sessions across workflows — one small GROUP BY per FK,
-    # merged and capped.  v2.338.2 — the unified session is the unit an
-    # operator actually started, so it is ranked too (its phase rows stay:
-    # they say which run within the session was busiest).
-    busiest: List[AgentActivitySessionRow] = []
-    for col, label in (
-        (AgentApiCall.agent_session_id, "session"),
-        (AgentApiCall.assist_session_id, "assist"),
-    ):
-        for sid, count, last in (
-            base.with_entities(col, func.count(AgentApiCall.id), func.max(AgentApiCall.created_at))
-            .filter(col.isnot(None))
-            .group_by(col)
-            .all()
-        ):
-            busiest.append(
-                AgentActivitySessionRow(
-                    workflow=label, session_id=int(sid), calls=int(count), last_activity=last
-                )
+    # Busiest sessions: one GROUP BY, ranked and cut in SQL.  ``session_id`` is
+    # the session's id whatever its label (v2.449.0 — a legacy assist session
+    # used to be listed twice, once under each of its two ids).
+    calls_per_session = func.count(AgentApiCall.id)
+    busiest = [
+        AgentActivitySessionRow(
+            workflow=label, session_id=int(sid), calls=int(count), last_activity=last
+        )
+        for sid, label, count, last in (
+            labelled.with_entities(
+                AgentApiCall.agent_session_id,
+                wf.label("wf"),
+                calls_per_session,
+                func.max(AgentApiCall.created_at),
             )
-    busiest.sort(key=lambda s: s.calls, reverse=True)
-    busiest = busiest[:10]
+            .filter(AgentApiCall.agent_session_id.isnot(None))
+            .group_by(AgentApiCall.agent_session_id, wf)
+            .order_by(calls_per_session.desc(), AgentApiCall.agent_session_id)
+            .limit(10)
+            .all()
+        )
+    ]
 
     return AgentActivitySummary(
         window_days=window_days,
@@ -392,9 +406,63 @@ def get_agent_activity_summary(
 
 
 @router.get(
+    "/agent-sessions/{session_id}/api-activity",
+    response_model=AgentApiCallListResponse,
+    summary="List the API calls an agent session made",
+)
+def list_agent_session_activity(
+    project_id: int = Path(..., gt=0),
+    session_id: int = Path(..., gt=0),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+    method: Optional[str] = Query(None),
+    status_min: Optional[int] = Query(None, ge=100, le=599),
+    status_max: Optional[int] = Query(None, ge=100, le=599),
+    host_id: Optional[int] = Query(None),
+    target_ip: Optional[str] = Query(None),
+    mine: bool = Query(False, description="Only calls made by agents the current user owns."),
+    since: Optional[datetime] = None,
+    until: Optional[datetime] = None,
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """What an agent session actually did (v2.284.0) — every authenticated
+    call its key made, newest first.
+
+    Keyed by the session id (v2.449.0).  It was keyed by the session's
+    ``assist_sessions`` row and had to match calls on either of two columns;
+    every call now names its session in ``agent_session_id``
+    (``idx_agent_api_call_session_created``).
+    """
+    # get_current_project enforces ProjectMembership for the path project_id;
+    # the session must be THIS project's, or its calls are not listed.
+    session = (
+        db.query(AgentSession.id)
+        .filter(AgentSession.id == session_id, AgentSession.project_id == project.id)
+        .first()
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="Agent session not found in this project")
+    q = _base_query(
+        db, project_id=project.id,
+        method=method, status_min=status_min, status_max=status_max,
+        host_id=host_id, target_ip=target_ip, since=since, until=until,
+        mine_owner_id=current_user.id if mine else None,
+    ).filter(AgentApiCall.agent_session_id == session_id)
+    total = q.count()
+    rows = (
+        q.order_by(AgentApiCall.created_at.desc())
+        .offset(offset).limit(limit).all()
+    )
+    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))
+
+
+@router.get(
     "/assist-sessions/{assist_session_id}/api-activity",
     response_model=AgentApiCallListResponse,
-    summary="List the agent's API calls for this assist session",
+    deprecated=True,
+    summary="A session's API calls by its old assist-session id — use /agent-sessions/{id}/api-activity",
 )
 def list_assist_session_activity(
     project_id: int = Path(..., gt=0),
@@ -413,42 +481,15 @@ def list_assist_session_activity(
     current_user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """What an assist session actually did (v2.284.0).
-
-    Plans and recon sessions have had this since the audit log existed; assist
-    did not, so the one workflow an operator runs interactively — and the only
-    one that can write notes under their own name — was the one whose activity
-    they could not review anywhere in the app.  The rows were being recorded the
-    whole time; nothing read them back.
-    """
-    # get_current_project enforces ProjectMembership for the path project_id
-    # (see list_plan_activity) — guards the same cross-tenant read.
-    assist = (
-        db.query(AssistSession)
-        .filter(
-            AssistSession.id == assist_session_id,
-            AssistSession.project_id == project.id,
-        )
-        .first()
-    )
-    if assist is None:
+    """The same feed for an old link: finds the session that had this
+    ``assist_sessions`` id (only sessions started before v2.449.0 have one) and
+    calls the handler above."""
+    session = agent_session_for_legacy_assist_id(db, project.id, assist_session_id)
+    if session is None:
         raise HTTPException(status_code=404, detail="Assist session not found in this project")
-    # v2.338.2 — calls are stamped with the UNIFIED session id (from the key);
-    # ``assist_session_id`` is only set on rows written before v2.337.0.  The
-    # page's "API calls" count already joined through the unified id, so it
-    # said 141 while this list — still filtering the legacy column — was empty.
-    owner = AgentApiCall.assist_session_id == assist_session_id
-    if assist.agent_session_id is not None:
-        owner = owner | (AgentApiCall.agent_session_id == assist.agent_session_id)
-    q = _base_query(
-        db, project_id=project.id,
+    return list_agent_session_activity(
+        project_id=project_id, session_id=session.id, limit=limit, offset=offset,
         method=method, status_min=status_min, status_max=status_max,
-        host_id=host_id, target_ip=target_ip, since=since, until=until,
-        mine_owner_id=current_user.id if mine else None,
-    ).filter(owner)
-    total = q.count()
-    rows = (
-        q.order_by(AgentApiCall.created_at.desc())
-        .offset(offset).limit(limit).all()
+        host_id=host_id, target_ip=target_ip, mine=mine, since=since, until=until,
+        project=project, current_user=current_user, db=db,
     )
-    return AgentApiCallListResponse(total=total, items=_serialize_rows(db, rows))

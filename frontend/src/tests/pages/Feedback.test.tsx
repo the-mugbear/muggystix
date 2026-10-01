@@ -39,9 +39,8 @@ const entry = (over: Partial<AgentFeedbackEntry> = {}): AgentFeedbackEntry => ({
   id: 9,
   project_id: 3,
   agent_id: 11,
-  assist_session_id: null,
   agent_session_id: 57,
-  session_page_id: 37,
+  session_has_page: true,
   session_api_calls: 89,
   project_name: 'Demo — Insights Eval',
   agent_name: 'session-agent',
@@ -118,7 +117,17 @@ describe('Agent Feedback', () => {
     renderPage();
     await userEvent.click(await screen.findByRole('button', { name: /Session #57/ }));
     expect(selectProject).toHaveBeenCalledWith(expect.objectContaining({ id: 3 }));
-    expect(navigate).toHaveBeenCalledWith('/assist-sessions/37');
+    // The session's page, by the session's one id (it was a second "page id").
+    expect(navigate).toHaveBeenCalledWith('/agent-sessions/57');
+  });
+
+  it('names a session that has no page without offering a dead link', async () => {
+    // A recon / plan / execution row from before the unified session.
+    listAgentFeedback.mockResolvedValue(page([entry({ session_has_page: false })]));
+    renderPage();
+    const row = await screen.findByTestId('feedback-row-9');
+    expect(within(row).getByText('Session #57')).toBeInTheDocument();
+    expect(within(row).queryByRole('button', { name: /Session #57/ })).not.toBeInTheDocument();
   });
 
   it('measures are links to the rows they count', async () => {

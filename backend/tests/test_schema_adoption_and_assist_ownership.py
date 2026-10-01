@@ -123,12 +123,12 @@ def _member(db, user, project, role):
 def _start_session(client, project_id):
     r = client.post(f"/api/v1/projects/{project_id}/assist/start", json={})
     assert r.status_code == 201, r.text
-    return r.json()["assist_session_id"]
+    return r.json()["agent_session_id"]
 
 
 def test_an_operator_can_end_their_own_session(client, test_project):
     sid = _start_session(client, test_project.id)
-    r = client.post(f"/api/v1/projects/{test_project.id}/assist/sessions/{sid}/end")
+    r = client.post(f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/end")
     assert r.status_code == 204, r.text
 
 
@@ -152,7 +152,7 @@ def test_a_peer_analyst_cannot_end_someone_elses_session(
     app.dependency_overrides[get_current_user] = lambda: peer
     try:
         r = client.post(
-            f"/api/v1/projects/{test_project.id}/assist/sessions/{sid}/end"
+            f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/end"
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)
@@ -177,7 +177,7 @@ def test_a_project_admin_can_end_an_abandoned_session(
     app.dependency_overrides[get_current_user] = lambda: admin
     try:
         r = client.post(
-            f"/api/v1/projects/{test_project.id}/assist/sessions/{sid}/end"
+            f"/api/v1/projects/{test_project.id}/agent-sessions/{sid}/end"
         )
     finally:
         app.dependency_overrides.pop(get_current_user, None)

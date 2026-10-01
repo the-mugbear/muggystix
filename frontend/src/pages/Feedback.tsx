@@ -46,6 +46,16 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
 } from '../components/ui/table';
 import { cn } from '../utils/cn';
+import { agentSessionPath } from '../utils/agentRuns';
+
+/** The session's page (with its API calls), or null when there is no session
+ *  or it has no page (a recon / plan / execution row from before the unified
+ *  session). 5.328.0 — the page is addressed by the session id; it used to be
+ *  a second id (`session_page_id`). */
+const sessionPageOf = (r: AgentFeedbackEntry): string | null =>
+  r.agent_session_id != null && r.session_has_page !== false
+    ? agentSessionPath(r.agent_session_id)
+    : null;
 
 const PAGE = 50;
 
@@ -206,7 +216,7 @@ const Feedback: React.FC = () => {
 
   /** Open the page that lists this session's API calls — in its own project. */
   const openSession = (r: AgentFeedbackEntry) => {
-    const target = r.session_page_id != null ? `/assist-sessions/${r.session_page_id}` : null;
+    const target = sessionPageOf(r);
     if (!target) return;
     if (r.project_id != null && r.project_id !== currentProject?.id) {
       const proj = projects.find((p) => p.id === r.project_id);
@@ -383,7 +393,7 @@ const Feedback: React.FC = () => {
                   const critiques = r.api_critiques?.length ?? 0;
                   const suggestions = r.tool_suggestions?.length ?? 0;
                   const client = clientOf(r);
-                  const canOpen = r.session_page_id != null;
+                  const canOpen = sessionPageOf(r) != null;
                   return (
                     <React.Fragment key={r.id}>
                       <TableRow data-testid={`feedback-row-${r.id}`}>
@@ -416,7 +426,9 @@ const Feedback: React.FC = () => {
                               {r.session_api_calls != null && ` · ${plural(r.session_api_calls, 'call')}`}
                             </button>
                           ) : (
-                            <span className="text-caption text-muted-foreground">No session recorded</span>
+                            <span className="text-caption text-muted-foreground">
+                              {r.agent_session_id != null ? `Session #${r.agent_session_id}` : 'No session recorded'}
+                            </span>
                           )}
                         </TableCell>
                         <TableCell className="align-top">

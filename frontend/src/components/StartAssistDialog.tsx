@@ -44,12 +44,12 @@ import {
 } from './ui/dialog';
 import { Input } from './ui/input';
 import { Label } from './ui/label';
-import { startAssistSession, type AssistSessionRow, type StartAssistResponse } from '../services/api';
+import { startAssistSession, type AgentSessionRow, type StartAssistResponse } from '../services/api';
 import { formatApiError } from '../utils/apiErrors';
 import AssistSessionsPanel from './AssistSessionsPanel';
 import AgentSessionCredentials, { KeyHandoffFooter } from './AgentSessionCredentials';
 import { CodeBlock } from './ui/code-block';
-import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
+import { SESSIONS_LIST_PATH, agentSessionPath, hasLiveKey } from '../utils/agentRuns';
 
 export interface StartAssistDialogProps {
   open: boolean;
@@ -58,7 +58,7 @@ export interface StartAssistDialogProps {
   onSessionStarted?: (sessionId: number) => void;
   /** The operator's own active sessions, shown above the start form so they
    *  can see (and revoke) a key they already hold. Omit to hide the panel. */
-  mySessions?: AssistSessionRow[];
+  mySessions?: AgentSessionRow[];
   /** Re-fetch `mySessions` after this dialog starts or ends one. */
   onSessionsChanged?: () => void | Promise<void>;
   /** A one-line task to give the agent (e.g. "Propose tests in BlueStick
@@ -66,10 +66,6 @@ export interface StartAssistDialogProps {
    *  starts. */
   instruction?: string;
 }
-
-/** A session whose key still works: an agent could take the instruction now. */
-const hasLiveKey = (s: AssistSessionRow, now: number): boolean =>
-  s.key_expires_at != null && new Date(s.key_expires_at).getTime() > now;
 
 const InstructionBlock: React.FC<{ text: string; lead: React.ReactNode }> = ({ text, lead }) => (
   <div className="flex min-w-0 flex-col gap-xxs">
@@ -120,7 +116,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
   };
 
   const handleClose = () => {
-    const sid = result?.assist_session_id;
+    const sid = result?.agent_session_id;
     reset();
     onOpenChange(false);
     if (sid && onSessionStarted) onSessionStarted(sid);
@@ -152,7 +148,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
           <DialogTitle className="flex items-center gap-xs">
             <MessageCircleQuestion className="size-5 text-primary" aria-hidden />
             {result
-              ? `Connect your agent — session #${result.agent_session_id ?? result.assist_session_id}`
+              ? `Connect your agent — session #${result.agent_session_id}`
               : 'Start Agent Session'}
           </DialogTitle>
           <DialogDescription>
@@ -185,11 +181,11 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
                     <>
                       Your agent session{' '}
                       <Link
-                        to={agentSessionPath(liveSession.agent_session_id ?? liveSession.id)}
+                        to={agentSessionPath(liveSession.id)}
                         onClick={() => { reset(); onOpenChange(false); }}
                         className="text-primary underline-offset-4 hover:underline"
                       >
-                        #{liveSession.agent_session_id ?? liveSession.id}
+                        #{liveSession.id}
                       </Link>{' '}
                       is live — paste this to its agent; there is no need to start another.
                     </>

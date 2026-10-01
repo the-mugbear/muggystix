@@ -121,14 +121,20 @@ class AgentSession(Base):
     proposed test a ``HostTest``, what it ran an ``EvidenceRecord``, a change
     it suggests an ``AgentProposal``, a note an ``Annotation``.  ``workflow``
     is ``project`` for every session minted since the consolidation; the
-    legacy per-workflow values survive on older rows as labels (an
-    :class:`AssistSession` detail row still attached where there was one).
+    legacy per-workflow values survive on older rows as labels.
 
     Shared lifecycle state (status, timestamps, the agent/model attribution,
     the operator's stated purpose, notes) lives here.  A host test and an
     evidence record keep their own copy of the attribution, snapshotted when
     written (a session can switch models).  The environment probe columns
     went in v2.434.0.
+
+    **This id is the session's only id** (v2.449.0).  Until then every start
+    also wrote an ``assist_sessions`` row whose id the review routes were keyed
+    by; migration ``b8e2a5c7d1f3`` folded that table in and dropped it.
+    ``legacy_assist_session_id`` keeps the old row's id for the sessions that
+    had one, read only to send an old ``/assist-sessions/{id}`` link to its
+    session — nothing is written to it and nothing else is keyed by it.
     """
     __tablename__ = "agent_sessions"
 
@@ -182,6 +188,10 @@ class AgentSession(Base):
 
     notes = Column(Text, nullable=True)
 
+    # The id this session's ``assist_sessions`` row had (dropped in
+    # b8e2a5c7d1f3).  NULL on every session started since.
+    legacy_assist_session_id = Column(Integer, nullable=True)
+
     # Relationships
     project = relationship("Project")
     agent = relationship("Agent")
@@ -190,6 +200,7 @@ class AgentSession(Base):
     __table_args__ = (
         Index("idx_agent_session_project", "project_id"),
         Index("idx_agent_session_workflow_status", "workflow", "status"),
+        Index("uq_agent_session_legacy_assist", "legacy_assist_session_id", unique=True),
     )
 
 
@@ -205,9 +216,8 @@ class AgentFeedbackSource(str, enum.Enum):
     # v2.85.0 — assist sessions now invite feedback.  Pre-v2.85.0 the
     # assist prompt deliberately omitted the feedback block because the
     # enum lacked an ASSIST value and the read-only "ask a question"
-    # shape didn't fit the plan/recon/execution lifecycle.  Now that
-    # AgentFeedback carries assist_session_id, the assist prompt closes
-    # the same way the others do.
+    # shape didn't fit the plan/recon/execution lifecycle.  The assist
+    # prompt now closes the same way the others do.
     ASSIST = "assist"
     # v2.442.0 — proposing tests on hosts and recording their evidence.  It
     # replaces PLAN_GENERATION / IN_SESSION_EXECUTION for new feedback; those
@@ -245,17 +255,10 @@ class AgentFeedback(Base):
         ForeignKey("agents.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # v2.85.0 — assist linkage (pre-consolidation assist sessions).  The
-    # ``test_plan_id`` / ``execution_session_id`` columns went with their
-    # tables in v2.442.0.
-    assist_session_id = Column(
-        Integer,
-        ForeignKey("assist_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-        index=True,
-    )
     # v2.337.0 — the session the feedback came from, stamped from the key
-    # rather than the body.
+    # rather than the body.  The one session link (``assist_session_id`` was
+    # folded into it by b8e2a5c7d1f3; ``test_plan_id`` /
+    # ``execution_session_id`` went with their tables in v2.442.0).
     agent_session_id = Column(
         Integer,
         ForeignKey("agent_sessions.id", ondelete="SET NULL"),
@@ -286,7 +289,6 @@ class AgentFeedback(Base):
     # Relationships
     project = relationship("Project", foreign_keys=[project_id])
     agent = relationship("Agent", foreign_keys=[agent_id])
-    assist_session = relationship("AssistSession", foreign_keys=[assist_session_id])
     agent_session = relationship("AgentSession", foreign_keys=[agent_session_id])
     reviewed_by = relationship("User", foreign_keys=[reviewed_by_id])
 
@@ -298,108 +300,10 @@ class AgentFeedback(Base):
 
 
 # ---------------------------------------------------------------------------
-# Assist sessions (v2.64.0)
+# (The ``assist_sessions`` table and its ``AssistSession`` model lived here
+# from v2.64.0.  Migration b8e2a5c7d1f3 folded each row into its
+# ``AgentSession`` and dropped the table — see ``legacy_assist_session_id``.)
 # ---------------------------------------------------------------------------
-#
-# Fourth agent surface — read-only, project-scoped, short-TTL.  The
-# recon/plan/execution workflows assume an operator wants to commit to
-# a full pipeline.  Assist sessions are the lightweight alternative
-# for senior testers who want to ask custom questions ("which hosts
-# expose FTP?", "summarize my critical findings for project X") without
-# minting a plan key and triggering plan-approval ceremony.
-#
-# Scope: read-only via /agent/assist/* endpoints.  No execution
-# authority, no test-plan creation, no host follow mutation in v1
-# (those are tracked as future work — see CHANGELOG).
-#
-# Audit: like recon/execution sessions, every /agent/assist/* call is
-# captured in agent_api_calls; ``assist_session_id`` is the new
-# attribution column for filtering.
-
-class AssistSessionStatus(str, enum.Enum):
-    ACTIVE = "active"
-    ENDED = "ended"
-    EXPIRED = "expired"
-
-
-class AssistSession(Base):
-    """The detail row the session pages still key on — one per session start.
-
-    Since v2.337.0 the consolidated project :class:`AgentSession` carries
-    ``purpose`` and ``last_activity_at`` itself, and every ``/agent/assist/*``
-    read resolves the caller's ``AgentSession`` directly, so nothing on the
-    agent side reads this table.  A row IS still written, though:
-    ``POST /projects/{id}/assist/start`` (``endpoints/assist.py``) adds one
-    beside the ``AgentSession`` it creates, linked by ``agent_session_id``,
-    because the ``/assist-sessions`` list, detail and API-activity routes —
-    and the note / feedback links that carry an assist-session id — read
-    through it.  Rows from before the consolidation have no
-    ``agent_session_id``.  Folding these pages onto ``agent_sessions`` is a
-    separate change (review 2026-10-01 B3).
-    """
-    __tablename__ = "assist_sessions"
-
-    id = Column(Integer, primary_key=True, index=True)
-    project_id = Column(
-        Integer,
-        ForeignKey("projects.id", ondelete="CASCADE"),
-        nullable=False,
-    )  # indexed via idx_assist_session_project
-    agent_id = Column(
-        Integer,
-        ForeignKey("agents.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-    started_by_id = Column(
-        Integer,
-        ForeignKey("users.id", ondelete="SET NULL"),
-        nullable=True,
-    )
-
-    status = Column(
-        String(20),
-        nullable=False,
-        default=AssistSessionStatus.ACTIVE.value,
-    )
-
-    # v2.116.0 — 1:1 link to the unified AgentSession base (see
-    # AgentSession).  Nullable during the expand phase.
-    agent_session_id = Column(
-        Integer,
-        ForeignKey("agent_sessions.id", ondelete="CASCADE"),
-        nullable=True,
-        index=True,
-    )
-
-    # Free-form description from the human at start time — "looking
-    # for FTP exposure", "writing up critical findings", etc.  Useful
-    # for the audit log so a reviewer can see why each assist session
-    # was opened.
-    purpose = Column(Text, nullable=True)
-
-    started_at = Column(DateTime(timezone=True), server_default=func.now())
-    ended_at = Column(DateTime(timezone=True), nullable=True)
-    # Refreshed by the audit middleware on every successful assist
-    # API call.  Lets the UI show "session has been idle for 47m"
-    # without scanning agent_api_calls.
-    last_activity_at = Column(DateTime(timezone=True), nullable=True)
-
-    # Executing-agent attribution (pre-consolidation rows; a unified session's
-    # lives on its AgentSession).
-    generated_by_model = Column(String(100), nullable=True)
-    generated_by_tool = Column(String(100), nullable=True)
-    prompt_version = Column(String(20), nullable=True)
-
-    # Relationships
-    project = relationship("Project", foreign_keys=[project_id])
-    agent = relationship("Agent", foreign_keys=[agent_id])
-    started_by = relationship("User", foreign_keys=[started_by_id])
-    agent_session = relationship("AgentSession")
-
-    __table_args__ = (
-        Index("idx_assist_session_project", "project_id"),
-        Index("idx_assist_session_status", "status"),
-    )
 
 
 # ---------------------------------------------------------------------------
@@ -475,16 +379,8 @@ class AgentApiCall(Base):
         ForeignKey("scopes.id", ondelete="SET NULL"),
         nullable=True,
     )
-    # v2.64.0 — assist-session attribution.  Parallel to the columns
-    # above; populated by the audit middleware from
-    # request.state.scoped_assist_session_id on /agent/assist/* calls.
-    # Nullable for the same reason as the other workflow columns
-    # (only one is set per row).
-    assist_session_id = Column(
-        Integer,
-        ForeignKey("assist_sessions.id", ondelete="SET NULL"),
-        nullable=True,
-    )  # indexed via idx_agent_api_call_assist_created (prefix; see __table_args__)
+    # (``assist_session_id`` — the v2.64.0 assist attribution — was folded into
+    # ``agent_session_id`` by b8e2a5c7d1f3: one session column.)
 
     # The call itself
     method = Column(String(8), nullable=False)        # GET / POST / PATCH / DELETE
@@ -535,9 +431,8 @@ class AgentApiCall(Base):
     __table_args__ = (
         Index("idx_agent_api_call_agent_created", "agent_id", "created_at"),
         Index("idx_agent_api_call_project_created", "project_id", "created_at"),
-        # assist_session_id folds into this composite (it's the leading column),
-        # so the column itself drops `index=True` to avoid a redundant index.
-        Index("idx_agent_api_call_assist_created", "assist_session_id", "created_at"),
+        # The session page's feed and its per-session counts: one session's
+        # calls, newest first.
         Index("idx_agent_api_call_session_created", "agent_session_id", "created_at"),
         # v2.50.1 — enforce the agent_id+project_id-or-error_class
         # contract at the DB level.  The columns were relaxed to

@@ -9,7 +9,7 @@ since v2.442.0 there are no plans or execution runs either.
 import uuid
 
 from app.db import models
-from app.db.models_agent import AgentSession, AssistSession
+from app.db.models_agent import AgentSession
 from app.db.models_host_tests import HostTest
 from app.db.models_proposals import EvidenceRecord
 
@@ -28,14 +28,12 @@ def _start_session(client, project):
     r = client.post(f"/api/v1/projects/{project.id}/assist/start", json={"purpose": "everything"})
     assert r.status_code == 201, r.text
     body = r.json()
-    return body["api_key"], body["assist_session_id"]
+    return body["api_key"], body["agent_session_id"]
 
 
-def _session_id(db, assist_session_id):
-    return (
-        db.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == assist_session_id).scalar()
-    )
+def _session_id(db, started_id):
+    """The session id IS the id the start returned (v2.449.0)."""
+    return started_id
 
 
 def _hdr(key):
@@ -56,8 +54,7 @@ def _spec(host, **extra):
 
 def test_one_key_reaches_identity_scope_and_host_tests(client, test_project, db_session):
     key, assist_session_id = _start_session(client, test_project)
-    # The start endpoint returns the AssistSession id; the unified session is
-    # the AgentSession it links to.
+    # The start endpoint returns the AgentSession id — the session's one id.
     session_id = _session_id(db_session, assist_session_id)
 
     # The session is a PROJECT session and the key resolves to it.

@@ -345,6 +345,40 @@ export const uploadFindingNoteAttachment = async (
   return response.data;
 };
 
+/** One image attached to a finding (its comments or its source-note thread),
+ *  as the client report sees it. */
+export interface FindingImage {
+  id: number;
+  note_id: number;
+  filename: string;
+  /** The figure caption; null → the report prints the file name. */
+  caption: string | null;
+  content_type: string;
+  size_bytes: number;
+  /** Ticked "In report". */
+  in_report: boolean;
+  /** PNG / JPEG / GIF — a format the report can print. */
+  printable: boolean;
+  /** The report-text fields whose Markdown places it (`![…](evidence:<id>)`). */
+  placed_in: string[];
+  uploaded_by_id: number | null;
+  by_agent: boolean;
+  created_at: string | null;
+  /** This viewer may tick, caption or delete it. */
+  can_edit: boolean;
+}
+
+export interface FindingImageList {
+  items: FindingImage[];
+  caption_max: number;
+}
+
+/** The finding's images with where each is placed in its report text. */
+export const getFindingImages = async (findingId: number): Promise<FindingImageList> => {
+  const response = await api.get<FindingImageList>(`${p()}/findings/${findingId}/images`);
+  return response.data;
+};
+
 export interface PromoteVulnerabilityPreview {
   plugin_id: string | null;
   /** Scanner-agnostic issue identity the fan-out keys on. */

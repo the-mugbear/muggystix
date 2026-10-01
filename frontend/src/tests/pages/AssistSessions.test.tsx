@@ -1,8 +1,8 @@
 /**
- * `/assist-sessions/:id` — the old, detail-row-keyed address of a session
- * (v5.312.0): it resolves to the session and redirects to its page, because
- * notes, feedback and bookmarks still link here. A bare `/assist-sessions`
- * goes to Agent Sessions.
+ * `/assist-sessions/:id` — the old address of a session, keyed by a second id
+ * it no longer has (5.328.0): the server says which session had that id and
+ * the page redirects there, because notes, feedback and bookmarks from before
+ * still link here. A bare `/assist-sessions` goes to Agent Sessions.
  */
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
@@ -17,9 +17,9 @@ vi.mock('react-router-dom', async () => {
   return { ...actual, useParams: () => params.current };
 });
 
-const getAssistSession = vi.fn();
+const getAgentSessionByLegacyAssistId = vi.fn();
 vi.mock('../../services/api', () => ({
-  getAssistSession: (...a: unknown[]) => getAssistSession(...a),
+  getAgentSessionByLegacyAssistId: (...a: unknown[]) => getAgentSessionByLegacyAssistId(...a),
 }));
 
 const Where = () => {
@@ -43,7 +43,7 @@ const renderAt = (sessionId?: string) => {
 
 describe('AssistSessions (redirect)', () => {
   beforeEach(() => {
-    getAssistSession.mockReset();
+    getAgentSessionByLegacyAssistId.mockReset();
   });
 
   it('sends the bare path to Agent Sessions', async () => {
@@ -51,15 +51,21 @@ describe('AssistSessions (redirect)', () => {
     expect(await screen.findByTestId('where')).toHaveTextContent('/agent-activity');
   });
 
-  it('opens the SESSION the detail row belongs to — detail #52 is session #72', async () => {
-    getAssistSession.mockResolvedValue({ id: 52, agent_session_id: 72 });
+  it('opens the session that had the old id — old #52 is session #72', async () => {
+    getAgentSessionByLegacyAssistId.mockResolvedValue({ kind: 'project', id: 72, project_id: 1, status: 'ended' });
     renderAt('52');
     expect(await screen.findByTestId('where')).toHaveTextContent('/agent-sessions/72');
-    expect(getAssistSession).toHaveBeenCalledWith(52);
+    expect(getAgentSessionByLegacyAssistId).toHaveBeenCalledWith(52);
+  });
+
+  it('opens a legacy assist session too: it has the same page now', async () => {
+    getAgentSessionByLegacyAssistId.mockResolvedValue({ kind: 'assist', id: 31, project_id: 1, status: 'ended' });
+    renderAt('7');
+    expect(await screen.findByTestId('where')).toHaveTextContent('/agent-sessions/31');
   });
 
   it('says so when the session cannot be found', async () => {
-    getAssistSession.mockRejectedValue(new Error('404'));
+    getAgentSessionByLegacyAssistId.mockRejectedValue(new Error('404'));
     renderAt('999');
     expect(await screen.findByRole('alert')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /All agent sessions/ })).toHaveAttribute('href', '/agent-activity');

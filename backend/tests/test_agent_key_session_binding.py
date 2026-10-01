@@ -31,13 +31,7 @@ def test_assist_key_is_bound_to_an_agent_session(client, db_session, test_projec
         json={"purpose": "session-binding test"},
     )
     assert resp.status_code == 201, resp.text
-    from app.db.models_agent import AssistSession
-    sess = (
-        db_session.query(AssistSession)
-        .filter_by(id=resp.json()["assist_session_id"])
-        .first()
-    )
-    key = _key_for(db_session, agent_session_id=sess.agent_session_id)
+    key = _key_for(db_session, agent_session_id=resp.json()["agent_session_id"])
     assert key is not None
     assert key.agent_session_id is not None, (
         "an assist key must carry the agent_session_id it is now resolved by"

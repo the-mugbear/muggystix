@@ -20,13 +20,20 @@ with delimiters that cannot collide with Quarto: ``<% … %>`` statements,
   placeholder div; the Lua filter ``_bluestick/fields.lua`` (added to every
   render, listed AFTER ``quarto`` in the template's ``filters``) reads the text
   from ``data.json`` and parses it as GitHub Markdown with raw HTML off, then
-  drops raw blocks, images, non-web links, headings and attributes.
+  drops raw blocks, images, non-web links, headings and attributes.  One
+  image form is kept: ``![alt](evidence:57)``, when the dataset's ``placed``
+  map lists attachment 57 for that field of that finding (the builder
+  decides; the filter never trusts the text) — it prints as a figure.
 * A command line or a tool's output is printed with ``<< code(c, "command") >>``:
   the same kind of placeholder, which the filter replaces with a verbatim
   block built from the string — the text is never parsed at all.
-* ``<< image(e) >>``, ``<< plain(v) >>`` and ``<< asset("logo") >>`` are the
-  only other ways out of escaping, and each validates its input against a
-  strict pattern.  ``asset`` prints a path from the template's OWN manifest
+* ``<< image(e) >>`` is a placeholder too: it names the file (a strict
+  pattern) and the filter builds the figure, taking the caption from
+  ``data.json``.  The filter numbers every figure — placed or printed by the
+  template — "Figure N: …" in document order.
+* ``<< plain(v) >>`` and ``<< asset("logo") >>`` are the only other ways out
+  of escaping, and each validates its input against a strict pattern.
+  ``asset`` prints a path from the template's OWN manifest
   (``template.json`` → ``assets``), never data.
 * Reusable parts are ``<% include %>``s (their output is written straight
   through); a macro's output would be printed via ``<< >>`` and escaped.
@@ -75,8 +82,12 @@ FORMATS: Dict[str, tuple] = {
 # Jinja partials are already included in report.qmd (and are Jinja, not
 # Quarto), and the sample data / Makefile drive the template, not the report.
 _BUNDLE_SKIP_TOP = {
-    "partials", "branding", "sample-data.json", "Makefile", "template.json", ".gitignore", ".luarc.json",
+    "partials", "branding", "sample-data.json", "sample-evidence", "Makefile", "template.json",
+    ".gitignore", ".luarc.json",
 }
+# The images a template's sample-data.json refers to (``1.png`` …), used by
+# the command line when no ``--evidence`` folder is given.
+SAMPLE_EVIDENCE_DIR = "sample-evidence"
 
 _BUNDLE_README = """\
 # {title} — Quarto source
@@ -96,7 +107,10 @@ which frames the screenshots).
                    executive summary …).  It is NOT in report.qmd: the filter
                    _bluestick/fields.lua inserts it while rendering, with raw
                    HTML and shortcodes disabled, so text from findings can
-                   never run as Quarto source.  Edit the text here.
+                   never run as Quarto source.  Edit the text here.  An image
+                   placed in a section is written ![caption](evidence:57) and
+                   prints only when that finding's "placed" map lists 57 for
+                   that field; captions are each image's "caption".
 - evidence/        the screenshots marked "In report".
 - reference.docx   the Word styles (fonts, captions, header/footer).
 """
@@ -417,8 +431,16 @@ def _md_factory(dataset: dict):
         """A placeholder the Lua filter fills with the written Markdown at
         ``obj._path + "." + field`` (or the dotted path ``obj``) in data.json.
         With ``todo=`` (or ``todo_text=``), an empty value prints that TODO
-        instead."""
+        instead.
+
+        An image the author placed in the text (``![…](evidence:57)``, one of
+        the finding's own images marked "In report" — the dataset's
+        ``placed`` map says which) prints as a numbered figure, ``image_width``
+        wide (default 6in).  ``images=False`` is for a template that prints no
+        evidence: placed images are left out of that field."""
         todo_text = kwargs.pop("todo", todo_text)
+        images = kwargs.pop("images", True)
+        image_width = kwargs.pop("image_width", None)
         if kwargs:
             raise RenderError(f"md(): unknown argument(s) {', '.join(kwargs)}.")
         if isinstance(obj, dict):
@@ -430,10 +452,17 @@ def _md_factory(dataset: dict):
             key = str(obj)
         if not _KEY.match(key):
             raise RenderError(f"md(): '{key}' is not a data path.")
+        if image_width is not None and not _WIDTH.match(str(image_width)):
+            raise RenderError(f"md(): '{image_width}' is not a width.")
         value = _lookup(dataset, key)
         if not (isinstance(value, str) and value.strip()):
             return todo(todo_text, block=True) if todo_text else Markup("")
-        return Markup(f'\n\n::: {{.bs-md key="{key}"}}\n:::\n\n')
+        attrs = f'key="{key}"'
+        if not images:
+            attrs += ' images="none"'
+        if image_width is not None:
+            attrs += f' image-width="{image_width}"'
+        return Markup(f'\n\n::: {{.bs-md {attrs}}}\n:::\n\n')
     return md
 
 
@@ -477,20 +506,23 @@ def md(obj: Any, field: Optional[str] = None) -> Markup:
 
 
 def image(item: Any, width: str = "6in", number: Optional[int] = None) -> Markup:
-    """An evidence image the renderer placed in the work directory.  With
-    ``number``, the caption reads "Figure N: …" (v2.410.0 — the prototype's
-    numbered figure captions, without Quarto cross-references and the wrapper
-    tables they bring in Word)."""
+    """An evidence image the renderer placed in the work directory, as a
+    placeholder the Lua filter turns into a figure: the file from here (it
+    matches a strict pattern), the caption from ``data.json`` — like written
+    text, a caption never enters the ``.qmd``.
+
+    Every figure is captioned "Figure N: …" by the filter, counted in
+    document order across the images an author placed in the text and the
+    ones printed here.  ``number`` is accepted and IGNORED: a template written
+    when Jinja counted the figures (``image(e, number=counter.figure)``,
+    v2.410.0) keeps rendering, with the filter's numbers."""
     if not isinstance(item, dict) or not _EVIDENCE.match(str(item.get("file", ""))):
         raise RenderError("image() takes an item from a finding's `evidence` list.")
     if not _WIDTH.match(width):
         raise RenderError(f"image(): '{width}' is not a width.")
     if number is not None and (isinstance(number, bool) or not isinstance(number, int) or number < 1):
         raise RenderError("image(): number must be a positive whole number.")
-    caption = escape_md(item.get("caption") or "")
-    if number is not None:
-        caption = f"Figure {number}" + (f"\\: {caption}" if caption else "")
-    return Markup(f'\n\n![{caption}]({item["file"]}){{width="{width}"}}\n\n')
+    return Markup(f'\n\n::: {{.bs-figure file="{item["file"]}" width="{width}"}}\n:::\n\n')
 
 
 def plain(value: Any) -> Markup:
@@ -561,23 +593,53 @@ def _copy_template(src: Path, dst: Path) -> None:
 
 
 def _place_evidence(dataset: dict, work: Path, resolve: Callable[[dict], Optional[Path]]) -> List[str]:
-    """Copy each finding's evidence image into ``work/evidence`` and drop
-    entries whose file cannot be found (the render would fail on them)."""
+    """Copy each finding's images into ``work/evidence`` and drop the entries
+    whose file cannot be found (the render would fail on them).
+
+    A finding's images are its ``images`` list — every image marked for the
+    report — of which ``evidence`` is the part no section places (the
+    trailing block) and ``placed`` the part a section does
+    (``{field: {attachment id: {file, caption}}}``).  A dataset frozen before
+    images could be placed has ``evidence`` alone.  A missing file leaves all
+    three, so a reference to it in the text prints as its alt text."""
     missing = []
     (work / "evidence").mkdir(exist_ok=True)
     for finding in dataset.get("findings") or []:
-        kept = []
-        for item in finding.get("evidence") or []:
-            if not _EVIDENCE.match(str(item.get("file", ""))):
-                continue
-            source = resolve(item)
-            if source is None or not source.is_file():
-                missing.append(str(item.get("caption") or item.get("file")))
-                continue
-            shutil.copyfile(source, work / item["file"])
-            kept.append(item)
-        finding["evidence"] = kept
+        present: Dict[str, bool] = {}
+
+        def have(item: Any) -> bool:
+            file = str(item.get("file", "")) if isinstance(item, dict) else ""
+            if not _EVIDENCE.match(file):
+                return False
+            if file not in present:
+                source = resolve(item)
+                present[file] = bool(source is not None and source.is_file())
+                if present[file]:
+                    shutil.copyfile(source, work / file)
+                else:
+                    missing.append(str(item.get("caption") or file))
+            return present[file]
+
+        for key in ("images", "evidence"):
+            if isinstance(finding.get(key), list) or key == "evidence":
+                finding[key] = [item for item in finding.get(key) or [] if have(item)]
+        placed = finding.get("placed")
+        if isinstance(placed, dict):
+            finding["placed"] = {
+                field: {
+                    str(att_id): item for att_id, item in refs.items()
+                    if have({"attachment_id": _as_int(att_id), **item} if isinstance(item, dict) else item)
+                }
+                for field, refs in placed.items() if isinstance(refs, dict)
+            }
     return missing
+
+
+def _as_int(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _clean_env(work: Path) -> Dict[str, str]:
@@ -714,9 +776,10 @@ def render(
         missing = _place_evidence(dataset, work, resolve_evidence or (lambda _item: None))
         if missing and strict_evidence:
             raise RenderError(
-                "Evidence images of this issued report are missing (deleted since it was "
-                f"issued?): {', '.join(missing[:10])}{' …' if len(missing) > 10 else ''}. "
-                "Restore them, or revise the report."
+                "Evidence images of this issued report are missing from its storage, or no "
+                f"longer the files that were issued: {', '.join(missing[:10])}"
+                f"{' …' if len(missing) > 10 else ''}. "
+                "Restore them (uploads/client_reports, from a backup), or revise the report."
             )
         (work / "data.json").write_text(json.dumps(dataset, ensure_ascii=False), encoding="utf-8")
         source_name = "report.qmd"
@@ -787,7 +850,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--to", action="append", choices=sorted(FORMATS), help="Format (repeatable; default all).")
     parser.add_argument("--out", type=Path, default=None, help="Output folder (default: <template>/_output).")
     parser.add_argument("--evidence", type=Path, default=None,
-                        help="Folder holding the evidence images, named as in the data (12.png …).")
+                        help="Folder holding the evidence images, named as in the data (12.png …). "
+                             "Default: the template's sample-evidence/ folder, when it has one.")
     args = parser.parse_args(argv)
 
     manifest = json.loads((args.template / "template.json").read_text(encoding="utf-8"))
@@ -801,6 +865,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
         print(f"error: template.json: {exc}", file=sys.stderr)
         return 1
     evidence_dir = args.evidence
+    if evidence_dir is None and (args.template / SAMPLE_EVIDENCE_DIR).is_dir():
+        evidence_dir = args.template / SAMPLE_EVIDENCE_DIR
 
     def resolve(item: dict) -> Optional[Path]:
         if evidence_dir is None:

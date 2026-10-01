@@ -585,10 +585,17 @@ def delete_project(
         "member_count": len(members), "members": members,
         "attachment_thread_count": len(_attachment_note_ids),
     })
+    _project_id = project.id
     db.delete(project)
     db.commit()
     for _nid in _attachment_note_ids:
         purge_note_files(_nid)
+    # The issued reports went with the project (cascade): so do their files —
+    # the rendered documents and each report's own copies of its evidence
+    # images, all under client_reports/<project id>/.  Nothing removed them
+    # before, and an issued report can be deleted no other way.
+    from app.services.client_report_service import discard_project_report_files
+    discard_project_report_files(_project_id)
     return {"message": f"Project '{project_name}' deleted"}
 
 

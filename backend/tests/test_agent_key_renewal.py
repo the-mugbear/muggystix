@@ -29,8 +29,6 @@ from app.core.config import settings
 from app.db.models_agent import (
     AgentSession,
     AgentSessionWorkflow,
-    AssistSession,
-    AssistSessionStatus,
 )
 from app.db.models_auth import APIKey
 
@@ -49,12 +47,6 @@ def _mint(db, project, agent, user, *, expires_in_hours, session_age_hours=0.0,
     )
     db.add(base)
     db.flush()
-    detail = AssistSession(
-        project_id=project.id, agent_id=agent.id, started_by_id=user.id,
-        status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
-        purpose="renewal test",
-    )
-    db.add(detail)
     raw = "nm_agent_" + secrets.token_urlsafe(32)
     key = APIKey(
         agent_id=agent.id,

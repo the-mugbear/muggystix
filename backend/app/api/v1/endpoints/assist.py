@@ -1,68 +1,50 @@
 """
-JWT-facing endpoints for the agent-assist workflow (v2.64.0).
+Starting an agent session (JWT) — ``POST /projects/{project_id}/assist/start``.
 
-Mounted under ``/projects/{project_id}/assist/*``.  The agent-facing
-counterparts (``/agent/assist/*``, X-API-Key auth) live in
-``agent_assist.py``; the two surfaces are physically separated for
-the same reason the recon and plan surfaces are — different auth
+The path keeps its v2.64.0 ``/assist`` name; since v2.337.0 what it starts is
+THE agent session: one ``AgentSession`` row and one key that acts with the
+operator's own project permissions.  It is the one way an agent is started.
+
+Everything that reads or ends a session is in ``agent_sessions.py``, keyed by
+the session id this route returns (``/projects/{id}/agent-sessions/…``).  This
+module also listed, showed and ended sessions until v2.449.0 — keyed by the id
+of a second row (``assist_sessions``) that each start wrote.  That table is
+gone (migration ``b8e2a5c7d1f3``); the old by-id paths answer from
+``agent_sessions.py`` for the sessions that had such an id.
+
+The agent-facing counterparts (``/agent/assist/*``, X-API-Key auth) live in
+``agent_assist.py``; the two surfaces are physically separated — different auth
 contracts, different dependency chains, different audit scopes.
-
-Endpoints here let an authenticated operator:
-
-* Start an assist session (returns a fresh API key + agent prompt).
-* End an active session (revokes the key; session row stays for
-  audit history).
-* List the project's recent assist sessions.
-
-No "resume" affordance in v1: an assist session ending is cheap
-(the operator just starts another one) and the absence of resume
-keeps the user-facing surface small.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field, field_validator
-from sqlalchemy import case, func
-from sqlalchemy.orm import Session, joinedload
+from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.db.models import Annotation, Host
-from app.db.models_agent import (
-    AgentApiCall,
-    AgentFeedback,
-    AgentSessionWorkflow,
-    AssistSession,
-    AssistSessionStatus,
-)
-from app.db.models_auth import APIKey, User, UserRole
-from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.db.models_auth import User
+from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
-from app.services.integration_service import active_integrations_for_prompt
 from app.services.agent_key_ttl import resolve_ttl_hours
-from app.services.assist_session_service import (
-    effective_status,
-    has_live_key,
-    key_expiry_for_sessions,
-    operator_role as _operator_role,
+from app.services.agent_prompt_service import build_session_instructions, resolve_base_url
+from app.services.agent_session_service import (
+    create_agent_session,
+    mint_session_key,
+    resolve_project_agent,
 )
-from app.services.agent_prompt_service import resolve_base_url
+from app.services.integration_service import active_integrations_for_prompt
 from app.services.mcp_client_setup_service import McpClientSetup, build_session_mcp_clients
 
 router = APIRouter()
 
-# Assist keys are issued with a deliberately shorter TTL than the
-# default agent-key (24h).  Assist sessions are conversational; an
-# operator who hasn't pinged the API in 4h has either finished or
-# moved on, and a hanging key from yesterday is just an orphan.
-#
-# Key TTL: the deployment default (``AGENT_KEY_TTL_HOURS``) like every other
-# session start — v2.338.0 retired the 4h assist-only default, which dated
-# from read-only assist keys.  The dialog reads the resolved value from the
-# response (``key_ttl_hours``), so there is no literal to keep in step.
+# Key TTL: the deployment default (``AGENT_KEY_TTL_HOURS``) — v2.338.0 retired
+# the 4h assist-only default, which dated from read-only assist keys.  The
+# dialog reads the resolved value from the response (``key_ttl_hours``), so
+# there is no literal to keep in step.
 
 
 # ---------------------------------------------------------------------------
@@ -87,9 +69,9 @@ class StartAssistRequest(BaseModel):
         ge=1,
         le=24,
         description=(
-            "Override the default 4-hour key TTL.  Cannot exceed 24h; "
-            "longer-lived agent work belongs in the recon/plan/execute "
-            "workflows that have proper session resume."
+            "Override the deployment's default key TTL (AGENT_KEY_TTL_HOURS). "
+            "Cannot exceed 24h; the key can be renewed, and the session resumed, "
+            "within the session's lifetime."
         ),
     )
     # v2.309.0 removed ``can_write_assigned`` with the capability system: a
@@ -134,21 +116,24 @@ class StartAssistRequest(BaseModel):
 
 
 # --- MCP client setup -------------------------------------------------------
-# The recipes moved to ``services/mcp_client_setup_service.py`` in v2.279.0, when
-# recon / plan / execution sessions started emitting them too.  One builder means
-# a fix to a client recipe lands on every workflow at once — the divergence that
-# replaces is why two of the three original recipes silently didn't work.  The
-# ``McpClientSetup`` shape and the per-session builder followed them there
-# (review 2026-10-01 B4): the resume route in ``agent_sessions.py`` used to
-# import a private helper from this router.
+# The recipes live in ``services/mcp_client_setup_service.py`` (v2.279.0): one
+# builder for the start and the resume response, so a fix to a client recipe
+# lands on both.
 
 
 class StartAssistResponse(BaseModel):
-    assist_session_id: int
-    # v2.432.1 — the SESSION id: the one the agent reports, Agent Sessions lists
-    # and ``/agent-sessions/{id}`` opens.  ``assist_session_id`` is its detail
-    # row, a different sequence; the dialog titled the session by it.
+    # The session's id — the one the agent reports, Agent Sessions lists and
+    # every ``/agent-sessions/{id}`` route takes.  It is the session's ONLY id
+    # (v2.449.0).
     agent_session_id: int
+    assist_session_id: int = Field(
+        deprecated=True,
+        description=(
+            "The same value as agent_session_id. Until v2.449.0 this was the id "
+            "of a second row; kept so a client written against that shape still "
+            "gets a session id that every route accepts. Read agent_session_id."
+        ),
+    )
     project_id: int
     project_name: str
     agent_id: int
@@ -168,108 +153,6 @@ class StartAssistResponse(BaseModel):
     key_ttl_hours: int
 
 
-class AssistSessionRow(BaseModel):
-    id: int
-    project_id: int
-    # v2.432.0 — the unified session this detail row belongs to: the id Agent
-    # Sessions, End and Resume use.  ``/assist-sessions/{id}`` links (notes,
-    # feedback) resolve through it to ``/agent-sessions/{agent_session_id}``.
-    agent_session_id: Optional[int] = None
-    purpose: Optional[str]
-    status: str
-    started_by_id: Optional[int]
-    started_by_username: Optional[str]
-    # The operator's display name (users.full_name), selected in the same
-    # statement as the username; null when the account has none set.  The page
-    # shows it, falling back to the username.
-    started_by_full_name: Optional[str] = None
-    # v2.402.0 — the authority the session acts with: the operator's project
-    # role (admin / analyst / auditor / viewer), or ``global_admin`` when the
-    # operator is a global admin without an admin membership (the agent gate
-    # lets a global admin through as ``require_project_role`` does).  Null when
-    # the operator is no longer a member — the key is refused on its next call.
-    # This is the role NOW, not at start: nothing records the role at start,
-    # and the gate re-resolves it on every call, so the current role is the one
-    # any further call would be checked against.
-    operator_role: Optional[str] = None
-    started_at: Optional[datetime]
-    ended_at: Optional[datetime]
-    last_activity_at: Optional[datetime]
-    # When the session's agent key stops working — the practical question an
-    # operator has ("end it now, or let it lapse?").  Deliberately the KEY's
-    # expiry rather than a session field: the session row has no lifetime of
-    # its own, and it can outlive its key.  Null means no active key remains,
-    # i.e. the session is already dead in practice even though `status` still
-    # reads 'active' — that state is worth showing, not hiding.
-    #
-    # Not derivable client-side from started_at + a hardcoded 4 hours:
-    # AGENT_KEY_TTL_HOURS can override the default and per-session ttl_hours
-    # is a start parameter, so a computed expiry would quietly be wrong.
-    key_expires_at: Optional[datetime] = None
-    # v2.284.0 — how much the session actually did, so the list answers "which
-    # of these is worth opening?" without a round trip per row.  A session that
-    # made no calls is the common dead end (key minted, prompt never pasted) and
-    # should be visibly distinguishable from one that did the work.
-    call_count: int = 0
-    note_count: int = 0
-    # v2.331.0 — how the agent reached this session, from observed calls:
-    #   "none" — no authenticated call yet (key minted, client never connected)
-    #   "mcp"  — at least one call arrived through the MCP transport
-    #   "curl" — calls arrived, all by direct HTTP (the pasted-prompt path)
-    # Replaces the probe-based "not yet connected", which a client can skip
-    # and still work, or post via curl and never use MCP.  Not a liveness
-    # claim: MCP is request/response, so a past call says the client connected,
-    # not that it is still running — pair with last_activity_at for that.
-    connection: str = "none"
-    first_call_at: Optional[datetime] = None
-
-
-class AssistSessionNote(BaseModel):
-    """A note this session's agent wrote, for the review page.
-
-    Notes are the session's durable output — everything else it did was a read.
-    They are attributed to the operator with an agent badge, so "what did the
-    agent put my name on" is the question this answers.
-    """
-    id: int
-    host_id: Optional[int] = None
-    host_ip: Optional[str] = None
-    hostname: Optional[str] = None
-    body: str
-    created_at: Optional[datetime] = None
-
-
-class AssistSessionDetail(AssistSessionRow):
-    """One session, with the material an operator reviews after the fact."""
-    # Which model and client did the work, and against which prompt
-    # (v2.434.0: from the session's attribution, not an environment probe).
-    agent_model: Optional[str] = None
-    agent_tool: Optional[str] = None
-    prompt_version: Optional[str] = None
-    notes: List[AssistSessionNote] = []
-    # Feedback the agent left about this session, if it closed the loop.
-    feedback_count: int = 0
-
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
-def _is_project_admin(db: Session, *, user: User, project_id: int) -> bool:
-    """True for a global admin, or a member whose project role is admin."""
-    if user.role == UserRole.ADMIN:
-        return True
-    membership = (
-        db.query(ProjectMembership)
-        .filter(
-            ProjectMembership.project_id == project_id,
-            ProjectMembership.user_id == user.id,
-        )
-        .first()
-    )
-    return membership is not None and membership.role == ProjectRole.ADMIN.value
-
-
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -287,13 +170,12 @@ def start_assist_session(
     project: Project = Depends(get_current_project),
     # v2.308.0 — AUDITOR, not ANALYST. "Auditors get a read-only agent" was a
     # settled decision that nothing implemented: every session-start endpoint
-    # still required analyst, so the auditor path was theory. Assist is the
-    # right workflow to lower first — it is read-only by default, and an
-    # auditor's key now carries the auditor's own permissions on every call
+    # still required analyst, so the auditor path was theory. An auditor's key
+    # carries the auditor's own permissions on every call
     # (see enforce_agent_operator_access), so it cannot write project data or
     # pull a bulk export it would be refused in the UI.
     #
-    # Writes (uploads, plans, results, notes) are ANALYST at each endpoint.
+    # Writes (uploads, host tests, evidence, notes) are ANALYST at each endpoint.
     current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
 ):
     """Start the operator's project agent session and mint its key — the one
@@ -302,49 +184,23 @@ def start_assist_session(
     an auditor's agent can read but not write, because the auditor cannot.
     The plaintext key is shown exactly once, in the instructions block.
 
-    Role gate: AUDITOR (v2.308.0) to start; writes (uploads, plans, results,
-    notes) need ANALYST at the endpoint.
-    """
-    # v2.337.0 — "AI Assist" mints the same unified PROJECT session as every
-    # other entry point; there is no separate assist key any more. The session
-    # can query, and (role permitting) go on to recon / plan / execute with the
-    # same key.
-    from app.services.agent_session_service import (
-        create_agent_session, resolve_project_agent, mint_session_key,
-    )
-    from app.services.agent_prompt_service import build_session_instructions
+    Writes ONE row, the ``AgentSession`` (v2.449.0), and its key.
 
+    Role gate: AUDITOR (v2.308.0) to start; writes (uploads, host tests,
+    evidence, notes) need ANALYST at the endpoint.
+    """
     agent = resolve_project_agent(db, project_id=project.id, user=current_user)
-    base_session = create_agent_session(
+    session = create_agent_session(
         db, project_id=project.id, agent_id=agent.id,
         started_by_id=current_user.id, purpose=body.purpose,
     )
-    # An AssistSession detail row is still created, linked to the base
-    # session, because the /assist-sessions review page and its end/detail
-    # routes are keyed by this table's ids.  It is a pointer, not the record:
-    # ``purpose``, ``last_activity_at`` and the attribution live on the base row and
-    # the page reads them through it (``_session_row``).  Collapsing the page
-    # onto ``agent_sessions`` outright would change every id it links on, so
-    # that is a separate change.
-    assist_session = AssistSession(
-        project_id=project.id,
-        agent_id=agent.id,
-        started_by_id=current_user.id,
-        status=AssistSessionStatus.ACTIVE.value,
-        purpose=body.purpose,
-        agent_session_id=base_session.id,
-    )
-    db.add(assist_session)
-    db.flush()
-    # v2.338.0 — the deployment default TTL, like every other session start.
-    # The 4h assist-only default dated from read-only assist keys; the session
-    # this mints is the same kind the other three buttons mint.
+    # v2.338.0 — the deployment default TTL unless the caller names one.
     raw_key = mint_session_key(
-        db, agent=agent, session=base_session, ttl_hours=body.ttl_hours,
+        db, agent=agent, session=session, ttl_hours=body.ttl_hours,
     )
     instructions = build_session_instructions(
         request=request,
-        session_id=base_session.id,
+        session_id=session.id,
         project_id=project.id,
         project_name=project.name,
         purpose=body.purpose,
@@ -355,490 +211,26 @@ def start_assist_session(
             db, user_id=current_user.id, project_id=project.id,
         ),
     )
+    # Read before commit() expires the row (a SELECT per attribute after it).
+    session_id = session.id
+    agent_id = agent.id
     db.commit()
-    db.refresh(assist_session)
 
     mcp_url = f"{resolve_base_url(request)}/mcp"
     mcp_clients = build_session_mcp_clients(
         mcp_url, raw_key,
         project_name=project.name,
-        agent_session_id=base_session.id,
+        agent_session_id=session_id,
     )
     return StartAssistResponse(
-        assist_session_id=assist_session.id,
-        agent_session_id=base_session.id,
+        agent_session_id=session_id,
+        assist_session_id=session_id,
         project_id=project.id,
         project_name=project.name,
-        agent_id=agent.id,
+        agent_id=agent_id,
         api_key=raw_key,
         instructions=instructions,
         mcp_clients=mcp_clients,
         mcp_url=mcp_url,
         key_ttl_hours=resolve_ttl_hours(body.ttl_hours),
-    )
-
-
-@router.post(
-    "/sessions/{session_id}/end",
-    status_code=204,
-    summary="End an assist session (revokes the key; session row preserved for audit)",
-)
-def end_assist_session(
-    session_id: int,
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    # v2.343.2 — AUDITOR, matching the start route: an auditor could start a
-    # session (since v2.308.0) but this gate was still ANALYST, so they could
-    # not end their own.  The owner-or-project-admin check below is the real
-    # authorization; the role floor only needs to admit whoever can start one.
-    current_user: User = Depends(require_project_role(ProjectRole.AUDITOR)),
-):
-    session = (
-        db.query(AssistSession)
-        .filter(
-            AssistSession.id == session_id,
-            AssistSession.project_id == project.id,
-        )
-        .first()
-    )
-    if session is None:
-        raise HTTPException(
-            status_code=404, detail="Assist session not found in this project"
-        )
-
-    # v2.240.4 (review follow-up) — ownership check.
-    #
-    # This filtered on project only, so ANY project analyst could end any
-    # other analyst's session, revoking their key mid-conversation and handing
-    # their running agent 401s. With several operators each driving their own
-    # agent that is a live foot-gun, not a theoretical one.
-    #
-    # An operator may always stop their own agent; a project admin may clean up
-    # after someone who closed their laptop or left the engagement. Peers may
-    # not disrupt each other — they gain nothing from it, since an assist
-    # agent's writes already carry its operator's name and an "Agent" badge.
-    if session.started_by_id != current_user.id and not _is_project_admin(
-        db, user=current_user, project_id=project.id
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "This assist session belongs to another operator. Only its "
-                "owner or a project admin can end it."
-            ),
-        )
-    if session.status != AssistSessionStatus.ACTIVE.value:
-        # Idempotent — calling end twice is harmless, but we 200 (well,
-        # 204) only on the first call.  Subsequent calls 409 so the
-        # caller knows the state didn't change.
-        raise HTTPException(
-            status_code=409,
-            detail=f"Session already in state '{session.status}'.",
-        )
-
-    # v2.343.1 (review) — this exit revoked the key and closed the assist row
-    # but left the unified AgentSession active with no end_reason, so a
-    # session ended from the sessions panel counted as "active" in the new
-    # exit metrics and never as an operator end.  Route it through the shared
-    # service, the same path the Agent Runs End button takes: keys revoked,
-    # open recon runs abandoned, open execution runs paused, end_reason set.
-    from app.db.models_agent import AgentSession
-    from app.services.agent_session_service import SESSION_ACTIVE, end_agent_session
-
-    agent_session = (
-        db.query(AgentSession).filter(AgentSession.id == session.agent_session_id).first()
-        if session.agent_session_id is not None else None
-    )
-    if agent_session is not None and agent_session.status == SESSION_ACTIVE:
-        end_agent_session(
-            db, agent_session, ended_by=current_user, reason="ended from the sessions panel",
-        )
-    else:
-        # A legacy assist row with no project session behind it: revoke what
-        # is keyed to it, as before.
-        db.query(APIKey).filter(
-            APIKey.agent_session_id == session.agent_session_id,
-            APIKey.is_active.is_(True),
-        ).update({"is_active": False}, synchronize_session=False)
-
-    session.status = AssistSessionStatus.ENDED.value
-    session.ended_at = (
-        agent_session.completed_at
-        if agent_session is not None and agent_session.completed_at is not None
-        else datetime.now(timezone.utc)
-    )
-    db.commit()
-
-
-@router.get(
-    "/sessions",
-    response_model=List[AssistSessionRow],
-    summary="List recent assist sessions in this project",
-)
-def list_assist_sessions(
-    status: Optional[str] = Query(
-        None, description="Filter by effective status (active / ended)."
-    ),
-    mine: bool = Query(False, description="Only sessions this user started."),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    current_user: User = Depends(require_project_role(ProjectRole.VIEWER)),
-):
-    """All assist sessions for the project, newest first.  Visible to
-    viewers (read-only view of audit metadata; no key material).
-
-    v2.284.0 — paginated and filterable, because this now backs a review page
-    rather than only the start dialog's "do I already have one running?" panel.
-    The `status` filter runs against the EFFECTIVE status (a session whose key
-    has expired reads as ended), so it agrees with what the caller is shown
-    rather than with a stored value the sweep may not have converged yet.
-    """
-    # The derived status is filtered in SQL rather than after the fetch, so the
-    # filter and the pagination agree.  An earlier shape took the newest 500,
-    # derived in Python, then sliced — past 500 sessions an older `ended` one was
-    # unreachable, silently.
-    #
-    # The filter is a correlated EXISTS, not a grouped subquery: an aggregate
-    # over api_keys has no access to this query's project or page, so it scaled
-    # with the deployment's whole key history on every request.  The expiry we
-    # *display* is fetched for the page's ids only, below.
-    now = datetime.now(timezone.utc)
-    live_key = has_live_key(now)
-    stored_active = AssistSession.status == AssistSessionStatus.ACTIVE.value
-
-    q = (
-        db.query(
-            AssistSession,
-            User.username,
-            User.full_name,
-            User.role,
-            ProjectMembership.role,
-        )
-        .options(joinedload(AssistSession.agent_session))
-        .outerjoin(User, AssistSession.started_by_id == User.id)
-        .outerjoin(
-            ProjectMembership,
-            (ProjectMembership.user_id == AssistSession.started_by_id)
-            & (ProjectMembership.project_id == AssistSession.project_id),
-        )
-        .filter(AssistSession.project_id == project.id)
-    )
-    if mine:
-        q = q.filter(AssistSession.started_by_id == current_user.id)
-    if status == AssistSessionStatus.ACTIVE.value:
-        q = q.filter(stored_active, live_key)
-    elif status:
-        # Everything not effectively active — including a row still stored as
-        # `active` whose key has died and the sweep hasn't caught yet.
-        q = q.filter(~(stored_active & live_key))
-        if status != AssistSessionStatus.ENDED.value:
-            # A specific non-active status still filters on the stored value;
-            # only `active`/`ended` are derived.
-            q = q.filter(AssistSession.status == status)
-
-    rows = (
-        q.order_by(AssistSession.started_at.desc())
-        .limit(limit)
-        .offset(offset)
-        .all()
-    )
-
-    session_ids = [row[0].id for row in rows]
-    expiry_by_session = key_expiry_for_sessions(db, session_ids)
-    activity_by_session = _session_activity(db, session_ids)
-    notes_by_session = _note_counts(db, [row[0] for row in rows])
-
-    return [
-        _session_row(
-            s,
-            username,
-            expiry_by_session.get(s.id),
-            now=now,
-            note_count=notes_by_session.get(s.id, 0),
-            activity=activity_by_session.get(s.id),
-            full_name=full_name,
-            operator_role=_operator_role(global_role, membership_role),
-        )
-        for s, username, full_name, global_role, membership_role in rows
-    ]
-
-
-def _latest(a: Optional[datetime], b: Optional[datetime]) -> Optional[datetime]:
-    """The later of two optional timestamps (tz-naive values read as UTC)."""
-    def _aware(t):
-        return t if t is None or t.tzinfo is not None else t.replace(tzinfo=timezone.utc)
-    a, b = _aware(a), _aware(b)
-    if a is None:
-        return b
-    if b is None:
-        return a
-    return max(a, b)
-
-
-def _attribution_source(session: AssistSession):
-    """The row whose model / client / prompt version to show: the unified
-    session when there is one (it is what those writes update), else this
-    legacy detail row."""
-    return session.agent_session if session.agent_session is not None else session
-
-
-def _session_row(
-    session: AssistSession,
-    username: Optional[str],
-    key_expires_at,
-    *,
-    now,
-    note_count: int = 0,
-    activity: Optional["_SessionActivity"] = None,
-    full_name: Optional[str] = None,
-    operator_role: Optional[str] = None,
-) -> AssistSessionRow:
-    """Map one session to its wire row.
-
-    Shared by the list and the detail endpoint (which extends this shape).  The
-    two built the same 18 fields independently, so adding one meant remembering
-    both — and the one you forget is the one that silently reads as its default.
-    """
-    # v2.338.0 — read the live columns through the unified AgentSession.  The
-    # audit middleware refreshes ``agent_sessions.last_activity_at``; nothing
-    # writes that column on this detail row any more, so reading it here
-    # reported every post-consolidation session as idle-forever.
-    # Sessions from before the consolidation carry the values on this row
-    # and have no live base row worth preferring.
-    base = session.agent_session
-    activity = activity or _SessionActivity()
-    stored_status = session.status
-    ended_at = session.ended_at
-    if base is not None and base.status != "active":
-        # The base row is what the key checks and what a supersede/lapse
-        # ends; mirror it so the page never shows a dead session as active.
-        stored_status = AssistSessionStatus.ENDED.value
-        ended_at = ended_at or base.completed_at
-    return AssistSessionRow(
-        id=session.id,
-        project_id=session.project_id,
-        # Only a project session has a page; a pre-consolidation assist
-        # session's base row does not (v2.433.1), so links resolve to "no
-        # session page" rather than a 404.
-        agent_session_id=(
-            session.agent_session_id
-            if base is not None and base.workflow == AgentSessionWorkflow.PROJECT.value
-            else None
-        ),
-        purpose=(base.purpose if base is not None and base.purpose else session.purpose),
-        status=effective_status(stored_status, key_expires_at, now),
-        started_by_id=session.started_by_id,
-        started_by_username=username,
-        started_by_full_name=(full_name or None),
-        operator_role=operator_role,
-        started_at=session.started_at,
-        ended_at=ended_at,
-        last_activity_at=_latest(
-            session.last_activity_at,
-            base.last_activity_at if base is not None else None,
-        ),
-        key_expires_at=key_expires_at,
-        call_count=activity.call_count,
-        note_count=note_count,
-        connection=activity.connection,
-        first_call_at=activity.first_call_at,
-    )
-
-
-class _SessionActivity:
-    """What the audit log says about one session, in the shape the row needs."""
-
-    __slots__ = ("call_count", "connection", "first_call_at")
-
-    def __init__(
-        self,
-        call_count: int = 0,
-        via_mcp: bool = False,
-        first_call_at: Optional[datetime] = None,
-    ):
-        self.call_count = call_count
-        self.first_call_at = first_call_at
-        if call_count == 0:
-            self.connection = "none"
-        else:
-            self.connection = "mcp" if via_mcp else "curl"
-
-
-def _session_activity(db: Session, session_ids: List[int]) -> dict:
-    """Audited call count, transport, and first-call time per session, in one
-    grouped query.
-
-    The list is the entry point to the review page, so "did this session do
-    anything?" has to be answerable without opening each one — a session with
-    zero calls is the common dead end (key minted, prompt never pasted) and
-    reads identically to a busy one without this.
-
-    v2.331.0 — also whether any call came through MCP.  Every audited row is an
-    authenticated call (the middleware writes nothing for a request that never
-    authenticated), so one row is proof the key was accepted, and ``via_mcp``
-    on any of them is proof the MCP transport carried it.  ``max(case)`` rather
-    than ``bool_or`` so the test suite's SQLite runs the same query.
-    """
-    if not session_ids:
-        return {}
-    # v2.337.0 — calls attribute to the unified agent_session_id now, so join
-    # AgentApiCall → AssistSession on that and group by the AssistSession id
-    # the review page keys on.
-    mcp_seen = func.max(case((AgentApiCall.via_mcp.is_(True), 1), else_=0))
-    return {
-        sid: _SessionActivity(
-            call_count=count, via_mcp=bool(via_mcp), first_call_at=first_at
-        )
-        for sid, count, via_mcp, first_at in (
-            db.query(
-                AssistSession.id,
-                func.count(AgentApiCall.id),
-                mcp_seen,
-                func.min(AgentApiCall.created_at),
-            )
-            .join(AgentApiCall, AgentApiCall.agent_session_id == AssistSession.agent_session_id)
-            .filter(AssistSession.id.in_(session_ids))
-            .group_by(AssistSession.id)
-            .all()
-        )
-    }
-
-
-def _note_counts(db: Session, sessions: List[AssistSession]) -> dict:
-    """Notes written per assist session.
-
-    Annotations hang off the unified ``AgentSession``, not the assist row, so
-    this maps back through ``agent_session_id`` — a session started before that
-    binding existed simply has none to find.
-    """
-    agent_session_ids = {
-        s.agent_session_id: s.id for s in sessions if s.agent_session_id is not None
-    }
-    if not agent_session_ids:
-        return {}
-    counts = (
-        db.query(Annotation.agent_session_id, func.count(Annotation.id))
-        .filter(Annotation.agent_session_id.in_(list(agent_session_ids)))
-        .group_by(Annotation.agent_session_id)
-        .all()
-    )
-    return {agent_session_ids[asid]: count for asid, count in counts}
-
-
-@router.get(
-    "/sessions/{session_id}",
-    response_model=AssistSessionDetail,
-    summary="One assist session, with what it produced",
-)
-def get_assist_session(
-    session_id: int = Path(..., gt=0),
-    note_limit: int = Query(50, ge=1, le=500),
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-    _user: User = Depends(require_project_role(ProjectRole.VIEWER)),
-):
-    """The review view for a finished (or running) assist session.
-
-    v2.284.0 — assist was the one workflow with no way to look back at what an
-    agent did: plans and recon sessions each have a detail page, assist had a
-    start dialog that listed live sessions and nothing else.  That is backwards
-    for the workflow that runs interactively and can write notes under the
-    operator's own name.
-
-    Notes are included inline rather than behind another endpoint because they
-    are the session's only durable output — everything else it did was a read,
-    and the read trail is the separate api-activity feed.
-    """
-    session = (
-        db.query(AssistSession)
-        .options(joinedload(AssistSession.agent_session))
-        .filter(
-            AssistSession.id == session_id,
-            # Scope to the path project: an assist session id from another
-            # project must 404 here, not leak its purpose and note bodies.
-            AssistSession.project_id == project.id,
-        )
-        .first()
-    )
-    if session is None:
-        raise HTTPException(status_code=404, detail="Assist session not found")
-
-    username, full_name, global_role, membership_role = (
-        db.query(User.username, User.full_name, User.role, ProjectMembership.role)
-        .outerjoin(
-            ProjectMembership,
-            (ProjectMembership.user_id == User.id)
-            & (ProjectMembership.project_id == project.id),
-        )
-        .filter(User.id == session.started_by_id)
-        .first()
-        if session.started_by_id
-        else None
-    ) or (None, None, None, None)
-    key_expires_at = (
-        db.query(func.max(APIKey.expires_at))
-        .filter(
-            APIKey.agent_session_id == session.agent_session_id,
-            APIKey.is_active.is_(True),
-        )
-        .scalar()
-    )
-    now = datetime.now(timezone.utc)
-
-    notes: List[AssistSessionNote] = []
-    note_total = 0
-    if session.agent_session_id is not None:
-        note_q = (
-            db.query(Annotation, Host.ip_address, Host.hostname)
-            .outerjoin(Host, Annotation.host_id == Host.id)
-            .filter(Annotation.agent_session_id == session.agent_session_id)
-        )
-        note_total = note_q.count()
-        notes = [
-            AssistSessionNote(
-                id=a.id,
-                host_id=a.host_id,
-                host_ip=ip,
-                hostname=hostname,
-                body=a.body,
-                created_at=a.created_at,
-            )
-            for a, ip, hostname in (
-                note_q.order_by(Annotation.created_at.desc()).limit(note_limit).all()
-            )
-        ]
-
-    activity = _session_activity(db, [session.id]).get(session.id)
-    # v2.338.0 — feedback is stamped with the unified session id (from the
-    # key), and only optionally with this detail row's id; count by either.
-    feedback_filter = AgentFeedback.assist_session_id == session.id
-    if session.agent_session_id is not None:
-        feedback_filter = feedback_filter | (
-            AgentFeedback.agent_session_id == session.agent_session_id
-        )
-    feedback_count = (
-        db.query(func.count(AgentFeedback.id)).filter(feedback_filter).scalar()
-    ) or 0
-
-    # Detail EXTENDS the list row, so the shared fields are mapped once. The two
-    # used to build the same 18 fields independently.
-    source = _attribution_source(session)
-    return AssistSessionDetail(
-        **_session_row(
-            session,
-            username,
-            key_expires_at,
-            now=now,
-            note_count=note_total,
-            activity=activity,
-            full_name=full_name,
-            operator_role=_operator_role(global_role, membership_role),
-        ).model_dump(),
-        agent_model=source.generated_by_model,
-        agent_tool=source.generated_by_tool,
-        prompt_version=source.prompt_version,
-        notes=notes,
-        feedback_count=feedback_count,
     )

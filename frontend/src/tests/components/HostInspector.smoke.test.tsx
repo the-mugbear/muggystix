@@ -27,7 +27,7 @@ vi.mock('../../services/api', () => ({
   getHostConflicts: vi.fn().mockResolvedValue([]),
   listHostTests: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
-  listAssistSessions: vi.fn().mockResolvedValue([]),
+  listAgentSessions: vi.fn().mockResolvedValue({ project_id: 1, sessions: [], total: 0 }),
   listEvidenceRecords: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
   getHostFollowers: vi.fn().mockResolvedValue([]),
   recordHostView: vi.fn().mockResolvedValue(undefined),

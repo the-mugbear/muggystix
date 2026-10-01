@@ -956,7 +956,7 @@ def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_
     """v2.339.0 — the session prompt says feedback is required, but an
     MCP-connected agent had no tool for it (curl only).  The tool posts to
     /agent/feedback; the row is attributed to the key's session."""
-    from app.db.models_agent import AgentFeedback, AssistSession
+    from app.db.models_agent import AgentFeedback
 
     body = _start_session(client, test_project.id)
     headers = {"X-API-Key": body["api_key"]}
@@ -974,10 +974,7 @@ def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_
         }},
     }, headers=headers).json()["result"]
     assert not res.get("isError"), res
-    session_id = (
-        db_session.query(AssistSession.agent_session_id)
-        .filter(AssistSession.id == body["assist_session_id"]).scalar()
-    )
+    session_id = body["agent_session_id"]
     row = db_session.query(AgentFeedback).filter(AgentFeedback.agent_session_id == session_id).one()
     assert row.source == "assist" and row.overall_rating == 4
 
@@ -987,6 +984,26 @@ def test_submit_feedback_over_mcp_lands_on_the_session(client, test_project, db_
         "params": {"name": "submit_feedback", "arguments": {"overall_rating": 3}},
     }, headers=headers).json()
     assert bad.get("error", {}).get("code") == -32602, bad
+
+
+def test_feedback_from_a_client_holding_the_older_tool_list_is_still_filed(client, test_project, db_session):
+    """v2.449.0 — `assist_session_id` went with the `assist_sessions` table.
+    The tool's schema refuses unknown arguments, so a client that still sends
+    the retired one would have had its feedback refused; it is accepted and
+    ignored instead — the session comes from the key."""
+    from app.db.models_agent import AgentFeedback
+
+    body = _start_session(client, test_project.id)
+    res = _rpc(client, {
+        "jsonrpc": "2.0", "id": 2, "method": "tools/call",
+        "params": {"name": "submit_feedback", "arguments": {
+            "source": "assist", "friction_notes": "sent the retired field", "assist_session_id": 999999,
+        }},
+    }, headers={"X-API-Key": body["api_key"]}).json()
+    assert "error" not in res and not res["result"].get("isError"), res
+    row = db_session.query(AgentFeedback).filter(
+        AgentFeedback.agent_session_id == body["agent_session_id"]).one()
+    assert row.friction_notes == "sent the retired field"
 
 
 def test_repeated_tools_list_does_not_spam_the_activity_log(client, test_project, db_session):

@@ -292,9 +292,8 @@ def build_session_mcp_clients(
     resume route both return.
 
     The label the operator checks the agent's answer against must be the id
-    the agent will actually report — ``session_id`` on /agent/identity is the
-    unified AgentSession id, not the start dialog's AssistSession row
-    (v2.338.0).
+    the agent will actually report — ``session_id`` on /agent/identity, the
+    AgentSession id (the session's only id since v2.449.0).
     """
     return [
         McpClientSetup(**client)

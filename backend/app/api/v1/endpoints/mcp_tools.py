@@ -275,9 +275,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         # (v2.343.2).
         "idempotent": False,
         "body_params": [
-            "source", "prompt_version", "assist_session_id", "overall_rating",
+            "source", "prompt_version", "overall_rating",
             "api_critiques", "tool_suggestions", "friction_notes", "agent_metrics",
         ],
+        # v2.449.0 — went with the `assist_sessions` table.  Still accepted
+        # from a client holding the older tool list, and dropped
+        # (`mcp_assist._validate_arguments`): the session comes from the key.
+        "retired_params": ["assist_session_id"],
         "input_schema": {
             "type": "object",
             "properties": {
@@ -287,10 +291,6 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "description": "The kind of work this feedback is about.",
                 },
                 "prompt_version": {"type": "string", "description": "The prompt_version from your instructions block."},
-                "assist_session_id": {
-                    "type": "integer", "minimum": 1,
-                    "description": "Only with source=assist, on a pre-consolidation assist session; normally omit — the session comes from your key.",
-                },
                 "overall_rating": {"type": "integer", "minimum": 1, "maximum": 5},
                 "api_critiques": {
                     "type": "array",
@@ -926,6 +926,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "impact, recommendation, references, steps to reproduce, CVSS vector "
             "and score), `endpoint_status_counts` (per-host state), and "
             "`status_history` (who changed the status, when, from → to, and why). "
+            "`images` lists the finding's images as the report sees them: `id`, "
+            "`caption`, `in_report` (ticked for the report) and `placed_in` — the "
+            "report-text fields whose Markdown places the image with "
+            "`![caption](evidence:<id>)`; a ticked image no field places prints "
+            "under Evidence. "
             "scanner_evidence lists at most 100 scanner rows: "
             "scanner_evidence_total is how many there are, and "
             "scanner_evidence_truncated says the list was cut."
@@ -1259,7 +1264,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "`rationale`. Propose only the sections you would change. One proposal per "
             "field; several may stand side by side (e.g. from different models). Fields: "
             "description, impact, recommendation, references, steps_to_reproduce "
-            "(Markdown), cvss_vector."
+            "(Markdown), cvss_vector. IMAGES: a section may hold `![caption](evidence:<id>)`, "
+            "which prints that image of the finding there. Read `images` on assist_get_finding "
+            "first: KEEP the references a section already holds when you rewrite it (dropping "
+            "one moves the image back under Evidence), and reference only ids listed there — "
+            "any other id is refused (422). You cannot tick an image \"In report\": a proposal "
+            "placing one that is not ticked is not accepted until a person ticks it."
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding-text",

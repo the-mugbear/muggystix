@@ -42,12 +42,10 @@ EXPECTED_ONDELETE = {
     # deleted agent can never be consulted again.
     ('agent_rate_buckets', 'agent_id'): 'CASCADE',
     ('agent_api_calls', 'api_key_id'): 'SET NULL',
-    ('agent_api_calls', 'assist_session_id'): 'SET NULL',
     ('agent_api_calls', 'project_id'): 'CASCADE',
     ('agent_api_calls', 'scope_id'): 'SET NULL',
     ('agent_feedback', 'agent_id'): 'SET NULL',
     ('agent_feedback', 'agent_session_id'): 'SET NULL',
-    ('agent_feedback', 'assist_session_id'): 'SET NULL',
     ('agent_feedback', 'project_id'): 'SET NULL',
     ('agent_feedback', 'reviewed_by_id'): 'SET NULL',
     ('agents', 'owner_id'): 'CASCADE',
@@ -68,10 +66,6 @@ EXPECTED_ONDELETE = {
     ('api_keys', 'agent_id'): 'CASCADE',
     ('api_keys', 'agent_session_id'): 'CASCADE',
     ('api_keys', 'user_id'): 'CASCADE',
-    ('assist_sessions', 'agent_id'): 'SET NULL',
-    ('assist_sessions', 'agent_session_id'): 'CASCADE',
-    ('assist_sessions', 'project_id'): 'CASCADE',
-    ('assist_sessions', 'started_by_id'): 'SET NULL',
     ('audit_logs', 'user_id'): 'SET NULL',
     ('conflict_history', 'host_id'): 'CASCADE',
     ('conflict_history', 'new_scan_id'): 'SET NULL',
@@ -197,6 +191,7 @@ EXPECTED_ONDELETE = {
     # files die with it; the people and the reports it points at may go
     # without taking the report with them.
     ('report_files', 'report_id'): 'CASCADE',
+    ('report_images', 'report_id'): 'CASCADE',
     ('report_profiles', 'project_id'): 'CASCADE',
     ('report_profiles', 'updated_by_id'): 'SET NULL',
     ('reports', 'baseline_report_id'): 'SET NULL',

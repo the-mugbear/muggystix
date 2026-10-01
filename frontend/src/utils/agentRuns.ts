@@ -76,12 +76,32 @@ export const agentSessionPath = (sessionId: number): string => `/agent-sessions/
 /** The Agent Sessions list. */
 export const SESSIONS_LIST_PATH = '/agent-activity';
 
-/** Where a row of the sessions timeline opens, or null when it has no page:
- *  a project session opens its own page; a legacy assist row has none
- *  (5.312.0 replaced it with the session page, which only project sessions
- *  have).  The one rule for Agent Sessions, Operations and the agent rail. */
+/** Where a row of the sessions timeline opens. The one rule for Agent
+ *  Sessions, Operations and the agent rail.
+ *  5.328.0 — every row has the page: a legacy assist session is the same kind
+ *  of record as a project session now (one table, one id), so its calls and
+ *  notes are readable too. It returned null for those rows before. */
 export const sessionRowPath = (row: AgentSessionRow): string | null =>
-  row.kind === 'project' ? agentSessionPath(row.id) : null;
+  agentSessionPath(row.id);
+
+/** A session whose key still works: an agent could take a task right now.
+ *  This — not the stored `status` — is what "my live sessions" means: an
+ *  active session whose key ran out is resumable from Agent Sessions, but
+ *  nothing is connected to it. (The list this replaced derived an `ended`
+ *  status for such rows on the server.) */
+export const hasLiveKey = (
+  row: Pick<AgentSessionRow, 'status' | 'key_expires_at'>,
+  now: number = Date.now(),
+): boolean =>
+  row.status === 'active'
+  && row.key_expires_at != null
+  && new Date(row.key_expires_at).getTime() > now;
+
+/** The session-list filters for "this operator's sessions that may be live";
+ *  the caller keeps the rows `hasLiveKey` accepts. One definition for
+ *  `useMyAssistSessions` and `useAgentTask`. */
+export const myActiveSessionFilters = (userId: number) =>
+  ({ kind: 'project', status: 'active', user_id: userId }) as const;
 
 /** 5.313.0 — the one-line tasks the per-object entry points hand to the
  *  operator's agent session (AgentTaskButton). There are no per-workflow keys.

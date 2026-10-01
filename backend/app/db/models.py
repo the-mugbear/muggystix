@@ -1412,6 +1412,11 @@ class NoteAttachment(Base):
     # report (screenshots often show more than a client should see).  Set by
     # the uploader or a project admin.
     include_in_report = Column(Boolean, nullable=False, default=False, server_default="false")
+    # What the image shows, written by the person who attached it (or a
+    # project admin) — the figure caption wherever the client report prints
+    # it.  NULL: the report falls back to the file name.  At most
+    # ``report_images.CAPTION_MAX`` characters (checked by the route).
+    caption = Column(Text, nullable=True)
 
     annotation = relationship("Annotation", back_populates="attachments")
     uploaded_by = relationship("User", foreign_keys=[uploaded_by_id])

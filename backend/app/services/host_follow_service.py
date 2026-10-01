@@ -326,6 +326,19 @@ class HostFollowService:
             raise NoteHasRepliesError(
                 "This note still has replies; delete or move them first."
             )
+        # The note's images go with it.  One that a finding's report text
+        # places stays until the reference is removed (409, naming the
+        # section) — the same refusal as deleting the image itself.
+        from app.db.models import NoteAttachment
+        from app.services import report_images
+        image_ids = [
+            aid for (aid,) in
+            self.db.query(NoteAttachment.id).filter(NoteAttachment.annotation_id == note.id)
+        ]
+        if image_ids:
+            report_images.refuse_if_placed(
+                self.db, image_ids, action="delete this comment", then="delete it",
+            )
         nid = note.id
         self.db.delete(note)
         self.db.commit()

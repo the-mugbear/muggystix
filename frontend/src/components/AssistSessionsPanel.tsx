@@ -12,14 +12,17 @@
  * 5.312.1 — each session opens its page (`/agent-sessions/:id`: its work,
  * notes, calls, Resume and End), and the panel links to Agent Sessions, which
  * also lists the sessions this panel does not: ones whose key ran out and that
- * wait to be resumed. Sessions are numbered by the SESSION id, the one the
- * agent and every other page use (the panel showed the detail row's id).
+ * wait to be resumed.
+ *
+ * 5.328.0 — the rows are the session list's own rows (`AgentSessionRow`): a
+ * session has one id, so there is nothing to translate before linking to it
+ * or ending it.
  */
 import React from 'react';
 import { Link } from 'react-router-dom';
 import { ChevronRight, KeyRound, Loader2, PowerOff } from 'lucide-react';
 
-import type { AgentSessionRow, AssistSessionRow } from '../services/api';
+import type { AgentSessionRow } from '../services/api';
 import { SESSIONS_LIST_PATH, agentSessionPath } from '../utils/agentRuns';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -28,7 +31,7 @@ import { useAgentSessionControls } from '../hooks/useAgentSessionControls';
 import { formatRelativeTime } from '../utils/relativeTime';
 
 export interface AssistSessionsPanelProps {
-  sessions: AssistSessionRow[];
+  sessions: AgentSessionRow[];
   /** Re-fetch after a session ends, so the list and any count agree. */
   onChanged: () => void | Promise<void>;
   /** Called when a link leaves for a session's page, so the host dialog closes. */
@@ -37,13 +40,13 @@ export interface AssistSessionsPanelProps {
 
 /** "4 minutes ago" — the long form, and null when there is no timestamp so the
  *  caller renders nothing rather than a placeholder. */
-const formatAge = (iso: string | null): string | null =>
-  formatRelativeTime(iso, { style: 'long', fallback: null });
+const formatAge = (iso: string | null | undefined): string | null =>
+  formatRelativeTime(iso ?? null, { style: 'long', fallback: null });
 
 /** Time remaining on the session's key, as the operator's decision needs it.
  *  Returns null when there is no live key — the caller renders that as a
  *  distinct dead state rather than as "expires in 0 minutes". */
-const formatRemaining = (iso: string | null): { label: string; urgent: boolean } | null => {
+const formatRemaining = (iso: string | null | undefined): { label: string; urgent: boolean } | null => {
   if (!iso) return null;
   const until = new Date(iso).getTime();
   if (Number.isNaN(until)) return null;
@@ -59,19 +62,6 @@ const formatRemaining = (iso: string | null): { label: string; urgent: boolean }
   };
 };
 
-/** The session row End needs, from this panel's detail row: End goes through
- *  the one path every session surface uses (`useAgentSessionControls` — the
- *  session id, and the wrap-up prompt while the agent is still connected). */
-const asSessionRow = (s: AssistSessionRow, sessionId: number): AgentSessionRow => ({
-  kind: 'project',
-  id: sessionId,
-  project_id: s.project_id,
-  status: s.status,
-  purpose: s.purpose,
-  key_expires_at: s.key_expires_at,
-  last_activity_at: s.last_activity_at,
-});
-
 export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
   sessions,
   onChanged,
@@ -80,9 +70,6 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
   const controls = useAgentSessionControls(() => void onChanged());
 
   if (sessions.length === 0) return null;
-
-  /** The number every other page uses for this session. */
-  const sessionNumber = (s: AssistSessionRow): number => s.agent_session_id ?? s.id;
 
   return (
     <div className="flex flex-col gap-xs rounded-control border border-border p-sm">
@@ -113,7 +100,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-xs">
                   <span className="font-mono text-caption text-muted-foreground">
-                    #{sessionNumber(s)}
+                    #{s.id}
                   </span>
                   {/* v5.189.0 — was a read-only/can-write badge sourced from
                       the session's capability grant. Grants are gone: a session
@@ -124,7 +111,7 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                       connected. A past call proves the client connected, not
                       that it is still running — so this is never a green
                       "live" badge; "last used" beside it is the liveness cue. */}
-                  {s.connection === 'none' ? (
+                  {(s.connection ?? 'none') === 'none' ? (
                     <Tooltip>
                       <TooltipTrigger asChild>
                         <Badge variant="outline" tabIndex={0}>
@@ -173,36 +160,33 @@ export const AssistSessionsPanel: React.FC<AssistSessionsPanelProps> = ({
                 </p>
               </div>
               <div className="flex shrink-0 items-center gap-xs">
-                {/* Both need the session id; a detail row without one
-                    predates the unified session and has no live key. */}
-                {s.agent_session_id != null && (
-                  <>
-                    <Button variant="outline" size="sm" asChild>
-                      <Link
-                        to={agentSessionPath(s.agent_session_id)}
-                        onClick={onNavigate}
-                        aria-label={`Open agent session ${s.agent_session_id}`}
-                      >
-                        Open
-                        <ChevronRight className="size-4" aria-hidden />
-                      </Link>
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      disabled={controls.isEnding(s.agent_session_id)}
-                      onClick={() => void controls.requestEnd(asSessionRow(s, s.agent_session_id!))}
-                      aria-label={`End agent session ${s.agent_session_id}`}
-                    >
-                      {controls.isEnding(s.agent_session_id) ? (
-                        <Loader2 className="size-4 animate-spin" aria-hidden />
-                      ) : (
-                        <PowerOff className="size-4" aria-hidden />
-                      )}
-                      End
-                    </Button>
-                  </>
-                )}
+                <Button variant="outline" size="sm" asChild>
+                  <Link
+                    to={agentSessionPath(s.id)}
+                    onClick={onNavigate}
+                    aria-label={`Open agent session ${s.id}`}
+                  >
+                    Open
+                    <ChevronRight className="size-4" aria-hidden />
+                  </Link>
+                </Button>
+                {/* End goes through the one path every session surface uses
+                    (`useAgentSessionControls` — the wrap-up prompt while the
+                    agent is still connected). */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled={controls.isEnding(s.id)}
+                  onClick={() => void controls.requestEnd(s)}
+                  aria-label={`End agent session ${s.id}`}
+                >
+                  {controls.isEnding(s.id) ? (
+                    <Loader2 className="size-4 animate-spin" aria-hidden />
+                  ) : (
+                    <PowerOff className="size-4" aria-hidden />
+                  )}
+                  End
+                </Button>
               </div>
             </li>
           );

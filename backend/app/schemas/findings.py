@@ -38,6 +38,37 @@ class FindingReportText(BaseModel):
     cvss_score_from_vector: bool = False
 
 
+class FindingImage(BaseModel):
+    """One image attached to the finding (on its comments or its source-note
+    thread), as the client report sees it."""
+    id: int
+    note_id: int
+    filename: str
+    # What the image shows: the figure caption in the report.  None → the
+    # report prints the file name.
+    caption: Optional[str] = None
+    content_type: str
+    size_bytes: int
+    # Ticked "In report".
+    in_report: bool = False
+    # PNG / JPEG / GIF: a format the report can print (a WebP is not).
+    printable: bool = True
+    # The written sections whose Markdown places it (``![…](evidence:<id>)``).
+    # Empty for a ticked image means it prints under Evidence.
+    placed_in: List[str] = []
+    uploaded_by_id: Optional[int] = None
+    by_agent: bool = False
+    created_at: Optional[datetime] = None
+    # Whether THIS viewer may tick, caption or delete it (the person who
+    # attached it, a project admin or a global admin).
+    can_edit: bool = False
+
+
+class FindingImageList(BaseModel):
+    items: List[FindingImage] = []
+    caption_max: int
+
+
 class FindingResponse(BaseModel):
     id: int
     project_id: int

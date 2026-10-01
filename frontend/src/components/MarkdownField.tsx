@@ -14,9 +14,9 @@
  * The label stays the caller's (`<Label htmlFor={id}>`), so the textarea is
  * found by its label as before.
  */
-import React, { useLayoutEffect, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  Bold, CircleHelp, Code, Italic, Link2, List, ListOrdered, SquareCode, Table,
+  Bold, CircleHelp, Code, ImagePlus, Italic, Link2, List, ListOrdered, Loader2, SquareCode, Table,
 } from 'lucide-react';
 
 import {
@@ -29,6 +29,7 @@ import {
   tablesAfterText,
   wrapSelection,
 } from '../utils/markdownEditing';
+import { MarkdownImages, imageReference } from '../utils/reportImages';
 import { Button } from './ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from './ui/popover';
 import { Textarea } from './ui/textarea';
@@ -43,7 +44,17 @@ interface Props {
   rows?: number;
   maxLength?: number;
   disabled?: boolean;
+  /**
+   * A finding's report section: the finding's images ticked "In report".
+   * Adds "Insert image" (it writes `![caption](evidence:<id>)` on a line of
+   * its own) and shows placed images in the preview.  Left out — the
+   * executive summary, any text that is not a finding's — the field takes no
+   * images, as before.
+   */
+  images?: MarkdownImages;
 }
+
+const NO_IMAGES_REASON = 'No image to insert: attach one to a comment below and tick “In report”.';
 
 const GUIDE: Array<[string, string]> = [
   ['**bold**  _italic_  `code`', 'Emphasis and inline code'],
@@ -54,9 +65,19 @@ const GUIDE: Array<[string, string]> = [
   ['blank line', 'Starts a new paragraph (a single line break is a space)'],
 ];
 
-const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, maxLength, disabled }) => {
+const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, maxLength, disabled, images }) => {
   const ref = useRef<HTMLTextAreaElement>(null);
   const [preview, setPreview] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The caret when the picker opened: the popover takes the focus, and the
+  // image goes where the author was writing.
+  const caret = useRef<{ start: number; end: number } | null>(null);
+  const placeable = images?.placeable ?? [];
+  const ensureImage = images?.resolver.ensure;
+  useEffect(() => {
+    if (pickerOpen && ensureImage) placeable.forEach((img) => ensureImage(img.id));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pickerOpen, ensureImage, placeable.map((i) => i.id).join(',')]);
   // The selection to restore once React has written the edited value.
   const pendingSelection = useRef<{ start: number; end: number } | null>(null);
 
@@ -69,11 +90,13 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
     el.setSelectionRange(sel.start, sel.end);
   }, [value, preview]);
 
-  const apply = (edit: (e: Edit) => Edit) => {
+  const apply = (edit: (e: Edit) => Edit, at?: { start: number; end: number } | null) => {
     const el = ref.current;
-    const current: Edit = el
-      ? { value, start: el.selectionStart, end: el.selectionEnd }
-      : { value, start: value.length, end: value.length };
+    const current: Edit = at
+      ? { value, start: Math.min(at.start, value.length), end: Math.min(at.end, value.length) }
+      : el
+        ? { value, start: el.selectionStart, end: el.selectionEnd }
+        : { value, start: value.length, end: value.length };
     const next = edit(current);
     if (maxLength !== undefined && next.value.length > maxLength) return;
     pendingSelection.current = { start: next.start, end: next.end };
@@ -133,6 +156,69 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
             <t.icon className="size-4 shrink-0" aria-hidden />
           </Button>
         ))}
+        {images && (placeable.length === 0 ? (
+          // A disabled button shows no tooltip in every browser: the span
+          // carries the reason, and assistive technology reads it.
+          <span title={NO_IMAGES_REASON}>
+            <Button type="button" variant="ghost" size="icon" className="size-7" disabled
+              aria-label="Insert image" aria-describedby={`${id}-no-images`}>
+              <ImagePlus className="size-4 shrink-0" aria-hidden />
+            </Button>
+            <span id={`${id}-no-images`} className="sr-only">{NO_IMAGES_REASON}</span>
+          </span>
+        ) : (
+          <Popover open={pickerOpen} onOpenChange={(open) => {
+            if (open) {
+              const el = ref.current;
+              caret.current = el ? { start: el.selectionStart, end: el.selectionEnd } : null;
+            }
+            setPickerOpen(open);
+          }}>
+            <PopoverTrigger asChild>
+              <Button type="button" variant="ghost" size="icon" className="size-7"
+                aria-label="Insert image" title="Insert one of this finding’s “In report” images"
+                disabled={disabled || preview}>
+                <ImagePlus className="size-4 shrink-0" aria-hidden />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-96 max-w-[90vw] space-y-xs text-caption">
+              <p className="font-medium">Place an image here</p>
+              <p className="text-muted-foreground">
+                This finding’s images ticked “In report”. An image placed in the text prints there with its caption;
+                the rest print under Evidence.
+              </p>
+              <ul className="max-h-72 space-y-xxs overflow-y-auto" aria-label="Images to insert">
+                {placeable.map((img) => {
+                  const src = images.urls[img.id];
+                  const caption = img.caption?.trim() || '';
+                  return (
+                    <li key={img.id}>
+                      <button type="button"
+                        className="flex w-full min-w-0 items-center gap-xs rounded-control p-xxs text-left hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label={`Insert image ${img.id}: ${caption || img.filename}`}
+                        onClick={() => {
+                          setPickerOpen(false);
+                          apply((e) => insertBlock(e, imageReference(img.id, img.caption)), caret.current);
+                        }}>
+                        <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-control border border-border bg-muted">
+                          {src
+                            ? <img src={src} alt="" className="size-full object-cover" />
+                            : <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+                        </span>
+                        <span className="min-w-0 flex-1">
+                          <span className="line-clamp-2 block [overflow-wrap:anywhere]">
+                            {caption || <span className="italic text-muted-foreground">No caption — {img.filename}</span>}
+                          </span>
+                          <span className="block truncate text-muted-foreground">Image {img.id}</span>
+                        </span>
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            </PopoverContent>
+          </Popover>
+        ))}
         <Popover>
           <PopoverTrigger asChild>
             <Button type="button" variant="ghost" size="sm" className="h-7 px-xs text-caption text-muted-foreground">
@@ -149,16 +235,28 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
                 </React.Fragment>
               ))}
             </dl>
-            <p className="text-muted-foreground">
-              Not printed: images (attach screenshots to the finding and mark them &quot;In report&quot;),
-              HTML (shown as text). A heading prints as bold text — the report&apos;s sections are the template&apos;s.
-            </p>
+            {images ? (
+              <p className="text-muted-foreground">
+                Images: only this finding&apos;s own, ticked &quot;In report&quot; — use Insert image, which writes{' '}
+                <span className="font-mono">![caption](evidence:57)</span>. The text in the brackets is the caption
+                for that place; leave it empty to print the image&apos;s own caption. Any other image prints as its
+                text. Not printed: HTML (shown as text). A heading prints as bold text — the report&apos;s sections
+                are the template&apos;s.
+              </p>
+            ) : (
+              <p className="text-muted-foreground">
+                Not printed: images (attach screenshots to the finding and mark them &quot;In report&quot;),
+                HTML (shown as text). A heading prints as bold text — the report&apos;s sections are the template&apos;s.
+              </p>
+            )}
           </PopoverContent>
         </Popover>
       </div>
       {preview ? (
         <div className="min-h-16 rounded-control border border-input bg-card px-sm py-xs text-body" data-testid={`${id}-preview`}>
-          {value.trim() ? <SafeMarkdown text={value} /> : <span className="text-muted-foreground">Nothing written yet</span>}
+          {value.trim()
+            ? <SafeMarkdown text={value} evidence={images?.resolver} />
+            : <span className="text-muted-foreground">Nothing written yet</span>}
         </div>
       ) : (
         <Textarea ref={ref} id={id} rows={rows} maxLength={maxLength} value={value} disabled={disabled}

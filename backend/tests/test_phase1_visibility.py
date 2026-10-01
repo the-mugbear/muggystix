@@ -210,6 +210,46 @@ def test_agent_activity_summary_aggregates(client, db_session, test_project, tes
     assert top["calls"] == 4
 
 
+def test_agent_activity_summary_labels_a_call_by_its_sessions_kind(
+    client, db_session, test_project, test_agent,
+):
+    """v2.449.0 — the "assist" label is the session's kind
+    (``agent_sessions.workflow``), not a second id column on the call: a legacy
+    assist session's calls still read "assist", every call is counted once, and
+    the session is ranked once, under its one id (it was listed twice — once
+    per id column)."""
+    from app.db.models_agent import AgentSession
+
+    pid = test_project.id
+    now = datetime.now(timezone.utc)
+    sessions = {}
+    for workflow in ("project", "assist"):
+        s = AgentSession(
+            workflow=workflow, project_id=pid, agent_id=test_agent.id,
+            started_by_id=test_agent.owner_id, status="ended",
+        )
+        db_session.add(s)
+        db_session.flush()
+        sessions[workflow] = s.id
+    for _ in range(3):
+        _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200,
+                  created_at=now, agent_session_id=sessions["assist"])
+    for _ in range(2):
+        _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200,
+                  created_at=now, agent_session_id=sessions["project"])
+    _api_call(db_session, project_id=pid, agent_id=test_agent.id, status=200, created_at=now)
+    db_session.commit()
+
+    body = client.get(f"/api/v1/projects/{pid}/agent-activity/summary").json()
+    assert body["total_calls"] == 6
+    by_wf = {row["workflow"]: row["calls"] for row in body["by_workflow"]}
+    assert by_wf == {"assist": 3, "session": 2, "other": 1}
+    assert [(s["workflow"], s["session_id"], s["calls"]) for s in body["busiest_sessions"]] == [
+        ("assist", sessions["assist"], 3),
+        ("session", sessions["project"], 2),
+    ]
+
+
 def test_agent_activity_summary_empty_window(client, db_session, test_project):
     resp = client.get(f"/api/v1/projects/{test_project.id}/agent-activity/summary")
     assert resp.status_code == 200, resp.text

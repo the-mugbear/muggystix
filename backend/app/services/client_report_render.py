@@ -11,11 +11,14 @@ Two job formats, both ``report_type='client'`` with ``filters={"report_id"}``:
   Re-running it (``POST /client-reports/{id}/render``, only after a failed
   render) builds the files from the same snapshot.
 
-Evidence images are read from the note-attachment store at render time.  An
-issued render refuses what would make its files differ from what was signed
-off (review 2026-09-23 C4): a template whose fingerprint changed since the
-issue, or an evidence image that has gone.  Either is a revision, not a
-re-render.
+Evidence images: a draft reads the live note attachments at render time; an
+issued report reads ITS OWN copies, made when it was issued
+(``client_report_service.freeze_report_images`` → ``report_images``), so an
+attachment deleted afterwards cannot fail its render.  An issued render
+refuses what would make its files differ from what was signed off (review
+2026-09-23 C4): a template whose fingerprint changed since the issue, or an
+image copy that is gone or no longer matches its recorded hash.  Either is a
+revision, not a re-render.
 """
 from __future__ import annotations
 
@@ -31,7 +34,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.db.models import NoteAttachment, ReportJob
-from app.db.models_reports import RenderStatus, Report, ReportFile, ReportStatus
+from app.db.models_reports import RenderStatus, Report, ReportFile, ReportImage, ReportStatus
 from app.services import quarto_render
 from app.services import report_template_service as templates
 from app.services.client_report_service import ClientReportService
@@ -51,6 +54,7 @@ def _slug(text: Optional[str]) -> str:
 
 
 def _evidence_resolver(db: Session, project_id: int):
+    """A DRAFT's images: the live attachments."""
     base = (Path(settings.UPLOAD_DIR) / "note_attachments").resolve()
 
     def resolve(item: dict) -> Optional[Path]:
@@ -63,6 +67,40 @@ def _evidence_resolver(db: Session, project_id: int):
         except (ValueError, OSError):
             return None
         return target if target.is_file() else None
+
+    return resolve
+
+
+def _issued_evidence_resolver(db: Session, report: Report):
+    """An ISSUED report's images: its own copies, made when it was issued
+    (``freeze_report_images``) and checked against the hash recorded then —
+    never the live attachment, which may have been deleted, un-ticked or
+    replaced since.  A report issued before the copies existed has none and
+    reads the live attachments, as it always did."""
+    copies = {
+        row.attachment_id: row
+        for row in db.query(ReportImage).filter(ReportImage.report_id == report.id)
+    }
+    if not copies:
+        return _evidence_resolver(db, report.project_id)
+    root = Path(settings.REPORT_FILES_DIR).resolve()
+
+    def resolve(item: dict) -> Optional[Path]:
+        row = copies.get(item.get("attachment_id"))
+        if row is None:
+            return None
+        try:
+            target = (root / row.storage_path).resolve()
+            target.relative_to(root)
+            if not target.is_file():
+                return None
+            if hashlib.sha256(target.read_bytes()).hexdigest() != row.sha256:
+                logger.error("Client report %s: its copy of image %s does not match the hash recorded at issue",
+                             report.id, row.attachment_id)
+                return None
+        except (ValueError, OSError):
+            return None
+        return target
 
     return resolve
 
@@ -92,7 +130,9 @@ def _render(db: Session, report: Report, dataset: dict, formats, out_dir: Path, 
     return quarto_render.render(
         template.path, template.entry, dataset, wanted, out_dir,
         basename=basename,
-        resolve_evidence=_evidence_resolver(db, report.project_id),
+        resolve_evidence=(
+            _issued_evidence_resolver(db, report) if issued else _evidence_resolver(db, report.project_id)
+        ),
         postprocess=template.postprocess,
         timeout=settings.REPORT_RENDER_TIMEOUT_SECONDS,
         strict_evidence=issued,

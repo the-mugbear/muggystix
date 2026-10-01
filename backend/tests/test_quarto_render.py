@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import copy
 import json
+import re
 import shutil
 import struct
 import zipfile
@@ -54,8 +55,11 @@ def test_md_placeholders_only_take_data_paths():
 
 
 def test_image_and_plain_refuse_anything_unexpected():
+    # A placeholder naming the file: the caption never enters the .qmd (the
+    # filter reads it from data.json), so there is nothing to escape.
     out = image({"file": "evidence/12.png", "caption": "a [link](x)"})
-    assert "(evidence/12.png)" in out and r"a \[link\]\(x\)" in out
+    assert out.strip() == '::: {.bs-figure file="evidence/12.png" width="6in"}\n:::'
+    assert "link" not in out
     for bad in ({"file": "/etc/passwd"}, {"file": "evidence/../x.png"}, {"file": "evidence/1.svg"}):
         with pytest.raises(RenderError):
             image(bad)
@@ -170,6 +174,47 @@ HOSTILE_CODE = (
     "\x1b[31mred\x1b[0m \x07bell\x00nul\n"
     "END-OF-HOSTILE-CODE"
 )
+
+
+# Images in written text.  Exactly one form may print: a reference to an
+# image the dataset's `placed` map lists for THAT field of THAT finding (here
+# attachment 1).  Everything else — an id the map does not list, another
+# scheme, a path, a data: URI, a web image, an <img> in raw HTML — is alt text
+# or plain text, as before; attributes and a title after a valid reference
+# are text / dropped.
+HOSTILE_IMAGES = (
+    "\n\n![foreign-alt](evidence:999)\n\n"
+    "![alt {{< env HOME >}} <b id=\"altraw\">x</b>](evidence:1){.class onerror=alert(4)}\n\n"
+    "![js-alt](javascript:alert(5))\n\n"
+    '![titled](evidence:1 "title with {{< include /etc/passwd >}}")\n\n'
+    '<img src="evidence:1" onerror="alert(6)" id="rawimg">\n\n'
+    "![data-alt](data:image/png;base64,SE9TVElMRQ==) ![path-alt](../../etc/passwd) "
+    "![web-alt](https://example.com/x.png) ![unlisted-alt](evidence:2)\n"
+)
+# A caption is typed by a person: it is printed as one plain string.
+HOSTILE_CAPTION = (
+    "{{< env HOME >}} {{< include /etc/passwd >}} <script>alert('cap')</script> `tick` "
+    "\n::: {.callout-note}\n:::\n![x](/etc/passwd) [l](javascript:alert(7)) <b id=\"capraw\">x</b> CAPTION-END"
+)
+PNG_1X1 = bytes.fromhex(
+    "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
+    "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
+)
+
+
+def _img_elements(html: str) -> list:
+    """The attributes of every <img> element of an HTML document."""
+    from html.parser import HTMLParser
+
+    found = []
+
+    class _Images(HTMLParser):
+        def handle_starttag(self, tag, attrs):
+            if tag == "img":
+                found.append(dict(attrs))
+
+    _Images().feed(html)
+    return found
 
 
 def test_code_placeholders_only_take_data_paths_and_print_nothing_when_empty(tmp_path):
@@ -323,15 +368,80 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     # B17 — a re-rated finding's earlier severity is a label; hostile all the same.
     data["findings"][0]["previous_severity"] = "medium"
     data["findings"][0]["previous_severity_label"] = HOSTILE
+    # Images placed in text.  Attachment 1 is placed in the description and
+    # the recommendation; 2 is ticked but placed nowhere (the trailing
+    # block); 999 is nobody's.  The `placed` map itself is hostile too: an
+    # entry whose file is not an evidence file must never be read.  Every
+    # field that prints, in any template, carries the hostile references —
+    # the executive summary and another finding included, where NO image may
+    # print (the map is per finding and per field).
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"] = [], {}, []
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG_1X1)
+    one = {"attachment_id": 1, "file": "evidence/1.png", "caption": HOSTILE_CAPTION}
+    two = {"attachment_id": 2, "file": "evidence/2.png", "caption": HOSTILE_CAPTION}
+    first = data["findings"][0]
+    first["description"] += HOSTILE_IMAGES
+    first["recommendation"] += HOSTILE_IMAGES + "\n\n![](evidence:1)\n"
+    first["images"] = [{**one, "placed_in": ["description", "recommendation"]}, {**two, "placed_in": []}]
+    first["evidence"] = [{**two, "placed_in": []}]
+    first["placed"] = {
+        "description": {"1": one, "7": {"attachment_id": 7, "file": "/etc/passwd", "caption": "x"},
+                        "8": {"attachment_id": 8, "file": "evidence/../../etc/passwd", "caption": "x"}},
+        "recommendation": {"1": one},
+    }
+    data["executive_summary"] += HOSTILE_IMAGES
+    data["findings"][1]["description"] = "Another finding. " + HOSTILE_IMAGES
+    data["findings"][1]["recommendation"] = "Fix it. " + HOSTILE_IMAGES
 
     files = quarto_render.render(
         template, manifest.get("entry", "report.qmd"), data, ["html", "docx"], tmp_path,
         postprocess=manifest.get("postprocess"), timeout=240,
+        resolve_evidence=lambda item: shot if item.get("attachment_id") in (1, 2) else None,
     )
     html = files["html"].read_text(encoding="utf-8")
     with zipfile.ZipFile(files["docx"]) as z:
         docx = z.read("word/document.xml").decode("utf-8")
         docx_links = z.read("word/_rels/document.xml.rels").decode("utf-8")
+        docx_media = [n for n in z.namelist() if n.startswith("word/media/")]
+
+    # --- images in written text ------------------------------------------
+    # The only <img> elements are the report's own figures (and the logo):
+    # none took its source, or any attribute, from the text.
+    # (Parsed, not searched: a caption's text is — safely — inside alt="…".)
+    for attrs in _img_elements(html):
+        assert set(attrs) <= {"role", "aria-label", "src", "style", "alt", "class"}, sorted(attrs)
+        assert attrs["src"].startswith("data:image/png;base64,") or "bs-logo" in attrs.get("class", "")
+        assert attrs.get("style", "") in ("", "width:6in") and "rawimg" not in attrs.get("class", "")
+    assert "SE9TVElMRQ==" not in html                       # the data: URI was not embedded
+    assert '<b id="altraw"' not in html and '<b id="capraw"' not in html
+    assert "<script>alert('cap')" not in html
+    assert "evidence:" not in docx_links and "passwd" not in docx_links and "example.com/x.png" not in docx_links
+    assert "<b id" not in docx
+    # Where a figure prints: per template, never in the executive summary or
+    # in the other finding.  pentest prints the description (2 references to
+    # image 1), the recommendation (3) and the trailing block (image 2);
+    # the worklist prints the recommendation; the brief prints no evidence.
+    figures = re.findall(r'<figure class="bs-figure[^>]*>.*?</figure>', html, re.S)
+    # An operator's own template is held to everything else here; the count
+    # is pinned for the shipped ones.
+    expected = {"pentest": 6, "remediation-worklist": 3, "executive-brief": 0}.get(template.name, len(figures))
+    assert len(figures) == expected
+    assert docx.count("<w:drawing>") == expected
+    assert not [n for n in docx_media if n.endswith((".svg", ".html")) or "passwd" in n]
+    captions = re.findall(r"<figcaption[^>]*>(.*?)</figcaption>", html, re.S)
+    assert [c.split(":")[0] for c in captions] == [f"Figure {n}" for n in range(1, expected + 1)]
+    if expected:
+        # The stored caption and an alt text are printed, whole, as text.
+        assert any("CAPTION-END" in c and "{{&lt; env HOME &gt;}}" in c for c in captions)
+        assert "CAPTION-END" in docx
+        assert any(c.startswith("Figure") and "alt {{&lt; env HOME &gt;}}" in c for c in captions)
+    else:
+        assert "CAPTION-END" not in html and "CAPTION-END" not in docx
+    for text in (html, docx):
+        # A reference that places nothing leaves its alt text, as any image does.
+        assert "foreign-alt" in text and "js-alt" in text and "unlisted-alt" in text
 
     for text in (html, docx):
         # Shortcodes were not run: printed, not expanded.
@@ -378,7 +488,13 @@ def test_evidence_images_are_placed_and_missing_ones_skipped(tmp_path):
         "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
         "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
     ))
-    data["findings"][0]["evidence"] = [
+    # The sample's first finding has images of its own; a dataset frozen
+    # before images could be placed has `evidence` alone, as here.
+    for f in data["findings"]:
+        f.pop("images", None)
+        f.pop("placed", None)
+        f["evidence"] = []
+    data["findings"][1]["evidence"] = [
         {"attachment_id": 1, "file": "evidence/1.png", "caption": "Listing"},
         {"attachment_id": 2, "file": "evidence/2.png", "caption": "Gone"},
     ]
@@ -624,8 +740,12 @@ def test_tables_figures_and_finding_sections_are_numbered_like_the_original():
     assert [int(n) for n, _ in tables] == list(range(1, len(tables) + 1))
     assert [t for _, t in tables][:3] == ["Project details", "Penetration testers", "Distribution list"]
     assert "Summary of findings" in [t for _, t in tables]
-    figures = re.findall(r"!\[(Figure \d+[^\]]*)\]", out)
-    assert figures == [r"Figure 1\: SMB banner", "Figure 2", r"Figure 3\: Bind"]
+    # Figures are placeholders in the source — the filter captions and numbers
+    # them in document order (test_figures_are_numbered_in_document_order).
+    assert re.findall(r'\.bs-figure file="(evidence/\d\.png)"', out) == [
+        "evidence/1.png", "evidence/2.png", "evidence/3.png",
+    ]
+    assert "Figure" not in "".join(re.findall(r"^::: \{\.bs-figure.*$", out, re.M))
     assert "{.unnumbered}" not in (TEMPLATE / "partials" / "_finding.qmd").read_text(encoding="utf-8")
     project = out.split("Table 1: Project details")[1]
     assert project.split("\n:::\n", 1)[1].lstrip().startswith("| | |")
@@ -684,11 +804,13 @@ def test_every_table_in_the_word_report_is_centred(tmp_path):
     assert all('<w:jc w:val="center"' in p for p in props), props[0]
 
 
-def test_image_numbers_its_caption_and_refuses_anything_but_a_count():
+def test_image_accepts_and_ignores_a_number_and_refuses_anything_but_a_count():
+    """A template written when Jinja counted the figures (v2.410.0,
+    ``image(e, number=counter.figure)``) keeps rendering: the argument is
+    accepted and ignored — the filter numbers every figure in document order."""
     item = {"file": "evidence/1.png", "caption": "a *b*"}
-    assert r"![Figure 4\: a \*b\*](evidence/1.png)" in image(item, number=4)
-    assert "![Figure 2](evidence/2.png)" in image({"file": "evidence/2.png"}, number=2)
-    assert "![a \\*b\\*](evidence/1.png)" in image(item)
+    assert image(item, number=4) == image(item)
+    assert "Figure" not in image(item, number=4) and "a *b*" not in image(item, number=4)
     for bad in (0, -1, "3", 2.5, True):
         with pytest.raises(RenderError):
             image(item, number=bad)
@@ -700,3 +822,174 @@ def test_pdf_is_not_a_report_format():
     assert "pdf" not in quarto_render.FORMATS
     with pytest.raises(quarto_render.RenderError):
         quarto_render.render(TEMPLATE, "report.qmd", {}, ["pdf"], Path("/nonexistent"))
+
+
+# --- images placed in a finding's written sections ---------------------------------
+
+def _img(att_id: int, caption: str, placed_in=()) -> dict:
+    return {"attachment_id": att_id, "file": f"evidence/{att_id}.png", "caption": caption,
+            "placed_in": list(placed_in)}
+
+
+def _placed(*images: dict) -> dict:
+    return {str(i["attachment_id"]): {k: i[k] for k in ("attachment_id", "file", "caption")} for i in images}
+
+
+def _figcaptions(html: str) -> list:
+    return [re.sub(r"\s+", " ", c).strip() for c in re.findall(r"<figcaption[^>]*>(.*?)</figcaption>", html, re.S)]
+
+
+def _word_paragraphs(docx: Path) -> list:
+    """``(style, text, framed)`` for each paragraph of the Word document, in
+    order; ``framed`` is True for a paragraph holding a picture inside the
+    one-cell table the post-processor frames screenshots with."""
+    with zipfile.ZipFile(docx) as z:
+        xml = z.read("word/document.xml").decode("utf-8")
+    out = []
+    depth = 0
+    for m in re.finditer(r"<w:tbl>|</w:tbl>|<w:p[ >].*?</w:p>", xml, re.S):
+        token = m.group(0)
+        if token == "<w:tbl>":
+            depth += 1
+        elif token == "</w:tbl>":
+            depth -= 1
+        else:
+            style = re.search(r'<w:pStyle w:val="([^"]+)"', token)
+            text = "".join(re.findall(r"<w:t[^>]*>([^<]*)</w:t>", token))
+            out.append((style.group(1) if style else "", text, "<w:drawing>" in token and depth > 0))
+    return out
+
+
+@needs_template
+@needs_quarto
+def test_placed_images_print_in_their_section_and_figures_count_in_document_order(tmp_path):
+    """The worst cases together, in HTML and Word: an image on its own line,
+    one in the middle of a paragraph, the same image twice in one section and
+    again in another, one in a table cell, one in a list item, a section that
+    is only an image, a reference inside a code block, a 2,000-character
+    caption, thirty images on one finding — and a second finding whose
+    figures carry on the count."""
+    long_caption = "L" * 1990 + " LONG-END"
+    images = {n: _img(n, f"Stored caption {n}") for n in range(1, 31)}
+    images[2] = _img(2, long_caption)
+    data = json.loads((TEMPLATE / "sample-data.json").read_text())
+    for f in data["findings"]:
+        f["images"], f["placed"], f["evidence"] = [], {}, []
+    first, second = data["findings"][0], data["findings"][1]
+    first["description"] = (
+        "Intro text.\n\n"
+        "![Own line, alt wins](evidence:1)\n\n"
+        "Before ![](evidence:2) after, and ![Same again](evidence:1) too.\n\n"
+        "| Step | Shot |\n|---|---|\n| relay | ![In a cell](evidence:3) |\n\n"
+        "- first item\n- second item ![In a list](evidence:4)\n\n"
+        "```\n![](evidence:5)\n```\n"
+    )
+    first["impact"] = "![](evidence:1)"                          # a section that is only an image
+    first["steps_to_reproduce"] = "1. Run it\n\n![](evidence:6)\n\n2. Read ![not placed here](evidence:3) the result"
+    placed_ids = {"description": [1, 2, 3, 4, 5], "impact": [1], "steps_to_reproduce": [6]}
+    first["placed"] = {field: _placed(*[images[n] for n in ids]) for field, ids in placed_ids.items()}
+    placed_anywhere = {n for ids in placed_ids.values() for n in ids}
+    for n, entry in images.items():
+        entry["placed_in"] = [field for field, ids in placed_ids.items() if n in ids]
+    first["images"] = list(images.values())
+    first["evidence"] = [images[n] for n in sorted(images) if n not in placed_anywhere]   # 24 trailing
+    second["evidence"] = second["images"] = [_img(40, "On the other finding")]
+
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(40, 20))
+    manifest = json.loads((TEMPLATE / "template.json").read_text())
+    files = quarto_render.render(
+        TEMPLATE, "report.qmd", data, ["html", "docx"], tmp_path / "out",
+        resolve_evidence=lambda item: shot, postprocess=manifest.get("postprocess"), timeout=240,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+
+    expected = [
+        "Own line, alt wins",          # description: on its own line — the alt text overrides the caption
+        long_caption,                  # in the middle of a paragraph: the stored caption (empty alt)
+        "Same again",                  # the same image again, its own number
+        "In a cell",                   # from a table cell: the figure follows the table
+        "In a list",
+        "Stored caption 5",            # referenced only inside a code block: printed after the text
+        "Stored caption 1",            # impact: the section that is only an image
+        "Stored caption 6",            # steps to reproduce
+    ] + [f"Stored caption {n}" for n in range(7, 31)] + ["On the other finding"]
+    numbered = [f"Figure {i}: {text}" for i, text in enumerate(expected, start=1)]
+    assert _figcaptions(html) == numbered
+    assert len(numbered) == 33
+
+    # Each placed figure sits INSIDE its section; the trailing block holds
+    # only the images no section places.
+    def between(start: str, end: str) -> str:
+        section = html[html.index(start):]
+        return section[:section.index(end)]
+
+    first_html = between('id="finding-11"', 'id="finding-12"')
+    h_impact, h_steps, h_evidence, h_fix = (
+        " Impact</h4>", " Steps to reproduce</h4>", " Evidence / proof of concept</h4>", " Recommendations</h3>",
+    )
+    description = first_html[first_html.index("Intro text."):first_html.index(h_impact)]
+    assert _figcaptions(description) == numbered[:6]
+    assert description.index("Before") < description.index("Figure 2:") < description.index("after, and")
+    assert description.index("</table>") < description.index("Figure 4:")
+    assert re.search(r"<td>In a cell</td>", description)          # the cell keeps the alt text
+    assert re.search(r"<li>second item\s*<figure", description)   # the list item holds its figure
+    assert "![](evidence:5)" in description                        # the code block is untouched
+    impact = first_html[first_html.index(h_impact):first_html.index(h_steps)]
+    assert _figcaptions(impact) == numbered[6:7]
+    steps = first_html[first_html.index(h_steps):first_html.index(h_evidence)]
+    assert _figcaptions(steps) == numbered[7:8] and "not placed here" in steps
+    evidence = first_html[first_html.index(h_evidence):first_html.index(h_fix)]
+    assert _figcaptions(evidence) == numbered[8:32]
+    assert "evidence:" not in re.sub(r"<pre>.*?</pre>", "", html, flags=re.S)   # no reference left as a target or text
+
+    # Word: the same captions in the same order, each under a framed picture.
+    paragraphs = _word_paragraphs(files["docx"])
+    captions = [text for style, text, _ in paragraphs if style == "ImageCaption"]
+    assert captions == numbered
+    framed = [i for i, (_, _, is_framed) in enumerate(paragraphs) if is_framed]
+    assert len(framed) == 33
+    for i in framed:                                              # picture, then its caption
+        assert paragraphs[i + 1][0] == "ImageCaption", paragraphs[i + 1]
+    texts = [text for _, text, _ in paragraphs]
+    assert texts.index("Intro text.") < texts.index(numbered[0]) < texts.index(numbered[5]) < texts.index(numbered[6])
+
+
+@needs_quarto
+def test_a_template_written_for_jinja_figure_numbers_keeps_rendering_and_one_may_drop_images(tmp_path):
+    """``image(e, number=counter.figure)`` (v2.410.0) is accepted and the
+    number ignored — the filter counts.  ``md(…, images=False)`` leaves placed
+    images out of a field (a brief that prints no evidence), caption and all;
+    ``image_width`` sets the placed figures' width."""
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    (folder / "report.qmd").write_text(
+        "---\ntitle: x\nengine: markdown\nfilters:\n  - quarto\n  - _bluestick/fields.lua\n"
+        "format:\n  html:\n    embed-resources: true\n---\n\n"
+        "<% set counter = namespace(figure=40) %>\n"
+        "# Kept\n\n<< md(findings[0], \"description\", image_width=\"3in\") >>\n\n"
+        "# Dropped\n\n<< md(findings[0], \"impact\", images=False) >>\n\n"
+        "# Trailing\n\n<% for e in findings[0].evidence %>\n"
+        "<% set counter.figure = counter.figure + 1 %>\n<< image(e, number=counter.figure) >>\n<% endfor %>\n"
+    )
+    one, two = _img(1, "Placed one"), _img(2, "Trailing two")
+    data = {"findings": [{
+        "_path": "findings.0",
+        "description": "Text ![](evidence:1)",
+        "impact": "Words before.\n\n![Dropped alt](evidence:1)\n\nWords after.",
+        "images": [one, two], "evidence": [two],
+        "placed": {"description": _placed(one), "impact": _placed(one)},
+    }]}
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(_png(20, 10))
+    with pytest.raises(RenderError):     # a width is a width, nothing else
+        quarto_render.jinja_environment(folder, data).from_string(
+            '<< md(findings[0], "description", image_width="3in; x") >>').render(**data)
+    files = quarto_render.render(folder, "report.qmd", data, ["html"], tmp_path / "out",
+                                 resolve_evidence=lambda item: shot, timeout=240)
+    html = files["html"].read_text(encoding="utf-8")
+    assert _figcaptions(html) == ["Figure 1: Placed one", "Figure 2: Trailing two"]     # not 41
+    assert 'style="width:3in"' in html and 'style="width:6in"' in html
+    dropped = html[html.index(">Dropped<"):html.index(">Trailing<")]
+    assert "Words before." in dropped and "Words after." in dropped
+    assert "<figure" not in dropped and "Dropped alt" not in dropped

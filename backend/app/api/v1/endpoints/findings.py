@@ -25,6 +25,7 @@ from app.services.finding_service import FindingService, validate_severity
 from app.services.finding_actions import (
     FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
 )
+from app.services import report_images
 from app.services.report_text import REPORT_TEXT_FIELDS, report_text_of
 from app.services.host_follow_service import HostFollowService, NoteHasRepliesError
 from app.services.host_serialization import _serialize_note, note_load_options
@@ -36,6 +37,7 @@ from app.schemas.schemas import (
 )
 from app.schemas.findings import (
     EndpointStatusBulkUpdate, EndpointStatusUpdate,
+    FindingImage, FindingImageList,
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
@@ -733,6 +735,33 @@ def delete_finding_note(
                    "Edit its text instead.",
         )
     return Response(status_code=204)
+
+
+@router.get(
+    "/findings/{finding_id}/images",
+    response_model=FindingImageList,
+    summary="The finding's images: caption, whether each is in the report, and where it is placed",
+)
+def list_finding_images(
+    finding_id: int,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    current_user: User = Depends(get_current_user),
+    viewer: FindingActor = Depends(get_finding_viewer),
+):
+    """Every image on the finding's comments and its source-note thread, as
+    the client report sees it.  A ticked image prints inside each section
+    whose Markdown references it (``![caption](evidence:<id>)``) and, when no
+    section does, under Evidence.  ``can_edit`` follows the rule of the tick
+    itself: the person who attached the image, or an admin."""
+    finding = _load(db, project, finding_id)
+    items = []
+    for image in report_images.finding_images(db, finding):
+        items.append(FindingImage(
+            **image,
+            can_edit=viewer.is_project_admin or image["uploaded_by_id"] in (None, current_user.id),
+        ))
+    return FindingImageList(items=items, caption_max=report_images.CAPTION_MAX)
 
 
 @router.post(

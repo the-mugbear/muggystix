@@ -1,7 +1,8 @@
 /**
  * One agent session's page (`/agent-sessions/:sessionId`, v5.312.0): where it
  * stands, its controls, the tests it proposed, the notes it wrote and its calls —
- * keyed by the session id, reading notes by the detail row's id it names.
+ * all read by the session id, its only id (5.328.0; notes and calls were read
+ * by a second id, the session's detail row).
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -18,15 +19,16 @@ vi.mock('react-router-dom', async () => {
 });
 
 const getAgentSession = vi.fn();
-const getAssistSession = vi.fn();
+const getAgentSessionNotes = vi.fn();
+const getAgentSessionApiActivity = vi.fn();
 const endAgentSession = vi.fn();
 const listHostTests = vi.fn();
 vi.mock('../../services/api', () => ({
   getAgentSession: (...a: unknown[]) => getAgentSession(...a),
-  getAssistSession: (...a: unknown[]) => getAssistSession(...a),
+  getAgentSessionNotes: (...a: unknown[]) => getAgentSessionNotes(...a),
   endAgentSession: (...a: unknown[]) => endAgentSession(...a),
   resumeAgentSession: vi.fn(),
-  getAssistSessionApiActivity: vi.fn().mockResolvedValue({ total: 0, items: [] }),
+  getAgentSessionApiActivity: (...a: unknown[]) => getAgentSessionApiActivity(...a),
   listHostTests: (...a: unknown[]) => listHostTests(...a),
 }));
 
@@ -59,7 +61,11 @@ const row = (over: Record<string, unknown> = {}) => ({
   feedback_count: 1,
   last_activity_at: ago(60 * 1000),
   operator_role: 'analyst',
-  assist_session_id: 52,
+  prompt_version: '2.13.1',
+  call_count: 14,
+  note_count: 1,
+  connection: 'mcp',
+  first_call_at: ago(HOUR),
   host_test_count: 1,
   evidence_count: 4,
   can_end: true,
@@ -75,27 +81,9 @@ const sessionTest = {
   tester_summary: null, dismissed_reason: null, revision: 2, evidence_count: 4, created_at: ago(HOUR),
 };
 
-const review = {
-  id: 52,
-  agent_session_id: 72,
-  project_id: 1,
-  purpose: 'map the DMZ',
-  status: 'ended', // the detail row's own status is NOT what the page shows
-  started_by_id: 3,
-  started_by_username: 'alice',
-  started_at: ago(2 * HOUR),
-  ended_at: null,
-  last_activity_at: ago(60 * 1000),
-  key_expires_at: null,
-  call_count: 14,
-  note_count: 1,
-  connection: 'mcp',
-  first_call_at: ago(HOUR),
-  agent_model: null,
-  agent_tool: null,
-  prompt_version: '2.13.1',
-  feedback_count: 1,
-  notes: [{
+const notes = {
+  total: 1,
+  items: [{
     id: 501, host_id: 88, host_ip: '10.0.0.9', hostname: 'ftp01',
     body: 'Anonymous FTP login accepted on 21.', created_at: ago(HOUR),
   }],
@@ -115,21 +103,45 @@ const renderAt = (sessionId: string) => {
 describe('AgentSessionDetail', () => {
   beforeEach(() => {
     getAgentSession.mockReset().mockResolvedValue(row());
-    getAssistSession.mockReset().mockResolvedValue(review);
+    getAgentSessionNotes.mockReset().mockResolvedValue(notes);
+    getAgentSessionApiActivity.mockReset().mockResolvedValue({ total: 0, items: [] });
     endAgentSession.mockReset().mockResolvedValue(undefined);
     listHostTests.mockReset().mockResolvedValue({ items: [sessionTest], total: 1, has_more: false });
   });
 
-  it('reads the session by its id and its notes by the detail row it names', async () => {
+  it('reads the session, its notes and its calls by the one session id', async () => {
     renderAt('72');
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #72');
     expect(getAgentSession).toHaveBeenCalledWith(72);
-    await waitFor(() => expect(getAssistSession).toHaveBeenCalledWith(52));
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(72));
+    await waitFor(() => expect(getAgentSessionApiActivity).toHaveBeenCalled());
+    expect(getAgentSessionApiActivity.mock.calls.every((c) => c[0] === 72)).toBe(true);
     expect(await screen.findByText('Anonymous FTP login accepted on 21.')).toBeInTheDocument();
     expect(screen.getByText('map the DMZ')).toBeInTheDocument();
+    // The call count is the row's own.
+    expect(screen.getByText('API calls').parentElement).toHaveTextContent('14');
   });
 
-  it('says where it stands from the session, not the detail row', async () => {
+  it('says how many notes there are when it shows only the newest', async () => {
+    getAgentSessionNotes.mockResolvedValue({ ...notes, total: 73 });
+    renderAt('72');
+    expect(await screen.findByText('Showing the 1 most recent of 73.')).toBeInTheDocument();
+  });
+
+  it('shows a legacy assist session on the same page, with nothing to end or resume', async () => {
+    getAgentSession.mockResolvedValue(row({
+      kind: 'assist', id: 31, status: 'ended', key_expires_at: null, renewable_until: null,
+      completed_at: ago(HOUR), can_end: false, can_resume: false, connection: 'curl',
+    }));
+    renderAt('31');
+    expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #31');
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(31));
+    expect(screen.getByText('Connected via curl')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^End$/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Resume/ })).not.toBeInTheDocument();
+  });
+
+  it('says where it stands', async () => {
     renderAt('72');
     await screen.findByText('Live');
     expect(screen.queryByText('Ended')).not.toBeInTheDocument();
@@ -199,7 +211,6 @@ describe('AgentSessionDetail', () => {
 
   it('never presents the agent’s name as its model', async () => {
     getAgentSession.mockResolvedValue(row({ generated_by_model: null }));
-    getAssistSession.mockResolvedValue({ ...review, agent_model: null });
     renderAt('72');
     const model = (await screen.findByText('Model')).parentElement!;
     expect(model).toHaveTextContent('not reported');
@@ -211,8 +222,8 @@ describe('AgentSessionDetail', () => {
     expect(await screen.findByText('Anonymous FTP login accepted on 21.')).toBeInTheDocument();
 
     // Back/Forward to another session whose notes fail to load.
-    getAgentSession.mockResolvedValue(row({ id: 80, assist_session_id: 60 }));
-    getAssistSession.mockRejectedValue(new Error('boom'));
+    getAgentSession.mockResolvedValue(row({ id: 80 }));
+    getAgentSessionNotes.mockRejectedValue(new Error('boom'));
     params.current = { sessionId: '80' };
     view.rerender(
       <MemoryRouter initialEntries={['/agent-sessions/80']}>
@@ -222,15 +233,18 @@ describe('AgentSessionDetail', () => {
       </MemoryRouter>,
     );
     expect(await screen.findByRole('heading', { level: 1 })).toHaveTextContent('Agent session #80');
-    await waitFor(() => expect(getAssistSession).toHaveBeenCalledWith(60));
-    await screen.findByText(/Could not load the session’s notes and calls/);
+    await waitFor(() => expect(getAgentSessionNotes).toHaveBeenCalledWith(80));
+    await screen.findByText(/Could not load the session’s notes/);
     expect(screen.queryByText('Anonymous FTP login accepted on 21.')).not.toBeInTheDocument();
+    // The calls are a separate read: a failed notes read does not hide them.
+    await waitFor(() => expect(getAgentSessionApiActivity.mock.calls.some((c) => c[0] === 80)).toBe(true));
   });
 
   it('reports a session that is not found', async () => {
     getAgentSession.mockRejectedValue(new Error('Agent session not found in this project'));
     renderAt('9999');
     expect(await screen.findByRole('alert')).toBeInTheDocument();
-    expect(getAssistSession).not.toHaveBeenCalled();
+    expect(getAgentSessionNotes).not.toHaveBeenCalled();
+    expect(getAgentSessionApiActivity).not.toHaveBeenCalled();
   });
 });

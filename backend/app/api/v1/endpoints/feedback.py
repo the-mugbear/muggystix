@@ -25,7 +25,7 @@ from app.db.session import get_db
 from app.services.host_query_common import escape_like
 from app.db.models_agent import (
     Agent, AgentApiCall, AgentFeedback, AgentFeedbackSource, AgentFeedbackStatus,
-    AssistSession, McpToolCall,
+    McpToolCall,
 )
 from app.db.models_auth import APIKey
 from app.db.models_project import Project
@@ -33,6 +33,7 @@ from app.schemas.pagination import Paginated
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_agent, check_agent_rate_limit
 from app.api.deps import get_current_user, require_role
+from app.services.agent_session_service import sessions_with_a_page
 
 
 # ---------------------------------------------------------------------------
@@ -54,8 +55,9 @@ class AgentFeedbackCreate(BaseModel):
         ),
     )
     prompt_version: Optional[str] = None
-    # v2.85.0 — assist linkage so the triage queue can filter by session.
-    assist_session_id: Optional[int] = None
+    # The session is never named in the body: it is the key's
+    # (``agent_session_id`` on the row).  ``assist_session_id`` (v2.85.0) went
+    # with the ``assist_sessions`` table in v2.449.0.
     overall_rating: Optional[int] = Field(None, ge=1, le=5)
     api_critiques: Optional[List[Dict[str, Any]]] = None
     tool_suggestions: Optional[List[Dict[str, Any]]] = None
@@ -67,13 +69,15 @@ class AgentFeedbackResponse(BaseModel):
     id: int
     project_id: Optional[int]
     agent_id: Optional[int]
-    assist_session_id: Optional[int] = None
     # v2.428.2 — who and where, so the triage queue can check a claim against
-    # the record: the unified session the feedback came from, the page that
-    # shows that session's API calls (``/assist-sessions/{session_page_id}``),
-    # and how many calls it made.  Filled by the admin list/detail routes.
+    # the record: the session the feedback came from — its page, with its API
+    # calls, is ``/agent-sessions/{agent_session_id}`` — and how many calls it
+    # made (filled by the admin list/detail routes).  v2.449.0: the page id
+    # IS the session id; ``session_page_id`` and ``assist_session_id`` went.
+    # ``session_has_page`` is false for a session no page lists (a recon /
+    # plan / execution row from before v2.337.0), so no dead link is offered.
     agent_session_id: Optional[int] = None
-    session_page_id: Optional[int] = None
+    session_has_page: Optional[bool] = None
     session_api_calls: Optional[int] = None
     project_name: Optional[str] = None
     agent_name: Optional[str] = None
@@ -165,26 +169,10 @@ def submit_agent_feedback(
     # execution run, validated here; both are gone.)
     agent_session_id = getattr(request.state, "agent_session_id", None)
 
-    if body.assist_session_id is not None:
-        assist = (
-            db.query(AssistSession)
-            .filter(
-                AssistSession.id == body.assist_session_id,
-                AssistSession.project_id == agent.project_id,
-            )
-            .first()
-        )
-        if not assist:
-            raise HTTPException(
-                status_code=404,
-                detail="assist_session_id not found in this project",
-            )
-
     row = AgentFeedback(
         project_id=agent.project_id,
         agent_id=agent.id,
         agent_session_id=agent_session_id,
-        assist_session_id=body.assist_session_id,
         source=body.source,
         prompt_version=body.prompt_version,
         overall_rating=body.overall_rating,
@@ -228,16 +216,10 @@ def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackR
     session_ids = {r.agent_session_id for r in rows if r.agent_session_id}
     projects = dict(db.query(Project.id, Project.name).filter(Project.id.in_(project_ids)).all()) if project_ids else {}
     agents = dict(db.query(Agent.id, Agent.name).filter(Agent.id.in_(agent_ids)).all()) if agent_ids else {}
-    pages: Dict[int, int] = {}
     calls: Dict[int, int] = {}
     clients: Dict[int, str] = {}
+    paged = sessions_with_a_page(db, session_ids)
     if session_ids:
-        for sid, aid in (
-            db.query(AssistSession.agent_session_id, func.min(AssistSession.id))
-            .filter(AssistSession.agent_session_id.in_(session_ids))
-            .group_by(AssistSession.agent_session_id).all()
-        ):
-            pages[sid] = aid
         calls = dict(
             db.query(AgentApiCall.agent_session_id, func.count(AgentApiCall.id))
             .filter(AgentApiCall.agent_session_id.in_(session_ids))
@@ -260,7 +242,7 @@ def _with_context(db: Session, rows: List[AgentFeedback]) -> List[AgentFeedbackR
         item.project_name = projects.get(item.project_id)
         item.agent_name = agents.get(item.agent_id)
         if item.agent_session_id:
-            item.session_page_id = pages.get(item.agent_session_id)
+            item.session_has_page = item.agent_session_id in paged
             item.session_api_calls = int(calls.get(item.agent_session_id, 0))
             item.client_name = clients.get(item.agent_session_id)
     return out

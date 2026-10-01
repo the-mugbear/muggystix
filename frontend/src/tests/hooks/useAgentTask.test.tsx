@@ -1,12 +1,17 @@
 /**
  * Handing a task to the operator's agent (5.322.0): copied when one of their
  * sessions is live, the Start Agent Session dialog otherwise.
+ *
+ * 5.328.0 — "live" is read from the one session list (the operator's active
+ * project sessions, asked for by filter) and decided by the key's expiry; the
+ * session is named by its one id. It read a second list whose rows carried a
+ * second id and a server-derived status.
  */
 import React from 'react';
 import { act, render, renderHook, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const api = vi.hoisted(() => ({ listAssistSessions: vi.fn() }));
+const api = vi.hoisted(() => ({ listAgentSessions: vi.fn() }));
 vi.mock('../../services/api', () => api);
 const copy = vi.hoisted(() => vi.fn());
 vi.mock('../../utils/clipboard', () => ({ copyToClipboard: copy }));
@@ -27,7 +32,13 @@ const Harness: React.FC<{ onReady: (give: (t: string) => Promise<void>) => void 
   return <>{task.dialog}</>;
 };
 
-const session = (over = {}) => ({ id: 3, agent_session_id: 79, status: 'active', started_by_id: 7, ...over });
+const inAnHour = () => new Date(Date.now() + 3_600_000).toISOString();
+const anHourAgo = () => new Date(Date.now() - 3_600_000).toISOString();
+const session = (over = {}) => ({
+  kind: 'project', id: 79, project_id: 1, status: 'active', user_id: 7,
+  key_expires_at: inAnHour(), ...over,
+});
+const listed = (...sessions: object[]) => ({ project_id: 1, sessions, total: sessions.length });
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -37,17 +48,24 @@ beforeEach(() => {
 
 describe('useAgentTask', () => {
   it('copies the task and says which session is live, without opening the dialog', async () => {
-    api.listAssistSessions.mockResolvedValue([session()]);
+    api.listAgentSessions.mockResolvedValue(listed(session()));
     let give!: (t: string) => Promise<void>;
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('Propose tests for host 5'));
+    // Asked of the server: this operator's active project sessions.
+    expect(api.listAgentSessions).toHaveBeenCalledWith({ kind: 'project', status: 'active', user_id: 7 });
     expect(copy).toHaveBeenCalledWith('Propose tests for host 5');
     expect(toast.success.mock.calls[0][0]).toContain('session #79');
     expect(screen.queryByTestId('start-dialog')).not.toBeInTheDocument();
   });
 
   it('opens the start dialog with the task when no session of the caller is live', async () => {
-    api.listAssistSessions.mockResolvedValue([session({ started_by_id: 8 }), session({ status: 'ended' })]);
+    // Still stored as active, but nothing can use them: the key ran out, or
+    // was revoked. Those wait on Agent Sessions to be resumed.
+    api.listAgentSessions.mockResolvedValue(listed(
+      session({ key_expires_at: anHourAgo() }),
+      session({ id: 80, key_expires_at: null }),
+    ));
     let give!: (t: string) => Promise<void>;
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('Propose tests for host 5'));
@@ -56,7 +74,7 @@ describe('useAgentTask', () => {
   });
 
   it('falls back to the dialog when the copy fails or the sessions cannot be read', async () => {
-    api.listAssistSessions.mockResolvedValue([session()]);
+    api.listAgentSessions.mockResolvedValue(listed(session()));
     copy.mockResolvedValue(false);
     let give!: (t: string) => Promise<void>;
     const { unmount } = render(<Harness onReady={(g) => { give = g; }} />);
@@ -65,7 +83,7 @@ describe('useAgentTask', () => {
     expect(toast.success).not.toHaveBeenCalled();
     unmount();
 
-    api.listAssistSessions.mockRejectedValue(new Error('down'));
+    api.listAgentSessions.mockRejectedValue(new Error('down'));
     render(<Harness onReady={(g) => { give = g; }} />);
     await act(() => give('task two'));
     expect(screen.getByTestId('start-dialog')).toHaveTextContent('task two');

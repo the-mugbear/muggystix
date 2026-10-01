@@ -167,6 +167,12 @@ class AssistReportFinding(BaseModel):
     confirmations: List[Dict[str, Any]] = Field(default_factory=list)
     confirmations_omitted: int = 0
     # Report images: fetch one with assist_get_image(attachment_id=…).
+    # `images` is every image the report prints for the finding, each with its
+    # caption and `placed_in` — the written sections whose Markdown places it
+    # (`![caption](evidence:<attachment_id>)`); `evidence` is the rest, printed
+    # in the trailing evidence block.  A report issued before images could be
+    # placed has `evidence` alone.
+    images: List[Dict[str, Any]] = Field(default_factory=list)
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -242,6 +248,12 @@ def get_assist_client_report(
             {"attachment_id": e.get("attachment_id"), "caption": e.get("caption")}
             for e in (item.get("evidence") or [])
         ]
+        row["images"] = [
+            {"attachment_id": e.get("attachment_id"), "caption": e.get("caption"),
+             "placed_in": list(e.get("placed_in") or [])}
+            for e in (item.get("images") or [])
+        ]
+        row.pop("placed", None)  # the renderer's map; `images[].placed_in` says the same
         # The report's own entries, minus the render's private keys.
         row["confirmations"] = [
             {k: v for k, v in c.items() if not k.startswith("_")}

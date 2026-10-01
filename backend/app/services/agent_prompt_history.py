@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.4.0",
+        "app_version": "2.449.0",
+        "summary": (
+            "Images in report text, and one id per session. A finding's report text can "
+            "place the finding's own images: assist_get_finding lists them under `images` "
+            "(id, caption, in_report, placed_in), a section places one with "
+            "`![caption](evidence:<id>)`, and propose_finding_text must keep the "
+            "references a section already holds (a dropped one returns the image to "
+            "Evidence), may reference only ids from that list (others are refused, 422), "
+            "and cannot tick an image — a proposal placing an un-ticked image is not "
+            "accepted until a person ticks it. A proposed NEW finding's text may not "
+            "reference images. Sessions: a session has one id, the one you already "
+            "report; submit_feedback takes no `assist_session_id` (still accepted over "
+            "MCP, and ignored) and its response carries `session_has_page` in place of "
+            "`assist_session_id` / `session_page_id`."
+        ),
+    },
+    {
         "version": "4.3.0",
         "app_version": "2.448.0",
         "summary": (

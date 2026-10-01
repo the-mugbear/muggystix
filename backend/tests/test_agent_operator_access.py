@@ -25,8 +25,6 @@ from app.db.models_agent import (
     Agent,
     AgentSession,
     AgentSessionWorkflow,
-    AssistSession,
-    AssistSessionStatus,
 )
 from app.db.models_auth import APIKey, User, UserRole
 from app.db.models_project import ProjectMembership, ProjectRole
@@ -64,13 +62,6 @@ def _assist_key(db, project, user):
         started_by_id=user.id, status="active",
     )
     db.add(base)
-    db.flush()
-    detail = AssistSession(
-        project_id=project.id, agent_id=agent.id, started_by_id=user.id,
-        status=AssistSessionStatus.ACTIVE, agent_session_id=base.id,
-        purpose="operator access test",
-    )
-    db.add(detail)
     db.flush()
     raw = "nm_agent_" + secrets.token_urlsafe(32)
     db.add(APIKey(
@@ -374,16 +365,14 @@ def test_a_read_only_operator_reaches_the_gated_metadata_writes(
     the handler still proves the gate let the request through, which is the
     only thing this test is about.
     """
-    from app.db.models_agent import AssistSession
-
     user = _member(db_session, test_project, ProjectRole.AUDITOR.value)
     raw, agent = _assist_key(db_session, test_project, user)
     headers = {"X-API-Key": raw}
 
     if "{session_id}" in probe_path:
         session_id = (
-            db_session.query(AssistSession.id)
-            .filter(AssistSession.agent_id == agent.id)
+            db_session.query(AgentSession.id)
+            .filter(AgentSession.agent_id == agent.id)
             .scalar()
         )
         probe_path = probe_path.replace("{session_id}", str(session_id))

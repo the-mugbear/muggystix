@@ -43,6 +43,7 @@ import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { useProjectRole } from '../hooks/useProjectRole';
+import { useFindingImages } from '../hooks/useFindingImages';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
@@ -302,10 +303,21 @@ const FindingDetail: React.FC = () => {
   const canModify = canManage && !!finding?.can_modify;
   // v5.260.0 — images are opt-in for the client report: the uploader marks
   // theirs, a project admin any (the server enforces the same rule).
+  // The finding's images, loaded once for the page: each image's caption and
+  // where the report text places it (the comment thread's rows), the editor's
+  // "Insert image" and the images shown in the text.
+  const findingImages = useFindingImages(finding?.id ?? null);
+  const reloadImages = findingImages.reload;
+  const imagesById = useMemo(
+    () => new Map(findingImages.images.map((img) => [img.id, img])), [findingImages.images],
+  );
   const reportMarking = useMemo(() => ({
     canMark: (att: NoteAttachment) =>
       canManage && (!!finding?.viewer_is_project_admin || (user?.id != null && att.uploaded_by_id === user.id)),
-  }), [canManage, finding?.viewer_is_project_admin, user?.id]);
+    placement: (att: NoteAttachment) => imagesById.get(att.id),
+    captionMax: findingImages.captionMax,
+    onImagesChanged: reloadImages,
+  }), [canManage, finding?.viewer_is_project_admin, user?.id, imagesById, findingImages.captionMax, reloadImages]);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
 
@@ -595,11 +607,14 @@ const FindingDetail: React.FC = () => {
 
       <FindingProposalsPanel
         findingId={finding.id} canDecide={canManage} reloadKey={proposalsKey}
-        onApplied={() => { void refreshAfterProposal(); }}
+        onApplied={() => { void refreshAfterProposal(); reloadImages(); }}
       />
 
       <FindingReportTextCard
-        finding={finding} canEdit={canModify} canPropose={canManage} onSaved={setFinding}
+        finding={finding} canEdit={canModify} canPropose={canManage}
+        // Saved text may place or release an image: re-read where each one is.
+        onSaved={(f) => { setFinding(f); reloadImages(); }}
+        images={findingImages}
         onDrafted={() => setProposalsKey((k) => k + 1)}
         agentAction={(
           <AgentTaskButton

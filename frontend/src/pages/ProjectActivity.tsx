@@ -716,7 +716,7 @@ const ProjectActivity: React.FC = () => {
                     <div className="flex min-w-0 items-center gap-xs">
                       {r.kind !== 'project' && <RunKindBadge kind={r.kind} className="shrink-0" />}
                       <span className="min-w-0 truncate" title={r.purpose ?? undefined}>
-                        {r.kind === 'project' ? safeFallback(r.purpose, 'No stated purpose') : 'Project-wide'}
+                        {safeFallback(r.purpose, r.kind === 'project' ? 'No stated purpose' : 'Project-wide')}
                       </span>
                     </div>
                     {(r.generated_by_model || r.generated_by_tool) && (

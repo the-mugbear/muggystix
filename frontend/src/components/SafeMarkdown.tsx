@@ -4,7 +4,13 @@
  *
  *   - raw HTML is never HTML: it stays literal text (the report reads GitHub
  *     Markdown WITHOUT raw HTML);
- *   - images are reduced to their alt text — nothing is ever loaded;
+ *   - images are reduced to their alt text — nothing is ever loaded.  The
+ *     one exception is the report's own: `![caption](evidence:57)`, a
+ *     reference to an image of THIS finding ticked "In report".  With an
+ *     `evidence` resolver (a finding's page) it is shown as that image, from
+ *     an object URL the resolver fetched for an id on the finding's list —
+ *     never from the reference's text — and a reference the resolver does
+ *     not know is a visible "image not available" note;
  *   - links keep only http / https / mailto targets (anything else is its
  *     text) and open in a new tab with rel="noopener noreferrer";
  *   - headings become bold paragraphs (the report's structure is the
@@ -19,9 +25,10 @@
  * italic / strikethrough / links / autolinks / bare web URLs / hard breaks.
  * Anything else stays text.
  */
-import React from 'react';
+import React, { useEffect } from 'react';
 
 import { CellAlign, isTableRow, splitTableRow, tableAlignments } from '../utils/markdownEditing';
+import { EvidenceResolver, evidenceIdOf } from '../utils/reportImages';
 
 const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
 
@@ -125,7 +132,45 @@ const closingDelimiter = (s: string, i: number, delim: string): number => {
 
 const BARE_URL = /^(?:https?:\/\/|mailto:)[^\s<>]+/i;
 
-const renderInline =(s: string, keyPrefix = 'i'): React.ReactNode[] => {
+/**
+ * A reference to one of the finding's images, as the report will print it:
+ * the picture with its caption.  The bytes come from the resolver (an object
+ * URL fetched through the authenticated attachment route for an id on the
+ * finding's own list) — the reference's text is never a URL.
+ */
+const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceResolver }> = ({ id, alt, evidence }) => {
+  const found = evidence.lookup(id);
+  const known = found !== null;
+  useEffect(() => {
+    if (known) evidence.ensure(id);
+  }, [known, id, evidence]);
+  if (!found) {
+    return (
+      <span role="note" data-testid={`evidence-missing-${id}`}
+        className="my-xxs inline-block max-w-full rounded-control border border-dashed border-border px-xs py-xxs text-caption text-warning [overflow-wrap:anywhere]">
+        Image not available: evidence:{id} is not one of this finding’s “In report” images, so the report prints
+        {alt ? ` “${alt}” as text` : ' nothing here'}.
+      </span>
+    );
+  }
+  const caption = alt || found.caption || '';
+  return (
+    <span className="my-xs block min-w-0" data-testid={`evidence-image-${id}`}>
+      {found.src ? (
+        <img src={found.src} alt={caption} className="block h-auto max-h-96 max-w-full rounded-control border border-border" />
+      ) : (
+        <span className="block rounded-control border border-border bg-muted px-sm py-md text-caption text-muted-foreground">
+          Loading image {id}…
+        </span>
+      )}
+      <span className="mt-xxs line-clamp-3 block text-caption text-muted-foreground [overflow-wrap:anywhere]" title={caption || undefined}>
+        Figure: {caption || <span className="italic">no caption — the report prints the file name</span>}
+      </span>
+    </span>
+  );
+};
+
+const renderInline =(s: string, keyPrefix = 'i', evidence?: EvidenceResolver): React.ReactNode[] => {
   const out: React.ReactNode[] = [];
   let text = '';
   let k = 0;
@@ -175,12 +220,26 @@ const renderInline =(s: string, keyPrefix = 'i'): React.ReactNode[] => {
       continue;
     }
 
-    // Image: the alt text only (nothing is loaded).
+    // Image: the alt text only (nothing is loaded) — except a reference to
+    // one of the finding's own images (`evidence:<id>`), which the report
+    // prints as a figure.  Which ids those are is the resolver's to say.
     if (c === '!' && s[i + 1] === '[') {
       const close = closingBracket(s, i + 1);
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
-        text += plain(s.slice(i + 2, close));
+        const alt = plain(s.slice(i + 2, close));
+        const evidenceId = evidenceIdOf(dest.url);
+        if (evidenceId !== null && evidence) {
+          flush();
+          out.push(<EvidenceImage key={key()} id={evidenceId} alt={alt.trim()} evidence={evidence} />);
+        } else if (evidenceId !== null) {
+          flush();
+          out.push(
+            <span key={key()} className="text-muted-foreground">[image {evidenceId}{alt.trim() ? `: ${alt.trim()}` : ''}]</span>,
+          );
+        } else {
+          text += alt;
+        }
         i = dest.end;
         continue;
       }
@@ -191,7 +250,7 @@ const renderInline =(s: string, keyPrefix = 'i'): React.ReactNode[] => {
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
         flush();
-        const label = renderInline(s.slice(i + 1, close), `${keyPrefix}-${k}`);
+        const label = renderInline(s.slice(i + 1, close), `${keyPrefix}-${k}`, evidence);
         out.push(renderLink(safeHref(dest.url), label, key()));
         i = dest.end;
         continue;
@@ -239,7 +298,7 @@ const renderInline =(s: string, keyPrefix = 'i'): React.ReactNode[] => {
         const close = closingDelimiter(s, i, open);
         if (close === -1) continue;
         flush();
-        const inner = renderInline(s.slice(i + open.length, close), `${keyPrefix}-${k}`);
+        const inner = renderInline(s.slice(i + open.length, close), `${keyPrefix}-${k}`, evidence);
         out.push(React.createElement(tag, { key: key() }, inner));
         i = close + open.length;
         matched = true;
@@ -428,15 +487,15 @@ const parseBlocks =(source: string): Block[] => {
   return blocks;
 };
 
-const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
+const renderBlocks = (blocks: Block[], keyPrefix: string, evidence?: EvidenceResolver): React.ReactNode[] =>
   blocks.map((b, n) => {
     const key = `${keyPrefix}-${n}`;
     switch (b.kind) {
       case 'para':
-        return <p key={key}>{renderInline(b.text, key)}</p>;
+        return <p key={key}>{renderInline(b.text, key, evidence)}</p>;
       case 'heading':
         // A heading in written text is a bold paragraph, as in the report.
-        return <p key={key}><strong>{renderInline(b.text, key)}</strong></p>;
+        return <p key={key}><strong>{renderInline(b.text, key, evidence)}</strong></p>;
       case 'code':
         return (
           <pre key={key} className="overflow-x-auto rounded bg-muted p-sm font-mono text-caption">
@@ -448,7 +507,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
       case 'quote':
         return (
           <blockquote key={key} className="space-y-xs border-l-2 border-border pl-sm text-muted-foreground">
-            {renderBlocks(parseBlocks(b.lines.join('\n')), key)}
+            {renderBlocks(parseBlocks(b.lines.join('\n')), key, evidence)}
           </blockquote>
         );
       case 'list': {
@@ -457,8 +516,8 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
           const ikey = `${key}-${j}`;
           // A tight item is its text alone, not a paragraph.
           const content = inner.length === 1 && inner[0].kind === 'para'
-            ? renderInline(inner[0].text, ikey)
-            : renderBlocks(inner, ikey);
+            ? renderInline(inner[0].text, ikey, evidence)
+            : renderBlocks(inner, ikey, evidence);
           return <li key={ikey} className="space-y-xs">{content}</li>;
         });
         return b.ordered ? (
@@ -476,7 +535,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
               <tr className="border-b border-border">
                 {b.head.map((c, j) => (
                   <th key={j} scope="col" className={`${cellClass} text-left font-medium`} style={textAlign(b.align[j])}>
-                    {renderInline(c, `${key}-h${j}`)}
+                    {renderInline(c, `${key}-h${j}`, evidence)}
                   </th>
                 ))}
               </tr>
@@ -486,7 +545,7 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
                 <tr key={n} className="border-b border-border/60">
                   {r.map((c, j) => (
                     <td key={j} className={cellClass} style={textAlign(b.align[j])}>
-                      {renderInline(c, `${key}-${n}-${j}`)}
+                      {renderInline(c, `${key}-${n}-${j}`, evidence)}
                     </td>
                   ))}
                 </tr>
@@ -503,11 +562,19 @@ const renderBlocks = (blocks: Block[], keyPrefix: string): React.ReactNode[] =>
 interface Props {
   text: string;
   className?: string;
+  /**
+   * On a finding's page: which `evidence:<id>` references are that finding's
+   * "In report" images, and their bytes.  Such a reference is then shown as
+   * the image; one the resolver does not know is a visible "image not
+   * available" note.  Without it nothing is loaded and a reference is a short
+   * text marker.  Every OTHER image is its alt text, always.
+   */
+  evidence?: EvidenceResolver;
 }
 
-const SafeMarkdown: React.FC<Props> = ({ text, className }) => (
+const SafeMarkdown: React.FC<Props> = ({ text, className, evidence }) => (
   <div className={`min-w-0 space-y-xs break-words ${className ?? ''}`.trim()}>
-    {renderBlocks(parseBlocks(text), 'md')}
+    {renderBlocks(parseBlocks(text), 'md', evidence)}
   </div>
 );
 
