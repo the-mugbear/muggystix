@@ -523,6 +523,66 @@ describe('HostTestsSection — a person adds a test', () => {
 });
 
 describe('HostTestsSection — stepping to another host', () => {
+  const onHost = (hostId: number) => (
+    <MemoryRouter>
+      <HostTestsSection hostId={hostId} canEdit userId={1} />
+    </MemoryRouter>
+  );
+
+  it('a test saved for the host that was left is not put in this host\'s list', async () => {
+    api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve(
+      host_id === 5 ? page([]) : page([test({ id: 61, host_id: 6, description: 'On host six' })]),
+    ));
+    let finish: (value: unknown) => void = () => {};
+    api.createHostTests.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const opened = vi.fn();
+    window.addEventListener('bluestick:open-host-test', opened);
+
+    const view = render(onHost(5));
+    await screen.findByText('No tests to do on this host.');
+    await userEvent.click(screen.getByRole('button', { name: 'Add test' }));
+    await userEvent.type(within(panel()).getByLabelText('What to check'), 'Anonymous FTP login');
+    await userEvent.type(within(panel()).getByLabelText('Tool'), 'ftp');
+    await userEvent.type(within(panel()).getByLabelText('Why'), 'Port 21 is open.');
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Add test' }));
+    expect(api.createHostTests).toHaveBeenCalledTimes(1);
+
+    view.rerender(onHost(6));
+    await screen.findByText('On host six');
+    await act(async () => {
+      finish({ items: [test({ id: 51, host_id: 5, description: 'Anonymous FTP login', source: 'person' })] });
+    });
+
+    expect(screen.queryByText(/Anonymous FTP login/)).not.toBeInTheDocument();
+    expect(tab(/To do/)).toHaveTextContent('1');
+    expect(tab(/All/)).toHaveTextContent('1');
+    expect(opened).not.toHaveBeenCalled();
+    window.removeEventListener('bluestick:open-host-test', opened);
+  });
+
+  it('a result saved for the host that was left does not close this host\'s result panel', async () => {
+    api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve(
+      page([test({ id: host_id === 5 ? 51 : 61, host_id, host_ip: `10.0.0.${host_id}` })]),
+    ));
+    let finish: (value: unknown) => void = () => {};
+    api.recordHostTestResult.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+
+    const view = render(onHost(5));
+    await userEvent.click(await within(await screen.findByTestId('host-test-51')).findByRole('button', { name: 'Record result' }));
+    await userEvent.click(within(panel()).getByRole('radio', { name: 'Finding' }));
+    await userEvent.type(within(panel()).getByLabelText('Summary'), 'present');
+    await userEvent.click(within(panel()).getByRole('button', { name: 'Save result' }));
+
+    view.rerender(onHost(6));
+    await userEvent.click(await within(await screen.findByTestId('host-test-61')).findByRole('button', { name: 'Record result' }));
+    await userEvent.type(within(panel()).getByLabelText('Summary'), 'typing on six');
+    await act(async () => { finish({ test: test({ id: 51, host_id: 5, status: 'done', revision: 4 }) }); });
+
+    // Still open, with what was typed for THIS host.
+    expect(within(panel()).getByLabelText('Summary')).toHaveValue('typing on six');
+    expect(within(panel()).getByText('10.0.0.6')).toBeInTheDocument();
+  });
+
   it('an answer for the host that was left never replaces this host\'s tests', async () => {
     const answers: Record<number, (value: unknown) => void> = {};
     api.listHostTests.mockImplementation(({ host_id }: { host_id: number }) =>

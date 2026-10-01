@@ -89,10 +89,13 @@ interface ResultPanelProps {
   onSaved: (updated: HostTest) => void;
   /** The test changed underneath: re-read and hand back the fresh copy. */
   onStale: (id: number) => Promise<HostTest | null>;
+  /** Is the page still on this host? A save that outlives the host it was
+   *  made on must change nothing on the host the analyst stepped to. */
+  isCurrentHost: (hostId: number) => boolean;
   onDraft: (dirty: boolean) => void;
 }
 
-const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft }) => {
+const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onStale, onDraft, isCurrentHost }) => {
   const [current, setCurrent] = useState<HostTest | null>(test);
   const [outcome, setOutcome] = useState<HostTestOutcome | ''>('');
   const [summary, setSummary] = useState('');
@@ -109,6 +112,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
       setSummary('');
       setOutput('');
       setError(null);
+      setSaving(false);
       setRequestKey(newKey());
     }
     // A different test, or the panel reopening — not every re-render of it.
@@ -120,6 +124,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
 
   const save = async () => {
     if (!current || !outcome) return;
+    const submittedFor = current.host_id;
     setSaving(true);
     setError(null);
     try {
@@ -130,13 +135,16 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
         summary: summary.trim(),
         ...(output ? { raw_output: output } : {}),
       });
+      if (!isCurrentHost(submittedFor)) return;
       onDraft(false);
       onSaved(res.test);
     } catch (err) {
+      if (!isCurrentHost(submittedFor)) return;
       const status = (err as { response?: { status?: number } })?.response?.status;
       if (status === 409) {
         // Keep what was typed; take the fresh revision so Save works again.
         const fresh = await onStale(current.id);
+        if (!isCurrentHost(submittedFor)) return;
         if (fresh) setCurrent(fresh);
         // A new key with the fresh copy: if the first attempt did land (a lost
         // response), what is saved next is a further result, never a silent
@@ -147,7 +155,7 @@ const ResultPanel: React.FC<ResultPanelProps> = ({ test, onClose, onSaved, onSta
         setError(formatApiError(err, 'Could not save the result.'));
       }
     } finally {
-      setSaving(false);
+      if (isCurrentHost(submittedFor)) setSaving(false);
     }
   };
 
@@ -253,10 +261,11 @@ interface AddPanelProps {
   onClose: () => void;
   onSaved: (created: HostTest) => void;
   onDraft: (dirty: boolean) => void;
+  isCurrentHost: (hostId: number) => boolean;
 }
 
 /** A person writes a test for this host — the same row an agent proposes. */
-const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft }) => {
+const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose, onSaved, onDraft, isCurrentHost }) => {
   const confirms = target?.confirms;
   const [description, setDescription] = useState('');
   const [tool, setTool] = useState('');
@@ -280,6 +289,7 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
     setPriority(asPriority(target.confirms?.severity));
     setMine(true);
     setError(null);
+    setSaving(false);
     setRequestKey(newKey());
     // Each opening starts clean — not every re-render of an open panel.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -296,12 +306,15 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
 
   const save = async () => {
     if (!ready) return;
+    // The host this test is FOR. If the analyst steps to another host while
+    // the save is in flight, its answer belongs to no list on screen.
+    const submittedFor = hostId;
     setSaving(true);
     setError(null);
     try {
       const res = await createHostTests([{
         request_key: requestKey,
-        host_id: hostId,
+        host_id: submittedFor,
         tool: tool.trim(),
         description: description.trim(),
         rationale: why,
@@ -311,12 +324,13 @@ const AddTestPanel: React.FC<AddPanelProps> = ({ target, hostId, userId, onClose
         ...(mine && userId != null ? { assigned_to_id: userId } : {}),
         ...(confirms ? { vulnerability_id: confirms.vulnerabilityId } : {}),
       }]);
+      if (!isCurrentHost(submittedFor)) return;
       onDraft(false);
       onSaved(res.items[0]);
     } catch (err) {
-      setError(formatApiError(err, 'Could not add the test.'));
+      if (isCurrentHost(submittedFor)) setError(formatApiError(err, 'Could not add the test.'));
     } finally {
-      setSaving(false);
+      if (isCurrentHost(submittedFor)) setSaving(false);
     }
   };
 
@@ -438,6 +452,11 @@ export const useHostTestsController = ({
   // latest request may write (the same guard as the inspector's own fetch).
   const requestRef = useRef(0);
   const proposalRequestRef = useRef(0);
+  // Writes too: a save started on the host that was left must not touch
+  // this host's list, count or panels when it lands.
+  const hostIdRef = useRef(hostId);
+  hostIdRef.current = hostId;
+  const isCurrentHost = useCallback((id: number) => hostIdRef.current === id, []);
 
   const reload = useCallback(async (): Promise<HostTest[]> => {
     const request = ++requestRef.current;
@@ -476,7 +495,9 @@ export const useHostTestsController = ({
     setProposalByEvidence({});
     setStaleNotice(false);
     setResultFor(null);
+    setResultDraft(false);
     setAddFor(null);
+    setAddDraft(false);
     void reload();
     loadProposals();
   }, [reload, loadProposals]);
@@ -515,6 +536,7 @@ export const useHostTestsController = ({
           onResultRecorded?.();
         }}
         onStale={async (id) => (await reload()).find((t) => t.id === id) ?? null}
+        isCurrentHost={isCurrentHost}
       />
       <AddTestPanel
         target={addFor}
@@ -522,6 +544,7 @@ export const useHostTestsController = ({
         userId={userId}
         onClose={() => { setAddFor(null); setAddDraft(false); }}
         onDraft={setAddDraft}
+        isCurrentHost={isCurrentHost}
         onSaved={(created) => {
           setStaleNotice(false);
           setTests((prev) => (prev ? [created, ...prev.filter((t) => t.id !== created.id)] : [created]));
