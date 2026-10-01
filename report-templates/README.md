@@ -142,7 +142,7 @@ Things to handle in every template:
 
 ## Testing a template
 
-- `make` renders `sample-data.json`. Try `make DATA=other.json` with a dataset saved from a real report. `make DATA=sample-data-large-scope.json` (pentest) renders a 3,000-network scope, the case over the cutoff.
+- `make` renders `sample-data.json`. Try `make DATA=other.json` with a dataset saved from a real report. Keep such datasets out of the repository: a saved report is client data, and `.gitignore` covers `sample-data-*.json` and `data-*.json` in a template folder. The scope-over-the-cutoff case is built in `test_report_templates_shipped.py` (`_with_scope`), not shipped as a file.
 - `backend/tests/test_report_templates_shipped.py` checks that every shipped template is offered with no problems, and what each one prints for a full report and an addendum. Add a test there for yours. `test_report_templates_escaping.py` and `test_report_template_assets.py` cover escaping and the `assets` manifest.
 - `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary and the written fields. Quarto only exists in the report-worker image, so run it there:
   ```bash

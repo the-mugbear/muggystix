@@ -232,6 +232,12 @@ notes.txt
 troubleshooting_*
 temp_artifacts/
 review_artifacts/
+# Generated or saved report datasets (a large-scope variant, a dataset saved
+# from a real report for `make DATA=…`) are development artifacts — and a
+# saved real report is client data.  Each template's own sample-data.json is
+# the only dataset committed (the shipped-template tests render it).
+report-templates/*/sample-data-*.json
+report-templates/*/data-*.json
 
 # Internal docs kept local-only — not published to the public repo.
 # CLAUDE.md (architecture/ops guidance) and CHANGELOG.md (detailed dev

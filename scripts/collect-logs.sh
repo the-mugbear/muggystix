@@ -5,13 +5,14 @@
 # instance whose parsers see far more real tool output than a dev box).
 #
 # Usage:
-#   ./scripts/collect-logs.sh [--since 72h] [--terms FILE]...
+#   ./scripts/collect-logs.sh [--since 72h] [--terms FILE]... [--no-feedback]
 #
 #   --since DUR   only container logs newer than DUR (docker syntax: 30m, 72h,
 #                 2026-09-20).  Default: everything the containers still hold.
 #   --terms FILE  extra values to remove, one per line (a client name, an
 #                 internal domain, a codename).  "category<TAB>value" also
 #                 works; categories are listed in scripts/scrub_logs.py.
+#   --no-feedback leave the agents' free-text feedback (feedback.txt) out.
 #
 # What it collects: platform/container versions and state, migration state,
 # the ingestion queue (formats, outcomes, skip counts, warnings, tracebacks),
@@ -19,8 +20,10 @@
 # each format carry each field — counts only, never values), health checks,
 # the TLS certificate nginx serves (derived facts: CA-issued or self-signed,
 # expiry, whether it names HOST_IP), agent-surface outcomes (refused calls by
-# route, MCP tool outcomes, proposals, evidence — counts only), and the
-# backend / worker / report-worker / frontend (nginx) / db logs.
+# route, MCP tool outcomes, proposals, evidence — counts only), the agents'
+# feedback IN FULL (feedback.txt: the newest 200 entries' ratings and free
+# text — read it before sending), and the backend / worker / report-worker /
+# frontend (nginx) / db logs.
 #
 # How identifying information is removed:
 #   * Collection happens in a private temp directory (mode 700).  Nothing
@@ -44,7 +47,9 @@
 # Residual risk: free text the database never saw (e.g. a name inside a
 # parser's exception message for a file that failed before import) is only
 # caught if it has an identifying SHAPE.  Pass --terms with the client's
-# name(s) and skim the bundle before sending it.
+# name(s) and skim the bundle before sending it.  feedback.txt is the one file
+# made of free text by design (agents describing their work): read it, or
+# collect with --no-feedback.
 
 set -euo pipefail
 
@@ -70,14 +75,16 @@ ORIG_PWD="$PWD"
 
 SINCE=""
 EXTRA_TERMS=()
+WITH_FEEDBACK=true
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --since) SINCE="${2:?--since needs a value}"; shift 2 ;;
+        --no-feedback) WITH_FEEDBACK=false; shift ;;
         --terms)
             [[ -r "${2:-}" ]] || { print_error "--terms: cannot read '${2:-}'"; exit 1; }
             # Absolute, so it still resolves after the cd below.
             EXTRA_TERMS+=("$(cd "$(dirname "$2")" && pwd)/$(basename "$2")"); shift 2 ;;
-        -h|--help) sed -n '2,45p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,/^$/p' "$0"; exit 0 ;;  # the header comment, however long
         *) print_error "Unknown argument: $1 (see --help)"; exit 1 ;;
     esac
 done
@@ -217,7 +224,10 @@ if $DB_UP; then
         # names itself freely ("Acme audit workstation"), and an unknown tool
         # name is whatever the caller sent.  Names in BlueStick's own source
         # (claude-code, the catalogue's tools) survive the vocabulary pass.
-        "mcp|mcp_tool_calls|client_name" "mcp|mcp_tool_calls|client_version"
+        # (Not client_version: a version names no one, and clients report
+        # versions like "2026-09-30" — harvested, that date vanished from
+        # every log timestamp in the bundle.)
+        "mcp|mcp_tool_calls|client_name"
         "mcp|mcp_tool_calls|tool_name" "mcp|mcp_tool_calls|rpc_method"
     )
     harvest_failed=0
@@ -455,6 +465,43 @@ if $DB_UP; then
 fi
 
 # ----------------------------------------------------------------------
+# Agent feedback — the agents' own words about what got in their way: the
+# most direct account of agent trouble there is (diag 4: ten feedback rows
+# the bundle could only count).  FREE TEXT: it is scrubbed like every other
+# file, but a name the database never held survives, so the operator reads
+# feedback.txt before moving the bundle (the end of the run says so), or
+# leaves it out with --no-feedback.
+# ----------------------------------------------------------------------
+FEEDBACK_LIMIT=200
+FEEDBACK_ROWS=0
+if $DB_UP && $WITH_FEEDBACK; then
+    print_info "Collecting agent feedback (newest $FEEDBACK_LIMIT, free text — review before sending)..."
+    FEEDBACK_ROWS=$(psql_q -A -t -c "SELECT count(*) FROM agent_feedback;" 2>/dev/null | tr -dc '0-9')
+    FEEDBACK_ROWS=${FEEDBACK_ROWS:-0}
+    {
+        echo "=== AGENT FEEDBACK (free text, scrubbed — READ BEFORE SENDING) ==="
+        echo "Entries in the database: $FEEDBACK_ROWS; shown: the newest $FEEDBACK_LIMIT, newest first."
+        echo "Ratings are 1-5. client/model: the agent session's attribution."
+        echo ""
+        # One "field: value" per line, a blank line between entries (psql's
+        # aligned expanded form padded every separator to the widest value —
+        # lines thousands of characters long).  JSON pretty-printed to read.
+        psql_q -x -A -F ': ' -c "SELECT f.id, f.created_at, f.source, f.status, f.prompt_version,
+                f.overall_rating AS rating, s.generated_by_tool AS client,
+                coalesce(f.agent_metrics->>'model', s.generated_by_model) AS model,
+                f.friction_notes,
+                jsonb_pretty(f.api_critiques::jsonb) AS api_critiques,
+                jsonb_pretty(f.tool_suggestions::jsonb) AS tool_suggestions,
+                f.reviewer_notes
+            FROM agent_feedback f LEFT JOIN agent_sessions s ON s.id = f.agent_session_id
+            ORDER BY f.created_at DESC, f.id DESC LIMIT $FEEDBACK_LIMIT;" 2>&1 \
+            || echo "(query failed — see above)"
+    } > "$LOG_DIR/feedback.txt" 2>&1
+elif ! $WITH_FEEDBACK; then
+    echo "Agent feedback left out (--no-feedback)." > "$LOG_DIR/feedback.txt"
+fi
+
+# ----------------------------------------------------------------------
 # TLS certificate actually served.  The health checks use curl -k, so a
 # certificate problem is invisible everywhere else in the bundle.  Derived
 # facts only: no subject, issuer or SAN values (they name the deployment).
@@ -628,8 +675,12 @@ Files:
                           is the file in ssl/certs and matches its key (no names)
 - agent_surface.txt       agent sessions, refused agent calls by route, MCP tool
                           outcomes and clients, proposals (with accept errors),
-                          evidence records and missing raw-output files,
+                          evidence records (outcomes, raw-output size),
                           feedback — counts only
+- feedback.txt            agent feedback IN FULL (newest 200): ratings, friction
+                          notes, endpoint critiques, tool suggestions, reviewer
+                          notes. FREE TEXT — scrubbed, but read it before sending;
+                          collect with --no-feedback to leave it out
 - error_analysis.txt      error counts, tracebacks, parser skip lines, auth events
 - code.txt                branch / recent commits when deployed from git
 - anonymisation.txt       how many values of each kind were replaced
@@ -664,4 +715,8 @@ print_success "Anonymised diagnostics bundle: $ORIG_PWD/$LOG_NAME.tar.gz"
 cat "$LOG_DIR/anonymisation.txt"
 echo ""
 print_warning "Skim it before sending: tar -xzf $LOG_NAME.tar.gz && grep -ri '<client name>' $LOG_NAME/"
+if $WITH_FEEDBACK && [[ "${FEEDBACK_ROWS:-0}" -gt 0 ]]; then
+    print_warning "It includes agent feedback as free text ($FEEDBACK_ROWS entries, newest $FEEDBACK_LIMIT): read $LOG_NAME/feedback.txt before moving the bundle."
+    print_info "To send without it: re-run with --no-feedback (or delete feedback.txt and re-pack the bundle)."
+fi
 print_info "Names only the operator knows can be added with --terms FILE."

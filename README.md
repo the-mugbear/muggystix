@@ -123,7 +123,7 @@ npm test -- --run    # Vitest suites
 ```bash
 ./scripts/deploy.sh        # unified deploy menu (start/rebuild, first-time setup, reconfigure IP, nuclear clean, security status, back up .env + SSL, roll back to the previous build)
 ./scripts/status.sh        # quick container health check
-./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit, served TLS certificate, agent-surface outcomes) — safe to share; needs python3; --since 72h, --terms FILE
+./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit, served TLS certificate, agent-surface outcomes, agent feedback) — read feedback.txt (free text) before sharing; needs python3; --since 72h, --terms FILE, --no-feedback
 ./scripts/backup-db.sh     # database + uploads/ backup (pg_dump, or a raw volume snapshot if Postgres is down)
 ./scripts/restore-db.sh    # restore the database and uploads/ from a backup-db.sh artifact
 ./scripts/upgrade-instance.sh  # carry a running instance's local state into a freshly copied source tree, then deploy (for hosts that deploy by file copy; read its header for the expected folder layout)

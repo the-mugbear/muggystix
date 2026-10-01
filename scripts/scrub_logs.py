@@ -76,8 +76,14 @@ CATEGORY_LABEL = {
     "site": "site", "label": "label", "scope": "scope", "client": "client",
     "report": "report", "file": "file", "host": "host", "fqdn": "host",
     "domain": "domain", "org": "org", "secret": "secret", "env": "config",
-    "term": "term", "deploydir": "deploydir",
+    "term": "term", "deploydir": "deploydir", "mcp": "mcp",
 }
+
+# A harvested value made only of digits and punctuation — a date, a time, a
+# version ("2026-09-30", "12:00", "1.0.2") — names no one, and replacing it
+# would erase that date or version from every log line (it did: an MCP
+# client's self-reported version was a date).  Secrets are exempt.
+DATE_OR_VERSION = re.compile(r"^[\d.:/_+\- T]+$")
 
 # Categories matched as whole TOKENS through a set (they can number in the
 # tens of thousands — hostnames, DNS names); the rest are matched as
@@ -168,6 +174,8 @@ def load_terms(paths: list[str], vocabulary: set[str] = frozenset()) -> tuple[di
             value = value.strip().strip(".")
             cat = cat.strip() or "term"
             if len(value) < 3 or value.lower() in GENERIC or value.isdigit() or value in SAFE_IPS:
+                continue
+            if cat != "secret" and DATE_OR_VERSION.match(value):
                 continue
             # Only machine-ish names get the vocabulary pass.  A project,
             # client, org, person or site name — or anything the operator
