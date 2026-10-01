@@ -3,8 +3,8 @@
  * stand, one strip of measures, sections without cards — and no "Correlate
  * Hosts" button (every write path correlates by itself).
  */
-import { fireEvent, render, screen, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -21,6 +21,14 @@ vi.mock('../../services/api', () => ({
   listScopeDomains: vi.fn().mockResolvedValue({ items: [], total: 0, skip: 0, limit: 100, names_in_scope_total: 0 }),
   addScopeDomains: vi.fn(),
   deleteScopeDomain: vi.fn(),
+}));
+// The PROJECT role decides who may change the scope (review 2026-10-01 R32).
+const role = vi.hoisted(() => ({ value: 'analyst' as string }));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: (r: string) => r !== 'admin' }),
+}));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: { id: 1, name: 'Demo', my_role: role.value } }),
 }));
 const toastMock = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
@@ -82,6 +90,7 @@ const renderPage = () =>
 
 beforeEach(() => {
   vi.clearAllMocks();
+  role.value = 'analyst';
   mocked.getDefaultScope.mockResolvedValue(scope);
   mocked.getScopeCoverage.mockResolvedValue(coverage);
   mocked.listSubnetLabels.mockResolvedValue([]);
@@ -280,5 +289,124 @@ describe('scopeLead', () => {
     expect(scopeLead({ ...coverage, total_subnets: 0, total_domains: 0 }).tone).toBe('neutral');
     expect(scopeLead({ ...coverage, total_hosts: 0 }).sentence)
       .toBe('No hosts discovered yet; 3 subnets and 1 domain declared.');
+  });
+});
+
+// Review 2026-10-01 R32 — Scopes had no role check: a reader saw the add row,
+// the editors, the uploads and the delete buttons, and learned from the 403.
+describe('Scopes page — a project viewer reads the scope', () => {
+  it('lists the scope without any control that changes it', async () => {
+    role.value = 'viewer';
+    mocked.listScopeDomains.mockResolvedValue({
+      items: [{ id: 5, domain: 'example.com', include_subdomains: true, name_count: 2 }],
+      total: 1, skip: 0, limit: 100, names_in_scope_total: 2,
+    });
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByText('East segment')).toBeInTheDocument();
+    await screen.findByText('*.example.com');
+
+    expect(screen.queryByRole('button', { name: /Upload scope file/ })).toBeNull();
+    expect(screen.queryByLabelText('CIDR or IP')).toBeNull();
+    expect(screen.queryByRole('button', { name: /^Add$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Manage project subnet labels/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Manage site criticality/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Edit subnet/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Delete subnet/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Edit labels/ })).toBeNull();
+    expect(screen.queryByLabelText(/Select .* for bulk label apply/)).toBeNull();
+    expect(screen.queryByLabelText(/Domain \(one or more/)).toBeNull();
+    expect(screen.queryByRole('button', { name: /Remove example.com from scope/ })).toBeNull();
+    // Exports are an auditor's.
+    expect(screen.queryByRole('button', { name: /Export/ })).toBeNull();
+    // Reading stays: the search and the links.
+    expect(screen.getByLabelText('Search subnets by CIDR or description')).toBeInTheDocument();
+  });
+
+  it('an auditor reads and exports; an analyst edits', async () => {
+    role.value = 'auditor';
+    const { unmount } = renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByRole('button', { name: 'Export scope' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Edit subnet/ })).toBeNull();
+    unmount();
+
+    role.value = 'analyst';
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByRole('button', { name: /Upload scope file/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit subnet 10.77.1.0/24' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete subnet 10.77.1.0/24' })).toBeInTheDocument();
+  });
+});
+
+// R34 — a failed label catalogue looked like "this project has no labels".
+describe('Scopes page — the label catalogue could not be loaded', () => {
+  it('says so, without blocking the page, and retries', async () => {
+    mocked.listSubnetLabels.mockRejectedValueOnce(new Error('down'));
+    renderPage();
+    await screen.findByText('10.77.1.0/24');
+    expect(await screen.findByText(/The subnet labels could not be loaded\./)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText(/The subnet labels could not be loaded\./)).toBeNull());
+  });
+});
+
+// B15 / R33 — the subnet search is in the URL, and the latest request wins.
+describe('Scopes page — subnet search', () => {
+  // (setupTests replaces useLocation; the search params are the real ones.)
+  const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
+  const renderAt = (url: string) => render(
+    <MemoryRouter initialEntries={[url]}>
+      <TooltipProvider><Scopes /><Where /></TooltipProvider>
+    </MemoryRouter>,
+  );
+
+  it('a link with a search restores it and asks the server for it', async () => {
+    renderAt('/scopes?subnet_q=dmz');
+    await screen.findByText('10.77.1.0/24');
+    expect(screen.getByLabelText('Search subnets by CIDR or description')).toHaveValue('dmz');
+    expect(mocked.getDefaultScope).toHaveBeenCalledWith(expect.objectContaining({ subnetsSearch: 'dmz' }));
+  });
+
+  it('typing writes the search to the URL once it settles', async () => {
+    renderAt('/scopes');
+    await screen.findByText('10.77.1.0/24');
+    fireEvent.change(screen.getByLabelText('Search subnets by CIDR or description'), { target: { value: 'east' } });
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('subnet_q=east'));
+    fireEvent.click(screen.getByRole('button', { name: 'Clear subnet search' }));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(''));
+  });
+
+  it('a slow first load never replaces the result of a later search', async () => {
+    let releaseFirst!: (v: unknown) => void;
+    const slowFirst = new Promise((resolve) => { releaseFirst = resolve; });
+    const found = { ...scope, subnets_total: 1, subnets: [{ ...scope.subnets[0], id: 99, cidr: '172.16.9.0/24', description: 'found by search' }] };
+    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+      (subnetsSearch ? Promise.resolve(found) : slowFirst));
+    // The page shows its body only once the first load settles; a reload
+    // after a change is the request a search can overtake.
+    releaseFirst(scope);
+    renderAt('/scopes');
+    await screen.findByText('10.77.1.0/24');
+
+    let releaseReload!: (v: unknown) => void;
+    const slowReload = new Promise((resolve) => { releaseReload = resolve; });
+    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+      (subnetsSearch ? Promise.resolve(found) : slowReload));
+    mocked.listScopeDomains.mockResolvedValue({ items: [], total: 0, skip: 0, limit: 100, names_in_scope_total: 0 });
+    mocked.addScopeSubnets.mockResolvedValue({});
+    fireEvent.change(screen.getByLabelText('CIDR or IP'), { target: { value: '10.9.9.0/24' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await waitFor(() => expect(mocked.addScopeSubnets).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('Search subnets by CIDR or description'), { target: { value: '172' } });
+    await screen.findByText('172.16.9.0/24');
+
+    // The unfiltered reload answers last.
+    await act(async () => { releaseReload(scope); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText('172.16.9.0/24')).toBeInTheDocument();
+    expect(screen.queryByText('10.77.1.0/24')).toBeNull();
   });
 });

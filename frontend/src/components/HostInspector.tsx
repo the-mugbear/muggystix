@@ -49,6 +49,7 @@ import {
   previewPromoteVulnerability,
   recordHostView,
   getHostFollowers,
+  PromotedEvidence,
 } from '../services/api';
 import type {
   Host,
@@ -93,7 +94,8 @@ import HostConflictsPanel from './host-inspector/HostConflictsPanel';
 import { groupByProduct, groupVulnerabilities } from '../utils/vulnGrouping';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
-import { testNeedsWork } from '../utils/hostTests';
+import { useProjectRole } from '../hooks/useProjectRole';
+import { promotedResultMessage, testNeedsWork } from '../utils/hostTests';
 import { asAxiosError, formatApiError } from '../utils/apiErrors';
 import { cn } from '../utils/cn';
 import { announceMentionOutcome } from '../utils/mentions';
@@ -246,8 +248,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
 }) => {
   const navigate = useNavigate();
   const toast = useToast();
-  const { hasPermission, user } = useAuth();
-  const canManageEntries = hasPermission('analyst');
+  const { user } = useAuth();
+  // The PROJECT role (analyst+), not the account role every member has (R32).
+  const { canWrite: canManageEntries } = useProjectRole();
 
   // Pivot a vuln to the host inventory filtered to every host with the same
   // vulnerability. When the parent supplies onQueryHosts (the Hosts SideSheet)
@@ -361,10 +364,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
     setEvidenceRefresh((n) => n + 1);
     reloadHost();
   }, [reloadHost]);
-  const onTestFindingCreated = useCallback((findingId: number) => {
+  const onTestFindingCreated = useCallback((findingId: number, made?: PromotedEvidence) => {
     // The test leaves the to-do list with its finding made, so the way to the
     // write-up is offered here rather than on a row that is no longer shown.
-    toast.success(`On finding #${findingId}.`, {
+    // From the response: a result that joined a concluded finding did not
+    // re-status it, and the toast must not say it did.
+    toast.success(promotedResultMessage(made ?? { finding_id: findingId }), {
       autoHideMs: 8000,
       action: { label: 'Write it up', onClick: () => navigate(`/findings/${findingId}?edit=report-text`) },
     });
@@ -549,7 +554,9 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
       ));
     } catch (err: unknown) {
       if (fetchId !== fetchIdRef.current) return;
-      console.error('Error loading informational findings:', err);
+      // Said, not only logged (R34): the "show" link otherwise spun and
+      // stopped with nothing changed.
+      toast.error(formatApiError(err, 'Could not load the informational observations.'));
     } finally {
       if (fetchId === fetchIdRef.current) setLoadingInformational(false);
     }
@@ -1604,6 +1611,13 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
                       )}
                     >
                       {f.value}
+                      {/* Plain words beside the value (whether the scan
+                          authenticated) — text, not a badge. */}
+                      {f.note && (
+                        <span className={cn('font-normal', f.noteTone === 'warn' ? 'text-warning' : 'text-muted-foreground')}>
+                          {' · '}{f.note}
+                        </span>
+                      )}
                     </dd>
                   </div>
                 ))}
@@ -1830,6 +1844,12 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
         count={notes.length}
       >
         <div className="space-y-sm">
+          {/* Writing a note is a project analyst's (R32); a reader sees the
+              discussion without a composer whose Post the server refuses. */}
+          {!canManageEntries && notes.length === 0 && (
+            <p className="text-caption text-muted-foreground">No notes on this host.</p>
+          )}
+          {canManageEntries && (
           <NoteComposer
             hostId={hostId}
             body={noteBody}
@@ -1844,6 +1864,7 @@ export const HostInspector: React.FC<HostInspectorProps> = ({
             onRemoveImage={removePendingImage}
             onRetryImage={retryPendingImage}
           />
+          )}
           {notes.length > 0 && (
             // v2.43.0 — MONO-2: notes rendering is now <NoteThread> (see
             // ./host-inspector/NoteThread.tsx).  Pre-extraction this was

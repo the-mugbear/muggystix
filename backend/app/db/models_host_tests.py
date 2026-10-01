@@ -15,7 +15,7 @@ class HostTest(Base):
     id = Column(Integer, primary_key=True)
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False)
-    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"))
+    name_id = Column(Integer, ForeignKey("dns_names.id", ondelete="SET NULL"), index=True)
     target_fqdn = Column(String(253))  # intent survives deletion of the navigation link
     tool = Column(String(100))  # historical free-text tests may not name a tool
     description = Column(Text, nullable=False)
@@ -35,7 +35,7 @@ class HostTest(Base):
     assigned_to_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     tester_summary = Column(Text)
     source = Column(String(20), nullable=False)
-    agent_session_id = Column(Integer, ForeignKey("agent_sessions.id", ondelete="SET NULL"))
+    agent_session_id = Column(Integer, ForeignKey("agent_sessions.id", ondelete="SET NULL"), index=True)
     created_by_user_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"))
     agent_model = Column(String(100))
     agent_client = Column(String(100))

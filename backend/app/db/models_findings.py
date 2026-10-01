@@ -22,8 +22,8 @@ are the canonical value sets, enforced in application code.
 import enum
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text,
-    UniqueConstraint, Index,
+    Column, DateTime, Float, ForeignKey, Integer, String, Text,
+    UniqueConstraint, Index, text,
 )
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
@@ -66,6 +66,13 @@ class FindingHostStatus(str, enum.Enum):
     # other hosts: dismissing one host's observation used to mark the issue a
     # false positive on every host that carries it.
     FALSE_POSITIVE = "false_positive"
+
+
+#: Which findings ``uq_finding_scanner_issue`` covers (R8).  The migration
+#: carries its own copy — a revision never imports from the models.
+SCANNER_ISSUE_PREDICATE = (
+    "source = 'scanner' AND dedup_key IS NOT NULL AND substr(dedup_key, 1, 4) <> 'row:'"
+)
 
 
 class Finding(Base):
@@ -131,22 +138,40 @@ class Finding(Base):
     # foreign_keys pinned: annotations.finding_id is a SECOND annotations<->
     # findings path (a finding's own comment thread), so this must be explicit.
     evidence_annotation = relationship("Annotation", foreign_keys=[evidence_annotation_id])
+    # Plain lazy (review 2026-10-01 C2, as ``Host`` in v2.393.0): this was
+    # ``lazy="selectin"``, so EVERY whole-entity Finding query also fetched all
+    # of its endpoints — a findings page of widespread issues loaded tens of
+    # thousands of rows nothing read.  A path that reads endpoints names the
+    # load (``selectinload(Finding.hosts)``); ``tests/test_finding_loading.py``
+    # pins that querying findings is one statement.
     hosts = relationship(
         "FindingHost", back_populates="finding", cascade="all, delete-orphan",
-        lazy="selectin",
     )
     status_history = relationship(
         "FindingStatusHistory", back_populates="finding",
         cascade="all, delete-orphan",
     )
     # Every scanner row evidencing this finding (see FindingVulnerability).
+    # Plain lazy too (C2): nothing reads it through the relationship — the
+    # readers query ``FindingVulnerability`` directly.
     vulnerabilities = relationship(
         "FindingVulnerability", back_populates="finding",
-        cascade="all, delete-orphan", lazy="selectin",
+        cascade="all, delete-orphan",
     )
 
     __table_args__ = (
         Index("idx_finding_project_status", "project_id", "status"),
+        # Review 2026-10-01 R8 — "one scanner finding per issue" is enforced by
+        # the database (migration b2e5a8c1d4f6), not only by a read-then-insert:
+        # two concurrent promotions of one issue used to insert two findings.
+        # ``row:`` keys identify a single scanner row, not an issue, and are
+        # left out (``substr`` rather than LIKE: no ``%`` in DDL, and SQLite's
+        # test schema accepts it).
+        Index(
+            "uq_finding_scanner_issue", "project_id", "dedup_key", unique=True,
+            postgresql_where=text(SCANNER_ISSUE_PREDICATE),
+            sqlite_where=text(SCANNER_ISSUE_PREDICATE),
+        ),
     )
 
 

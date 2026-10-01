@@ -45,7 +45,9 @@ BlueStick; the operator carries the finished report out.
      and NFS weaknesses sit on 2049/tcp when the host has it — that is
      `correct`, not the wrong port (v2.430.1).
    - Weaknesses: `assist_get_host_vulnerabilities` (scanner observations, with
-     `check_id` for catalog checks such as `vnc_no_auth`, `smb_signing_not_required`).
+     `check_id` for catalog checks such as `vnc_no_auth`, `smb_signing_not_required`,
+     `dns_zone_transfer_allowed` — on the NAME SERVER's host, and only when that
+     address is a host of the project).
    - Web tools: `assist_list_host_web_interfaces`.
 3. **Classify every line you examined** as one of:
    - `correct` — read as the tool meant it;

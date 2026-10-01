@@ -22,7 +22,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User, UserRecoveryCode
 from app.core.security import verify_password, log_audit_event
-from app.api.v1.endpoints.auth import get_current_user, get_client_info
+from app.api.deps import get_current_user, get_client_info
 from app.services import totp_service
 
 router = APIRouter()

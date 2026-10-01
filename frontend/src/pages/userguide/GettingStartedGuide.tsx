@@ -87,6 +87,7 @@ const sections: GuideSection[] = [
         <UnorderedList>
           <li>Press <Mono>/</Mono> on the Hosts page to focus the query bar; type a boolean query, then <strong>Copy link</strong> to share the exact view.</li>
           <li>Quick-nav chords jump to the main pages — e.g. <Mono>g h</Mono> Hosts, <Mono>g s</Mono> Scans, <Mono>g p</Mono> Proposals, <Mono>g i</Mono> Inventory, <Mono>g o</Mono> Operations.</li>
+          <li>On Proposals, <Mono>j</Mono> / <Mono>k</Mono> move through the queue, <Mono>Enter</Mono> opens the finding, <Mono>a</Mono> accepts the highlighted proposal and <Mono>r</Mono> opens its reject reason. Press <Mono>?</Mono> anywhere for the full list.</li>
           <li>Bookmark hosts you're tracking by setting a review status (Watching / In Review / Reviewed) — then filter back to them with <Mono>follow:in_review</Mono>.</li>
           <li>Upload multiple scan files at once — they're processed in parallel by the ingestion worker.</li>
           <li>Use the Activity page (Collaboration) to catch up on the team's discussions across every host and finding.</li>

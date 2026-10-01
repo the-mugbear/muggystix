@@ -12,7 +12,7 @@ Standardizes the response shape for paginated list endpoints on::
 
 Pre-fix, list endpoints returned either a bare ``List[T]`` or a
 hand-rolled envelope, and several recently-paginated endpoints
-(``/recon-sessions/``, ``/execution-sessions/``, etc.) surfaced the
+(the session lists of the time, since removed) surfaced the
 total via an ``X-Total-Count`` response header.  That worked but
 left the client guessing whether each endpoint used the header or a
 body field, and made the "Showing N of T" affordance bespoke per
@@ -26,7 +26,7 @@ models.
 
 Pydantic v2 ``Generic[T]`` requires no special config — the type
 variable is resolved at endpoint declaration time when the caller
-writes ``response_model=Paginated[ReconSessionRow]``.
+writes ``response_model=Paginated[DNSRecord]``.
 """
 from __future__ import annotations
 

@@ -375,7 +375,7 @@ def test_masscan_banners_become_script_output(name, db_session, test_project):
     """v2.390.0 — `--banners` output was read past and dropped."""
     from app.parsers.masscan_parser import MasscanParser
 
-    scan = MasscanParser(db_session).parse_file(str(NATIVE / name), name, project_id=test_project.id)
+    MasscanParser(db_session).parse_file(str(NATIVE / name), name, project_id=test_project.id)
     port = (
         db_session.query(models.Port).join(models.Host)
         .filter(models.Host.ip_address == "172.30.77.20", models.Port.port_number == 8080).one()

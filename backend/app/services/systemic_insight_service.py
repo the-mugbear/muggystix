@@ -33,6 +33,7 @@ from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -60,7 +61,6 @@ from app.services.pattern_families import (
     family_for_condition,
     family_for_vuln,
     FAMILIES,
-    _CONDITION_FAMILY,
 )
 from app.services.evidence_service import DOMAIN_LABELS, assessed_host_ids, eligible_host_ids
 from app.schemas.metric import ratio_metric
@@ -247,20 +247,68 @@ def compute_systemic_insights(db: Session, project_id: int) -> Dict[str, Any]:
     # they (a) bury the actionable signal under info noise and (b) are the bulk
     # of the rows this scan transfers, which is the dominant cost at 40k+ hosts.
     # Systemic analysis is about *actionable* weaknesses, so floor at low.
+    #
+    # review 2026-10-01 R22 — grouped in the database.  This used to bring
+    # back EVERY non-info vulnerability row of the project, title included
+    # (hundreds of thousands of strings into one of four workers sharing a
+    # 2 GB container), to count hosts per plugin in Python.  Now Postgres
+    # counts, only the plugins that reach ``min_hosts`` come back, and a title
+    # is read for the few that clear the remaining gates below.  The SQL count
+    # is over the project's hosts, a superset of the in-scope estate, so it
+    # can only let a plugin through that the in-scope recount then drops —
+    # never hide one.
+    plugin_rows = (
+        Vulnerability.plugin_id.isnot(None),
+        Vulnerability.severity.notin_([VulnerabilitySeverity.INFO, VulnerabilitySeverity.UNKNOWN]),
+    )
     plugin_hosts: Dict[str, Set[int]] = defaultdict(set)
     plugin_meta: Dict[str, tuple] = {}
-    for hid, plugin_id, severity, title in (
-        db.query(Vulnerability.host_id, Vulnerability.plugin_id, Vulnerability.severity, Vulnerability.title)
-        .join(models.Host, Vulnerability.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project_id,
-            Vulnerability.plugin_id.isnot(None),
-            Vulnerability.severity.notin_([VulnerabilitySeverity.INFO, VulnerabilitySeverity.UNKNOWN]),
+    candidates: List[str] = []
+    if estate_large_enough:
+        candidates = [
+            plugin_id for (plugin_id,) in (
+                db.query(Vulnerability.plugin_id)
+                .join(models.Host, Vulnerability.host_id == models.Host.id)
+                .filter(models.Host.project_id == project_id, *plugin_rows)
+                .group_by(Vulnerability.plugin_id)
+                .having(func.count(func.distinct(Vulnerability.host_id)) >= min_hosts)
+                .all()
+            )
+        ]
+    if candidates:
+        for hid, plugin_id in (
+            db.query(Vulnerability.host_id, Vulnerability.plugin_id)
+            .join(models.Host, Vulnerability.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == project_id, *plugin_rows,
+                Vulnerability.plugin_id.in_(candidates),
+            )
+            .distinct()
+            .all()
+        ):
+            if hid in in_scope:
+                plugin_hosts[plugin_id].add(hid)
+        plugin_hosts = {
+            plugin_id: hosts for plugin_id, hosts in sorted(plugin_hosts.items())
+            if len(hosts) >= min_hosts
+        }
+    if plugin_hosts:
+        # Severity and title of each surviving plugin, from its newest row.
+        # (Before, it was whichever row the unordered scan returned last.)
+        newest = (
+            db.query(func.max(Vulnerability.id))
+            .join(models.Host, Vulnerability.host_id == models.Host.id)
+            .filter(
+                models.Host.project_id == project_id, *plugin_rows,
+                Vulnerability.plugin_id.in_(list(plugin_hosts)),
+            )
+            .group_by(Vulnerability.plugin_id)
         )
-        .all()
-    ):
-        if hid in in_scope:
-            plugin_hosts[plugin_id].add(hid)
+        for plugin_id, severity, title in (
+            db.query(Vulnerability.plugin_id, Vulnerability.severity, Vulnerability.title)
+            .filter(Vulnerability.id.in_(newest))
+            .all()
+        ):
             plugin_meta[plugin_id] = (severity, title)
     for plugin_id, hosts in plugin_hosts.items():
         if not estate_large_enough or len(hosts) < min_hosts:

@@ -22,8 +22,41 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from pydantic import BaseModel
+
 _SERVER_NAME = "bluestick"
 _KEY_ENV_VAR = "BLUESTICK_API_KEY"
+
+
+class McpClientSetup(BaseModel):
+    """How one MCP-capable host connects to this session's /api/v1/mcp endpoint.
+
+    v2.269.0 — this used to be a single `mcp_config` string in VS Code's shape,
+    handed to operators on VS Code, Claude Code, AND Cursor alike.  The clients
+    do not agree: VS Code's `.vscode/mcp.json` wraps servers under `servers`,
+    while Claude Code and Cursor use `mcpServers` — so two of the three named
+    hosts silently ignored the server the dialog told the operator to paste.
+    The file path differs per client too, which is why `path` is part of the
+    payload rather than something the dialog hardcodes.
+    """
+
+    id: str
+    # Client name as the operator knows it, for the dialog's tab.
+    label: str
+    # "file"    -> `payload` is JSON to write at `path`
+    # "command" -> `payload` is a shell command to run; `path` is empty
+    kind: str
+    path: str
+    payload: str
+    # One line under the payload: what to do with it.
+    hint: str
+    # v2.331.0 — the handoff the recipes used to stop short of: how this client
+    # shows "connected", the first prompt to give the agent, and what the answer
+    # looks like from the session that was actually minted.  See
+    # ``verify_prompt``.
+    verify_check: str = ""
+    verify_prompt: str = ""
+    verify_expected: str = ""
 
 
 def server_name() -> str:
@@ -250,3 +283,27 @@ def build_mcp_clients(
         client["verify_prompt"] = prompt
         client["verify_expected"] = expected_text
     return clients
+
+
+def build_session_mcp_clients(
+    mcp_url: str, raw_key: str, *, project_name: str, agent_session_id: int
+) -> List[McpClientSetup]:
+    """The recipes for one agent session — what the start dialog and the
+    resume route both return.
+
+    The label the operator checks the agent's answer against must be the id
+    the agent will actually report — ``session_id`` on /agent/identity is the
+    unified AgentSession id, not the start dialog's AssistSession row
+    (v2.338.0).
+    """
+    return [
+        McpClientSetup(**client)
+        for client in build_mcp_clients(
+            mcp_url,
+            raw_key,
+            expected={
+                "project_name": project_name,
+                "session_label": f"agent session #{agent_session_id}",
+            },
+        )
+    ]

@@ -35,7 +35,6 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from typing import FrozenSet, Iterable
 from urllib.parse import urlparse
 
 
@@ -395,7 +394,6 @@ def safe_request(
     cap; otherwise the returned response behaves like a normal buffered one
     (``.json()`` / ``.text`` / ``.status_code`` / ``.raise_for_status()``).
     """
-    import httpx
     from app.core.config import settings
 
     cap = settings.MAX_OUTBOUND_RESPONSE_BYTES if max_bytes is None else max_bytes

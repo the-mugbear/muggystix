@@ -236,3 +236,152 @@ def test_the_shipped_templates_declare_the_default_cutoff(monkeypatch):
     # The worklist prints no scope, so it never names a scope file.
     w = templates.get_template("remediation-worklist")
     assert (w.scope_inline_max, w.scope_domains_inline_max) == (None, None)
+
+
+# --- review 2026-10-01 B8: how a finding was confirmed ---------------------------------
+
+@needs_templates
+def test_the_pentest_report_prints_how_a_finding_was_confirmed():
+    sample = _sample("pentest")
+    out = _fill("pentest", sample)
+    smb = out.split("{#finding-11}")[1].split("{#finding-12}")[0]
+    evidence = smb.split("Evidence / proof of concept")[1].split("Recommendations")[0]
+    # Who, what, where and when are printed values (escaped) …
+    assert "**nmap** against 192\\.0\\.2\\.10, 2026\\-09\\-18, by Alex Tester" in evidence
+    assert "The SMB service answers the vulnerable request without authentication\\." in evidence
+    # … the command and the output are placeholders the filter fills verbatim:
+    # neither is in the source.
+    assert '::: {.bs-code key="findings.0.confirmations.0.command"}\n:::' in evidence
+    assert '::: {.bs-code key="findings.0.confirmations.0.output"}\n:::' in evidence
+    assert "Output (excerpt):" in evidence
+    assert "smb-vuln-ms17-010" not in out and "smb\\-vuln" not in out
+    # A confirmed test is the evidence: no "mark the screenshots" TODO for it.
+    assert "TODO" not in evidence
+    # A finding with neither still asks for evidence; an agent's record names its operator.
+    tls = out.split("{#finding-13}")[1].split("{#finding-14}")[0]
+    assert "bs-code" not in tls and "Mark the evidence screenshots" in tls
+    assert "by Sam Analyst \\(agent session 7\\)" in out
+
+
+@needs_templates
+def test_results_that_were_not_printed_are_counted_and_old_reports_still_fill():
+    data = _sample("pentest")
+    data["findings"][0]["confirmations_omitted"] = 4
+    assert "*4 further test result(s) confirming this finding are not printed.*" in _fill("pentest", data)
+    # A report issued before the list existed carries no such keys.
+    old = _sample("pentest")
+    for f in old["findings"]:
+        for key in ("confirmations", "confirmations_omitted", "previous_severity", "previous_severity_label"):
+            f.pop(key)
+    out = _fill("pentest", old)
+    assert "bs-code" not in out and "Mark the evidence screenshots" in out
+    for name in ("executive-brief", "remediation-worklist"):
+        assert _fill(name, old)
+
+
+@needs_templates
+def test_only_the_pentest_template_asks_for_test_results():
+    """Opt-in per template (template.json → evidence_records): the brief leaves
+    evidence out by design and the worklist is a list of fixes."""
+    asked = {
+        name: json.loads((ROOT / name / "template.json").read_text()).get("evidence_records")
+        for name in ("pentest", "executive-brief", "remediation-worklist")
+    }
+    assert asked == {"pentest": True, "executive-brief": False, "remediation-worklist": False}
+    for name in ("executive-brief", "remediation-worklist"):
+        data = _sample(name)
+        # Even handed some, they print none.
+        data["findings"][0]["confirmations"] = _sample("pentest")["findings"][0]["confirmations"]
+        assert "bs-code" not in _fill(name, data)
+
+
+# --- owner's decision 2026-10-01 (B17): a re-rated finding in an addendum ----------------
+
+def _rerated(sample: dict, *, also_new_hosts: bool = False) -> dict:
+    """An addendum in which F-03 (reported as Medium) is now High, and nothing
+    else changed — or, with ``also_new_hosts``, F-02 was re-rated from Low AND
+    is on a further system."""
+    data = copy.deepcopy(sample)
+    data["report"].update({
+        "kind": "addendum", "title": "Addendum", "number": 2,
+        "baseline": {"number": 1, "title": sample["report"]["title"], "date": "2026-09-23"},
+    })
+    tls = data["findings"][2]
+    tls.update({"change": "severity_changed", "severity": "high", "severity_label": "High",
+                "previous_severity": "medium", "previous_severity_label": "Medium", "status": "confirmed",
+                "status_note": None})
+    shown = [tls]
+    if also_new_hosts:
+        ldap = data["findings"][1]
+        ldap.update({"change": "new_hosts", "previous_severity": "low", "previous_severity_label": "Low",
+                     "new_affected": [{"address": "192.0.2.99", "hostname": "app09", "name": None,
+                                       "port": "389/tcp", "state": None}]})
+        shown = [ldap, tls]
+    data["findings"] = shown
+    for i, f in enumerate(shown):
+        f["_path"] = f"findings.{i}"
+    data["delta"] = {
+        "new_findings": 0, "findings_with_new_endpoints": int(also_new_hosts),
+        "findings_with_changed_severity": len(shown), "withdrawn": [],
+    }
+    return data
+
+
+@needs_templates
+def test_the_pentest_addendum_lists_a_rerated_finding():
+    out = _fill("pentest", _rerated(_sample("pentest")))
+    assert "Nothing has changed" not in out
+    assert "1 reported finding(s) whose severity changed" in out
+    section = out.split("# Reported findings with a changed severity")[1].split("\n# ")[0]
+    assert "| F\\-03 | TLS 1\\.0 accepted by the web portal | Medium | High |" in section
+    assert "# New findings" not in out and "# Reported findings on further systems" not in out
+
+    both = _fill("pentest", _rerated(_sample("pentest"), also_new_hosts=True))
+    grown = both.split("# Reported findings on further systems")[1].split("\n# ")[0]
+    assert "Severity changed: was Low in report 1, now High." in grown and "192\\.0\\.2\\.99" in grown
+    # Listed once under its new systems, and named in the severity table too.
+    assert both.count("## F\\-02 — ") == 1
+    table = both.split("# Reported findings with a changed severity")[1].split("\n# ")[0]
+    assert "| F\\-02 |" in table and "| F\\-03 |" in table
+    assert "2 reported finding(s) whose severity changed" in both
+
+
+@needs_templates
+def test_an_addendum_with_no_change_at_all_still_says_so():
+    data = _rerated(_sample("pentest"))
+    data["findings"] = []
+    data["delta"]["findings_with_changed_severity"] = 0
+    out = _fill("pentest", data)
+    assert "Nothing has changed since report 1." in out
+    assert "# Reported findings with a changed severity" not in out
+    brief = _rerated(_sample("executive-brief"))
+    brief["findings"] = []
+    assert "Nothing has changed since report 1." in _fill("executive-brief", brief)
+
+
+@needs_templates
+def test_the_brief_addendum_has_a_row_for_a_rerated_finding():
+    out = _fill("executive-brief", _rerated(_sample("executive-brief")))
+    assert "Nothing has changed" not in out
+    assert "| Severity changed | F\\-03 | TLS 1\\.0 accepted by the web portal | High (was Medium) |" in out
+    both = _fill("executive-brief", _rerated(_sample("executive-brief"), also_new_hosts=True))
+    assert "| Found on 1 more system(s) | F\\-02 | Anonymous LDAP bind returns the directory | High (was Low) |" in both
+    assert both.count("| F\\-02 |") == 1
+    # An earlier addendum's data (no previous severity) prints as before.
+    assert "(was" not in _fill("executive-brief", _addendum(_sample("executive-brief")))
+
+
+@needs_templates
+def test_the_worklist_addendum_names_a_rerated_finding_without_adding_work():
+    out = _fill("remediation-worklist", _rerated(_sample("remediation-worklist")))
+    section = out.split("# Severity changed since report 1")[1].split("\n# ")[0]
+    assert "| F\\-03 | TLS 1\\.0 accepted by the web portal | Medium | High |" in section
+    # Re-rating adds no system to fix.
+    assert "Nothing to fix" in out and "## 198\\.51\\.100\\.5" not in out
+    both = _fill("remediation-worklist", _rerated(_sample("remediation-worklist"), also_new_hosts=True))
+    assert "## 192\\.0\\.2\\.99" in both
+    table = both.split("# Severity changed since report 1")[1].split("\n# ")[0]
+    assert "| F\\-02 |" in table and "| Low | High |" in table
+    # A full report and an earlier addendum have no such section.
+    assert "# Severity changed" not in _fill("remediation-worklist", _sample("remediation-worklist"))
+    assert "# Severity changed" not in _fill("remediation-worklist", _addendum(_sample("remediation-worklist")))

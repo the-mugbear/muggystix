@@ -55,6 +55,31 @@ class Settings:
     # so a proxy / Postgres idle timeout can't hand back a dead socket.
     # pool_pre_ping already revalidates on checkout; this avoids the churn.
     DB_POOL_RECYCLE: int = int(os.getenv("DB_POOL_RECYCLE", "1800"))
+    # review 2026-10-01 R23 — a ceiling on any ONE statement an API REQUEST
+    # runs, in milliseconds; 0 = none.  It is applied by ``db.session.get_db``
+    # to the request's own session (``SET LOCAL`` at each transaction start),
+    # never as an engine or connection default — the ingestion worker, the
+    # report worker, startup tasks, the seed / repair scripts and Alembic
+    # share this module and this environment (``env_file: .env``) and run long
+    # statements on purpose, so nothing they open may inherit it.  A request
+    # that hits it is cancelled by Postgres (SQLSTATE 57014), answers 503 and
+    # frees its pooled connection instead of holding it until the client
+    # gives up.  A request path that must run long opts out with
+    # ``app.db.session.disable_statement_timeout(db)``.
+    try:
+        API_STATEMENT_TIMEOUT_MS: int = max(0, int(os.getenv("API_STATEMENT_TIMEOUT_MS", "30000") or 0))
+    except ValueError:
+        API_STATEMENT_TIMEOUT_MS = 30000
+
+    # review 2026-10-01 R18 — how long one API worker keeps the UNFILTERED
+    # Hosts filter facets (port / service / OS / technology / weakness / check
+    # counts) of a project, in seconds.  They are project-wide aggregations
+    # that change only when a scan is imported; tags, labels, subnets and the
+    # scan list are never cached.  0 turns the cache off.
+    try:
+        HOST_FACET_CACHE_SECONDS: float = max(0.0, float(os.getenv("HOST_FACET_CACHE_SECONDS", "30") or 0))
+    except ValueError:
+        HOST_FACET_CACHE_SECONDS = 30.0
 
     # Security settings
     SECRET_KEY: str = os.getenv("SECRET_KEY", "")

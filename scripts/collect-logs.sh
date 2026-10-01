@@ -22,8 +22,12 @@
 # expiry, whether it names HOST_IP), agent-surface outcomes (refused calls by
 # route, MCP tool outcomes, proposals, evidence — counts only), the agents'
 # feedback IN FULL (feedback.txt: the newest 200 entries' ratings and free
-# text — read it before sending), and the backend / worker / report-worker /
-# frontend (nginx) / db logs.
+# text — read it before sending), the backend / worker / report-worker /
+# frontend (nginx) / db logs, request timing per route template
+# (request_timing.txt, from the backend access log) and the statements the
+# database spent most time in (sql_statements.txt, from pg_stat_statements —
+# normalised text, no values; the extension is created if it is missing, the
+# one thing this script writes to the database).
 #
 # How identifying information is removed:
 #   * Collection happens in a private temp directory (mode 700).  Nothing
@@ -66,6 +70,8 @@ print_warning() { echo -e "${YELLOW}⚠️  $1${NC}"; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRUBBER="$SCRIPT_DIR/scrub_logs.py"
+# Derived summaries (request timing, top SQL statements) — stdlib python3.
+SUMMARIES="$SCRIPT_DIR/diag_summaries.py"
 # Everything below reads .env, uploads/, docker-compose.yml and
 # platform_version.json relative to the deployment root.  Run from scripts/
 # (production, 2026-09-26) every one of them read "(not found)" while docker
@@ -362,6 +368,18 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
         q "Postgres extensions" "SELECT extname, extversion FROM pg_extension ORDER BY extname;"
         q "Database size on disk" "SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size;"
         q "Largest tables" "SELECT relname AS table, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(relid)) AS size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 30;"
+        # The data-repair ledger (review 2026-10-01 B10): which one-off data
+        # corrections this instance has run.  Repair names, modes and a row
+        # TOTAL — the per-rule counts are numbers keyed by check ids, and no
+        # row value is stored in the table at all.  A known repair missing
+        # from this list has not been applied (scripts/data_repairs.py).
+        q "Data repairs applied (the ledger; a known repair not listed here is pending)" "SELECT name, mode, applied_at, applied_by, app_version, run_count, (SELECT coalesce(sum(value::bigint), 0) FROM json_each_text(coalesce(rows_affected, '{}'::json)) WHERE value ~ '^[0-9]+\$') AS rows_total FROM data_repairs ORDER BY name;"
+        # Postgres memory settings and the two signals for changing them
+        # (review 2026-10-01 R25; .env.example, "PostgreSQL tuning"):
+        # temp_bytes climbing between two bundles -> PG_WORK_MEM;
+        # blks_read far above blks_hit on a warm instance -> PG_SHARED_BUFFERS.
+        q "Postgres memory settings" "SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'effective_cache_size', 'work_mem', 'maintenance_work_mem', 'max_connections', 'log_min_duration_statement', 'shared_preload_libraries') ORDER BY name;"
+        q "Cache and temp-file counters since stats_reset" "SELECT blks_hit, blks_read, round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 2) AS cache_hit_pct, temp_files, pg_size_pretty(temp_bytes) AS temp_bytes, deadlocks, stats_reset FROM pg_stat_database WHERE datname = current_database();"
     fi
 } > "$LOG_DIR/versions_and_schema.txt" 2>&1
 
@@ -463,6 +481,52 @@ if $DB_UP; then
         q "Agent feedback by source" "SELECT source, count(*), round(avg(overall_rating), 1) AS avg_rating, max(created_at) AS last FROM agent_feedback GROUP BY 1 ORDER BY 2 DESC;"
     } > "$LOG_DIR/agent_surface.txt" 2>&1
 fi
+
+# ----------------------------------------------------------------------
+# Top SQL statements by total execution time (review 2026-10-01), from
+# pg_stat_statements.  The text is the NORMALISED statement — constants are
+# $1, $2 … — so it holds table and column names, never a row value;
+# diag_summaries.py also leaves out utility statements (Postgres keeps some
+# of their literals) and replaces any quoted literal that remains.  Nothing
+# here is harvested as a name to remove.
+# CREATE EXTENSION is the one write this script makes: the library is loaded
+# by the server flag in docker-compose.yml, the extension is per database.
+# Either can be missing (an older compose file, a role that may not create
+# extensions): that is a one-line note, never a failed collection.
+# ----------------------------------------------------------------------
+SQL_TOP=40
+print_info "Collecting the top SQL statements (pg_stat_statements, normalised text)..."
+{
+    echo "=== SQL STATEMENTS (pg_stat_statements: top $SQL_TOP by total execution time) ==="
+    echo "Normalised text — constants are \$1, \$2 … — so table and column names only."
+    echo "calls, total and mean execution time (ms), rows returned or changed."
+    echo ""
+    if ! $DB_UP; then
+        echo "Database container not running — unavailable."
+    elif [[ ! -r "$SUMMARIES" ]]; then
+        echo "Missing scripts/diag_summaries.py (copy the whole scripts/ directory) — unavailable."
+    else
+        ext_note=""
+        if ! ext_out=$(psql_q -q -v ON_ERROR_STOP=1 -c "CREATE EXTENSION IF NOT EXISTS pg_stat_statements;" 2>&1); then
+            ext_note=$(grep -m1 -E 'ERROR|FATAL' <<<"$ext_out" | cut -c1-200 || true)
+        fi
+        # One row per line: whitespace (newlines and tabs included) collapsed
+        # in SQL, so the tab-separated output cannot be broken by a statement.
+        if sql_rows=$(psql_q -A -t -F $'\t' -v ON_ERROR_STOP=1 -c \
+                "SELECT s.calls, round(s.total_exec_time::numeric, 1), round(s.mean_exec_time::numeric, 2), s.rows, regexp_replace(s.query, '\s+', ' ', 'g') FROM pg_stat_statements s WHERE s.dbid = (SELECT oid FROM pg_database WHERE datname = current_database()) ORDER BY s.total_exec_time DESC LIMIT $SQL_TOP;" \
+                2>"$WORK/sql_statements.err"); then
+            psql_q -A -t -c "SELECT 'Counters since: ' || coalesce(stats_reset::text, 'unknown') || '; statements evicted for space: ' || dealloc FROM pg_stat_statements_info;" 2>/dev/null || true
+            echo ""
+            printf '%s\n' "$sql_rows" | python3 "$SUMMARIES" sql-statements 2>&1 \
+                || echo "(the statement summary failed — see above)"
+        else
+            reason=$(grep -m1 -E 'ERROR|FATAL' "$WORK/sql_statements.err" 2>/dev/null | cut -c1-200 || true)
+            echo "pg_stat_statements is not available on this database: ${reason:-${ext_note:-no reason reported}}"
+            echo "(It needs shared_preload_libraries=pg_stat_statements — docker-compose.yml sets it; a database container started before that keeps running without it until it is recreated — and a role allowed to CREATE EXTENSION.)"
+        fi
+        rm -f "$WORK/sql_statements.err"
+    fi
+} > "$LOG_DIR/sql_statements.txt" 2>&1
 
 # ----------------------------------------------------------------------
 # Agent feedback — the agents' own words about what got in their way: the
@@ -586,6 +650,27 @@ else
 fi
 
 # ----------------------------------------------------------------------
+# Request timing by route (review 2026-10-01).  The backend's access line
+# carries duration, db_ms, db_n and the route TEMPLATE; this is the per-route
+# roll-up, read from the raw backend log just collected.  Templates name no
+# one (the path, which does, is never printed), and the file is scrubbed with
+# the rest of the bundle all the same.
+# ----------------------------------------------------------------------
+print_info "Summarising request timing by route..."
+{
+    if [[ ! -f "$LOG_DIR/logs_backend.txt" ]]; then
+        echo "=== REQUEST TIMING ==="
+        echo "No backend log was collected — unavailable."
+    elif [[ ! -r "$SUMMARIES" ]]; then
+        echo "=== REQUEST TIMING ==="
+        echo "Missing scripts/diag_summaries.py (copy the whole scripts/ directory) — unavailable."
+    else
+        python3 "$SUMMARIES" request-timing "$LOG_DIR/logs_backend.txt" 2>&1 \
+            || echo "(the request-timing summary failed — see above)"
+    fi
+} > "$LOG_DIR/request_timing.txt" 2>&1
+
+# ----------------------------------------------------------------------
 # Health and analysis
 # ----------------------------------------------------------------------
 print_info "Performing health checks..."
@@ -658,7 +743,9 @@ Files:
 - platform.txt            kernel, CPU/memory/disk, versions, upload dir counts
 - containers.txt          container state, images, limits, resource usage
 - configuration.txt       .env keys (values redacted unless numeric/boolean), docker-compose.yml
-- versions_and_schema.txt deployed versions, ingestion settings, Alembic state, table sizes
+- versions_and_schema.txt deployed versions, ingestion settings, Alembic state, table sizes,
+                          the data-repair ledger (which one-off corrections ran),
+                          Postgres memory settings with cache-hit and temp-file counters
 - ingestion.txt           ingestion queue, failed-job tracebacks, parse errors
 - parser_audit.txt        per-format field coverage (counts only): what each parser
                           extracts, what lands only in raw blobs, what stays empty;
@@ -669,6 +756,13 @@ Files:
                           access results, DNS); observations by source and
                           catalog check; NetExec/SMBMap outcomes by protocol
 - logs_<service>.txt      backend, worker, report-worker, frontend (nginx), db
+- request_timing.txt      per route template, from the backend access log:
+                          requests, p50 / p95 request time, mean db_ms and
+                          db_n, SLOW request lines (no paths)
+- sql_statements.txt      pg_stat_statements: the statements the database spent
+                          most time in — calls, total / mean ms, rows, the
+                          normalised text (constants are \$n; no values), or
+                          one line saying why it is unavailable
 - health.txt              reachability through nginx and the internal DB probe
 - tls.txt                 the certificate nginx serves: self-signed or CA-issued,
                           expiry, SAN counts, whether it names HOST_IP, whether it

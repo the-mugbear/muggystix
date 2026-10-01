@@ -15,7 +15,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
 from app.db.session import get_db
@@ -77,7 +77,14 @@ class DecideBody(BaseModel):
     edited_value: Optional[str] = Field(None, max_length=32768)
 
 
-def _decide(db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody):
+def _decide(
+    db: Session, project_id: int, proposal_id: int, user: User, action: str, body: DecideBody,
+    *, serialize: bool = True,
+):
+    """Decide one proposal and commit.  Returns its row as the routes return
+    it, or None with ``serialize=False`` (the bulk route reports ids only —
+    it used to build and discard each row, about five statements apiece;
+    review 2026-10-01 N8)."""
     # Locked until the commit below: a second decision on it waits, then
     # finds it decided (409) instead of applying it again.
     proposal = proposals.get_proposal(db, project_id, proposal_id, for_update=True)
@@ -90,8 +97,13 @@ def _decide(db: Session, project_id: int, proposal_id: int, user: User, action: 
         # Keep the reason on the proposal (it stays pending) — then refuse.
         db.commit()
         raise
+    # Built before the commit, which expires the row and what it points at
+    # (N8, as the host-test routes do).  The flush puts the decision where the
+    # lazy loads below read it.
+    db.flush()
+    data = proposals.serialize_many(db, [proposal])[0] if serialize else None
     db.commit()
-    return proposals.serialize_many(db,[proposal])[0]
+    return data
 
 
 @router.post("/proposals/{proposal_id}/accept", summary="Accept a proposal: apply it as you")
@@ -143,7 +155,7 @@ def bulk_decide(
             failed.append({"id": pid, "status_code": 409, "detail": proposals.COMPETING_DRAFTS_DETAIL})
             continue
         try:
-            _decide(db, project.id, pid, user, body.action, DecideBody(note=body.note))
+            _decide(db, project.id, pid, user, body.action, DecideBody(note=body.note), serialize=False)
             done.append(pid)
         except HTTPException as exc:
             failed.append({"id": pid, "status_code": exc.status_code, "detail": exc.detail})
@@ -196,11 +208,15 @@ def finding_from_evidence(
         db, project.id, evidence_id, title=body.title, severity=body.severity,
         status=body.status, actor_id=user.id,
     )
-    db.commit()
     # ``joined_issue``: the record's test confirmed a scanner observation, so
     # this was that observation's promotion (the issue's finding, not a new one).
-    return {"finding_id": finding.id, "title": finding.title, "severity": finding.severity,
+    # ``status`` is the finding's as it now stands — joining a finding the team
+    # already concluded leaves its status alone (review 2026-10-01 R9), so it
+    # may differ from the one asked for.  Built before the commit expires it.
+    data = {"finding_id": finding.id, "title": finding.title, "severity": finding.severity,
             "status": finding.status, "evidence_id": evidence_id, "joined_issue": joined}
+    db.commit()
+    return data
 
 
 @router.get("/evidence/{evidence_id}/raw", response_class=PlainTextResponse, summary="An evidence record's raw output")

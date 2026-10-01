@@ -71,14 +71,20 @@ format:
 
 << md("executive_summary", todo="Summarise what changed since the last report, and what it means.") >>
 
-<% if new or grown or delta.withdrawn %>
+<# Re-rated since the baseline: change "severity_changed".  A finding that was
+   re-rated AND found on more systems is one row (new_hosts) saying both. #>
+<% set rerated = findings|selectattr("change", "equalto", "severity_changed")|list %>
+<% if new or grown or rerated or delta.withdrawn %>
 | Change | Ref | Finding | Severity |
 |:---------------------|:------|:---------------------------------------------|:-----------|
 <% for f in new %>
 | New finding | << f.ref >> | << f.title >> | << f.severity_label >> |
 <% endfor %>
 <% for f in grown %>
-| Found on << f.new_affected|length >> more system(s) | << f.ref >> | << f.title >> | << f.severity_label >> |
+| Found on << f.new_affected|length >> more system(s) | << f.ref >> | << f.title >> | << f.severity_label >><% if f.get("previous_severity_label") %> (was << f.previous_severity_label >>)<% endif %> |
+<% endfor %>
+<% for f in rerated %>
+| Severity changed | << f.ref >> | << f.title >> | << f.severity_label >> (was << f.previous_severity_label >>) |
 <% endfor %>
 <% for w in delta.withdrawn %>
 | Withdrawn | << w.ref >> | << w.title >> | << w.severity_label >> |

@@ -7,11 +7,11 @@ Two halves of one rule the user set for agent writes:
   dismissing a scanner observation, an endpoint's status — is a PROPOSAL that
   a person accepts (then may edit) or rejects (:class:`AgentProposal`);
 * what the agent DID and SAW is recorded directly and never changes: "I ran X
-  against Y and got Z" (:class:`EvidenceRecord`), without a test plan.
-  Proposals may cite it.
+  against Y and got Z" (:class:`EvidenceRecord`) — on its own, or as the
+  answer to a host test (``host_test_id``).  Proposals may cite it.
 
-Scan uploads, feedback, notes, host corrections, review status and plan /
-execution writes stay direct, attributed to the session.
+Scan uploads, feedback, notes, host corrections, review status and host tests
+stay direct, attributed to the session.
 """
 from __future__ import annotations
 
@@ -45,7 +45,7 @@ class EvidenceRecord(Base):
     project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
     host_id = Column(Integer, ForeignKey("hosts_v2.id", ondelete="CASCADE"), nullable=False, index=True)
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
-    finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="SET NULL"), nullable=True)
+    finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="SET NULL"), nullable=True, index=True)
     host_test_id = Column(Integer, ForeignKey("host_tests.id", ondelete="SET NULL"), nullable=True)
     request_key = Column(String(100), nullable=True)
     request_hash = Column(String(64), nullable=True)
@@ -117,7 +117,7 @@ class AgentProposal(Base):
 
     finding_id = Column(Integer, ForeignKey("findings.id", ondelete="CASCADE"), nullable=True, index=True)
     vulnerability_id = Column(Integer, ForeignKey("vulnerabilities.id", ondelete="CASCADE"), nullable=True, index=True)
-    finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="CASCADE"), nullable=True)
+    finding_host_id = Column(Integer, ForeignKey("finding_hosts.id", ondelete="CASCADE"), nullable=True, index=True)
     field = Column(String(40), nullable=True)
     payload = Column(JSON, nullable=False)
     rationale = Column(Text, nullable=True)
@@ -134,7 +134,7 @@ class AgentProposal(Base):
     decided_at = Column(DateTime(timezone=True), nullable=True)
     decision_note = Column(Text, nullable=True)
     # The finding an accepted create / promote produced or joined.
-    result_finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True)
+    result_finding_id = Column(Integer, ForeignKey("findings.id", ondelete="SET NULL"), nullable=True, index=True)
     # Why the last accept attempt failed (the target changed underneath); the
     # proposal stays pending.
     error = Column(Text, nullable=True)

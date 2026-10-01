@@ -21,6 +21,7 @@ import {
   DropdownMenuTrigger,
 } from '../ui/dropdown-menu';
 import { cn } from '../../utils/cn';
+import { hostTestCounts } from '../../utils/hostTests';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import {
   exposureChips,
@@ -346,12 +347,11 @@ export const reviewStateText = (
  * alone hid the pending work.
  */
 export const testWorkState = (
-  host: Pick<Host, 'test_execution_count' | 'test_plan_entry_count'>,
+  host: Parameters<typeof hostTestCounts>[0],
 ): { kind: 'tested' | 'planned'; label: string; title: string } | null => {
   // Evidence records of a test that ran / tests proposed or in progress (the
-  // field names date from test plans; the definitions are the backend's).
-  const tested = host.test_execution_count ?? 0;
-  const toDo = host.test_plan_entry_count ?? 0;
+  // definitions are the backend's).
+  const { toDo, recorded: tested } = hostTestCounts(host);
   const pending = `${toDo} test${toDo === 1 ? '' : 's'} proposed or in progress`;
   if (tested > 0) {
     const results = `${tested} test result${tested === 1 ? '' : 's'} recorded`;

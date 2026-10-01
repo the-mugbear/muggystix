@@ -179,7 +179,7 @@ def test_retry_requeues_only_failed_rows_and_clears_the_token(db_session, test_p
         db_session, test_project.id, status="failed", started_at=_t(600),
         completed_at=_t(500), error_message="e", last_error="e",
     )
-    out = tx.retry(db_session, job.id, increment_retry=True, message="again")
+    tx.retry(db_session, job.id, increment_retry=True, message="again")
     db_session.commit()
     row = _fresh(db_session, model, job.id)
     assert row.status == "queued"

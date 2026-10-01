@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Optional, Tuple
+from typing import Optional, Tuple
 
 
 # v2.45.1 — match the FIRST element tag of an XML document, skipping
@@ -368,8 +368,13 @@ def looks_like_naabu(sample: bytes, filename: str) -> bool:
 
 # RustScan's two line shapes, whole lines only: `Open 10.0.0.5:22` and the
 # greppable `10.0.0.5 -> [22,80]`.
-_RUSTSCAN_OPEN_LINE = re.compile(r"^\s*open\s+(?:\d{1,3}\.){3}\d{1,3}:\d+\s*$", re.IGNORECASE | re.MULTILINE)
-_RUSTSCAN_GREPPABLE_LINE = re.compile(r"^\s*(?:\d{1,3}\.){3}\d{1,3}\s+->\s+\[[\d,\s]+\]\s*$", re.MULTILINE)
+# IPv6 as RustScan prints it: `Open [2001:db8::1]:22`, `2001:db8::1 -> [22]`.
+_RUSTSCAN_OPEN_LINE = re.compile(
+    r"^\s*open\s+(?:(?:\d{1,3}\.){3}\d{1,3}|\[[0-9A-Fa-f:.]+\]):\d+\s*$", re.IGNORECASE | re.MULTILINE,
+)
+_RUSTSCAN_GREPPABLE_LINE = re.compile(
+    r"^\s*(?:(?:\d{1,3}\.){3}\d{1,3}|[0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\s+->\s+\[[\d,\s]+\]\s*$", re.MULTILINE,
+)
 
 
 def looks_like_rustscan(sample: bytes, filename: str) -> bool:
@@ -799,7 +804,12 @@ def looks_like_dnsx(sample: bytes, filename: str) -> bool:
         return False
     if "host" not in rec:
         return False
-    return _has_any(rec, ("a", "aaaa", "ptr", "cname", "mx", "ns", "txt", "soa"))
+    if _has_any(rec, ("a", "aaaa", "ptr", "cname", "mx", "ns", "txt", "soa")):
+        return True
+    # An -axfr-only row carries no typed array at the top: the zone is under
+    # `axfr`, an object of {host, chain: [...]} (retryabledns AXFRData).
+    axfr = rec.get("axfr")
+    return isinstance(axfr, dict) and isinstance(axfr.get("chain"), list)
 
 
 def looks_like_nuclei(sample: bytes, filename: str) -> bool:

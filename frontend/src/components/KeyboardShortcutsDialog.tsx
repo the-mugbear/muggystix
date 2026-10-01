@@ -42,6 +42,9 @@ const buildShortcuts = (): ShortcutRow[] => [
     keys: ['j', 'k'],
     label: 'Findings, Scanner observations, Names, Collaboration: move the row cursor (↑/↓ too); Enter opens the row',
   },
+  { keys: ['j', 'k'], label: 'Proposals: move the row cursor (↑/↓ too); Enter opens the finding' },
+  { keys: ['a'], label: 'Proposals: accept the cursor row (applied as you)' },
+  { keys: ['r'], label: 'Proposals: reject the cursor row — opens the reason field' },
 ];
 
 export interface KeyboardShortcutsDialogProps {
@@ -73,8 +76,9 @@ export const KeyboardShortcutsDialog: React.FC<KeyboardShortcutsDialogProps> = (
       </DialogHeader>
       <table className="w-full text-metadata">
         <tbody className="divide-y divide-border">
-          {shortcuts.map((row) => (
-            <tr key={row.keys.join('+')}>
+          {shortcuts.map((row, index) => (
+            // Several rows share j/k, so the keys alone are not a key.
+            <tr key={`${index}-${row.keys.join('+')}`}>
               <td className="py-xs pr-md align-top">
                 <span className="inline-flex items-center gap-xxs">
                   {row.keys.map((k, i) => (

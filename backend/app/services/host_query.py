@@ -69,12 +69,18 @@ def make_correlated_subquery(where_clause):
 # identically.
 # ---------------------------------------------------------------------------
 
-def build_search_predicate(db: Session, search: str):
+def build_search_predicate(db: Session, search: str, project_id: Optional[int] = None):
     """Compile a free-text search string into a single ``ColumnElement``.
 
     Matches IP / hostname / OS across the host, plus port number, service
     name/product (and service→port aliases) via a Port subquery — exactly
     the behaviour the /hosts quick-search box has always had.
+
+    ``project_id`` (review 2026-10-01 R19) confines the Port subquery to the
+    project.  The subquery sits under an ``OR``, so Postgres runs it whole,
+    once, before looking at a single host: unscoped, that was a substring
+    scan of EVERY project's ports for the count, the page and each facet.
+    The matches are unchanged — the outer query is the project's already.
     """
     escaped_search = escape_like(search)
     host_search_conditions = [
@@ -102,6 +108,8 @@ def build_search_predicate(db: Session, search: str):
 
     if port_search_conditions:
         search_port_subquery = db.query(models.Host.id).join(models.Port).filter(or_(*port_search_conditions))
+        if project_id is not None:
+            search_port_subquery = search_port_subquery.filter(models.Host.project_id == project_id)
         return or_(
             or_(*host_search_conditions),
             models.Host.id.in_(search_port_subquery),
@@ -261,22 +269,20 @@ def build_filtered_host_query(
         service_list = [s.strip() for s in services.split(',') if s.strip()] if services else None
         state_list = [s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None
         if has_open_ports is False:
-            query = query.filter(not_(models.Host.id.in_(P.port_match_subquery(db, require_open=True))))
+            # NOT EXISTS, never ``NOT IN (subquery)`` (review 2026-10-01 R19):
+            # Postgres cannot anti-join NOT IN, and this filter did not
+            # finish in 60 s on a 120k-host instance.
+            query = query.filter(not_(P.has_open_ports_predicate(db)))
         else:
-            query = query.filter(
-                models.Host.id.in_(
-                    P.port_match_subquery(
-                        db,
-                        ports=port_ints,
-                        services=service_list,
-                        port_states=state_list,
-                        require_open=bool(has_open_ports),
-                    )
-                )
-            )
+            query = query.filter(P.host_has_port(*P.port_match_conditions(
+                ports=port_ints,
+                services=service_list,
+                port_states=state_list,
+                require_open=bool(has_open_ports),
+            )))
 
     if search:
-        query = query.filter(build_search_predicate(db, search))
+        query = query.filter(build_search_predicate(db, search, project_id))
 
     if with_notes_only:
         query = query.filter(P.has_notes_predicate(db, project_id))

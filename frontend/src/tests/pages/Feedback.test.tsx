@@ -2,9 +2,9 @@
  * Agent Feedback (v5.310.0) — the triage queue says who and where, so a
  * reviewer can check a claim against the session's own API calls.
  */
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 import type { AgentFeedbackEntry, FeedbackStats } from '../../services/api';
@@ -161,5 +161,39 @@ describe('Agent Feedback', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Show 1 more' }));
     expect(await screen.findByTestId('feedback-row-8')).toBeInTheDocument();
     expect(listAgentFeedback).toHaveBeenLastCalledWith(expect.objectContaining({ skip: 1 }));
+  });
+});
+
+// Review 2026-10-01 R33 — the page had no latest-request guard.
+describe('Agent Feedback — the latest filter wins', () => {
+  it('a slow response for the unfiltered list never replaces the rows of the filter chosen after it', async () => {
+    let releaseAll!: (v: unknown) => void;
+    const slowAll = new Promise((resolve) => { releaseAll = resolve; });
+    listAgentFeedback.mockImplementation((q: { status?: string }) =>
+      (q.status === 'new' ? Promise.resolve(page([entry({ id: 21 })])) : slowAll));
+    const Shell = () => {
+      const [, setParams] = useSearchParams();
+      return <button type="button" onClick={() => setParams({ status: 'new' })}>to new</button>;
+    };
+    render(<MemoryRouter initialEntries={['/feedback']}><Shell /><Feedback /></MemoryRouter>);
+    await waitFor(() => expect(listAgentFeedback).toHaveBeenCalled());
+    fireEvent.click(screen.getByRole('button', { name: 'to new' }));
+    await screen.findByTestId('feedback-row-21');
+
+    await act(async () => { releaseAll(page([entry({ id: 9 }), entry({ id: 10 })])); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByTestId('feedback-row-21')).toBeInTheDocument();
+    expect(screen.queryByTestId('feedback-row-9')).toBeNull();
+    expect(screen.getByText('1 of 1 shown')).toBeInTheDocument();
+  });
+
+  it('says a failed load is a failure, and recovers on refresh', async () => {
+    listAgentFeedback.mockRejectedValueOnce(new Error('down'));
+    renderPage();
+    expect(await screen.findByText('Could not load agent feedback.')).toBeInTheDocument();
+    listAgentFeedback.mockResolvedValue(page([entry()]));
+    fireEvent.click(screen.getByRole('button', { name: /Refresh agent feedback/i }));
+    await screen.findByTestId('feedback-row-9');
+    expect(screen.queryByText('Could not load agent feedback.')).toBeNull();
   });
 });

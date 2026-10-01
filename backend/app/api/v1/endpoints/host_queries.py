@@ -31,7 +31,7 @@ from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.db import models
 from app.db.models import HostQueryHistory
 from app.db.models_auth import User

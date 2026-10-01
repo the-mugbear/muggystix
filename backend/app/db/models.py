@@ -224,6 +224,12 @@ class HostScanHistory(Base):
     # surfaced on the host pages. Set at ingest from the dedup create/update
     # decision (the ground truth), so it doesn't need re-deriving.
     host_created = Column(Boolean, nullable=False, server_default=text("false"), default=False)
+    # Review 2026-10-01 B12 — did THIS scan authenticate to the host?  True /
+    # False when the scanner says so (Nessus: the host's Credentialed_Scan
+    # tag, else plugin 19506); NULL when it does not, and for every tool that
+    # has no such notion.  A typed column, not text in a plugin's output: it
+    # is what separates "scanned and clean" from "looked at from outside".
+    credentialed = Column(Boolean, nullable=True)
 
     # Relationships
     host = relationship("Host", back_populates="scan_history")
@@ -268,6 +274,10 @@ class PortScanHistory(Base):
         # uq_port_scan covers port_id (leading) but not scan_id.
         # Hot path: "what ports did this scan observe?".
         Index('idx_port_scan_history_scan', 'scan_id'),
+        # review 2026-10-01 (N9) — the Scans summary counts the ports each
+        # scan saw OPEN; with the state in the index that is an index-only
+        # count instead of a heap visit per observation.
+        Index('idx_port_scan_history_scan_state', 'scan_id', 'state_at_scan'),
     )
 
 
@@ -871,6 +881,28 @@ class IngestionJob(Base):
     submitted_by_id = Column(Integer, ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
     parse_error_id = Column(Integer, ForeignKey("parse_errors.id", ondelete="SET NULL"), nullable=True)
+    # Review 2026-10-01 R1 — the scan the CURRENT attempt is writing, stamped
+    # in the transaction that first commits the scan row
+    # (ingestion_service.note_scan_created) and cleared when the job completes.
+    # ``scan_id`` above is only written at completion, so a worker that was
+    # killed mid-import left a committed partial scan nothing pointed at, and
+    # the re-queued attempt imported into a second one.  A value still here
+    # when a job is claimed (or reaped to failed) is a dead attempt's scan and
+    # is deleted before anything else is parsed.
+    in_progress_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True)
+    # Review 2026-10-01 R2 — the ids of the ports the CURRENT attempt created,
+    # for an import path that writes no PortScanHistory (Nessus).  Cleanup
+    # only: ``delete_partial_scan`` finds an attempt's ports through
+    # ``port_scan_history.port_created``, which Nessus does not write (and
+    # must not start to — it would change the port counts on the Scans page,
+    # the dashboard and the scan diff), so the ports a failed Nessus attempt
+    # added to hosts that already existed stayed.  Written in the transaction
+    # that commits each batch (``ingestion_service.note_ports_created``), so a
+    # committed port is always named here; cleared when the job completes and
+    # when the attempt's leftovers are deleted.  Never read by a page or a
+    # count.  A plain JSON array of ints — ~1 MB for the ~100k ports a 1 GB
+    # file can create.
+    in_progress_created_port_ids = Column(JSON(none_as_null=True), nullable=True)
     # An agent's upload (POST /agent/uploads) carries the agent session that
     # sent it (v2.433.0).  Null for an operator's upload.
     agent_session_id = Column(
@@ -932,7 +964,8 @@ class IngestionJob(Base):
     # status='completed' filter on the frontend.
     dismissed_at = Column(DateTime(timezone=True), nullable=True)
 
-    scan = relationship("Scan")
+    # Two FKs reach scans (scan_id, in_progress_scan_id): this is the finished one.
+    scan = relationship("Scan", foreign_keys=[scan_id])
     parse_error = relationship("ParseError")
 
     __table_args__ = (

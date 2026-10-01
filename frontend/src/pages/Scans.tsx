@@ -51,6 +51,7 @@ import LastUpdated from '../components/LastUpdated';
 import { ListPageSkeleton } from '../components/PageSkeleton';
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 // From the barrel, like every other call here: a direct submodule import
@@ -246,6 +247,9 @@ export default function Scans() {
   // sent with each upload. UX review 2026-09-24 — changed in Project settings →
   // Imports; the upload dialog states it and links there.
   const { currentProject } = useProject();
+  // Importing, retrying and deleting are a project analyst's (R32): a viewer
+  // or auditor reads the import history without the write controls.
+  const { canWrite } = useProjectRole();
   const skipInformational = currentProject?.skip_informational_effective ?? false;
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
@@ -408,11 +412,13 @@ export default function Scans() {
       setScans((prev) => [...prev, ...data]);
       setHasMoreScans(data.length === SCAN_LIMIT);
     } catch (err) {
-      console.error('Error loading more scans:', err);
+      if (gen !== fetchGenRef.current) return;
+      toast.error(formatApiError(err, 'Could not load more of the import history'));
     } finally {
       setLoadingMore(false);
     }
   }, [
+    toast,
     scans.length,
     listFilters,
     sortBy,
@@ -956,9 +962,11 @@ export default function Scans() {
           <Button variant="outline" onClick={() => navigate('/scans/compare')}>
             <GitCompareArrows className="size-4" aria-hidden /> Compare scans
           </Button>
-          <Button onClick={() => setUploadDialogOpen(true)}>
-            <Upload className="size-4" aria-hidden /> Upload scans
-          </Button>
+          {canWrite && (
+            <Button onClick={() => setUploadDialogOpen(true)}>
+              <Upload className="size-4" aria-hidden /> Upload scans
+            </Button>
+          )}
         </div>
       </div>
 
@@ -1163,14 +1171,14 @@ export default function Scans() {
                     failed inspection) go back into the review, all at once.
                     Before, the only visible action here was Discard; the
                     review was one file per dialog behind "Show jobs". */}
-                {stagedJobs.length > 0 && (
+                {canWrite && stagedJobs.length > 0 && (
                   <Button size="sm" onClick={() => openReview(stagedJobs)}>
                     Review {stagedJobs.length} waiting
                   </Button>
                 )}
                 {/* v5.232.0 — staged files nobody will start (a closed review
                     dialog, a failed inspection) can be cleared in one go. */}
-                {stagedJobs.length > 0 && (
+                {canWrite && stagedJobs.length > 0 && (
                   <Button
                     size="sm"
                     variant="outline"
@@ -1464,7 +1472,7 @@ export default function Scans() {
                                 review dialog, or by a failed inspection) had no
                                 action at all here: import it after a format
                                 review, or discard it. */}
-                            {job.status === 'staged' && (
+                            {canWrite && job.status === 'staged' && (
                               <div className="flex flex-wrap justify-end gap-xxs">
                                 <Button
                                   size="sm"
@@ -1493,7 +1501,7 @@ export default function Scans() {
                                 </Button>
                               </div>
                             )}
-                            {(job.status === 'queued' || job.status === 'processing') && (
+                            {canWrite && (job.status === 'queued' || job.status === 'processing') && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -1522,7 +1530,7 @@ export default function Scans() {
                                 Cancel
                               </Button>
                             )}
-                            {isFailure && (
+                            {canWrite && isFailure && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -1542,7 +1550,7 @@ export default function Scans() {
                                 Retry
                               </Button>
                             )}
-                            {isFailure && (
+                            {canWrite && isFailure && (
                               <Button
                                 size="sm"
                                 variant="ghost"
@@ -1551,7 +1559,7 @@ export default function Scans() {
                                     await dismissIngestionJob(job.id);
                                     await fetchRecentJobs();
                                   } catch (err) {
-                                    console.error('Failed to dismiss ingestion job', err);
+                                    toast.error(formatApiError(err, 'Could not dismiss the failed import'));
                                   }
                                 }}
                                 aria-label={`Dismiss failed ingestion for ${job.original_filename}`}
@@ -1621,9 +1629,11 @@ export default function Scans() {
           <Upload className="mx-auto mb-sm size-16 text-muted-foreground" aria-hidden />
           <p className="text-subheading text-muted-foreground">No scans uploaded yet</p>
           <p className="text-metadata text-muted-foreground">
-            Use Upload scans to import Nmap, Nessus, Masscan, OpenVAS, httpx, dnsx, BloodHound,
-            EyeWitness, NetExec, and other supported scanner exports — expand "Supported
-            formats" below the upload area for the full list and per-tool notes.
+            {canWrite
+              ? <>Use Upload scans to import Nmap, Nessus, Masscan, OpenVAS, httpx, dnsx, BloodHound,
+                EyeWitness, NetExec, and other supported scanner exports — expand "Supported
+                formats" below the upload area for the full list and per-tool notes.</>
+              : 'Nothing has been imported into this project. A project analyst uploads scanner output here.'}
           </p>
         </div>
       ) : (
@@ -1856,7 +1866,7 @@ export default function Scans() {
                           key={row.key}
                           batch={row.batch}
                           stagedJobs={stagedByBatch.get(row.batch.id)}
-                          onReviewStaged={openReview}
+                          onReviewStaged={canWrite ? openReview : undefined}
                           filters={listFilters}
                           onViewScan={handleViewScan}
                           colSpan={5}
@@ -1984,12 +1994,14 @@ export default function Scans() {
                                   <DropdownMenuItem onSelect={() => handleViewScan(scan.id)}>
                                     Open scan
                                   </DropdownMenuItem>
-                                  <DropdownMenuItem
-                                    onSelect={() => handleDeleteClick(scan)}
-                                    className="text-destructive focus:text-destructive"
-                                  >
-                                    <Trash2 className="size-3.5" aria-hidden /> Delete scan…
-                                  </DropdownMenuItem>
+                                  {canWrite && (
+                                    <DropdownMenuItem
+                                      onSelect={() => handleDeleteClick(scan)}
+                                      className="text-destructive focus:text-destructive"
+                                    >
+                                      <Trash2 className="size-3.5" aria-hidden /> Delete scan…
+                                    </DropdownMenuItem>
+                                  )}
                                 </DropdownMenuContent>
                               </DropdownMenu>
                               }

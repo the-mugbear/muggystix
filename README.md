@@ -96,7 +96,7 @@ All traffic goes through the nginx/frontend container on `443`, which proxies th
 
 ```bash
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt -c constraints.txt   # runtime + pytest/ruff, every version fixed by constraints.txt
 export DATABASE_URL=... SECRET_KEY=...       # both required
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
@@ -122,10 +122,12 @@ npm test -- --run    # Vitest suites
 
 ```bash
 ./scripts/deploy.sh        # unified deploy menu (start/rebuild, first-time setup, reconfigure IP, nuclear clean, security status, back up .env + SSL, roll back to the previous build)
-./scripts/status.sh        # quick container health check
-./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit, served TLS certificate, agent-surface outcomes, agent feedback) — read feedback.txt (free text) before sharing; needs python3; --since 72h, --terms FILE, --no-feedback
-./scripts/backup-db.sh     # database + uploads/ backup (pg_dump, or a raw volume snapshot if Postgres is down)
-./scripts/restore-db.sh    # restore the database and uploads/ from a backup-db.sh artifact
+./scripts/status.sh        # container health, the newest backup and its age, data repairs not yet applied
+./scripts/check.sh         # THE GATE before a push (there is no CI): backend suite in the report-worker image (fails if a Quarto test skipped), ruff (any finding fails), frontend tsc + vitest, Alembic round trip; --fast skips the last; `make check`
+./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit, served TLS certificate, agent-surface outcomes, request timing by route, top SQL statements, agent feedback) — read feedback.txt (free text) before sharing; needs python3; --since 72h, --terms FILE, --no-feedback
+./scripts/backup-db.sh     # database + uploads/ backup (pg_dump, or a raw volume snapshot if Postgres is down); read back before it reports success; mode 0600; keeps the newest BACKUP_KEEP (default 10)
+./scripts/restore-db.sh    # restore the database and uploads/ from a backup-db.sh artifact (the backup is validated before anything is dropped)
+docker compose exec backend python scripts/data_repairs.py   # which one-off data repairs this instance has run, and the command for each pending one
 ./scripts/upgrade-instance.sh  # carry a running instance's local state into a freshly copied source tree, then deploy (for hosts that deploy by file copy; read its header for the expected folder layout)
 
 # Seeds run INSIDE the backend container (scripts/ is bind-mounted at /app/scripts); deploy.sh runs none of them:
@@ -134,14 +136,51 @@ docker compose exec backend python scripts/seed_named_assets.py     # then the n
 docker compose exec backend python scripts/seed_eval_scenarios.py   # a small project of hand-placed scenarios, each with "open X, expect Y" (--wipe rebuilds)
 ```
 
+### Deploying, backups and what the host needs
+
+- **A deploy waits for the backend, and tells a slow migration from a crash.** Option 1 builds first (a failed build changes nothing), starts the database, backend and workers, then waits up to `DEPLOY_HEALTH_TIMEOUT` seconds (default 1800) — the backend serves only after its schema migrations finish. If the backend container **exited or keeps restarting**, roll back (option 7). If it is **still running** at the timeout it has not crashed: follow `docker compose logs -f backend` and finish with `docker compose up -d`; rolling back in the middle of a migration points the old build at a half-migrated schema.
+- **Backups** are taken before every option-1 deploy and by `./scripts/backup-db.sh`, into a sibling `<project>-db-backups` folder (mode 700, files 0600). A backup that could not be read back, or whose `uploads/` archive failed, is a failed backup. The newest `BACKUP_KEEP` (default 10; `0` = all) are kept. (A directory that was never pruned is reported, not emptied: `BACKUP_PRUNE_BACKLOG=1 ./scripts/backup-db.sh` clears the backlog once.) **Nothing schedules them**: on a host that is not redeployed, add a cron entry — `./scripts/status.sh` shows the newest backup's age. A dump is only restorable with the `.env` it was taken under (`CREDENTIAL_ENCRYPTION_KEY` / `SECRET_KEY` decrypt the TOTP secrets and stored credentials in it): keep a copy with `deploy.sh` option 6. Option 4 (Nuclear clean) saves both before it removes anything, and only removes this Compose project's resources.
+- **The first-boot admin password** is in `./uploads/initial-admin-password.txt` and nowhere else — it is never written to the logs.
+- **Data repairs.** A few releases correct rows that older versions wrote (`scripts/backfill_misconfigs.py`, `scripts/repair_netexec_results.py`). They are not migrations and nothing runs them automatically; the `data_repairs` table records each run, and `deploy.sh` / `status.sh` list the ones this instance still owes, with the exact command. Run them when no import is in progress.
+- **Base images are pinned** to exact releases — `postgres:16.13` in `docker-compose.yml`; `python:3.11.16-slim-trixie`, `node:22.23.2-alpine` and `nginx:1.31.3-alpine` in the Dockerfiles — and Python packages, transitive ones included, by `backend/constraints.txt`, so a rebuild of the same commit is the same image. `POSTGRES_IMAGE` / `PYTHON_IMAGE` / `NODE_IMAGE` / `NGINX_IMAGE` in `.env` override a pin for a host that cannot pull; `scripts/transfer-images.sh` carries the built images and the database image to an offline host.
+- **Container logs rotate** (`LOG_MAX_SIZE` × `LOG_MAX_FILE`, default 20 MB × 5 per container).
+- **PostgreSQL memory** defaults suit a 2–4 GB host and are set in `.env` (`PG_SHARED_BUFFERS`, `PG_EFFECTIVE_CACHE_SIZE`, `PG_WORK_MEM`, `PG_MAINTENANCE_WORK_MEM`). Change them on a signal, read from `pg_stat_database` (the query is in `.env.example`; `collect-logs.sh` includes it): **`temp_bytes` climbing** → raise `PG_WORK_MEM` (per sort, per connection — step it); **`blks_read` far above `blks_hit`'s growth on a warm instance** → raise `PG_SHARED_BUFFERS`. Statements slower than `PG_LOG_MIN_DURATION_MS` (default 500) are in the `db` log.
+- **Where the time goes.** Every API request writes one access line with its duration, the time spent in database statements (`db_ms`), the statement count (`db_n`) and the route template; a request at or over `SLOW_REQUEST_MS` (default 1000) also writes a `SLOW request` warning. `collect-logs.sh` rolls these up per route in `request_timing.txt` (requests, p50 / p95, mean `db_ms` and `db_n`, slow count) and lists the statements the database spent most time in in `sql_statements.txt` (from `pg_stat_statements`: calls, total and mean ms, rows, the normalised text — no values). The script creates the `pg_stat_statements` extension if it is missing; the library is preloaded by `docker-compose.yml`, and when it is not available the file says so in one line.
+
 ## Schema & Migrations
 
 - Tables are owned by Alembic — migrations live in `backend/alembic/versions/`. Every startup runs `alembic upgrade head` before serving traffic.
 - Baseline revision: `b46cd59c17f5_baseline_schema.py`. Subsequent migrations layer on additive changes (plan-generation metadata, ingestion-quality columns, agent API call log; the environment probe columns were added and later dropped).
 - `app/db/init.py` builds no schema itself — it takes an advisory lock and runs `alembic upgrade head` (skipped under `BLUESTICK_SKIP_DB_INIT=1`, test harness only). The old `create_all` + hand-rolled migration list is gone; the model is the schema, and Alembic enforces it.
+- **Upgrading across v2.448.0 — back up first** (`./scripts/backup-db.sh`), **and run the check below before you upgrade.** Seven revisions apply, in this order:
+  - `a1d4f7b9c2e3` adds `ingestion_jobs.in_progress_scan_id`: the scan an import is writing, so a worker killed mid-import no longer leaves a partial scan behind when the job is picked up again. Existing rows get NULL.
+  - `b2e5a8c1d4f6` adds a unique index: one scanner finding per issue in a project. **It refuses to run when a project already has two scanner findings for one issue.** It merges nothing — each finding has its own report text, status, history, comments, endpoints and proposals — so the migration stops, lists the findings, and the backend does not start. Look before upgrading, on the running version:
+
+    ```sql
+    SELECT project_id, dedup_key, array_agg(id ORDER BY id)
+    FROM findings
+    WHERE source = 'scanner' AND dedup_key IS NOT NULL
+      AND substr(dedup_key, 1, 4) <> 'row:'
+    GROUP BY project_id, dedup_key HAVING count(*) > 1;
+    ```
+
+    (`docker compose exec db psql -U nmapuser -d networkMapper`, or the user and database your `.env` names.) No rows: nothing to do. For each row, on the version you are upgrading **from**: keep one finding of the group, add the other's hosts to it, delete the rest — then upgrade. If the upgrade has already stopped on this, the backend log names the findings: roll back (`deploy.sh` option 7), resolve them, and deploy again.
+  - `c3f6b9d2e5a7` adds indexes for the read path (substring search on port service, product and version; `vulnerabilities.issue_key`; foreign keys on the newer tables; the Scans summary's open-port count). Nothing is dropped. They are built with `CREATE INDEX CONCURRENTLY`, outside a transaction, so imports and edits are not blocked while a large table is indexed — but the build takes time on a large database, and the backend serves only when it has finished (see "A deploy waits for the backend" above: a backend that is still running has not crashed). An interrupted build is safe to repeat: every index is created `IF NOT EXISTS`, so the next start carries on. An index that was mid-build when it was interrupted can be left INVALID, and `IF NOT EXISTS` then skips it — find it with `SELECT indexrelid::regclass FROM pg_index WHERE NOT indisvalid;`, drop it by name (`DROP INDEX CONCURRENTLY <name>;`) and restart the backend.
+  - `d4a7c1e3f6b8` creates `data_repairs`, the ledger of one-off data corrections. A database with no hosts records both known repairs as not needed; a database with hosts starts with an empty ledger, and `deploy.sh` / `status.sh` name each repair it still owes until it has been run once (see "Data repairs" above).
+  - `e5b8d2f4a7c9` adds `host_scan_history.credentialed`: whether a Nessus scan's authenticated checks ran on the host. Earlier imports stay NULL ("the scan did not say"); nothing is backfilled.
+  - `f6c9e3a5b8d1` adds `ingestion_jobs.in_progress_created_port_ids`: one nullable JSON column holding the ports a Nessus import attempt created, read only by the cleanup of a failed, cancelled or killed import. Existing rows get NULL.
+  - `a7d1f4b6c9e2` adds `DNSX` to the `vulnerabilitysource` type: a name server that allowed a zone transfer (dnsx `-axfr`) becomes a scanner observation, "DNS zone transfer allowed", on that server's host. Nothing is backfilled — re-import a dnsx file to get the observation. The downgrade deletes those observations.
+
+  What else changes on this upgrade:
+  - **The import time limit now applies to every parser.** `INGESTION_JOB_TIMEOUT` (default 1800 seconds, 30 minutes) is checked each time a parser reports progress, and every parser now does; before, several formats (OpenVAS, nuclei, httpx among them) never did, so neither the limit nor a cancel reached them. An import that runs longer fails with "Parse timed out" and what it wrote is removed. Raise the value in `.env` before importing a file you expect to take longer.
+  - **API requests have a statement timeout.** `API_STATEMENT_TIMEOUT_MS` (default 30000; `0` turns it off) is the longest any one database statement of an API request may run before Postgres cancels it; the request answers 503 ("Narrow the filter or try again"). Imports, report rendering, migrations and the seed / repair scripts are never limited. Routes that stream a whole export lift it for themselves: the host inventory CSV and HTML exports, the tool-ready host list, the DNS names export, and the agents' host NDJSON, report-context and scope target-file downloads.
+  - **The next `docker compose up` recreates every container, the database included**, because each service's definition changed: container logs now rotate (`LOG_MAX_SIZE` × `LOG_MAX_FILE`), the database image is pinned (`postgres:16.13`, was `postgres:16`), and Postgres starts with two more flags (`log_min_duration_statement`, `shared_preload_libraries=pg_stat_statements`). Expect a short outage while the database restarts. The data is in the `postgres_data` volume and is not touched.
+  - **Backups are now pruned.** `backup-db.sh` — which every option-1 deploy runs — keeps the newest `BACKUP_KEEP` backups (default 10; `0` keeps all), each with its uploads archive. A folder holding more than three backups beyond that is a backlog: it is reported and nothing is deleted, until you run `BACKUP_PRUNE_BACKLOG=1 ./scripts/backup-db.sh` once, or set `BACKUP_KEEP=0`. Move any old backup you want to keep out of the folder first.
+  - **The host inventory CSV export has one column fewer.** "Open Notes" is gone (notes have had no status since v2.446.0, so it repeated "Notes"). It sat between "Test Findings" and "Untriaged Vulns": anything that reads the file by position finds "Untriaged Vulns", "Tags", "Notes", "Last Seen", "Scan File" and "Scan Date" one column to the left.
+  - **An issued client report whose render failed before the upgrade cannot be rendered again.** The three shipped templates changed, so their fingerprints no longer match the one recorded when the report was issued, and a retry stops with "The template has changed since this report was issued". Revise the report to issue it with the current template. Issued reports whose files already exist are unaffected: their files are kept as they are.
 - **Upgrading across v2.447.0 — back up first** (`./scripts/backup-db.sh`). Revision `c2e6a4f8d103` drops what host notes no longer use: a note's status, assignee, due date and resolution summary, and the note status history. Notes themselves, their threads and their images are untouched. The downgrade restores the columns, not the values.
 - **Upgrading across v2.442.0 — back up first** (`./scripts/backup-db.sh`, with the application stopped). That release replaces test plans and execution runs with tests on hosts: revision `d7e1a9c4b602` converts every proposed test into a host test (labelled with its plan's title) and every execution result into an evidence record, and `f4b8d2a6c917` then drops the old tables. Sanity checks, plan history and the plan / run structure have no replacement table, so the backup is the only copy; the downgrade restores the schema, not the data. The conversion stops with the offending row's id rather than skip a record it does not recognise.
-- `scripts/test-alembic-roundtrip.sh` walks every revision down and back up, so a new migration needs a real `downgrade()`; `alembic check` catches model/migration drift. There is no hosted CI — run both locally before pushing a migration.
+- `scripts/test-alembic-roundtrip.sh` walks every revision down and back up, so a new migration needs a real `downgrade()`; `alembic check` catches model/migration drift. There is no hosted CI — `./scripts/check.sh` runs both, with the backend and frontend suites, before a push.
 
 ## Asynchronous ingestion
 
@@ -162,7 +201,7 @@ Whatever an agent session is doing (assist, scanning, proposing or running tests
 - [MCP](documentation/MCP.md) — the agent surface as MCP tools, client setup, the certificate
 - [Assist Tools](documentation/ASSIST_TOOLS.md) — how the agent read surface was derived, and the review rule for adding to it
 - [MCP acceptance questions](documentation/MCP_ACCEPTANCE_QUESTIONS.md) — a repeatable question set for testing a live agent session against the app's pages
-- [Testing Framework](documentation/TESTING_FRAMEWORK_DOCUMENTATION.md) — pytest + Vitest harness, and CI
+- [Testing Framework](documentation/TESTING_FRAMEWORK_DOCUMENTATION.md) — pytest + Vitest harness, and the local gate (`scripts/check.sh`; there is no hosted CI)
 - [UI Style Guide](documentation/UI_STYLE_GUIDE.md) — frontend behavioral contract
 - [Scripts](scripts/README.md) — deployment and maintenance helpers
 - [Local CA](ca/README.md) — replace the self-signed certificate with one from your own root CA, which each analyst machine trusts once (recommended on closed networks)

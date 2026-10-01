@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User, UserRole
 from app.db.models_integrations import IntegrationCredential, IntegrationType
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.deps import get_current_user, require_role
 from app.services.integration_service import IntegrationService
 from app.services.url_validator import (
     require_public_http_url,

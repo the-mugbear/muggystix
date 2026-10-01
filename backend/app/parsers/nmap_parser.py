@@ -5,13 +5,14 @@ Uses the host deduplication service to eliminate duplicate host entries
 and maintain scan history.
 """
 
-from typing import Dict, Optional, Any
+from typing import Callable, Dict, Optional, Any
 from datetime import datetime, timezone
 from lxml import etree
 from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers import nse_vulns
-from app.parsers.parser_utils import epoch_to_utc, map_numeric_severity, upsert_vulnerability
+from sqlalchemy.exc import IntegrityError
+from app.parsers.parser_utils import announce_scan, epoch_to_utc, map_numeric_severity, upsert_vulnerability
 from app.parsers.xml_stream_helpers import clear_element, iterparse_safe, strip_namespace
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
@@ -97,24 +98,37 @@ class NmapXMLParser:
                             # Rolling back this savepoint discards only the bad
                             # host's writes; the scan record and prior hosts survive
                             # (mirrors the gnmap parser).
-                            host_sp = self.db.begin_nested()
+                            #
+                            # Review 2026-10-01 R7 — this savepoint is also the
+                            # only one around the host's new ports
+                            # (find_or_create_port(isolated=True)); a port
+                            # another import inserted concurrently surfaces
+                            # here as IntegrityError, and the host is processed
+                            # once more, now finding that row.
                             try:
-                                self._process_host_with_deduplication(elem, scan_id)
-                                host_sp.commit()
-                                hosts_processed += 1
-                            except Exception as e:
-                                logger.warning(f"Skipping malformed host element: {e}")
-                                hosts_skipped += 1
-                                parse_warnings.append(str(e))
-                                try:
-                                    host_sp.rollback()
-                                    # H1 — the history the savepoint added is gone;
-                                    # a later element for this host must re-add it.
-                                    self.dedup_service.discard_rolled_back_state()
-                                except Exception:  # noqa: BLE001
-                                    # Inner frame already rolled the savepoint back;
-                                    # the parent transaction stays committable.
-                                    pass
+                                for attempt in (1, 2):
+                                    host_sp = self.db.begin_nested()
+                                    try:
+                                        self._process_host_with_deduplication(elem, scan_id)
+                                        host_sp.commit()
+                                        hosts_processed += 1
+                                        break
+                                    except Exception as e:
+                                        try:
+                                            host_sp.rollback()
+                                            # H1 — the history the savepoint added is gone;
+                                            # a later element for this host must re-add it.
+                                            self.dedup_service.discard_rolled_back_state()
+                                        except Exception:  # noqa: BLE001
+                                            # Inner frame already rolled the savepoint back;
+                                            # the parent transaction stays committable.
+                                            pass
+                                        if attempt == 1 and isinstance(e, IntegrityError):
+                                            continue
+                                        logger.warning(f"Skipping malformed host element: {e}")
+                                        hosts_skipped += 1
+                                        parse_warnings.append(str(e))
+                                        break
                             finally:
                                 clear_element(elem)
                             # Progress + periodic commit live OUTSIDE the per-host
@@ -126,11 +140,16 @@ class NmapXMLParser:
                                 logger.info(f"Processed {hosts_processed} hosts so far")
                                 from app.services.ingestion_service import report_progress
                                 report_progress(f"{hosts_processed} hosts")
+                                # R7 — the heartbeat committed (under a job):
+                                # stop pinning every host's and port's history
+                                # row for the rest of the file.
+                                self.dedup_service.release_committed_history()
                             # Periodic commit so a 10k-host scan doesn't hold row locks
                             # on hosts/ports/host_scan_history for the full parse
                             # duration, which would block every other concurrent writer.
                             if hosts_processed and hosts_processed % 500 == 0:
                                 self.db.commit()
+                                self.dedup_service.release_committed_history()
                                 if scan is not None:
                                     self.db.refresh(scan)
                         else:
@@ -235,6 +254,7 @@ class NmapXMLParser:
         self.db.add(scan)
         self.db.flush()
         self._created_scan_id = scan.id
+        announce_scan(self.db, scan)
         return scan
 
     def _parse_scan_info_element(self, scaninfo_elem: etree.Element, scan_id: int):
@@ -392,17 +412,22 @@ class NmapXMLParser:
             port_data = self._extract_port_data(port_elem)
             
             # Find or create deduplicated port
-            port = self.dedup_service.find_or_create_port(host_id, scan_id, port_data)
-            
+            # isolated: the host's savepoint in _stream_parse (R7).
+            port = self.dedup_service.find_or_create_port(host_id, scan_id, port_data, isolated=True)
+
             # Process port scripts
             self._process_port_scripts(port_elem, port.id, scan_id)
             self._record_tls_from_scripts(port_elem, host_id, port, scan_id)
-            self._record_port_script_misconfigs(port_elem, host_id, port.port_number, scan_id)
+            self._record_port_script_misconfigs(port_elem, host_id, port.id, scan_id)
 
     # v2.412.0 — NSE results that are catalog weaknesses
     # (app/services/misconfig_checks.py).  Every other script stays text.
     def _record_port_script_misconfigs(self, port_elem: etree.Element, host_id: int,
-                                       port_number: int, scan_id: int) -> None:
+                                       port_id: int, scan_id: int) -> None:
+        # Review 2026-10-01 R7 — the caller holds the port row; its id is
+        # passed down.  Looking the port up again by number cost a SELECT per
+        # <script> element (and, by number alone, found the TCP port for a
+        # script that ran on UDP).
         for script_elem in port_elem.findall('script'):
             script_id = script_elem.get('id') or ''
             output = script_elem.get('output') or ''
@@ -410,25 +435,30 @@ class NmapXMLParser:
             if check_id:
                 record_misconfig(
                     self.db, check_id=check_id, host_id=host_id, scan_id=scan_id,
-                    source=VulnerabilitySource.NMAP, port_number=port_number,
+                    source=VulnerabilitySource.NMAP, port_id=port_id,
                     evidence=f"{script_id}: {output.strip()}",
                 )
-            self._record_nse_vulns(script_elem, host_id, port_number, scan_id)
+            self._record_nse_vulns(script_elem, host_id, scan_id, lambda: port_id)
 
     _RISK_SEVERITY = {
         'critical': VulnerabilitySeverity.CRITICAL, 'high': VulnerabilitySeverity.HIGH,
         'medium': VulnerabilitySeverity.MEDIUM, 'low': VulnerabilitySeverity.LOW,
     }
 
-    def _record_nse_vulns(self, script_elem: etree.Element, host_id: int,
-                          port_number: Optional[int], scan_id: int) -> None:
+    def _record_nse_vulns(self, script_elem: etree.Element, host_id: int, scan_id: int,
+                          port_id_of: Callable[[], Optional[int]]) -> None:
         """v2.413.0 — vulnerability results in NSE's structured output
-        (app/parsers/nse_vulns.py) as scanner observations."""
+        (app/parsers/nse_vulns.py) as scanner observations.
+
+        ``port_id_of`` answers the port the result belongs to and is called
+        only when the script produced one (R7): most scripts report no
+        vulnerability, and the host-script path would otherwise query for the
+        SMB port on every script."""
         script_id = script_elem.get('id') or ''
-        port = port_row(self.db, host_id, port_number)
-        port_id = port.id if port else None
         if script_id == 'vulners':
-            for entry in nse_vulns.vulners_results(script_elem):
+            entries = nse_vulns.vulners_results(script_elem)
+            port_id = port_id_of() if entries else None
+            for entry in entries:
                 product = nse_vulns.cpe_product(entry['cpe'])
                 upsert_vulnerability(
                     db=self.db, host_id=host_id, scan_id=scan_id, source=VulnerabilitySource.NMAP,
@@ -442,7 +472,9 @@ class NmapXMLParser:
                     exploitable=entry['is_exploit'] or None,
                 )
             return
-        for vuln in nse_vulns.vulns_lib_results(script_elem):
+        vulns = nse_vulns.vulns_lib_results(script_elem)
+        port_id = port_id_of() if vulns else None
+        for vuln in vulns:
             severity = (self._RISK_SEVERITY.get(vuln['risk'] or '')
                         or map_numeric_severity(vuln['cvss']))
             upsert_vulnerability(
@@ -466,8 +498,20 @@ class NmapXMLParser:
         if hostscript_elem is None:
             return
         scripts = {(s.get('id') or ''): (s.get('output') or '') for s in hostscript_elem.findall('script')}
-        # Host scripts carry no port; SMB answers on 445 (else 139).
-        smb_port = next((p for p in (445, 139) if port_row(self.db, host_id, p)), None)
+        # Host scripts carry no port; SMB answers on 445 (else 139).  Looked
+        # up once, and only when a result needs it (R7) — it was two SELECTs
+        # for every host that ran any host script.
+        resolved: list = []
+
+        def smb_port_id() -> Optional[int]:
+            if not resolved:
+                row = next(
+                    (r for r in (port_row(self.db, host_id, p) for p in (445, 139)) if r is not None),
+                    None,
+                )
+                resolved.append(row.id if row is not None else None)
+            return resolved[0]
+
         if signing in smb_signing_states.RELAYABLE:
             evidence = "\n".join(
                 f"{sid}: {out.strip()}" for sid, out in scripts.items()
@@ -475,20 +519,23 @@ class NmapXMLParser:
             )
             record_misconfig(
                 self.db, check_id='smb_signing_not_required', host_id=host_id, scan_id=scan_id,
-                source=VulnerabilitySource.NMAP, port_number=smb_port, evidence=evidence,
+                source=VulnerabilitySource.NMAP, port_id=smb_port_id(), evidence=evidence,
             )
         protocols = scripts.get('smb-protocols', '')
         if nse_vulns.script_text_check('smb-protocols', protocols):
             record_misconfig(
                 self.db, check_id='smbv1_enabled', host_id=host_id, scan_id=scan_id,
-                source=VulnerabilitySource.NMAP, port_number=smb_port,
+                source=VulnerabilitySource.NMAP, port_id=smb_port_id(),
                 evidence=f"smb-protocols: {protocols.strip()}",
             )
         # Host-rule vulnerability scripts (smb-vuln-*…) name no port; the SMB
         # ones are about the SMB service.
         for script_elem in hostscript_elem.findall('script'):
             sid = script_elem.get('id') or ''
-            self._record_nse_vulns(script_elem, host_id, smb_port if sid.startswith('smb') else None, scan_id)
+            self._record_nse_vulns(
+                script_elem, host_id, scan_id,
+                smb_port_id if sid.startswith('smb') else (lambda: None),
+            )
 
     def _extract_port_data(self, port_elem: etree.Element) -> Dict[str, Any]:
         """Extract port information from XML element"""

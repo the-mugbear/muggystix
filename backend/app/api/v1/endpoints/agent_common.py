@@ -6,15 +6,15 @@ Must not import from the endpoint modules (agent_browse / agent_recon /
 agent_assist…) to avoid circular imports.
 """
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 from fastapi import HTTPException, Request
-from sqlalchemy import func, select
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_agent import AgentSession
+from app.services.vulnerability_service import VulnerabilityService
 
 
 def load_agent_session(db: Session, request: Request) -> AgentSession:
@@ -83,7 +83,7 @@ def parse_port_list(ports: str) -> List[int]:
         )
     return out
 
-def _apply_agent_host_filters(
+def apply_agent_host_filters(
     q, db: Session, *,
     project_id: int,
     state: Optional[str] = None,
@@ -131,14 +131,14 @@ def _apply_agent_host_filters(
         port_nums = parse_port_list(ports)
         if port_nums:
             q = q.filter(models.Host.id.in_(
-                P.port_match_subquery(db, ports=port_nums, require_open=True)
+                P.port_match_subquery(db, ports=port_nums, require_open=True, project_id=project_id)
             ))
 
     if services:
         names = [s.strip() for s in services.split(",") if s.strip()]
         if names:
             q = q.filter(models.Host.id.in_(
-                P.port_match_subquery(db, services=names, require_open=True)
+                P.port_match_subquery(db, services=names, require_open=True, project_id=project_id)
             ))
 
     if subnets:
@@ -195,16 +195,29 @@ def _apply_agent_host_filters(
     return q
 
 
-def _batch_host_enrichment(db: Session, host_ids: List[int], include_ports: bool = False):
-    """Batch-compute open port counts, vuln summaries, services, and optionally
-    full port details and top vulnerabilities for a list of host IDs.
+def batch_host_enrichment(
+    db: Session, host_ids: List[int],
+) -> Tuple[Dict[int, int], Dict[int, Dict[str, int]]]:
+    """Open-port counts and scanner-row counts by severity for a page of hosts.
 
-    Returns (port_counts, vuln_map, svc_map, port_details_map, top_vulns_map).
-    port_details_map and top_vulns_map are only populated when
-    include_ports=True; otherwise they are empty dicts.
+    Returns ``(port_counts, vuln_map)``: ``port_counts[host_id]`` is the number
+    of OPEN ports; ``vuln_map[host_id]`` maps a severity name (``critical`` …
+    ``info``) to its row count, and is ``{}`` for a host with none.
+
+    The severity rollup is the Hosts page's own —
+    ``VulnerabilityService.get_bulk_host_vulnerability_summaries`` — so an
+    agent's host list and the page cannot disagree on a count (CLAUDE.md,
+    "Agent parity with the pages": the SAME service, never a second rollup;
+    pinned by ``tests/test_agent_host_enrichment.py``).
+
+    Review 2026-10-01 B4 — this returned five results and every caller
+    discarded three: a DISTINCT services query ran on every agent host list
+    for nothing, and the port-detail / top-vulnerabilities branch
+    (``include_ports=True``) had no caller.  Both are gone, with the function's
+    own GROUP BY over ``vulnerabilities``.
     """
     if not host_ids:
-        return {}, {}, {}, {}, {}
+        return {}, {}
 
     # Open port counts
     port_counts_raw = (
@@ -215,99 +228,9 @@ def _batch_host_enrichment(db: Session, host_ids: List[int], include_ports: bool
     )
     port_counts = {hid: cnt for hid, cnt in port_counts_raw}
 
-    # Vuln counts by severity
-    vuln_rows = (
-        db.query(
-            Vulnerability.host_id,
-            Vulnerability.severity,
-            func.count(Vulnerability.id),
-        )
-        .filter(Vulnerability.host_id.in_(host_ids))
-        .group_by(Vulnerability.host_id, Vulnerability.severity)
-        .all()
-    )
-    vuln_map: Dict[int, Dict[str, int]] = {}
-    for hid, sev, cnt in vuln_rows:
-        vuln_map.setdefault(hid, {})[sev.value if hasattr(sev, "value") else sev] = cnt
+    summaries = VulnerabilityService(db).get_bulk_host_vulnerability_summaries(host_ids)
+    vuln_map: Dict[int, Dict[str, int]] = {
+        hid: dict(summary.get("by_severity") or {}) for hid, summary in summaries.items()
+    }
 
-    # Distinct services
-    svc_rows = (
-        db.query(models.Port.host_id, models.Port.service_name)
-        .filter(
-            models.Port.host_id.in_(host_ids),
-            models.Port.state == "open",
-            models.Port.service_name.isnot(None),
-            models.Port.service_name != "",
-        )
-        .distinct()
-        .all()
-    )
-    svc_map: Dict[int, List[str]] = {}
-    for hid, svc in svc_rows:
-        svc_map.setdefault(hid, []).append(svc)
-
-    # Full port details (only for context endpoint — open ports only)
-    port_details: Dict[int, List] = {}
-    if include_ports:
-        port_rows = (
-            db.query(models.Port)
-            .filter(
-                models.Port.host_id.in_(host_ids),
-                models.Port.state == "open",
-            )
-            .order_by(models.Port.host_id, models.Port.port_number)
-            .all()
-        )
-        for p in port_rows:
-            port_details.setdefault(p.host_id, []).append(p)
-
-    # Top vulnerabilities per host (critical/high, up to 5 each).
-    # v2.90.4 (code review #3) — was ``.all() + Python trim``, which
-    # materialised every critical/high vulnerability for up to 2000
-    # hosts before truncating to 5/host.  On a Nessus-heavy project
-    # (hundreds of findings × hundreds of hosts) that ballooned the
-    # working set without need.  Switched to a window-function
-    # subquery — ``ROW_NUMBER() OVER (PARTITION BY host_id ORDER BY
-    # severity ASC, cvss_score DESC NULLS LAST, id ASC)`` — so the
-    # database returns at most 5 IDs per host.  A second query
-    # hydrates the ORM objects for those IDs.  Severity ordering
-    # exploits the enum's lowercase string values: "critical" <
-    # "high" alphabetically, so ASC puts critical first.
-    top_vulns: Dict[int, List] = {}
-    if include_ports and host_ids:
-        ranked = (
-            select(
-                Vulnerability.id.label("vid"),
-                func.row_number().over(
-                    partition_by=Vulnerability.host_id,
-                    order_by=(
-                        Vulnerability.severity.asc(),
-                        func.coalesce(Vulnerability.cvss_score, 0).desc(),
-                        Vulnerability.id.asc(),
-                    ),
-                ).label("rn"),
-            )
-            .where(
-                Vulnerability.host_id.in_(host_ids),
-                Vulnerability.severity.in_([
-                    VulnerabilitySeverity.CRITICAL,
-                    VulnerabilitySeverity.HIGH,
-                ]),
-            )
-            .subquery()
-        )
-        top_ids = [
-            row.vid for row in db.execute(
-                select(ranked.c.vid).where(ranked.c.rn <= 5)
-            ).all()
-        ]
-        if top_ids:
-            top_vuln_rows = (
-                db.query(Vulnerability)
-                .filter(Vulnerability.id.in_(top_ids))
-                .all()
-            )
-            for v in top_vuln_rows:
-                top_vulns.setdefault(v.host_id, []).append(v)
-
-    return port_counts, vuln_map, svc_map, port_details, top_vulns
+    return port_counts, vuln_map

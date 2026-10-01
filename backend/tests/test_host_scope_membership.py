@@ -176,11 +176,11 @@ def test_host_list_carries_the_three_coverage_states(client, db_session, test_pr
     db_session.flush()
     by_subnet = _host(db_session, test_project.id, "10.1.4.4")
     _map(db_session, by_subnet, s)
-    by_name = _host(db_session, test_project.id, "203.0.113.5")
+    _host(db_session, test_project.id, "203.0.113.5")  # in scope by name
     dns_name_service.record_observation(
         db_session, project_id=test_project.id, name="www.example.com", record_type="A", value="203.0.113.5",
     )
-    uncovered = _host(db_session, test_project.id, "198.51.100.1")
+    _host(db_session, test_project.id, "198.51.100.1")  # uncovered
     db_session.commit()
 
     r = client.get(f"/api/v1/projects/{test_project.id}/hosts/?limit=50")

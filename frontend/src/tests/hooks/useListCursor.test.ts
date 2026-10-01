@@ -5,13 +5,37 @@
  */
 import { renderHook, act } from '@testing-library/react';
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { useListCursor } from '../../hooks/useListCursor';
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
+import { LIST_CURSOR_CLASS, useListCursor } from '../../hooks/useListCursor';
 
 const press = (key: string, target: EventTarget = window) => {
   act(() => { target.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true })); });
 };
 
 afterEach(() => { document.body.innerHTML = ''; });
+
+// Walkthrough 2026-10-01 — the cursor row was `bg-accent ring-1`: `--accent`
+// carries its own alpha and tailwind.config wraps it in `hsl(… / <alpha>)`, so
+// the fill was an invalid colour the browser dropped and only a 1px ring was
+// left.  The highlight must be built from tokens that are opaque in index.css.
+describe('LIST_CURSOR_CLASS', () => {
+  it('paints with opaque theme tokens and a ring wider than a hairline', () => {
+    const css = readFileSync(join(__dirname, '..', '..', 'index.css'), 'utf8');
+    const tokens = LIST_CURSOR_CLASS.split(/\s+/)
+      .map((c) => /^(?:bg|ring)-([a-z-]+?)(?:\/\d+)?$/.exec(c)?.[1])
+      .filter((t): t is string => !!t && t !== 'inset');
+    expect(tokens.length).toBeGreaterThanOrEqual(2);
+    for (const token of tokens) {
+      const value = new RegExp(`--${token}:\\s*([^;]+);`).exec(css)?.[1];
+      expect(value, `--${token} is defined`).toBeTruthy();
+      expect(value, `--${token} must not carry its own alpha`).not.toContain('/');
+    }
+    expect(LIST_CURSOR_CLASS).toMatch(/\bbg-/);
+    expect(LIST_CURSOR_CLASS).toMatch(/\bring-2\b/);
+  });
+});
 
 describe('useListCursor', () => {
   it('moves with j/k and the arrows, clamps at both ends, and opens with Enter', () => {

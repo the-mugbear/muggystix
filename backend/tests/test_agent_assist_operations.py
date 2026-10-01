@@ -249,6 +249,75 @@ def test_agent_scan_compare_equals_the_page(client, db_session, test_project):
     assert "999999" in missing.text
 
 
+def test_agent_scan_hosts_equal_the_scan_pages_as_scanned_table(client, db_session, test_project):
+    """Review 2026-10-01: the scan page's "As scanned" rows — and whether the
+    scan authenticated to each host — had no agent read."""
+    pid = test_project.id
+    scan = models.Scan(project_id=pid, filename="auth.nessus", tool_name="nessus")
+    db_session.add(scan)
+    db_session.flush()
+    for ip, credentialed in (("10.62.0.1", True), ("10.62.0.2", False), ("10.62.0.3", None)):
+        host = _host(db_session, pid, ip)
+        db_session.add(models.HostScanHistory(
+            host_id=host.id, scan_id=scan.id, state_at_scan="up", credentialed=credentialed,
+            discovered_at=datetime.now(timezone.utc),
+        ))
+    db_session.commit()
+    headers = _start(client, pid)
+
+    page = client.get(_ui(pid, f"/scans/{scan.id}/host-snapshots"))
+    agent = client.get(f"/api/v1/agent/assist/scans/{scan.id}/hosts", headers=headers)
+    assert page.status_code == 200 and agent.status_code == 200, agent.text
+    assert agent.json() == page.json()
+    assert [r["credentialed"] for r in agent.json()["items"]] == [True, False, None]
+
+    # Another project's scan is not found, not empty.
+    from app.db.models_project import Project
+    other = Project(name="Other", slug="other-scan-hosts")
+    db_session.add(other)
+    db_session.flush()
+    foreign = models.Scan(project_id=other.id, filename="theirs.xml")
+    db_session.add(foreign)
+    db_session.commit()
+    assert client.get(
+        f"/api/v1/agent/assist/scans/{foreign.id}/hosts", headers=headers,
+    ).status_code == 404
+
+    # The MCP tool puts scan_id in the path.
+    result = client.post("/api/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 1, "method": "tools/call",
+        "params": {"name": "assist_list_scan_hosts", "arguments": {"scan_id": scan.id, "limit": 2}},
+    }, headers=headers).json()["result"]
+    assert result["isError"] is False, result
+    assert result["structuredContent"]["total"] == 3
+    assert len(result["structuredContent"]["items"]) == 2
+
+
+def test_agent_scan_list_carries_the_scanned_port_list(client, db_session, test_project):
+    """nmap's <scaninfo> — what the scan was asked to probe — was stored and
+    read by nothing.  The scan page shows it; the agent's scan rows carry it."""
+    pid = test_project.id
+    scan = models.Scan(project_id=pid, filename="ports.xml", tool_name="nmap")
+    plain = models.Scan(project_id=pid, filename="other.txt", tool_name="netexec")
+    db_session.add_all([scan, plain])
+    db_session.flush()
+    db_session.add(models.ScanInfo(
+        scan_id=scan.id, type="syn", protocol="tcp", numservices=1000, services="1-1000",
+    ))
+    db_session.commit()
+    headers = _start(client, pid)
+
+    rows = {r["id"]: r for r in client.get("/api/v1/agent/assist/scans", headers=headers).json()}
+    assert rows[scan.id]["scan_info"] == [
+        {"type": "syn", "protocol": "tcp", "numservices": 1000, "services": "1-1000"},
+    ]
+    assert rows[plain.id]["scan_info"] == []
+    page = client.get(_ui(pid, f"/scans/{scan.id}")).json()
+    assert [
+        {k: i[k] for k in ("type", "protocol", "numservices", "services")} for i in page["scan_info"]
+    ] == rows[scan.id]["scan_info"]
+
+
 # ---------------------------------------------------------------------------
 # Gating and MCP
 # ---------------------------------------------------------------------------

@@ -60,7 +60,13 @@ class EvidenceCreate(BaseModel):
         ),
     )
     summary: str = Field(..., min_length=1, max_length=10_000, description="What it showed, in a sentence or two.")
-    raw_output: Optional[str] = Field(None, description="The tool's output (up to 5 MB; kept with the record).")
+    # Capped by the evidence service (review 2026-10-01 R10): over 5 MB is a
+    # 413, checked BEFORE the text is hashed.  Deliberately no ``max_length``
+    # here — that makes it a 422 whose body echoes the oversize input, and
+    # the agent guide documents 413.
+    raw_output: Optional[str] = Field(
+        None, description="The tool's output (up to 5 MB; kept with the record; over that is a 413).",
+    )
     observed_ip: Optional[str] = Field(None, max_length=45, description="The address actually reached.")
     executed_at: Optional[datetime] = None
     agent_model: Optional[str] = _MODEL
@@ -83,9 +89,12 @@ def record_evidence(
         recorded_by_user_id=who.user_id, agent_model=who.model, agent_client=who.client,
         host_test_id=body.host_test_id, request_key=body.request_key,
     )
+    # Serialized BEFORE the commit, like the host-test routes: expire-on-commit
+    # makes every attribute read afterwards a SELECT (and `refresh` another).
+    db.flush()
+    payload = evidence.serialize_evidence(record)
     db.commit()
-    db.refresh(record)
-    return evidence.serialize_evidence(record)
+    return payload
 
 
 @router.get("/evidence", summary="List evidence records (newest first)")
@@ -126,7 +135,10 @@ def evidence_raw(
 
 class _ProposalBase(BaseModel):
     rationale: Optional[str] = Field(None, max_length=10_000, description="Why — what the reviewer should know.")
-    evidence_ids: Optional[List[int]] = Field(None, description="Evidence records that support it.")
+    evidence_ids: Optional[List[int]] = Field(
+        None, max_length=proposals.EVIDENCE_IDS_MAX,
+        description="Evidence records that support it (at most 100).",
+    )
     agent_model: Optional[str] = _MODEL
 
 
@@ -179,8 +191,12 @@ def propose_finding_text(
         db, agent.project_id, _who(db, request, body.agent_model), finding_id=body.finding_id,
         fields=body.fields, rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
+    # Built before the commit (review 2026-10-01 N8, as the host-test routes
+    # do): the commit expires every row, and serializing afterwards re-reads
+    # each proposal and each of its relations.
+    data = {"proposals": proposals.serialize_many(db, rows)}
     db.commit()
-    return {"proposals": proposals.serialize_many(db,rows)}
+    return data
 
 
 @router.post("/proposals/finding", status_code=201, summary="Propose a new finding")
@@ -193,8 +209,9 @@ def propose_finding(
         severity=body.severity, host_ids=body.host_ids, status=body.status,
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
+    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
-    return proposals.serialize_many(db,[row])[0]
+    return data
 
 
 @router.post("/proposals/observation", status_code=201, summary="Propose promoting or dismissing a scanner observation")
@@ -208,8 +225,9 @@ def propose_observation(
         severity=body.severity, summary=body.summary, rationale=body.rationale,
         evidence_ids=body.evidence_ids,
     )
+    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
-    return proposals.serialize_many(db,[row])[0]
+    return data
 
 
 @router.post("/proposals/endpoint-status", status_code=201, summary="Propose a finding endpoint's status")
@@ -222,8 +240,9 @@ def propose_endpoint_status(
         finding_host_id=body.finding_host_id, host_status=body.host_status,
         rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
+    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
-    return proposals.serialize_many(db,[row])[0]
+    return data
 
 
 @router.get("/proposals", summary="Proposals in this project and what happened to them")

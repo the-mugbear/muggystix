@@ -424,8 +424,9 @@ const McpReference: React.FC = () => {
               status — visible on the session&rsquo;s activity view. The client is recorded from
               the MCP handshake; the model is the agent&rsquo;s own report, passed as the optional{' '}
               <span className="font-mono">agent_model</span> argument of{' '}
-              <span className="font-mono">create_test_plan</span>,{' '}
-              <span className="font-mono">start_execution</span> or{' '}
+              <span className="font-mono">host_tests_propose</span>,{' '}
+              <span className="font-mono">record_evidence</span>, the{' '}
+              <span className="font-mono">propose_*</span> tools or{' '}
               <span className="font-mono">end_session</span>.
             </p>
           </div>

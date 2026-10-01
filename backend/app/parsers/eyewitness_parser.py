@@ -27,11 +27,10 @@ import csv
 import logging
 import os
 import re
-import shutil
 import time
 import zipfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -40,6 +39,8 @@ from app.core.config import settings
 from app.services.dns_name_service import ObservationCache, bind_url_name
 from app.db import models
 from app.parsers.parser_utils import (
+    ProgressBeat,
+    announce_scan,
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
@@ -218,6 +219,7 @@ class EyewitnessParser:
         scan = self._build_scan(filename)
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         screenshot_dir = Path(settings.UPLOAD_DIR) / "web_screenshots" / str(scan.id)
         screenshot_dir.mkdir(parents=True, exist_ok=True)
@@ -326,6 +328,7 @@ class EyewitnessParser:
         scan = self._build_scan(filename)
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
         written, skipped = self._load_and_write_json(
             Path(file_path), scan, screenshot_dir_rel=None,
         )
@@ -344,6 +347,7 @@ class EyewitnessParser:
         scan = self._build_scan(filename)
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         written, skipped = self._load_and_write_csv(Path(file_path), scan, screenshot_dir_rel=None)
         _refuse_if_all_skipped(written, skipped, filename)
@@ -365,6 +369,16 @@ class EyewitnessParser:
             project_id=self._project_id,
         )
 
+    def _beat(self, scan: models.Scan) -> ProgressBeat:
+        """R6 — heartbeat between records.  The host history is written at
+        the end of the file; it is also written ahead of every heartbeat's
+        commit, so a committed part of the import says which hosts it
+        created (a failed import's cleanup reads that)."""
+        scan_id = scan.id
+        return ProgressBeat(
+            "records", before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
+        )
+
     def _finalize(self, scan: models.Scan) -> None:
         try:
             correlate_scan(self.db, scan.id)
@@ -376,8 +390,10 @@ class EyewitnessParser:
     ) -> tuple[int, int]:
         written = 0
         skipped = 0
+        beat = self._beat(scan)
         with open(path, "r", encoding="utf-8", errors="replace") as f:
             for row in csv.DictReader(f):
+                beat.tick()
                 try:
                     # v2.419.0 (H3) — isolated, as httpx.
                     with record_savepoint(self.db, self._observed, self._reset_caches):
@@ -410,7 +426,9 @@ class EyewitnessParser:
         )
         written = 0
         skipped = 0
+        beat = self._beat(scan)
         for record in records:
+            beat.tick()
             try:
                 with record_savepoint(self.db, self._observed, self._reset_caches):
                     host_id = self._write_row(record, scan, screenshot_dir_rel=screenshot_dir_rel)

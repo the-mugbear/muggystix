@@ -59,15 +59,15 @@
         {
           "what": "Scan type / protocol / port list scanned",
           "input": "`<scaninfo type=\"syn\" protocol=\"tcp\" numservices=\"1000\" services=\"1,3-4,...\"/>`",
-          "level": "stored",
+          "level": "field",
           "stored_as": [
             "ScanInfo.type",
             "ScanInfo.protocol",
             "ScanInfo.numservices",
             "ScanInfo.services"
           ],
-          "shown": null,
-          "note": "services is the raw port-range string (Text)."
+          "shown": "Scan page ('Scanned:' line under the measures) · Also: Agent/MCP assist_list_scans",
+          "note": "services is the raw port-range string (Text). One row per `<scaninfo>` element, so a TCP + UDP run keeps both lists (pinned by a test). `GET /scans/{id}` returns the rows as `scan_info`; the scan page prints protocol and port list per row, clamped with an expander when the list is long."
         },
         {
           "what": "Verbosity, debugging level, task progress, host hints",
@@ -631,12 +631,22 @@
           "note": "Only state 'open' is kept (`closed` list rows and non-open XML/JSON states are skipped). A JSON port with no `status` (banner records) counts as open."
         },
         {
-          "what": "Port state reason and TTL",
-          "input": "XML `<state reason=\"syn-ack\" reason_ttl=\"64\"/>`; JSON `reason`, `ttl`",
+          "what": "Port state reason",
+          "input": "XML `<state reason=\"syn-ack\" …/>`; JSON `reason`",
+          "level": "field",
+          "stored_as": [
+            "Port.reason"
+          ],
+          "shown": "Host inspector › Ports table",
+          "note": "The -oL list format carries no reason: such an import keeps a stored reason while the state is unchanged and clears one that described another state (the dedup service's rule). A `--banners` record repeats the port with reason `response` (the banner arriving); that is not stored as the port's reason."
+        },
+        {
+          "what": "Reply TTL",
+          "input": "XML `<state reason_ttl=\"64\"/>`; JSON `ttl`",
           "level": "discarded",
           "stored_as": [],
           "shown": null,
-          "note": "Port.reason exists but the bulk insert never writes it."
+          "note": "No column holds a port's reply TTL (nmap's reason_ttl is not read either)."
         },
         {
           "what": "Service name (greppable list lines)",
@@ -724,7 +734,7 @@
       ],
       "gaps": [
         "The service a banner identifies (e.g. 'ssh', 'http') is never written to the port's service name for XML, JSON or -oL imports, so masscan --banners ports show as unidentified.",
-        "The SYN-ACK reason and reply TTL masscan records per port are dropped, though Port.reason exists.",
+        "The reply TTL masscan records per port is dropped (no column holds it).",
         "Banners are kept only as free-text script output, so an HTTP title or Server header from masscan cannot be filtered or feed web-interface views."
       ],
       "unverified": [
@@ -841,7 +851,7 @@
       "registry_tools": [
         "rustscan"
       ],
-      "accepted_input": "RustScan text in a .txt: `Open 10.0.0.1:80` lines and greppable `10.0.0.1 -> [80,443]` (-g); any nmap output RustScan passes through is present in the file but not read.",
+      "accepted_input": "RustScan text in a .txt: `Open 10.0.0.1:80` lines and greppable `10.0.0.1 -> [80,443]` (-g), IPv6 as `Open [2001:db8::1]:80` / `2001:db8::1 -> [80]`; any nmap output RustScan passes through is present in the file but not read.",
       "signals": [
         {
           "what": "Host address",
@@ -873,11 +883,16 @@
         },
         {
           "what": "IPv6 results",
-          "input": "`Open [2001:db8::1]:443` / IPv6 `->` lines",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "Both patterns match IPv4 only."
+          "input": "`Open [2001:db8::1]:443` and the summary `2001:db8::1 -> [443,80]`",
+          "level": "field",
+          "stored_as": [
+            "Host.ip_address",
+            "Port.port_number",
+            "Port.protocol",
+            "Port.state"
+          ],
+          "shown": "Host inspector header; Hosts list › Host column; Host inspector › Ports table; Scan page ports table · Filter: ip:, port:, has:open_ports",
+          "note": "The bracketed form is how Rust prints an IPv6 socket address; the candidate is validated as an address before it is used, so a clock or a MAC address in other text is not read as one."
         },
         {
           "what": "Pass-through nmap results (services, versions, hostnames, OS, NSE scripts)",
@@ -898,11 +913,10 @@
       ],
       "gaps": [
         "Services and versions that nmap identified in RustScan's pass-through output are ignored, so a `rustscan -- -sV` run imports bare open ports only (since v2.417.0 the import warns when the file holds nmap's report).",
-        "Hostnames from the pass-through `Nmap scan report for name (ip)` lines are not recorded.",
-        "IPv6 results are dropped."
+        "Hostnames from the pass-through `Nmap scan report for name (ip)` lines are not recorded."
       ],
       "unverified": [
-        "No RustScan fixture in backend/tests/fixtures; line shapes are from knowledge of RustScan 2.x output.",
+        "The IPv4 line shapes are confirmed by real RustScan captures (`Open 192.168.7.200:22`, `192.168.7.245 -> [443]`); no IPv6 capture exists — the IPv6 shapes are how Rust's standard library prints `SocketAddr` / `IpAddr`, which RustScan prints unchanged.",
         "Whether RustScan's UDP mode (`--udp`, newer versions) prints a distinguishable line; if it uses the same `Open ip:port` shape, UDP ports are stored as tcp."
       ]
     },
@@ -1014,12 +1028,23 @@
           "note": "Read into scan_info but no Scan column receives it."
         },
         {
-          "what": "Credentialed-scan status and authentication details",
-          "input": "`<tag name=\"Credentialed_Scan\">`, `LastAuthenticatedResults`, `local-checks-proto`, `smb-login-used`; plugins 19506 / 21745 / 117887 output",
+          "what": "Credentialed-scan status (did the scan authenticate to this host)",
+          "input": "`<tag name=\"Credentialed_Scan\">true|false</tag>` in HostProperties; else plugin 19506 ('Nessus Scan Information') output line `Credentialed checks : yes, as '…' via ssh` / `Credentialed checks : no`",
+          "level": "field",
+          "stored_as": [
+            "HostScanHistory.credentialed",
+            "IngestionJob.message"
+          ],
+          "shown": "Scan page › Hosts 'As scanned' (Authenticated column: Credentialed / Not credentialed, blank when the scan did not say); Host inspector header › Vulnerabilities assessment (credentialed / not credentialed / credentials not stated); Evidence page › Vulnerability assessment line (N credentialed, N not credentialed, N not stated among the assessed hosts) · Filter: vulnscan:credentialed|uncredentialed|unstated · Also: Agent/MCP assist_list_scan_hosts, assist_get_host (assessment.vuln_scan_credentialed), assist_get_coverage (vuln_assessment.credentialed)",
+          "note": "Per host, per scan: true / false when the file says so, NULL when it does not (and for every other tool). The host's tag wins over the plugin line; it is read even when informational items are skipped. The import's message counts both ('credentialed checks ran on N host(s), not on M'). The column appears on a scan's page only when the scan said so for at least one listed host. Evidence still counts an unauthenticated scan that found nothing as assessed — the host inspector and the Evidence page say beside 'assessed' whether a scan authenticated (yes if any vulnerability-scanner scan of the host did, no if one says it did not and none did, not stated otherwise), so a clean result from outside is read as the weaker evidence it is."
+        },
+        {
+          "what": "Authentication details",
+          "input": "`LastAuthenticatedResults`, `LastUnauthenticatedResults`, `local-checks-proto`, `smb-login-used`, `ssh-login-used` tags; plugins 21745 / 104410 / 110095 / 117887 / 141118 output",
           "level": "discarded",
           "stored_as": [],
           "shown": null,
-          "note": "HostProperties tags are collected into a dict but only host-ip, host-fqdn, netbios-name, mac-address, OS and HOST_START/END are read. Plugin 19506 ('Nessus Scan Information') is stored only as an ordinary informational observation (or skipped with the informational switch); nothing parses its text."
+          "note": "Which protocol and account authenticated, and why authentication failed, are not read; the plugins' text is kept only as ordinary informational observations (or not at all with the informational switch)."
         },
         {
           "what": "Policy used and other HostProperties",
@@ -1226,7 +1251,8 @@
       ],
       "gaps": [
         "The `<Report name>` and `<policyName>` are lost: the scan is named after the uploaded file and no column holds the policy.",
-        "Whether the scan was credentialed (`Credentialed_Scan` tag, plugin 19506/21745 output) is not recorded, so an analyst cannot tell an authenticated from an unauthenticated result set.",
+        "Whether the scan was credentialed is shown (scan page, host inspector, Evidence page) but does not change what counts as assessed: a host an unauthenticated Nessus scan found nothing on still reads as assessed for vulnerabilities, with 'not credentialed' beside it. Imports from before this was recorded read 'credentials not stated'.",
+        "Which account and protocol authenticated, and why authentication failed (plugins 21745 / 104410 / 110095 / 117887), are not recorded.",
         "OS, certificate, SMB-signing and service-version facts from informational plugins are not extracted into host or port fields; they exist only as plugin_output text (or not at all when informational items are skipped).",
         "`risk_factor`, patch/vulnerability publication dates, BID/XREF (CWE, IAVA, MSFT) and VPR/EPSS/temporal scores are parsed or present but not stored.",
         "When a Nessus OS string arrives for a host that already has an OS, it never replaces it (no accuracy is supplied); it is only recorded as a conflict.",
@@ -1266,12 +1292,31 @@
           "note": "State 'up'. Results whose host text has no IP are not recorded and counted in the import warning."
         },
         {
-          "what": "Result hostname",
-          "input": "`<result><host>…<hostname>web01</hostname></host>`",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": null
+          "what": "Hostname (result, and the report's per-host detail)",
+          "input": "`<result><host>10.0.0.5<hostname>web01</hostname></host>`; report-level `<host><ip>…<detail><name>hostname</name><value>web01.example.com</value>`",
+          "level": "field",
+          "stored_as": [
+            "Host.hostname",
+            "Host.hostname_source",
+            "DNSName.fqdn",
+            "DNSRecord.record_type",
+            "DNSRecord.value",
+            "HostScanHistory.hostname_at_scan"
+          ],
+          "shown": "Host inspector header; Hosts list › Host column; Scan page current-hosts table · Filter: hostname:/host: · Also: Host inventory CSV; JSON / Markdown export",
+          "note": "Display name follows the provenance rule (scanner rank: fills an empty hostname or replaces a weaker forward-resolved one, never a PTR or operator name); the name is also written as a SCANNER-kind DNS observation."
+        },
+        {
+          "what": "Operating system (report-level host detail)",
+          "input": "`<report><host><ip>10.0.0.5</ip><detail><name>best_os_txt</name><value>Ubuntu 20.04</value></detail>`",
+          "level": "field",
+          "stored_as": [
+            "Host.os_name",
+            "Host.os_family",
+            "HostScanHistory.os_info_updated"
+          ],
+          "shown": "Host inspector › OS row; Hosts list › Host column OS chip; Scan page current-hosts table · Filter: os:, has:eol · Also: Patterns insight: eol_os condition; Segments EOL hosts",
+          "note": "`best_os_txt` only. It fills Host.os_name when the host has none (GVM supplies no accuracy); a differing value does not replace one already stored. The family is derived from the name. A host the report lists with a detail but no result is still created. `best_os_cpe` is not stored."
         },
         {
           "what": "Port",
@@ -1385,12 +1430,14 @@
           "note": "Text only; the solution type attribute is dropped."
         },
         {
-          "what": "CVSS vector and NVT severities block",
-          "input": "`<nvt><severities><severity type=\"cvss_base_v3\"><value>CVSS:3.1/…`, `cvss_base_vector=` tag",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "Vulnerability.cvss_vector is never set for OpenVAS."
+          "what": "CVSS vector",
+          "input": "`<nvt><severities><severity type=\"cvss_base_v3\"><value>CVSS:3.1/…`, else the `cvss_base_vector=` entry of `<nvt><tags>`",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.cvss_vector"
+          ],
+          "shown": "Host inspector › Scanner observations detail · Also: promotion seeds Finding CVSS -> client report; vulnerabilities.csv",
+          "note": "A v3 / v4 entry of the severities block wins over a v2 one, and the block over the tag; stored as printed, clipped to 200 chars. A re-import that carries no vector keeps the stored one. The score is still the result's `<severity>`; the block's own origin / date / score are not stored."
         },
         {
           "what": "NVT family, type, EPSS",
@@ -1409,12 +1456,14 @@
           "note": null
         },
         {
-          "what": "Exploitability",
-          "input": "no dedicated element; exploit hints in NVT tags/refs",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "upsert_vulnerability never sets Vulnerability.exploitable, so OpenVAS rows never match exploit filters."
+          "what": "Exploit code exists (CVSS exploit-maturity metric)",
+          "input": "the vector's `E:` metric: `E:P` / `E:F` / `E:H` (3.x), `E:POC` / `E:F` / `E:H` (2.0), `E:A` / `E:P` (4.0)",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.exploitable"
+          ],
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention · Filter: has:exploit, exploitport: · Also: Workbench 'Worth a look' tiering; Hosts sort exploitable_vulns",
+          "note": "Set only when the report's vector says exploit code exists — the same bar as the Nessus path's exploit_code_maturity. A GVM report has no dedicated exploit element, and most feed vectors are base-only, so most OpenVAS rows stay not-exploitable: nothing is inferred from severity, and EPSS (a probability) is not read as a statement. A re-observation only ever raises the flag."
         },
         {
           "what": "Scan run window",
@@ -1429,12 +1478,12 @@
           "note": null
         },
         {
-          "what": "Report-level host details (OS, hostname, CPEs, per-host times)",
-          "input": "`<report><host><ip>…<detail><name>best_os_txt|best_os_cpe|hostname|App|…</name>`, `<host><start>` / `<end>`",
+          "what": "Other report-level host details (OS CPE, application CPEs, per-host times)",
+          "input": "`<report><host><ip>…<detail><name>best_os_cpe|App|OS|traceroute|…</name>`, `<host><start>` / `<end>`",
           "level": "discarded",
           "stored_as": [],
           "shown": null,
-          "note": "Only <result>, <report>, <scan_start> and <scan_end> elements are handled; OS detection is never recorded on the host."
+          "note": "Of a report host's details only `best_os_txt` and `hostname` are read (see the rows above)."
         },
         {
           "what": "Report metadata",
@@ -1447,15 +1496,16 @@
       ],
       "gaps": [
         "Results Greenbone marks as False Positive (severity -1) are stored as informational observations instead of being dropped or marked as false positives.",
-        "Host OS detection (best_os_txt / best_os_cpe) and hostnames from the report's <host> details or <result><host><hostname> are ignored, so an OpenVAS-only host has no OS or name.",
+        "An OS from the report (best_os_txt) only fills a host that has none; it never replaces a stored one, and the OS CPE (best_os_cpe) and application CPEs are not stored.",
         "Log-level results are always stored as INFO observations; there is no equivalent of the Nessus skip-informational switch.",
         "No service name is recorded on ports created from OpenVAS results.",
-        "The CVSS vector, NVT family, EPSS, original severity and overrides/notes are not stored, and exploitability is never set.",
+        "NVT family, EPSS, original severity and overrides/notes are not stored. Exploitability is set only from a vector's exploit-maturity metric, which most GVM feed vectors do not carry, so `has:exploit` finds few OpenVAS rows.",
         "Quality of detection is only appended to the plugin_output text, so low-QoD results cannot be filtered out.",
         "Scan metadata (task name, GVM/NVT feed version) is not recorded; the scan is named after the uploaded file."
       ],
       "unverified": [
-        "The only OpenVAS fixtures (artifacts/manual/openvas_sample.xml and the inline XML in tests/test_openvas_streaming_parser.py) are synthetic and minimal; element names for refs, tags, qod, severities, epss, overrides, report host details and False Positive/Error severities (-1/-3) are from knowledge of the GMP report format.",
+        "The only OpenVAS fixtures (artifacts/manual/openvas_sample.xml and the inline XML in tests/test_openvas_streaming_parser.py) are synthetic and minimal; element names for refs, tags, qod, severities, epss, overrides, report host details and False Positive/Error severities (-1/-3) are from knowledge of the GMP report format. That includes everything read since 2026-10-01: the `<severities><severity><value>` vector and the `cvss_base_vector=` tag (both accepted), `<result><host><hostname>`, and the report-level `<host><ip>` + `<detail><name>best_os_txt|hostname</name><value>` block — none confirmed against a real GVM export.",
+        "Whether any GVM feed vector carries a temporal exploit-maturity metric (`E:`) in practice; if none does, no OpenVAS row is ever marked exploitable.",
         "Full GMP reports can nest a `<result>` inside `<detection>`; with end-event iteration such an inner element would be counted as a result without a host address and inflate the 'not recorded' warning — not confirmed against a real export.",
         "Old OpenVAS 8 port strings like `https (443/tcp)` would not parse as a port (the observation becomes host-level); not confirmed with a sample."
       ]
@@ -2923,7 +2973,7 @@
       "registry_tools": [
         "dnsx"
       ],
-      "accepted_input": "dnsx -j / -json output, one JSON object per line (JSONL) or a JSON array, with `host` plus record-type arrays (typically -resp with -a -aaaa -cname -mx -ns -txt -ptr -soa -srv -caa); plain-text -resp output is not accepted.",
+      "accepted_input": "dnsx -j / -json output, one JSON object per line (JSONL) or a JSON array, with `host` plus record-type arrays (typically -resp with -a -aaaa -cname -mx -ns -txt -ptr -soa -srv -caa) and/or an `axfr` object (-axfr); plain-text -resp output is not accepted.",
       "signals": [
         {
           "what": "Forward answers: A, AAAA, CNAME, MX, NS, TXT, SRV, CAA",
@@ -3041,19 +3091,45 @@
         },
         {
           "what": "Zone transfer result",
-          "input": "`axfr` (dnsx -axfr)",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "The parser only reads `axfr` when it is an array of strings; dnsx writes it as an object (host + chain of records), which fails the list check and is skipped."
+          "input": "`axfr` object from dnsx -axfr: `{\"host\": zone, \"chain\": [{\"resolver\": [...], \"all\": [\"www.corp.example.\\t300\\tIN\\tA\\t10.0.0.5\", …]}]}`, one chain entry per name server that handed the zone over",
+          "level": "field",
+          "stored_as": [
+            "DNSRecord.domain",
+            "DNSRecord.record_type",
+            "DNSRecord.value",
+            "DNSRecord.ttl",
+            "DNSRecord.resolver_name",
+            "DNSName.fqdn",
+            "Host.ip_address",
+            "Host.hostname",
+            "IngestionJob.parser_warnings"
+          ],
+          "shown": "Host inspector › DNS evidence; Scan page › DNS Records; Names detail observations; Ingestion Results › the file's row ('Zone transfer allowed: zone by server (N records)')",
+          "note": "Every transferred record is stored under its OWN owner name and type, read from the chain entry's `all` array (the entry's typed arrays carry no owner names and are not used); the server that allowed the transfer is the resolver. The zone name also gets one `AXFR` observation per server, 'zone transfer allowed (N records)'. A/AAAA records discover hosts named by their owner (never a wildcard owner); PTR records of a reverse zone name the host. A chain entry without `all` keeps its values on the zone as `AXFR` observations ('A 10.0.0.5') rather than inventing owner names. An array of strings under `axfr` (not dnsx's shape) is still stored as before, one `AXFR` row per string. The transfer itself is the next row."
         },
         {
-          "what": "All records (-any / -recon)",
-          "input": "dnsx `all` array",
-          "level": "discarded",
-          "stored_as": [],
-          "shown": null,
-          "note": "The parser looks for a key named `any`; dnsx's field is `all`, which is never read."
+          "what": "Zone transfer allowed (the name server's weakness)",
+          "input": "A chain entry of the `axfr` object that returned records; its `resolver` (`10.0.0.53:53`) is the name server that handed the zone over",
+          "level": "observation",
+          "stored_as": [
+            "Vulnerability.title",
+            "Vulnerability.plugin_output"
+          ],
+          "shown": "Host inspector › Scanner observations; Findings › Scanner observations view · Filter: vuln:, check:dns_zone_transfer_allowed · Also: Patterns insight: vuln monoculture; promoted to a finding",
+          "note": "Scanner observation \"DNS zone transfer allowed\" (medium, source dnsx) on the NAME SERVER's host, with the zone and the record count as its output ('Zone corp.example: transfer allowed by 10.0.0.53:53 (9 records)'). On the server's port from the resolver string (53/tcp) when the host has that port recorded, else on the host. Recorded only when the server's address is already a host of the project — known before, or discovered by this import (usually the zone's own A record for the server); a resolver is never made a host (see gaps). One observation per server; a second zone from the same server refreshes it."
+        },
+        {
+          "what": "All records (`all`): types with no array of their own",
+          "input": "dnsx `all` array, one resource record per string as miekg/dns prints it: `owner<TAB>ttl<TAB>IN<TAB>TYPE<TAB>rdata` (present on every row; `-recon` queries every type)",
+          "level": "field",
+          "stored_as": [
+            "DNSRecord.domain",
+            "DNSRecord.record_type",
+            "DNSRecord.value",
+            "DNSRecord.ttl"
+          ],
+          "shown": "Host inspector › DNS evidence; Scan page › DNS Records; Names detail observations",
+          "note": "On an ordinary row `all` repeats the typed arrays in another spelling, so only the types dnsx has no array for (HINFO, DNSKEY, TLSA, …) are read from it, each under its own owner name, type and TTL. The MX preference and SRV priority/weight/port that `all` carries for the typed answers are therefore still not stored. An array under a key named `any` (not dnsx's field) is still stored as `ANY` rows, as before."
         },
         {
           "what": "ASN / CDN enrichment",
@@ -3088,14 +3164,15 @@
       ],
       "gaps": [
         "Names that did not resolve (NXDOMAIN / SERVFAIL) are only counted in a warning string, so an analyst cannot see which enumerated names are dead.",
-        "Zone transfer output (-axfr) is ignored because dnsx writes it as an object, which the parser's list-only handling skips, so a successful AXFR, a significant finding, leaves no trace.",
+        "A zone transfer allowed by a name server whose address is not a host of the project (not scanned, and not named by an A record in the zone) raises no scanner observation: it is only the `AXFR` observation on the zone and a line on the import. A resolver given by name rather than address is treated the same way.",
+        "One name server that hands over several zones has ONE 'DNS zone transfer allowed' observation, whose output names the zone imported last; the others are on their zones' `AXFR` rows.",
+        "MX preference and SRV priority / weight / port are not stored for ordinary answers: dnsx's typed arrays carry only the target name.",
         "The -asn enrichment (AS number, AS name, country, range) is dropped although BlueStick has a NetworkAttribution table built for exactly this.",
-        "When dnsx reports several resolvers for one answer only the first is attributed, weakening the 'which resolver said what' comparison the resolver column exists for.",
-        "The -any / -recon answers are never read because the parser looks for `any` rather than dnsx's `all` key."
+        "When dnsx reports several resolvers for one answer only the first is attributed, weakening the 'which resolver said what' comparison the resolver column exists for."
       ],
       "unverified": [
-        "No real dnsx capture exists in backend/tests/fixtures; key names for `axfr` (object shape), `all`, `asn`, `cdn`, `raw`, `has_internal_ips` are from knowledge of dnsx's DNSData struct, not a sample file.",
-        "Structural detection (content_detection.looks_like_dnsx) keys only on a/aaaa/ptr/cname/mx/ns/txt/soa, so a file carrying only srv/caa answers probably needs 'dnsx' in the filename or a manual format choice.",
+        "The `axfr` object and `all` array shapes are from dnsx's own source (retryabledns v1.0.111 `DNSData` / `AXFRData`, miekg/dns `RR.String()`) and a real `dnsx -a -j` capture confirms the `all` line format; no capture of a SUCCESSFUL zone transfer exists, so the chain entry is covered by a constructed sample only. `asn`, `cdn`, `raw`, `has_internal_ips` are also from the struct, not a sample.",
+        "Structural detection (content_detection.looks_like_dnsx) keys on a/aaaa/ptr/cname/mx/ns/txt/soa or an `axfr` object, so a file carrying only srv/caa answers probably needs 'dnsx' in the filename or a manual format choice.",
         "Wildcard filtering (-wd) removes lines rather than adding a field as far as known; nothing wildcard-related is read."
       ]
     },

@@ -1,6 +1,6 @@
 import logging
 import sys
-from typing import List, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from sqlalchemy.orm import Session, joinedload
 
@@ -37,34 +37,62 @@ class SubnetCorrelationService:
         when the host is ingested (full correlate over all subnets) or when
         those subnets are themselves added/edited, so the invariant holds.
         """
-        subnet = self.db.query(Subnet).filter(Subnet.id == subnet_id).first()
-        if subnet is None:
+        return self.correlate_subnets([subnet_id])
+
+    def correlate_subnets(self, subnet_ids: Sequence[int]) -> int:
+        """Correlate the project's hosts against SEVERAL subnets in one pass,
+        replacing only those subnets' mappings (review 2026-10-01 R24).
+
+        ``POST /scopes/{id}/subnets`` used to call ``correlate_subnet`` once
+        per new subnet — up to 500 — and each call read every host of the
+        project and committed: a 100-subnet paste on an 80k-host project was
+        100 × an 80k-row fetch.  Here the hosts are read ONCE per project,
+        matched against one trie holding all the named subnets, and the
+        mappings are written and committed once.  Same result as the calls one
+        after another, since each subnet's mappings depend only on its own
+        CIDR.
+
+        Returns the number of mappings written.  Commits (including whatever
+        the caller has flushed, so the new subnets and their mappings land
+        together or not at all).
+        """
+        ids = list(dict.fromkeys(i for i in subnet_ids if i is not None))
+        if not ids:
             return 0
-        scope = self.db.query(Scope).filter(Scope.id == subnet.scope_id).first()
-        project_id = scope.project_id if scope else None
+        found = (
+            self.db.query(Subnet, Scope.project_id)
+            .outerjoin(Scope, Scope.id == Subnet.scope_id)
+            .filter(Subnet.id.in_(ids))
+            .all()
+        )
+        if not found:
+            return 0
 
-        trie = IPTrie()
-        trie.add_subnet(subnet)  # invalid CIDR is skipped (logged) internally
+        # One trie per project (in practice one: the subnets of one scope).
+        by_project: Dict[Optional[int], IPTrie] = {}
+        for subnet, project_id in found:
+            # invalid CIDR is skipped (logged) internally
+            by_project.setdefault(project_id, IPTrie()).add_subnet(subnet)
 
-        host_query = self.db.query(Host.id, Host.ip_address)
-        if project_id is not None:
-            host_query = host_query.filter(Host.project_id == project_id)
-        rows = host_query.all()
+        mapping_set: Set[Tuple[int, int]] = set()
+        for project_id, trie in by_project.items():
+            host_query = self.db.query(Host.id, Host.ip_address)
+            if project_id is not None:
+                host_query = host_query.filter(Host.project_id == project_id)
+            for host_id, ip_str in host_query.all():
+                for subnet in trie.find_matching_subnets(ip_str):
+                    mapping_set.add((host_id, subnet.id))
 
-        matched_host_ids = {
-            host_id for host_id, ip_str in rows
-            if trie.find_matching_subnets(ip_str)
-        }
-
-        # Replace ONLY this subnet's mappings.  A CIDR edit can change which
+        # Replace ONLY these subnets' mappings.  A CIDR edit can change which
         # hosts match, so the scoped delete (not a whole-project wipe) is both
         # correct and cheap.
+        found_ids = [subnet.id for subnet, _ in found]
         self.db.query(HostSubnetMapping).filter(
-            HostSubnetMapping.subnet_id == subnet_id
+            HostSubnetMapping.subnet_id.in_(found_ids)
         ).delete(synchronize_session=False)
 
-        if matched_host_ids:
-            mapping_list = [{"host_id": hid, "subnet_id": subnet_id} for hid in matched_host_ids]
+        if mapping_set:
+            mapping_list = [{"host_id": hid, "subnet_id": sid} for hid, sid in mapping_set]
             INSERT_BATCH = 5000
             for i in range(0, len(mapping_list), INSERT_BATCH):
                 self.db.bulk_insert_mappings(
@@ -72,8 +100,10 @@ class SubnetCorrelationService:
                 )
 
         self.db.commit()
-        logger.info("Correlated subnet %s to %d project hosts", subnet_id, len(matched_host_ids))
-        return len(matched_host_ids)
+        logger.info(
+            "Correlated %d subnet(s) to project hosts (%d mappings)", len(found_ids), len(mapping_set),
+        )
+        return len(mapping_set)
 
     def correlate_scan_hosts_to_subnets(self, scan_id: int) -> int:
         """Correlate hosts from a specific scan (legacy entry point)."""

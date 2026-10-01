@@ -24,3 +24,38 @@ export const canStartAgentSession = (project: Pick<Project, 'my_role'> | null | 
   if (!project || project.my_role === undefined) return true;
   return projectRoleAtLeast(project.my_role, 'auditor');
 };
+
+export interface ProjectRoleAccess {
+  /** The caller's role on the current project; `undefined` when it has not
+   *  loaded (or the project carries none), `null` for a non-member. */
+  role: ProjectRoleName | null | undefined;
+  /** analyst+ — uploads, scope, triage, host tests, notes, tags. */
+  canWrite: boolean;
+  /** auditor+ — exports, reports, starting an agent session. */
+  canExport: boolean;
+  isProjectAdmin: boolean;
+  /** The ACCOUNT role (`User.role === 'admin'`): user management, system
+   *  settings, the audit log.  A global admin passes every project check. */
+  isGlobalAdmin: boolean;
+}
+
+/** One answer to "may this person do that here" (review 2026-10-01 R32).
+ *  The rule `canStartAgentSession` set: only a role KNOWN to be too low hides
+ *  a control.  A project the context has not loaded, or one without
+ *  `my_role`, leaves the decision to the server, which refuses with 403. */
+export const resolveProjectRole = (
+  project: Pick<Project, 'my_role'> | null | undefined,
+  globalRole: string | null | undefined,
+): ProjectRoleAccess => {
+  const isGlobalAdmin = globalRole === 'admin';
+  const unknown = !project || project.my_role === undefined;
+  const role = unknown ? undefined : (project.my_role as ProjectRoleName | null);
+  const atLeast = (min: ProjectRoleName) => isGlobalAdmin || unknown || projectRoleAtLeast(role, min);
+  return {
+    role: isGlobalAdmin ? 'admin' : role,
+    canWrite: atLeast('analyst'),
+    canExport: atLeast('auditor'),
+    isProjectAdmin: atLeast('admin'),
+    isGlobalAdmin,
+  };
+};

@@ -8,8 +8,10 @@ the assertion instead of one "last seen" at the top:
 * observed        — the newest scan that saw the host at all;
 * vulnerabilities — newest vulnerability observation OR vulnerability-scanner
                     run over the host (a clean scan is an assessment), or not
-                    assessed;
-* web / TLS       — newest web-interface / cert evidence, or not assessed,
+                    assessed; and, beside it, whether a vulnerability scan
+                    authenticated to the host (yes / no / not stated) — shown,
+                    never a different kind of "assessed";
+* web / TLS      — newest web-interface / cert evidence, or not assessed,
                     or not applicable (no web port);
 * auth / SMB      — SMB-signing or NetExec evidence present, or not, or n/a;
 * tested          — newest executed test result on a plan entry for the host;
@@ -24,7 +26,7 @@ page agree on what "not applicable" means.
 from __future__ import annotations
 
 from datetime import timedelta, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -35,7 +37,8 @@ from app.db.models_host_tests import TESTED_OUTCOMES
 from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability
 from app.services.evidence_service import (
-    _AUTH_PORTS, _WEB_PORTS, vuln_scanned_filter, vulnerability_evidence_filter,
+    _AUTH_PORTS, _WEB_PORTS, host_vuln_scan_credentialed, vuln_scanned_filter,
+    vulnerability_evidence_filter,
 )
 
 # A port observed within this window of the host's newest observation counts
@@ -120,6 +123,11 @@ def host_assessment(db: Session, host: models.Host) -> Dict[str, Any]:
         "last_observed_at": host.last_seen,
         "vuln_assessed": bool(vuln_count) or last_vuln_scan_at is not None,
         "last_vuln_assessed_at": max(vuln_dates) if vuln_dates else None,
+        # Beside "assessed", never part of it (review 2026-10-01): did a
+        # vulnerability scan log in to this host?  yes / no / not_stated, or
+        # None when the host is not assessed.  One definition, shared with the
+        # Evidence page's counts and the DSL's ``vulnscan:``.
+        "vuln_scan_credentialed": host_vuln_scan_credentialed(db, hid),
         "web_eligible": web_eligible,
         "web_assessed": bool(web_count),
         "last_web_assessed_at": last_web_at,

@@ -28,6 +28,9 @@ import re
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySeverity, VulnerabilitySource
 from app.parsers.parser_utils import (
+    ProgressBeat,
+    announce_scan,
+    beat_while_reading,
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
@@ -255,7 +258,10 @@ class TestsslParser:
         targets: Dict[Tuple[str, Optional[str], int], Dict[str, Any]] = {}
         record_count = 0
         records = iter_json_records(file_path, array_keys=("scanResult",), tool_label="testssl JSON")
-        for rec in (flat for target in records for flat in _flatten_pretty(target)):
+        # R6 — the read phase heartbeats: the scan row does not exist yet, so
+        # a cancel here leaves nothing behind.
+        flattened = (flat for target in records for flat in _flatten_pretty(target))
+        for rec in beat_while_reading(flattened, "findings read"):
             if not isinstance(rec, dict):
                 continue
             record_count += 1
@@ -300,13 +306,23 @@ class TestsslParser:
         )
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         written = 0
         observations = 0
         # v2.332.0 — a target whose savepoint rolled back was logged and then
         # reported as a clean import ("skipped": 0).  Count it.
         skipped_targets: list = []
+        # R6 — heartbeat between targets, outside the target's savepoint.  The
+        # host history written at the end is also written ahead of each
+        # heartbeat's commit (a failed import's cleanup reads it).
+        scan_id = scan.id
+        beat = ProgressBeat(
+            "targets", every=100,
+            before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
+        )
         for (ip, hostname, port), t in targets.items():
+            beat.tick()
             # Per-target SAVEPOINT so a single row's integrity failure (e.g. a
             # (scan_id, url, source) collision) rolls back JUST this target
             # instead of poisoning the session — without it, the caught flush

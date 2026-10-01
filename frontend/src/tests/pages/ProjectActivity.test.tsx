@@ -5,7 +5,7 @@
  */
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 
 import ProjectActivity, { fillCallDays } from '../../pages/ProjectActivity';
 
@@ -368,6 +368,57 @@ describe('Agent Sessions', () => {
     renderPage();
     await screen.findByText(/No agent has reported its model or client yet/);
     expect(screen.queryByText('Activity by agent / model')).not.toBeInTheDocument();
+  });
+});
+
+// B15 — the history's filters are in the URL.
+describe('Agent Sessions — filters in the URL', () => {
+  const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
+  const renderAt = (url: string) => render(
+    <MemoryRouter initialEntries={[url]}><ProjectActivity /><Where /></MemoryRouter>,
+  );
+
+  beforeEach(() => {
+    project.my_role = 'analyst';
+    mockedApi.listAgentSessions.mockReset();
+    mockedApi.getAgentSessionSummary.mockReset();
+    mockedApi.getAgentSessionSummary.mockResolvedValue({
+      project_id: 1,
+      summary: [{ generated_by_model: 'claude-opus-4-7', generated_by_tool: 'claude-code', project: 0, assist: 1, total: 1 }],
+    });
+    mockedApi.getAgentActivitySummary.mockReset();
+    mockedApi.getAgentActivitySummary.mockResolvedValue(emptyActivity);
+  });
+
+  it('a link with kind, model and tool restores them and asks the server for them', async () => {
+    serve([], [legacyRun()]);
+    renderAt('/agent-activity?kind=assist&model=claude-opus-4-7&tool=claude-code');
+    await screen.findByTestId('runs-table');
+    expect(mockedApi.listAgentSessions).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'assist', model: 'claude-opus-4-7', tool: 'claude-code' }),
+    );
+    expect(screen.getByLabelText('Filter sessions by model')).toHaveTextContent('claude-opus-4-7');
+    expect(screen.getByLabelText('Filter sessions by client')).toHaveTextContent('claude-code');
+  });
+
+  it('choosing a filter writes it, and Clear filters removes all three at once', async () => {
+    const user = userEvent.setup();
+    serve([], []);
+    renderAt('/agent-activity?kind=assist&model=claude-opus-4-7&tool=claude-code');
+    await user.click(await screen.findByRole('button', { name: 'Clear filters' }));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe(''));
+
+    await user.click(await screen.findByLabelText('Filter sessions by model'));
+    await user.click(await screen.findByRole('option', { name: 'claude-opus-4-7' }));
+    await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('model=claude-opus-4-7'));
+  });
+
+  it('ignores a kind the page does not have', async () => {
+    serve([], [legacyRun()]);
+    renderAt('/agent-activity?kind=recon');
+    await screen.findByTestId('runs-table');
+    const history = mockedApi.listAgentSessions.mock.calls.map((c) => c[0]).filter((f) => f?.status !== 'active');
+    expect(history.every((f) => f.kind === undefined)).toBe(true);
   });
 });
 

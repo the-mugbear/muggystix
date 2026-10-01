@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_agent import (
     Agent,
@@ -56,8 +56,8 @@ from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity, se
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP,
     SERVICES_PARAM_HELP,
-    _apply_agent_host_filters,
-    _batch_host_enrichment,
+    apply_agent_host_filters,
+    batch_host_enrichment,
     load_agent_session,
 )
 from app.services import dns_name_service, host_detail_service
@@ -81,6 +81,7 @@ from app.services.host_query_common import escape_like
 from app.services.note_attachment_service import require_readable_file
 from app.services.agent_prompt_history import PROMPT_VERSION
 from app.services.posture_service import compute_posture
+from app.services.scan_inventory_filters import apply_scan_inventory_filters
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.subnet_insight_service import compute_subnet_insights
 
@@ -310,7 +311,7 @@ def _build_assist_host_query(
     malformed DSL query.
     """
     query = db.query(models.Host).filter(models.Host.project_id == session.project_id)
-    query = _apply_agent_host_filters(
+    query = apply_agent_host_filters(
         query,
         db,
         project_id=session.project_id,
@@ -408,7 +409,7 @@ def _iter_assist_hosts_ndjson(db: Session, query: SAQuery, operator_id=None):
         if not hosts:
             break
         host_ids = [h.id for h in hosts]
-        port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+        port_counts, vuln_map = batch_host_enrichment(db, host_ids)
         follow_map = _operator_follow_map(db, host_ids, operator_id)
         exploit_maps = exploit_count_maps(db, host_ids)
         for h in hosts:
@@ -562,7 +563,7 @@ def list_assist_hosts(
     if not hosts:
         return page([])
     host_ids = [h.id for h in hosts]
-    port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+    port_counts, vuln_map = batch_host_enrichment(db, host_ids)
     follow_map = _operator_follow_map(db, host_ids, session.started_by_id)
     exploits, critical_exploits = exploit_count_maps(db, host_ids)
     result = []
@@ -628,6 +629,9 @@ def download_assist_hosts_ndjson(
     processed without being read whole. Server memory is bounded (rows are
     paged as they stream).
     """
+    # A streamed export of the whole project: exempt from the API statement
+    # timeout (review 2026-10-01 R23), which is for interactive requests.
+    disable_statement_timeout(db)
     session = _load_assist_session(db, request)
     query = _build_assist_host_query(
         db, session,
@@ -757,7 +761,10 @@ class AssistHostDetail(HostDetail):
     ))
     assessment: Dict[str, Any] = Field(default_factory=dict, description=(
         "Per assessment domain (observed, vulnerabilities, web/TLS, SMB/AD, tested): "
-        "when it was assessed, or not assessed / not applicable."
+        "when it was assessed, or not assessed / not applicable. vuln_scan_credentialed says "
+        "whether a vulnerability scan authenticated to the host: yes / no / not_stated "
+        "(null when not assessed) — a clean result from a scan that did not log in is "
+        "weaker evidence; it does not change vuln_assessed."
     ))
     weakness_flags: List[str] = Field(default_factory=list, description="The has: weakness flags this host matches (smb_unsigned, weak_tls, eol_os…).")
     weakness_labels: Dict[str, str] = Field(default_factory=dict, description="Human label per weakness flag.")
@@ -1147,7 +1154,7 @@ def get_assist_host(
         for p in sorted(host.ports, key=lambda p: (p.port_number, p.protocol or ""))
     ]
     open_count = sum(1 for p in host.ports if p.state == "open")
-    _, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
+    _, vuln_map = batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
     follow_map = _operator_follow_map(db, [host.id], session.started_by_id)
 
@@ -1391,6 +1398,8 @@ def download_assist_report_context(
     """
     from app.services.report_generator import ReportGenerator  # heavy stack — lazy
 
+    # Streamed, uncapped: exempt from the API statement timeout (R23).
+    disable_statement_timeout(db)
     session = _load_assist_session(db, request)
     operator = (
         db.query(User).filter(User.id == session.started_by_id).first()
@@ -1514,7 +1523,12 @@ def list_assist_findings(
         project_id=session.project_id, status=status, source=source,
         host_id=host_id, unowned=unowned, owner_id=owner_id, search=search,
     )
-    rows, total = svc.list_findings(**filters, severity=severity, limit=limit, offset=offset)
+    # ``Finding.hosts`` is plain lazy (review 2026-10-01 C2); this route reads
+    # every endpoint of every row for its distinct-address count, so it names
+    # the load.
+    rows, total = svc.list_findings(
+        **filters, severity=severity, limit=limit, offset=offset, with_endpoints=True,
+    )
     counts = svc.severity_counts(**filters)
 
     findings = []
@@ -2274,16 +2288,17 @@ def list_assist_scans(
 ):
     # The Scans page's own filter (v2.429.1, MCP acceptance run 2: "the last
     # two nmap scans" meant reading every scan).
-    from app.api.v1.endpoints.scans import _apply_scan_inventory_filters
-
     session = _load_assist_session(db, request)
     scans = (
-        _apply_scan_inventory_filters(
+        apply_scan_inventory_filters(
             db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
             search=None, tool=tool, created_after=None,
         )
         # id breaks a tie: scans imported together share created_at, and a
         # page boundary between them would repeat or skip one.
+        # scan_info (nmap's scanned port list) is on every row: one load for
+        # the page, never one per scan.
+        .options(selectinload(models.Scan.scan_info))
         .order_by(models.Scan.created_at.desc(), models.Scan.id.desc())
         .offset(offset)
         .limit(limit)
@@ -2761,8 +2776,12 @@ class AssistFindingDetail(BaseModel):
     evidence_thread: List[AssistFindingNote] = []
     # The finding's own discussion thread.
     comments: List[AssistFindingNote] = []
-    # Provenance for scanner- and execution-sourced findings.
+    # Provenance for scanner- and execution-sourced findings.  At most
+    # ``_SCANNER_EVIDENCE_CAP`` rows (review 2026-10-01 C2); the total says
+    # how many scanner rows evidence the finding.
     scanner_evidence: List[dict] = []
+    scanner_evidence_total: int = 0
+    scanner_evidence_truncated: bool = False
     # v2.442.0 — the agent evidence records that bear on this finding (what
     # was run, and what came back).  It was ``execution_evidence``: one
     # test-plan execution result.
@@ -2781,6 +2800,8 @@ class AssistFindingDetail(BaseModel):
 
 
 _FINDING_HOST_CAP = 100
+#: Scanner rows listed on a finding's detail; ``scanner_evidence_total`` is all of them.
+_SCANNER_EVIDENCE_CAP = 100
 #: A finding's status changes are few; the cap only stops a pathological one.
 _STATUS_HISTORY_CAP = 100
 
@@ -2846,26 +2867,43 @@ def get_assist_finding(
         raise HTTPException(status_code=404, detail="Finding not found in this project")
 
     # --- affected hosts ---------------------------------------------------
-    host_rows = (
-        db.query(FindingHost, models.Host, models.DNSName)
-        .join(models.Host, FindingHost.host_id == models.Host.id)
-        .outerjoin(models.DNSName, FindingHost.name_id == models.DNSName.id)
-        .filter(FindingHost.finding_id == finding.id)
-        .order_by(models.Host.ip_address, models.DNSName.fqdn)
-        .all()
-    )
+    # Review 2026-10-01 C2 — this loaded every endpoint as three entities and
+    # sliced the list in Python.  The cap is now in SQL, the rows are columns,
+    # and the totals come from one grouped count.
     hosts = [
         AssistFindingHost(
-            host_id=h.id,
-            ip_address=h.ip_address,
-            hostname=h.hostname,
-            name_id=fh.name_id,
-            fqdn=n.fqdn if n is not None else None,
-            host_status=fh.host_status,
+            host_id=r.host_id,
+            ip_address=r.ip_address,
+            hostname=r.hostname,
+            name_id=r.name_id,
+            fqdn=r.fqdn,
+            host_status=r.host_status,
         )
-        for fh, h, n in host_rows[:_FINDING_HOST_CAP]
+        for r in (
+            db.query(
+                FindingHost.host_id, FindingHost.name_id, FindingHost.host_status,
+                models.Host.ip_address, models.Host.hostname, models.DNSName.fqdn,
+            )
+            .join(models.Host, FindingHost.host_id == models.Host.id)
+            .outerjoin(models.DNSName, FindingHost.name_id == models.DNSName.id)
+            .filter(FindingHost.finding_id == finding.id)
+            .order_by(models.Host.ip_address, models.DNSName.fqdn, FindingHost.id)
+            .limit(_FINDING_HOST_CAP)
+        )
     ]
-    distinct_host_count = len({h.id for _fh, h, _n in host_rows})
+    endpoint_status_counts: Dict[str, int] = {
+        state: int(n) for state, n in (
+            db.query(FindingHost.host_status, func.count(FindingHost.id))
+            .filter(FindingHost.finding_id == finding.id)
+            .group_by(FindingHost.host_status)
+        )
+    }
+    endpoint_count = sum(endpoint_status_counts.values())
+    distinct_host_count = (
+        db.query(func.count(func.distinct(FindingHost.host_id)))
+        .filter(FindingHost.finding_id == finding.id)
+        .scalar()
+    ) or 0
 
     # --- notes: the evidence note (thread root + its replies) and the
     #     finding's own comment thread, fetched together so attachments are
@@ -2916,23 +2954,27 @@ def get_assist_finding(
     uploaders = _uploader_names(db, [a for atts in attachments_by_note.values() for a in atts])
 
     # --- scanner / execution provenance ----------------------------------
+    # Capped, with the total beside it (C2): an issue-wide promotion links one
+    # scanner row per affected host, and every one was returned as an entity.
     scanner_evidence: List[dict] = []
-    vuln_ids = [
-        row[0] for row in
-        db.query(FindingVulnerability.vuln_id)
-        .filter(FindingVulnerability.finding_id == finding.id)
-        .all()
-    ]
-    if finding.vuln_id and finding.vuln_id not in vuln_ids:
-        vuln_ids.append(finding.vuln_id)
-    if vuln_ids:
+    linked = db.query(FindingVulnerability.vuln_id).filter(FindingVulnerability.finding_id == finding.id)
+    evidences = Vulnerability.id.in_(linked)
+    if finding.vuln_id:
+        evidences = or_(evidences, Vulnerability.id == finding.vuln_id)
+    scanner_evidence_total = db.query(func.count(Vulnerability.id)).filter(evidences).scalar() or 0
+    if scanner_evidence_total:
         for v in (
-            db.query(Vulnerability)
-            .filter(Vulnerability.id.in_(vuln_ids))
-            .all()
+            db.query(
+                Vulnerability.id, Vulnerability.host_id, Vulnerability.source, Vulnerability.plugin_id,
+                Vulnerability.title, Vulnerability.severity, Vulnerability.cve_id,
+            )
+            .filter(evidences)
+            .order_by(Vulnerability.id)
+            .limit(_SCANNER_EVIDENCE_CAP)
         ):
             scanner_evidence.append({
                 "vuln_id": v.id,
+                "host_id": v.host_id,
                 "source": v.source.value if hasattr(v.source, "value") else v.source,
                 "plugin_id": v.plugin_id,
                 "title": v.title,
@@ -2952,9 +2994,6 @@ def get_assist_finding(
     from app.db.models_findings import FindingStatusHistory
     from app.services.report_text import report_text_of
 
-    endpoint_status_counts: Dict[str, int] = {}
-    for fh, _h, _n in host_rows:
-        endpoint_status_counts[fh.host_status] = endpoint_status_counts.get(fh.host_status, 0) + 1
     status_history = [
         {
             "from_status": r.from_status,
@@ -2988,9 +3027,11 @@ def get_assist_finding(
         created_by_username=finding.created_by.username if finding.created_by else None,
         created_at=finding.created_at,
         host_count=distinct_host_count,
-        endpoint_count=len(host_rows),
+        endpoint_count=endpoint_count,
         hosts=hosts,
-        hosts_truncated=len(host_rows) > _FINDING_HOST_CAP,
+        hosts_truncated=endpoint_count > _FINDING_HOST_CAP,
+        scanner_evidence_total=scanner_evidence_total,
+        scanner_evidence_truncated=scanner_evidence_total > _SCANNER_EVIDENCE_CAP,
         evidence_note=(
             _serialize_finding_note(evidence_note, attachments_by_note, uploaders)
             if evidence_note is not None else None

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Optional, Set
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, case, exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -92,6 +92,99 @@ def vulnerability_evidence_filter():
 def vuln_scanned_filter():
     """``scans`` predicate: this scan came from a host vulnerability scanner."""
     return func.lower(models.Scan.tool_name).in_(VULN_SCANNER_TOOLS)
+
+
+# --- Did the vulnerability scan authenticate? (review 2026-10-01) -----------
+#
+# Shown BESIDE "assessed", never part of it: any vulnerability-scanner run
+# still counts as an assessment.  An unauthenticated scan that reports nothing
+# is weaker evidence than a credentialed one (it saw the host from outside),
+# so the reader is told which it was.  Three states, over assessed hosts only:
+#
+#   yes         — at least one vulnerability-scanner scan of the host says it
+#                 authenticated (``host_scan_history.credentialed`` true);
+#   no          — at least one says it did not, and none says it did;
+#   not_stated  — assessed, and no scan said either way (every import from
+#                 before the column existed, every OpenVAS / Nuclei scan, and
+#                 a host assessed only through vulnerability rows).
+#
+# ``vuln_scan_credentialed_condition`` is the ONE definition: the host
+# detail's ``assessment.vuln_scan_credentialed``, the Evidence page's counts
+# and the Hosts DSL's ``vulnscan:`` all evaluate it.
+VULN_SCAN_CREDENTIALED_STATES = ("yes", "no", "not_stated")
+
+
+def _vuln_scan_exists(*conditions):
+    """The enclosing query's host has a vulnerability-scanner scan meeting
+    ``conditions`` — a correlated EXISTS (reached through ``uq_host_scan``)."""
+    return (
+        exists()
+        .where(
+            models.HostScanHistory.host_id == models.Host.id,
+            models.HostScanHistory.scan_id == models.Scan.id,
+            vuln_scanned_filter(),
+            *conditions,
+        )
+        .correlate(models.Host)
+    )
+
+
+def vuln_assessed_condition():
+    """``hosts`` predicate: assessed for vulnerabilities — the same rule as
+    ``assessed_host_ids()["vuln_assessment"]`` (a scanner's run over the host,
+    or any vulnerability row that is not a misconfiguration check)."""
+    has_row = (
+        exists()
+        .where(Vulnerability.host_id == models.Host.id, vulnerability_evidence_filter())
+        .correlate(models.Host)
+    )
+    return or_(has_row, _vuln_scan_exists())
+
+
+def vuln_scan_credentialed_condition(state: str):
+    """``hosts`` predicate for one of ``VULN_SCAN_CREDENTIALED_STATES``.  The
+    three are disjoint and together are exactly ``vuln_assessed_condition``."""
+    said_yes = _vuln_scan_exists(models.HostScanHistory.credentialed.is_(True))
+    said_no = _vuln_scan_exists(models.HostScanHistory.credentialed.is_(False))
+    if state == "yes":
+        return said_yes
+    if state == "no":
+        return and_(~said_yes, said_no)
+    if state == "not_stated":
+        return and_(vuln_assessed_condition(), ~said_yes, ~said_no)
+    raise ValueError(f"unknown credentialed state: {state!r}")
+
+
+def _credentialed_state_column():
+    return case(
+        *[(vuln_scan_credentialed_condition(s), s) for s in VULN_SCAN_CREDENTIALED_STATES],
+        else_=None,
+    )
+
+
+def host_vuln_scan_credentialed(db: Session, host_id: int) -> Optional[str]:
+    """One host's state, or None when it is not assessed for vulnerabilities."""
+    return db.execute(
+        select(_credentialed_state_column()).where(models.Host.id == host_id)
+    ).scalar()
+
+
+def vuln_scan_credentialed_counts(db: Session, project_id: int) -> Dict[str, int]:
+    """How many of the project's vulnerability-assessed hosts are in each
+    state — one statement; the three add up to the assessed count."""
+    state = _credentialed_state_column().label("state")
+    rows = db.execute(
+        select(state, func.count())
+        .select_from(models.Host)
+        .where(models.Host.project_id == project_id)
+        .group_by(state)
+    ).all()
+    found = {s: int(n) for s, n in rows if s is not None}
+    return {
+        "credentialed": found.get("yes", 0),
+        "not_credentialed": found.get("no", 0),
+        "credentials_not_stated": found.get("not_stated", 0),
+    }
 
 
 def _ids(db: Session, query) -> Set[int]:
@@ -412,6 +505,11 @@ def compute_evidence_coverage(db: Session, project_id: int) -> Dict[str, Any]:
                 len(assessed[d["key"]] & eligible[d["key"]]), len(eligible[d["key"]]))
         for d in EVIDENCE_DOMAINS
     ]
+    # Beside "assessed", not instead of it: how many of the assessed hosts the
+    # scanner logged in to.  Present only when the domain has assessed hosts.
+    for domain in domains:
+        if domain["key"] == "vuln_assessment" and domain["coverage"]["numerator"]:
+            domain["credentialed"] = vuln_scan_credentialed_counts(db, project_id)
 
     # --- Contributing tools (project-wide) ------------------------------------
     tool_rows = (

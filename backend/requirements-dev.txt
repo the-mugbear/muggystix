@@ -1,0 +1,17 @@
+# Test and lint tools — not needed to serve the API (review 2026-10-01 B5).
+#
+# They ARE installed in the image by default (Dockerfile build arg
+# INSTALL_DEV=true): the documented way to run the suite is a one-off
+# container of the backend image (CLAUDE.md, "Running the backend suite";
+# scripts/check.sh; scripts/test-alembic-roundtrip.sh), and the hosts this
+# runs on build from source, often without a route to PyPI afterwards.  A
+# deployment that wants an image without them builds with INSTALL_DEV=false
+# in .env — and cannot run the suite from that image.
+#
+# Versions are fixed by constraints.txt, like the runtime ones.
+-r requirements.txt
+pytest==8.4.2
+pytest-cov==7.0.0
+pytest-asyncio==1.2.0
+# pyflakes rules only — see ruff.toml.
+ruff==0.16.10

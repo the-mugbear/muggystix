@@ -222,3 +222,45 @@ describe('Evidence — the lead (5.262.0)', () => {
     );
   });
 });
+
+describe('Evidence — whether the vulnerability scan authenticated', () => {
+  const withVulns = (credentialed?: object, numerator = 412) => ({
+    ...coverage,
+    domains: [
+      ...coverage.domains,
+      { ...domain('vuln_assessment', 'Vulnerability assessment', numerator, 500), ...(credentialed ? { credentialed } : {}) },
+    ],
+  });
+
+  it('says how many assessed hosts were scanned with credentials, and each count opens its hosts', async () => {
+    coverageMock.mockReset().mockResolvedValue(
+      withVulns({ credentialed: 300, not_credentialed: 40, credentials_not_stated: 72 }),
+    );
+    await renderPage();
+    const line = screen.getByTestId('credentialed-line');
+    expect(line).toHaveTextContent(
+      'Vulnerability assessment — 412 assessed: 300 credentialed, 40 not credentialed, 72 not stated.',
+    );
+    // The number is there to support a judgment, and all three stay "assessed".
+    expect(line).toHaveTextContent('weaker evidence');
+    expect(line).toHaveTextContent('All three count as assessed.');
+    const href = (name: RegExp) => within(line).getByRole('link', { name }).getAttribute('href');
+    expect(href(/300 credentialed/)).toBe('/hosts?q=vulnscan%3Acredentialed');
+    expect(href(/40 not credentialed/)).toBe('/hosts?q=vulnscan%3Auncredentialed');
+    expect(href(/72 not stated/)).toBe('/hosts?q=vulnscan%3Aunstated');
+  });
+
+  it('a zero count is a plain number, not a link to an empty list', async () => {
+    coverageMock.mockReset().mockResolvedValue(
+      withVulns({ credentialed: 0, not_credentialed: 0, credentials_not_stated: 5 }, 5),
+    );
+    await renderPage();
+    expect(within(screen.getByTestId('credentialed-line')).getAllByRole('link')).toHaveLength(1);
+  });
+
+  it('shows nothing when no host is assessed or the server sends no counts', async () => {
+    coverageMock.mockReset().mockResolvedValue(withVulns(undefined));
+    await renderPage();
+    expect(screen.queryByTestId('credentialed-line')).toBeNull();
+  });
+});

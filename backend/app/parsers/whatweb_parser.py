@@ -48,6 +48,8 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
+    ProgressBeat,
+    announce_scan,
     correlate_scan,
     ScanHostObservations,
     record_hosts_in_scan,
@@ -134,10 +136,17 @@ class WhatwebParser:
         )
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         written = 0
         skipped = 0
+        # R6 — heartbeat between records (see httpx).
+        scan_id = scan.id
+        beat = ProgressBeat(
+            "records", before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
+        )
         for record in records:
+            beat.tick()
             try:
                 # v2.419.0 (H3) — isolated, as httpx.
                 with record_savepoint(self.db, self._observed, self._reset_caches):

@@ -18,9 +18,8 @@ from app.core.security import (
     get_password_hash,
     validate_password_strength,
     log_audit_event,
-    check_permissions
 )
-from app.api.v1.endpoints.auth import get_current_user, require_role, get_client_info
+from app.api.deps import get_current_user, require_role, get_client_info
 
 
 # --- Shared error responses for role-gated endpoints ---

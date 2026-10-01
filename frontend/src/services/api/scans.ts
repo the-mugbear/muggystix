@@ -73,8 +73,19 @@ export interface ScanPortBreakdown {
   open_with_service?: number;
 }
 
+/** One nmap `<scaninfo>`: what the scan was asked to probe. `services` is the
+ *  tool's raw port-range string — unbounded. */
+export interface ScanInfoEntry {
+  type?: string | null;
+  protocol?: string | null;
+  numservices?: number | null;
+  services?: string | null;
+}
+
 export interface Scan {
   id: number;
+  /** `GET /scans/{id}` only: the scanned port lists (nmap). */
+  scan_info?: ScanInfoEntry[] | null;
   filename: string;
   scan_type: string | null;
   tool_name: string | null;

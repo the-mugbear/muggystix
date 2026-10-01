@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_project import Project
 from app.db.models_auth import User
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project
 from app.services.subnet_insight_service import compute_subnet_insights
 from app.services.systemic_insight_service import compute_systemic_insights

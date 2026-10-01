@@ -150,6 +150,12 @@ function RedirectKeepingQuery({ to }: { to: string }) {
 // crash itself keeps the Layout/sidebar/nav mounted instead of blanking the app.
 function RoutedErrorBoundary({ children }: { children: React.ReactNode }) {
   const location = useLocation();
+  // The pathname key also REMOUNTS the page on every navigation between
+  // routes — /findings/3 → /findings/4 is a fresh FindingDetail, not the same
+  // instance with a new id.  Detail pages rely on that for stale-response
+  // safety (a late response for #3 has no mounted component to write into);
+  // if this key ever goes, each of them needs a latest-request guard
+  // (hooks/useLatestRequest, hooks/useListQuery) first.
   return (
     <ErrorBoundary key={location.pathname} scope="route">
       {children}
@@ -445,7 +451,7 @@ function App() {
                       <Route
                         path="/scopes"
                         element={
-                          <ProtectedRoute requiredRole="analyst">
+                          <ProtectedRoute requiredRole="viewer">
                             <Scopes />
                           </ProtectedRoute>
                         }

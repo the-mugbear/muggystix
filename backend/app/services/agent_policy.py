@@ -1,10 +1,10 @@
 """Single source of truth for the agent safety rules (terse form).
 
-The rules are handed to agents two ways in code — the session prompt
-(:func:`agent_prompt_service.build_session_instructions`) and the offline
-bundle instructions (:func:`bundle_service._build_offline_instructions`).
-Author them once here; both builders render :func:`render_safety_rules`, and
-``test_agent_safety_policy`` asserts both surfaces emit these exact rules.
+The rules are handed to agents in the session prompt
+(:func:`agent_prompt_service.build_session_instructions`), which renders
+:func:`render_safety_rules`; ``test_agent_safety_policy`` asserts the prompt
+emits these exact rules.  (The second surface, the offline bundle
+instructions, went with test plans in v2.442.0.)
 
 This is the *terse skeleton* the prompt carries.  The detailed how-to lives in
 the agent guide by design (see the prompt-vs-guide split).

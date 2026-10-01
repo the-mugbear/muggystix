@@ -350,8 +350,8 @@ Nmap done at Mon Jul 15 10:30:25 2024; 2 IP addresses (2 hosts up) scanned in 24
         with open(temp_file, 'w') as f:
             f.write("")
         
-        scan = parser.parse_file(temp_file, "empty.gnmap")
-        
+        parser.parse_file(temp_file, "empty.gnmap")
+
         # Verify scan was created (not rolled back)
         final_scan_count = db_session.query(models.Scan).count()
         final_host_count = db_session.query(models.Host).count()

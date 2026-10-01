@@ -47,6 +47,9 @@ interface ScopeDomainsCardProps {
   refreshKey?: number;
   /** Called after any change so the parent can refresh coverage numbers. */
   onChanged?: () => void;
+  /** Whether the caller may change the scope (project analyst+).  A reader
+   *  sees the list without the add row or the remove buttons. */
+  canEdit?: boolean;
 }
 
 // Plain-English help for the name-scope presentation (5.198.0).  Name scope
@@ -78,7 +81,7 @@ const TIPS = {
     'exact descendants both count the same name), so they can add up to more than this.',
 } as const;
 
-const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey = 0, onChanged }) => {
+const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey = 0, onChanged, canEdit = true }) => {
   const toast = useToast();
   const [confirmDialog, confirm] = useConfirm();
   const [rows, setRows] = useState<ScopeDomainRow[] | null>(null);
@@ -208,6 +211,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
       )}
     >
       {confirmDialog}
+      {canEdit && (
       <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-end">
         <div className="min-w-0 flex-1">
           <Label htmlFor="new-scope-domain">Domain (one or more; *.example.com allowed)</Label>
@@ -244,6 +248,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
           Add
         </Button>
       </div>
+      )}
       {domainError && (
         <p id="new-scope-domain-error" role="alert" className="-mt-xs mb-sm break-words text-caption text-destructive">
           {domainError}
@@ -296,6 +301,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
                     </TableCell>
                     <TableCell className="text-right tabular-nums">{row.name_count.toLocaleString()}</TableCell>
                     <TableCell className="text-right">
+                      {canEdit && (
                       <Tooltip>
                         <TooltipTrigger asChild>
                           <Button
@@ -310,6 +316,7 @@ const ScopeDomainsCard: React.FC<ScopeDomainsCardProps> = ({ scopeId, refreshKey
                         </TooltipTrigger>
                         <TooltipContent>Remove from scope</TooltipContent>
                       </Tooltip>
+                      )}
                     </TableCell>
                   </TableRow>
                 ))}

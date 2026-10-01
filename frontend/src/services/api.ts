@@ -115,6 +115,9 @@ export interface ScanHostSnapshot {
   hostname_at_scan: string | null;
   state_at_scan: string | null;
   host_created: boolean;
+  /** Did this scan authenticate to the host? true / false when the scanner
+   *  said so (Nessus); null or absent when it did not say — never "no". */
+  credentialed?: boolean | null;
   observed_port_count: number;
   open_port_count: number;
   ports: ScanPortSnapshot[];
@@ -460,6 +463,9 @@ export interface ReportJob {
   completed_at?: string | null;
   expires_at?: string | null;
   dismissed_at?: string | null;
+  /** Who asked for it — retry / cancel / dismiss are the requester's, or a
+   *  project analyst's.  Absent when the server does not send it. */
+  requested_by_id?: number | null;
 }
 
 // Effective per-format host caps for this deployment — the dialog shows the

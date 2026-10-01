@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models import Annotation, FollowStatus, HostFollow
 from app.db.models_agent import AgentSession
-from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES
+from app.db.models_host_tests import HostTest
 from app.db.models_auth import User
 from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
 from app.db.models_project import Project

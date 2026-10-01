@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit, get_current_project, require_project_role
 from app.api.v1.endpoints.agent_common import load_agent_session
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.db.models_agent import Agent
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole

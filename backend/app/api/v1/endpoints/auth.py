@@ -7,7 +7,7 @@ Endpoints for user login, logout, registration, and session management.
 from datetime import datetime, timedelta, timezone
 from typing import Dict, Any, Optional, Union
 from fastapi import APIRouter, Depends, HTTPException, status, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, Field
 
@@ -23,31 +23,39 @@ from app.core.security import (
     log_audit_event,
     create_session,
     revoke_session,
-    check_permissions,
     login_throttle_exceeded,
     verify_password,
     ACCESS_TOKEN_EXPIRE_MINUTES,
     LOGIN_THROTTLE_WINDOW_MINUTES,
 )
 from app.services import totp_service
+# The auth DEPENDENCIES are defined in ``app.api.deps`` (review 2026-10-01
+# B4: a router file is not where ~45 other routers should import from).  They
+# are re-exported here so ``from app.api.v1.endpoints.auth import
+# get_current_user`` — and a test's ``dependency_overrides`` keyed on it —
+# is the SAME function object.  New code imports them from ``app.api.deps``.
+from app.api.deps import (
+    TWO_FACTOR_CHALLENGE_PURPOSE as _2FA_CHALLENGE_PURPOSE,
+    get_client_info,
+    get_current_user,
+    optional_bearer as _optional_bearer,
+    require_password_changed,
+    require_role,
+    security,
+)
 
-# Short-lived purpose claim minted after password (but before TOTP) succeeds.
-# A token carrying it is NOT a session: it has no UserSession row, and
-# get_current_user rejects the purpose explicitly (belt-and-suspenders).
-_2FA_CHALLENGE_PURPOSE = "2fa_challenge"
+__all__ = [
+    "router",
+    "get_client_info",
+    "get_current_user",
+    "require_password_changed",
+    "require_role",
+    "security",
+]
+
 _2FA_CHALLENGE_TTL_MINUTES = 5
 
 router = APIRouter()
-security = HTTPBearer()
-# Same scheme without the automatic 401 — used where the token is only read
-# for context after get_current_user has authenticated the request.
-_optional_bearer = HTTPBearer(auto_error=False)
-
-# v2.91.3 (code review #6) — debounce window for UserSession.last_activity
-# updates on the get_current_user dep.  Mirrors the agent-side debounce
-# constant in app.api.deps; see the get_current_user docstring for why
-# coarse-grained resolution is fine here.
-_USER_SESSION_ACTIVITY_DEBOUNCE_SECONDS = 60.0
 
 
 # Pydantic models for request/response
@@ -103,146 +111,6 @@ class UserProfile(BaseModel):
 class ChangePasswordRequest(BaseModel):
     current_password: str
     new_password: str
-
-
-def get_client_info(request: Request) -> Dict[str, Optional[str]]:
-    """Extract client information from request"""
-    return {
-        "ip_address": request.client.host if request.client else None,
-        "user_agent": request.headers.get("user-agent")
-    }
-
-
-def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: Session = Depends(get_db)
-) -> User:
-    # v2.91.4 (third code review #3) — switched from `async def` to
-    # plain `def`.  Pre-fix this dep was `async def` but every call
-    # inside it (verify_token / db.query.first() / db.commit())
-    # is synchronous psycopg2 / bcrypt work.  FastAPI runs `async
-    # def` deps directly on the event loop, so on every
-    # authenticated request the loop blocked on two SELECTs + an
-    # UPDATE; a slow DB stalled unrelated requests on the same
-    # Uvicorn worker.  Switching to `def` lets FastAPI dispatch
-    # this dep to its thread pool, freeing the loop.  Same
-    # contract — the caller awaits the same Depends().
-    """
-    Get current authenticated user from JWT token
-    """
-    token = credentials.credentials
-    payload = verify_token(token)
-
-    # A 2FA-challenge token proves password-but-not-yet-TOTP; it must never
-    # authenticate a request.  (It also has no session row, so the lookup
-    # below would reject it anyway — this is the explicit, earlier guard.)
-    if payload.get("purpose") == _2FA_CHALLENGE_PURPOSE:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Two-factor authentication not completed",
-        )
-
-    user_id = payload.get("sub")
-    if not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload"
-        )
-
-    # `sub` is a numeric user id at mint time, but a malformed or
-    # foreign-issued token could carry a non-numeric subject; int() would
-    # then raise ValueError and escape as a 500.  Auth-boundary type
-    # failures must be 401, not 500.
-    try:
-        user_id_int = int(user_id)
-    except (TypeError, ValueError):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid token payload"
-        )
-
-    user = db.query(User).filter(User.id == user_id_int).first()
-    if not user or not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User not found or inactive"
-        )
-
-    # Check if session is still valid
-    token_jti = payload.get("jti")
-    session = db.query(UserSession).filter(
-        UserSession.token_jti == token_jti,
-        UserSession.revoked_at.is_(None),
-        UserSession.expires_at > datetime.now(timezone.utc)
-    ).first()
-
-    if not session:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Session expired or revoked"
-        )
-
-    # v2.91.3 (code review #6) — debounce the per-request session
-    # activity write.  Pre-fix every authenticated user request issued
-    # an UPDATE + commit on user_sessions, which on a polling-heavy UI
-    # turns read traffic into write traffic with all the WAL + row-
-    # contention costs.  The agent path was debounced in v2.26.0
-    # (see deps._AGENT_ACTIVITY_DEBOUNCE_SECONDS); apply the same
-    # pattern here.  ``last_activity`` is used as a "when did this
-    # user last show signs of life" coarse signal — second-level
-    # resolution isn't required (the per-request audit trail lives
-    # elsewhere).  Stateless across workers because the persisted
-    # value is itself the source of truth.
-    now = datetime.now(timezone.utc)
-    prior = session.last_activity
-    if prior is not None and prior.tzinfo is None:
-        prior = prior.replace(tzinfo=timezone.utc)
-    if prior is None or (now - prior).total_seconds() >= _USER_SESSION_ACTIVITY_DEBOUNCE_SECONDS:
-        session.last_activity = now
-        db.commit()
-
-    return user
-
-
-def require_role(required_role: str):
-    """Decorator to require specific user role"""
-    def role_checker(current_user: User = Depends(get_current_user)):
-        if not check_permissions(current_user.role, required_role):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Insufficient permissions. Required: {required_role}"
-            )
-        return current_user
-    return role_checker
-
-
-def require_password_changed(
-    current_user: User = Depends(get_current_user),
-) -> User:
-    """Post-login account-readiness gate, applied to every data endpoint.
-
-    Blocks API access (403 with a machine-readable detail the frontend
-    intercepts) until the user has finished account setup:
-      * ``password_change_required`` — a forced password change is pending.
-      * ``two_factor_setup_required`` — mandatory 2FA (``REQUIRE_2FA``) is on
-        and the user hasn't enrolled yet.
-
-    Password change is checked first (most urgent).  The ``/auth/*`` surface —
-    login, logout, change-password, profile, and the ``/auth/2fa/*`` enrollment
-    endpoints — is intentionally NOT behind this gate, so a blocked user can
-    still complete setup.
-    """
-    if current_user.must_change_password:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="password_change_required",
-        )
-    if settings.REQUIRE_2FA and not current_user.totp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="two_factor_setup_required",
-        )
-    return current_user
 
 
 @router.post("/login", response_model=Union[LoginResponse, TwoFactorChallengeResponse])
@@ -581,7 +449,6 @@ def change_password(
     client_info = get_client_info(request)
 
     # Verify current password
-    from app.core.security import verify_password
     if not verify_password(password_data.current_password, current_user.hashed_password):
         log_audit_event(
             db=db,

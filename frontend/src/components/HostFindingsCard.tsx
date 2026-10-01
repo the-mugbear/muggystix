@@ -15,13 +15,16 @@ import {
   Finding,
   FindingHostStatus,
   FindingStatus,
+  getFinding,
   listFindings,
   setFindingEndpointStatus,
   setFindingStatus,
 } from '../services/api';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
+import { endpointPreviewIsCut } from '../utils/findingEndpoints';
+import { runLimited } from '../utils/runLimited';
 import { useToast } from '../contexts/ToastContext';
-import { useAuth } from '../contexts/AuthContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { formatApiError } from '../utils/apiErrors';
 import { Badge } from './ui/badge';
 import { FindingHistoryButton } from './FindingHistoryButton';
@@ -45,15 +48,29 @@ interface HostFindingsCardProps {
 const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey }) => {
   const toast = useToast();
   const navigate = useNavigate();
-  const { hasPermission } = useAuth();
-  const canManage = hasPermission('analyst');
+  const { canWrite: canManage } = useProjectRole();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   const fetchFindings = useCallback(async () => {
     try {
       const res = await listFindings({ host_id: hostId, limit: 100 });
-      setFindings(res.items);
+      // A list row's `hosts` is a preview of at most five endpoints (C2), and
+      // with `host_id` the server puts THIS host's endpoint rows first
+      // (`endpoint_summaries(first_host_id=)`), so the preview is enough: no
+      // read per finding.  The one case it cannot answer is a cut preview
+      // that is ALL this host's rows — a host with more named endpoints on
+      // the finding than the preview holds — where the rows beyond it would
+      // be left out of this host's state and of a change to it.  Only then is
+      // the finding read whole; a failed read keeps the list row.
+      const cut = res.items.filter((f) => {
+        const shown = f.hosts ?? [];
+        return endpointPreviewIsCut(f) && shown.length > 0 && shown.every((h) => h.host_id === hostId);
+      });
+      const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id));
+      const byId = new Map<number, Finding>();
+      whole.forEach((r) => { if (r.status === 'fulfilled') byId.set(r.value.id, r.value); });
+      setFindings(res.items.map((f) => byId.get(f.id) ?? f));
     } catch {
       // Non-blocking surface — leave empty on error.
     } finally {

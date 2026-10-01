@@ -12,7 +12,7 @@ from pydantic import BaseModel
 
 from app.db.session import get_db
 from app.db.models_auth import User, UserRole
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.deps import get_current_user, require_role
 from app.core.security import log_audit_event
 
 router = APIRouter(dependencies=[Depends(get_current_user)])

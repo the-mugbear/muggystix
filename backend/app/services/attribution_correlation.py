@@ -12,7 +12,6 @@ those discovered today, so correlation can't be a one-shot at ingest.
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from sqlalchemy.orm import Session
 

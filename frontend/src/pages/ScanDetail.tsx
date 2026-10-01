@@ -25,6 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '../components/ui/toolti
 import { formatApiError } from '../utils/apiErrors';
 import { formatHostForUrl } from '../utils/webLinks';
 import { ScanTimeSourceNote } from '../components/scans/ScanTimeCells';
+import ScannedPorts from '../components/scans/ScannedPorts';
 import { describeScanRun, describeUpload } from '../utils/scanTime';
 
 type BadgeTone = 'success' | 'destructive' | 'warning' | 'muted';
@@ -173,6 +174,9 @@ const ScanDetail: React.FC = () => {
   // The rendered host/port tables are a sample when the scan has more
   // hosts than we fetched — surface that so the counts don't look buggy.
   const hostsCapped = hosts.length < totalHostCount;
+  // Whether the scan authenticated to each host is a column only when the scan
+  // said so for someone: an nmap scan gets no column of blanks.
+  const showCredentialed = snapshots.some((row) => row.credentialed != null);
 
   // v5.205.0 — same wording as the /scans list: when the scan ran per its own
   // output (or that the file doesn't say), where that time came from, and the
@@ -244,6 +248,10 @@ const ScanDetail: React.FC = () => {
           />
         </PostureMeasure>
       </div>
+
+      {/* What the scan was asked to probe (nmap's scaninfo). The tool's own
+          range string is unbounded, so the component clamps it. */}
+      <ScannedPorts scanInfo={scan.scan_info} className="mb-lg" />
 
       {/* Scanner-observation severity rollup — only for scans that recorded any. */}
       {vulnSummary && vulnSummary.total > 0 && (
@@ -360,6 +368,14 @@ const ScanDetail: React.FC = () => {
                             <TableHead className="w-1/4">Hostname at scan</TableHead>
                             <TableHead className="w-28">State at scan</TableHead>
                             <TableHead className="w-24">First seen</TableHead>
+                            {showCredentialed && (
+                              <TableHead
+                                className="w-36"
+                                title="Whether this scan logged in to the host. Blank: the scan did not say."
+                              >
+                                Authenticated
+                              </TableHead>
+                            )}
                             <TableHead className="w-1/4">Ports observed</TableHead>
                           </TableRow>
                         </TableHeader>
@@ -409,6 +425,18 @@ const ScanDetail: React.FC = () => {
                                   </span>
                                 )}
                               </TableCell>
+                              {showCredentialed && (
+                                <TableCell>
+                                  {/* A text state, not a badge; null stays
+                                      blank — "did not say" is not "no". */}
+                                  <div className="max-w-full truncate min-w-0 text-metadata">
+                                    {row.credentialed === true && 'Credentialed'}
+                                    {row.credentialed === false && (
+                                      <span className="text-muted-foreground">Not credentialed</span>
+                                    )}
+                                  </div>
+                                </TableCell>
+                              )}
                               <TableCell>
                                 <div className="max-w-full truncate min-w-0 tabular-nums">
                                   {row.open_port_count} open

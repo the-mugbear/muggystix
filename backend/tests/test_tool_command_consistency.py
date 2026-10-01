@@ -2,13 +2,13 @@
 
 `app.services.tool_output_contract.TOOL_OUTPUT_CONTRACT` is the single source of
 truth for which file extensions each recon tool's output must carry to be
-parseable.  Three independent, human/agent-facing copies describe "how to run
-a tool for BlueStick", and they can't share code (a static operator-facing
-page and two markdown tables).  The backend recon catalog was a fourth until
-v2.434.0, when BlueStick stopped handing agents commands to run:
+parseable.  Two independent, human-facing copies describe "how to run a tool
+for BlueStick", and they can't share code (a static operator-facing page and a
+markdown table).  The backend recon catalog was another until v2.434.0, when
+BlueStick stopped handing agents commands to run, and the agent guide's
+"Supported upload formats" table (source 3) left the guide in v2.433.1:
 
   2. frontend Tool Reference — ``RUN_COMMANDS`` in ``frontend/src/pages/ToolReference.tsx``
-  3. ``documentation/AGENT_GUIDE.md`` "Supported upload formats" table
   4. ``documentation/UPLOAD_FORMATS.md`` parser-coverage table
 
 The invariant this test pins: **every output extension any source recommends or
@@ -17,7 +17,7 @@ contract is the permissive superset of valid formats; a source that drifts to an
 extension outside it (i.e. one the parser can't ingest) fails here instead of
 shipping a command whose output silently won't upload.
 
-Sources 2–4 live outside the backend image (only ``backend/`` is copied in), so
+Both sources live outside the backend image (only ``backend/`` is copied in), so
 run this with the repo root mounted to exercise every check::
 
     docker compose run --rm --no-deps -v "$PWD:/repo" -w /repo/backend backend \\
@@ -167,30 +167,20 @@ def test_frontend_run_commands_match_contract():
             )
 
 
-# --- Source 3: AGENTS.md upload-formats table ------------------------------
-# Display name in the table → contract key.
-_AGENTS_TABLE_ALIASES = {
-    "nmap": "nmap",
-    "nmap (grepable)": "nmap",
-    "masscan": "masscan",
-    "rustscan → nmap": "rustscan",
-    "httpx": "httpx",
-    "eyewitness": "eyewitness",
-    "nikto": "nikto",
-    "naabu": "naabu",
-    "nuclei": "nuclei",
-    "bloodhound": "bloodhound-python",
-    "netexec": "netexec",
-}
+# --- (Source 3 was the agent guide's "Supported upload formats" table.  The
+# table left the guide in v2.433.1 (a908a2a1) with the recon-run sections, and
+# its check then matched no rows and skipped or failed.  The guide now names
+# tools only, with no extensions; agents read `list_tools` (`ingestible`), and
+# the extension list is UPLOAD_FORMATS.md, pinned below.)
 _BACKTICK_EXT_RE = re.compile(r"`\.([A-Za-z0-9]+)`")
 
 
 def _table_extensions(cell: str) -> Set[str]:
     """Extract extension tokens from a markdown cell.
 
-    Both tables quote extensions as ```.xml```; grab those regardless of the
-    surrounding separators (AGENTS.md uses ' / ', UPLOAD_FORMATS.md uses commas
-    and parentheticals like '`.xml` (normal)').  Fall back to slash-split bare
+    The table quotes extensions as ```.xml```; grab those regardless of the
+    surrounding separators (commas and parentheticals like '`.xml` (normal)').
+    Fall back to slash-split bare
     tokens if a cell has no backtick-quoted extension."""
     exts = {m.lower() for m in _BACKTICK_EXT_RE.findall(cell)}
     if exts:
@@ -201,31 +191,6 @@ def _table_extensions(cell: str) -> Set[str]:
         if m:
             exts.add(m.group(1).lower())
     return exts
-
-
-def test_agents_md_table_matches_contract():
-    md = _read("documentation/AGENT_GUIDE.md")
-    if md is None:
-        pytest.skip("AGENTS.md not mounted — run with the repo root mounted")
-    checked = 0
-    for line in md.splitlines():
-        if not line.strip().startswith("|"):
-            continue
-        cols = [c.strip() for c in line.strip().strip("|").split("|")]
-        if len(cols) < 3:
-            continue
-        tool = _AGENTS_TABLE_ALIASES.get(cols[0].lower())
-        if tool is None:
-            continue  # header, separator, or a non-command row (nessus/openvas/dns)
-        listed = _table_extensions(cols[1])
-        # Every extension the table advertises must be accepted by the contract.
-        extra = listed - accepted_extensions(tool)
-        assert not extra, (
-            f"AGENTS.md upload table row '{cols[0]}' lists .{extra} "
-            f"not in contract for '{tool}' ({accepted_extensions(tool)})"
-        )
-        checked += 1
-    assert checked >= 8, f"only matched {checked} AGENTS.md rows — table shape changed?"
 
 
 # --- Source 4: documentation/UPLOAD_FORMATS.md -----------------------------

@@ -4,7 +4,7 @@ import json
 from datetime import datetime, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import func, update
+from sqlalchemy import update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import joinedload
 
@@ -113,12 +113,14 @@ def create_tests(db, project_id, tests, who):
         ))
     # Savepoints isolate uniqueness races; the outer transaction keeps the batch atomic.
     result = []
+    created = []
     for row in prepared:
         if row.id is None:
             try:
                 with db.begin_nested():
                     db.add(row)
                     db.flush()
+                created.append(row)
             except IntegrityError:
                 other = db.query(HostTest).filter(
                     HostTest.project_id == project_id, HostTest.request_key == row.request_key,
@@ -129,11 +131,23 @@ def create_tests(db, project_id, tests, who):
                     raise HTTPException(409, "request_key already used for a different test")
                 row = other
         result.append(row)
+    # Review 2026-10-01 B9 — a test proposed FOR someone tells them (one
+    # notification per assignee for the batch; a replayed test tells nobody).
+    _notify_assigned(db, created, who.user_id)
     return result
+
+
+def _notify_assigned(db, tests, actor_id):
+    """In the caller's transaction, so a rolled-back change notifies nobody."""
+    from app.services.notification_service import NotificationService
+
+    if tests:
+        NotificationService(db).notify_host_tests_assigned(tests, actor_id)
 
 
 def update_test(db, project_id, test_id, body, user_id):
     row = get_test(db, project_id, test_id)
+    assigned_before = row.assigned_to_id
     values = body.model_dump(exclude_unset=True, exclude={"expected_revision"})
     if "status" in values and values["status"] is None:
         raise HTTPException(422, "status cannot be null")
@@ -162,6 +176,10 @@ def update_test(db, project_id, test_id, body, user_id):
     if changed.rowcount != 1:
         raise HTTPException(409, "This test changed; refresh before updating it")
     db.refresh(row)
+    # B9 — handing a test to someone else tells them; claiming it yourself, or
+    # re-sending the assignee it already had, does not.
+    if values.get("assigned_to_id") is not None and row.assigned_to_id != assigned_before:
+        _notify_assigned(db, [row], user_id)
     return row
 
 
@@ -184,7 +202,7 @@ def record_result(db, project_id, test_id, body, user_id):
         command = test.command.replace("{ip}", test.host.ip_address).replace("{fqdn}", test.target_fqdn or "{fqdn}")
 
     def store():
-        return agent_evidence_service.record_evidence(
+        return agent_evidence_service.record_evidence_once(
             db, project_id=project_id, host_id=test.host_id, host_test_id=test.id,
             request_key=body.request_key, tool=test.tool or "manual", outcome=body.outcome,
             summary=body.summary, command=command, raw_output=body.raw_output,
@@ -199,12 +217,20 @@ def record_result(db, project_id, test_id, body, user_id):
     if db.query(EvidenceRecord.id).filter(
         EvidenceRecord.project_id == project_id, EvidenceRecord.request_key == body.request_key,
     ).first() is not None:
-        return test, store()
+        return test, store()[0]
     # Refuse a stale copy before anything is written.
     if test.revision != body.expected_revision:
         raise HTTPException(409, "This test changed; refresh before updating it")
-    record = store()
-    # Every result takes its revision, including one that leaves the status
+    record, created = store()
+    if not created:
+        # The same key was stored by a request that ran alongside this one (a
+        # double click): the check above saw nothing, the insert met the
+        # other's row, and the evidence service has confirmed it IS this
+        # result.  That request already moved the test, so taking the revision
+        # again would refuse a retry that succeeded (review 2026-10-01 N8).
+        db.refresh(test)
+        return test, record
+    # Every NEW result takes its revision, including one that leaves the status
     # as it was: the UPDATE's WHERE is the only check a concurrent change
     # cannot slip past, and the caller's rollback then discards the record.
     status = "done" if body.outcome in CLOSING_OUTCOMES else "in_progress"

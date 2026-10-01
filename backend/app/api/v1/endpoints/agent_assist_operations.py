@@ -14,6 +14,7 @@ it).
 * ``GET /assist/workbench/terrain``    → ``address_terrain_service.compute_address_terrain``
 * ``GET /assist/evidence/gaps?domain=`` → ``evidence_service.evidence_gap_hosts``
 * ``GET /assist/scans/compare``        → ``scan_diff_service.compute_scan_diff``
+* ``GET /assist/scans/{id}/hosts``     → ``scan_snapshot_service.scan_host_snapshots``
 
 The personal sections are the key's OPERATOR's — the person the session acts
 for — exactly as that person would see them.  Reading never acknowledges
@@ -33,11 +34,12 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit
-from app.api.v1.endpoints.agent_assist import _load_assist_session
+from app.api.v1.endpoints.agent_common import load_agent_session
 from app.db.models_agent import Agent, AgentSession
 from app.db.models_auth import User
 from app.db.models_project import Project
 from app.db.session import get_db
+from app.schemas.pagination import Paginated
 from app.services.address_terrain_service import TerrainBlock, compute_address_terrain
 from app.services.evidence_service import DOMAIN_LABELS, evidence_gap_hosts, evidence_segments
 from app.services.operations_read_service import (
@@ -45,6 +47,7 @@ from app.services.operations_read_service import (
     compute_investigation_queue,
 )
 from app.services.scan_diff_service import ScanDiffResponse, ScanNotInProject, compute_scan_diff
+from app.services.scan_snapshot_service import ScanHostSnapshot, scan_host_snapshots
 from app.services.workbench_service import WorkbenchResponse, compute_workbench
 
 logger = logging.getLogger(__name__)
@@ -126,7 +129,7 @@ def get_assist_workbench(
     section reported ``*_unavailable: true`` could not be computed — say so;
     it does NOT mean there is nothing there.
     """
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     project, operator = _project_and_operator(db, session)
     if operator is None:
         raise HTTPException(
@@ -162,7 +165,7 @@ def get_assist_investigation_queue(
     503 when the queue cannot be computed — never an empty queue, which would
     read as "every host has been touched".
     """
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     project, _ = _project_and_operator(db, session)
     try:
         return compute_investigation_queue(db, project, limit=limit, tier=tier, offset=offset)
@@ -190,7 +193,7 @@ def get_assist_terrain(
     ``planned`` / ``worked`` / ``untouched`` (exclusive, adding up to
     ``hosts``), plus ``critical`` and ``critical_untouched``.  Answers "which
     ranges has nobody touched?".  503 on failure — never an empty map."""
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     project, _ = _project_and_operator(db, session)
     try:
         terrain = compute_address_terrain(db, project)
@@ -245,7 +248,7 @@ def get_assist_evidence_gaps(
     ``total`` is exact; ``items`` is cut at ``limit``.  Read ``scope_caution``
     when present — hosts outside the declared scope must be confirmed in scope
     before anyone collects against them."""
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     result = evidence_gap_hosts(db, session.project_id, domain, limit=limit, segment=segment)
     if result is None:
         # Say WHICH value is wrong and what would be right (MCP acceptance
@@ -287,7 +290,7 @@ def get_assist_scan_compare(
     never looked — NOT evidence of remediation).  Both ids are required: pick
     them from ``assist_list_scans`` (compare scans of the same targets and
     tool, or the difference is coverage, not change)."""
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     try:
         return compute_scan_diff(db, session.project_id, a, b, row_cap=limit)
     except ScanNotInProject as exc:
@@ -295,3 +298,40 @@ def get_assist_scan_compare(
             status_code=404,
             detail=f"Scan(s) not found in project: {', '.join(str(x) for x in exc.missing)}",
         )
+
+
+# ---------------------------------------------------------------------------
+# One scan's hosts, as it observed them
+# ---------------------------------------------------------------------------
+
+@router.get(
+    "/assist/scans/{scan_id}/hosts",
+    response_model=Paginated[ScanHostSnapshot],
+    summary="Hosts as one scan observed them — state, hostname, ports, whether it authenticated",
+)
+def get_assist_scan_hosts(
+    scan_id: int,
+    request: Request,
+    state: Optional[str] = Query(
+        None, max_length=40,
+        description="Filter on state_at_scan (the observed state, not the current one).",
+    ),
+    search: Optional[str] = Query(None, max_length=200, description="Address or hostname at scan"),
+    skip: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=1000),
+    agent: Agent = Depends(check_agent_rate_limit),
+    db: Session = Depends(get_db),
+):
+    """The scan page's "As scanned" table (``GET /scans/{id}/host-snapshots``),
+    from the same ``scan_snapshot_service.scan_host_snapshots``: what THIS scan
+    recorded — it does not change as later scans run.  ``credentialed`` is
+    whether the scan authenticated to the host: true / false when the scanner
+    said so (Nessus), null when it did not say — null is "not stated", never
+    "no".  ``ports`` lists at most 50 per host; the two counts are exact."""
+    session = load_agent_session(db, request)
+    try:
+        return scan_host_snapshots(
+            db, session.project_id, scan_id, state=state, search=search, skip=skip, limit=limit,
+        )
+    except ScanNotInProject:
+        raise HTTPException(status_code=404, detail="Scan not found in this project")

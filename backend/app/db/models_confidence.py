@@ -5,7 +5,7 @@ These models extend the base v2 schema to track confidence scores
 and historical conflicts for better visibility into data quality.
 """
 
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, Float, JSON, func, Index, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, ForeignKey, JSON, func, Index, UniqueConstraint
 from sqlalchemy.orm import relationship
 from app.db.session import Base
 

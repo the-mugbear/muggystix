@@ -106,7 +106,8 @@ say in your report which you had.
     `writable_share`, `shares`) **beside the tool's own line** (`raw_output`);
   - `assist_get_host_vulnerabilities` — scanner observations; `check_id` names
     the catalog check (`vnc_no_auth`, `smb_signing_not_required`,
-    `smb_null_session`, `smbv1_enabled`, `ftp_anonymous`…);
+    `smb_null_session`, `smbv1_enabled`, `ftp_anonymous`,
+    `dns_zone_transfer_allowed`…);
   - `assist_list_host_web_interfaces` — web results.
 - **The BlueStick source tree**, if present:
   - `backend/app/data/parser_coverage.json` (or

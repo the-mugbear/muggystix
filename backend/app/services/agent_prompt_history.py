@@ -21,6 +21,39 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.3.0",
+        "app_version": "2.448.0",
+        "summary": (
+            "What the 2026-10-01 review changed for agents. Reports: "
+            "assist_get_client_report carries each finding's `confirmations` (the test "
+            "results the report prints as how it was confirmed) with `confirmations_omitted`, "
+            "and in an addendum the change kind `severity_changed` with `previous_severity` / "
+            "`previous_severity_label`; `delta.findings_with_changed_severity`, and "
+            "`summary.evidence_records` / `agent_evidence_records`. Findings: "
+            "assist_get_finding lists at most 100 scanner rows and says so "
+            "(`scanner_evidence_total`, `scanner_evidence_truncated`); the page's findings "
+            "list is a five-endpoint preview beside the true `host_count`. Evidence: a "
+            "result promoted from a linked test joins the issue's finding without "
+            "re-statusing one that is already concluded; raw output over 5 MB is a 413, as "
+            "the guide always said. Notifications: assigning a host test tells the "
+            "assignee; a proposal on no finding yet tells the project's admins; a promote / "
+            "dismiss proposal on an observation that already has a finding tells that "
+            "finding's author and owner. Imports: a failed or cancelled import leaves "
+            "nothing in the inventory. Scans: assist_list_scan_hosts (GET "
+            "/agent/assist/scans/{id}/hosts) is the scan page's as-scanned host table, "
+            "with `credentialed` — whether the scan authenticated to the host (null = "
+            "the scan did not say, never 'no'); assist_list_scans rows carry `scan_info`, "
+            "the port list an nmap scan was asked to probe. Assessment: the host detail's "
+            "`assessment.vuln_scan_credentialed` (yes / no / not_stated) and "
+            "/assist/coverage's `vuln_assessment.credentialed` counts say whether the "
+            "vulnerability scan authenticated — a host is still assessed either way, but "
+            "say which it was when reporting a host or a segment as clean; "
+            "`q=vulnscan:credentialed|uncredentialed|unstated` lists each. Weaknesses: a "
+            "name server that allowed a zone transfer (dnsx -axfr) carries the catalog "
+            "check `dns_zone_transfer_allowed` (source dnsx) when its address is a host."
+        ),
+    },
+    {
         "version": "4.2.0",
         "app_version": "2.446.0",
         "summary": (

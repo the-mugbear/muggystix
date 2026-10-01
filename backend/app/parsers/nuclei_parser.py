@@ -35,6 +35,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import (
+    ProgressBeat,
     ScanClock,
     correlate_scan,
     ensure_scan,
@@ -165,9 +166,12 @@ class NucleiParser:
         no_address: List[str] = []
         failed: List[str] = []
 
+        # R6 — heartbeat between results, outside the result's savepoint.
+        beat = ProgressBeat("results")
         for record in records:
             if not isinstance(record, dict) or not record.get("template-id"):
                 continue
+            beat.tick()
             seen += 1
             ip, hostname, port, scheme = _target_of(record)
             if not ip:

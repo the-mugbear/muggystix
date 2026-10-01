@@ -1,10 +1,8 @@
 import logging
-import os
-import tempfile
 from typing import List, Optional
 from starlette.concurrency import run_in_threadpool
-from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Form, Query
-from sqlalchemy import func, or_
+from fastapi import APIRouter, UploadFile, File, HTTPException, Depends, Query
+from sqlalchemy import case, func, or_, text, true
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
@@ -17,19 +15,17 @@ from app.schemas.dns_names import (
     ScopeDomainRow,
 )
 from app.services import dns_name_service
+from app.services.default_scope import get_or_create_default_scope
 from app.services.host_query_common import escape_like
-from app.api.v1.endpoints.auth import get_current_user, require_role
-from app.db.models_auth import User, UserRole
+from app.api.deps import get_current_user
+from app.db.models_auth import User
 from app.api.deps import get_current_project, require_project_role, read_upload_capped
 from app.db.models_project import Project, ProjectRole
 from app.schemas.pagination import Paginated
 from app.schemas.schemas import (
     Scope as ScopeSchema,
     ScopeSummary,
-    ScopeCreate,
-    ScopeUpdate,
     Subnet as SubnetSchema,
-    SubnetCreate,
     SubnetUpdate,
     SubnetBatchCreate,
     SubnetFileUploadResponse,
@@ -57,51 +53,15 @@ logger = logging.getLogger(__name__)
 # Default scope helper (v2.9.4)
 # ---------------------------------------------------------------------------
 #
-# As of v2.9.4 the user never names or manages a "scope container" — a
-# project has exactly one scope conceptually, and the user sees a flat
-# list of subnet/IP entries with optional labels.  The backend Scope
-# model is kept as-is (no migration, no data loss on rollback), but all
-# write paths funnel through this helper so every new project gets one
-# sentinel-named scope and every upload/add operation appends to it
-# rather than minting a new scope.
-
-DEFAULT_SCOPE_NAME = "__default__"
-
+# A project has exactly one scope container; every write path funnels through
+# ``default_scope.get_or_create_default_scope`` (a service since the
+# 2026-10-01 review, B4 — the scope-domain write in dns_names.py uses it too).
+#
 # v2.244.0 — POST / and PATCH /{scope_id} (create + rename a scope container)
 # were removed. They were leftovers from the pre-v2.9.4 model in which users
 # named and managed scopes; since then a project has exactly one implicit
-# scope and every write path funnels through get_or_create_default_scope
-# below. Nothing in the UI had called them for that entire time.
-
-
-def get_or_create_default_scope(db: Session, project_id: int, user_id: Optional[int] = None) -> Scope:
-    """Return the project's default scope, creating it if it doesn't exist.
-
-    If the project already has at least one scope (either a legacy
-    named scope or the sentinel default), this returns the
-    lowest-id existing scope so legacy projects land in a stable,
-    deterministic "first" scope rather than minting yet another one.
-    Projects with zero scopes get a freshly-created sentinel scope
-    named ``__default__``.
-    """
-    existing = (
-        db.query(Scope)
-        .filter(Scope.project_id == project_id)
-        .order_by(Scope.id.asc())
-        .first()
-    )
-    if existing:
-        return existing
-    scope = Scope(
-        name=DEFAULT_SCOPE_NAME,
-        description="Project scope",
-        project_id=project_id,
-        uploaded_by_id=user_id,
-    )
-    db.add(scope)
-    db.commit()
-    db.refresh(scope)
-    return scope
+# scope and every write path funnels through get_or_create_default_scope.
+# Nothing in the UI had called them for that entire time.
 
 
 def _get_or_create_site(db: Session, project_id: int, name: Optional[str], user_id: Optional[int], cache: Optional[dict] = None) -> Optional[Site]:
@@ -543,6 +503,63 @@ def get_scopes(
     ]
 
 
+def _technology_host_counts(db: Session, project_id: int) -> dict:
+    """{technology: hosts reporting it} over the project's web interfaces.
+
+    Distinct hosts, not interfaces; an interface with no host counts as one
+    more (the Python bucketing put ``None`` in the set).  On SQLite (the test
+    fallback, which has no ``json_array_elements_text``) the rows are bucketed
+    in Python as they always were.
+    """
+    WebInterface = models.WebInterface
+    dialect = db.get_bind().dialect.name
+    if dialect != "postgresql":
+        sets: dict = {}
+        for host_id, tech_list in (
+            db.query(WebInterface.host_id, WebInterface.technologies)
+            .filter(WebInterface.project_id == project_id, WebInterface.technologies.isnot(None))
+            .all()
+        ):
+            if not isinstance(tech_list, list):
+                continue
+            for t in tech_list:
+                if isinstance(t, str) and t:
+                    sets.setdefault(t, set()).add(host_id)
+        return {name: len(hosts) for name, hosts in sets.items()}
+
+    # A JSON ``null`` / object / string in the column is not an array:
+    # ``json_array_elements`` raises on it, and Postgres does not promise the
+    # WHERE runs before the set-returning function — so the non-arrays are
+    # replaced by an empty array IN the function's argument.
+    arrays = case(
+        (func.json_typeof(WebInterface.technologies) == "array", WebInterface.technologies),
+        else_=text("'[]'::json"),
+    )
+    element = func.json_array_elements(arrays).table_valued("value")
+    # ``#>> '{}'`` is the element as text; only string elements are names.
+    name = element.c.value.op("#>>")(text("'{}'"))
+    rows = (
+        db.query(
+            name.label("name"),
+            (
+                func.count(func.distinct(WebInterface.host_id))
+                + func.max(case((WebInterface.host_id.is_(None), 1), else_=0))
+            ).label("host_count"),
+        )
+        .select_from(WebInterface)
+        .join(element, true())
+        .filter(
+            WebInterface.project_id == project_id,
+            WebInterface.technologies.isnot(None),
+            func.json_typeof(element.c.value) == "string",
+            name != "",
+        )
+        .group_by(name)
+        .all()
+    )
+    return {row.name: int(row.host_count or 0) for row in rows}
+
+
 @router.get("/coverage", response_model=ScopeCoverageSummary)
 def get_scope_coverage(
     limit: int = Query(25, ge=1, le=200),
@@ -632,25 +649,17 @@ def get_scope_coverage(
     # distinct interfaces) so a single host running both "Nginx" and
     # "React" adds 1 to each rather than skewing the list.  Null
     # technologies arrays are skipped.
+    #
+    # review 2026-10-01 R22 — grouped in Postgres, the way ``/hosts/filters/data``
+    # has done since v2.86.5.  This loaded every web interface's technologies
+    # array and bucketed it in Python on each coverage read.  The ORDER and the
+    # cut to ten stay in Python on purpose: one row per distinct technology
+    # comes back (hundreds, not one per interface) and ``name.lower()`` sorts
+    # exactly as before, which the database's collation would not promise.
     from app.schemas.schemas import TopTechnology
-    tech_rows = (
-        db.query(models.WebInterface.host_id, models.WebInterface.technologies)
-        .filter(
-            models.WebInterface.project_id == project.id,
-            models.WebInterface.technologies.isnot(None),
-        )
-        .all()
-    )
-    tech_host_sets: dict = {}
-    for host_id, tech_list in tech_rows:
-        if not tech_list:
-            continue
-        for t in tech_list:
-            if not t:
-                continue
-            tech_host_sets.setdefault(str(t), set()).add(host_id)
+    tech_counts = _technology_host_counts(db, project.id)
     top_techs = sorted(
-        ({'name': name, 'host_count': len(hosts)} for name, hosts in tech_host_sets.items()),
+        ({'name': name, 'host_count': count} for name, count in tech_counts.items()),
         key=lambda x: (-x['host_count'], x['name'].lower()),
     )[:10]
     top_technologies = [TopTechnology(**t) for t in top_techs]
@@ -894,16 +903,17 @@ def add_subnets(
         )
         db.add(row)
         created.append(row)
-    db.commit()
+    # Flush for the ids; ``correlate_subnets`` commits the subnets and their
+    # mappings together.
+    db.flush()
+
+    # Map the hosts already in the database to the new subnets — ALL of them in
+    # one pass (review 2026-10-01 R24): one read of the project's hosts, one
+    # trie, one commit.  It was one full host read and one commit PER subnet,
+    # up to 500 of them.  Only these subnets' mapping rows are touched.
+    SubnetCorrelationService(db).correlate_subnets([row.id for row in created])
     for row in created:
         db.refresh(row)
-
-    # Correlate only the newly added subnets so hosts already in the database
-    # get mapped to them — O(hosts × new subnets), touching only these subnets'
-    # mapping rows instead of rewriting the whole project's mapping table.
-    svc = SubnetCorrelationService(db)
-    for row in created:
-        svc.correlate_subnet(row.id)
 
     return created
 

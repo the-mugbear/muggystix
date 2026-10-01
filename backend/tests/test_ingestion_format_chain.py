@@ -83,8 +83,11 @@ def test_worker_records_detected_and_final_format(db_session, test_project, tmp_
 
 def test_override_is_recorded_beside_what_was_detected(db_session, test_project, tmp_path):
     f = tmp_path / "scan.xml"
-    f.write_bytes(NMAP_XML)
-    # Masscan's parser reads nmap-shaped XML too, so this override parses.
+    # Masscan writes nmap's XML dialect, so its parser reads an <nmaprun> root
+    # — unless the root names another scanner (review 2026-10-01 R4: an nmap
+    # file is refused).  A root that names none is detected as nmap XML and
+    # parses under the override.
+    f.write_bytes(NMAP_XML.replace(b' scanner="nmap"', b""))
     job = _job(db_session, test_project.id, f, "scan.xml", format_override="masscan_xml")
     result = IngestionService()._process_job(db_session, job)
     assert result["final_file_type"] == "masscan_xml"

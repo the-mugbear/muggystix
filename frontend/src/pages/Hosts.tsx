@@ -37,6 +37,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
+import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
 import {
   HOST_BUILT_IN_VIEWS,
   HostFilterOptions,
@@ -1820,7 +1821,7 @@ export default function Hosts() {
               // scroll-into-view effect keys off.
               getRowClassName={(row) => (
                 row.index === cursorIndex
-                  ? 'host-cursor-row bg-accent ring-1 ring-inset ring-ring'
+                  ? `host-cursor-row ${LIST_CURSOR_CLASS}`
                   : undefined
               )}
               bare

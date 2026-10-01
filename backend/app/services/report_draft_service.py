@@ -83,28 +83,16 @@ class ReportDraftService:
         comment thread). Captions only — image bytes never enter the prompt.
         """
         out: Dict[int, List[str]] = {}
+        # One statement for every finding (review 2026-10-01 R16), through
+        # the client report's lookup; every attached image, as before.
+        from app.services.client_report_service import finding_image_attachments
+        attached = finding_image_attachments(
+            self.db, [(f.get("id"), f.get("evidence_annotation_id")) for f in findings],
+            marked_only=False,
+        )
         for f in findings:
             fid = f.get("id")
-            root = f.get("evidence_annotation_id")
-            ann_q = self.db.query(models.Annotation.id).filter(
-                or_(
-                    models.Annotation.finding_id == fid,
-                    models.Annotation.id == root,
-                    models.Annotation.thread_root_id == root,
-                )
-                if root
-                else (models.Annotation.finding_id == fid)
-            )
-            ann_ids = [r[0] for r in ann_q.all()]
-            if not ann_ids:
-                continue
-            atts = (
-                self.db.query(models.NoteAttachment)
-                .filter(models.NoteAttachment.annotation_id.in_(ann_ids))
-                .order_by(models.NoteAttachment.id)
-                .limit(_MAX_CAPTIONS_PER_FINDING)
-                .all()
-            )
+            atts = [att for att, _actor in attached.get(fid, ())][:_MAX_CAPTIONS_PER_FINDING]
             captions = [
                 (getattr(a, "caption", None) or getattr(a, "filename", None) or "screenshot")
                 for a in atts

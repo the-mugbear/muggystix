@@ -20,8 +20,8 @@
  * longer runs "now ± 5 minutes" on arrival — it waits for the analyst, or for
  * a click on a chart column.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Clock, RefreshCw, Search, ExternalLink, AlertTriangle, Info } from 'lucide-react';
 import {
   ActivityItem,
@@ -30,6 +30,7 @@ import {
   getScansAt,
   getScansBetween,
 } from '../services/api';
+import { useLatestRequest } from '../hooks/useLatestRequest';
 import { formatApiError } from '../utils/apiErrors';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
@@ -169,6 +170,25 @@ function durationSeconds(start: string, end: string | null): string {
   return `${Math.round(secs / 3600)}h`;
 }
 
+const urlDate = (raw: string | null): Date | null => {
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+};
+
+/** The query a URL names; anything unreadable is ignored, not guessed. */
+function readActivityQuery(params: URLSearchParams) {
+  const tolerance = Number(params.get('tolerance'));
+  return {
+    at: urlDate(params.get('at')),
+    from: urlDate(params.get('from')),
+    to: urlDate(params.get('to')),
+    tolerance: TOLERANCE_OPTIONS.some((o) => o.value === tolerance) ? tolerance : null,
+    tool: params.get('tool') ?? '',
+    target: params.get('target') ?? '',
+  };
+}
+
 export const ToolActivity: React.FC = () => {
   const navigate = useNavigate();
   const { projects, currentProject, selectProject } = useProject();
@@ -193,21 +213,51 @@ export const ToolActivity: React.FC = () => {
     [currentProject?.id, navigate, projects, selectProject],
   );
 
+  // B15 — the query lives in the URL, so "what ran at 14:32" can be shared
+  // and survives a reload: `at` + `tolerance`, or `from` + `to` (instants,
+  // UTC ISO), with `tool` and `target`.  Read once on arrival; written with
+  // replace (never a history entry per keystroke).
+  const [searchParams, setSearchParams] = useSearchParams();
+  const fromUrl = useRef(readActivityQuery(searchParams)).current;
+
   // Default timestamp = "now, rounded to the minute"
-  const [tsLocal, setTsLocal] = useState<string>(() => toLocalInput(new Date()));
-  const [tolerance, setTolerance] = useState<number>(300);
+  const [tsLocal, setTsLocal] = useState<string>(() => toLocalInput(fromUrl.at ?? new Date()));
+  const [tolerance, setTolerance] = useState<number>(fromUrl.tolerance ?? 300);
   // v5.213.0 — a second query shape: a from/to range (≤ 7 days) for
   // "when did this tool run?" rather than "what ran at this moment?".
-  const [mode, setMode] = useState<QueryMode>('at');
+  const [mode, setMode] = useState<QueryMode>(fromUrl.from && fromUrl.to ? 'between' : 'at');
   const [fromLocal, setFromLocal] = useState<string>(() =>
-    toLocalInput(new Date(Date.now() - 24 * 3600 * 1000)),
+    toLocalInput(fromUrl.from ?? new Date(Date.now() - 24 * 3600 * 1000)),
   );
-  const [toLocal, setToLocal] = useState<string>(() => toLocalInput(new Date()));
+  const [toLocal, setToLocal] = useState<string>(() => toLocalInput(fromUrl.to ?? new Date()));
   // v5.213.0 — attribution filters.  Applied server-side to the focused
   // query and to the week snapshot alike, so the snapshot answers "when
   // did <tool> touch <target> this week?" on its own.
-  const [tool, setTool] = useState('');
-  const [target, setTarget] = useState('');
+  const [tool, setTool] = useState(fromUrl.tool);
+  const [target, setTarget] = useState(fromUrl.target);
+  // The window last asked for — what the URL names.  The form's default
+  // "now" is not a query, so it is not written until one is run.
+  const [asked, setAsked] = useState<{ at: string } | { from: string; to: string } | null>(
+    fromUrl.from && fromUrl.to
+      ? { from: fromUrl.from.toISOString(), to: fromUrl.to.toISOString() }
+      : fromUrl.at ? { at: fromUrl.at.toISOString() } : null,
+  );
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      ['at', 'from', 'to', 'tolerance', 'tool', 'target'].forEach((k) => next.delete(k));
+      if (asked && 'at' in asked) {
+        next.set('at', asked.at);
+        next.set('tolerance', String(tolerance));
+      } else if (asked) {
+        next.set('from', asked.from);
+        next.set('to', asked.to);
+      }
+      if (tool.trim()) next.set('tool', tool.trim());
+      if (target.trim()) next.set('target', target.trim());
+      return next.toString() === prev.toString() ? prev : next;
+    }, { replace: true });
+  }, [asked, tolerance, tool, target, setSearchParams]);
   const [response, setResponse] = useState<ActivityResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -233,33 +283,42 @@ export const ToolActivity: React.FC = () => {
 
   // `range` runs a range query for exactly those instants (a chart bin was
   // chosen) without waiting for the form state it also sets to settle.
+  // Only the newest question is answered (review 2026-10-01 follow-up): a
+  // second Correlate, or a chart bin chosen while a query was in flight, used
+  // to be overwritten by the earlier, slower response — under a form and a
+  // URL that named the later window.
+  const runLatestSearch = useLatestRequest();
   const search = useCallback(async (range?: { from: string; to: string }) => {
     setLoading(true);
     setError(null);
-    try {
-      const attribution = { tool: tool || undefined, target: target || undefined };
-      const data = range
-        ? await getScansBetween({ from: range.from, to: range.to, ...attribution })
-        : mode === 'at'
-          ? await getScansAt({
-              ts: localInputToUtcIso(tsLocal),
-              toleranceSeconds: tolerance,
-              ...attribution,
-            })
-          : await getScansBetween({
-              from: localInputToUtcIso(fromLocal),
-              to: localInputToUtcIso(toLocal),
-              ...attribution,
-            });
-      setResponse(data);
+    const attribution = { tool: tool || undefined, target: target || undefined };
+    setAsked(range
+      ?? (mode === 'at'
+        ? { at: localInputToUtcIso(tsLocal) }
+        : { from: localInputToUtcIso(fromLocal), to: localInputToUtcIso(toLocal) }));
+    const result = await runLatestSearch(() => (range
+      ? getScansBetween({ from: range.from, to: range.to, ...attribution })
+      : mode === 'at'
+        ? getScansAt({
+            ts: localInputToUtcIso(tsLocal),
+            toleranceSeconds: tolerance,
+            ...attribution,
+          })
+        : getScansBetween({
+            from: localInputToUtcIso(fromLocal),
+            to: localInputToUtcIso(toLocal),
+            ...attribution,
+          })));
+    if (result.stale) return; // the newer query owns the result and `loading`
+    if (result.ok) {
+      setResponse(result.value);
       setProjectFilter(new Set()); // reset chip filter on new search
-    } catch (err) {
-      setError(formatApiError(err, 'Failed to load activity'));
+    } else {
+      setError(formatApiError(result.error, 'Failed to load activity'));
       setResponse(null);
-    } finally {
-      setLoading(false);
     }
-  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target]);
+    setLoading(false);
+  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target, runLatestSearch]);
 
   const loadWeek = useCallback(async () => {
     setWeekLoading(true);
@@ -292,8 +351,10 @@ export const ToolActivity: React.FC = () => {
   // analyst: it used to run "now ± 5 minutes" on mount, so the page always
   // opened on "0 activities matched … No activity in this window" — an
   // answer to a question nobody asked (screenshot review 2026-09-23).
+  // A link that names a window IS a question: it runs on arrival.
   useEffect(() => {
     loadWeek();
+    if (fromUrl.at || (fromUrl.from && fromUrl.to)) void search();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 

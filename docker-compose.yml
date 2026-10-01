@@ -2,9 +2,29 @@
 # Environment is configured via .env (copy from .env.example)
 # Run ./scripts/deploy.sh for guided setup with auto-detected IP
 
+# Log rotation for every service (review 2026-10-01 B11).  Docker's json-file
+# driver keeps a container's whole stdout forever by default, and nginx writes
+# an access-log line per request: on a long-lived host the logs alone filled
+# the disk.  Each container now keeps at most LOG_MAX_FILE files of
+# LOG_MAX_SIZE (5 × 20 MB by default).  scripts/collect-logs.sh reads the same
+# logs, so raise these in .env if a diagnostics bundle needs to reach further
+# back than they hold.
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "${LOG_MAX_SIZE:-20m}"
+    max-file: "${LOG_MAX_FILE:-5}"
+
 services:
   db:
-    image: postgres:16
+    # Pinned to the exact release in use (review 2026-10-01 B5) — `postgres:16`
+    # moved to a new minor whenever the host happened to pull.  A tag, not a
+    # digest.  POSTGRES_IMAGE in .env overrides it (an isolated host that has
+    # another 16.x loaded); scripts/deploy.sh tags a matching local
+    # `postgres:16` with this name instead of pulling.  The backup, restore
+    # and round-trip scripts take the image from here, never a hardcoded tag.
+    image: ${POSTGRES_IMAGE:-postgres:16.13}
+    logging: *default-logging
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -18,8 +38,18 @@ services:
     # so the default here is raised to 120.  Memory tunables are
     # env-overridable and default conservatively (safe on a ~2-4GB host)
     # — scale PG_SHARED_BUFFERS / PG_EFFECTIVE_CACHE_SIZE to host RAM in
-    # .env.  The entrypoint still runs initdb + the SSL init script; only
+    # .env.  Change them on a signal, not a guess (.env.example has the
+    # queries): temp_bytes climbing -> PG_WORK_MEM; blks_read far above
+    # blks_hit on a warm instance -> PG_SHARED_BUFFERS.
+    # The entrypoint still runs initdb + the SSL init script; only
     # the final `postgres` invocation is overridden.
+    #
+    # Measurement (review 2026-10-01): every statement slower than
+    # PG_LOG_MIN_DURATION_MS is written to the db log (collect-logs.sh
+    # bundles it, scrubbed), and pg_stat_statements is loaded so per-statement
+    # totals can be read once the extension exists in the database.  Loading
+    # the library needs this server flag — it cannot be turned on later
+    # without a restart — and costs nothing until the extension is created.
     command:
       - "postgres"
       - "-c"
@@ -32,6 +62,10 @@ services:
       - "work_mem=${PG_WORK_MEM:-8MB}"
       - "-c"
       - "maintenance_work_mem=${PG_MAINTENANCE_WORK_MEM:-128MB}"
+      - "-c"
+      - "log_min_duration_statement=${PG_LOG_MIN_DURATION_MS:-500}"
+      - "-c"
+      - "shared_preload_libraries=pg_stat_statements"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-networkMapper}
       POSTGRES_USER: ${POSTGRES_USER:-nmapuser}
@@ -61,6 +95,13 @@ services:
       target: production
       args:
         CACHE_BUST: ${CACHE_BUST:-}
+        # Passed only when set in .env / the environment; otherwise the
+        # Dockerfile's pinned defaults apply (one place to read the pin).
+        # INSTALL_DEV=false builds without pytest/ruff — and then the suite
+        # cannot run from this image (see backend/requirements-dev.txt).
+        PYTHON_IMAGE:
+        INSTALL_DEV:
+    logging: *default-logging
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -68,6 +109,19 @@ services:
     # honors an explicit `docker compose stop` — so a deliberate
     # dev shutdown isn't fought by the daemon.
     restart: unless-stopped
+    # The app answers /health only after `alembic upgrade head` finished, and
+    # a data migration on a large project runs for minutes.  With the image's
+    # old 60 s start period the container went "unhealthy" ~150 s in, the
+    # frontend's `depends_on: service_healthy` failed, and `up` reported a
+    # failed deploy in the middle of a healthy migration (review 2026-10-01
+    # R31).  Failing probes do not count during the start period and the first
+    # passing one ends it, so a fast boot is unaffected.
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8000/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      start_period: ${BACKEND_HEALTH_START_PERIOD:-15m}
+      retries: 3
     # v2.63.0 — explicit memory cap.  Uploads stream chunk-by-chunk
     # to disk so the body never sits fully in RAM; this cap covers
     # the long tail (UVICORN_WORKERS × per-worker state).  Override
@@ -85,17 +139,23 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.447.1}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.326.1}
+      APP_VERSION: ${APP_VERSION:-2.448.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.327.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
         condition: service_healthy
     volumes:
       - ./uploads:/app/uploads
+      # NOT read-only: pytest caches its rewritten test modules in
+      # tests/__pycache__ through this mount (a read-only one makes every
+      # suite run rewrite all of them again), and nothing in the running app
+      # reads or writes it.
       - ./backend/tests:/app/tests
-      - ./backend/pytest.ini:/app/pytest.ini
-      - ./scripts:/app/scripts
+      # Read-only: nothing writes through these.  The seed and repair scripts
+      # run from /app/scripts but write to the database and /app/uploads.
+      - ./backend/pytest.ini:/app/pytest.ini:ro
+      - ./scripts:/app/scripts:ro
       - ./platform_version.json:/app/platform_version.json:ro
       # The agent guide served at /api/v1/agents-guide (renamed from a root
       # AGENTS.md in v2.427.1: coding agents load a root AGENTS.md as repo rules).
@@ -129,6 +189,9 @@ services:
       target: production
       args:
         CACHE_BUST: ${CACHE_BUST:-}
+        PYTHON_IMAGE:
+        INSTALL_DEV:
+    logging: *default-logging
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered
@@ -170,7 +233,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.447.1}
+      APP_VERSION: ${APP_VERSION:-2.448.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -193,12 +256,21 @@ services:
       target: report-worker
       args:
         CACHE_BUST: ${CACHE_BUST:-}
+        PYTHON_IMAGE:
+        INSTALL_DEV:
+    logging: *default-logging
     restart: unless-stopped
     # Sized for an in-memory PDF/zip build of a capped report; bump
     # REPORT_WORKER_MEM_LIMIT in .env if you raise REPORT_MAX_HOSTS.
     mem_limit: ${REPORT_WORKER_MEM_LIMIT:-2g}
     # `exec`: python is PID 1 and receives SIGTERM (see the worker above).
     command: ["sh", "-c", "mkdir -p /app/uploads/report_artifacts /app/uploads/client_reports 2>/dev/null; exec python -m app.report_worker"]
+    # A client-report render may run for REPORT_RENDER_TIMEOUT_SECONDS (300 s
+    # by default) per format.  Docker's default 10 s grace SIGKILLed a render
+    # on every rebuild, leaving the job 'processing' until the reaper's
+    # timeout (review 2026-10-01 N7).  Six minutes = one render timeout plus a
+    # margin; raise REPORT_WORKER_STOP_GRACE with the render timeout.
+    stop_grace_period: ${REPORT_WORKER_STOP_GRACE:-6m}
     # Same heartbeat-freshness healthcheck as the ingestion worker (v2.194.0):
     # the loop rewrites the file each cycle, so a wedged render goes stale ->
     # unhealthy.  Reuses WORKER_HEARTBEAT_TIMEOUT; own heartbeat path.
@@ -213,7 +285,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.447.1}
+      APP_VERSION: ${APP_VERSION:-2.448.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -236,14 +308,18 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.447.1}
+        BACKEND_VERSION: ${APP_VERSION:-2.448.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.326.1}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.327.0}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
+        # Passed only when set; the Dockerfile holds the pinned defaults.
+        NODE_IMAGE:
+        NGINX_IMAGE:
+    logging: *default-logging
     # v2.45.3 — flipped no → unless-stopped after a worker exit-255
     # went unnoticed for 24h (the worker silently stopped processing
     # the ingestion queue; restart: no meant Docker never recovered

@@ -37,7 +37,7 @@ character ``position`` where known), which a FastAPI handler maps to 400.
 from __future__ import annotations
 
 from dataclasses import dataclass, field as dc_field
-from typing import Callable, List, Optional, Sequence, Union
+from typing import Callable, List, Optional, Union
 
 from sqlalchemy import and_, false, not_, or_
 from sqlalchemy.orm import Session
@@ -571,6 +571,16 @@ def _b_follow(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     return or_(*preds)
 
 
+def _b_vulnscan(ctx: BuildCtx, values: List[str]) -> ColumnElement:
+    unknown = [v for v in values if v.strip().lower() not in P.VULN_SCAN_CREDENTIALED_VALUES]
+    if unknown:
+        raise DSLError(
+            f"Unknown vulnscan value '{unknown[0]}' — use one of: "
+            + ", ".join(P.VULN_SCAN_CREDENTIALED_VALUES)
+        )
+    return P.vuln_scan_credentialed_predicate(values)
+
+
 def _b_conclusion(ctx: BuildCtx, values: List[str]) -> ColumnElement:
     wanted = [v.lower() for v in values]
     unknown = [v for v in wanted if v not in REVIEW_CONCLUSIONS]
@@ -620,10 +630,7 @@ def _b_has(ctx: BuildCtx, values: List[str]) -> ColumnElement:
 
 
 def _b_testlabel(ctx: BuildCtx, values: List[str]) -> ColumnElement:
-    from app.db.models_host_tests import HostTest
-    return models.Host.id.in_(ctx.db.query(HostTest.host_id).filter(
-        HostTest.project_id == ctx.project_id, HostTest.label.in_(values),
-    ))
+    return P.test_label_predicate(ctx.project_id, values)
 
 
 _FIELD_SPECS: List[FieldSpec] = [
@@ -716,6 +723,18 @@ _FIELD_SPECS: List[FieldSpec] = [
                   "none": "Outside scope — no scope subnet, no in-scope name.",
               },
               description="Scope coverage: subnet, name (reached only through an in-scope name) or none."),
+    # Review 2026-10-01 — the Evidence page's "N credentialed, N not, N not
+    # stated" each open exactly these hosts.
+    FieldSpec("vulnscan", _b_vulnscan, value_source="enum",
+              enum_values=list(P.VULN_SCAN_CREDENTIALED_VALUES),
+              enum_descriptions={
+                  "credentialed": "Assessed for vulnerabilities, and a scan says it authenticated to the host.",
+                  "uncredentialed": "Assessed, a scan says it did NOT authenticate and none says it did — "
+                                    "a clean result here saw the host from outside only.",
+                  "unstated": "Assessed, and no scan said whether it authenticated.",
+              },
+              description="Whether the vulnerability scan of an assessed host authenticated: "
+                          "credentialed, uncredentialed or unstated."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any."),
     FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
@@ -768,7 +787,7 @@ _FIELD_SPECS: List[FieldSpec] = [
               enum_values=sorted(CHECKS),
               enum_descriptions={cid: check.title for cid, check in CHECKS.items()},
               description="One misconfiguration check, whichever tool reported it (nmap, NetExec, SMBMap, "
-                          "Nessus, Nuclei, Nikto, testssl)."),
+                          "Nessus, Nuclei, Nikto, testssl, dnsx)."),
     FieldSpec("exploitport", _b_exploitport, value_source="port",
               description="A port carrying a finding flagged exploitable by a vulnerability "
                           "scanner (currently Nessus) — the exploit is on THIS port (same-row)."),

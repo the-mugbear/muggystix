@@ -16,7 +16,7 @@ import {
   NamesSummary,
   NameStateFilter,
 } from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
@@ -613,12 +613,10 @@ const DetailSheet: React.FC<DetailSheetProps> = ({ nameId, onClose, onNavigate, 
 // Page
 // ---------------------------------------------------------------------------
 const Names: React.FC = () => {
-  const { hasPermission } = useAuth();
   const toast = useToast();
-  const canEdit = hasPermission('analyst');
-  // Data egress — the server gates at AUDITOR+ (same policy as the Hosts
-  // tool-ready export); this only hides the affordance from viewers.
-  const canExport = hasPermission('auditor');
+  // The PROJECT role (R32).  Data egress — the server gates at AUDITOR+ (same
+  // policy as the Hosts tool-ready export); this only hides the affordance.
+  const { canWrite: canEdit, canExport } = useProjectRole();
   const [searchParams, setSearchParams] = useSearchParams();
   const [exporting, setExporting] = useState<'txt' | 'csv' | null>(null);
 
@@ -650,10 +648,16 @@ const Names: React.FC = () => {
     [searchParams, setSearchParams],
   );
 
+  // A failed summary is said (R34): the chips used to lose their counts with
+  // nothing to tell "no counts" from "could not be loaded".
+  const [summaryError, setSummaryError] = useState<string | null>(null);
   const reloadSummary = useCallback(() => {
     getNamesSummary()
-      .then(setSummary)
-      .catch(() => setSummary(null));
+      .then((s) => { setSummary(s); setSummaryError(null); })
+      .catch((err: unknown) => {
+        setSummary(null);
+        setSummaryError(formatApiError(err, 'The counts could not be loaded.'));
+      });
   }, []);
 
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
@@ -824,6 +828,12 @@ const Names: React.FC = () => {
               </Tooltip>
             );
           })}
+          {summaryError && (
+            <span role="status" className="inline-flex min-w-0 items-center gap-xs text-caption text-muted-foreground">
+              <span className="min-w-0 break-words">{summaryError}</span>
+              <Button variant="link" size="sm" className="h-auto p-0" onClick={reloadSummary}>Retry</Button>
+            </span>
+          )}
         </div>
       </ListFilterBar>
 

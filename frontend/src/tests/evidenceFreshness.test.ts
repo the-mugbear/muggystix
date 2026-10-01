@@ -63,6 +63,22 @@ describe('freshnessFacts', () => {
     expect(byKey.stale_ports).toMatchObject({ value: '1', tone: 'warn' });
   });
 
+  it('says whether the vulnerability scan authenticated, beside the assessment', () => {
+    const vulns = (over: Partial<HostAssessment>) =>
+      freshnessFacts(assessment({ vuln_assessed: true, last_vuln_assessed_at: daysAgo(3), ...over }))
+        .find((f) => f.key === 'vulns')!;
+    // Assessed stays assessed whatever the scan said — the words sit beside it.
+    expect(vulns({ vuln_scan_credentialed: 'yes' })).toMatchObject({ tone: 'ok', note: 'credentialed', noteTone: 'plain' });
+    expect(vulns({ vuln_scan_credentialed: 'no' })).toMatchObject({ tone: 'ok', note: 'not credentialed', noteTone: 'warn' });
+    expect(vulns({ vuln_scan_credentialed: 'not_stated' })).toMatchObject({ tone: 'ok', note: 'credentials not stated', noteTone: 'plain' });
+    expect(vulns({ vuln_scan_credentialed: 'no' }).title).toContain('weaker evidence');
+    // An older server sends nothing; a host that is not assessed never gets the words.
+    expect(vulns({}).note).toBeUndefined();
+    const unassessed = freshnessFacts(assessment({ vuln_scan_credentialed: 'yes' })).find((f) => f.key === 'vulns')!;
+    expect(unassessed).toMatchObject({ value: 'not assessed', tone: 'gap' });
+    expect(unassessed.note).toBeUndefined();
+  });
+
   it('a host with no web or auth port says n/a, not a gap', () => {
     const byKey = Object.fromEntries(freshnessFacts(assessment()).map((f) => [f.key, f]));
     expect(byKey.web).toMatchObject({ value: 'n/a', tone: 'na' });

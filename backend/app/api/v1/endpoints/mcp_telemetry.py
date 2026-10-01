@@ -17,8 +17,8 @@ from typing import Any, Dict
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.auth import require_role
-from app.api.v1.endpoints.mcp_assist import _TOOLS
+from app.api.deps import require_role
+from app.api.v1.endpoints.mcp_tools import TOOLS
 from app.db.models_auth import UserRole
 from app.db.session import get_db
 from app.services import mcp_telemetry_service as mcp_telemetry
@@ -51,12 +51,12 @@ def mcp_telemetry_summary(
             "protocol_error": observed.get(name, {}).get(mcp_telemetry.PROTOCOL_ERROR, 0),
             "kind": "read" if spec["method"] == "GET" else "write",
         }
-        for name, spec in _TOOLS.items()
+        for name, spec in TOOLS.items()
     }
     # Calls naming a tool that doesn't exist are the most interesting rows in the
     # table — a client working from a stale or hallucinated tool list — so they
     # are surfaced rather than dropped for not matching the registry.
     summary["unknown_tools_called"] = {
-        name: counts for name, counts in observed.items() if name not in _TOOLS
+        name: counts for name, counts in observed.items() if name not in TOOLS
     }
     return summary

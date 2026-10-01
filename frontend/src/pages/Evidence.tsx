@@ -327,6 +327,36 @@ const CoverageMatrix: React.FC<{
   );
 };
 
+/**
+ * Beside "assessed", never a different kind of it: of the hosts a vulnerability
+ * scanner covered, how many it logged in to. It supports a judgment — a scan
+ * that did not authenticate saw the host from outside, so few or no results
+ * from it is weaker evidence — and each count opens exactly its hosts
+ * (`vulnscan:` in the Hosts query).
+ */
+const CredentialedLine: React.FC<{ data: EvidenceCoverageResponse }> = ({ data }) => {
+  const domain = data.domains.find((d) => d.key === 'vuln_assessment');
+  const c = domain?.credentialed;
+  if (!domain || !c || domain.coverage.numerator <= 0) return null;
+  const count = (n: number, value: string, words: string) => (n > 0 ? (
+    <Link to={`/hosts?q=${encodeURIComponent(`vulnscan:${value}`)}`} className={cn(selectButton, 'text-foreground')}
+      aria-label={`${n.toLocaleString()} ${words} — open these hosts`}>
+      {n.toLocaleString()}
+    </Link>
+  ) : <span className="tabular-nums">0</span>);
+  return (
+    <p className="mt-xs break-words text-caption text-muted-foreground" data-testid="credentialed-line">
+      <span className="font-medium text-foreground">{domain.label}</span> —{' '}
+      <span className="tabular-nums">{domain.coverage.numerator.toLocaleString()}</span> assessed:{' '}
+      {count(c.credentialed, 'credentialed', 'credentialed')} credentialed,{' '}
+      {count(c.not_credentialed, 'uncredentialed', 'not credentialed')} not credentialed,{' '}
+      {count(c.credentials_not_stated, 'unstated', 'not stated')} not stated.{' '}
+      A scan that did not authenticate saw the host only from the network: few or no results from it is weaker evidence
+      than a credentialed scan. All three count as assessed.
+    </p>
+  );
+};
+
 /** The answer first: how many domains are complete, and the largest gap. */
 const EvidenceLead: React.FC<{
   data: EvidenceCoverageResponse;
@@ -443,6 +473,7 @@ const Evidence: React.FC = () => {
               ) : (
                 <p className="text-metadata text-muted-foreground">The per-segment breakdown is not available from this server version.</p>
               )}
+              <CredentialedLine data={data} />
               {selection && <GapPanel selection={selection} onClose={() => setSelection(null)} />}
             </PostureSection>
 

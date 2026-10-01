@@ -10,6 +10,7 @@ from typing import Dict, List, Optional, Sequence
 
 from fastapi import HTTPException
 from sqlalchemy import func, case, select, asc, desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, selectinload
 
 from app.db.models import Annotation, Host
@@ -42,6 +43,10 @@ _TERMINAL_STATUSES = {
 # exactly. Kept here so posture's active counts and the Findings list it links
 # to share one definition.
 _ACTIVE_STATUSES = set(ACTIVE_FINDING_STATUSES)
+
+#: Endpoints a findings LIST row carries (review 2026-10-01 C2).  The row's
+#: ``host_count`` is the true total; the finding's own page has them all.
+ENDPOINT_PREVIEW = 5
 _STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
 
 
@@ -211,6 +216,7 @@ class FindingService:
         summary: Optional[str] = None,
         only_this_host: bool = False,
         host_ids: Optional[Sequence[int]] = None,
+        confirm_only_on_join: bool = False,
     ) -> Finding:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
@@ -230,6 +236,14 @@ class FindingService:
         ``host_ids`` (v2.386.0): exactly these hosts — the bulk promotion from
         the Scanner observations list, where the operator ticked the hosts
         they verified.  The caller checks they carry the issue.
+
+        ``confirm_only_on_join`` (review 2026-10-01 R9): when the issue already
+        has a finding, the only status change made is open / retest →
+        confirmed.  A concluded finding (accepted risk, remediated, false
+        positive) is joined as it stands and a confirmed one is never taken
+        back to open.  For callers that record a result on ONE host — a test's
+        evidence — and are not re-judging the issue.  The explicit promote /
+        dismiss click leaves it off: there the person chose the status.
         """
         def _hosts_for(v, k):
             if host_ids is not None:
@@ -248,29 +262,7 @@ class FindingService:
         # problem converge on a single finding.
         key = issue_key_for(vuln)
 
-        existing = (
-            self.db.query(Finding)
-            .filter(
-                Finding.vuln_id == vuln.id,
-                Finding.source == FindingSource.SCANNER.value,
-            )
-            .first()
-        )
-        if existing is None and key and not key.startswith("row:"):
-            # A different scanner already promoted this same issue. Attach to
-            # that finding as corroborating evidence instead of forking a
-            # second record — which is what produced two entries in the client
-            # report for one problem.
-            existing = (
-                self.db.query(Finding)
-                .filter(
-                    Finding.project_id == project_id,
-                    Finding.source == FindingSource.SCANNER.value,
-                    Finding.dedup_key == key,
-                )
-                .first()
-            )
-        if existing is not None:
+        def _join(existing: Finding) -> Finding:
             # Record this scanner's row as evidence even when the finding
             # already existed; corroboration is the thing worth keeping.
             self.attach_vulnerability(finding=existing, vuln=vuln)
@@ -281,11 +273,25 @@ class FindingService:
             )
             # Already promoted — if the caller is dismissing/redispositioning,
             # honour the new status rather than silently returning stale.
-            if status != existing.status:
+            # R9: a one-host result may only confirm a finding still under
+            # investigation; it never reopens, un-concludes or downgrades.
+            may_move = not confirm_only_on_join or (
+                status == FindingStatus.CONFIRMED.value
+                and existing.status in (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
+            )
+            if status != existing.status and may_move:
                 self.set_status(finding=existing, status=status, actor_id=actor_id,
                                 summary=summary or "Re-dispositioned scanner finding")
             self.db.flush()
             return existing
+
+        # A different scanner may already have promoted this same issue.
+        # Attach to that finding as corroborating evidence instead of forking
+        # a second record — which is what produced two entries in the client
+        # report for one problem.
+        existing = self._scanner_finding_for(vuln, project_id, key)
+        if existing is not None:
+            return _join(existing)
 
         finding = Finding(
             project_id=project_id,
@@ -299,8 +305,9 @@ class FindingService:
             created_by_id=actor_id,
         )
         seed_report_text_from_vuln(finding, vuln)
-        self.db.add(finding)
-        self.db.flush()
+        winner = self._insert_scanner_finding(finding, vuln, project_id, key)
+        if winner is not None:
+            return _join(winner)
         self.attach_vulnerability(finding=finding, vuln=vuln)
         self._attach_hosts(
             finding, _hosts_for(vuln, key),
@@ -347,21 +354,7 @@ class FindingService:
         validate_severity(sev)
         key = issue_key_for(vuln)
 
-        finding = (
-            self.db.query(Finding)
-            .filter(Finding.vuln_id == vuln.id, Finding.source == FindingSource.SCANNER.value)
-            .first()
-        )
-        if finding is None and key and not key.startswith("row:"):
-            finding = (
-                self.db.query(Finding)
-                .filter(
-                    Finding.project_id == project_id,
-                    Finding.source == FindingSource.SCANNER.value,
-                    Finding.dedup_key == key,
-                )
-                .first()
-            )
+        finding = self._scanner_finding_for(vuln, project_id, key)
         created = finding is None
         if created:
             finding = Finding(
@@ -376,8 +369,11 @@ class FindingService:
                 created_by_id=actor_id,
             )
             seed_report_text_from_vuln(finding, vuln)
-            self.db.add(finding)
-            self.db.flush()
+            winner = self._insert_scanner_finding(finding, vuln, project_id, key)
+            if winner is not None:
+                # Someone promoted or dismissed the issue while this ran (R8):
+                # theirs is the issue's finding and its status stays theirs.
+                finding, created = winner, False
         self.attach_vulnerability(finding=finding, vuln=vuln)
         self._attach_hosts(finding, [vuln.host_id], names_by_host=self._vuln_names_by_host(vuln))
         self.db.flush()
@@ -412,6 +408,63 @@ class FindingService:
             ))
         self.db.flush()
         return finding
+
+    def _scanner_finding_for(self, vuln, project_id: int, key: Optional[str]) -> Optional[Finding]:
+        """The scanner finding that already covers this row: the one promoted
+        from it, else the ISSUE's (one per ``dedup_key`` in a project — the
+        partial unique index ``uq_finding_scanner_issue``).
+
+        A row with no issue identity (a ``row:`` key) is outside that index —
+        nothing in the database refuses a second finding for it — so its
+        lookup-then-insert is serialised on the scanner row itself: the second
+        promotion waits here until the first commits, and its lookup (a new
+        statement, so it sees the commit) then finds the first one's finding.
+        The lock lasts to the end of the transaction."""
+        if not key or key.startswith("row:"):
+            from app.db.models_vulnerability import Vulnerability as _Vuln
+
+            self.db.query(_Vuln.id).filter(_Vuln.id == vuln.id).with_for_update().first()
+        existing = (
+            self.db.query(Finding)
+            .filter(Finding.vuln_id == vuln.id, Finding.source == FindingSource.SCANNER.value)
+            .order_by(Finding.id)
+            .first()
+        )
+        if existing is None and key and not key.startswith("row:"):
+            existing = (
+                self.db.query(Finding)
+                .filter(
+                    Finding.project_id == project_id,
+                    Finding.source == FindingSource.SCANNER.value,
+                    Finding.dedup_key == key,
+                )
+                .order_by(Finding.id)
+                .first()
+            )
+        return existing
+
+    def _insert_scanner_finding(
+        self, finding: Finding, vuln, project_id: int, key: Optional[str],
+    ) -> Optional[Finding]:
+        """Insert a new scanner finding; returns None when it went in, or the
+        finding that got there first (review 2026-10-01 R8).
+
+        The lookup-then-insert above is not atomic: two promotions of one issue
+        both found nothing and inserted two findings.  The unique index now
+        refuses the second insert; it runs in a savepoint so the refusal costs
+        only the insert, and the caller joins the winner exactly as if its
+        lookup had found it (the pattern ``host_test_service.create_tests``
+        uses for request keys)."""
+        try:
+            with self.db.begin_nested():
+                self.db.add(finding)
+                self.db.flush()
+        except IntegrityError:
+            winner = self._scanner_finding_for(vuln, project_id, key)
+            if winner is None:
+                raise
+            return winner
+        return None
 
     def attach_vulnerability(self, *, finding: Finding, vuln) -> None:
         """Record a scanner row as evidence for this finding. Idempotent."""
@@ -459,10 +512,15 @@ class FindingService:
 
         if key and key.startswith("cve:"):
             cve = key.split(":", 1)[1]
+            # Plain comparisons so the `cve_id` index is usable — wrapping the
+            # column in upper() made this a scan of the project's rows.  The
+            # key is upper-case; parsers store a CVE as the tool wrote it,
+            # which is upper or (nuclei, nikto) lower.
             siblings = (
                 self.db.query(_Vuln.host_id)
                 .join(Host, _Vuln.host_id == Host.id)
-                .filter(Host.project_id == project_id, func.upper(_Vuln.cve_id) == cve)
+                .filter(Host.project_id == project_id,
+                        _Vuln.cve_id.in_(sorted({cve, cve.upper(), cve.lower()})))
                 .distinct()
             )
         elif vuln.plugin_id:
@@ -652,12 +710,7 @@ class FindingService:
         the finding's history with the endpoint named, so the trail shows
         which host moved.
         """
-        allowed = {s.value for s in FindingHostStatus}
-        if host_status not in allowed:
-            raise HTTPException(
-                status_code=422,
-                detail=f"host_status must be one of {sorted(allowed)}",
-            )
+        self._validate_endpoint_status(host_status)
         row = (
             self.db.query(FindingHost)
             .filter(FindingHost.finding_id == finding.id, FindingHost.id == finding_host_id)
@@ -665,8 +718,60 @@ class FindingService:
         )
         if row is None:
             raise HTTPException(status_code=404, detail="Endpoint is not attached to this finding")
+        if self._move_endpoint(finding, row, host_status, actor_id, note):
+            self.db.flush()
+        return finding
+
+    def set_endpoint_statuses(
+        self, *, finding: Finding, finding_host_ids: Sequence[int], host_status: str,
+        actor_id: Optional[int], note: Optional[str] = None,
+    ) -> int:
+        """The same change for several endpoints of ONE finding (review
+        2026-10-01 B13: after a retest, 300 endpoints were 300 requests).
+
+        All-or-nothing: every id must be an endpoint of this finding, or
+        nothing is written (404 naming the strangers).  Each endpoint that
+        actually moves goes through :meth:`_move_endpoint` — the single
+        route's own step — so it gets the same history line.  Rows are loaded
+        once with their host and name; nothing is read per endpoint.  Returns
+        how many moved; the caller commits."""
+        self._validate_endpoint_status(host_status)
+        wanted = list(dict.fromkeys(finding_host_ids))
+        rows = (
+            self.db.query(FindingHost)
+            .options(selectinload(FindingHost.host), selectinload(FindingHost.name))
+            .filter(FindingHost.finding_id == finding.id, FindingHost.id.in_(wanted))
+            .order_by(FindingHost.id)
+            .all()
+        )
+        missing = sorted(set(wanted) - {r.id for r in rows})
+        if missing:
+            shown = ", ".join(str(i) for i in missing[:20]) + (" …" if len(missing) > 20 else "")
+            raise HTTPException(
+                status_code=404,
+                detail=f"Not endpoints of this finding: {shown}. Nothing was changed.",
+            )
+        moved = sum(1 for row in rows if self._move_endpoint(finding, row, host_status, actor_id, note))
+        self.db.flush()
+        return moved
+
+    @staticmethod
+    def _validate_endpoint_status(host_status: str) -> None:
+        allowed = {s.value for s in FindingHostStatus}
+        if host_status not in allowed:
+            raise HTTPException(
+                status_code=422,
+                detail=f"host_status must be one of {sorted(allowed)}",
+            )
+
+    def _move_endpoint(
+        self, finding: Finding, row: FindingHost, host_status: str,
+        actor_id: Optional[int], note: Optional[str],
+    ) -> bool:
+        """Set one endpoint row's state and write its history line.  False
+        when it already had that state (nothing written).  Does not flush."""
         if row.host_status == host_status:
-            return finding
+            return False
         old = row.host_status
         row.host_status = host_status
         label = row.host.ip_address if row.host else f"host {row.host_id}"
@@ -680,8 +785,7 @@ class FindingService:
             # ``note``: where the change came from (an accepted proposal).
             summary=f"Endpoint {label}: {old} → {host_status}" + (f" — {note}" if note else ""),
         ))
-        self.db.flush()
-        return finding
+        return True
 
     def add_hosts(
         self, *, finding: Finding, host_ids: Sequence[int], actor_id: Optional[int] = None,
@@ -805,16 +909,21 @@ class FindingService:
         search: Optional[str] = None,
         limit: int = 100, offset: int = 0,
         sort: Optional[str] = None, sort_dir: Optional[str] = None,
+        with_endpoints: bool = False,
     ):
-        # Eager-load what _serialize touches (each finding's hosts + their
-        # Host rows, and the owner) so a page of findings — amplified by the
-        # one-finding-many-hosts design — doesn't N+1.  Mirrors _load.
+        """One page of findings and the filtered total.
+
+        Endpoints are NOT loaded (review 2026-10-01 C2): a widespread issue has
+        thousands, and a list row shows a count and a handful.  A caller that
+        lists rows takes :meth:`endpoint_summaries` for the page's ids;
+        ``with_endpoints`` is for the caller that really reads every endpoint
+        of every row."""
+        options = [selectinload(Finding.owner), selectinload(Finding.created_by)]
+        if with_endpoints:
+            options.append(selectinload(Finding.hosts).selectinload(FindingHost.host))
         q = (
             self.db.query(Finding)
-            .options(
-                selectinload(Finding.hosts).selectinload(FindingHost.host),
-                selectinload(Finding.owner), selectinload(Finding.created_by),
-            )
+            .options(*options)
             .filter(Finding.project_id == project_id)
         )
         q = _apply_status_filter(q, status)
@@ -834,6 +943,70 @@ class FindingService:
         q = q.order_by(*_finding_order(sort, sort_dir))
         rows = q.offset(offset).limit(limit).all()
         return rows, total
+
+    def endpoint_summaries(
+        self, finding_ids: Sequence[int], *, preview: int = ENDPOINT_PREVIEW,
+        first_host_id: Optional[int] = None,
+    ) -> Dict[int, dict]:
+        """What a list row says about a finding's endpoints, for a page of
+        findings in TWO statements whatever the page holds (review 2026-10-01
+        C2): ``{finding_id: {"host_count", "status_counts", "preview"}}``.
+
+        ``host_count`` is every endpoint row (what the ``host_count`` sort
+        orders by); ``status_counts`` the per-endpoint states over all of
+        them; ``preview`` the first ``preview`` endpoints by id, as plain
+        tuples with the host's address and the endpoint's name already joined
+        — no entity is built and nothing is loaded per row.
+
+        ``first_host_id`` (the list's ``host_id`` filter) ranks that host's
+        endpoint rows ahead of the rest, so a host's findings card reads this
+        host's state from the preview instead of fetching every finding; the
+        remaining places are filled first-by-id as before.  Same two
+        statements — only the window's ordering changes."""
+        ids = list(finding_ids)
+        out: Dict[int, dict] = {
+            fid: {"host_count": 0, "status_counts": {}, "preview": []} for fid in ids
+        }
+        if not ids:
+            return out
+        for fid, state, n in (
+            self.db.query(FindingHost.finding_id, FindingHost.host_status, func.count(FindingHost.id))
+            .filter(FindingHost.finding_id.in_(ids))
+            .group_by(FindingHost.finding_id, FindingHost.host_status)
+        ):
+            out[fid]["status_counts"][state] = int(n)
+            out[fid]["host_count"] += int(n)
+        if preview <= 0:
+            return out
+        from app.db.models import DNSName
+
+        rank_order = [FindingHost.id]
+        if first_host_id is not None:
+            rank_order.insert(0, case((FindingHost.host_id == first_host_id, 0), else_=1))
+        ranked = (
+            select(
+                FindingHost.id.label("id"), FindingHost.finding_id.label("finding_id"),
+                FindingHost.host_id.label("host_id"), FindingHost.name_id.label("name_id"),
+                FindingHost.host_status.label("host_status"),
+                func.row_number().over(
+                    partition_by=FindingHost.finding_id, order_by=rank_order,
+                ).label("rn"),
+            )
+            .where(FindingHost.finding_id.in_(ids))
+            .subquery()
+        )
+        for row in (
+            self.db.query(
+                ranked.c.id, ranked.c.finding_id, ranked.c.host_id, ranked.c.name_id,
+                ranked.c.host_status, Host.ip_address, Host.hostname, DNSName.fqdn,
+            )
+            .outerjoin(Host, Host.id == ranked.c.host_id)
+            .outerjoin(DNSName, DNSName.id == ranked.c.name_id)
+            .filter(ranked.c.rn <= preview)
+            .order_by(ranked.c.finding_id, ranked.c.rn)
+        ):
+            out[row.finding_id]["preview"].append(row)
+        return out
 
     def severity_counts(
         self, *, project_id: int,
@@ -981,7 +1154,7 @@ class FindingService:
     ) -> Annotation:
         # Threading stays within one finding (mirrors the same-host guard on
         # host notes): a reply's parent must be a note on THIS finding, else a
-        # status-change could notify across a project boundary.
+        # reply could notify another project's thread.
         parent = None
         if parent_id is not None:
             parent = (

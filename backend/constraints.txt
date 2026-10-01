@@ -1,0 +1,66 @@
+# The complete resolved dependency set of the backend image — every direct
+# AND transitive package, at the version that is actually deployed.
+#
+# The Dockerfile installs with `pip install -r requirements*.txt -c
+# constraints.txt`, so a rebuild next month resolves to exactly these versions
+# instead of whatever is newest that day (review 2026-10-01 B5: production
+# rebuilds from source on the host, so "the same commit" was not the same
+# image).  A constraints file only fixes versions; it installs nothing by
+# itself — what is installed is still decided by requirements.txt and
+# requirements-dev.txt.
+#
+# Generated from the running image:
+#     docker compose exec -T backend pip freeze
+# (2026-10-01, Python 3.11.16, pip 26.2.1) plus ruff, added with
+# requirements-dev.txt.
+#
+# To change a dependency: edit the pin in requirements*.txt and the matching
+# line here, rebuild, run scripts/check.sh, then replace the list below with a
+# fresh `pip freeze` from the new image so new transitive packages are fixed
+# too.
+alembic==1.16.5
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+bcrypt==3.2.2
+certifi==2026.7.22
+cffi==2.1.1
+click==8.3.0
+coverage==7.16.1
+cryptography==50.0.1
+defusedxml==0.7.1
+dnspython==2.8.0
+email-validator==2.3.0
+fastapi==0.141.1
+greenlet==3.5.6
+h11==0.16.0
+httpcore==1.0.9
+httpx==0.28.1
+idna==3.20
+ijson==3.3.0
+iniconfig==2.3.0
+Jinja2==3.1.6
+lxml==6.0.1
+Mako==1.4.3
+MarkupSafe==3.0.3
+packaging==26.3
+pluggy==1.6.0
+psycopg2-binary==2.9.10
+pycparser==3.0
+pydantic==2.11.9
+pydantic_core==2.33.2
+Pygments==2.21.0
+PyJWT==2.8.0
+pyotp==2.9.0
+pypng==0.20220715.0
+pytest==8.4.2
+pytest-asyncio==1.2.0
+pytest-cov==7.0.0
+python-multipart==0.0.20
+qrcode==7.4.2
+ruff==0.16.10
+SQLAlchemy==2.0.43
+starlette==1.6.0
+typing-inspection==0.4.4
+typing_extensions==4.15.0
+uvicorn==0.36.0

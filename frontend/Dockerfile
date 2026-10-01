@@ -1,9 +1,16 @@
+# Base images, pinned to the exact versions in use (review 2026-10-01 B5);
+# `node:22-alpine` and `nginx:alpine` floated — nginx across MINOR releases.
+# Tags, not digests.  Override per host with NODE_IMAGE / NGINX_IMAGE in .env
+# (compose passes them through).
+ARG NODE_IMAGE=node:22.23.2-alpine
+ARG NGINX_IMAGE=nginx:1.31.3-alpine
+
 # Build stage
 # node:22-alpine ships npm 10.x which has the optional-deps install bug
 # (npm/cli#4828) largely fixed.  Node 18 is past EOL (April 2025) and
 # its bundled npm 9.x intermittently fails to install platform-specific
 # native binaries — see v4.7.3 attempted-fix history.
-FROM node:22-alpine AS builder
+FROM ${NODE_IMAGE} AS builder
 
 WORKDIR /app
 
@@ -87,7 +94,7 @@ COPY . .
 RUN npm run build
 
 # Production stage
-FROM nginx:alpine AS production
+FROM ${NGINX_IMAGE} AS production
 
 # Install security updates and curl for health check
 RUN apk upgrade --no-cache \

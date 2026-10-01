@@ -20,7 +20,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence
 
-from sqlalchemy import String, case, cast, distinct, func, literal, or_
+from sqlalchemy import String, and_, case, cast, distinct, false, func, literal, or_
 from sqlalchemy.dialects.postgresql import aggregate_order_by
 from sqlalchemy.dialects.postgresql import array_agg as pg_array_agg
 from sqlalchemy.orm import Session
@@ -58,6 +58,51 @@ def _key():
     """The issue key, with the per-row fallback ``issue_key`` itself uses for a
     row with no CVE and no title (such a row is an issue of its own)."""
     return func.coalesce(Vulnerability.issue_key, literal("row:") + cast(Vulnerability.id, String))
+
+
+def _row_id(issue_key: str) -> Optional[int]:
+    """The row a ``row:N`` key names — only in the exact form ``_key`` writes
+    (``row:7``, never ``row:07``), so the lookup below matches what the
+    string comparison matched."""
+    digits = issue_key[4:] if isinstance(issue_key, str) and issue_key.startswith("row:") else ""
+    if digits.isascii() and digits.isdigit() and str(int(digits)) == digits:
+        return int(digits)
+    return None
+
+
+def _key_in(keys: Sequence[str]):
+    """``_key() IN keys`` without wrapping the column (review 2026-10-01 R20).
+
+    ``coalesce(issue_key, 'row:' || id) = …`` cannot use an index on either
+    column, so every expand-row, host list and promotion read all the
+    project's vulnerability rows.  Split by the key's form instead: a stored
+    key is looked up on ``issue_key`` (indexed by ``c3f6b9d2e5a7``), a
+    ``row:N`` key on the primary key.  The ``issue_key IS NULL`` beside the id
+    keeps the old meaning exactly — ``row:N`` names row N only while that row
+    has no key of its own — and ``issue_key`` never stores a ``row:`` value
+    (``vuln_identity.issue_key`` returns None without a ``row_id``).
+    """
+    row_ids = [rid for rid in (_row_id(k) for k in keys) if rid is not None]
+    stored = [k for k in keys if _row_id(k) is None]
+    arms = []
+    if stored:
+        arms.append(
+            Vulnerability.issue_key == stored[0] if len(stored) == 1
+            else Vulnerability.issue_key.in_(stored)
+        )
+    if row_ids:
+        arms.append(and_(
+            Vulnerability.issue_key.is_(None),
+            Vulnerability.id == row_ids[0] if len(row_ids) == 1 else Vulnerability.id.in_(row_ids),
+        ))
+    if not arms:
+        return false()
+    return arms[0] if len(arms) == 1 else or_(*arms)
+
+
+def _key_is(issue_key: str):
+    """``_key() == issue_key``, index-friendly — see ``_key_in``."""
+    return _key_in([issue_key])
 
 
 def _of_most_severe_row(db: Session, column):
@@ -217,7 +262,7 @@ def list_issues(
     if keys:
         for k, src in (
             _project_rows(db, project_id, key, Vulnerability.source)
-            .filter(key.in_(keys))
+            .filter(_key_in(keys))
             .distinct()
             .all()
         ):
@@ -257,7 +302,7 @@ def issue_host_total(db: Session, project_id: int, issue_key: str) -> int:
     """How many hosts carry the issue — the total ``issue_hosts`` pages over."""
     return (
         _project_rows(db, project_id, func.count(distinct(Host.id)))
-        .filter(_key() == issue_key)
+        .filter(_key_is(issue_key))
         .scalar()
     ) or 0
 
@@ -269,14 +314,13 @@ def issue_hosts(
     ``offset``, or all), with whether a finding covers it there.  The Findings
     view asks for one more than it shows, so it knows when the list is cut — an
     issue on 10k hosts rendered 10k rows (review 2026-09-23 R11)."""
-    key = _key()
     judged = func.max(case((observation_judged_on_host(), 1), else_=0))
     query = (
         _project_rows(
             db, project_id, Host.id, Host.ip_address, Host.hostname, func.max(_rank()).label("rank"),
             judged.label("judged"),
         )
-        .filter(key == issue_key)
+        .filter(_key_is(issue_key))
         .group_by(Host.id, Host.ip_address, Host.hostname)
         .order_by(Host.ip_address)
     )
@@ -290,7 +334,7 @@ def issue_hosts(
     for hid, number in (
         _project_rows(db, project_id, Vulnerability.host_id, Port.port_number)
         .join(Port, Port.id == Vulnerability.port_id)
-        .filter(key == issue_key, Vulnerability.host_id.in_(host_ids))
+        .filter(_key_is(issue_key), Vulnerability.host_id.in_(host_ids))
         .distinct()
         .all()
     ):
@@ -351,7 +395,7 @@ def promote_issues(
     key = _key()
     rows_by_key: Dict[str, List[Vulnerability]] = {}
     for k, vuln in (
-        _project_rows(db, project_id, key, Vulnerability).filter(key.in_(keys)).all()
+        _project_rows(db, project_id, key, Vulnerability).filter(_key_in(keys)).all()
     ):
         rows_by_key.setdefault(k, []).append(vuln)
 

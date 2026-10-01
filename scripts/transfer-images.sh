@@ -8,7 +8,8 @@
 #   ./scripts/transfer-images.sh import <input-dir>   - Import images and database
 #
 # What gets exported:
-#   - Application Docker images (backend, frontend)
+#   - Application Docker images (backend, frontend, report worker) and the
+#     PostgreSQL image docker-compose.yml names
 #   - PostgreSQL database dump (all data)
 #   - Environment configuration template
 #
@@ -65,7 +66,10 @@ What gets transferred:
   ✓ Docker Compose configuration
   ✓ Environment configuration template
 
-Note: PostgreSQL base image is pulled automatically on import.
+  ✓ PostgreSQL image (the exact release docker-compose.yml names)
+
+Note: an export made before the database image was included has no
+postgres.tar; the target host then pulls the image docker-compose.yml names.
 USAGE
 }
 
@@ -138,6 +142,38 @@ export_app() {
   log "Exporting frontend image: $frontend_image"
   docker save "$frontend_image" -o "$output_dir/frontend.tar"
   echo "$frontend_image" > "$output_dir/frontend-tag.txt"
+
+  # The database image — the exact release docker-compose.yml names (pinned
+  # there since the 2026-10-01 review; POSTGRES_IMAGE overrides it).  The
+  # import used to rely on the target host pulling `postgres`, which an
+  # isolated host cannot do.  Saved under the name compose resolves, so the
+  # target's `up` finds it without a pull.
+  local db_image db_cid db_image_id
+  db_image=$($COMPOSE_CMD config --images db 2>/dev/null | head -1)
+  if [[ -n "$db_image" ]]; then
+    if ! docker image inspect "$db_image" >/dev/null 2>&1; then
+      # Not under the pinned name here yet: the running db container's image
+      # is that release if it declares the same version.
+      db_cid=$($COMPOSE_CMD ps -aq db 2>/dev/null | head -1)
+      db_image_id=""
+      [[ -n "$db_cid" ]] && db_image_id=$(docker inspect "$db_cid" --format '{{.Image}}' 2>/dev/null || echo "")
+      local have want
+      want="${db_image#*:}"
+      have=""
+      [[ -n "$db_image_id" ]] && have=$(docker image inspect "$db_image_id" \
+        --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^PG_VERSION=//p')
+      if [[ -n "$have" && "$have" == "$want"* ]]; then
+        docker tag "$db_image_id" "$db_image"
+      fi
+    fi
+    if docker image inspect "$db_image" >/dev/null 2>&1; then
+      log "Exporting database image: $db_image"
+      docker save "$db_image" -o "$output_dir/postgres.tar"
+      echo "$db_image" > "$output_dir/postgres-tag.txt"
+    else
+      log "WARNING: database image $db_image is not on this host — the target host will have to pull it"
+    fi
+  fi
 
   # Export database
   log "Exporting database..."
@@ -364,6 +400,13 @@ import_app() {
     if [[ -n "$rw_tag" && "$rw_tag" != "networkmapper-report-worker:latest" ]]; then
       docker tag "$rw_tag" networkmapper-report-worker:latest 2>/dev/null || true
     fi
+  fi
+
+  if [[ -f "$input_dir/postgres.tar" ]]; then
+    log "Loading database image ($(cat "$input_dir/postgres-tag.txt" 2>/dev/null || echo postgres))..."
+    docker load -i "$input_dir/postgres.tar"
+  else
+    log "No database image in this export — docker will pull the one docker-compose.yml names"
   fi
 
   # Re-tag images if tag metadata exists

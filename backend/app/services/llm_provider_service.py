@@ -19,13 +19,12 @@ Security notes:
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import logging
 from urllib.parse import quote
 
 import httpx
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from cryptography.fernet import Fernet, InvalidToken

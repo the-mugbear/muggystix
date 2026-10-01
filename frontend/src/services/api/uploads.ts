@@ -283,14 +283,9 @@ export const uploadFile = async (
   });
 };
 
-export const getIngestionJob = async (jobId: number): Promise<IngestionJob> => {
-  const response = await api.get(`${p()}/upload/jobs/${jobId}`);
-  return response.data;
-};
-
 /**
  * The named jobs in ONE request (v5.248.0). Following N started files used to
- * be N `getIngestionJob` calls per poll tick. A job the caller may not see, or
+ * be N single-job requests per poll tick. A job the caller may not see, or
  * that no longer exists, is absent from the answer rather than an error — so
  * the caller can stop following it. The server takes at most 200 ids.
  */

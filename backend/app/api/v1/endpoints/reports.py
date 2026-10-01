@@ -1,24 +1,23 @@
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
-from app.db.session import get_db
-from app.db import models
-from app.core.config import settings
-from app.api.v1.endpoints.auth import get_current_user
+from app.db.session import disable_statement_timeout, get_db
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
-from app.db.models_project import Project, ProjectRole
-from app.api.v1.endpoints.hosts import HostFilterParams
+from app.core.security import check_permissions
+from app.db.models_auth import UserRole
+from app.db.models_project import Project, ProjectMembership, ProjectRole
+from app.api.params import HostFilterParams
 from app.db.models import ReportJob
 # ReportGenerator now lives in the service layer; re-exported here so the
 # endpoints (and existing test imports of `from ...reports import ReportGenerator`)
 # keep working.
-from app.services.report_generator import ReportGenerator, _id_chunks
+from app.services.report_generator import ReportGenerator
 from app.services.report_job_service import STREAMED_REPORT_FORMATS, ReportJobService
 from app.schemas.schemas import ReportJobSchema
 from app.services.csv_utils import csv_safe as _csv_safe, safe_csv_row as _safe_csv_row  # noqa: F401
-import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,6 +33,10 @@ router = APIRouter(dependencies=[
     Depends(require_project_role(ProjectRole.AUDITOR)),
 ])
 
+# Client-report renders (``client_reports.CLIENT_REPORT_JOB``): listed, polled
+# and downloaded here, changed only by the Reports page's own routes.
+CLIENT_REPORT_TYPE = "client"
+
 
 @router.get("/hosts/csv")
 def generate_hosts_csv_report(
@@ -43,6 +46,10 @@ def generate_hosts_csv_report(
     project: Project = Depends(get_current_project),
 ):
     """Generate CSV report of hosts based on filters"""
+    # A streamed export: its queries run after the response has started and
+    # cover every matching host — exempt from the API statement timeout
+    # (review 2026-10-01 R23), which is for interactive requests.
+    disable_statement_timeout(db)
     # The full filter context (incl. has_exploit_available, has_test_execution,
     # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
     # the shared HostFilterParams so reports can never narrow to fewer filters
@@ -73,6 +80,8 @@ def generate_hosts_html_report(
     project: Project = Depends(get_current_project),
 ):
     """Generate HTML report of hosts based on filters"""
+    # Streamed, like the CSV: exempt from the API statement timeout (R23).
+    disable_statement_timeout(db)
     # The full filter context (incl. has_exploit_available, has_test_execution,
     # has_web_interface, tech, tags, subnet_labels, assigned_to) — derived from
     # the shared HostFilterParams so reports can never narrow to fewer filters
@@ -274,6 +283,52 @@ def download_report_job(
     )
 
 
+def _job_for_change(db: Session, project: Project, user, job_id: int) -> ReportJob:
+    """The job, for a route that CHANGES it (dismiss / retry / cancel) —
+    review 2026-10-01 R17.
+
+    The router's floor is auditor: reading and downloading exports.  Changing
+    a job is a write, so it needs an analyst — or the person who requested
+    that export, so an auditor still manages their own.  A client-report job
+    is refused here whoever asks: it is half of a report's state (cancelling
+    a queued issue render left the report PENDING with no job), and the
+    Reports page has its own routes for it.
+    """
+    job = (
+        db.query(ReportJob)
+        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
+        .first()
+    )
+    if not job:
+        raise HTTPException(status_code=404, detail="Report job not found")
+    if job.report_type == CLIENT_REPORT_TYPE:
+        raise HTTPException(
+            status_code=409,
+            detail="This job renders a client report and belongs to the Reports page: "
+                   "preview the draft again, or use \"Render again\" on the issued report.",
+        )
+    if job.requested_by_id is not None and job.requested_by_id == user.id:
+        return job
+    if not is_project_analyst(db, project.id, user):
+        raise HTTPException(
+            status_code=403,
+            detail="Insufficient project role. Required: analyst (or the person who requested this export).",
+        )
+    return job
+
+
+def is_project_analyst(db: Session, project_id: int, user) -> bool:
+    if user.role == UserRole.ADMIN:
+        return True
+    role = (
+        db.query(ProjectMembership.role)
+        .filter(ProjectMembership.project_id == project_id, ProjectMembership.user_id == user.id)
+        .scalar()
+    )
+    role = getattr(role, "value", role)
+    return bool(role) and check_permissions(role, ProjectRole.ANALYST.value)
+
+
 @router.post("/jobs/{job_id}/dismiss", response_model=ReportJobSchema)
 def dismiss_report_job(
     job_id: int,
@@ -282,13 +337,7 @@ def dismiss_report_job(
     project: Project = Depends(get_current_project),
 ):
     """Acknowledge a report job (drops it from the recent-jobs list)."""
-    job = (
-        db.query(ReportJob)
-        .filter(ReportJob.id == job_id, ReportJob.project_id == project.id)
-        .first()
-    )
-    if not job:
-        raise HTTPException(status_code=404, detail="Report job not found")
+    job = _job_for_change(db, project, current_user, job_id)
     job.dismissed_at = datetime.now(timezone.utc)
     db.commit()
     db.refresh(job)
@@ -303,6 +352,7 @@ def retry_report_job(
     project: Project = Depends(get_current_project),
 ):
     """Re-queue a failed report job. 409 if it isn't in a failed state."""
+    _job_for_change(db, project, current_user, job_id)
     service = ReportJobService()
     try:
         job = service.retry_job(db, job_id=job_id, project_id=project.id)
@@ -322,6 +372,7 @@ def cancel_report_job(
 ):
     """Cancel a queued report job before the worker claims it. 409 if it's
     already processing or in a terminal state."""
+    _job_for_change(db, project, current_user, job_id)
     service = ReportJobService()
     try:
         job = service.cancel_job(db, job_id=job_id, project_id=project.id)

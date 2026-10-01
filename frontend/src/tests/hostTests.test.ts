@@ -1,10 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
 import type { HostTest } from '../services/api';
-import { issueTestSummary, resolveCommand, stripAgentMark, testNeedsWork, testResultState } from '../utils/hostTests';
+import { readdirSync, readFileSync, statSync } from 'fs';
+import { join } from 'path';
+
+import {
+  hostTestCounts, issueTestSummary, resolveCommand, stripAgentMark, testNeedsWork, testResultState,
+} from '../utils/hostTests';
 
 const t = (over: Partial<HostTest>): HostTest =>
   ({ status: 'proposed', evidence_count: 0, last_outcome: null, unpromoted_findings: 0, finding_ids: [], ...over }) as HostTest;
+
+// The host row's two counts still travel under their test-plan names.  One
+// helper reads them, so the backend rename is a change in two files.
+describe('hostTestCounts', () => {
+  it('names the counts by what they mean, zero when absent', () => {
+    expect(hostTestCounts({ test_plan_entry_count: 2, test_execution_count: 3 })).toEqual({ toDo: 2, recorded: 3 });
+    expect(hostTestCounts({})).toEqual({ toDo: 0, recorded: 0 });
+  });
+
+  it('is the only code that reads the legacy wire names', () => {
+    const src = join(__dirname, '..');
+    const allowed = new Set(['services/api/hosts.ts', 'utils/hostTests.ts']);
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const name of readdirSync(dir)) {
+        const full = join(dir, name);
+        if (statSync(full).isDirectory()) {
+          if (name !== 'tests') walk(full);
+        } else if (/\.tsx?$/.test(name)) {
+          const rel = full.slice(src.length + 1).split('\\').join('/');
+          if (!allowed.has(rel) && /test_plan_entry_count|test_execution_count/.test(readFileSync(full, 'utf8'))) {
+            offenders.push(rel);
+          }
+        }
+      }
+    };
+    walk(src);
+    expect(offenders).toEqual([]);
+  });
+});
 
 describe('host test helpers', () => {
   it('fills {ip}, and {fqdn} only when the test names one', () => {
@@ -43,5 +78,22 @@ describe('host test helpers', () => {
     expect(issueTestSummary([t({ status: 'done', finding_ids: [9] })])?.label).toBe('confirmed by test');
     expect(issueTestSummary([t({ status: 'done', last_outcome: 'no_finding' })])?.label).toBe('tested · not present');
     expect(issueTestSummary([t({})])?.label).toBe('1 test to do');
+  });
+});
+
+// 2026-10-01 — a result that JOINED a concluded finding does not re-status
+// it; the toast is written from the response, not from what was asked for.
+describe('promotedResultMessage', () => {
+  it('says it joined the existing finding, and what that finding still is', async () => {
+    const { promotedResultMessage } = await import('../utils/hostTests');
+    expect(promotedResultMessage({ finding_id: 7, joined_issue: true, status: 'accepted_risk' }))
+      .toBe('Joined the existing finding #7, which stays accepted risk.');
+    expect(promotedResultMessage({ finding_id: 7, joined_issue: true })).toBe('Joined the existing finding #7.');
+  });
+
+  it('names the status of a finding it made from the response', async () => {
+    const { promotedResultMessage } = await import('../utils/hostTests');
+    expect(promotedResultMessage({ finding_id: 7, joined_issue: false, status: 'open' })).toBe('On finding #7 (open).');
+    expect(promotedResultMessage({ finding_id: 7 })).toBe('On finding #7.');
   });
 });

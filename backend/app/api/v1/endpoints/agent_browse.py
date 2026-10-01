@@ -54,7 +54,7 @@ from app.api.v1.endpoints.agent_schemas import (
 )
 from app.api.v1.endpoints.agent_common import (
     PORTS_PARAM_HELP, SERVICES_PARAM_HELP,
-    _apply_agent_host_filters, _batch_host_enrichment, load_agent_session,
+    apply_agent_host_filters, batch_host_enrichment, load_agent_session,
 )
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ def _enrich_host_briefs(db: Session, hosts) -> List[HostBrief]:
     if not hosts:
         return []
     host_ids = [h.id for h in hosts]
-    port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, host_ids)
+    port_counts, vuln_map = batch_host_enrichment(db, host_ids)
     exploits, critical_exploits = exploit_count_maps(db, host_ids)
 
     result = []
@@ -437,7 +437,7 @@ def list_hosts(
     db: Session = Depends(get_db),
 ):
     q = db.query(models.Host).filter(models.Host.project_id == agent.project_id)
-    q = _apply_agent_host_filters(
+    q = apply_agent_host_filters(
         q, db, project_id=agent.project_id,
         state=state, ports=ports, services=services, subnets=subnets,
         has_critical_vulns=has_critical_vulns, has_high_vulns=has_high_vulns,
@@ -466,7 +466,7 @@ def get_host(
     port_briefs = [PortBrief.model_validate(p) for p in host.ports]
     open_count = sum(1 for p in host.ports if p.state == "open")
     # Compute vuln summary for consistency with list endpoint
-    port_counts, vuln_map, _, _, _ = _batch_host_enrichment(db, [host.id])
+    port_counts, vuln_map = batch_host_enrichment(db, [host.id])
     vc = vuln_map.get(host.id, {})
     # v2.323.0 — every name observed at this address, most recently seen
     # first; the valid target_fqdn set (shared with /assist/hosts/{id}).

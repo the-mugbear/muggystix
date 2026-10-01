@@ -20,11 +20,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.db.session import get_db
-from app.db import models
 from app.db.models import HostTag, HostTagAssignment
-from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 
 router = APIRouter(dependencies=[Depends(get_current_user)])

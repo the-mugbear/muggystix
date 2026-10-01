@@ -156,7 +156,12 @@ describe('McpReference', () => {
     // 5.320.0 — tests are proposed on hosts; there is no plan or run group.
     const testing = screen.getByRole('heading', { name: 'Propose and work host tests' });
     expect(testing).toBeInTheDocument();
-    expect(screen.getByText('host_tests_propose')).toBeInTheDocument();
+    // In the catalogue, and in the audit note (which names the tools that take `agent_model`).
+    expect(screen.getAllByText('host_tests_propose').length).toBeGreaterThan(0);
+    // N2 — the audit note named two tools removed with test plans and runs.
+    expect(screen.queryByText('create_test_plan')).toBeNull();
+    expect(screen.queryByText('start_execution')).toBeNull();
+    expect(screen.getByText('record_evidence')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: /Write test plans|Record test results/ })).not.toBeInTheDocument();
 
     expect(screen.getByRole('heading', { name: 'One session, one key' })).toBeInTheDocument();

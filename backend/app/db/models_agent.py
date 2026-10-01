@@ -323,13 +323,19 @@ class AssistSessionStatus(str, enum.Enum):
 
 
 class AssistSession(Base):
-    """LEGACY — the detail row of an assist session started before v2.337.0.
+    """The detail row the session pages still key on — one per session start.
 
-    No new rows are written: the consolidated project session carries
+    Since v2.337.0 the consolidated project :class:`AgentSession` carries
     ``purpose`` and ``last_activity_at`` itself, and every ``/agent/assist/*``
-    read resolves the caller's :class:`AgentSession` directly.  The table
-    stays so the review pages keep answering for sessions that ran before
-    the consolidation.
+    read resolves the caller's ``AgentSession`` directly, so nothing on the
+    agent side reads this table.  A row IS still written, though:
+    ``POST /projects/{id}/assist/start`` (``endpoints/assist.py``) adds one
+    beside the ``AgentSession`` it creates, linked by ``agent_session_id``,
+    because the ``/assist-sessions`` list, detail and API-activity routes —
+    and the note / feedback links that carry an assist-session id — read
+    through it.  Rows from before the consolidation have no
+    ``agent_session_id``.  Folding these pages onto ``agent_sessions`` is a
+    separate change (review 2026-10-01 B3).
     """
     __tablename__ = "assist_sessions"
 
@@ -482,9 +488,9 @@ class AgentApiCall(Base):
 
     # The call itself
     method = Column(String(8), nullable=False)        # GET / POST / PATCH / DELETE
-    path = Column(Text, nullable=False)               # /api/v1/agent/test-plans/12/context
-    path_template = Column(Text, nullable=True)       # /agent/test-plans/{plan_id}/context
-    path_params = Column(JSON, nullable=True)         # {"plan_id": 12}
+    path = Column(Text, nullable=False)               # /api/v1/agent/host-tests/12
+    path_template = Column(Text, nullable=True)       # /agent/host-tests/{test_id}; NULL = no route matched
+    path_params = Column(JSON, nullable=True)         # {"test_id": 12}
     query_params = Column(JSON, nullable=True)        # {"detail_level": "brief"}
     request_body_summary = Column(JSON, nullable=True)  # only for non-GET, ≤8KB
     status_code = Column(Integer, nullable=False)

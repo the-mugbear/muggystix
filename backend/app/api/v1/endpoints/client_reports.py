@@ -18,19 +18,24 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import get_current_project, require_project_role
-from app.api.v1.endpoints.auth import get_current_user
-from app.core.security import check_permissions, log_audit_event
+from app.api.deps import get_current_user
+from app.core.security import log_audit_event
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.models_reports import Report, ReportKind, ReportProfile, ReportStatus, RenderStatus
 from app.db.session import get_db
 from app.schemas.client_reports import (
-    EngagementSettings, PreviewRequest, ReportCreate, ReportFileOut, ReportListOut, ReportOut,
-    ReportProfileBody, ReportProfileOut, ReportRef, ReportTemplateAssetChangeOut, ReportTemplateOut,
+    PreviewRequest, ReportCreate, ReportListOut, ReportOut,
+    ReportProfileBody, ReportProfileOut, ReportTemplateAssetChangeOut, ReportTemplateOut,
     ReportTemplateProblemOut, ReportUpdate, Tester,
 )
 from app.schemas.schemas import ReportJobSchema
 from app.services.client_report_service import ClientReportService, ReportStateError, stored_file_path
+from app.services.client_report_views import (
+    load_report,
+    role_allows as _is,
+    serialize_report as _serialize,
+)
 from app.services.report_job_service import ReportJobService
 from app.services import report_scope
 from app.services import report_template_service as templates
@@ -57,64 +62,31 @@ def _role(db: Session, project: Project, user: User) -> str:
     return getattr(role, "value", role) or ""
 
 
-def _is(role: str, required: ProjectRole) -> bool:
-    return bool(role) and check_permissions(role, required.value)
-
-
-def _name(user) -> Optional[str]:
-    return (user.full_name or user.username) if user is not None else None
-
-
-def _ref(report: Optional[Report]) -> Optional[ReportRef]:
-    if report is None:
-        return None
-    return ReportRef(
-        id=report.id, number=report.number, title=report.title, status=report.status,
-        issued_at=report.issued_at,
-    )
-
-
-def _serialize(db: Session, report: Report, role: str, *, with_summary: bool) -> ReportOut:
-    superseded_by = None
-    if report.status == ReportStatus.SUPERSEDED:
-        superseded_by = (
-            db.query(Report)
-            .options(defer(Report.snapshot))
-            .filter(Report.revision_of_id == report.id, Report.status != ReportStatus.DRAFT)
-            .order_by(Report.number.desc())
-            .first()
-        )
-    summary = ClientReportService(db).summary(report) if with_summary else None
-    is_draft = report.status == ReportStatus.DRAFT
-    return ReportOut(
-        id=report.id, project_id=report.project_id, kind=report.kind, status=report.status,
-        title=report.title, number=report.number, template=report.template,
-        baseline=_ref(report.baseline), revision_of=_ref(report.revision_of),
-        superseded_by=_ref(superseded_by),
-        settings=EngagementSettings(**(report.settings or {})),
-        executive_summary=report.executive_summary,
-        template_fingerprint=report.template_fingerprint, quarto_version=report.quarto_version,
-        render_status=report.render_status, render_error=report.render_error,
-        files=[
-            ReportFileOut(
-                format=f.format, filename=f.filename, media_type=f.media_type,
-                size_bytes=f.size_bytes, sha256=f.sha256, created_at=f.created_at,
-            )
-            for f in report.files
-        ],
-        created_by_name=_name(report.created_by), issued_by_name=_name(report.issued_by),
-        created_at=report.created_at, updated_at=report.updated_at, issued_at=report.issued_at,
-        summary=summary,
-        can_edit=is_draft and _is(role, ProjectRole.ANALYST),
-        can_issue=is_draft and _is(role, ProjectRole.ADMIN),
-    )
-
-
+# The serializer and the loader are ``client_report_views`` (a service since
+# the 2026-10-01 review, B4): the agents' report reads use the same two.
 def _load(db: Session, project: Project, report_id: int) -> Report:
+    return load_report(db, project.id, report_id)
+
+
+def _load_for_change(db: Session, project: Project, report_id: int) -> Report:
+    """The report under ``FOR UPDATE``, re-read — for a route that checks the
+    status and then writes (review 2026-10-01 R13).
+
+    ``issue()`` locks the row; a PATCH or DELETE that had read ``draft``
+    without a lock then waited behind it and applied AFTER the issue
+    committed: an issued report's title, settings or template no longer
+    matched its snapshot, or a numbered report was deleted.  With the lock the
+    route waits for the issue and then sees ``issued``.  ``populate_existing``
+    because a row already in the session would be checked at its pre-lock
+    status.  The files load by ``selectinload`` — a second statement, so the
+    lock covers the report row only (a joined load under FOR UPDATE fails on
+    Postgres)."""
     report = (
         db.query(Report)
         .options(selectinload(Report.files))
         .filter(Report.id == report_id, Report.project_id == project.id)
+        .with_for_update(of=Report)
+        .populate_existing()
         .first()
     )
     if report is None:
@@ -488,7 +460,7 @@ def update_report(
     project: Project = Depends(get_current_project),
     current_user: User = Depends(get_current_user),
 ):
-    report = _load(db, project, report_id)
+    report = _load_for_change(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report cannot be changed; start a revision instead.")
     sent = body.model_fields_set
@@ -525,7 +497,7 @@ def delete_report(
 ):
     """Discard a DRAFT (its creator or a project admin).  Issued reports are
     the record and stay."""
-    report = _load(db, project, report_id)
+    report = _load_for_change(db, project, report_id)
     if report.status != ReportStatus.DRAFT:
         raise HTTPException(status_code=409, detail="An issued report is part of the record and cannot be deleted.")
     role = _role(db, project, current_user)
@@ -570,13 +542,22 @@ def issue_report(
 ):
     """A project admin's sign-off: freeze what the report says, number it, and
     render its files.  After this the report never changes."""
-    report = _load(db, project, report_id)
-    template = _renderable_template_or_409(report.template)
+    _load(db, project, report_id)
+
+    def fingerprint(locked: Report) -> str:
+        # Computed from the row ``issue()`` holds locked (review 2026-10-01
+        # R13): read before the lock, a PATCH that changed the template in
+        # between stamped the report with the OLD template's fingerprint, and
+        # its issue render then refused it as "changed since issue".
+        return templates.fingerprint(_renderable_template_or_409(locked.template))
+
     try:
         report = ClientReportService(db).issue(
-            report.id, project.id, user_id=current_user.id,
-            fingerprint=templates.fingerprint(template),
+            report_id, project.id, user_id=current_user.id, fingerprint=fingerprint,
         )
+    except HTTPException:
+        db.rollback()
+        raise
     except LookupError:
         raise HTTPException(status_code=404, detail="Report not found")
     except ReportStateError as exc:

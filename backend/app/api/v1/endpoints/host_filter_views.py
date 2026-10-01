@@ -25,7 +25,7 @@ from app.db.session import get_db
 from app.db.models import HostFilterView
 from app.db.models_auth import User
 from app.db.models_project import Project
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import ProjectRole
 

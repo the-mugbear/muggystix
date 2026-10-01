@@ -145,7 +145,18 @@ export interface ReportSummary {
     domains_inline_max: number | null;
     file: { name: string; sha256: string; bytes: number } | null;
   } | null;
-  delta?: { new_findings: number; findings_with_new_endpoints: number; withdrawn: number } | null;
+  delta?: {
+    new_findings: number;
+    findings_with_new_endpoints: number;
+    withdrawn: number;
+    /** Already-reported findings whose severity is different now.  Absent on
+     *  reports issued before it was counted — read it as 0. */
+    findings_with_changed_severity?: number;
+  } | null;
+  /** Test results the report prints as "how it was confirmed"… */
+  evidence_records?: number;
+  /** …and how many of those an agent recorded.  A notice, never a block. */
+  agent_evidence_records?: number;
   /** Set when the summary could not be built (e.g. an addendum lost its baseline). */
   error?: string;
 }

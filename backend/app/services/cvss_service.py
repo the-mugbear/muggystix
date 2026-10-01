@@ -37,6 +37,17 @@ _V3_WEIGHTS: Dict[str, Dict[str, float]] = {
 }
 # Privileges Required weighs more when the scope changes.
 _V3_PR_CHANGED = {"N": 0.85, "L": 0.68, "H": 0.5}
+# The temporal and environmental metrics of 3.0 / 3.1.  They do not change the
+# BASE score computed here, but they are part of the standard, so a vector that
+# carries them is accepted; anything else is not a CVSS 3.x metric and the
+# vector is refused like any other malformed one (review 2026-10-01 N5 —
+# "CVSS:3.1/…/ZZ:9" used to be stored and printed in the report).
+_V3_OPTIONAL: Dict[str, str] = {
+    "E": "XHFPU", "RL": "XUWTO", "RC": "XCRU",
+    "CR": "XHML", "IR": "XHML", "AR": "XHML",
+    "MAV": "XNALP", "MAC": "XLH", "MPR": "XNLH", "MUI": "XNR", "MS": "XUC",
+    "MC": "XNLH", "MI": "XNLH", "MA": "XNLH",
+}
 
 
 def _roundup_31(value: float) -> float:
@@ -72,6 +83,13 @@ def _score_v3(version: str, metrics: Dict[str, str]) -> float:
             raise CvssError(f"A CVSS {version} vector needs the base metric {key}.")
         if metrics[key] not in allowed:
             raise CvssError(f"{key}:{metrics[key]} is not a CVSS {version} value.")
+    for key, value in metrics.items():
+        if key in _V3_WEIGHTS:
+            continue
+        if key not in _V3_OPTIONAL:
+            raise CvssError(f"{key} is not a CVSS {version} metric.")
+        if len(value) != 1 or value not in _V3_OPTIONAL[key]:
+            raise CvssError(f"{key}:{value} is not a CVSS {version} value.")
     changed = metrics["S"] == "C"
     av = _V3_WEIGHTS["AV"][metrics["AV"]]
     ac = _V3_WEIGHTS["AC"][metrics["AC"]]
@@ -119,7 +137,10 @@ def _score_v2(metrics: Dict[str, str]) -> float:
     exploitability = 20 * w["AV"] * w["AC"] * w["Au"]
     f_impact = 0.0 if impact == 0 else 1.176
     base = ((0.6 * impact) + (0.4 * exploitability) - 1.5) * f_impact
-    return float(Decimal(str(base)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+    score = float(Decimal(str(base)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+    # No impact multiplies a negative term by zero: -0.0, which serialises as
+    # "-0.0" in the report.  A score is never below zero (review 2026-10-01 N5).
+    return score if score > 0 else 0.0
 
 
 # --- CVSS 4.0 (checked, not scored) -----------------------------------------

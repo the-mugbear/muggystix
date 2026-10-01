@@ -138,6 +138,26 @@ Nothing to fix: no confirmed finding has an open affected system in this report.
 <% endfor %>
 <% endif %>
 <#
+  An addendum also carries findings whose SEVERITY changed since the baseline
+  (change "severity_changed", or a "new_hosts" finding that was re-rated too).
+  Re-rating adds no system to fix, but it changes what to fix first, so the
+  list names them.  .get(): an addendum issued before this has no such key.
+#>
+<% if report.kind == "addendum" %>
+<% set rerated = [] %>
+<% for f in findings if f.get("previous_severity_label") %><% set _ = rerated.append(f) %><% endfor %>
+<% if rerated %>
+# Severity changed since report << report.baseline.number >>
+
+| Ref | Finding | Was | Now |
+|:------|:---------------------------------------------|:-----------|:-----------|
+<% for f in rerated %>
+| << f.ref >> | << f.title >> | << f.previous_severity_label >> | << f.severity_label >> |
+<% endfor %>
+
+<% endif %>
+<% endif %>
+<#
   Nothing silently disappears: whatever the worklist left out is named here.
 #>
 <% set accepted = findings|selectattr("status", "equalto", "accepted_risk")|list %>

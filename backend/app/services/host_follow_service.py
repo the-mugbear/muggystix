@@ -180,8 +180,8 @@ class HostFollowService:
     ) -> Annotation:
         # Security fix: previously trusted ``parent_id`` verbatim, so a
         # note on host A in Project A could be threaded under a note on
-        # host B in Project B — every status-change on the child would
-        # notify the parent's author across the project boundary.  Same-
+        # host B in Project B — a reply there would notify that thread's
+        # writers across the project boundary.  Same-
         # host check enforces that threading stays within one host (and
         # therefore one project).
         parent = None

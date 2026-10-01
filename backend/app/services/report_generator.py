@@ -9,7 +9,7 @@ hosts router.
 """
 from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.orm import Session, selectinload
-from sqlalchemy import or_, case, func
+from sqlalchemy import case, func
 from app.db import models
 from app.db.models_vulnerability import Vulnerability, enum_value, SEVERITY_KEYS
 from app.core.config import settings
@@ -260,10 +260,12 @@ class ReportGenerator:
         # inventory can be filtered/sorted on what was actually concluded, not
         # just raw scan vulns: active canonical findings, critical findings,
         # test results that found something (evidence records with outcome
-        # "finding"; "Execution Findings" until v2.442.0), open notes, and
-        # scanner vulns not yet triaged.
+        # "finding"; "Execution Findings" until v2.442.0) and scanner vulns not
+        # yet triaged.  No "Open Notes" (review 2026-10-01 N2): notes lost
+        # their status in v2.446.0, so that column counted every note — the
+        # same number as "Notes" below under a label that said otherwise.
         'Active Findings', 'Critical Findings', 'Test Findings',
-        'Open Notes', 'Untriaged Vulns',
+        'Untriaged Vulns',
         'Tags', 'Notes', 'Last Seen', 'Scan File', 'Scan Date',
     ]
 
@@ -382,10 +384,6 @@ class ReportGenerator:
             last_seen_str = host.last_seen.strftime('%Y-%m-%d %H:%M:%S') if host.last_seen else ''
 
             fc = finding_counts.get(host.id, {})
-            open_notes = sum(
-                1 for n in (host.notes or [])
-                if enum_value(getattr(n, 'status', None)) not in ('resolved',)
-            )
             untriaged_vulns = max(0, len(host.vulnerabilities or []) - len(fc.get('promoted_vuln_ids', ())))
 
             _safe_csv_row(writer, [
@@ -409,7 +407,6 @@ class ReportGenerator:
                 fc.get('active', 0),
                 fc.get('critical', 0),
                 fc.get('exec', 0),
-                open_notes,
                 untriaged_vulns,
                 self._host_tags(host),
                 len(host.notes or []),
@@ -901,25 +898,67 @@ class ReportGenerator:
 
         return {"scan": scan, "discovered_at": discovered_at}
 
+    # Readable names for the Hosts list's filters (``HostFilterParams``).  Ids
+    # are called ids: the report prints what was sent, it does not look up
+    # tag or scan names.
+    _FILTER_LABELS = {
+        "q": "Query",
+        "search": "Search",
+        "state": "Host state",
+        "ports": "Ports",
+        "services": "Services",
+        "port_states": "Port states",
+        "has_open_ports": "Has open ports",
+        "os_filter": "OS",
+        "subnets": "Subnets",
+        "has_critical_vulns": "Has critical vulnerabilities",
+        "has_high_vulns": "Has high vulnerabilities",
+        "has_medium_vulns": "Has medium vulnerabilities",
+        "has_low_vulns": "Has low vulnerabilities",
+        "has_exploit_available": "Exploit available",
+        "has_test_execution": "Tested",
+        "follow_status": "Review status",
+        "out_of_scope_only": "Out of scope only",
+        "scan_ids": "Scan ids",
+        "first_seen_in_scan": "First seen in those scans",
+        "with_notes_only": "With notes only",
+        "has_web_interface": "Has a web interface",
+        "tech": "Technology",
+        "tags": "Tag ids",
+        "subnet_labels": "Subnet label ids",
+        "sites": "Sites",
+        "assigned_to": "Assigned to",
+        "orgs": "Organisations",
+        "asns": "ASNs",
+        "countries": "Countries",
+        "weaknesses": "Weaknesses",
+        "checks": "Checks",
+    }
+
     def _format_filters_html(self, filters: Dict[str, Any]) -> str:
         """Format applied filters for HTML report"""
-        if not filters:
-            return "<p><strong>Applied Filters:</strong> None</p>"
-
+        # Every filter that narrowed the export is printed (review 2026-10-01
+        # R15).  This used to name five keys of the ~31 the Hosts list sends
+        # (``HostFilterParams``), so an export narrowed by a query, a site, a
+        # tag or a weakness said "Applied Filters: None" — a subset presented
+        # as the whole inventory.  A key without a label here is still
+        # printed, under its own name: a new filter can never go unreported.
         filter_items = []
-        for key, value in filters.items():
-            if value:
-                if key == 'search':
-                    filter_items.append(f"Search: {html.escape(str(value))}")
-                elif key == 'state':
-                    filter_items.append(f"Host State: {html.escape(str(value))}")
-                elif key == 'ports':
-                    filter_items.append(f"Ports: {html.escape(str(value))}")
-                elif key == 'services':
-                    filter_items.append(f"Services: {html.escape(str(value))}")
-                elif key == 'os_filter':
-                    filter_items.append(f"OS Filter: {html.escape(str(value))}")
-        
+        for key, value in (filters or {}).items():
+            if value is None or value == "" or value == [] or value == ():
+                continue
+            label = self._FILTER_LABELS.get(key) or str(key).replace("_", " ").capitalize()
+            if value is True:
+                filter_items.append(html.escape(label))
+                continue
+            if value is False:
+                text = "no"
+            elif isinstance(value, (list, tuple, set)):
+                text = ", ".join(str(v) for v in value)
+            else:
+                text = str(value)
+            filter_items.append(f"{html.escape(label)}: {html.escape(text)}")
+
         if filter_items:
             return f"<p><strong>Applied Filters:</strong> {', '.join(filter_items)}</p>"
         return "<p><strong>Applied Filters:</strong> None</p>"
@@ -1011,7 +1050,7 @@ class ReportGenerator:
             '<div class="dossier-glance">'
             f'<span>Findings <strong>{summary["active_findings"]}</strong>/{summary["total_findings"]}: {finding_chips}</span>'
             f'<span>Vulns: {e(vuln_line)} · untriaged {summary["untriaged_vulns"]}</span>'
-            f'<span>Tests {summary["execution_findings"]} · Tester {summary["tester_summaries"]} · Notes {summary["open_notes"]}/{summary["total_notes"]}</span>'
+            f'<span>Tests {summary["execution_findings"]} · Tester {summary["tester_summaries"]} · Notes {summary["total_notes"]}</span>'
             '</div>'
             '</div>'
         )
@@ -1313,7 +1352,6 @@ class ReportGenerator:
                 detail = {
                     "kind": "note",
                     "body": a.body or "",
-                    "status": enum_value(getattr(a, "status", None)),
                 }
             base[f.id] = {
                 "finding_id": f.id,
@@ -1456,7 +1494,6 @@ class ReportGenerator:
             findings_by_severity[cf["severity"]] = findings_by_severity.get(cf["severity"], 0) + 1
             if cf.get("host_status") not in _INACTIVE_ENDPOINT_STATES:
                 active += 1
-        open_notes = sum(1 for n in notes if (n.get("status") or "") not in ("resolved",))
         return {
             "active_findings": active,
             "total_findings": len(canonical_findings),
@@ -1465,7 +1502,6 @@ class ReportGenerator:
             "untriaged_vulns": untriaged_count,
             "execution_findings": len(execution_findings),
             "tester_summaries": len(tester_summaries),
-            "open_notes": open_notes,
             "total_notes": len(notes),
         }
 
@@ -1491,28 +1527,21 @@ class ReportGenerator:
         except OSError:
             return out
         used = 0
+        # One statement for every finding (review 2026-10-01 R16) — this ran
+        # two queries per finding before the report's first byte.  The
+        # lookup is the client report's (``finding_image_attachments``).
+        # ``marked_only=False`` keeps this report's behaviour: every attached
+        # image, marked "In report" or not (the owner parked that filter).
+        from app.services.client_report_service import finding_image_attachments
+        attached = finding_image_attachments(
+            self.db, [(f.get("id"), f.get("evidence_annotation_id")) for f in findings],
+            marked_only=False,
+        )
         for f in findings:
             fid = f.get("id")
-            root = f.get("evidence_annotation_id")
-            # All annotation ids whose attachments count as this finding's
-            # evidence: the source-note thread (root + replies) and every
-            # comment on the finding itself.
-            ann_q = self.db.query(models.Annotation.id).filter(
-                or_(
-                    models.Annotation.finding_id == fid,
-                    models.Annotation.id == root,
-                    models.Annotation.thread_root_id == root,
-                ) if root else (models.Annotation.finding_id == fid)
-            )
-            ann_ids = [r[0] for r in ann_q.all()]
-            if not ann_ids:
+            atts = [att for att, _actor in attached.get(fid, ())]
+            if not atts:
                 continue
-            atts = (
-                self.db.query(models.NoteAttachment)
-                .filter(models.NoteAttachment.annotation_id.in_(ann_ids))
-                .order_by(models.NoteAttachment.id)
-                .all()
-            )
             uris: List[Tuple[str, str]] = []
             for att in atts:
                 if used >= self._EVIDENCE_IMAGE_BUDGET:
@@ -2895,7 +2924,6 @@ class ReportGenerator:
             "enums": {
                 "vulnerability_severity": ["critical", "high", "medium", "low", "info", "unknown"],
                 "follow_status": ["watching", "in_review", "reviewed"],
-                "note_status": ["open", "in_progress", "resolved"],
             },
         }
 

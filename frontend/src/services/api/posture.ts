@@ -168,6 +168,11 @@ export interface EvidenceDomain {
   label: string;
   note: string;
   coverage: Metric;
+  /** `vuln_assessment` only, and only when it has assessed hosts: of the
+   *  ASSESSED hosts, how many a vulnerability scan authenticated to. The three
+   *  add up to `coverage.numerator`. It qualifies the evidence — a scan that
+   *  did not log in saw the host from outside — and never changes "assessed". */
+  credentialed?: { credentialed: number; not_credentialed: number; credentials_not_stated: number } | null;
 }
 
 /** One cell of the evidence matrix (backend 2.374.0). Three states and no more:

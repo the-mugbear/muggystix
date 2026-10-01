@@ -4,7 +4,7 @@ Each folder here is one client report template. BlueStick lists every valid fold
 
 | Folder | For | Formats |
 |---|---|---|
-| `pentest` | The full penetration test report: every finding with its affected systems, evidence and recommendation. The default. | HTML, Word, QMD source |
+| `pentest` | The full penetration test report: every finding with its affected systems, how it was confirmed, evidence and recommendation. The default. | HTML, Word, QMD source |
 | `executive-brief` | Leadership: the summary, findings at a glance and what to do, with no evidence or host lists. | Word, HTML |
 | `remediation-worklist` | The people who fix things: one section per system with its findings, then how to fix each finding once. **The starter template — copy this one.** | HTML, Word, QMD source |
 
@@ -78,6 +78,7 @@ Every issued report records a fingerprint of the template folder, so its history
 - **`formats`**: any of `html`, `docx` and `qmd` (a zip of the filled source with the data and filters). There is no PDF: export the Word file.
 - **`postprocess`**: optional, one script per format, run on the rendered file (see `pentest/scripts/fix-docx-report.py`).
 - **`scope_inline_max`, `scope_domains_inline_max`** (v2.441.0): the most networks and domains the report lists itself (default 25 each). A project over either limit is not listed in the report. The template gets `scope.external` and prints the totals and the name and SHA-256 of a separate scope file, a CSV the operator downloads from the report's page and sends with it (see `pentest/partials/_scope_external.qmd`). Thousands of networks otherwise made a table that ran for pages. Set `null` for a template that prints no scope at all (`remediation-worklist`): it never names a file, and issuing never asks for one.
+- **`evidence_records`** (default `false`): set `true` for a template that prints how each finding was confirmed. Only then does a finding carry `confirmations` (see The data): a template that does not ask gets none, and none is frozen into a report issued with it. `pentest` sets it; `executive-brief` leaves evidence out by design, and `remediation-worklist` is a list of fixes, so both set `false`.
 - **`assets`**: optional, the template's own images and files, each with a unique `id` (lower-case, starting with a letter, at most 32 characters) and a `path` inside the folder. `label`, `description` and an optional `note` are shown on the Reports page, which lists each asset as installed or missing; `formats` says where it appears (`html`, `docx`; default both). A path must be an image (png, jpg, jpeg, svg, gif, webp) unless the asset `replaces` a file of the same type (`.docx` allowed). A `required` asset that is missing blocks preview and issue. An asset with `"replaces": "reference.docx"` is used in place of that shipped file when it is installed. Inside the template, `asset("logo")` gives the path when the file is installed and an empty string otherwise; `asset()` of an id that is not declared fails the render.
 - **Uploading assets** (v2.431.0): a global administrator can also upload a PNG, JPEG or `.docx` asset from **Template files** on the Reports page instead of installing it on the server. The upload is stored in `uploads/template_assets/<template>/`, never in your folder. It wins over a server-installed file, applies to every project, and counts in the template fingerprint, so issued reports keep theirs. SVG, GIF and WebP assets can only be installed on the server: an SVG would carry script into the HTML report. The upload's type must match the `path` extension (`logo.png` takes a PNG). Optional guidance per asset, shown on the page and enforced on upload:
   - `max_bytes`: largest file accepted (default 5 MB for an image, 10 MB for a Word file).
@@ -100,10 +101,14 @@ A template receives one object. `sample-data.json` is a complete example.
 | `scope` | `subnets` (`cidr`, `site`, `description`), `domains` (`domain`, `include_subdomains`). Since v2.441.0 also: `totals` (`networks`, `ipv4_addresses`, `ipv6_networks`, `domains`, `sites`), `by_site` (`site`, `networks`, `addresses`; at most 15 rows plus "Other sites (n)"), `inline_max` / `domains_inline_max` (the cutoffs), `subnets_inline` / `domains_inline` (whether to list each), `external` (either is not listed), and `file` (`name`, `sha256`, `bytes`; `null` when nothing is external). Reports issued before v2.441.0 carry only the two lists, so test with `scope.get("totals")`. Numbers print with separators via `"{:,}".format(n)`. |
 | `counts` | `critical`, `high`, `medium`, `low`, `info`, `total` |
 | `severity_order`, `severity_labels` | `["critical", …, "info"]` and their display labels |
-| `findings` | Worst first (severity, then CVSS score). Each has `id`, `_path` (its data path, which `md()` uses), `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `evidence` (`file`, `caption`), `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references` |
-| `delta` | Addenda only: `new_findings`, `findings_with_new_endpoints`, `withdrawn` (`ref`, `title`, `severity_label`, `reason`, `endpoints`). In an addendum, each finding's `change` is `new` or `new_hosts`, and `new_affected` lists the new systems. |
+| `findings` | Worst first (severity, then CVSS score). Each has `id`, `_path` (its data path, which `md()` uses), `ref` (F-01…), `title`, `severity`, `severity_label`, `status` (`confirmed`, `accepted_risk`, `remediated`), `status_note`, `cvss_score`, `cvss_vector`, `affected` (`address`, `hostname`, `name`, `port`, `state` — `Remediated` when that system is fixed), `affected_count`, `evidence` (`file`, `caption`), `confirmations` and `confirmations_omitted` (below), `corroboration`, and written text: `description`, `impact`, `recommendation`, `steps_to_reproduce`, `references`. In an addendum also `previous_severity` / `previous_severity_label` when the finding was re-rated since the baseline (else `null`). |
+| `delta` | Addenda only: `new_findings`, `findings_with_new_endpoints`, `findings_with_changed_severity`, `withdrawn` (`ref`, `title`, `severity_label`, `reason`, `endpoints`). In an addendum, each finding's `change` is `new`, `new_hosts` or `severity_changed`, and `new_affected` lists the new systems. |
 
 What a report includes: findings that are confirmed, accepted risk or remediated. False positives are dropped entirely. Open and retest findings are counted, never shown.
+
+**What an addendum shows.** A finding the baseline report did not have (`new`); a reported finding on systems the baseline did not list (`new_hosts`, the new ones in `new_affected`); a reported finding whose severity is not the one the baseline gave it (`severity_changed`); and withdrawals. A finding that was re-rated AND is on further systems appears once, as `new_hosts`. Every re-rated finding carries `previous_severity` (`medium`) and `previous_severity_label` (`Medium`), so print "was Medium, now Critical" from those and `severity_label`. `delta.findings_with_changed_severity` counts all of them. Only severity is compared: a changed title or status is never a change an addendum reports, and nothing is compared by date. An addendum issued before this existed has neither key, so read them with `f.get("previous_severity_label")` and count re-rated findings from the list, as the shipped templates do. Say "nothing has changed" only when there is no new finding, no new system, no re-rated finding and no withdrawal.
+
+**How a finding was confirmed** (`confirmations`, only with `"evidence_records": true`). The test results linked to the finding whose outcome is `finding`: there is no per-result "in report" mark, so a result that showed the issue is printed and one that did not (no finding, inconclusive, failed, informational) never is. Only results on a system the report lists for that finding are taken. Each entry has `_path`, `id`, `tool`, `host` (the system's address), `summary`, `command`, `output`, `output_truncated`, `executed_at`, `date`, `by` (the person, or the operator with the agent session number) and `by_agent`. At most 10 per finding, oldest first; `confirmations_omitted` is how many more there are. The command is cut to 600 characters and the output to 30 lines or 1,500 characters, with terminal colour codes and control characters removed. Issuing freezes them with the rest of the data. Reports issued before this have no such keys: read them with `f.get("confirmations") or []`. See `pentest/partials/_confirmations.qmd`.
 
 ## Writing `report.qmd`
 
@@ -122,6 +127,7 @@ Helpers:
 - `md(f, "recommendation", todo="…")`: a finding's written Markdown. `md("executive_summary")` works the same for a top-level field. When the field is empty, the `todo` text is printed as a highlighted **TODO** instead.
 - `todo("…")`: a highlighted, searchable "TODO: …" for anything the report still needs.
 - `image(e, width="6in", number=None)`: an evidence image (`e` from `f.evidence`). With `number=`, it prints a numbered "Figure N: caption"; see pentest's `counter` namespace in `report.qmd` and `partials/_table_caption.qmd` for numbered table captions.
+- `code(c, "command")`: a command line or a tool's output, verbatim (`c` from `f.confirmations`; `"command"` or `"output"`). Like `md()` it prints only a placeholder: the filter builds one code block from the string in `data.json`, which is never parsed, so a fence, a backtick or a shortcode in it is text. Nothing is printed for an empty value.
 - `asset("logo")`: the path of an installed template image, or an empty string.
 - `plain(v)`: a date, number or reference printed unescaped. It refuses anything that would need escaping.
 
@@ -130,13 +136,13 @@ Helpers:
 1. **Every printed value is escaped.** A title of `*bold*` prints as those characters. So no data can become Markdown, a Quarto shortcode or HTML.
 2. **Written text only through `md()`.** It is inserted after Quarto's own filters, with raw HTML, images, non-web links, headings and attributes removed. Never print written text as a value.
 3. **Never print data in the YAML front matter.** Quarto expands shortcodes in metadata even when they are escaped. Name the data with `bluestick-meta` instead, as the shipped templates do for `title` and `subtitle`.
-4. **Never print a value inside `` `code` `` or a code block.** Escapes are not undone there.
+4. **Never print a value inside `` `code` `` or a code block.** Escapes are not undone there. A command line or tool output goes through `code()`, the one way to print either.
 5. **Reusable parts are includes, not macros.** A macro's output is printed like a value and so escaped. Use `<% include "partials/_x.qmd" %>` with `<% with … %>` to pass it variables.
 6. The template runs in Jinja's sandbox: no Python internals, and no includes outside the folder.
 
 Things to handle in every template:
 
-- **Addenda**: `report.kind == "addendum"`. Show what changed (`change`, `new_affected`, `delta.withdrawn`), not the whole report again.
+- **Addenda**: `report.kind == "addendum"`. Show what changed (`change`, `new_affected`, `previous_severity_label`, `delta.withdrawn`), not the whole report again.
 - **Drafts**: `report.draft`. The shipped templates print a "Draft — not for distribution" callout.
 - **Empty values**: a missing client name, no scope, no findings. Print a `todo()` or say so plainly; never leave a blank.
 
@@ -144,7 +150,7 @@ Things to handle in every template:
 
 - `make` renders `sample-data.json`. Try `make DATA=other.json` with a dataset saved from a real report. Keep such datasets out of the repository: a saved report is client data, and `.gitignore` covers `sample-data-*.json` and `data-*.json` in a template folder. The scope-over-the-cutoff case is built in `test_report_templates_shipped.py` (`_with_scope`), not shipped as a file.
 - `backend/tests/test_report_templates_shipped.py` checks that every shipped template is offered with no problems, and what each one prints for a full report and an addendum. Add a test there for yours. `test_report_templates_escaping.py` and `test_report_template_assets.py` cover escaping and the `assets` manifest.
-- `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary and the written fields. Quarto only exists in the report-worker image, so run it there:
+- `backend/tests/test_quarto_render.py` renders every folder here with hostile text in the title, the finding title, the summary, the written fields and a test result's command and output. Quarto only exists in the report-worker image, so run it there:
   ```bash
   docker compose run --rm --no-deps -v "$PWD/backend:/app" report-worker \
     sh -c "cd /tmp && python -m pytest /app/tests/test_quarto_render.py -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov"

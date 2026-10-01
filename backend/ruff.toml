@@ -1,0 +1,30 @@
+# Ruff — pyflakes (F) rules ONLY (review 2026-10-01 B5).
+#
+# The point is the class of defect a reviewer cannot see in a diff: an unused
+# import or variable (F401, F841), an undefined name (F821), a redefinition
+# that silently replaces an earlier one (F811), a format string with the wrong
+# arguments.  That is how whole dead branches survived unnoticed here.
+#
+# Deliberately NOT a style gate: no E/W (pycodestyle), no import sorting, no
+# formatter.  Adding rule families is a separate decision — each one makes
+# every open diff noisier — so `select` is closed, not `extend-select`.
+#
+# Run (ruff is in requirements-dev.txt, so it is in the backend image):
+#   docker compose run --rm --no-deps -v "$PWD/backend:/app" backend ruff check /app
+target-version = "py311"
+
+# The migration chain is frozen history: a revision is never edited to please
+# a linter (see CLAUDE.md, Schema management).
+extend-exclude = ["alembic/versions", "htmlcov"]
+
+[lint]
+select = ["F"]
+
+[lint.per-file-ignores]
+# Imported for their side effect (registering every model on Base.metadata)
+# or re-exported as a package surface.
+"__init__.py" = ["F401"]
+"app/db/model_registry.py" = ["F401"]
+# Fixtures are used by NAME: a test's parameter "redefines" the imported
+# fixture, and importing one for its side effect looks unused.
+"tests/**" = ["F401", "F811"]

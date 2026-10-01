@@ -57,7 +57,7 @@ from app.api.v1.endpoints import (
     # Durable job-queue operational metrics (admin-only, deployment-wide).
     system_metrics,
 )
-from app.api.v1.endpoints.auth import require_password_changed, require_role
+from app.api.deps import require_password_changed, require_role
 from app.db.models_auth import UserRole
 from app.api.deps import enforce_agent_operator_access
 

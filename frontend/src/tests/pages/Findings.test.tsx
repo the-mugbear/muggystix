@@ -338,11 +338,28 @@ describe('Findings — presentation', () => {
     const caption = await screen.findByTestId('finding-hosts-1');
     expect(caption.textContent).toContain('10.0.0.5');
     expect(caption.textContent).toContain('db01');
-    expect(caption.textContent).toContain('+2');
+    expect(caption.textContent).toContain('+2 more');
     expect(caption.textContent).toContain('still present on 2 of 3');
     expect(screen.getByRole('link', { name: '10.0.0.5' }).getAttribute('href')).toBe('/hosts/42');
-    // The full host list is on hover.
-    expect(caption.getAttribute('title')).toBe('10.0.0.5 (db01), 10.0.0.6');
+    // The hover lists the PREVIEW the row carries and says how many it does
+    // not list (C2): `hosts` is at most five endpoints, `host_count` the total.
+    expect(caption.getAttribute('title')).toBe('10.0.0.5 (db01), 10.0.0.6, and 1 more');
+  });
+
+  it('counts a 2,000-endpoint finding from host_count, not from the five-endpoint preview', async () => {
+    setResponse([
+      makeFinding(1, {
+        host_count: 2000,
+        hosts: Array.from({ length: 5 }, (_, i) => ({
+          id: i + 1, host_id: 40 + i, ip_address: `10.0.0.${i + 1}`, hostname: null,
+        })),
+        endpoint_status_counts: { open: 2000 },
+      }),
+    ]);
+    renderFindings();
+    const caption = await screen.findByTestId('finding-hosts-1');
+    expect(caption.textContent).toContain('+1,999 more');
+    expect(caption.getAttribute('title')).toMatch(/10\.0\.0\.5, and 1,995 more$/);
   });
 
   it('shows age as a compact value with the full date on hover', async () => {

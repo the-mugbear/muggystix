@@ -196,8 +196,8 @@ def s01_notes(c: Ctx, sc):
     port(c, h, sc, 8443, "https", product="nginx", version="1.24.0")
     vuln(c, h, sc, "OpenSSH outdated", VulnerabilitySeverity.MEDIUM, port_obj=p, plugin_id="s01-1")
 
-    pinned = annotation(c, h, "PINNED — out-of-hours testing only on this host (change window Tue 22:00).",
-                        created=ago(days=30), pinned=True, note_type="decision")
+    annotation(c, h, "PINNED — out-of-hours testing only on this host (change window Tue 22:00).",
+               created=ago(days=30), pinned=True, note_type="decision")
     old_active = annotation(c, h, "Old thread: is the 8443 console meant to be reachable from the user VLAN?",
                             created=ago(days=25), note_type="question")
     annotation(c, h, "Reply from TODAY — yes, confirmed with the platform owner.", created=ago(hours=1),

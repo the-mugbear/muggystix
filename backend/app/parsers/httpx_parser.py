@@ -53,6 +53,8 @@ from app.services.dns_name_service import (
     record_observation,
 )
 from app.parsers.parser_utils import (
+    ProgressBeat,
+    announce_scan,
     correlate_scan,
     ScanClock,
     ScanHostObservations,
@@ -155,13 +157,22 @@ class HttpxParser:
         )
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         written = 0
         skipped = 0
         # Every httpx -json record carries an RFC 3339 `timestamp`; the scan
         # window is first..last probe (v2.333.0 — it used to be left NULL).
         clock = ScanClock()
+        # R6 — heartbeat between records, outside the record's savepoint.  The
+        # host history written at the end is also written ahead of each
+        # heartbeat's commit (a failed import's cleanup reads it).
+        scan_id = scan.id
+        beat = ProgressBeat(
+            "records", before=lambda: record_hosts_in_scan(self.db, scan_id, self._observed),
+        )
         for record in records:
+            beat.tick()
             if isinstance(record, dict):
                 clock.observe(parse_rfc3339(record.get("timestamp")))
             try:

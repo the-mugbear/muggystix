@@ -143,7 +143,35 @@ function Span(el)
   return pandoc.Strong(el.content)
 end
 
+--[[
+Verbatim text (review 2026-10-01 B8): the template's `code(c, "command")`
+emits
+
+    ::: {.bs-code key="findings.3.confirmations.0.command"}
+    :::
+
+for a command line as it was run or a tool's output.  The value becomes ONE
+code block built from the string — it is never read as Markdown, so a fence,
+a backtick, a shortcode or raw HTML inside it is text.  Control characters
+are dropped (one of them makes a Word file unreadable) and the length is
+capped here too, whatever the data holds.
+]]
+local CODE_MAX = 6000
+
+local function verbatim(el)
+  local key = el.attributes["key"]
+  if key == nil or not key:match("^[%a_][%w_%.]*$") then return {} end
+  local text = resolve(key)
+  if text == nil or text:match("^%s*$") then return {} end
+  text = text:gsub("\r\n?", "\n")
+  text = text:gsub("[\0-\8\11\12\14-\31\127]", "")
+  -- pandoc.text counts characters, so a cut never splits a UTF-8 sequence.
+  if pandoc.text.len(text) > CODE_MAX then text = pandoc.text.sub(text, 1, CODE_MAX) end
+  return pandoc.CodeBlock(text)
+end
+
 function Div(el)
+  if el.classes:includes("bs-code") then return verbatim(el) end
   if not el.classes:includes("bs-md") then return nil end
   local key = el.attributes["key"]
   if key == nil or not key:match("^[%a_][%w_%.]*$") then return {} end

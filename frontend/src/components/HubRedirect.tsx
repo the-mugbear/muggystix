@@ -18,14 +18,14 @@
 import React from 'react';
 import { Navigate } from 'react-router-dom';
 
-import { useAuth } from '../contexts/AuthContext';
+import { useRoleGate } from '../hooks/useProjectRole';
 import { HUBS, HubId } from '../config/navigation';
 
 const HubRedirect: React.FC<{ hubId: HubId }> = ({ hubId }) => {
-  const { hasPermission } = useAuth();
+  const allowed = useRoleGate();
   const hub = HUBS.find((h) => h.id === hubId);
   const visible = hub
-    ? hub.children.filter((c) => hasPermission(c.requiredRole))
+    ? hub.children.filter((c) => allowed(c.requiredRole))
     : [];
   const target =
     visible.find((c) => c.path === hub?.defaultChildPath)?.path

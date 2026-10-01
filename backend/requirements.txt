@@ -1,3 +1,11 @@
+# Runtime dependencies of the backend, the ingestion worker and the report
+# worker.  Test and lint tools live in requirements-dev.txt (review 2026-10-01
+# B5).  Every version — these and the packages they pull in — is fixed by
+# constraints.txt, which the Dockerfile passes to pip with `-c`.
+#
+# Changing a pin: edit it here AND in constraints.txt (pip refuses the build
+# if they disagree), rebuild, then regenerate constraints.txt from the new
+# image — see the header of that file.
 fastapi==0.141.1
 uvicorn==0.36.0
 sqlalchemy==2.0.43
@@ -6,19 +14,26 @@ alembic==1.16.5
 pydantic[email]==2.11.9
 python-multipart==0.0.20
 lxml==6.0.1
+# Not imported by BlueStick: required by fastapi, pydantic, sqlalchemy, alembic
+# and starlette.  Pinned here only so a rebuild cannot move it; it could live
+# in constraints.txt alone.
 typing-extensions==4.15.0
 # Not imported by BlueStick: pinned because email-validator (pydantic[email])
 # requires it.
 dnspython==2.8.0
-pytest==8.4.2
-pytest-cov==7.0.0
-pytest-asyncio==1.2.0
+# Runtime, not only tests: the MCP loopback, LLM-provider and integration
+# clients and the URL validator import httpx (starlette's TestClient too).
 httpx==0.28.1
+# Not imported by BlueStick: required by uvicorn (its CLI).  Pinned for the
+# same reason as typing-extensions.
 click==8.3.0
 starlette==1.6.0
 bcrypt==3.2.2
 PyJWT==2.8.0
-cryptography>=41.0.0
+# Exact, like everything else here (it was `>=41.0.0`, so two builds a week
+# apart could ship different major versions of the library that encrypts
+# stored credentials and TOTP secrets).  Imported directly (Fernet, HKDF).
+cryptography==50.0.1
 defusedxml==0.7.1
 # v2.381.0 — client-report templates: the .qmd is a Jinja template (sandboxed
 # environment, every value escaped for Markdown) rendered before Quarto runs.

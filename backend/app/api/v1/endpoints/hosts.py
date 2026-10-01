@@ -10,26 +10,28 @@ envelope assembly.
 import logging
 from pathlib import Path
 from typing import Any, List, Optional, Dict
-from datetime import datetime, timezone
+from datetime import datetime
 import ipaddress
 import json
 import itertools
+import time
 
 logger = logging.getLogger(__name__)
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session, selectinload, noload, aliased
-from sqlalchemy import or_, and_, case, distinct, func, select, true
-from sqlalchemy.sql import exists
+from sqlalchemy import or_, and_, case, distinct, func, true
 
-from app.db.session import get_db
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.core.config import settings
+from app.db.session import disable_statement_timeout, get_db
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
+from app.api.params import HostFilterParams
 from app.db.models_project import Project, ProjectRole
-from app.db.models_auth import User, UserRole
+from app.db.models_auth import User
 from app.db import models
 from app.db.models_confidence import (
-    NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, ConflictHistory, NetexecResult,
+    NETEXEC_RAW_OUTPUT_LIMIT, HostConfidence, PortConfidence, NetexecResult,
 )
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 from app.db.models_host_tests import HostTest, ACTIVE_TEST_STATUSES, TESTED_OUTCOMES
@@ -42,21 +44,13 @@ from app.schemas.schemas import (
     Host as HostSchema,
     ScanHost as ScanHostSchema,
     HostListResponse,
-    HostVulnerabilitySummary,
-    HostFollowInfo,
-    Annotation,
-    AnnotationCreate,
-    AnnotationUpdate,
-    HostFollowUpdate,
 )
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_follow_service import HostFollowService
 from app.services.host_query import (
     SERVICE_PORT_MAPPINGS,
     escape_like as _escape_like,
-    parse_subnets as _parse_subnets,
-    make_correlated_subquery as _make_correlated_subquery,
     build_filtered_host_query as _build_filtered_host_query,
     apply_host_sorting as _apply_host_sorting,
     HOST_SORT_FIELDS,
@@ -67,18 +61,14 @@ from app.services.host_query import (
     weakness_predicate,
 )
 from app.services.host_serialization import (
-    SEVERITY_ORDER,
     LIST_DISCOVERY_CAP,
     discovery_dict as _discovery_dict,
-    build_vuln_summary as _build_vuln_summary,
     exploit_count_maps as _exploit_count_maps,
     serialize_host_base as _serialize_host_base,
     serialize_host_detail as _serialize_host_detail,
     serialize_port_light as _serialize_port_light,
-    serialize_vulnerability as _serialize_vulnerability,
-    vulnerability_sort_key as _vulnerability_sort_key,
 )
-from app.db.models import HostFollow, FollowStatus, Annotation as AnnotationModel
+from app.db.models import HostFollow, FollowStatus
 
 
 # --- Response schemas for previously untyped endpoints ---
@@ -276,96 +266,10 @@ class HostDnsRecordsResponse(BaseModel):
 router = APIRouter(dependencies=[Depends(get_current_user)])
 
 
-class HostFilterParams:
-    """The shared /hosts filter query params, declared once.
-
-    Consumed via ``Depends()`` by every endpoint that filters hosts
-    (listing, matching-ids, filter-data, tool-ready export).  Declaring
-    the params here — instead of repeating ~25 ``Query(...)`` defaults
-    across four signatures — means adding a filter dimension is a one-line
-    change in one place, and the four endpoints can never drift out of
-    sync.  Attribute names match ``build_filtered_host_query``'s kwargs,
-    so ``as_builder_kwargs()`` splats straight in.
-    """
-
-    def __init__(
-        self,
-        state: Optional[str] = Query(None, description="Host state filter", examples=["up"]),
-        search: Optional[str] = Query(None, description="Search by IP address, hostname, OS name, port number, or service name", examples=["10.0.0"]),
-        ports: Optional[str] = Query(None, description="Comma-separated port numbers to match", examples=["22,80,443,8080"]),
-        services: Optional[str] = Query(None, description="Comma-separated service names to match (mapped to common ports automatically)", examples=["ssh,http,https,rdp"]),
-        port_states: Optional[str] = Query(None, description="Comma-separated port states to match. With ports= or services= it is the state of THAT port, which is open unless named here; `any` matches every state", examples=["open,filtered", "any"]),
-        has_open_ports: Optional[bool] = Query(None, description="If true, only hosts with at least one open port"),
-        os_filter: Optional[str] = Query(None, description="Filter by OS name or family (partial match)", examples=["Linux"]),
-        subnets: Optional[str] = Query(None, description="Comma-separated CIDR blocks; hosts must fall within at least one", examples=["192.168.1.0/24,10.0.0.0/8"]),
-        has_critical_vulns: Optional[bool] = Query(None, description="If true, only hosts with critical-severity vulnerabilities"),
-        has_high_vulns: Optional[bool] = Query(None, description="If true, only hosts with high-severity vulnerabilities"),
-        has_medium_vulns: Optional[bool] = Query(None, description="If true, only hosts with medium-severity vulnerabilities"),
-        has_low_vulns: Optional[bool] = Query(None, description="If true, only hosts with low-severity vulnerabilities"),
-        has_exploit_available: Optional[bool] = Query(None, description="If true, only hosts with at least one vulnerability flagged as exploitable by Nessus (exploit_available / metasploit_name / canvas_package / core_impact_name / exploit_code_maturity in {functional, high, proof-of-concept})"),
-        has_test_execution: Optional[bool] = Query(None, description="If true, only hosts that have been tested: at least one evidence record whose outcome is finding, no_finding or inconclusive (a failed attempt or an informational record is not a test). Drives the 'tested' badge on the Hosts list."),
-        follow_status: Optional[str] = Query(None, description="Filter by team-shared review status: in_review, reviewed, or none (nobody reviewing)", examples=["none"]),
-        out_of_scope_only: Optional[bool] = Query(None, description="If true, only hosts not mapped to any scope/subnet"),
-        scan_ids: Optional[str] = Query(None, description="Comma-separated scan IDs; hosts must appear in at least one", examples=["1,2,5"]),
-        first_seen_in_scan: Optional[bool] = Query(None, description="Used with scan_ids — if true, only hosts first discovered in those scans"),
-        with_notes_only: Optional[bool] = Query(None, description="If true, only hosts that have at least one note"),
-        has_web_interface: Optional[bool] = Query(None, description="If true, only hosts with at least one web interface recorded (httpx / eyewitness / nikto)"),
-        tech: Optional[str] = Query(None, description="Comma-separated list of technology strings; OR semantics — host qualifies if any interface has any listed tech (substring match, case-insensitive)", examples=["nginx,jenkins"]),
-        tags: Optional[str] = Query(None, description="Comma-separated tag IDs; OR semantics — host qualifies if it carries any listed tag", examples=["3,7"]),
-        subnet_labels: Optional[str] = Query(None, description="Comma-separated subnet-label IDs; OR semantics — host qualifies if it sits in any subnet carrying any listed label", examples=["2,5"]),
-        sites: Optional[str] = Query(None, description="Comma-separated site names; OR semantics — host qualifies if any of its subnets belongs to a listed site", examples=["London DC"]),
-        assigned_to: Optional[str] = Query(None, description="Assignment filter: 'me', 'any', or a numeric user id", examples=["me"]),
-        # RDAP network-attribution filters (org / ASN / country). Repeated
-        # params (?orgs=A&orgs=B), NOT comma-joined, because org names routinely
-        # contain commas ("Google, LLC"). OR semantics within each group.
-        orgs: Optional[List[str]] = Query(None, description="Registered netblock owner(s) from RDAP; repeat the param per value. OR semantics; substring match.", examples=["Google, LLC"]),
-        asns: Optional[List[str]] = Query(None, description="Autonomous system number(s) from RDAP; repeat the param per value. OR semantics.", examples=["15169"]),
-        countries: Optional[List[str]] = Query(None, description="ISO country code(s) of the registered netblock; repeat the param per value. OR semantics; exact match.", examples=["US"]),
-        weaknesses: Optional[str] = Query(None, description="Comma-separated weakness / access flags (the DSL's has: values smb_unsigned, eol, weak_tls, cert_issue, cleartext, weak_auth, local_admin, writable_share); OR semantics", examples=["smb_unsigned,weak_tls"]),
-        checks: Optional[str] = Query(None, description="Comma-separated misconfiguration check ids (the DSL's check:); OR semantics", examples=["smb_signing_not_required"]),
-        q: Optional[str] = Query(None, description="Boolean query DSL. Fields (port, os, service, subnet, tag, label, cve, vuln, header, note, has:, …) combined with AND/OR/NOT + parentheses. Comma = OR within a field; repeated field = AND. e.g. 'port:80 port:443 AND NOT tag:test', 'cve:CVE-2021-44228 OR vuln:\"log4j\"'. ANDs with the other filters."),
-    ):
-        self.state = state
-        self.search = search
-        self.ports = ports
-        self.services = services
-        self.port_states = port_states
-        self.has_open_ports = has_open_ports
-        self.os_filter = os_filter
-        self.subnets = subnets
-        self.has_critical_vulns = has_critical_vulns
-        self.has_high_vulns = has_high_vulns
-        self.has_medium_vulns = has_medium_vulns
-        self.has_low_vulns = has_low_vulns
-        self.has_exploit_available = has_exploit_available
-        self.has_test_execution = has_test_execution
-        self.follow_status = follow_status
-        self.out_of_scope_only = out_of_scope_only
-        self.scan_ids = scan_ids
-        self.first_seen_in_scan = first_seen_in_scan
-        self.with_notes_only = with_notes_only
-        self.has_web_interface = has_web_interface
-        self.tech = tech
-        self.tags = tags
-        self.subnet_labels = subnet_labels
-        self.sites = sites
-        self.assigned_to = assigned_to
-        self.orgs = orgs
-        self.asns = asns
-        self.countries = countries
-        self.weaknesses = weaknesses
-        self.checks = checks
-        self.q = q
-
-    def as_builder_kwargs(self) -> Dict[str, Any]:
-        """Kwargs for ``build_filtered_host_query`` (excludes ``project_id``,
-        which the endpoint supplies from the resolved project)."""
-        return dict(self.__dict__)
-
-    def active(self) -> bool:
-        """True if any filter (including ``q``) is set — used by the
-        filter-data endpoint to decide whether to scope the cascade."""
-        return any(v is not None for v in self.__dict__.values())
+# ``HostFilterParams`` — the shared /hosts filter query params — is declared in
+# ``app/api/params.py`` (review 2026-10-01 B4: the reports router imported it
+# from this file).  Imported above, so ``hosts.HostFilterParams`` still names
+# the one class.
 
 
 _ISSUE_RANK = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
@@ -919,31 +823,98 @@ def _state_counted_facet(db: Session, host_scope, value_col, applied_states, lim
     return out
 
 
-@router.get(
-    "/filters/data",
-    response_model=HostFilterDataResponse,
-    summary="Get host filter options",
-)
-def get_host_filter_data_v2(
-    filters: HostFilterParams = Depends(),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """Get available filter data, optionally scoped to the current filter context (cascading filters)."""
+# review 2026-10-01 R18 — the facets that are aggregates over the project's
+# scan data (ports, services, OS, technologies, weakness and check counts,
+# RDAP owners) for the UNFILTERED Hosts page, kept per worker for a short time.
+# The same pattern, bound and TTL as ``posture_service``'s cache: opening the
+# Hosts page ran every one of these project-wide aggregations each time, and
+# they change only when a scan is imported.  What a person edits and expects
+# to see at once — tags, subnet labels, subnets, sites, the scan list — is NOT
+# cached and is read on every request.
+#
+# Keyed by project and nothing else, which is safe because the unfiltered
+# facets depend on nothing else: no filter is applied (so nothing of the
+# caller's — ``assigned:me``, a follow status — enters), and the route gives
+# every project role the same answer.  A filtered request never reads or
+# writes it.  ``HOST_FACET_CACHE_SECONDS=0`` turns it off.
+_FACET_CACHE_MAX = 256
+_FACET_CACHE: Dict[int, "tuple[float, Dict[str, Any]]"] = {}
 
-    has_filters = filters.active()
 
-    # Build a subquery of matching host IDs when filters are active
-    if has_filters:
-        filtered_ids = _build_filtered_host_query(
-            db, current_user,
-            **filters.as_builder_kwargs(),
-            project_id=project.id,
-        ).with_entities(models.Host.id).scalar_subquery()
-        host_scope = models.Host.id.in_(filtered_ids)
-    else:
-        host_scope = models.Host.project_id == project.id
+def _facet_cache_ttl() -> float:
+    return float(settings.HOST_FACET_CACHE_SECONDS)
+
+
+class _FacetScope:
+    """The hosts the facets are counted over (review 2026-10-01 R18).
+
+    With filters active, the matching host ids used to be a SUBQUERY embedded
+    in each of the dozen facet statements, so the filter — a substring search,
+    a DSL expression — was evaluated a dozen times per request.  Here it is
+    evaluated ONCE: the ids are fetched and handed to every statement as one
+    array parameter (``= ANY('{…}'::int[])`` — a single value, not one bind
+    per id).  A facet counted "without its own dimension" reuses the same ids
+    whenever that dimension is not filtered, which is the usual case.
+
+    Off Postgres (the SQLite test fallback) there is no array type, and the
+    subquery is embedded as before.
+    """
+
+    def __init__(self, db: Session, current_user: User, project: Project, filters: "HostFilterParams"):
+        self.db = db
+        self.current_user = current_user
+        self.project = project
+        self.kwargs = filters.as_builder_kwargs()
+        self.has_filters = filters.active()
+        self.ids: Optional[List[int]] = None
+        if self.has_filters and db.get_bind().dialect.name == "postgresql":
+            self.ids = [row[0] for row in self._matching(self.kwargs).all()]
+
+    def _matching(self, kwargs: Dict[str, Any]):
+        return _build_filtered_host_query(
+            self.db, self.current_user, **kwargs, project_id=self.project.id,
+        ).with_entities(models.Host.id)
+
+    def _in_ids(self, column):
+        from sqlalchemy import Integer, any_, cast, literal
+        from sqlalchemy.dialects.postgresql import ARRAY
+
+        packed = "{" + ",".join(str(i) for i in self.ids) + "}"
+        return column == any_(cast(literal(packed), ARRAY(Integer)))
+
+    def hosts(self):
+        """A condition for a statement that has ``Host`` in it."""
+        if not self.has_filters:
+            return models.Host.project_id == self.project.id
+        if self.ids is not None:
+            return self._in_ids(models.Host.id)
+        return models.Host.id.in_(self._matching(self.kwargs).scalar_subquery())
+
+    def without(self, own_dimension: str, column, always: bool = False):
+        """``column`` is a host matching every applied filter EXCEPT
+        ``own_dimension`` — so choosing a value does not hide the ones not yet
+        chosen.  With nothing else applied: ``None``, or with ``always`` the
+        project's hosts."""
+        kwargs = dict(self.kwargs)
+        own_value = kwargs.get(own_dimension)
+        kwargs[own_dimension] = None
+        if all(v is None for v in kwargs.values()):
+            if not always:
+                return None
+            return column.in_(
+                self.db.query(models.Host.id).filter(models.Host.project_id == self.project.id)
+            )
+        if own_value is None and self.ids is not None:
+            return self._in_ids(column)  # the same set: nothing was left out
+        return column.in_(self._matching(kwargs))
+
+
+def _scan_derived_facets(
+    db: Session, current_user: User, project: Project, filters: "HostFilterParams", scope: _FacetScope,
+) -> Dict[str, Any]:
+    """The facets aggregated from scan data — the expensive part of
+    ``/hosts/filters/data`` and the part its cache holds."""
+    host_scope = scope.hosts()
 
     # Ports and services — scoped, one row per port NUMBER / service NAME,
     # counted in distinct hosts. Rows used to be split by (port, service, state)
@@ -990,9 +961,12 @@ def get_host_filter_data_v2(
     ).filter(models.Host.os_name.isnot(None), models.Host.os_name != '')
     if host_scope is not None:
         os_query = os_query.filter(host_scope)
+    # The name breaks ties (review 2026-10-01 R18): equal counts used to come
+    # back in whatever order the plan produced, so the list — and which names
+    # made the cut — could change between two identical requests.
     operating_systems = os_query.group_by(
         models.Host.os_name
-    ).order_by(func.count(models.Host.id).desc()).limit(100).all()
+    ).order_by(func.count(models.Host.id).desc(), models.Host.os_name).limit(100).all()
 
     # Technologies — v2.12.1.  Pulls the flattened tech strings from
     # all web_interfaces in scope, counts host-level uniqueness, and
@@ -1073,6 +1047,146 @@ def get_host_filter_data_v2(
             key=lambda x: (-x["host_count"], x["name"].lower()),
         )[:200]
 
+    # RDAP attribution facets — distinct owner / ASN / country across in-scope
+    # hosts, each with a DISTINCT host count (a host maps to one block, but a
+    # block covers many hosts).  Scoped by the active filter like the other
+    # cascading facets.  Empty when the project has no RDAP data, which the
+    # frontend reads as "hide this control".
+    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
+
+    def _attr_query(*entities):
+        q = (
+            db.query(*entities)
+            .select_from(NetworkAttribution)
+            .join(
+                HostNetworkAttribution,
+                HostNetworkAttribution.attribution_id == NetworkAttribution.id,
+            )
+            .join(models.Host, models.Host.id == HostNetworkAttribution.host_id)
+        )
+        return q.filter(host_scope) if host_scope is not None else q.filter(
+            models.Host.project_id == project.id
+        )
+
+    distinct_hosts = func.count(func.distinct(HostNetworkAttribution.host_id))
+    org_rows = (
+        _attr_query(NetworkAttribution.org_name, distinct_hosts)
+        .filter(NetworkAttribution.org_name.isnot(None), NetworkAttribution.org_name != '')
+        .group_by(NetworkAttribution.org_name)
+        .order_by(distinct_hosts.desc(), NetworkAttribution.org_name)
+        .limit(200)
+        .all()
+    )
+    asn_rows = (
+        _attr_query(NetworkAttribution.asn, NetworkAttribution.as_name, distinct_hosts)
+        .filter(NetworkAttribution.asn.isnot(None))
+        .group_by(NetworkAttribution.asn, NetworkAttribution.as_name)
+        .order_by(distinct_hosts.desc(), NetworkAttribution.asn, NetworkAttribution.as_name)
+        .limit(200)
+        .all()
+    )
+    country_rows = (
+        _attr_query(NetworkAttribution.country, distinct_hosts)
+        .filter(NetworkAttribution.country.isnot(None), NetworkAttribution.country != '')
+        .group_by(NetworkAttribution.country)
+        .order_by(distinct_hosts.desc(), NetworkAttribution.country)
+        .all()
+    )
+
+    # v2.423.0 — weakness flags and checks.  Like subnets / sites, each is
+    # counted under the OTHER applied conditions, so ticking one flag does not
+    # zero the counts of the flags not yet ticked.  One statement each.
+    from sqlalchemy import case
+    weakness_counts = db.query(*[
+        func.coalesce(func.sum(case(
+            (weakness_predicate(db, current_user, project.id, [flag]), 1), else_=0,
+        )), 0)
+        for flag in WEAKNESS_FLAGS
+    ]).filter(scope.without('weaknesses', models.Host.id, always=True)).one()
+    descriptions = weakness_descriptions()
+    weaknesses_result = [
+        {'name': flag, 'label': WEAKNESS_LABELS[flag], 'description': descriptions[flag],
+         'host_count': int(weakness_counts[i] or 0)}
+        for i, flag in enumerate(WEAKNESS_FLAGS)
+    ]
+
+    from app.services.misconfig_checks import CHECKS
+    check_hosts = func.count(func.distinct(Vulnerability.host_id))
+    check_rows = (
+        db.query(Vulnerability.check_id, check_hosts)
+        .filter(Vulnerability.check_id.isnot(None),
+                scope.without('checks', Vulnerability.host_id, always=True))
+        .group_by(Vulnerability.check_id)
+        .order_by(check_hosts.desc(), Vulnerability.check_id)
+        .all()
+    )
+    checks_result = [
+        {'id': cid, 'title': CHECKS[cid].title if cid in CHECKS else cid, 'host_count': int(n or 0)}
+        for cid, n in check_rows
+    ]
+
+    return {
+        'weaknesses': weaknesses_result,
+        'checks': checks_result,
+        'common_ports': [
+            {'port': number, 'service': port_service.get(number, (0, 'unknown'))[1],
+             'state': port_state_label, 'count': n, 'state_counts': by_state}
+            for number, n, by_state in port_rows
+        ],
+        'services': [
+            {'name': name, 'count': n, 'state_counts': by_state}
+            for name, n, by_state in services_result
+        ],
+        'operating_systems': [
+            {'name': o.os_name, 'count': o.count}
+            for o in operating_systems
+        ],
+        'technologies': technologies_result,
+        'orgs': [
+            {'name': r[0], 'host_count': r[1] or 0}
+            for r in org_rows
+        ],
+        'asns': [
+            {'asn': r[0], 'as_name': r[1], 'host_count': r[2] or 0}
+            for r in asn_rows
+        ],
+        'countries': [
+            {'country': r[0], 'host_count': r[1] or 0}
+            for r in country_rows
+        ],
+    }
+
+
+@router.get(
+    "/filters/data",
+    response_model=HostFilterDataResponse,
+    summary="Get host filter options",
+)
+def get_host_filter_data_v2(
+    filters: HostFilterParams = Depends(),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Get available filter data, optionally scoped to the current filter context (cascading filters)."""
+
+    scope = _FacetScope(db, current_user, project, filters)
+
+    derived: Optional[Dict[str, Any]] = None
+    ttl = _facet_cache_ttl()
+    cacheable = not scope.has_filters and ttl > 0
+    now = time.monotonic()
+    if cacheable:
+        hit = _FACET_CACHE.get(project.id)
+        if hit is not None and hit[0] > now:
+            derived = hit[1]
+    if derived is None:
+        derived = _scan_derived_facets(db, current_user, project, filters, scope)
+        if cacheable:
+            if len(_FACET_CACHE) >= _FACET_CACHE_MAX:
+                _FACET_CACHE.clear()  # crude bound; the cache is best-effort
+            _FACET_CACHE[project.id] = (now + ttl, derived)
+
     # Scans — scoped to project so analysts see project-relevant scans
     scans = db.query(
         models.Scan.id, models.Scan.filename, models.Scan.tool_name,
@@ -1143,14 +1257,8 @@ def get_host_filter_data_v2(
     # v2.298.0 fixed a cross-project leak from it missing there.
     def _facet_mapping_join(own_dimension: str):
         join_cond = models.Subnet.id == models.HostSubnetMapping.subnet_id
-        kwargs = filters.as_builder_kwargs()
-        kwargs[own_dimension] = None
-        if all(v is None for v in kwargs.values()):
-            return join_cond
-        matching_ids = _build_filtered_host_query(
-            db, current_user, **kwargs, project_id=project.id,
-        ).with_entities(models.Host.id).scalar_subquery()
-        return and_(join_cond, models.HostSubnetMapping.host_id.in_(matching_ids))
+        scoped = scope.without(own_dimension, models.HostSubnetMapping.host_id)
+        return join_cond if scoped is None else and_(join_cond, scoped)
 
     subnet_count = func.count(models.HostSubnetMapping.id)
     subnets_result = (
@@ -1183,112 +1291,8 @@ def get_host_filter_data_v2(
         .all()
     )
 
-    # RDAP attribution facets — distinct owner / ASN / country across in-scope
-    # hosts, each with a DISTINCT host count (a host maps to one block, but a
-    # block covers many hosts).  Scoped by the active filter like the other
-    # cascading facets.  Empty when the project has no RDAP data, which the
-    # frontend reads as "hide this control".
-    from app.db.models_attribution import HostNetworkAttribution, NetworkAttribution
-
-    def _attr_query(*entities):
-        q = (
-            db.query(*entities)
-            .select_from(NetworkAttribution)
-            .join(
-                HostNetworkAttribution,
-                HostNetworkAttribution.attribution_id == NetworkAttribution.id,
-            )
-            .join(models.Host, models.Host.id == HostNetworkAttribution.host_id)
-        )
-        return q.filter(host_scope) if host_scope is not None else q.filter(
-            models.Host.project_id == project.id
-        )
-
-    distinct_hosts = func.count(func.distinct(HostNetworkAttribution.host_id))
-    org_rows = (
-        _attr_query(NetworkAttribution.org_name, distinct_hosts)
-        .filter(NetworkAttribution.org_name.isnot(None), NetworkAttribution.org_name != '')
-        .group_by(NetworkAttribution.org_name)
-        .order_by(distinct_hosts.desc())
-        .limit(200)
-        .all()
-    )
-    asn_rows = (
-        _attr_query(NetworkAttribution.asn, NetworkAttribution.as_name, distinct_hosts)
-        .filter(NetworkAttribution.asn.isnot(None))
-        .group_by(NetworkAttribution.asn, NetworkAttribution.as_name)
-        .order_by(distinct_hosts.desc())
-        .limit(200)
-        .all()
-    )
-    country_rows = (
-        _attr_query(NetworkAttribution.country, distinct_hosts)
-        .filter(NetworkAttribution.country.isnot(None), NetworkAttribution.country != '')
-        .group_by(NetworkAttribution.country)
-        .order_by(distinct_hosts.desc())
-        .all()
-    )
-
-    # v2.423.0 — weakness flags and checks.  Like subnets / sites, each is
-    # counted under the OTHER applied conditions, so ticking one flag does not
-    # zero the counts of the flags not yet ticked.  One statement each.
-    def _hosts_without(own_dimension: str):
-        kwargs = filters.as_builder_kwargs()
-        kwargs[own_dimension] = None
-        base = db.query(models.Host.id).filter(models.Host.project_id == project.id)
-        if all(v is None for v in kwargs.values()):
-            return base
-        return _build_filtered_host_query(
-            db, current_user, **kwargs, project_id=project.id,
-        ).with_entities(models.Host.id)
-
-    from sqlalchemy import case
-    weakness_scope = _hosts_without('weaknesses').subquery()
-    weakness_counts = db.query(*[
-        func.coalesce(func.sum(case(
-            (weakness_predicate(db, current_user, project.id, [flag]), 1), else_=0,
-        )), 0)
-        for flag in WEAKNESS_FLAGS
-    ]).filter(models.Host.id.in_(select(weakness_scope.c.id))).one()
-    descriptions = weakness_descriptions()
-    weaknesses_result = [
-        {'name': flag, 'label': WEAKNESS_LABELS[flag], 'description': descriptions[flag],
-         'host_count': int(weakness_counts[i] or 0)}
-        for i, flag in enumerate(WEAKNESS_FLAGS)
-    ]
-
-    from app.services.misconfig_checks import CHECKS
-    check_scope = _hosts_without('checks').subquery()
-    check_hosts = func.count(func.distinct(Vulnerability.host_id))
-    check_rows = (
-        db.query(Vulnerability.check_id, check_hosts)
-        .filter(Vulnerability.check_id.isnot(None),
-                Vulnerability.host_id.in_(select(check_scope.c.id)))
-        .group_by(Vulnerability.check_id)
-        .order_by(check_hosts.desc(), Vulnerability.check_id)
-        .all()
-    )
-    checks_result = [
-        {'id': cid, 'title': CHECKS[cid].title if cid in CHECKS else cid, 'host_count': int(n or 0)}
-        for cid, n in check_rows
-    ]
-
     return {
-        'weaknesses': weaknesses_result,
-        'checks': checks_result,
-        'common_ports': [
-            {'port': number, 'service': port_service.get(number, (0, 'unknown'))[1],
-             'state': port_state_label, 'count': n, 'state_counts': by_state}
-            for number, n, by_state in port_rows
-        ],
-        'services': [
-            {'name': name, 'count': n, 'state_counts': by_state}
-            for name, n, by_state in services_result
-        ],
-        'operating_systems': [
-            {'name': o.os_name, 'count': o.count}
-            for o in operating_systems
-        ],
+        **derived,
         'subnets': [
             {'cidr': s.cidr, 'host_count': s.host_count or 0}
             for s in subnets_result
@@ -1306,24 +1310,11 @@ def get_host_filter_data_v2(
             }
             for s in scans
         ],
-        'technologies': technologies_result,
         'tags': tags_result,
         'subnet_labels': subnet_labels_result,
         'sites': [
             {'name': s.site, 'host_count': s.host_count or 0}
             for s in sites_result
-        ],
-        'orgs': [
-            {'name': r[0], 'host_count': r[1] or 0}
-            for r in org_rows
-        ],
-        'asns': [
-            {'asn': r[0], 'as_name': r[1], 'host_count': r[2] or 0}
-            for r in asn_rows
-        ],
-        'countries': [
-            {'country': r[0], 'host_count': r[1] or 0}
-            for r in country_rows
         ],
     }
 
@@ -1923,6 +1914,11 @@ def get_tool_ready_hosts(
         # the dedupe and the sort; a server-side cursor keeps the response at
         # one chunk in memory.
         from app.services import dns_name_service as _dns
+        # One statement sorts every name before the first row is streamed, and
+        # the response has started by the time it could fail: a streamed
+        # export is exempt from the API statement timeout (review 2026-10-01
+        # R23).  The IP formats above read in short keyset chunks and are not.
+        disable_statement_timeout(db)
         r = aliased(models.DNSRecord)
         n = models.DNSName
         matching_hosts = query.order_by(None).with_entities(models.Host.id).scalar_subquery()

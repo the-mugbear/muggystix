@@ -110,16 +110,19 @@ const NoteMessage: React.FC<NoteMessageProps> = ({
 
   const actions = (
     <>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <Button variant="ghost" size="icon" className={ACTION_BUTTON}
-            onClick={() => onReplyToChange(replyTo?.id === note.id ? null : { id: note.id, author: authorLabel })}
-            aria-label="Reply to note">
-            <Reply className={ACTION_ICON} aria-hidden />
-          </Button>
-        </TooltipTrigger>
-        <TooltipContent>Reply</TooltipContent>
-      </Tooltip>
+      {/* A reply is a note: a project analyst's, like the composer (R32). */}
+      {canManageNotes && (
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <Button variant="ghost" size="icon" className={ACTION_BUTTON}
+              onClick={() => onReplyToChange(replyTo?.id === note.id ? null : { id: note.id, author: authorLabel })}
+              aria-label="Reply to note">
+              <Reply className={ACTION_ICON} aria-hidden />
+            </Button>
+          </TooltipTrigger>
+          <TooltipContent>Reply</TooltipContent>
+        </Tooltip>
+      )}
       {canManageNotes && (
         <Tooltip>
           <TooltipTrigger asChild>

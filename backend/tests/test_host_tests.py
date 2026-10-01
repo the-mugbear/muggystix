@@ -480,15 +480,17 @@ def test_a_result_racing_a_dismissal_is_refused_by_the_update_itself(client, db_
     row = create(client, test_project, item(host))
     started, _ = _result(client, test_project, row, outcome="inconclusive")
     current = started.json()["test"]
-    real = agent_evidence_service.record_evidence
+    # ``record_result`` stores through ``record_evidence_once`` (review
+    # 2026-10-01 N8: it needs to know whether THIS call stored the record).
+    real = agent_evidence_service.record_evidence_once
 
     def dismissed_meanwhile(db, **kwargs):
-        record = real(db, **kwargs)
+        stored = real(db, **kwargs)
         db.execute(HostTest.__table__.update().where(HostTest.id == current["id"]).values(
             status="dismissed", dismissed_reason="out of scope", revision=HostTest.revision + 1))
-        return record
+        return stored
 
-    monkeypatch.setattr(agent_evidence_service, "record_evidence", dismissed_meanwhile)
+    monkeypatch.setattr(agent_evidence_service, "record_evidence_once", dismissed_meanwhile)
     late, _ = _result(client, test_project, current, outcome="inconclusive")
     assert late.status_code == 409, late.text
 

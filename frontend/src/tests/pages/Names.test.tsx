@@ -19,9 +19,13 @@ let role = 'analyst';
 const LEVEL: Record<string, number> = { admin: 100, analyst: 60, auditor: 40, viewer: 20 };
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 1, username: 'tester' },
+    // A member account: the PROJECT role below decides (review 2026-10-01 R32).
+    user: { id: 1, username: 'tester', role: 'member' },
     hasPermission: (r: string) => (LEVEL[role] ?? 0) >= (LEVEL[r] ?? 0),
   }),
+}));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: { id: 1, name: 'P', my_role: role } }),
 }));
 
 import * as api from '../../services/api';
@@ -69,6 +73,24 @@ describe('Names page export', () => {
     await waitFor(() => expect(screen.getByText('portal.acme.com')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: 'Export names as text' })).toBeNull();
     expect(screen.queryByRole('button', { name: /import names/i })).toBeNull();
+  });
+
+  it('lets an auditor export but not import (the project role, not the account role)', async () => {
+    role = 'auditor';
+    renderAt('/names');
+    await waitFor(() => expect(screen.getByText('portal.acme.com')).toBeInTheDocument());
+    expect(screen.getByRole('button', { name: 'Export names as text' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /import names/i })).toBeNull();
+  });
+
+  // R34 — the chips used to lose their counts silently.
+  it('says the counts could not be loaded, and retries', async () => {
+    mocked.getNamesSummary.mockRejectedValueOnce(new Error('down'));
+    renderAt('/names');
+    expect(await screen.findByText('The counts could not be loaded.')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(screen.queryByText('The counts could not be loaded.')).toBeNull());
+    expect(mocked.getNamesSummary).toHaveBeenCalledTimes(2);
   });
 
   it('surfaces an export failure as a toast (export)', async () => {

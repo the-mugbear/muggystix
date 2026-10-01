@@ -18,7 +18,7 @@ from app.db.models_vulnerability import Vulnerability
 from app.db.models_findings import Finding, FindingHost, FindingStatus, FindingStatusHistory
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.core.security import log_audit_event
 from app.services.finding_service import FindingService, validate_severity
@@ -35,7 +35,7 @@ from app.schemas.schemas import (
     Annotation as AnnotationSchema, AnnotationCreate, NoteAttachmentOut,
 )
 from app.schemas.findings import (
-    EndpointStatusUpdate,
+    EndpointStatusBulkUpdate, EndpointStatusUpdate,
     FindingResponse, FindingHostInfo, FindingListResponse, FindingReportText,
     PromoteVulnerabilityRequest, PromoteVulnerabilityPreview,
     FindingCreateRequest, FindingUpdateRequest, FindingNoteUpdate,
@@ -65,24 +65,42 @@ def _report_text(finding: Finding) -> FindingReportText:
 
 def _serialize(
     finding: Finding, viewer: Optional[FindingActor] = None, *, with_report_text: bool = True,
+    endpoints: Optional[dict] = None,
 ) -> FindingResponse:
-    hosts = [
-        FindingHostInfo(
-            id=fh.id,
-            host_id=fh.host_id,
-            ip_address=fh.host.ip_address if fh.host else None,
-            hostname=fh.host.hostname if fh.host else None,
-            name_id=fh.name_id,
-            fqdn=fh.name.fqdn if fh.name else None,
-            host_status=fh.host_status,
-        )
-        for fh in finding.hosts
-    ]
-    # v2.349.0 — per-endpoint states rolled up, so a list row can say
-    # "open on 3 of 5 · 2 remediated" without implying one state everywhere.
-    endpoint_status_counts: Dict[str, int] = {}
-    for h in hosts:
-        endpoint_status_counts[h.host_status] = endpoint_status_counts.get(h.host_status, 0) + 1
+    """``endpoints`` (a LIST row; review 2026-10-01 C2): this finding's entry
+    from ``FindingService.endpoint_summaries`` — the true count, the state
+    roll-up and a preview of at most five endpoints, so ``finding.hosts`` is
+    never touched.  Without it (one finding, loaded by ``_load``) every
+    endpoint is returned."""
+    if endpoints is not None:
+        hosts = [
+            FindingHostInfo(
+                id=r.id, host_id=r.host_id, ip_address=r.ip_address, hostname=r.hostname,
+                name_id=r.name_id, fqdn=r.fqdn, host_status=r.host_status,
+            )
+            for r in endpoints["preview"]
+        ]
+        host_count = endpoints["host_count"]
+        endpoint_status_counts: Dict[str, int] = dict(endpoints["status_counts"])
+    else:
+        hosts = [
+            FindingHostInfo(
+                id=fh.id,
+                host_id=fh.host_id,
+                ip_address=fh.host.ip_address if fh.host else None,
+                hostname=fh.host.hostname if fh.host else None,
+                name_id=fh.name_id,
+                fqdn=fh.name.fqdn if fh.name else None,
+                host_status=fh.host_status,
+            )
+            for fh in finding.hosts
+        ]
+        host_count = len(hosts)
+        # v2.349.0 — per-endpoint states rolled up, so a list row can say
+        # "open on 3 of 5 · 2 remediated" without implying one state everywhere.
+        endpoint_status_counts = {}
+        for h in hosts:
+            endpoint_status_counts[h.host_status] = endpoint_status_counts.get(h.host_status, 0) + 1
     return FindingResponse(
         endpoint_status_counts=endpoint_status_counts,
         id=finding.id, project_id=finding.project_id, title=finding.title,
@@ -91,7 +109,7 @@ def _serialize(
         owner_name=(finding.owner.full_name or finding.owner.username) if finding.owner else None,
         evidence_annotation_id=finding.evidence_annotation_id,
         vuln_id=finding.vuln_id,
-        host_count=len(hosts), hosts=hosts,
+        host_count=host_count, hosts=hosts,
         created_by_id=finding.created_by_id,
         created_by_name=(
             (finding.created_by.full_name or finding.created_by.username)
@@ -105,10 +123,14 @@ def _serialize(
 
 
 def _load(db: Session, project: Project, finding_id: int) -> Finding:
+    """One finding with EVERY endpoint, each with its host and its name (the
+    name was a lazy load per named endpoint — ``fh.name.fqdn``, C2).
+    ``Finding.hosts`` is plain lazy, so this is where the load is named."""
     finding = (
         db.query(Finding)
         .options(
             selectinload(Finding.hosts).selectinload(FindingHost.host),
+            selectinload(Finding.hosts).selectinload(FindingHost.name),
             selectinload(Finding.owner), selectinload(Finding.created_by),
         )
         .filter(Finding.id == finding_id, Finding.project_id == project.id)
@@ -150,9 +172,17 @@ def list_findings(
         project_id=project.id, status=status, owner_id=owner_id,
         unowned=unowned, source=source, host_id=host_id, search=search,
     )
+    # C2 (review 2026-10-01): a row carries the endpoint COUNT, the state
+    # roll-up and a preview of five — two grouped statements for the page,
+    # never every endpoint of every finding (and never a query per row).
+    # With `host_id`, that host's endpoint rows lead each preview.
+    endpoints = svc.endpoint_summaries([f.id for f in rows], first_host_id=host_id)
     return FindingListResponse(
         # Report text stays off the list: up to five 32 KB fields per row.
-        items=[_serialize(f, viewer, with_report_text=False) for f in rows],
+        items=[
+            _serialize(f, viewer, with_report_text=False, endpoints=endpoints[f.id])
+            for f in rows
+        ],
         total=total, severity_counts=sev_counts,
     )
 
@@ -432,6 +462,39 @@ def remove_finding_host(
     FindingService(db).remove_host(finding=finding, host_id=host_id)
     db.commit()
     return _serialize(_load(db, project, finding_id), viewer)
+
+
+@router.patch(
+    "/findings/{finding_id}/endpoints",
+    response_model=FindingResponse,
+    summary="Set the state of several of a finding's endpoints at once",
+)
+def set_finding_endpoint_statuses(
+    finding_id: int,
+    body: EndpointStatusBulkUpdate,
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+    _role: User = Depends(require_project_role(ProjectRole.ANALYST)),
+    current_user: User = Depends(get_current_user),
+    viewer: FindingActor = Depends(get_finding_viewer),
+):
+    """Review 2026-10-01 B13 — after a retest, marking 300 endpoints
+    remediated was 300 requests.  The same change as the single-endpoint
+    route below (same role, same history line per endpoint), for the
+    endpoints the person selected, in one transaction: every id must be an
+    endpoint of this finding or nothing is written (404).  ``summary`` is
+    added to each history line.  People only — an agent's endpoint change
+    stays a proposal (``POST /agent/proposals/endpoint-status``)."""
+    finding = _load(db, project, finding_id)
+    FindingService(db).set_endpoint_statuses(
+        finding=finding, finding_host_ids=body.finding_host_ids,
+        host_status=body.host_status, actor_id=current_user.id,
+        note=(body.summary or "").strip() or None,
+    )
+    # Built before the commit, which expires the finding and its 500 rows.
+    data = _serialize(finding, viewer)
+    db.commit()
+    return data
 
 
 @router.patch(

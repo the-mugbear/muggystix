@@ -30,13 +30,13 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.api.v1.endpoints.auth import get_current_user
-from app.api.v1.endpoints.scopes import get_or_create_default_scope
+from app.api.deps import get_current_user
+from app.services.default_scope import get_or_create_default_scope
 from app.db import models
 from app.db.models import DNS_ADDRESS_VALUED_TYPES, DNS_OBS_IMPORT, DNS_RESOLVING_TYPES
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.schemas.dns_names import (
     HostNameBinding,
     HostNamesResponse,
@@ -176,6 +176,9 @@ def export_names(
     resolves to" rule."""
     if state not in _STATES:
         raise HTTPException(status_code=400, detail=f"state must be one of {', '.join(_STATES)}")
+    # Streamed: its queries run after the response has started, over the whole
+    # inventory — exempt from the API statement timeout (review 2026-10-01 R23).
+    disable_statement_timeout(db)
     q = _names_query(db, project.id, search=search, state=state, sort=sort, order=order)
     project_id = project.id
 

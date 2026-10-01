@@ -68,9 +68,11 @@ returning from leave.
 | Question | Tool | Status |
 |---|---|---|
 | Totals, scopes, recent scans | `assist_get_context` | **have** |
-| Which scopes / scans exist, in full | `assist_list_scopes`, `assist_list_scans` | **have** |
+| Which scopes / scans exist, in full | `assist_list_scopes`, `assist_list_scans` (an nmap scan's rows carry `scan_info`: the port list it was asked to probe) | **have** |
+| Which hosts one scan saw, and whether it authenticated to them | `assist_list_scan_hosts` — the scan page's "As scanned" rows from the same `scan_snapshot_service`; `credentialed` is true / false when the scanner said so (Nessus), null when it did not | **have** (2026-10-01) |
 | Which session am I, for whom (what `assigned:me` means) | `assist_session_info` | **have** |
 | How much has actually been assessed | `assist_get_coverage` | **have** |
+| Of the hosts assessed for vulnerabilities, how many the scanner logged in to | `assist_get_coverage` → the `vuln_assessment` domain's `credentialed` (`credentialed` / `not_credentialed` / `credentials_not_stated`, adding up to the assessed count; the same `evidence_service` rule as the Evidence page); `assist_list_hosts q=vulnscan:credentialed\|uncredentialed\|unstated` lists each; one host: `assist_get_host` → `assessment.vuln_scan_credentialed` (`yes` / `no` / `not_stated`, null when not assessed) | **have** (2026-10-01) |
 | What's the headline condition, and why | `assist_get_posture` | **have** (2.294.0) |
 | How many hosts match X | `assist_count_hosts` | **have** |
 
@@ -324,6 +326,18 @@ that observed it), `scan_id`, `observed_at` with `observed_at_basis` (`scan` =
 the scan's own time, `import` = the import time), `imported_at` and `is_latest`
 (false = an earlier scan's row of the same URL by the same tool — history, not
 current state).
+
+**Payload follow-ups from the 2026-10-01 review (prompt 4.3.0)** — fields, not
+tools, each read from the page's own data (rule 3):
+`assist_get_client_report` findings carry `confirmations` (the test results the
+report prints as how the finding was confirmed — tool, host, command, summary,
+output excerpt, date, who; at most 10) with `confirmations_omitted`, and in an
+addendum `previous_severity` / `previous_severity_label` beside the new
+`change` kind `severity_changed`; `delta` carries
+`findings_with_changed_severity`, and `summary` carries `evidence_records` /
+`agent_evidence_records`. `assist_get_finding` lists at most 100
+`scanner_evidence` rows and says so with `scanner_evidence_total` /
+`scanner_evidence_truncated`.
 
 The read surface is **32 `assist_*` reads** (35 `assist_*` tools with the
 three writes) inside a 56-tool catalogue (v2.442.0 removed the plan and

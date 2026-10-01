@@ -9,10 +9,11 @@ execution schemas went with those routes in v2.442.0: a test is a host test
 """
 
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from app.schemas.schemas import ScanInfoBase
 from app.services.scan_time import scan_time_for_api
 
 
@@ -128,6 +129,12 @@ class AssistFindingsResponse(BaseModel):
     findings: List[AssistFinding] = Field(default_factory=list)
 
 
+class ScanInfoBrief(ScanInfoBase):
+    """One nmap ``<scaninfo>``: the scan type, protocol and the port list it
+    was asked to probe — the page's fields, without the row ids."""
+    model_config = ConfigDict(from_attributes=True)
+
+
 class ScanBrief(BaseModel):
     id: int
     filename: str
@@ -152,6 +159,17 @@ class ScanBrief(BaseModel):
             "tool_run / tool_records: start/end are instants (UTC). tool_clock: the "
             "scanner's local wall clock, zone unknown — do not treat as UTC. Null: "
             "the output carried no run time."
+        ),
+    )
+    # Review 2026-10-01 — what the scan was asked to look at (nmap's
+    # <scaninfo>: one entry per scan type/protocol with the port list it
+    # probed).  The scan page's "Scanned:" line; empty for every other tool.
+    scan_info: List[ScanInfoBrief] = Field(
+        default_factory=list,
+        description=(
+            "nmap only: per scan type/protocol, numservices and services — the "
+            "port list the scan probed (e.g. '1-1000'). A port outside it was "
+            "not looked at. Empty when the tool does not report it."
         ),
     )
 

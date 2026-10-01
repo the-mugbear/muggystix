@@ -30,7 +30,7 @@ from sqlalchemy.orm import Session, selectinload
 from app.db import models
 from app.db.models_agent import AgentSession
 from app.db.models_auth import User
-from app.db.models_project import Notification
+from app.db.models_project import Notification, ProjectMembership, ProjectRole
 from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingStatus, FindingStatusHistory, FindingVulnerability,
 )
@@ -44,6 +44,10 @@ from app.services.finding_actions import (
 )
 from app.services.finding_service import FindingService, validate_severity
 from app.services.report_text import REPORT_TEXT_FIELDS, REPORT_TEXT_MAX
+
+#: Evidence records one proposal may cite (review 2026-10-01 R11; the list
+#: was uncapped and each id is checked and stored on the row).
+EVIDENCE_IDS_MAX = 100
 
 #: Fields a finding_text proposal may carry.
 TEXT_FIELDS = (*REPORT_TEXT_FIELDS, "cvss_vector")
@@ -105,6 +109,11 @@ def _check_evidence(db: Session, project_id: int, evidence_ids: Optional[Iterabl
     ids = sorted(set(evidence_ids or []))
     if not ids:
         return None
+    if len(ids) > EVIDENCE_IDS_MAX:
+        raise HTTPException(
+            status_code=422,
+            detail=f"A proposal cites at most {EVIDENCE_IDS_MAX} evidence records ({len(ids)} sent).",
+        )
     found = {
         eid for (eid,) in db.query(EvidenceRecord.id).filter(
             EvidenceRecord.id.in_(ids), EvidenceRecord.project_id == project_id,
@@ -149,10 +158,21 @@ def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribut
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
     model = f" ({who.model})" if who.model else ""
     for uid in recipients:
+        theirs = (Finding.created_by_id == uid) | (Finding.owner_id == uid)
         finding_ids = sorted({
             fid for (fid,) in db.query(AgentProposal.finding_id)
             .join(Finding, Finding.id == AgentProposal.finding_id)
-            .filter(scope, (Finding.created_by_id == uid) | (Finding.owner_id == uid))
+            .filter(scope, theirs)
+            .distinct()
+        } | {
+            # Promote / dismiss proposals name an observation, not a finding:
+            # the finding is derived through ``finding_vulnerabilities``
+            # (``_about_findings``).  A per-finding draft scope names its
+            # finding, so this adds nothing there.
+            fid for (fid,) in db.query(FindingVulnerability.finding_id)
+            .join(AgentProposal, AgentProposal.vulnerability_id == FindingVulnerability.vuln_id)
+            .join(Finding, Finding.id == FindingVulnerability.finding_id)
+            .filter(scope, AgentProposal.kind.in_(_OBSERVATION_KINDS), theirs)
             .distinct()
         } | {finding.id})
         one = len(finding_ids) == 1
@@ -184,6 +204,78 @@ def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribut
         existing.body = body
         # A single finding opens that finding; several open the Proposals page.
         existing.finding_id = finding_ids[0] if one else None
+    db.flush()
+
+
+#: ``Notification.source_type`` of a "no finding yet" proposal notification;
+#: ``source_id`` is the agent session.  Distinct from ``agent_session`` (a
+#: person's own findings) so the two never overwrite each other, and so the
+#: page can open the session's proposals unscoped — these are on nobody's
+#: finding, which is exactly what ``scope=mine`` leaves out.
+UNOWNED_PROPOSAL_SOURCE = "agent_session_new"
+
+
+def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> None:
+    """Tell the project's admins about proposals that sit on NOBODY'S finding
+    (review 2026-10-01 B9): a proposed new finding, or a promote / dismiss of
+    a scanner observation that has no finding yet.  ``_notify_finding_people``
+    has no author or owner to tell for those, so they waited unseen.
+
+    Same shape as that function: ONE unread notification per admin per agent
+    session, kept current as the run proposes more.  Admins are the project's
+    admin members who are active; the person whose agent it is is not told
+    about their own run."""
+    recipients = {
+        uid for (uid,) in db.query(ProjectMembership.user_id)
+        .join(User, User.id == ProjectMembership.user_id)
+        .filter(
+            ProjectMembership.project_id == project_id,
+            ProjectMembership.role == ProjectRole.ADMIN.value,
+            User.is_active.is_(True),
+        )
+    } - {who.user_id}
+    if not recipients:
+        return
+    if who.session is not None:
+        source_type, source_id = UNOWNED_PROPOSAL_SOURCE, who.session.id
+        scope = AgentProposal.agent_session_id == who.session.id
+    else:
+        source_type, source_id = "project", project_id
+        scope = AgentProposal.agent_session_id.is_(None) & (AgentProposal.proposed_by_user_id == who.user_id)
+    count = db.query(func.count(AgentProposal.id)).filter(
+        AgentProposal.project_id == project_id, scope,
+        AgentProposal.status == ProposalStatus.PENDING.value,
+        AgentProposal.finding_id.is_(None),
+    ).scalar() or 0
+    proposer = db.get(User, who.user_id) if who.user_id else None
+    name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
+    model = f" ({who.model})" if who.model else ""
+    title = (
+        "AI proposed a change that is on no finding yet" if count <= 1
+        else f"AI proposed {count} changes that are on no finding yet"
+    )
+    body = (
+        f"{name}'s agent{model} proposed new findings or scanner-observation decisions. "
+        "No finding's author or owner reviews these — accept or reject them."
+    )
+    for uid in recipients:
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.user_id == uid, Notification.type == "proposal",
+                Notification.source_type == source_type, Notification.source_id == source_id,
+                Notification.is_read.is_(False),
+            )
+            .first()
+        )
+        if existing is None:
+            existing = Notification(
+                user_id=uid, project_id=project_id, type="proposal",
+                source_type=source_type, source_id=source_id, actor_id=who.user_id,
+            )
+            db.add(existing)
+        existing.title = title
+        existing.body = body
     db.flush()
 
 
@@ -252,12 +344,20 @@ def propose_finding(
     unknown = sorted(set(text) - set(REPORT_TEXT_FIELDS))
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown report fields {unknown}")
-    return _add(
+    # The limit ``propose_finding_text`` and the finding's own editor apply
+    # (review 2026-10-01 R11): a new finding's text skipped it, so accepting
+    # one stored text the editor would then refuse to save.
+    for field, value in text.items():
+        if len(value) > REPORT_TEXT_MAX:
+            raise HTTPException(status_code=422, detail=f"{field}: longer than {REPORT_TEXT_MAX} characters.")
+    proposal = _add(
         db, project_id, ProposalKind.FINDING_CREATE.value, who,
         payload={"title": title[:500], "severity": severity, "status": status,
                  "host_ids": ids, "report_text": text},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    _notify_project_admins(db, project_id, who)
+    return proposal
 
 
 def propose_observation(
@@ -274,11 +374,27 @@ def propose_observation(
         validate_severity(severity)
     _vulnerability(db, project_id, vulnerability_id)
     kind = ProposalKind.OBSERVATION_PROMOTE if action == "promote" else ProposalKind.OBSERVATION_DISMISS
-    return _add(
+    proposal = _add(
         db, project_id, kind.value, who, vulnerability_id=vulnerability_id,
         payload={"scope": scope, "severity": severity, "summary": summary},
         rationale=rationale, evidence_ids=_check_evidence(db, project_id, evidence_ids),
     )
+    # The findings this observation evidences, derived through
+    # ``finding_vulnerabilities`` exactly as ``_about_findings`` does.
+    finding_ids = [
+        fid for (fid,) in db.query(FindingVulnerability.finding_id)
+        .filter(FindingVulnerability.vuln_id == vulnerability_id)
+        .distinct().order_by(FindingVulnerability.finding_id)
+    ]
+    if not finding_ids:
+        # No finding, so no author or owner to tell: the project's admins (B9).
+        _notify_project_admins(db, project_id, who)
+    for finding_id in finding_ids:
+        # The proposal is "needs review" on that finding (accepting a dismiss
+        # drops an endpoint from the report), so its author and owner are told
+        # like for any other proposal about it.  It used to tell nobody.
+        _notify_finding_people(db, finding_id, who)
+    return proposal
 
 
 def propose_endpoint_status(

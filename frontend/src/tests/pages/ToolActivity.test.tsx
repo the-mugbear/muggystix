@@ -4,7 +4,7 @@
  * does not answer a query nobody asked on arrival.
  */
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { TooltipProvider } from '../../components/ui/tooltip';
@@ -181,5 +181,82 @@ describe('ToolActivity', () => {
     await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
     expect(await screen.findByText(/0 activities matched/)).toBeInTheDocument();
     expect(screen.queryByTestId('correlate-prompt')).not.toBeInTheDocument();
+  });
+
+  // Review 2026-10-01 follow-up — the focused query had no guard: asking
+  // twice let the first, slower answer replace the second.
+  it('a slow first answer never replaces a later query', async () => {
+    let releaseFirst!: (r: ActivityResponse) => void;
+    getScansAt
+      .mockImplementationOnce(() => new Promise<ActivityResponse>((resolve) => { releaseFirst = resolve; }))
+      .mockResolvedValueOnce({ ...week([]), total: 0 });
+    renderPage();
+    await screen.findByTestId('activity-histogram');
+    fireEvent.click(screen.getByRole('button', { name: /Correlate/ }));
+    await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+    fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
+    await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText(/0 activities matched/)).toBeInTheDocument();
+
+    releaseFirst({ ...week([item('scan', recent(5), 1), item('scan', recent(6), 2)]), total: 2 });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(screen.getByText(/0 activities matched/)).toBeInTheDocument();
+    expect(screen.queryByText(/2 activities matched/)).toBeNull();
+  });
+
+  // B15 — "what ran at 14:32" is a link: the query lives in the URL.
+  describe('the query is in the URL', () => {
+    const Where = () => <output data-testid="where">{useSearchParams()[0].toString()}</output>;
+    const renderAt = (url: string) => render(
+      <MemoryRouter initialEntries={[url]}>
+        <TooltipProvider><ToolActivity /><Where /></TooltipProvider>
+      </MemoryRouter>,
+    );
+    const params = () => new URLSearchParams(screen.getByTestId('where').textContent ?? '');
+
+    it('a link with timestamp, tolerance, tool and target restores them and runs the query', async () => {
+      getScansAt.mockResolvedValue({ ...week([]), total: 0 });
+      renderAt('/tool-activity?at=2026-09-30T14:32:00.000Z&tolerance=60&tool=nmap&target=10.0.0.5');
+      await waitFor(() => expect(getScansAt).toHaveBeenCalledWith({
+        ts: '2026-09-30T14:32:00.000Z', toleranceSeconds: 60, tool: 'nmap', target: '10.0.0.5',
+      }));
+      expect(screen.getByLabelText('Tool')).toHaveValue('nmap');
+      expect(screen.getByLabelText(/Target/)).toHaveValue('10.0.0.5');
+      // The week snapshot is filtered the same way.
+      expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap', target: '10.0.0.5' }));
+      // …and the URL still names the query.
+      expect(params().get('at')).toBe('2026-09-30T14:32:00.000Z');
+      expect(params().get('tolerance')).toBe('60');
+    });
+
+    it('a from/to link restores a range query', async () => {
+      renderAt('/tool-activity?from=2026-09-29T00:00:00.000Z&to=2026-09-30T00:00:00.000Z');
+      await waitFor(() => expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({
+        from: '2026-09-29T00:00:00.000Z', to: '2026-09-30T00:00:00.000Z',
+      })));
+      expect(getScansAt).not.toHaveBeenCalled();
+    });
+
+    it('writes the tool and the window asked for; an untouched form writes nothing', async () => {
+      getScansAt.mockResolvedValue({ ...week([]), total: 0 });
+      renderAt('/tool-activity');
+      await screen.findByTestId('activity-histogram');
+      expect(screen.getByTestId('where').textContent).toBe('');
+
+      fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'nuclei' } });
+      await waitFor(() => expect(params().get('tool')).toBe('nuclei'));
+      expect(params().get('at')).toBeNull();  // no window was asked for yet
+
+      fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
+      await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+      await waitFor(() => expect(params().get('at')).toBe(getScansAt.mock.calls[0][0].ts));
+      expect(params().get('tolerance')).toBe('300');
+    });
+
+    it('ignores an unreadable timestamp or a tolerance the form does not offer', async () => {
+      renderAt('/tool-activity?at=yesterday&tolerance=7');
+      await screen.findByTestId('activity-histogram');
+      expect(getScansAt).not.toHaveBeenCalled();
+    });
   });
 });

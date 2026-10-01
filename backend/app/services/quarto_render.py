@@ -21,6 +21,9 @@ with delimiters that cannot collide with Quarto: ``<% … %>`` statements,
   render, listed AFTER ``quarto`` in the template's ``filters``) reads the text
   from ``data.json`` and parses it as GitHub Markdown with raw HTML off, then
   drops raw blocks, images, non-web links, headings and attributes.
+* A command line or a tool's output is printed with ``<< code(c, "command") >>``:
+  the same kind of placeholder, which the filter replaces with a verbatim
+  block built from the string — the text is never parsed at all.
 * ``<< image(e) >>``, ``<< plain(v) >>`` and ``<< asset("logo") >>`` are the
   only other ways out of escaping, and each validates its input against a
   strict pattern.  ``asset`` prints a path from the template's OWN manifest
@@ -41,10 +44,12 @@ import json
 import os
 import re
 import shutil
+import signal
 import string
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional
 
@@ -100,16 +105,19 @@ which frames the screenshots).
 FIELDS_FILTER = Path(__file__).with_name("quarto_fields.lua")
 
 _PUNCT = set(string.punctuation)
-_KEY = re.compile(r"^[a-z_]+(\.(\d+|[a-z_]+))*$")
-_EVIDENCE = re.compile(r"^evidence/\d+\.(png|jpg|gif)$")
-_WIDTH = re.compile(r"^\d+(\.\d+)?(in|cm|mm|px|%)$")
-_PLAIN = re.compile(r"^[0-9A-Za-z .:+_-]*$")
+# ``\Z``, never ``$``: ``$`` also matches before a trailing newline, so
+# "evidence/1.png\n" or a plain() value ending in one passed and was printed
+# unescaped (review 2026-10-01 N5).
+_KEY = re.compile(r"\A[a-z_]+(\.(\d+|[a-z_]+))*\Z")
+_EVIDENCE = re.compile(r"\Aevidence/\d+\.(png|jpg|gif)\Z")
+_WIDTH = re.compile(r"\A\d+(\.\d+)?(in|cm|mm|px|%)\Z")
+_PLAIN = re.compile(r"\A[0-9A-Za-z .:+_-]*\Z")
 _SKIP = {"_output", ".quarto", "__pycache__", ".git"}
 # A template's own images (logo, cover art …) declared in template.json.  The
 # path charset is narrow on purpose: ``asset()`` prints it unescaped into
 # Markdown, so it must never hold a space, bracket, brace or quote.
-_ASSET_ID = re.compile(r"^[a-z][a-z0-9_-]{0,31}$")
-_ASSET_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*$")
+_ASSET_ID = re.compile(r"\A[a-z][a-z0-9_-]{0,31}\Z")
+_ASSET_PATH = re.compile(r"^[A-Za-z0-9_-][A-Za-z0-9_.-]*(/[A-Za-z0-9_-][A-Za-z0-9_.-]*)*\Z")
 ASSET_EXTENSIONS = (".png", ".jpg", ".jpeg", ".svg", ".gif", ".webp")
 # An asset may instead REPLACE one of the template's own files when installed
 # (``"replaces": "reference.docx"`` — an operator's Word styles over the
@@ -124,7 +132,7 @@ ASSET_KINDS = {".png": "png", ".jpg": "jpeg", ".jpeg": "jpeg", ".svg": "svg",
 UPLOADABLE_KINDS = ("png", "jpeg", "docx")
 DEFAULT_MAX_BYTES = {"png": 5 * 1024 * 1024, "jpeg": 5 * 1024 * 1024, "docx": 10 * 1024 * 1024}
 MAX_ASSET_BYTES = 25 * 1024 * 1024
-_ASPECT = re.compile(r"^\d+(\.\d+)?:\d+(\.\d+)?$")
+_ASPECT = re.compile(r"\A\d+(\.\d+)?:\d+(\.\d+)?\Z")
 
 
 class RenderError(RuntimeError):
@@ -429,6 +437,30 @@ def _md_factory(dataset: dict):
     return md
 
 
+def _code_factory(dataset: dict):
+    def code(obj: Any, field: Optional[str] = None) -> Markup:
+        """A placeholder the Lua filter fills with the value at
+        ``obj._path + "." + field`` as a VERBATIM block (review 2026-10-01
+        B8) — a command line as it was run, a tool's output.  The text is
+        never parsed: the filter builds the code block from the string, after
+        Quarto's own filters, so backticks, fences, shortcodes and raw HTML
+        in it are characters.  Nothing is printed for an empty value."""
+        if isinstance(obj, dict):
+            base = obj.get("_path")
+            if not isinstance(base, str) or not field:
+                raise RenderError("code() needs an item with a data path and a field name.")
+            key = f"{base}.{field}"
+        else:
+            key = str(obj)
+        if not _KEY.match(key):
+            raise RenderError(f"code(): '{key}' is not a data path.")
+        value = _lookup(dataset, key)
+        if not (isinstance(value, str) and value.strip()):
+            return Markup("")
+        return Markup(f'\n\n::: {{.bs-code key="{key}"}}\n:::\n\n')
+    return code
+
+
 def md(obj: Any, field: Optional[str] = None) -> Markup:
     """The placeholder alone, without the empty check (kept for callers that
     have no dataset)."""
@@ -490,6 +522,7 @@ def jinja_environment(
         raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
     env.globals.update(
         md=_md_factory(dataset) if dataset is not None else md,
+        code=_code_factory(dataset or {}),
         image=image, plain=plain, todo=todo, asset=asset,
     )
     return env
@@ -580,6 +613,61 @@ def _tail(text: str, lines: int = 25) -> str:
     return "\n".join((text or "").strip().splitlines()[-lines:])
 
 
+#: After SIGTERM, how long a timed-out render's process group gets before SIGKILL.
+KILL_GRACE_SECONDS = 3.0
+
+
+def _kill_group(proc: "subprocess.Popen") -> None:
+    """End every process of ``proc``'s group: TERM, a short wait, then KILL."""
+    for sig, wait in ((signal.SIGTERM, KILL_GRACE_SECONDS), (signal.SIGKILL, KILL_GRACE_SECONDS)):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return  # the whole group is gone
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            proc.poll()  # reap the leader so the group can empty
+            try:
+                os.killpg(proc.pid, 0)
+            except (ProcessLookupError, PermissionError):
+                return
+            time.sleep(0.05)
+
+
+def _run_group(cmd: List[str], *, cwd: Path, env: Dict[str, str], timeout: float):
+    """Run ``cmd`` in its OWN process group → ``(exit code, stdout, stderr)``.
+
+    On timeout the whole group is killed and reaped before
+    ``subprocess.TimeoutExpired`` is raised (review 2026-10-01 R14).
+    ``subprocess.run(timeout=…)`` kills only the process it started, and
+    ``quarto`` is a bash launcher that runs deno WITHOUT ``exec``: bash died,
+    and deno (with pandoc under it) carried on as an orphan — still rendering
+    into a work directory that had been deleted, holding its memory and CPU
+    while the worker moved on to the next job, one more for every timeout."""
+    proc = subprocess.Popen(
+        cmd, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE, text=True, start_new_session=True,
+    )
+    try:
+        stdout, stderr = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        _kill_group(proc)
+        try:
+            # The pipes close once every holder is dead; bounded all the same.
+            proc.communicate(timeout=KILL_GRACE_SECONDS)
+        except subprocess.TimeoutExpired:
+            for stream in (proc.stdout, proc.stderr):
+                if stream is not None:
+                    stream.close()
+            proc.wait()
+        raise
+    except BaseException:
+        _kill_group(proc)
+        proc.wait()
+        raise
+    return proc.returncode, stdout, stderr
+
+
 def render(
     template_dir: Path,
     entry: str,
@@ -608,7 +696,7 @@ def render(
     formats = [f for f in formats if f in FORMATS]
     if not formats:
         raise RenderError("No format to render.")
-    if not re.match(r"^[A-Za-z0-9._-]{1,120}$", basename):
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,120}", basename):
         raise RenderError("Unusable output file name.")
     missing_assets = missing_required_assets(template_dir, asset_files)
     if missing_assets:
@@ -653,27 +741,35 @@ def render(
                 results[fmt] = target
                 continue
             try:
-                proc = subprocess.run(
-                    [quarto, "render", source_name, "--to", to],
-                    cwd=work, env=env, capture_output=True, text=True, timeout=timeout,
+                code, stdout, stderr = _run_group(
+                    [quarto, "render", source_name, "--to", to], cwd=work, env=env, timeout=timeout,
                 )
             except subprocess.TimeoutExpired:
                 raise RenderError(f"Quarto took longer than {timeout}s to render {fmt}.")
             except OSError as exc:
                 raise RenderError(f"Quarto could not be started ({exc}); is it installed?")
-            if proc.returncode != 0 or not produced.is_file():
+            if code != 0 or not produced.is_file():
                 raise RenderError(
-                    f"Quarto failed to render {fmt} (exit {proc.returncode}):\n"
-                    f"{_tail(proc.stderr or proc.stdout)}"
+                    f"Quarto failed to render {fmt} (exit {code}):\n"
+                    f"{_tail(stderr or stdout)}"
                 )
             script = (postprocess or {}).get(fmt)
             if script:
-                post = subprocess.run(
-                    [sys.executable, str(work / script), str(produced), "-o", str(produced)],
-                    cwd=work, env=env, capture_output=True, text=True, timeout=timeout,
-                )
-                if post.returncode != 0:
-                    raise RenderError(f"The {fmt} post-processor failed:\n{_tail(post.stderr or post.stdout)}")
+                # The same treatment as Quarto: its own process group, killed
+                # whole on timeout, and a message without the work directory
+                # (an uncaught TimeoutExpired printed the full command line,
+                # temp paths included, as the job's error).
+                try:
+                    code, stdout, stderr = _run_group(
+                        [sys.executable, str(work / script), str(produced), "-o", str(produced)],
+                        cwd=work, env=env, timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired:
+                    raise RenderError(f"The {fmt} post-processor took longer than {timeout}s.")
+                except OSError as exc:
+                    raise RenderError(f"The {fmt} post-processor could not be started ({exc.strerror or 'error'}).")
+                if code != 0:
+                    raise RenderError(f"The {fmt} post-processor failed:\n{_tail(stderr or stdout)}")
             target = out_dir / f"{basename}{suffix}"
             shutil.copyfile(produced, target)
             results[fmt] = target

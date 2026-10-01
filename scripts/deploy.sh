@@ -182,13 +182,89 @@ random_secret() {
     fi
 }
 
+# The Compose project name of THIS tree — what every container, volume,
+# network and built image of this instance is labelled with
+# (com.docker.compose.project).  Asked of compose itself, which applies its
+# own rules (COMPOSE_PROJECT_NAME, a top-level `name:`, else the normalised
+# directory name); the fallback reproduces them for the v1 binary, whose
+# `config` prints no name.
+compose_project_name() {
+    local project
+    project="$($DC config 2>/dev/null | awk '/^name:/ {print $2; exit}')"
+    [[ -z "$project" ]] && project="${COMPOSE_PROJECT_NAME:-}"
+    [[ -z "$project" ]] && project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$project" ]] && project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    printf '%s\n' "$project"
+}
+
 # Whether this stack's Postgres volume already exists (then it was initialised
 # with some password, and a new one in .env would lock the app out).
 postgres_volume_exists() {
     local project
-    project="$(grep -E '^COMPOSE_PROJECT_NAME=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
-    [[ -z "$project" ]] && project="$(basename "$PROJECT_ROOT" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9_-')"
+    project="$(compose_project_name)"
     docker volume ls -q 2>/dev/null | grep -qx "${project}_postgres_data"
+}
+
+# ------------------------------------------------------------------
+# Pinned base images without a pull (review 2026-10-01 B5).
+#
+# docker-compose.yml and the Dockerfiles name exact releases
+# (postgres:16.13, python:3.11.16-slim-trixie, node:22.23.2-alpine,
+# nginx:1.31.3-alpine) where they used to name floating tags.  A host that
+# pulled the floating tag earlier already HAS that release under the old
+# name, and an isolated host cannot pull the new one.  When the pinned name
+# is missing locally and the floating one is the very same release (checked
+# by the version the image itself declares), give it the pinned name.
+# Anything else is left alone: docker pulls it, or the operator sets
+# POSTGRES_IMAGE / PYTHON_IMAGE / NODE_IMAGE / NGINX_IMAGE in .env.
+# ------------------------------------------------------------------
+image_declared_version() {
+    # $1 image, $2 the env var the official image declares its version in
+    docker image inspect "$1" --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null \
+        | awk -F= -v key="$2" '$1 == key {print $2; exit}'
+}
+
+adopt_local_base_image() {
+    # $1 pinned ref, $2 floating ref it replaced, $3 version env var, $4 version prefix expected
+    local pinned="$1" floating="$2" var="$3" want="$4" have
+    docker image inspect "$pinned" >/dev/null 2>&1 && return 0
+    docker image inspect "$floating" >/dev/null 2>&1 || return 0
+    have="$(image_declared_version "$floating" "$var")"
+    if [[ -n "$have" && "$have" == "$want"* ]]; then
+        if docker tag "$floating" "$pinned" 2>/dev/null; then
+            print_info "Base image: local $floating is $have — tagged as $pinned (no pull needed)."
+        fi
+    else
+        print_warning "Base image $pinned is not on this host (local $floating is ${have:-unknown})."
+        print_warning "Docker will pull it; on an isolated host, load it or set the override in .env"
+        print_warning "(POSTGRES_IMAGE / PYTHON_IMAGE / NODE_IMAGE / NGINX_IMAGE)."
+    fi
+}
+
+ensure_pinned_base_images() {
+    local env_override
+    # The database image: whatever compose resolves (the pin, or POSTGRES_IMAGE).
+    local db_image
+    db_image="$($DC config --images db 2>/dev/null | head -1)"
+    if [[ "$db_image" =~ ^postgres:([0-9]+)\.([0-9]+)$ ]]; then
+        adopt_local_base_image "$db_image" "postgres:${BASH_REMATCH[1]}" PG_VERSION \
+            "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}-"
+    fi
+    # Build bases: the Dockerfile's default unless .env overrides it.
+    local spec arg dockerfile floating var pinned version
+    for spec in \
+        "PYTHON_IMAGE|backend/Dockerfile|python:3.11-slim|PYTHON_VERSION" \
+        "NODE_IMAGE|frontend/Dockerfile|node:22-alpine|NODE_VERSION" \
+        "NGINX_IMAGE|frontend/Dockerfile|nginx:alpine|NGINX_VERSION"; do
+        IFS='|' read -r arg dockerfile floating var <<< "$spec"
+        env_override="$(grep -E "^${arg}=" .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+        [[ -n "${!arg:-}" || -n "$env_override" ]] && continue
+        pinned="$(sed -n "s/^ARG ${arg}=//p" "$dockerfile" 2>/dev/null | head -1)"
+        [[ -z "$pinned" ]] && continue
+        # python:3.11.16-slim-trixie -> 3.11.16 ; nginx:1.31.3-alpine -> 1.31.3
+        version="${pinned#*:}"; version="${version%%-*}"
+        adopt_local_base_image "$pinned" "$floating" "$var" "$version"
+    done
 }
 
 # Point an EXISTING .env at a new address: only HOST_IP, REACT_APP_API_URL
@@ -597,8 +673,11 @@ predeploy_db_backup() {
     fi
     rm -f "$marker"
 
-    print_error "Pre-deploy database backup FAILED."
-    print_error "Rollback would not be able to restore the database, so this deploy is aborting."
+    print_error "Pre-deploy backup FAILED (see backup-db.sh's own message above)."
+    print_error "Rollback would not be able to restore this instance, so this deploy is aborting."
+    print_info  "If the database dump was written and only the uploads archive failed, and a"
+    print_info  "database-only backup is acceptable for this deploy:"
+    print_info  "    BACKUP_ALLOW_MISSING_UPLOADS=1 ./scripts/deploy.sh"
     print_info  "Fix the backup (check disk space and that the db container is up), or, for a"
     print_info  "disposable environment where losing the data is acceptable, re-run with:"
     print_info  "    DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
@@ -612,21 +691,105 @@ predeploy_db_backup() {
     return 1
 }
 
-# Probe /health INSIDE the backend container (it isn't port-exposed; only the
-# db/worker services have compose healthchecks). Returns 0 once the app serves
-# 200, i.e. migrations ran and uvicorn bound; 1 if it never comes up in time.
+# ------------------------------------------------------------------
+# Waiting for the backend (review 2026-10-01 R31)
+#
+# The backend runs `alembic upgrade head` at import, before it serves
+# anything, so "not healthy yet" has two very different meanings:
+#
+#   * still migrating — the container is running and a session holds the
+#     migration advisory lock.  The only correct action is to wait; rolling
+#     back the images now would point the OLD code at a half-migrated schema.
+#   * crashed — the container exited, or Docker keeps restarting it.  That
+#     is when option 7 is the answer.
+#
+# The old wait was 90 s with one message for both ("the boot migration may
+# have failed … roll back"), and `up --build -d` under `set -e` could end the
+# script before even that.
+#
+# Returns 0 healthy, 2 crashed / crash-looping, 1 still starting at timeout.
+# DEPLOY_HEALTH_TIMEOUT (seconds, default 1800) bounds the wait.
+# ------------------------------------------------------------------
+DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-1800}"
+# backend/app/db/init.py _MIGRATION_LOCK_KEY — the session-level advisory lock
+# held for the whole of `alembic upgrade head`.
+MIGRATION_LOCK_KEY=738582901
+# Restarts of ONE container before it counts as crash-looping (a single
+# restart can be a database that was not accepting connections yet).
+BACKEND_RESTART_LIMIT=3
+
+backend_probe() {
+    $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1
+}
+
+# "<status> <restart count>" of the backend container, e.g. "running 0".
+backend_container_state() {
+    local cid
+    cid="$($DC ps -aq backend 2>/dev/null | head -1)"
+    if [[ -z "$cid" ]]; then
+        echo "missing 0"
+        return 0
+    fi
+    docker inspect "$cid" --format '{{.State.Status}} {{.RestartCount}}' 2>/dev/null || echo "unknown 0"
+}
+
+migration_lock_held() {
+    local pg_user pg_db held
+    pg_user="$(grep -E '^POSTGRES_USER=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    pg_db="$(grep -E '^POSTGRES_DB=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    held="$($DC exec -T db psql -U "${pg_user:-nmapuser}" -d "${pg_db:-networkMapper}" -tAc \
+        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 0 AND objid = ${MIGRATION_LOCK_KEY}" \
+        2>/dev/null | tr -dc '0-9')"
+    [[ -n "$held" && "$held" -gt 0 ]]
+}
+
 wait_for_backend_healthy() {
-    local timeout="${1:-90}" elapsed=0
-    print_info "Waiting for the backend to become healthy (migrations + boot, up to ${timeout}s)..."
+    local timeout="${1:-$DEPLOY_HEALTH_TIMEOUT}" elapsed=0 status restarts last_note=0
+    print_info "Waiting for the backend (schema migrations run before it serves; up to ${timeout}s)..."
     while [[ "$elapsed" -lt "$timeout" ]]; do
-        if $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1; then
+        if backend_probe; then
             print_success "Backend is healthy (boot + migrations succeeded)."
             return 0
+        fi
+        read -r status restarts <<< "$(backend_container_state)"
+        case "$status" in
+            exited|dead)
+                print_error "The backend container has stopped (state: $status)."
+                return 2
+                ;;
+        esac
+        if [[ "${restarts:-0}" =~ ^[0-9]+$ && "${restarts:-0}" -ge "$BACKEND_RESTART_LIMIT" ]]; then
+            print_error "The backend container has restarted ${restarts} times — it is crash-looping."
+            return 2
+        fi
+        if (( elapsed - last_note >= 30 )); then
+            last_note=$elapsed
+            if migration_lock_held; then
+                print_info "  ${elapsed}s — a schema migration is running (migration lock held). Waiting; do not interrupt."
+            else
+                print_info "  ${elapsed}s — backend is ${status:-starting}, restarts: ${restarts:-0}."
+            fi
         fi
         sleep 5
         elapsed=$((elapsed + 5))
     done
     return 1
+}
+
+# After a healthy start: one-off data corrections this instance has no
+# recorded run of (the data-repair ledger, review 2026-10-01 B10).  A
+# reminder with the exact commands — nothing is run here: one of them deletes
+# rows, and the other must not run beside a live import.
+print_pending_data_repairs() {
+    local pending
+    pending="$($DC exec -T backend python scripts/data_repairs.py --pending 2>/dev/null || true)"
+    if [[ -n "$pending" ]]; then
+        echo ""
+        print_warning "Data repairs not yet applied on this instance:"
+        echo "$pending" | sed 's/^/  /'
+        print_info "They correct rows written by older versions. Run them when no import is in"
+        print_info "progress; ./scripts/status.sh repeats this list until each has been run."
+    fi
 }
 
 # Re-point the :rollback image tags and (prompted) restore the pre-deploy DB
@@ -754,19 +917,64 @@ case $DEPLOY_CHOICE in
         # config tweaks or selective file copies the user made out-of-band).
         # The cost of always rebusting is ~30s per deploy; the cost of
         # NOT busting is shipping a stale bundle and not knowing it.
-        CACHE_BUST=$(date +%s) $DC up --build -d
+        #
+        # Three steps, not one `up --build -d` (review 2026-10-01 R31):
+        #   1. build — a failed build stops here with the OLD containers still
+        #      running and nothing to roll back;
+        #   2. start the database, backend and workers and WAIT for the
+        #      backend ourselves.  `up` on the whole stack waits on the
+        #      frontend's `depends_on: service_healthy` and returns non-zero
+        #      if the backend is not healthy in time — which, under `set -e`,
+        #      ended this script in the middle of a healthy migration;
+        #   3. `up -d` for everything, which starts the frontend (nginx) on
+        #      the now-healthy backend.
+        ensure_pinned_base_images
+        print_info "Building images..."
+        if ! CACHE_BUST=$(date +%s) $DC build; then
+            echo ""
+            print_error "The image build failed. Nothing was restarted: the previous containers are"
+            print_error "still running the previous build. Fix the error above and deploy again."
+            exit 1
+        fi
+
+        print_info "Starting the database, backend and workers..."
+        up_rc=0
+        $DC up -d db backend worker report-worker || up_rc=$?
+        if [[ "$up_rc" -ne 0 ]]; then
+            print_warning "'$DC up' returned $up_rc — checking the backend before deciding what that means."
+        fi
 
         # Verify the backend actually came up (migrations ran, uvicorn bound).
-        # A failed boot migration crash-loops here; surface it with the
-        # rollback escape hatch instead of a silently-broken deploy.
-        if wait_for_backend_healthy; then
+        wait_rc=0
+        wait_for_backend_healthy || wait_rc=$?
+        if [[ "$wait_rc" -eq 0 ]]; then
+            # The frontend waits on a healthy backend; it is healthy now.
+            $DC up -d
             print_success "Deployment complete!"
             prune_after_deploy
-        else
+            print_pending_data_repairs
+        elif [[ "$wait_rc" -eq 2 ]]; then
             echo ""
-            print_error "Backend did not become healthy — the boot migration may have failed."
+            print_error "The backend is not staying up — the boot migration (or startup) failed."
             print_warning "Check logs:   $DC logs backend | tail -n 50   (look for 'DATABASE MIGRATION FAILED')"
             print_warning "Roll back:    re-run this script and choose option 7 (Roll back to previous build)"
+            echo ""
+            exit 1
+        else
+            echo ""
+            print_warning "The backend is still starting after ${DEPLOY_HEALTH_TIMEOUT}s — it has NOT crashed."
+            if migration_lock_held; then
+                print_warning "A schema migration is still running. Do NOT roll back: the previous build"
+                print_warning "cannot run against a half-migrated schema. Let it finish."
+            else
+                print_warning "No migration lock is held, and the container is running without restarts."
+            fi
+            print_info "Watch it:      $DC logs -f backend"
+            print_info "When it is healthy, finish the deploy (starts the frontend):"
+            print_info "               $DC up -d"
+            print_info "Wait longer next time:  DEPLOY_HEALTH_TIMEOUT=7200 ./scripts/deploy.sh"
+            print_info "Roll back (option 7) ONLY if the logs show 'DATABASE MIGRATION FAILED' or the"
+            print_info "container starts restarting."
             echo ""
             exit 1
         fi
@@ -779,8 +987,9 @@ case $DEPLOY_CHOICE in
         echo "  API Docs: https://${CONFIGURED_IP:-localhost}/docs"
         echo ""
         print_info "Default admin: username 'admin'. If DEFAULT_ADMIN_PASSWORD was not set,"
-        print_info "the password was auto-generated — read ./uploads/initial-admin-password.txt"
-        print_info "(or the backend startup logs). Password change is required on first login."
+        print_info "the password was auto-generated on the FIRST boot — it is in"
+        print_info "./uploads/initial-admin-password.txt and nowhere else (it is never logged)."
+        print_info "Password change is required on first login."
         ;;
 
     2)
@@ -793,6 +1002,7 @@ case $DEPLOY_CHOICE in
 
         print_info "Building and starting containers..."
         ensure_uploads_dir
+        ensure_pinned_base_images
         CACHE_BUST=$(date +%s) $DC up --build -d
 
         print_info "Waiting for services to start..."
@@ -824,7 +1034,8 @@ case $DEPLOY_CHOICE in
         print_header "Default Admin Credentials"
         echo "  Username: admin"
         echo "  Password: auto-generated (unless DEFAULT_ADMIN_PASSWORD was set)."
-        echo "            Read it from ./uploads/initial-admin-password.txt or the backend logs."
+        echo "            It is in ./uploads/initial-admin-password.txt and nowhere else"
+        echo "            (it is never written to the logs)."
         print_info "Password change is required on first login."
         echo ""
 
@@ -908,12 +1119,35 @@ case $DEPLOY_CHOICE in
     4)
         print_header "Nuclear Clean"
         print_warning "WARNING: This will destroy ALL data including the database!"
+        print_warning "It removes the Compose project '$(compose_project_name)' — its containers, database"
+        print_warning "volume, networks and built images — and this folder's .env. Other Compose projects"
+        print_warning "on this host are not touched. A backup of the database, uploads, .env and SSL is"
+        print_warning "taken first, outside this folder."
         echo "Type 'DELETE EVERYTHING' to confirm: "
         read -r CONFIRM
 
         if [[ "$CONFIRM" != "DELETE EVERYTHING" ]]; then
             print_info "Operation cancelled"
             exit 0
+        fi
+
+        # ---- Save what a restore needs, BEFORE anything is destroyed -------
+        # (review 2026-10-01 R28).  The database dump is useless without the
+        # key that encrypted what is in it: TOTP secrets and stored
+        # integration / LLM credentials are Fernet ciphertext keyed off
+        # CREDENTIAL_ENCRYPTION_KEY (or SECRET_KEY), which lives only in .env
+        # — and this option deletes .env.  So .env and ssl/ are saved the way
+        # option 6 saves them, next to the dump, and both locations are
+        # printed.  A subshell: backup_config exits when there is nothing to
+        # save, which must not end the script here.
+        nuke_backup_failed=0
+        if [[ -f ".env" || -d "ssl" ]]; then
+            if ! ( backup_config ); then
+                print_error "Saving .env + SSL failed."
+                nuke_backup_failed=1
+            fi
+        else
+            print_info "No .env or ssl/ here — no configuration to save."
         fi
 
         # Create a minimal .env if missing so Compose can parse the config
@@ -925,40 +1159,83 @@ case $DEPLOY_CHOICE in
             echo "SECRET_KEY=teardown" >> .env
         fi
 
-        # Best-effort backup BEFORE destroying the database.  backup-db.sh
-        # auto-selects: a logical pg_dump if the db container is up, or a
-        # raw volume snapshot if Postgres is down.  Backups land in the
-        # sibling <project>-db-backups directory — outside the project, which
-        # the teardown below does NOT touch — with an archive of uploads/, so
-        # the artifact survives the nuke.  Failure is non-fatal: the
-        # user explicitly asked to destroy everything.
+        # backup-db.sh auto-selects: a logical pg_dump if the db container is
+        # up, or a raw volume snapshot if Postgres is down, plus an archive of
+        # uploads/.  It writes to the sibling <project>-db-backups directory —
+        # outside the project, which the teardown below does not touch.
+        nuke_backup_dir="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
         if [[ -x "scripts/backup-db.sh" ]]; then
-            print_info "Backing up the database before teardown..."
-            ./scripts/backup-db.sh || print_warning "Backup failed — continuing with teardown."
+            print_info "Backing up the database and uploads before teardown..."
+            if ./scripts/backup-db.sh; then
+                print_success "Database + uploads backup: $nuke_backup_dir"
+            else
+                print_error "The database / uploads backup FAILED."
+                nuke_backup_failed=1
+            fi
         else
-            print_warning "scripts/backup-db.sh not found — skipping pre-teardown backup."
+            print_error "scripts/backup-db.sh not found — no backup was taken."
+            nuke_backup_failed=1
         fi
 
-        # Stop and remove containers, volumes, and networks
-        print_info "Stopping containers..."
+        # A failed backup used to be a warning on the way to the delete.  It
+        # is now a stop: the operator typed the first confirmation expecting
+        # the backup this option promises.
+        if [[ "$nuke_backup_failed" -ne 0 ]]; then
+            echo ""
+            print_error "The pre-teardown backup is INCOMPLETE (see above). Continuing destroys the"
+            print_error "database, its volume and .env with no complete backup to restore from."
+            echo "Type 'DELETE WITHOUT BACKUP' to continue anyway, anything else to stop: "
+            read -r CONFIRM_NO_BACKUP || CONFIRM_NO_BACKUP=""
+            if [[ "$CONFIRM_NO_BACKUP" != "DELETE WITHOUT BACKUP" ]]; then
+                print_info "Stopped. Nothing was removed."
+                exit 1
+            fi
+        fi
+
+        # ---- Remove THIS compose project's resources, and only those ------
+        # (review 2026-10-01 R27).  This used `--filter name=networkmapper`,
+        # a SUBSTRING match, for containers and volumes, a hardcoded
+        # `networkmapper_postgres_data`, and `networkmapper-*` image names:
+        # a second copy of the tree on the same host (networkmapper-test,
+        # old-networkmapper…) lost its containers, and its database volume if
+        # it was stopped.  Everything compose creates carries the label
+        # com.docker.compose.project=<name>; that label is the only selector
+        # used here.
+        nuke_project="$(compose_project_name)"
+        if [[ -z "$nuke_project" ]]; then
+            print_error "Could not determine this stack's Compose project name — refusing to remove"
+            print_error "anything by guesswork. Set COMPOSE_PROJECT_NAME in .env and re-run."
+            exit 1
+        fi
+        nuke_label="label=com.docker.compose.project=${nuke_project}"
+        print_info "Removing the Compose project '${nuke_project}' (containers, volumes, networks, images)..."
+
+        # Counted before the teardown, so the closing lines can say what went.
+        nuke_containers="$(docker ps -aq --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"
+        nuke_volumes="$(docker volume ls -q --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"
+        nuke_images="$(docker images -q --filter "$nuke_label" 2>/dev/null | sort -u | wc -l | tr -d ' ')"
+
+        # Images are collected now: `down` removes the containers that
+        # reference them, the label filter still finds them afterwards, but a
+        # list taken first cannot be affected by anything in between.
+        mapfile -t nuke_image_ids < <(docker images -q --filter "$nuke_label" 2>/dev/null | sort -u)
+
         $DC down --remove-orphans --volumes 2>/dev/null || true
 
-        # Remove named volumes explicitly in case compose missed them
-        docker volume rm networkmapper_postgres_data 2>/dev/null || true
-        # Catch alternate naming conventions (docker compose v2 uses hyphens)
-        docker volume ls -q --filter "name=networkmapper" 2>/dev/null | xargs -r docker volume rm 2>/dev/null || true
+        # What `down` left behind — a container compose no longer knows as a
+        # service, a volume of a renamed service — still by label only.
+        docker ps -aq --filter "$nuke_label" 2>/dev/null | xargs -r docker rm -f >/dev/null 2>&1 || true
+        docker volume ls -q --filter "$nuke_label" 2>/dev/null | xargs -r docker volume rm >/dev/null 2>&1 || true
+        docker network ls -q --filter "$nuke_label" 2>/dev/null | xargs -r docker network rm >/dev/null 2>&1 || true
 
-        # Remove all project images — both hyphen and underscore naming
-        print_info "Removing images..."
-        docker images --filter "reference=networkmapper-*" -q 2>/dev/null | xargs -r docker rmi -f 2>/dev/null || true
-        docker images --filter "reference=networkmapper_*" -q 2>/dev/null | xargs -r docker rmi -f 2>/dev/null || true
-
-        # Remove any containers that survived (e.g. stopped/dead)
-        docker ps -a --filter "name=networkmapper" -q 2>/dev/null | xargs -r docker rm -f 2>/dev/null || true
-
-        # Prune dangling images and build cache from this project
-        docker image prune -f 2>/dev/null || true
-        docker builder prune -f 2>/dev/null || true
+        # This project's built images, including the :previous rollback tags
+        # (they are tags of images this project built, so they carry its
+        # label).  Base images (postgres, python, node, nginx) are shared with
+        # other projects and are left.
+        if [[ "${#nuke_image_ids[@]}" -gt 0 ]]; then
+            printf '%s\n' "${nuke_image_ids[@]}" | xargs -r docker rmi -f >/dev/null 2>&1 || true
+        fi
+        rm -f "$ROLLBACK_STATE_FILE"
 
         # Clean up .env so first-time setup starts fresh
         rm -f .env
@@ -968,8 +1245,22 @@ case $DEPLOY_CHOICE in
         # generated credential is the only one an operator can find.
         rm -f uploads/initial-admin-password.txt
 
-        print_success "BlueStick containers, volumes, and images removed."
-        print_info "Other Docker projects on this system were NOT affected."
+        nuke_left_containers="$(docker ps -aq --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"
+        nuke_left_volumes="$(docker volume ls -q --filter "$nuke_label" 2>/dev/null | wc -l | tr -d ' ')"
+        echo ""
+        if [[ "$nuke_left_containers" -eq 0 && "$nuke_left_volumes" -eq 0 ]]; then
+            print_success "Removed Compose project '${nuke_project}': ${nuke_containers} container(s), ${nuke_volumes} volume(s), ${nuke_images} image(s), and .env."
+        else
+            print_error "Compose project '${nuke_project}' was NOT fully removed: ${nuke_left_containers} container(s) and ${nuke_left_volumes} volume(s) remain."
+            print_info  "List them:  docker ps -a --filter $nuke_label ;  docker volume ls --filter $nuke_label"
+        fi
+        print_info "Only resources labelled com.docker.compose.project=${nuke_project} were touched."
+        print_info "Left in place: base images, Docker's build cache (shared with other projects —"
+        print_info "'docker builder prune' reclaims it), ./uploads, ./ssl, and the backups:"
+        print_info "    database + uploads: $nuke_backup_dir"
+        print_info "    .env + SSL:         $(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-config-backup-<timestamp>  (printed above)"
+        print_info "To restore: copy the saved .env back FIRST (it holds the key the dump's"
+        print_info "encrypted secrets need), start the stack, then ./scripts/restore-db.sh <dump>."
         ;;
 
     5)

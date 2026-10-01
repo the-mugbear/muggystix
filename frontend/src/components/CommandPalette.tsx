@@ -28,6 +28,7 @@ import {
 } from './AppIcons';
 import { useAppTheme, type AppThemeName } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleGate } from '../hooks/useProjectRole';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import {
@@ -53,7 +54,9 @@ export interface CommandPaletteProps {
 
 export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChange }) => {
   const navigate = useNavigate();
-  const { hasPermission, logout } = useAuth();
+  const { logout } = useAuth();
+  // Project-scoped entries follow the PROJECT role, admin ones the account's.
+  const allowed = useRoleGate();
   const { projects, currentProject, selectProject } = useProject();
   const { themeName, setThemeName, availableThemes } = useAppTheme();
   const [search, setSearch] = useState('');
@@ -170,8 +173,8 @@ export const CommandPalette: React.FC<CommandPaletteProps> = ({ open, onOpenChan
   }, [debouncedSearch, open]);
 
   const navItems = useMemo(
-    () => NAV_COMMANDS.filter((entry) => hasPermission(entry.requiredRole)),
-    [hasPermission],
+    () => NAV_COMMANDS.filter((entry) => allowed(entry.requiredRole)),
+    [allowed],
   );
 
   const showResourceGroups = debouncedSearch.trim().length >= 2;

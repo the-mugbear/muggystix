@@ -1,10 +1,8 @@
 import traceback
-import os
 from typing import Optional
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.schemas.schemas import ParseErrorCreate
 
 def log_parse_error(
     db: Session,

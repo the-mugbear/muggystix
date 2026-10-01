@@ -8,18 +8,19 @@
  * Sections, not cards (UI_STYLE_GUIDE §7): a lead sentence, one strip of
  * measures (pending by kind — each opens its list), then the list.
  */
-import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import React, { useEffect, useRef, useState } from 'react';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, X } from 'lucide-react';
 
 import {
   decideProposals, getProposalSummary, listProposals, Proposal, ProposalKind, ProposalStatus,
   ProposalSummary,
 } from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
-import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { useListCursor } from '../hooks/useListCursor';
+import { ListPage, useListQuery } from '../hooks/useListQuery';
 import { formatApiError } from '../utils/apiErrors';
 import { announceProposalsChanged } from '../utils/proposalEvents';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -48,14 +49,43 @@ const STATUSES: ProposalStatus[] = ['pending', 'accepted', 'rejected', 'supersed
 
 type Scope = 'mine' | 'all';
 
+/** The first page carries the measures' summary beside the rows. */
+type ProposalPage = ListPage<Proposal> & { summary?: ProposalSummary };
+
+/** Where Enter takes the reviewer from a proposal: the finding it is about
+ *  (or made), else the host its observation sits on. */
+export const proposalDestination = (pr: Proposal): string | null => {
+  const findingId = pr.finding_id ?? pr.result_finding_id;
+  if (findingId != null) {
+    return pr.kind === 'endpoint_status' && pr.finding_host_id != null
+      ? `/findings/${findingId}?endpoint=${pr.finding_host_id}#endpoints`
+      : `/findings/${findingId}${pr.status === 'pending' ? '#proposals' : ''}`;
+  }
+  return pr.target.host_id != null ? `/hosts/${pr.target.host_id}` : null;
+};
+
 const Proposals: React.FC = () => {
   const toast = useToast();
-  const { hasPermission } = useAuth();
-  const canDecide = hasPermission('analyst');
+  const { canWrite: canDecide } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
   const [params, setParams] = useSearchParams();
-  const status = (params.get('status') as ProposalStatus | null) ?? 'pending';
-  const kind = (params.get('kind') as ProposalKind | null) ?? undefined;
+  // A value the page does not know (`?status=all`, a typo, an old link) is the
+  // default — pending, every kind — never a request the API refuses: that read
+  // "Could not load the proposals." under an empty Status select.  The effect
+  // below takes the unknown value out of the address.
+  const statusParam = params.get('status');
+  const kindParam = params.get('kind');
+  const statusKnown = statusParam == null || (STATUSES as string[]).includes(statusParam);
+  const kindKnown = kindParam == null || KINDS.some((k) => k.kind === kindParam);
+  const status: ProposalStatus = statusParam != null && statusKnown ? (statusParam as ProposalStatus) : 'pending';
+  const kind: ProposalKind | undefined = kindParam != null && kindKnown ? (kindParam as ProposalKind) : undefined;
+  useEffect(() => {
+    if (statusKnown && kindKnown) return;
+    const next = new URLSearchParams(params);
+    if (!statusKnown) next.delete('status');
+    if (!kindKnown) next.delete('kind');
+    setParams(next, { replace: true });
+  }, [statusKnown, kindKnown, params, setParams]);
   const sessionParam = params.get('agent_session_id');
   const sessionId = sessionParam ? Number(sessionParam) : undefined;
   // 5.318.0 — whose findings: `mine` (authored or owned — what you were
@@ -71,55 +101,73 @@ const Proposals: React.FC = () => {
   }, [scopeParam]);
   const scope: Scope | null = scopeParam === 'mine' || scopeParam === 'all' ? scopeParam : defaultScope;
 
-  const [items, setItems] = useState<Proposal[] | null>(null);
-  const [total, setTotal] = useState(0);
-  const [summary, setSummary] = useState<ProposalSummary | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [loadingMore, setLoadingMore] = useState(false);
   const [bulkBusy, setBulkBusy] = useState(false);
   const bulkNote = useRef('');
-  // 5.317.3 — how many rows "Show more" has loaded.  A decision or the poll
-  // re-reads that many, not the first page: deciding one on page 3 used to
-  // drop the reviewer back to page 1.  Capped at the server's limit.
-  const loaded = useRef(PAGE);
-
-  const query = useCallback((offset: number, limit: number = PAGE) => listProposals({
-    status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined, limit, offset,
-  }), [status, kind, sessionId, scope]);
-
-  const load = useCallback(async () => {
-    if (scope === null) return;  // the default is still being read
-    try {
-      const [res, sum] = await Promise.all([
-        query(0, Math.min(MAX_RELOAD, Math.max(PAGE, loaded.current))), getProposalSummary(),
-      ]);
-      setItems(res.items);
-      setTotal(res.total);
-      setSummary(sum);
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Could not load the proposals.'));
-    }
-  }, [query, scope]);
-
-  // A new filter starts from the first page again.
-  useEffect(() => { loaded.current = PAGE; setItems(null); void load(); }, [load]);
-  useVisibilityPoll(load, 60_000);
+  // One request lane for the filter, "Show more", a decision's re-read and
+  // the 60 s tick (R33): a response for an earlier filter never lands.  A
+  // slow "pending" response used to replace the "Accepted" list, Accept
+  // buttons included.  A re-read keeps every row "Show more" had loaded.
+  const list = useListQuery<Proposal, ProposalPage>(
+    async ({ offset, limit }) => {
+      const query = listProposals({
+        status, kind, agent_session_id: sessionId, mine: scope === 'mine' ? true : undefined, limit, offset,
+      });
+      if (offset > 0) return query;
+      const [res, sum] = await Promise.all([query, getProposalSummary()]);
+      return { ...res, summary: sum };
+    },
+    [status, kind, sessionId, scope],
+    {
+      pageSize: PAGE, maxReload: MAX_RELOAD, poll: 60_000,
+      enabled: scope !== null,  // the default is still being read
+      errorMessage: 'Could not load the proposals.',
+    },
+  );
+  const { rows: items, total, error, loadingMore, reload: load } = list;
+  // The measures keep their last value while a new filter loads.
+  const [summary, setSummary] = useState<ProposalSummary | null>(null);
+  const latestSummary = list.response?.summary;
+  useEffect(() => { if (latestSummary) setSummary(latestSummary); }, [latestSummary]);
 
   const more = async () => {
-    if (!items) return;
-    setLoadingMore(true);
     try {
-      const res = await query(items.length);
-      loaded.current = items.length + res.items.length;
-      setItems([...items, ...res.items]);
-      setTotal(res.total);
+      await list.loadMore();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not load more.'));
-    } finally {
-      setLoadingMore(false);
     }
   };
+
+  // B16 — keyboard review: j/k (↓/↑) move, Enter opens the finding, and on a
+  // pending row `a` accepts and `r` opens the reject reason.  The keys press
+  // the row's own buttons, so a busy or already-decided row ignores them and
+  // there is one code path for a decision.
+  const navigate = useNavigate();
+  const { cursor, cursorRowProps } = useListCursor(
+    items?.length ?? 0,
+    (i) => {
+      const to = items ? proposalDestination(items[i]) : null;
+      if (to) navigate(to);
+    },
+    { resetKey: `${status}|${kind ?? ''}|${sessionId ?? ''}|${scope ?? ''}` },
+  );
+  const cursorId = items && cursor >= 0 && cursor < items.length ? items[cursor].id : null;
+  useEffect(() => {
+    if (!canDecide || cursorId === null) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'a' && e.key !== 'r')) return;
+      const t = e.target as HTMLElement | null;
+      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
+      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      const button = document.querySelector<HTMLButtonElement>(
+        `[data-proposal="${cursorId}"] [data-proposal-action="${e.key === 'a' ? 'accept' : 'reject'}"]`,
+      );
+      if (!button || button.disabled) return;
+      e.preventDefault();
+      button.click();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [canDecide, cursorId]);
 
   const setParam = (key: string, value: string | undefined) => {
     const next = new URLSearchParams(params);
@@ -242,17 +290,25 @@ const Proposals: React.FC = () => {
           )}
         </div>
 
-        {error ? (
-          <p className="text-caption text-destructive">{error}</p>
+        {error && items !== null && (
+          // A failed re-read keeps the rows it could not refresh.
+          <p role="alert" className="mb-xs break-words text-caption text-destructive">{error} The rows below are from the last successful load.</p>
+        )}
+        {error && items === null ? (
+          <p role="alert" className="break-words text-caption text-destructive">{error}</p>
         ) : items === null ? (
           <p className="text-caption text-muted-foreground">Loading…</p>
         ) : items.length === 0 ? (
           <p className="text-caption text-muted-foreground">None.</p>
         ) : (
           <>
-            {items.map((pr) => (
+            <p className="mb-xs text-caption text-muted-foreground">
+              <kbd className="font-mono">j</kbd> / <kbd className="font-mono">k</kbd> move, <kbd className="font-mono">Enter</kbd> opens the finding
+              {canDecide && status === 'pending' && <>, <kbd className="font-mono">a</kbd> accepts, <kbd className="font-mono">r</kbd> rejects</>}.
+            </p>
+            {items.map((pr, i) => (
               <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} showTarget
-                onDecided={() => void load()} />
+                rowProps={cursorRowProps(i)} onDecided={() => void load()} />
             ))}
             {items.length < total && (
               <Button variant="ghost" size="sm" className="mt-xs" onClick={() => void more()} disabled={loadingMore}>

@@ -1,11 +1,7 @@
 """Host notes CRUD endpoints."""
 
 import logging
-import os
-import re
-import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
 from fastapi.responses import FileResponse
@@ -14,7 +10,6 @@ from sqlalchemy.orm import Session, selectinload
 
 from pydantic import BaseModel
 
-from app.core.config import settings
 from app.core.security import check_permissions
 
 logger = logging.getLogger(__name__)
@@ -27,7 +22,7 @@ from app.db import models
 from app.services.host_query_common import escape_like
 from app.db.models import Annotation as AnnotationModel, ActivityCursor
 from app.db.models_auth import User, UserRole
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole, ProjectMembership
 from app.schemas.schemas import (
@@ -376,7 +371,7 @@ def create_host_note(
                 context={"host_id": host_id, "note_id": note.id},
             )
         db.commit()
-    except Exception as exc:
+    except Exception:
         logger.exception(
             "Mention processing failed",
             extra={
@@ -460,6 +455,15 @@ def update_host_note(
     # means the failure path needs no rollback at all.
     if want_body and target.user_id != current_user.id:
         raise HTTPException(status_code=403, detail="Only the author can edit a note's body")
+    if "note_type" in meta and meta["note_type"] is not None and not meta["note_type"].strip():
+        # Review 2026-10-01 N4 — "" slipped past the truthiness check below
+        # and the service's own check raised (a 500).  Null is how a type is
+        # cleared.
+        raise HTTPException(
+            status_code=422,
+            detail="note_type cannot be empty; send null to clear it, or one of "
+                   f"{sorted(VALID_NOTE_TYPES)}",
+        )
     if meta.get("note_type") and meta["note_type"] not in VALID_NOTE_TYPES:
         raise HTTPException(
             status_code=400,
@@ -660,29 +664,36 @@ def delete_note_attachment(
     project: Project = Depends(get_current_project),
 ):
     att = _resolve_attachment(db, attachment_id, project)
-    # Uploader or a project admin may delete.
-    if att.uploaded_by_id not in (None, current_user.id):
-        membership = (
-            db.query(ProjectMembership)
+    # Uploader, a project admin or a global admin may delete — the same people
+    # who may mark it for the report (the route below).  Review 2026-10-01 N4:
+    # a global admin, who has no membership row, was refused here and allowed
+    # there.
+    if att.uploaded_by_id not in (None, current_user.id) and current_user.role != UserRole.ADMIN:
+        role = (
+            db.query(ProjectMembership.role)
             .filter(
                 ProjectMembership.project_id == project.id,
                 ProjectMembership.user_id == current_user.id,
             )
-            .first()
+            .scalar()
         )
-        if not membership or membership.role != ProjectRole.ADMIN:
+        if not role or not check_permissions(role, ProjectRole.ADMIN.value):
             raise HTTPException(status_code=403, detail="Only the uploader or a project admin can delete this attachment.")
 
+    storage_path = att.storage_path
+    db.delete(att)
+    db.commit()
+    # The file goes only AFTER the row's delete has committed (N4): unlinking
+    # first left a row pointing at nothing whenever the commit failed.  A file
+    # that outlives its row is the lesser fault — nothing serves it.
     base = _attachments_root()
     try:
-        target = (base / att.storage_path).resolve()
+        target = (base / storage_path).resolve()
         target.relative_to(base.resolve())
         if target.exists():
             target.unlink()
     except (ValueError, OSError):
         pass  # best-effort file removal; the row delete is the source of truth
-    db.delete(att)
-    db.commit()
     return Response(status_code=204)
 
 

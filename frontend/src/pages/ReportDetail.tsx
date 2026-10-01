@@ -65,6 +65,16 @@ const FORMAT_LABEL: Record<ReportFileFormat, string> = {
 };
 const when = (iso: string | null) => formatTimestamp(iso);
 
+/** "N test results are printed as how findings were confirmed; M were recorded
+ *  by an agent." — the second clause only when an agent recorded any. */
+export const evidenceRecordsNotice = (total: number, byAgent?: number | null): string => {
+  const agent = byAgent ?? 0;
+  const first = `${total.toLocaleString()} test result${total === 1 ? ' is' : 's are'} printed as how findings were confirmed`;
+  return agent > 0
+    ? `${first}; ${agent.toLocaleString()} ${agent === 1 ? 'was' : 'were'} recorded by an agent.`
+    : `${first}.`;
+};
+
 interface Form {
   title: string;
   template: string;
@@ -228,6 +238,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.agent_images && (
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
+          {!!s?.evidence_records && (
+            <p className="mt-xs">{evidenceRecordsNotice(s.evidence_records, s.agent_evidence_records)}</p>
+          )}
           {!!s?.scope_external?.file && (
             <p className="mt-xs">Its scope ({s.scope_external.networks.toLocaleString()} networks) is over the template&apos;s limit: the report names <span className="font-medium">{s.scope_external.file.name}</span> instead of listing it — send that file with the report.</p>
           )}
@@ -335,7 +348,9 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
   if (s.error) {
     lead = <span className="text-destructive">{s.error}</span>;
   } else if (report.kind === 'addendum' && s.delta) {
-    lead = <>Compared with report #{report.baseline?.number}: <strong>{s.delta.new_findings}</strong> new finding{s.delta.new_findings === 1 ? '' : 's'}, <strong>{s.delta.findings_with_new_endpoints}</strong> reported finding{s.delta.findings_with_new_endpoints === 1 ? '' : 's'} on further systems, <strong>{s.delta.withdrawn}</strong> withdrawal{s.delta.withdrawn === 1 ? '' : 's'}.</>;
+    // Reports issued before severity changes were counted lack the field.
+    const reRated = s.delta.findings_with_changed_severity ?? 0;
+    lead = <>Compared with report #{report.baseline?.number}: <strong>{s.delta.new_findings}</strong> new finding{s.delta.new_findings === 1 ? '' : 's'}, <strong>{s.delta.findings_with_new_endpoints}</strong> reported finding{s.delta.findings_with_new_endpoints === 1 ? '' : 's'} on further systems, <strong>{s.delta.withdrawn}</strong> withdrawal{s.delta.withdrawn === 1 ? '' : 's'}{reRated > 0 && <>, <strong>{reRated}</strong> reported finding{reRated === 1 ? '' : 's'} with a changed severity</>}.</>;
   } else {
     lead = isDraft
       ? <>Covers <strong>{counts?.total ?? 0}</strong> finding{counts?.total === 1 ? '' : 's'}, as they stand now.</>
@@ -474,6 +489,14 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             </Button>
           )}
         </PostureSection>
+      )}
+
+      {!!s.evidence_records && (
+        // A notice, never a block: what the report prints as its proof, and
+        // how much of it a person did not run.
+        <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-notice">
+          {evidenceRecordsNotice(s.evidence_records, s.agent_evidence_records)}
+        </p>
       )}
 
       {s.scope_external?.file && (

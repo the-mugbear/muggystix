@@ -1,6 +1,6 @@
 {
   "name": "networkMapper-frontend",
-  "version": "5.326.1",
+  "version": "5.327.0",
   "private": true,
   "dependencies": {
     "@observablehq/plot": "0.6.17",
@@ -11,7 +11,6 @@
     "@radix-ui/react-dropdown-menu": "2.1.4",
     "@radix-ui/react-label": "2.1.1",
     "@radix-ui/react-popover": "1.1.4",
-    "@radix-ui/react-radio-group": "1.2.2",
     "@radix-ui/react-select": "2.1.4",
     "@radix-ui/react-separator": "1.1.1",
     "@radix-ui/react-slot": "1.1.1",

@@ -32,7 +32,6 @@ from sqlalchemy.orm import Session, joinedload
 from app.api.deps import get_current_project, require_project_role
 from app.db.models import Annotation, Host
 from app.db.models_agent import (
-    Agent,
     AgentApiCall,
     AgentFeedback,
     AgentSessionWorkflow,
@@ -51,7 +50,7 @@ from app.services.assist_session_service import (
     operator_role as _operator_role,
 )
 from app.services.agent_prompt_service import resolve_base_url
-from app.services.mcp_client_setup_service import build_mcp_clients
+from app.services.mcp_client_setup_service import McpClientSetup, build_session_mcp_clients
 
 router = APIRouter()
 
@@ -134,61 +133,14 @@ class StartAssistRequest(BaseModel):
         )
 
 
-class McpClientSetup(BaseModel):
-    """How one MCP-capable host connects to this session's /api/v1/mcp endpoint.
-
-    v2.269.0 — this used to be a single `mcp_config` string in VS Code's shape,
-    handed to operators on VS Code, Claude Code, AND Cursor alike.  The clients
-    do not agree: VS Code's `.vscode/mcp.json` wraps servers under `servers`,
-    while Claude Code and Cursor use `mcpServers` — so two of the three named
-    hosts silently ignored the server the dialog told the operator to paste.
-    The file path differs per client too, which is why `path` is part of the
-    payload rather than something the dialog hardcodes.
-    """
-
-    id: str
-    # Client name as the operator knows it, for the dialog's tab.
-    label: str
-    # "file"    -> `payload` is JSON to write at `path`
-    # "command" -> `payload` is a shell command to run; `path` is empty
-    kind: str
-    path: str
-    payload: str
-    # One line under the payload: what to do with it.
-    hint: str
-    # v2.331.0 — the handoff the recipes used to stop short of: how this client
-    # shows "connected", the first prompt to give the agent, and what the answer
-    # looks like from the session that was actually minted.  See
-    # ``mcp_client_setup_service.verify_prompt``.
-    verify_check: str = ""
-    verify_prompt: str = ""
-    verify_expected: str = ""
-
-
 # --- MCP client setup -------------------------------------------------------
 # The recipes moved to ``services/mcp_client_setup_service.py`` in v2.279.0, when
 # recon / plan / execution sessions started emitting them too.  One builder means
 # a fix to a client recipe lands on every workflow at once — the divergence that
-# replaces is why two of the three original recipes silently didn't work.
-
-
-def _build_mcp_clients(
-    mcp_url: str, raw_key: str, *, project_name: str, agent_session_id: int
-) -> List["McpClientSetup"]:
-    # The label the operator checks the agent's answer against must be the id
-    # the agent will actually report — ``session_id`` on /agent/identity is the
-    # unified AgentSession id, not this dialog's AssistSession row (v2.338.0).
-    return [
-        McpClientSetup(**client)
-        for client in build_mcp_clients(
-            mcp_url,
-            raw_key,
-            expected={
-                "project_name": project_name,
-                "session_label": f"agent session #{agent_session_id}",
-            },
-        )
-    ]
+# replaces is why two of the three original recipes silently didn't work.  The
+# ``McpClientSetup`` shape and the per-session builder followed them there
+# (review 2026-10-01 B4): the resume route in ``agent_sessions.py`` used to
+# import a private helper from this router.
 
 
 class StartAssistResponse(BaseModel):
@@ -407,7 +359,7 @@ def start_assist_session(
     db.refresh(assist_session)
 
     mcp_url = f"{resolve_base_url(request)}/mcp"
-    mcp_clients = _build_mcp_clients(
+    mcp_clients = build_session_mcp_clients(
         mcp_url, raw_key,
         project_name=project.name,
         agent_session_id=base_session.id,

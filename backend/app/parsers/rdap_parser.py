@@ -30,9 +30,9 @@ from typing import Any, Dict, Iterable, List, Optional
 from sqlalchemy.orm import Session
 
 from app.db import models
+from app.parsers.parser_utils import announce_scan, beat_while_reading
 from app.db.models_attribution import (
     AttributionSource,
-    HostNetworkAttribution,
     NetworkAttribution,
 )
 
@@ -186,6 +186,7 @@ class RdapParser:
         )
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         written = 0
         skipped = 0
@@ -210,7 +211,9 @@ class RdapParser:
         elif isinstance(whole, list):
             entries = [(f"item {i}", item) for i, item in enumerate(whole, start=1)]
         else:
-            for lineno, line in enumerate(content.splitlines(), start=1):
+            # R6 — the read phase heartbeats (only the committed scan row
+            # exists so far).
+            for lineno, line in enumerate(beat_while_reading(content.splitlines(), "lines read"), start=1):
                 line = line.strip()
                 if not line:
                     continue
@@ -221,6 +224,16 @@ class RdapParser:
                     if len(warnings) < 5:
                         warnings.append(f"line {lineno}: invalid JSON ({exc})")
 
+        # R6 — one heartbeat before anything is written, so a cancel, timeout
+        # or shutdown that arrived while the file was being read stops here.
+        # The write loop below does NOT heartbeat, on purpose: an attribution
+        # row belongs to the project's address block, not to this scan, so
+        # the cleanup of a cancelled import cannot find it — a heartbeat's
+        # commit part-way would leave rows a cancelled import is promised not
+        # to leave.  It stays one transaction (a query and a flush per block).
+        from app.services.ingestion_service import report_progress
+
+        report_progress(f"{len(entries)} records read")
         for where, record in entries:
             if not isinstance(record, dict):
                 skipped += 1

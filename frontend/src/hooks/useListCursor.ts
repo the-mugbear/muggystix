@@ -12,7 +12,18 @@
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../utils/cn';
 
-export const LIST_CURSOR_CLASS = 'bg-accent ring-1 ring-inset ring-ring';
+/**
+ * The cursor row's look, on every list (Hosts included): a primary tint and a
+ * 2px inset ring.
+ *
+ * It was `bg-accent ring-1`, and the fill never painted: `--accent` (like
+ * `--muted` and `--border`) carries its own alpha, and tailwind.config wraps
+ * each token as `hsl(var(--x) / <alpha-value>)`, so the browser gets the
+ * invalid `hsl(H S% L% / 0.12 / 1)` and drops the declaration.  What was left
+ * was a 1px ring nobody saw (walkthrough 2026-10-01).  `--primary` and
+ * `--ring` are opaque tokens, so these classes resolve in every theme.
+ */
+export const LIST_CURSOR_CLASS = 'bg-primary/10 ring-2 ring-inset ring-ring';
 
 const isTyping = (t: HTMLElement | null) =>
   !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);

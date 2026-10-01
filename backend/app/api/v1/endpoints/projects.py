@@ -7,7 +7,7 @@ CRUD for projects and project membership management.
 import re
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
@@ -16,9 +16,37 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from app.db.session import get_db
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User, UserRole
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.deps import get_client_info, get_current_user, require_role
+from app.core.security import log_audit_event
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _audit(db: Session, request: Request, actor: User, action: str, *,
+           project_id: int, details: dict, resource_type: str = "project") -> None:
+    """Stage an audit row in the CALLER's transaction (review 2026-10-01 R26).
+
+    ``commit=False``: the row lands with the change it describes or not at
+    all.  Project and membership changes decide who can read an engagement's
+    data, and a project deletion takes its whole history with it — before
+    this, none of them left a record while every account change did.
+    ``resource_id`` is the project id for every event here, so one filter on
+    the Audit page lists everything that happened to a project.
+    """
+    log_audit_event(
+        db,
+        user_id=actor.id,
+        action=action,
+        resource_type=resource_type,
+        resource_id=str(project_id),
+        details=details,
+        commit=False,
+        **get_client_info(request),
+    )
+
+
+def _iso(value) -> Optional[str]:
+    return value.isoformat() if value is not None else None
 
 
 # --- Schemas ---
@@ -258,6 +286,7 @@ def _my_role(user: User, membership_role) -> Optional[str]:
 )
 def create_project(
     data: ProjectCreate,
+    request: Request,
     db: Session = Depends(get_db),
     # RV-3 — project creation is a global-admin action.  Previously this
     # only required authentication, so any user could create a project and
@@ -297,6 +326,10 @@ def create_project(
         role="admin",
     )
     db.add(membership)
+    _audit(db, request, current_user, "project_created", project_id=project.id, details={
+        "name": project.name, "slug": project.slug, "status": project.status,
+        "creator_role": "admin",
+    })
     db.commit()
 
     resp = ProjectResponse.model_validate(project)
@@ -349,6 +382,7 @@ def get_project(
 def update_project(
     project_id: int,
     data: ProjectUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -359,6 +393,12 @@ def update_project(
 
     if not _can_manage_project(project, current_user, db):
         raise HTTPException(status_code=403, detail="Only project admins can update project settings")
+
+    before = {
+        "name": project.name, "description": project.description,
+        "status": project.status, "is_archived": bool(project.is_archived),
+        "start_date": _iso(project.start_date), "end_date": _iso(project.end_date),
+    }
 
     if data.name is not None:
         if data.name != project.name:
@@ -396,6 +436,33 @@ def update_project(
 
     if data.end_date is not None:
         project.end_date = data.end_date
+
+    after = {
+        "name": project.name, "description": project.description,
+        "status": project.status, "is_archived": bool(project.is_archived),
+        "start_date": _iso(project.start_date), "end_date": _iso(project.end_date),
+    }
+    changes = {
+        key: {"old": before[key], "new": after[key]}
+        for key in before if before[key] != after[key]
+    }
+    if changes:
+        # Archiving hides a project from selection and unarchiving brings it
+        # back; both get their own action so they can be found by name.
+        if "is_archived" in changes:
+            action = "project_archived" if after["is_archived"] else "project_unarchived"
+        else:
+            action = "project_updated"
+        try:
+            _audit(db, request, current_user, action, project_id=project.id,
+                   details={"name": after["name"], "changes": changes})
+        except IntegrityError:
+            # The flush carries the rename; see the commit below.
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail="Another project took that name or slug concurrently; try again.",
+            )
 
     try:
         db.commit()
@@ -468,6 +535,7 @@ def update_project_ingest_settings(
 )
 def delete_project(
     project_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(require_role(UserRole.ADMIN)),
 ):
@@ -499,6 +567,24 @@ def delete_project(
         .all()
     }
     project_name = project.name
+    # The project's own history cascades with it, so the audit row is the
+    # only record left: who the members were is part of it.
+    members = [
+        {"user_id": uid, "username": username, "role": role}
+        for uid, username, role in db.query(
+            ProjectMembership.user_id, User.username, ProjectMembership.role
+        ).outerjoin(User, User.id == ProjectMembership.user_id)
+        .filter(ProjectMembership.project_id == project.id)
+        .order_by(ProjectMembership.user_id)
+        .all()
+    ]
+    _audit(db, request, current_user, "project_deleted", project_id=project.id, details={
+        "name": project_name, "slug": project.slug, "status": project.status,
+        "is_archived": bool(project.is_archived),
+        "created_by_id": project.created_by_id,
+        "member_count": len(members), "members": members,
+        "attachment_thread_count": len(_attachment_note_ids),
+    })
     db.delete(project)
     db.commit()
     for _nid in _attachment_note_ids:
@@ -571,6 +657,7 @@ def list_members(
 def add_member(
     project_id: int,
     data: MembershipCreate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -602,6 +689,11 @@ def add_member(
         role=data.role,
     )
     db.add(membership)
+    _audit(db, request, current_user, "project_member_added", project_id=project_id,
+           resource_type="project_membership", details={
+               "project_name": project.name, "user_id": user.id, "username": user.username,
+               "old_role": None, "new_role": data.role,
+           })
     db.commit()
 
     return MembershipResponse(
@@ -625,6 +717,7 @@ def update_member(
     project_id: int,
     user_id: int,
     data: MembershipUpdate,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -646,10 +739,18 @@ def update_member(
     if not membership:
         raise HTTPException(status_code=404, detail="User is not a member of this project")
 
+    user = db.query(User).filter(User.id == user_id).first()
+    old_role = membership.role
     membership.role = data.role
+    if old_role != data.role:
+        _audit(db, request, current_user, "project_member_role_changed", project_id=project_id,
+               resource_type="project_membership", details={
+                   "project_name": project.name, "user_id": user_id,
+                   "username": user.username if user else None,
+                   "old_role": old_role, "new_role": data.role,
+               })
     db.commit()
 
-    user = db.query(User).filter(User.id == user_id).first()
     return MembershipResponse(
         id=membership.id,
         project_id=membership.project_id,
@@ -670,6 +771,7 @@ def update_member(
 def remove_member(
     project_id: int,
     user_id: int,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
@@ -697,6 +799,12 @@ def remove_member(
         if admin_count <= 1:
             raise HTTPException(status_code=400, detail="Cannot remove the last project admin")
 
+    removed_username = db.query(User.username).filter(User.id == user_id).scalar()
+    _audit(db, request, current_user, "project_member_removed", project_id=project_id,
+           resource_type="project_membership", details={
+               "project_name": project.name, "user_id": user_id, "username": removed_username,
+               "old_role": membership.role, "new_role": None,
+           })
     db.delete(membership)
     db.commit()
     return {"message": "Member removed from project"}

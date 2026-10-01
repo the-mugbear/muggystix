@@ -4,5 +4,6 @@
   "entry": "report.qmd",
   "formats": ["html", "docx", "qmd"],
   "scope_inline_max": null,
-  "scope_domains_inline_max": null
+  "scope_domains_inline_max": null,
+  "evidence_records": false
 }

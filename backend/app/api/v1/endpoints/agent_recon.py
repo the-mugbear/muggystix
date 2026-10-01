@@ -15,7 +15,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_agent import Agent
 from app.api.deps import check_agent_rate_limit
@@ -143,7 +143,11 @@ def get_scope_domains(
 # Bulk host downloads — streamed, meant to be redirected to a file.
 # ---------------------------------------------------------------------------
 
-def _stream(generator, media_type: str, filename: str) -> StreamingResponse:
+def _stream(db: Session, generator, media_type: str, filename: str) -> StreamingResponse:
+    # A streamed target file runs its queries after the response has started
+    # and is meant to cover the whole scope: exempt from the API statement
+    # timeout (review 2026-10-01 R23), which is for interactive requests.
+    disable_statement_timeout(db)
     return StreamingResponse(
         generator,
         media_type=media_type,
@@ -165,7 +169,7 @@ def download_scope_hosts_ndjson(
     line — redirect it to a file and process it locally."""
     scope = _load_scope(db, agent, scope_id)
     return _stream(
-        _iter_scope_hosts_ndjson(db, scope.id),
+        db, _iter_scope_hosts_ndjson(db, scope.id),
         "application/x-ndjson",
         f"scope-{scope.id}-hosts.jsonl",
     )
@@ -184,7 +188,7 @@ def download_scope_live_hosts(
     """One IP per line, IP-sorted — an ``-iL`` target file."""
     scope = _load_scope(db, agent, scope_id)
     return _stream(
-        _iter_scope_live_hosts(db, scope.id),
+        db, _iter_scope_live_hosts(db, scope.id),
         "text/plain",
         f"scope-{scope.id}-hosts.txt",
     )
@@ -203,7 +207,7 @@ def download_scope_web_targets(
     """One URL per line, derived from in-scope hosts' open web ports."""
     scope = _load_scope(db, agent, scope_id)
     return _stream(
-        _iter_scope_web_targets(db, scope.id),
+        db, _iter_scope_web_targets(db, scope.id),
         "text/plain",
         f"scope-{scope.id}-web-targets.txt",
     )
@@ -233,7 +237,7 @@ def download_scope_named_targets(
     listed."""
     scope = _load_scope(db, agent, scope_id)
     return _stream(
-        _iter_scope_named_targets_ndjson(db, scope),
+        db, _iter_scope_named_targets_ndjson(db, scope),
         "application/x-ndjson",
         f"scope-{scope.id}-named-targets.jsonl",
     )

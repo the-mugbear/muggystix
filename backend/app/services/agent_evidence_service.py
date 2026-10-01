@@ -13,7 +13,7 @@ import ipaddress
 from typing import List, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy.exc import IntegrityError
 
@@ -21,8 +21,8 @@ from app.db import models
 from app.db.models_findings import Finding, FindingHost
 from app.db.models_proposals import EvidenceOutcome, EvidenceRecord
 
-#: Raw output kept per record — a tool's output, not a disk image.
-RAW_OUTPUT_MAX_BYTES = 5 * 1024 * 1024
+from app.schemas.host_test_schemas import RAW_OUTPUT_MAX_BYTES  # noqa: F401  (5 MB; one constant, also the schemas' cap)
+
 #: Characters of raw output carried inline on the record.
 PREVIEW_CHARS = 2000
 
@@ -51,15 +51,69 @@ def record_evidence(
     request_key: Optional[str] = None,
     server_timed: bool = False,
 ) -> EvidenceRecord:
-    """Validate the targets belong to the project, store the raw output as a
-    file, and add the row.  The caller commits.
+    """Validate the targets belong to the project and add the row (the raw
+    output is kept in it).  The caller commits.
 
     ``server_timed``: ``executed_at`` is the server's clock, not something the
     caller sent, so it is left out of the replay fingerprint — a retry of the
     same result is then recognised, and a changed one under the same key is
     refused, by the one check below."""
+    return record_evidence_once(
+        db, project_id=project_id, host_id=host_id, tool=tool, outcome=outcome, summary=summary,
+        command=command, raw_output=raw_output, observed_ip=observed_ip, executed_at=executed_at,
+        finding_id=finding_id, finding_host_id=finding_host_id, agent_session_id=agent_session_id,
+        recorded_by_user_id=recorded_by_user_id, agent_model=agent_model, agent_client=agent_client,
+        host_test_id=host_test_id, request_key=request_key, server_timed=server_timed,
+    )[0]
+
+
+def record_evidence_once(
+    db: Session,
+    *,
+    project_id: int,
+    host_id: int,
+    tool: str,
+    outcome: str,
+    summary: str,
+    command: Optional[str] = None,
+    raw_output: Optional[str] = None,
+    observed_ip: Optional[str] = None,
+    executed_at: Optional[datetime] = None,
+    finding_id: Optional[int] = None,
+    finding_host_id: Optional[int] = None,
+    agent_session_id: Optional[int] = None,
+    recorded_by_user_id: Optional[int] = None,
+    agent_model: Optional[str] = None,
+    agent_client: Optional[str] = None,
+    host_test_id: Optional[int] = None,
+    request_key: Optional[str] = None,
+    server_timed: bool = False,
+) -> Tuple[EvidenceRecord, bool]:
+    """:func:`record_evidence`, saying also whether THIS call stored the
+    record: ``(record, created)``.  ``created`` is False for a replay of the
+    key — found up front, or lost to a concurrent request with the same key
+    (review 2026-10-01 N8) — so a caller that goes on to write something else
+    for a new record knows not to."""
     from app.services.host_test_service import get_test, payload_hash
     from app.db.models_host_tests import TESTED_OUTCOMES
+
+    # Review 2026-10-01 R10 — measured before anything else touches it: the
+    # schemas cap the length, but this is the one rule for every caller, and
+    # the fingerprint below used to hash an oversize output before the check.
+    # A character is at least a byte, so the cheap test settles most refusals
+    # without encoding the string.
+    if raw_output and (
+        len(raw_output) > RAW_OUTPUT_MAX_BYTES
+        or len(raw_output.encode("utf-8", errors="replace")) > RAW_OUTPUT_MAX_BYTES
+    ):
+        raise HTTPException(
+            status_code=413,
+            detail=f"raw_output is larger than the limit of {RAW_OUTPUT_MAX_BYTES} bytes. "
+                   "Trim it, or upload the file if it is a supported scanner format.",
+        )
+    if request_key and "\x00" in request_key:
+        # A NUL reached Postgres as a query parameter and failed with a 500.
+        raise HTTPException(422, "request_key: NUL is not allowed")
     test = get_test(db, project_id, host_test_id) if host_test_id is not None else None
     if test is not None and test.host_id != host_id:
         raise HTTPException(422, "Evidence and host test must refer to the same host")
@@ -81,7 +135,7 @@ def record_evidence(
         if prior:
             if prior.request_hash != digest:
                 raise HTTPException(409, "request_key already used for different evidence")
-            return prior
+            return prior, False
     if outcome not in OUTCOMES:
         raise HTTPException(status_code=422, detail=f"outcome must be one of {OUTCOMES}")
     host = (
@@ -113,13 +167,8 @@ def record_evidence(
     raw_output = _no_nul(raw_output) or None
     size = preview = None
     if raw_output:
+        # Within the limit: checked on entry, before the fingerprint (R10).
         size = len(raw_output.encode("utf-8", errors="replace"))
-        if size > RAW_OUTPUT_MAX_BYTES:
-            raise HTTPException(
-                status_code=413,
-                detail=f"raw_output is {size} bytes; the limit is {RAW_OUTPUT_MAX_BYTES}. "
-                       "Trim it, or upload the file if it is a supported scanner format.",
-            )
         preview = raw_output[:PREVIEW_CHARS]
 
     record = EvidenceRecord(
@@ -144,13 +193,13 @@ def record_evidence(
             raise
         if prior.request_hash != digest:
             raise HTTPException(409, "request_key already used for different evidence")
-        return prior
+        return prior, False
     if test and test.target_fqdn and observed_ip and outcome in TESTED_OUTCOMES:
         from app.services.dns_name_service import record_observation
         record_observation(db, project_id=project_id, name=test.target_fqdn,
                            record_type=models.DNS_OBS_TESTED, value=observed_ip,
                            evidence_record_id=record.id, observed_at=executed_at)
-    return record
+    return record, True
 
 
 def list_evidence(
@@ -214,19 +263,47 @@ def link_issue_evidence(db: Session, *, host_id: int, issue_key: Optional[str], 
     recorded for a test linked to that issue.  Called when the observation is
     promoted, so promoting from the weakness row and promoting from the test's
     result end in the same place.  Returns how many were linked."""
-    from app.db.models_host_tests import HostTest
-
-    if not issue_key:
+    ids = _lock_issue_evidence(db, host_id=host_id, issue_key=issue_key)
+    if not ids:
         return 0
-    test_ids = select(HostTest.id).where(HostTest.host_id == host_id, HostTest.issue_key == issue_key)
     return (
         db.query(EvidenceRecord)
-        .filter(
-            EvidenceRecord.host_test_id.in_(test_ids), EvidenceRecord.host_id == host_id,
-            EvidenceRecord.outcome == "finding", EvidenceRecord.finding_id.is_(None),
-        )
+        .filter(EvidenceRecord.id.in_(ids), EvidenceRecord.finding_id.is_(None))
         .update({"finding_id": finding_id}, synchronize_session=False)
     )
+
+
+def _lock_issue_evidence(
+    db: Session, *, host_id: int, issue_key: Optional[str], also: Optional[int] = None,
+) -> List[int]:
+    """Lock, IN ID ORDER, the unlinked finding-outcome evidence of the tests
+    that confirm this issue on this host (plus record ``also``); returns the
+    ids.
+
+    Review 2026-10-01 N8: promoting one result locked ITS record and then
+    updated its siblings, so two people promoting two results of one issue
+    each held the row the other wanted — a deadlock.  Every path now takes
+    the whole set in one ordered statement, so the second waits for the first
+    and then finds the records linked."""
+    from app.db.models_host_tests import HostTest
+
+    conditions = []
+    if issue_key:
+        test_ids = select(HostTest.id).where(HostTest.host_id == host_id, HostTest.issue_key == issue_key)
+        conditions.append(
+            EvidenceRecord.host_test_id.in_(test_ids) & (EvidenceRecord.host_id == host_id)
+            & (EvidenceRecord.outcome == "finding") & EvidenceRecord.finding_id.is_(None)
+        )
+    if also is not None:
+        conditions.append(EvidenceRecord.id == also)
+    if not conditions:
+        return []
+    return [
+        rid for (rid,) in db.query(EvidenceRecord.id)
+        .filter(or_(*conditions))
+        .order_by(EvidenceRecord.id)
+        .with_for_update()
+    ]
 
 
 def create_finding_from_evidence(
@@ -242,16 +319,37 @@ def create_finding_from_evidence(
     is ``FindingService.create_finding`` on the evidence's host (at the name
     the test was aimed at).  Either way the record is linked.  The row is
     locked: two clicks must not make two findings.  Returns ``(finding,
-    joined_issue)``; the caller commits."""
+    joined_issue)``; the caller commits.
+
+    Joining never re-judges the issue (review 2026-10-01 R9): this is one
+    host's result, so an existing finding moves only from open / retest to
+    confirmed.  A finding the team concluded — accepted risk, remediated,
+    false positive — keeps its status, and ``confirmed`` is never taken back
+    to ``open``; the host and the evidence are attached either way."""
     from app.db.models_host_tests import HostTest
     from app.db.models_vulnerability import Vulnerability
     from app.services.finding_actions import promote_or_dismiss_vulnerability
     from app.services.finding_service import FindingService
 
+    # Read first, unlocked, only to learn which records the promotion will
+    # touch (immutable facts: host, test); then lock that whole set in id
+    # order and re-read the record under its lock (N8, see the helper).
+    target = (
+        db.query(EvidenceRecord.host_id, EvidenceRecord.host_test_id)
+        .filter(EvidenceRecord.id == evidence_id, EvidenceRecord.project_id == project_id)
+        .first()
+    )
+    if target is None:
+        raise HTTPException(status_code=404, detail="Evidence record not found in this project")
+    test = db.get(HostTest, target.host_test_id) if target.host_test_id else None
+    _lock_issue_evidence(
+        db, host_id=target.host_id, issue_key=test.issue_key if test is not None else None,
+        also=evidence_id,
+    )
     record = (
         db.query(EvidenceRecord)
         .filter(EvidenceRecord.id == evidence_id, EvidenceRecord.project_id == project_id)
-        .with_for_update().populate_existing().first()
+        .populate_existing().first()
     )
     if record is None:
         raise HTTPException(status_code=404, detail="Evidence record not found in this project")
@@ -259,7 +357,6 @@ def create_finding_from_evidence(
         raise HTTPException(status_code=409, detail=f"This evidence already belongs to finding #{record.finding_id}")
     if record.outcome != "finding":
         raise HTTPException(status_code=422, detail="Only evidence whose outcome is 'finding' can be promoted")
-    test = db.get(HostTest, record.host_test_id) if record.host_test_id else None
     vuln = None
     if test is not None and test.issue_key:
         vuln = (
@@ -274,6 +371,7 @@ def create_finding_from_evidence(
         finding = promote_or_dismiss_vulnerability(
             db, vuln=vuln, project_id=project_id, actor_id=actor_id, severity=None,
             status=status, scope="host", summary=f"Confirmed by test evidence #{record.id}",
+            confirm_only_on_join=True,
         )
     else:
         if not (title or "").strip() or not severity:

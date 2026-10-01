@@ -73,6 +73,9 @@ class ReportTemplate:
     # None: the template does not print the scope at all.
     scope_inline_max: Optional[int] = report_scope.DEFAULT_INLINE_MAX
     scope_domains_inline_max: Optional[int] = report_scope.DEFAULT_INLINE_MAX
+    # Whether the template prints how each finding was confirmed (its
+    # evidence records).  Opt-in: only a literal ``true`` in template.json.
+    evidence_records: bool = False
 
     def as_dict(self) -> dict:
         return {
@@ -80,6 +83,7 @@ class ReportTemplate:
             "formats": list(self.formats), "assets": [dict(a) for a in self.assets],
             "scope_inline_max": self.scope_inline_max,
             "scope_domains_inline_max": self.scope_domains_inline_max,
+            "evidence_records": self.evidence_records,
         }
 
     def missing_required_assets(self) -> List[dict]:
@@ -139,7 +143,8 @@ def _load(folder: Path) -> ReportTemplate:
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
-        postprocess=post, assets=assets, **cutoffs,
+        postprocess=post, assets=assets,
+        evidence_records=data.get("evidence_records") is True, **cutoffs,
     )
 
 

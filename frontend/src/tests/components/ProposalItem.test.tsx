@@ -139,3 +139,59 @@ describe('5.317.1 — a rejection can say why (the agent reads it back)', () => 
     await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(7, undefined));
   });
 });
+
+// Review 2026-10-01 B14 — what a decided proposal already carried and did not show.
+describe('ProposalItem — after the decision', () => {
+  it('says WHEN it was decided, with the absolute time on hover', () => {
+    const decidedAt = new Date(Date.now() - 2 * 3600_000).toISOString();
+    renderItem({ ...base, status: 'accepted', decided_by: 'Ben', decided_at: decidedAt });
+    const line = screen.getByText(/Decided by Ben/);
+    const time = line.querySelector('time');
+    expect(time).not.toBeNull();
+    expect(time?.getAttribute('datetime')).toBe(decidedAt);
+    expect(time?.textContent).toMatch(/2h/);
+    expect(time?.getAttribute('title')).toBeTruthy();
+  });
+
+  it('shows no time when the proposal carries none', () => {
+    renderItem({ ...base, status: 'rejected', decided_by: 'Ben', decided_at: null, decision_note: 'not this' });
+    const line = screen.getByText(/Decided by Ben/);
+    expect(line.querySelector('time')).toBeNull();
+    expect(line.textContent).toBe('Decided by Ben — not this');
+  });
+
+  it('links an accepted "new finding" proposal to the finding it created', () => {
+    renderItem({
+      ...base, kind: 'finding_create', status: 'accepted', finding_id: null, field: null,
+      payload: { title: 'Default creds', severity: 'high', host_ids: [1] }, result_finding_id: 41,
+      decided_by: 'Ben', decided_at: null,
+    });
+    expect(screen.getByRole('link', { name: 'Open the finding it created' })).toHaveAttribute('href', '/findings/41');
+  });
+
+  it('has no such link while pending, or when no finding came of it', () => {
+    renderItem({
+      ...base, kind: 'finding_create', status: 'pending', finding_id: null, field: null,
+      payload: { title: 'Default creds', severity: 'high', host_ids: [1] }, result_finding_id: null,
+    });
+    expect(screen.queryByRole('link', { name: /finding it created/ })).toBeNull();
+  });
+
+  it('deep-links an endpoint-status proposal to its endpoint row on the finding', () => {
+    renderItem({
+      ...base, kind: 'endpoint_status', field: null, finding_id: 3, finding_host_id: 9,
+      payload: { host_status: 'retest' },
+      target: { finding_title: 'SMB signing', observation_title: null, host_id: 1, host_ip: '10.0.0.1' },
+    });
+    expect(screen.getByRole('link', { name: 'Show 10.0.0.1 on the finding' }))
+      .toHaveAttribute('href', '/findings/3?endpoint=9#endpoints');
+  });
+
+  it('is null-safe: an endpoint proposal without its row id gets no endpoint link', () => {
+    renderItem({
+      ...base, kind: 'endpoint_status', field: null, finding_id: 3, finding_host_id: null,
+      payload: { host_status: 'retest' },
+    });
+    expect(screen.queryByRole('link', { name: /on the finding$/ })).toBeNull();
+  });
+});

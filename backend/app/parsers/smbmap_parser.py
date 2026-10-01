@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -11,7 +11,10 @@ from app.db.models_confidence import NetexecResult
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.netexec_parser import writable_share
 from app.services.misconfig_checks import record_misconfig
-from app.parsers.parser_utils import correlate_scan, extract_first_ip, ensure_scan, persist_host_observation
+from app.parsers.parser_utils import (
+    ProgressBeat, beat_while_reading, correlate_scan, extract_first_ip, ensure_scan,
+    persist_host_observation, without_nul,
+)
 from app.parsers.streaming_json import iter_json_records
 from app.services.host_deduplication_service import HostDeduplicationService
 
@@ -77,7 +80,8 @@ class SMBMapParser:
                 array_keys=("hosts",),
                 tool_label="SMBMap JSON",
             )
-            for row in rows:
+            # R6 — the read phase heartbeats (nothing is written yet).
+            for row in beat_while_reading(rows):
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("host") or ""))
                 if not ip_address:
                     continue
@@ -96,7 +100,9 @@ class SMBMapParser:
             # ("[\] Checking for open ports...\r\r\r") becomes separate lines.
             current: Optional[Dict[str, Any]] = None
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
+                # NUL removed (review 2026-10-01 R5): share names, remarks and
+                # the status line are stored.
+                for line in beat_while_reading(without_nul(handle), "lines read"):
                     match = HOST_PATTERN.match(line.strip())
                     if match:
                         ip_address = extract_first_ip(match.group(1))
@@ -133,7 +139,12 @@ class SMBMapParser:
                 f"file is empty or not smbmap output."
             )
 
+        # R6 — heartbeat between hosts.  No savepoint wraps a host here, and
+        # everything a host needs is written (and flushed) within its own
+        # iteration, so the heartbeat's commit lands on a host boundary.
+        beat = ProgressBeat("hosts", every=200)
         for ip_address, entry in hosts.items():
+            beat.tick()
             persisted = persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,

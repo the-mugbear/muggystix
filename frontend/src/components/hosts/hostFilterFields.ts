@@ -261,7 +261,7 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
     kind: 'multi', id: 'checks', key: 'checks', keys: ['checks'], chipKey: 'checks',
     label: 'Misconfiguration check', category: 'weaknesses', searchValues: true,
     keywords: ['misconfiguration', 'check', 'smbv1', 'vnc', 'hsts', 'csp', 'header', 'anonymous', 'null session'],
-    help: 'One misconfiguration, whichever tool reported it — nmap NSE, NetExec, SMBMap, Nessus, Nuclei, Nikto, testssl.',
+    help: 'One misconfiguration, whichever tool reported it — nmap NSE, NetExec, SMBMap, Nessus, Nuclei, Nikto, testssl, dnsx.',
     options: (d) => counted(d?.checks, (c) => ({
       value: c.id, label: c.title, count: c.host_count, keywords: [c.id],
     })),

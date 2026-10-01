@@ -160,6 +160,7 @@ EXPECTED_ONDELETE = {
     ('host_tags', 'project_id'): 'CASCADE',
     ('ingestion_jobs', 'agent_session_id'): 'SET NULL',
     ('ingestion_jobs', 'batch_id'): 'SET NULL',
+    ('ingestion_jobs', 'in_progress_scan_id'): 'SET NULL',
     ('ingestion_jobs', 'parse_error_id'): 'SET NULL',
     ('ingestion_jobs', 'project_id'): 'CASCADE',
     ('ingestion_jobs', 'scan_id'): 'SET NULL',

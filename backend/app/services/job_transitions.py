@@ -160,6 +160,17 @@ class JobTransitions:
         )
         return res.rowcount
 
+    def stamp(
+        self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
+    ) -> int:
+        """Write ``cols`` on the row for THIS attempt only, changing neither
+        the status nor the heartbeat (review 2026-10-01 R1: the scan an
+        attempt is writing).  Fenced like every other attempt write, so a
+        stale attempt cannot put its scan on a row a peer now owns."""
+        m = self.model
+        res = db.execute(update(m).where(*self._fenced(job_id, claimed_at)).values(**cols))
+        return res.rowcount
+
     def complete(
         self, db: Session, job_id: int, claimed_at: Optional[datetime], **cols: Any,
     ) -> int:

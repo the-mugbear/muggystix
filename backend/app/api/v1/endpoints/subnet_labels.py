@@ -38,8 +38,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.api.v1.endpoints.auth import get_current_user
-from app.db import models
+from app.api.deps import get_current_user
 from app.db.models import (
     HostSubnetMapping,
     Scope,

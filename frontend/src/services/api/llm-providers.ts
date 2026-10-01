@@ -83,24 +83,3 @@ export const testLLMProvider = async (
   const r = await api.post<{ ok: boolean; detail: string }>(`/llm-providers/${id}/test`);
   return r.data;
 };
-
-export interface LLMCompletionResponse {
-  provider_id: number;
-  provider_name: string;
-  model_id: string | null;
-  content: string;
-  raw_metadata: Record<string, any>;
-}
-
-export const llmComplete = async (
-  providerId: number,
-  body: { system?: string; prompt: string; max_tokens?: number; temperature?: number },
-  // Optional axios opts so callers can pass an AbortController signal
-  // for user-initiated cancel of long completions (audit C9).
-  opts?: { signal?: AbortSignal },
-): Promise<LLMCompletionResponse> => {
-  const r = await api.post<LLMCompletionResponse>(`/llm-providers/${providerId}/complete`, body, {
-    signal: opts?.signal,
-  });
-  return r.data;
-};

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from typing import Iterable, List, Optional, Sequence
 
-from sqlalchemy import and_, cast, func, or_, false
+from sqlalchemy import and_, cast, func, literal_column, or_, false
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy.sql import exists
 from sqlalchemy.sql.elements import ColumnElement
@@ -146,6 +146,31 @@ def scope_coverage_predicate(values: Sequence[str], project_id: int) -> ColumnEl
     return or_(*conditions) if conditions else false()
 
 
+#: ``vulnscan:`` values → the state ``evidence_service`` defines (review
+#: 2026-10-01).  The Evidence page's three counts each open one of these.
+VULN_SCAN_CREDENTIALED_VALUES = {
+    "credentialed": "yes",
+    "uncredentialed": "no",
+    "unstated": "not_stated",
+}
+
+
+def vuln_scan_credentialed_predicate(values: Sequence[str]) -> ColumnElement:
+    """Host assessed for vulnerabilities whose scans say they authenticated
+    (``credentialed``), say they did not (``uncredentialed``), or say neither
+    (``unstated``).  Correlated EXISTS on the host; the rule itself is
+    ``evidence_service.vuln_scan_credentialed_condition`` — never a second
+    copy here.  A host that is not assessed matches none of the three."""
+    from app.services.evidence_service import vuln_scan_credentialed_condition
+
+    states = {
+        VULN_SCAN_CREDENTIALED_VALUES[v.strip().lower()]
+        for v in values if v.strip().lower() in VULN_SCAN_CREDENTIALED_VALUES
+    }
+    conditions = [vuln_scan_credentialed_condition(s) for s in sorted(states)]
+    return or_(*conditions) if conditions else false()
+
+
 # ---------------------------------------------------------------------------
 # Port-dimension predicates
 # ---------------------------------------------------------------------------
@@ -200,16 +225,39 @@ def port_match_subquery(
     services: Optional[Sequence[str]] = None,
     port_states: Optional[Sequence[str]] = None,
     require_open: bool = False,
+    project_id: Optional[int] = None,
 ):
     """Return a ``db.query(Host.id).join(Port)`` narrowed by the supplied
     port dimensions (all applied to the *same* Port row).  A port or
     service condition matches OPEN ports unless ``port_states`` names a
-    state (``resolve_endpoint_states``)."""
+    state (``resolve_endpoint_states``).
+
+    The host predicates below no longer use this (they are correlated
+    ``EXISTS`` — ``host_has_port``); it remains for callers that want the id
+    list itself.  ``project_id`` (review 2026-10-01 R19) confines it to one
+    project's hosts: it never changes which of a project's hosts match, only
+    what Postgres reads — without it the subquery is every project's ports.
+    Pass it wherever the project is known.
+    """
     sub = db.query(models.Host.id).join(models.Port)
+    if project_id is not None:
+        sub = sub.filter(models.Host.project_id == project_id)
+    return sub.filter(*port_match_conditions(ports, services, port_states, require_open))
+
+
+def port_match_conditions(
+    ports: Optional[Sequence[int]] = None,
+    services: Optional[Sequence[str]] = None,
+    port_states: Optional[Sequence[str]] = None,
+    require_open: bool = False,
+) -> List[ColumnElement]:
+    """The conditions ONE Port row must meet — shared by
+    ``port_match_subquery`` and ``host_has_port``."""
+    conditions: List[ColumnElement] = []
     if ports:
-        sub = sub.filter(models.Port.port_number.in_(list(ports)))
+        conditions.append(models.Port.port_number.in_(list(ports)))
     if services:
-        sub = sub.filter(or_(*[
+        conditions.append(or_(*[
             models.Port.service_name.ilike(f'%{escape_like(s)}%', escape='\\')
             for s in services
         ]))
@@ -219,10 +267,31 @@ def port_match_subquery(
     elif require_open:
         # An explicit other state beside "must be open": both hold (the
         # long-standing contradiction stays a contradiction).
-        sub = sub.filter(models.Port.state == 'open')
+        conditions.append(models.Port.state == 'open')
     if states:
-        sub = sub.filter(port_state_condition(states))
-    return sub
+        conditions.append(port_state_condition(states))
+    return conditions
+
+
+def host_has_port(*conditions: ColumnElement) -> ColumnElement:
+    """The host of the enclosing query has a Port row meeting ``conditions``
+    — a correlated ``EXISTS`` (review 2026-10-01 R19/R21).
+
+    The port predicates used to be ``Host.id IN (SELECT … FROM hosts JOIN
+    ports …)`` over every project's ports.  That plans well only un-negated:
+    under ``NOT`` Postgres cannot make an anti-join of ``NOT IN`` and falls
+    back to a list it rescans per host once it outgrows work_mem — the
+    "no open ports" filter did not finish in 60 s at 120k hosts (measured).
+    ``EXISTS`` correlated on the host is a semi-join, ``NOT EXISTS`` an
+    anti-join, and either way it is reached through the outer query's hosts,
+    so it is confined to the project without being told which one.  Same
+    hosts: ``ports_v2.host_id`` is NOT NULL and references the host.
+    """
+    return (
+        exists()
+        .where(models.Port.host_id == models.Host.id, *conditions)
+        .correlate(models.Host)
+    )
 
 
 def port_state_condition(states: Sequence[str]) -> ColumnElement:
@@ -244,13 +313,29 @@ def port_predicate(db: Session, values: Sequence, states: Optional[Sequence[str]
     port_ints = [int(v) for v in values if str(v).strip().isdigit()]
     if not port_ints:
         return false()
-    return models.Host.id.in_(port_match_subquery(db, ports=port_ints, port_states=states))
+    return host_has_port(*port_match_conditions(ports=port_ints, port_states=states))
 
 
 def service_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
     """Host has at least one OPEN port (or one in ``states``) whose service
     name ILIKE-matches a value."""
-    return models.Host.id.in_(port_match_subquery(db, services=list(values), port_states=states))
+    return host_has_port(*port_match_conditions(services=list(values), port_states=states))
+
+
+def product_version_text() -> ColumnElement:
+    """A port's product and version as one string, "OpenSSH 7.4".
+
+    Built with ``||`` rather than ``concat()`` (review 2026-10-01 R19):
+    ``concat()`` is only STABLE in Postgres and cannot be indexed, while this
+    expression is what ``ix_trgm_port_product_version`` (revision
+    ``c3f6b9d2e5a7``) is built on — keep the two in step.  With both sides
+    coalesced the result is the same string ``concat`` gave.
+    """
+    return (
+        func.coalesce(models.Port.service_product, literal_column("''"))
+        .concat(literal_column("' '"))
+        .concat(func.coalesce(models.Port.service_version, literal_column("''")))
+    )
 
 
 def version_predicate(db: Session, values: Sequence[str], states: Optional[Sequence[str]] = None) -> ColumnElement:
@@ -258,26 +343,20 @@ def version_predicate(db: Session, values: Sequence[str], states: Optional[Seque
     version (or the two together, "OpenSSH 7.4") ILIKE-matches a value
     (v2.390.0 — `service:` matched the name only, so "which hosts run
     OpenSSH 7.x" had no filter)."""
-    joined = func.concat(
-        func.coalesce(models.Port.service_product, ""), " ", func.coalesce(models.Port.service_version, ""),
-    )
+    joined = product_version_text()
     # LIKE wildcards in the value are literal, as in service: (review
     # 2026-09-23 R12 — `path:/admin_x` matched `/adminYx`).
-    conds = [
-        or_(
-            models.Port.service_product.ilike(f"%{escape_like(v)}%", escape="\\"),
-            models.Port.service_version.ilike(f"%{escape_like(v)}%", escape="\\"),
-            joined.ilike(f"%{escape_like(v)}%", escape="\\"),
-        )
-        for v in values if v
-    ]
+    #
+    # ONE arm (R19): a value found in the product or in the version is found
+    # in "product version" too, so the two column arms the predicate used to
+    # OR in matched nothing extra — and an OR whose arms need three different
+    # indexes is an OR Postgres scans the table for.
+    # ``tests/test_read_path_review.py`` pins old == new.
+    conds = [joined.ilike(f"%{escape_like(v)}%", escape="\\") for v in values if v]
     if not conds:
         return false()
     resolved = resolve_endpoint_states(states, has_endpoint=True)
-    sub = db.query(models.Port.host_id).filter(
-        *([port_state_condition(resolved)] if resolved else []), or_(*conds),
-    )
-    return models.Host.id.in_(sub)
+    return host_has_port(*([port_state_condition(resolved)] if resolved else []), or_(*conds))
 
 
 def webpath_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
@@ -308,12 +387,32 @@ def issue_predicate(db: Session, values: Sequence[str], project_id: int) -> Colu
 
 def portstate_predicate(db: Session, values: Sequence[str]) -> ColumnElement:
     """Host has at least one port in any of the given states."""
-    return models.Host.id.in_(port_match_subquery(db, port_states=list(values)))
+    return host_has_port(*port_match_conditions(port_states=list(values)))
+
+
+def test_label_predicate(project_id: int, labels: Sequence[str]) -> ColumnElement:
+    """Host has a host test carrying one of ``labels`` (exact, any status).
+
+    A correlated ``EXISTS`` like ``host_has_port``: a semi-join un-negated,
+    an anti-join under ``NOT`` — never ``Host.id IN (subquery)``.
+    """
+    wanted = [v for v in labels if v]
+    if not wanted:
+        return false()
+    return (
+        exists()
+        .where(
+            HostTest.host_id == models.Host.id,
+            HostTest.project_id == project_id,
+            HostTest.label.in_(wanted),
+        )
+        .correlate(models.Host)
+    )
 
 
 def has_open_ports_predicate(db: Session) -> ColumnElement:
     """Host has at least one ``open`` port."""
-    return models.Host.id.in_(port_match_subquery(db, require_open=True))
+    return host_has_port(*port_match_conditions(require_open=True))
 
 
 # ---------------------------------------------------------------------------
@@ -405,9 +504,7 @@ def cleartext_predicate(db: Session) -> ColumnElement:
 
     Reuses ``port_match_subquery`` so port-in-set AND open are required on the
     SAME Port row — matching the systemic ``cleartext_services`` condition."""
-    return models.Host.id.in_(
-        port_match_subquery(db, ports=sorted(CLEARTEXT_PORTS), require_open=True)
-    )
+    return host_has_port(*port_match_conditions(ports=sorted(CLEARTEXT_PORTS), require_open=True))
 
 
 def eol_os_predicate(db: Session, project_id: int) -> ColumnElement:
@@ -680,12 +777,27 @@ def untouched_conditions(db: Session) -> List[ColumnElement]:
     all use it (v2.426.0)."""
     from app.db.models_findings import FindingHost
 
+    # review 2026-10-01 R21 — correlated NOT EXISTS, not ``NOT IN (subquery)``.
+    # Postgres cannot plan ``NOT IN`` as an anti-join (a NULL in the list would
+    # change the answer), so each of the five ran as a hashed list of EVERY
+    # project's rows — and a per-row rescan once the list outgrew work_mem.
+    # NOT EXISTS is an anti-join driven by this project's hosts.  The two are
+    # the same predicate here because none of the lists can hold a NULL: four
+    # of the columns are NOT NULL and the note list keeps its IS NOT NULL
+    # filter (``tests/test_read_path_review.py`` pins old == new).
+    def none_of(model, *conditions) -> ColumnElement:
+        return ~(
+            exists()
+            .where(model.host_id == models.Host.id, *conditions)
+            .correlate(models.Host)
+        )
+
     return [
-        ~models.Host.id.in_(db.query(HostFollow.host_id)),
-        ~models.Host.id.in_(db.query(AnnotationModel.host_id).filter(AnnotationModel.host_id.isnot(None))),
-        ~models.Host.id.in_(db.query(HostTest.host_id).filter(HostTest.status != "dismissed")),
-        ~models.Host.id.in_(db.query(EvidenceRecord.host_id)),
-        ~models.Host.id.in_(db.query(FindingHost.host_id)),
+        none_of(HostFollow),
+        none_of(AnnotationModel, AnnotationModel.host_id.isnot(None)),
+        none_of(HostTest, HostTest.status != "dismissed"),
+        none_of(EvidenceRecord),
+        none_of(FindingHost),
     ]
 
 

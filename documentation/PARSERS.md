@@ -101,7 +101,7 @@ Never invent attribution from a filename alone.
 | `Host` | `hosts_v2` | every host-bearing parser (deduped: one row per `(project_id, ip_address)`) |
 | `Port` | `ports_v2` | port scanners + web/dir/vuln parsers |
 | `HostScanHistory` / `PortScanHistory` | `host_scan_history` / `port_scan_history` | per-scan observation audit trail |
-| `Vulnerability` | `vulnerabilities` | **Nessus, OpenVAS, Nikto, Nuclei, nmap** (NSE vuln scripts, vulners, catalog checks), **testssl** (rated checks), **NetExec** and **SMBMap** (catalog checks) — the "scanner observations" |
+| `Vulnerability` | `vulnerabilities` | **Nessus, OpenVAS, Nikto, Nuclei, nmap** (NSE vuln scripts, vulners, catalog checks), **testssl** (rated checks), **NetExec**, **SMBMap** and **dnsx** (catalog checks) — the "scanner observations" |
 | `WebInterface` | `web_interfaces` | **httpx, whatweb, eyewitness, testssl, nmap** (TLS scripts on web ports) — unified web view, keyed by `source` |
 | `WebPath` | `web_paths` | **dirbuster family** — one row per discovered path (url, path, status, size, tool) |
 | `DNSRecord` | `dns_records` | The general name-evidence table: one immutable observation about a name per scan. Written by **dnsx, dns CSV, amass, httpx**, the HTTP observations of the name tested by **nikto, nuclei, testssl, dirbuster** (`dns_name_service.bind_hostname`), and by EVERY host parser through `host_deduplication_service` (a scanner-reported hostname becomes a `SCANNER` observation). `record_type` is a real RR type or one of the `IMPORT`/`DISCOVERED`/`SCANNER`/`HTTP`/`CERT` kinds. Columns are `domain` + `value` (*not* `hostname`/`ip_address`), plus `name_id` → `dns_names`. Single write path: `dns_name_service.record_observation`. |
@@ -137,6 +137,7 @@ scans via conflict-resolution rules; the fields listed are what the parser
 | `mac_address` / `mac_vendor` | ✓ | — | — | — | — |
 | `smb_signing` | ✓ (from `smb-security-mode` host script) | — | — | — | — |
 | **Port** `port_number` / `protocol` / `state` | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `reason` | ✓ | — | ✓ (XML / JSON; the list format has none) | — | — |
 | `service_name` | ✓ | ✓ (if present) | greppable lines only | from URL scheme | — |
 | `service_product` / `_version` / `_extrainfo` / `_method` / `_conf` | ✓ (full set) | `_version` only | — | — | — |
 | **Other** | `ScanInfo` row; port + host **`Script`** rows (`script_id`, `output`); scanner observations (see notes); `WebInterface` rows for web ports with TLS scripts | `open\|filtered` ports kept | `--banners` output as port script rows | — | — |
@@ -151,7 +152,11 @@ Notes:
   signing not required, SMBv1, deprecated TLS, an expired certificate).
 - **nmap** streams XML via `iterparse_safe`; relabels itself masscan if
   `<nmaprun scanner="masscan">`. Down hosts with no ports/OS/scripts are
-  dropped. Sets `Scan.version`, `command_line` (`@args`), `start_time`.
+  dropped. Sets `Scan.version`, `command_line` (`@args`), `start_time`. Each
+  `<scaninfo>` element is one `ScanInfo` row (type, protocol, port list), so a
+  TCP + UDP run keeps both lists; `GET /scans/{id}` returns them as
+  `scan_info`, the scan page prints them as its "Scanned:" line, and an agent
+  reads them on each `assist_list_scans` row.
 - **gnmap** parses grepable `Host:`/`Ports:`/`Status:` lines; incrementally
   fills `Scan` metadata (tool, version, command line, start/end) from header
   comments; detects masscan-vs-nmap origin.
@@ -159,16 +164,28 @@ Notes:
   writes **raw bulk SQL** to `hosts_v2`/`ports_v2` (`ON CONFLICT` upserts) for
   throughput on tens-of-thousands-of-host scans. Accepts `.xml` / `.json` /
   list. Service name (greppable only) merges via an empty-or-longer-wins CASE.
-  **Fails closed** (raises if 0 hosts).
+  `Port.reason` (`syn-ack`, from XML / JSON) follows the dedup service's rule
+  in the same SQL: a scan that gives none keeps the stored reason while the
+  state is unchanged and clears one that described another state; a
+  `--banners` record's `reason="response"` is the banner arriving, not the
+  port's reason.
+  **Fails closed** (raises if 0 hosts). Masscan writes nmap's XML dialect
+  (`<nmaprun scanner="masscan">`), so an XML root that names ANOTHER scanner is
+  refused — an nmap file can never be imported as masscan (open ports only) —
+  while a root naming none is still read. List lines that are not records
+  (fewer than four fields, a non-numeric port) are counted as skipped and the
+  import is marked partial.
 - **naabu** / **rustscan** funnel through the shared `persist_host_observation`
   helper. naabu accepts `.json`/`.jsonl`/text and **fails closed**; rustscan is
   text-only and also **fails closed** — and warns when the file holds an nmap
-  report it does not read.
+  report it does not read. RustScan's IPv6 lines are read (`Open
+  [2001:db8::1]:443`, `2001:db8::1 -> [443]`; the candidate is validated as an
+  address first).
 
 ### Vulnerability / AD / credential scanners
 
-**Nessus, OpenVAS, Nikto, Nuclei, nmap, testssl, NetExec and SMBMap create
-`Vulnerability` rows** (the *scanner observations*). Vuln rows go through
+**Nessus, OpenVAS, Nikto, Nuclei, nmap, testssl, NetExec, SMBMap and dnsx (an
+allowed zone transfer) create `Vulnerability` rows** (the *scanner observations*). Vuln rows go through
 `upsert_vulnerability` (app-level dedup on `(host_id, source, plugin_id|title,
 port_id)`; `db.flush()` after add); a weakness from the misconfiguration catalog
 goes through `record_misconfig` (`app/services/misconfig_checks.py`), which
@@ -177,9 +194,33 @@ issue.
 
 **Nessus** (`.nessus`/`.xml`; streamed via defusedxml; persistence done by
 `NessusIntegrationService` + `VulnerabilityService`, committed in batches):
+- **An import that does not finish keeps nothing:** a cancel, the timeout or a
+  worker restart stops it at the next batch (a restart re-queues the job), and
+  a truncated export or one with no processable host fails the job. In each
+  case the batches already committed are removed with the scan. A report item
+  the parser cannot read is counted in the import's warnings and marks it
+  partial.
 - **Host:** `ip_address`, `hostname` (`host-fqdn`→`netbios-name`),
   `os_name` (`operating-system`), `state=up`. Also writes `HostAttribute` rows
   (hostname / netbios_name / os_name with per-field confidence).
+- **Credentialed or not:** whether the scan authenticated to the host is
+  stored on the host's row in the scan, `host_scan_history.credentialed`
+  (true / false; NULL when the file does not say, and for every other tool).
+  The host's `Credentialed_Scan` tag answers it; a file without the tag is read
+  from plugin 19506's `Credentialed checks : yes|no` line
+  (`nessus_parser.credentialed_status`), also when informational items are
+  skipped. The import's message counts both. The scan page's "As scanned"
+  hosts table shows it per host (Credentialed / Not credentialed, blank when
+  the scan did not say; the column appears only when some listed host has a
+  value), and an agent reads it with `assist_list_scan_hosts`. It does not
+  change what Evidence counts as assessed; it is shown beside it. The host
+  inspector's Vulnerabilities assessment reads "credentialed", "not
+  credentialed" or "credentials not stated" (`assessment.vuln_scan_credentialed`:
+  `yes` if any vulnerability-scanner scan of the host authenticated, `no` if
+  one says it did not and none did, `not_stated` otherwise), the Evidence page
+  counts the assessed hosts in each state, and the Hosts query
+  `vulnscan:credentialed|uncredentialed|unstated` lists them. One definition:
+  `evidence_service.vuln_scan_credentialed_condition`.
 - **Port:** created only when the finding's port ≠ 0, and keyed by **`(port, protocol)`** —
   UDP and SCTP findings keep their protocol (v2.365.0). Before that every Nessus
   finding was attached to a TCP port, so an SNMP/NTP/IKE/DNS-over-UDP finding
@@ -208,14 +249,28 @@ issue.
   old scans to backfill; only emitted since v2.83.2.)
 
 **OpenVAS / Greenbone** (`.xml`; streamed per `<result>`, savepoint per result):
-- **Host:** `ip_address` only (`state=up`). **Port:** `port_number`/`protocol`.
+- **Host:** `ip_address` (`state=up`); `hostname` from the result's
+  `<host>…<hostname>` and from the report-level `<host><ip>…<detail>` block's
+  `hostname` detail; `os_name` from that block's `best_os_txt` detail (fills a
+  host that has no OS; a host the report lists without a result is still
+  created). **Port:** `port_number`/`protocol`.
 - **Vulnerability columns written:** `title` (`name`), `severity`,
   `plugin_id` (NVT `oid`), `description` (from the NVT tags — summary,
   insight, impact, affected — falling back to the result's description),
-  **`cvss_score`** (← `<severity>` / `cvss_base`), `cve_id` (first CVE),
+  **`cvss_score`** (← `<severity>` / `cvss_base`), **`cvss_vector`** (the
+  NVT's `<severities>` block, a v3 entry before a v2 one, else the
+  `cvss_base_vector=` tag), `cve_id` (first CVE),
   `solution`, `references` (URLs, CERT-Bund/DFN-CERT ids, further CVEs),
   `plugin_output` (the detection result and QoD), `source=OPENVAS`. Severity
   from CVSS numeric, falling back to `<threat>` text.
+- **`exploitable`** is set only when the stored vector's exploit-maturity
+  metric says exploit code exists (`E:P` / `E:F` / `E:H`, 2.0 `E:POC`, 4.0
+  `E:A` — `openvas_parser.vector_states_exploit`). A GVM report has no other
+  statement that an exploit exists: nothing is inferred from severity, and
+  EPSS is not read as one. Most feed vectors are base-only, so most OpenVAS
+  rows stay not-exploitable.
+- None of these element names has been checked against a real GVM export (the
+  suite has none); both vector shapes are accepted for that reason.
 
 **NetExec (NXC)** (`.json` or console text; auto-detected; read with
 `read_tool_text`, so a UTF-16 capture from PowerShell's `>` and NUL bytes are
@@ -299,7 +354,7 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
 | --- | --- | --- | --- |
 | Formats | `.json`/`.jsonl` | `.csv` | `.json`/`.jsonl`/`.txt` |
 | `domain` | host or PTR name | `name` column | hostname (`name`/`host`/`domain`) |
-| `record_type` | A/AAAA/CNAME/MX/NS/TXT/SOA/SRV/CAA/ANY/AXFR/PTR | from `type` column (an unknown type is rejected) | A/AAAA (`DISCOVERED` for unresolved names) |
+| `record_type` | A/AAAA/CNAME/MX/NS/TXT/SOA/SRV/CAA/PTR, any other type listed in `all`, and `AXFR` (the transfer itself) | from `type` column (an unknown type is rejected) | A/AAAA (`DISCOVERED` for unresolved names) |
 | `value` | the answer / IP | an IP for A/AAAA/PTR, the record data otherwise | resolved IP |
 | `ttl` | int rows only | ✓ (when numeric) | — |
 | `resolver_name` | ✓ (**only parser that sets it**) | — | — |
@@ -309,11 +364,40 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
   failures and per-resolver hits into `parser_warnings`, and **fails closed**.
   PTR answers authoritatively set `Host.hostname`; forward A/AAAA answers create
   assets but never clobber an existing hostname.
+- **dnsx `all` and `-axfr`** are read in dnsx's own shapes (retryabledns
+  `DNSData` / `AXFRData`). `all` is an array of resource records as text,
+  `owner<TAB>ttl<TAB>IN<TAB>TYPE<TAB>rdata` (`parse_rr_text`); on an ordinary
+  row it repeats the typed arrays, so only the types with no array of their
+  own (HINFO, DNSKEY, TLSA…) are stored from it. `axfr` is an object,
+  `{"host": zone, "chain": [...]}`, one chain entry per name server that
+  handed the zone over: every record is stored under ITS owner name and type
+  from the entry's `all` (the entry's typed arrays have no owner names), A/AAAA
+  records discover hosts, PTR records of a reverse zone name them, and the zone
+  gets one `AXFR` observation per server ("zone transfer allowed (N records)",
+  resolver = that server) plus a line in the import's warnings. An entry with
+  no `all` keeps its values on the zone as `AXFR` rows rather than inventing
+  owners. Arrays of strings under `axfr` / `any` (not dnsx's shapes) are still
+  stored as before. **The transfer is a weakness of the name server:** the
+  catalog check `dns_zone_transfer_allowed` ("DNS zone transfer allowed",
+  medium, source `dnsx`) is recorded through `record_misconfig` on the host
+  whose address is the chain entry's resolver, on the resolver's port (53/tcp)
+  when the host has that port row, else on the host, with the zone and record
+  count as its output (`_record_zone_transfer_check`). Only when that address
+  is already a host of the project — known before, or discovered by the same
+  import (usually the zone's own A record for the server): a resolver is where
+  the operator pointed dnsx and is never made a host. Without a host the fact
+  stays on the zone's `AXFR` row and in the import's warnings. It is written
+  inside the row's savepoint. There is no backfill for earlier imports
+  (`backfill_misconfigs.py`): the `AXFR` rows that would feed it have only been
+  written since the same release.
 - **dns CSV** expects `record_type` + `name` + `address` columns (with aliases);
   gated by a header heuristic so an arbitrary CSV doesn't become a silent
   zero-record DNS scan. Rows are stored by record type (v2.416.0): a type that
   is not a real RR type, or an A/AAAA/PTR row whose value is not an IP of that
-  family, is rejected and counted.
+  family, is rejected and counted. The file is read with `read_tool_text`
+  (UTF-16 and a UTF-8 byte-order mark accepted, NUL removed), and each row is
+  its own savepoint: a row the database refuses is one rejected row, not the
+  end of the import.
 - **amass** creates a host only for rows with a resolved IP; hostname-only
   rows are **kept** as unresolved names in the Names inventory (a `DNSName` +
   `DISCOVERED` observation with no host — pre-v2.322.0 they were dropped).
@@ -405,6 +489,41 @@ class MyToolParser:
   on MUST wrap the record in `record_savepoint(db, observed, on_rollback)`;
   without it the failed flush poisons the session and the whole import fails
   after logging "skipped" (v2.419.0).
+- **Name your scan:** create the `Scan` with `ensure_scan`, or call
+  `announce_scan(db, scan)` right after flushing a row you built yourself —
+  once, OUTSIDE any record savepoint. Under a job this stamps
+  `ingestion_jobs.in_progress_scan_id` and commits it with the scan row, which
+  is how a failed, cancelled or killed import's partial scan is found and
+  deleted (review 2026-10-01).
+- **Heartbeat:** a record loop calls `ProgressBeat(...).tick()` once per
+  record, OUTSIDE the record's savepoint (nmap / gnmap / masscan / NetExec /
+  Nessus call `report_progress` themselves). The heartbeat keeps the job's
+  lease, is where a cancel, the timeout and a worker shutdown stop the parse
+  (it raises `ParseFailure` — never catch it as a bad record), and it COMMITS.
+  ORM rows you hold stay usable (they are expired and reload); a parser that
+  writes its host history at the end (`record_hosts_in_scan`) passes it as
+  `before=` so each commit also records which hosts the scan created.
+  A parser that COLLECTS the file before it writes wraps the read loop in
+  `beat_while_reading(items)` (every 20,000 by default): the read phase holds
+  nothing half-built in the session, so its commit is safe and a cancel there
+  leaves nothing. Do not heartbeat between writes of rows the cleanup cannot
+  find — rdap's attribution rows belong to the project's address block, not to
+  the scan, so it heartbeats while reading, once more before writing, and
+  then writes in one transaction.
+- **What a failed import leaves:** nothing. The dispatcher deletes the scan
+  and, with it, the hosts and ports ONLY that attempt created (their history
+  says `host_created` / `port_created` for this scan and no other scan saw
+  them) and the observations it first recorded — never a host someone has
+  worked on (a note, a follow, a tag, a finding, a test, evidence). Changes it
+  made to rows that already existed stay. An import path that writes no
+  `PortScanHistory` (Nessus — and it must not start to: that would change the
+  port counts on the Scans page, the dashboard and the scan diff) reports the
+  ports it creates instead: `VulnerabilityService.created_port_ids` →
+  `ingestion_service.note_ports_created`, which puts the ids on the job row
+  (`ingestion_jobs.in_progress_created_port_ids`) in the transaction that
+  commits each batch. The cleanup deletes those ports under the same guards
+  (no other scan saw it, nothing refers to it) and the column is cleared when
+  the job completes. It is read by the cleanup and nothing else.
 - **Fail closed:** raise `ValueError` when the file yields **zero** records, so
   a misrouted or malformed file surfaces a parse error instead of a silent
   empty scan. (Most parsers do this; it's the expected convention.)
@@ -425,7 +544,8 @@ class MyToolParser:
 `app/parsers/parser_utils.py`:
 - `ensure_scan(db, *, filename, tool_name, scan_type, command_line=None,
   project_id=None)` — create the `Scan` row (all args after `db` are
-  keyword-only; `filename`, `tool_name`, `scan_type` are required).
+  keyword-only; `filename`, `tool_name`, `scan_type` are required) and name it
+  on the ingestion job (`announce_scan`).
 - `persist_host_observation(*, dedup_service, scan_id, ip_address,
   hostname=None, state="up", ports=[...], host_data=None, project_id=None,
   isolate=False)` — the one-stop "I saw this host with these ports" writer
@@ -444,7 +564,11 @@ class MyToolParser:
   writes as a unit (see "Record isolation" above).
 - `read_tool_text(path) -> ToolText` — read a tool's text output with UTF-16
   (PowerShell `>`) decoded and NUL removed; required when text lines reach a
-  Text column (PostgreSQL rejects NUL; v2.420.0).
+  Text column (PostgreSQL rejects NUL; v2.420.0). `without_nul(handle)` is the
+  streaming form, for a parser that reads a large file line by line.
+- `announce_scan(db, scan)` / `ProgressBeat(label, every=500, before=None)` —
+  name the scan on the job, and heartbeat a record loop (see the contract);
+  `beat_while_reading(items, label, every=20000)` is the read-phase form.
 - `ScanClock` — accumulates the scan window from timestamps in the tool's
   output and writes it onto the `Scan` (never over a window the parser set from
   an explicit run start/finish).

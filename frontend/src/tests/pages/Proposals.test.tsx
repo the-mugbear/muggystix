@@ -3,30 +3,47 @@
  * re-reads as many rows as are shown, where it used to re-read only the
  * first page and drop the reviewer back to it.
  */
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const listProposals = vi.fn();
 const getProposalSummary = vi.fn();
 const rejectProposal = vi.fn();
+const acceptProposal = vi.fn();
+const decideProposals = vi.fn();
 vi.mock('../../services/api', () => ({
   listProposals: (...a: unknown[]) => listProposals(...a),
   getProposalSummary: (...a: unknown[]) => getProposalSummary(...a),
   rejectProposal: (...a: unknown[]) => rejectProposal(...a),
-  acceptProposal: vi.fn(),
-  decideProposals: vi.fn(),
+  acceptProposal: (...a: unknown[]) => acceptProposal(...a),
+  decideProposals: (...a: unknown[]) => decideProposals(...a),
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 vi.mock('../../contexts/AuthContext', () => ({
-  useAuth: () => ({ hasPermission: () => true }),
+  useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: () => true }),
 }));
+// The PROJECT role decides who may accept or reject (review 2026-10-01 R32).
+const projectRole = vi.hoisted(() => ({ value: 'analyst' as string }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({ currentProject: { id: 1, name: 'P', my_role: projectRole.value } }),
+}));
+const navigate = vi.fn();
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
+  return { ...actual, useNavigate: () => navigate };
+});
 vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: () => undefined }));
 
+import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import Proposals from '../../pages/Proposals';
 import type { Proposal } from '../../services/api';
+
+// jsdom has no scrollIntoView; the list cursor calls it on its row.
+const scrollIntoView = vi.fn();
+Element.prototype.scrollIntoView = scrollIntoView;
 
 const row = (id: number): Proposal => ({
   id, kind: 'endpoint_status', status: 'pending', source: 'agent',
@@ -40,9 +57,13 @@ const row = (id: number): Proposal => ({
 const page = (from: number, n: number) => Array.from({ length: n }, (_, i) => row(from + i));
 
 beforeEach(() => {
+  projectRole.value = 'analyst';
+  navigate.mockReset();
   listProposals.mockReset();
   getProposalSummary.mockReset().mockResolvedValue({ pending: 120, by_kind: { endpoint_status: 120 } });
   rejectProposal.mockReset();
+  acceptProposal.mockReset();
+  decideProposals.mockReset();
 });
 
 describe('Proposals page — whose findings (5.318.0)', () => {
@@ -94,5 +115,176 @@ describe('Proposals page', () => {
     await waitFor(() => expect(listProposals).toHaveBeenLastCalledWith(
       expect.objectContaining({ offset: 0, limit: 100 }),
     ));
+  });
+});
+
+// Review 2026-10-01 R33 — reproduced live: with the first request delayed, the
+// page showed a pending proposal, Accept and Reject included, under the
+// "Accepted" filter, and "Accept all shown" acted on it.
+describe('Proposals page — the latest filter wins', () => {
+  const answer = (status: Proposal['status'], n: number) => ({
+    total: n, has_more: false, items: page(status === 'pending' ? 1 : 500, n).map((r) => ({ ...r, status })),
+  });
+
+  it('a slow "pending" response arriving after the filter changed to "accepted" does not replace the accepted rows', async () => {
+    let releasePending!: (v: unknown) => void;
+    const slowPending = new Promise((resolve) => { releasePending = resolve; });
+    listProposals.mockImplementation(({ status }: { status: string }) =>
+      (status === 'pending' ? slowPending : Promise.resolve(answer('accepted', 2))));
+    getProposalSummary.mockResolvedValue({
+      pending: 3, by_kind: {}, pending_mine: 3, by_kind_mine: {}, viewer_is_project_admin: true,
+    });
+
+    const Shell = () => {
+      const [, setParams] = useSearchParams();
+      return (
+        <>
+          <button type="button" onClick={() => setParams({ status: 'accepted', scope: 'all' })}>to accepted</button>
+          <Proposals />
+        </>
+      );
+    };
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Shell /></MemoryRouter>);
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ status: 'pending' })));
+
+    fireEvent.click(screen.getByRole('button', { name: 'to accepted' }));
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(2));
+
+    // The first request answers now, with three pending rows.
+    await act(async () => { releasePending(answer('pending', 3)); await Promise.resolve(); });
+    await new Promise((r) => setTimeout(r, 20));
+
+    expect(document.querySelectorAll('[data-proposal]')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: /^Accept$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Accept all shown/ })).toBeNull();
+    expect(decideProposals).not.toHaveBeenCalled();
+  });
+
+  it('says a failed load is a failure, not "None."', async () => {
+    getProposalSummary.mockResolvedValue({ pending: 0, by_kind: {}, viewer_is_project_admin: true });
+    listProposals.mockRejectedValue(new Error('down'));
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    expect(await screen.findByText('Could not load the proposals.')).toBeInTheDocument();
+    expect(screen.queryByText('None.')).toBeNull();
+  });
+});
+
+describe('Proposals page — a filter value it does not know', () => {
+  const Address = () => {
+    const [params] = useSearchParams();
+    return <output data-testid="address">{params.toString()}</output>;
+  };
+  const open = (search: string) =>
+    render(<MemoryRouter initialEntries={[`/proposals${search}`]}><Proposals /><Address /></MemoryRouter>);
+
+  beforeEach(() => {
+    getProposalSummary.mockResolvedValue({ pending: 2, by_kind: {}, viewer_is_project_admin: true });
+    listProposals.mockResolvedValue({ total: 2, items: page(1, 2), has_more: false });
+  });
+
+  it('`?status=all` is the pending list, never a request for a status the API refuses', async () => {
+    open('?status=all&scope=all');
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals.mock.calls.every(([q]) => q.status === 'pending')).toBe(true);
+    expect(screen.queryByText('Could not load the proposals.')).toBeNull();
+    expect(screen.getByRole('heading', { name: /Waiting for a decision/ })).toBeInTheDocument();
+    // The address is corrected, and the filter that was valid stays.
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent(/^scope=all$/));
+  });
+
+  it('an unknown kind is every kind, and a valid status beside it is kept', async () => {
+    open('?status=accepted&kind=nonsense&scope=all');
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals.mock.calls.every(([q]) => q.status === 'accepted' && q.kind === undefined)).toBe(true);
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent(/^status=accepted&scope=all$/));
+  });
+
+  it('leaves a valid address alone', async () => {
+    open('?status=rejected&kind=finding_text&scope=all');
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(
+      expect.objectContaining({ status: 'rejected', kind: 'finding_text' }),
+    ));
+    expect(screen.getByTestId('address')).toHaveTextContent('status=rejected&kind=finding_text&scope=all');
+  });
+});
+
+describe('Proposals page — who may decide (R32)', () => {
+  it('shows a project viewer the proposals without Accept, Reject or the bulk actions', async () => {
+    projectRole.value = 'viewer';
+    listProposals.mockResolvedValue({ total: 3, items: page(1, 3), has_more: false });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(3));
+    expect(screen.queryByRole('button', { name: /^Accept$/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Reject/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /all shown/ })).toBeNull();
+    // …and the keys do nothing for them.
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(acceptProposal).not.toHaveBeenCalled();
+  });
+
+  it('shows an analyst the controls', async () => {
+    listProposals.mockResolvedValue({ total: 3, items: page(1, 3), has_more: false });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /^Accept$/ })).toHaveLength(3));
+    expect(screen.getByRole('button', { name: /Accept all shown/ })).toBeInTheDocument();
+  });
+});
+
+// B16 — the review queue is worked from the keyboard.
+describe('Proposals page — keyboard review', () => {
+  const load = async () => {
+    listProposals.mockResolvedValue({ total: 3, items: page(1, 3), has_more: false });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(3));
+  };
+  const cursorRow = () => document.querySelector('[data-list-cursor="true"]')?.getAttribute('data-proposal');
+
+  it('j / k move a visible cursor and Enter opens the endpoint on its finding', async () => {
+    await load();
+    expect(cursorRow()).toBeUndefined();
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'j' });
+    expect(cursorRow()).toBe('2');
+    // Walkthrough 2026-10-01 — the cursor must be SEEN: exactly one row carries
+    // the shared highlight (a fill and a ring), and it is scrolled into view.
+    const marked = document.querySelectorAll('[data-list-cursor="true"]');
+    expect(marked).toHaveLength(1);
+    for (const cls of LIST_CURSOR_CLASS.split(' ')) expect(marked[0].className).toContain(cls);
+    expect(document.querySelector('[data-proposal="1"]')!.className).not.toContain('ring-');
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'nearest' });
+    fireEvent.keyDown(window, { key: 'k' });
+    expect(cursorRow()).toBe('1');
+    fireEvent.keyDown(window, { key: 'Enter' });
+    expect(navigate).toHaveBeenCalledWith('/findings/3?endpoint=9#endpoints');
+  });
+
+  it('`a` accepts the cursor row and `r` opens its reject reason — never without a cursor', async () => {
+    await load();
+    acceptProposal.mockResolvedValue({ ...row(2), status: 'accepted' });
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(acceptProposal).not.toHaveBeenCalled();
+
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'a' });
+    await waitFor(() => expect(acceptProposal).toHaveBeenCalledWith(2, {}));
+
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'r' });
+    const reason = await screen.findByLabelText(/Why reject it/);
+    expect(reason.id).toBe('reject-3');
+    expect(rejectProposal).not.toHaveBeenCalled();  // the reason is asked first
+  });
+
+  it('never fires while typing in a field', async () => {
+    await load();
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'r' });
+    const reason = await screen.findByLabelText(/Why reject it/);
+    fireEvent.keyDown(reason, { key: 'a' });
+    fireEvent.keyDown(reason, { key: 'j' });
+    expect(acceptProposal).not.toHaveBeenCalled();
+    expect(cursorRow()).toBe('1');
   });
 });

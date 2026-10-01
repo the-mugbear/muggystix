@@ -7,7 +7,7 @@ import math
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -51,7 +51,77 @@ def ensure_scan(
     )
     db.add(scan)
     db.flush()
+    announce_scan(db, scan)
     return scan
+
+
+def announce_scan(db: Session, scan: models.Scan) -> None:
+    """Tell the ingestion job which scan this parse is writing (review
+    2026-10-01 R1).  Every parser calls it once, right after flushing its
+    Scan row and OUTSIDE any record savepoint: under a job the id is stamped
+    on the job row and committed with the scan, so an import that is killed
+    or fails part-way can be cleaned up.  Without a job it does nothing."""
+    from app.services.ingestion_service import note_scan_created
+
+    note_scan_created(db, scan.id)
+
+
+class ProgressBeat:
+    """Heartbeat for a parser's record loop (review 2026-10-01 R6).
+
+    Twelve parsers never called ``report_progress``: one transaction for the
+    whole file, row locks held to the end, cancel and timeout never checked,
+    and a worker asked to stop was killed and its job reaped 45 minutes later.
+    ``tick()`` once per record, OUTSIDE the record's savepoint — the heartbeat
+    raises ``ParseFailure`` on cancel / timeout / shutdown, which must stop
+    the parse rather than be counted as one bad record, and it COMMITS
+    (``update_heartbeat``), which would end a savepoint it ran inside.
+
+    The commit is the only form the heartbeat has.  It is safe for a parser
+    whose ORM rows stay attached to the session: they are expired and reload
+    on next use.  ``before`` runs just ahead of each heartbeat — a parser that
+    writes its host history at the END of the file passes
+    ``record_hosts_in_scan`` here, so what a commit makes durable always says
+    which hosts this scan created (``delete_partial_scan`` reads that).
+
+    With no active job (a parser driven directly) nothing is committed."""
+
+    def __init__(self, label: str = "records", every: int = 500,
+                 before: Optional[Callable[[], None]] = None):
+        self.label = label
+        self.every = max(1, every)
+        self.before = before
+        self.count = 0
+
+    def tick(self, n: int = 1) -> None:
+        previous = self.count
+        self.count += n
+        if self.count // self.every == previous // self.every:
+            return
+        from app.services.ingestion_service import report_progress
+
+        if self.before is not None:
+            self.before()
+        report_progress(f"{self.count} {self.label}")
+
+
+def beat_while_reading(items: Iterable[Any], label: str = "records read", every: int = 20000) -> Iterator[Any]:
+    """``items``, with a heartbeat every ``every`` of them — for the READ
+    phase of a parser that collects the whole file before it writes anything
+    (naabu, testssl, dirbuster, masscan, smbmap, rustscan, rdap).
+
+    Without it a large file was read with no heartbeat at all: a cancel or a
+    worker shutdown was not noticed until the first write, and a read longer
+    than the stale-job threshold got the job reaped while it was still
+    working.  The heartbeat commits; that is safe HERE because a read phase
+    holds nothing half-built in the session — the scan row is either not
+    created yet or already committed by ``announce_scan``.  Never wrap a loop
+    that writes inside a record savepoint with this: use ``ProgressBeat``
+    between the records instead."""
+    beat = ProgressBeat(label, every=every)
+    for item in items:
+        beat.tick()
+        yield item
 
 
 # ---------------------------------------------------------------------------
@@ -229,6 +299,19 @@ def read_tool_text(file_path: str) -> ToolText:
     if nul_removed:
         text = text.replace("\x00", "")
     return ToolText(text=text, encoding=encoding, nul_removed=nul_removed)
+
+
+def without_nul(lines: Iterable[str]) -> Iterable[str]:
+    """The lines of an open text file with NUL removed, still streamed.
+
+    Review 2026-10-01 R5 — ``read_tool_text`` is for a report read whole; a
+    parser that streams a large file line by line (gnmap, masscan list,
+    smbmap, nikto) opened it with ``errors="ignore"``, which drops undecodable
+    bytes but keeps NUL, and a stored line then failed the import the way
+    NetExec's did (PostgreSQL text cannot hold NUL).  Wrapping the handle
+    keeps the read streaming."""
+    for line in lines:
+        yield line.replace("\x00", "") if "\x00" in line else line
 
 
 def extract_first_ip(text: Optional[str]) -> Optional[str]:
@@ -583,7 +666,11 @@ def upsert_vulnerability(
     # v2.390.0 — per-host evidence (what was requested / seen on THIS host),
     # shown in the inspector as "Scanner output on this host".
     plugin_output: Optional[str] = None,
+    # Review 2026-10-01 B12 — the CVSS vector the scanner printed (OpenVAS).
+    # None leaves a stored vector alone.
+    cvss_vector: Optional[str] = None,
 ) -> Vulnerability:
+    cvss_vector = cvss_vector.strip()[:200] if cvss_vector and cvss_vector.strip() else None
     # v2.387.0 — values are clipped to their columns.  A Nikto message longer
     # than 200 characters (source_plugin_name is String(200)) raised
     # StringDataRightTruncation and failed the whole file.
@@ -620,7 +707,8 @@ def upsert_vulnerability(
 
     existing = query.first()
     if existing:
-        existing.last_seen = datetime.utcnow()
+        # Aware UTC (review 2026-10-01 N1); UTCDateTime stores it naive.
+        existing.last_seen = datetime.now(timezone.utc)
         # v2.332.0 — scan_id is "first recorded by" and never moves; the
         # re-observation lands on last_seen_scan_id.
         existing.last_seen_scan_id = scan_id
@@ -632,6 +720,8 @@ def upsert_vulnerability(
         # fields below (it used to blank it).
         if cvss_score is not None:
             existing.cvss_score = cvss_score
+        if cvss_vector:
+            existing.cvss_vector = cvss_vector
         existing.description = description or existing.description
         existing.cve_id = cve_id or existing.cve_id
         existing.solution = solution or existing.solution
@@ -651,6 +741,7 @@ def upsert_vulnerability(
         description=description,
         severity=severity,
         cvss_score=cvss_score,
+        cvss_vector=cvss_vector,
         source=source,
         source_plugin_name=title[:200],
         host_id=host_id,

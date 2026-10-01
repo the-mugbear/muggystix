@@ -7,7 +7,7 @@ dramatically improving performance over linear searches through subnet lists.
 
 import ipaddress
 import logging
-from typing import List, Optional, Set, Union
+from typing import List, Set
 from app.db.models import Subnet
 
 logger = logging.getLogger(__name__)

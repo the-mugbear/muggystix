@@ -23,6 +23,7 @@ import {
   type HostTest,
   type HostTestOutcome,
   type HostTestPriority,
+  type PromotedEvidence,
 } from '../../services/api';
 import { useAgentTask } from '../../hooks/useAgentTask';
 import { formatApiError } from '../../utils/apiErrors';
@@ -427,7 +428,7 @@ export interface HostTestsControllerOptions {
   /** A result was recorded: the host's "tested" fact and other evidence changed. */
   onResultRecorded?: () => void;
   /** A finding was created or joined from a result. */
-  onFindingCreated?: (findingId: number) => void;
+  onFindingCreated?: (findingId: number, made?: PromotedEvidence) => void;
 }
 
 /** Load the host's tests and own the result panel. Returns the controller to
@@ -518,7 +519,7 @@ export const useHostTestsController = ({
     askAgent: (instruction) => { void giveAgent(instruction); },
     canAskAgent,
     resultDraft: resultDraft || addDraft,
-    onFindingCreated: (findingId) => { onFindingCreated?.(findingId); void reload(); loadProposals(); },
+    onFindingCreated: (findingId, made) => { onFindingCreated?.(findingId, made); void reload(); loadProposals(); },
   }), [
     hostId, canEdit, userId, tests, total, loading, error, reload, replace, staleNotice,
     proposalByEvidence, giveAgent, canAskAgent, resultDraft, addDraft, onFindingCreated, loadProposals,

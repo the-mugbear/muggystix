@@ -193,7 +193,6 @@ def test_drop_without_creator_logs_only(db_session, test_project):
     db_session.add(cfg)
     db_session.commit()
     _drop(cfg, "note_mention", "test")
-    count = db_session.query(Notification).count()
     # The test_user fixture may have other Notification rows; assert
     # none target the orphan or carry source_id=cfg.id.
     related = (

@@ -32,7 +32,7 @@ from app.db.models_project import Project
 from app.schemas.pagination import Paginated
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_agent, check_agent_rate_limit
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.deps import get_current_user, require_role
 
 
 # ---------------------------------------------------------------------------

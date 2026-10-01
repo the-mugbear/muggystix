@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useDropzone } from 'react-dropzone';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import {
   ArrowDownToLine,
   Building2,
@@ -35,6 +35,7 @@ import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
 import { agentInstruction } from '../utils/agentRuns';
 import { useConfirm } from '../hooks/useConfirm';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import {
@@ -130,6 +131,10 @@ const EmptyCellEdit: React.FC<{ label: string; onClick: () => void }> = ({ label
 
 const Scopes: React.FC = () => {
   const toast = useToast();
+  // Changing the scope is a project analyst's (R32); the page reads the same
+  // for a viewer or auditor, without the add row, the editors or the uploads.
+  const { canWrite, canExport } = useProjectRole();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [confirmEl, confirm] = useConfirm();
 
   const [scope, setScope] = useState<Scope | null>(null);
@@ -171,8 +176,19 @@ const Scopes: React.FC = () => {
   // description, applied server-side (before pagination) so users can jump
   // straight to an entry instead of paging.  Debounced so we don't fire a
   // request per keystroke; the result resets the list to page 0.
-  const [subnetSearch, setSubnetSearch] = useState('');
+  // In the URL (`?subnet_q=`, replace not push) so a filtered scope can be
+  // shared and survives a reload (B15).
+  const [subnetSearch, setSubnetSearch] = useState(() => searchParams.get('subnet_q') ?? '');
   const debouncedSubnetSearch = useDebouncedValue(subnetSearch, 300);
+  useEffect(() => {
+    setSearchParams((prev) => {
+      const term = debouncedSubnetSearch.trim();
+      if ((prev.get('subnet_q') ?? '') === term) return prev;
+      const next = new URLSearchParams(prev);
+      if (term) next.set('subnet_q', term); else next.delete('subnet_q');
+      return next;
+    }, { replace: true });
+  }, [debouncedSubnetSearch, setSearchParams]);
   const searchRef = useRef(debouncedSubnetSearch);
   searchRef.current = debouncedSubnetSearch;
 
@@ -186,12 +202,16 @@ const Scopes: React.FC = () => {
   const [selectedSubnetIds, setSelectedSubnetIds] = useState<Set<number>>(new Set());
   const [bulkApplying, setBulkApplying] = useState(false);
 
+  // A failed catalogue is said (R34): it used to look like "this project has
+  // no labels", with Apply label… disabled and nothing to explain it.
+  const [labelCatalogueError, setLabelCatalogueError] = useState<string | null>(null);
   const fetchLabelCatalogue = async () => {
     try {
       const rows = await listSubnetLabels();
       setLabelCatalogue(rows);
+      setLabelCatalogueError(null);
     } catch (err) {
-      console.warn('Failed to load subnet label catalogue', err);
+      setLabelCatalogueError(formatApiError(err, 'The subnet labels could not be loaded.'));
     }
   };
 
@@ -218,33 +238,48 @@ const Scopes: React.FC = () => {
       subnetsSearch: debouncedSubnetSearch,
     });
 
+  // Latest request wins (R33).  Every fetch that REPLACES the scope — the
+  // first load, a reload after a change, a search — takes a new generation,
+  // and a response from an older one is dropped: a slow reload issued before
+  // a search used to land after it and put the unfiltered list back under
+  // the search box.  "Load more" appends, so it only checks that nothing
+  // replaced the list while it was in flight.
+  const scopeGen = useRef(0);
+
   const loadData = async (showSpinner = false) => {
+    const gen = ++scopeGen.current;
     if (showSpinner) setLoading(true);
     try {
       const [scopeData, coverageData] = await Promise.all([
         fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
+      if (gen !== scopeGen.current) return;
       setScope(scopeData);
       setCoverage(coverageData);
       setError(null);
     } catch (err) {
-      setError('Failed to load scope data');
-      console.error('Error loading scope data:', err);
+      if (gen !== scopeGen.current) return;
+      setError(formatApiError(err, 'Failed to load scope data'));
     } finally {
+      // The spinner belongs to the first load only; a newer request never
+      // shows one, so clearing it here cannot hide a load in flight.
       if (showSpinner) setLoading(false);
     }
   };
 
   const refreshScope = async () => {
+    const gen = ++scopeGen.current;
     try {
       const [scopeData, coverageData] = await Promise.all([
         fetchScopePage(0, currentSubnetWindow()),
         getScopeCoverage(),
       ]);
+      if (gen !== scopeGen.current) return;
       setScope(scopeData);
       setCoverage(coverageData);
     } catch (err) {
+      if (gen !== scopeGen.current) return;
       // Said, not only logged: the page otherwise kept showing the state
       // from before the change the operator just made.
       console.error('Error refreshing scope:', err);
@@ -261,19 +296,16 @@ const Scopes: React.FC = () => {
       searchInitialized.current = true;
       return;
     }
-    let cancelled = false;
+    const gen = ++scopeGen.current;
     (async () => {
       try {
         const scopeData = await fetchScopePage(0, SUBNET_PAGE_SIZE);
-        if (!cancelled) setScope(scopeData);
+        if (gen === scopeGen.current) setScope(scopeData);
       } catch (err) {
-        console.error('Error searching subnets:', err);
-        toast.error('Failed to search subnets.');
+        if (gen !== scopeGen.current) return;
+        toast.error(formatApiError(err, 'Failed to search subnets.'));
       }
     })();
-    return () => {
-      cancelled = true;
-    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [debouncedSubnetSearch]);
 
@@ -282,10 +314,11 @@ const Scopes: React.FC = () => {
     // A page asked for under one search is dropped if the search changed
     // while it loaded, instead of being appended to the new result.
     const askedFor = debouncedSubnetSearch;
+    const gen = scopeGen.current;
     setLoadingMore(true);
     try {
       const next = await fetchScopePage(scope.subnets.length, SUBNET_PAGE_SIZE);
-      if (askedFor !== searchRef.current) return;
+      if (askedFor !== searchRef.current || gen !== scopeGen.current) return;
       setScope((prev) =>
         prev
           ? {
@@ -296,8 +329,7 @@ const Scopes: React.FC = () => {
           : next,
       );
     } catch (err) {
-      console.error('Error loading more subnets:', err);
-      toast.error('Failed to load more subnets.');
+      toast.error(formatApiError(err, 'Failed to load more subnets.'));
     } finally {
       setLoadingMore(false);
     }
@@ -429,6 +461,7 @@ const Scopes: React.FC = () => {
           <SubnetLabelChip key={lbl.id} label={lbl} />
         ))
       )}
+      {canWrite && (
       <SubnetLabelEditorPopover
         subnetId={subnet.id}
         subnetCidr={subnet.cidr}
@@ -453,6 +486,7 @@ const Scopes: React.FC = () => {
           <Pencil className="size-3.5" aria-hidden />
         </Button>
       </SubnetLabelEditorPopover>
+      )}
     </div>
   );
 
@@ -539,20 +573,25 @@ const Scopes: React.FC = () => {
             change and scope-file upload links hosts to subnets itself, and a
             deleted subnet's links cascade.  The endpoint stays for scripts. */}
         <div className="flex flex-wrap gap-xs">
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() => {
-              setUploadError(null);
-              setUploadOpen(true);
-            }}
-          >
-            <Upload className="size-4" aria-hidden /> Upload scope file
-          </Button>
-          <Button variant="outline" size="sm" onClick={() => setShowOutOfScopeDialog(true)}>
-            <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
-          </Button>
-          {scope != null && (
+          {canWrite && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => {
+                setUploadError(null);
+                setUploadOpen(true);
+              }}
+            >
+              <Upload className="size-4" aria-hidden /> Upload scope file
+            </Button>
+          )}
+          {canExport && (
+            <Button variant="outline" size="sm" onClick={() => setShowOutOfScopeDialog(true)}>
+              <ArrowDownToLine className="size-4" aria-hidden /> Export out-of-scope hosts
+            </Button>
+          )}
+          {scope != null && canWrite && (
+            // Scanning uploads scans: a project analyst's, as on Operations.
             // 5.313.0 — one way to start an agent: the operator's session,
             // handed the task. The per-scope key is gone; 5.313.1 — so is the
             // recon run: the agent reads the scope and uploads to its session.
@@ -644,18 +683,21 @@ const Scopes: React.FC = () => {
                 {subnetCount.toLocaleString()} entr{subnetCount === 1 ? 'y' : 'ies'}
                 {debouncedSubnetSearch.trim() ? ' matching' : ''}
               </span>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-7"
-                onClick={() => handleOpenScopeExport(scope.id, 'Project scope')}
-                aria-label="Export scope"
-                title="Export scope as txt / csv / json"
-              >
-                <ArrowDownToLine className="size-4" aria-hidden /> Export
-              </Button>
+              {canExport && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7"
+                  onClick={() => handleOpenScopeExport(scope.id, 'Project scope')}
+                  aria-label="Export scope"
+                  title="Export scope as txt / csv / json"
+                >
+                  <ArrowDownToLine className="size-4" aria-hidden /> Export
+                </Button>
+              )}
             </>}
           >
+            {canWrite && (
             <div className="mb-sm flex flex-col gap-xs sm:flex-row sm:items-end">
               <div className="min-w-0 flex-1">
                 <Label htmlFor="new-cidr">CIDR or IP</Label>
@@ -711,6 +753,15 @@ const Scopes: React.FC = () => {
                 Manage sites
               </Button>
             </div>
+            )}
+            {labelCatalogueError && (
+              <p role="status" className="mb-sm flex flex-wrap items-center gap-xs break-words text-caption text-muted-foreground">
+                <span className="min-w-0">{labelCatalogueError} Labels already on a subnet are still shown; applying one needs the list.</span>
+                <Button variant="link" size="sm" className="h-auto p-0" onClick={() => void fetchLabelCatalogue()}>
+                  Retry
+                </Button>
+              </p>
+            )}
             {/* Below the row, not inside the field's column: the row aligns
                 its items to the bottom, so a message inside would lift the
                 input off the buttons' line. */}
@@ -754,7 +805,7 @@ const Scopes: React.FC = () => {
             {/* v2.86.0 — bulk-action bar: hidden until at least one
                 subnet is checked.  Mirrors the ScopeDetail surface so
                 the affordance is in the same place on both pages. */}
-            {selectedSubnetIds.size > 0 && (
+            {canWrite && selectedSubnetIds.size > 0 && (
               <div className="mb-xs flex flex-wrap items-center gap-xs border-l-4 border-l-info py-xxs pl-sm">
                 <span className="text-metadata">
                   {selectedSubnetIds.size} subnet{selectedSubnetIds.size === 1 ? '' : 's'} selected
@@ -806,13 +857,15 @@ const Scopes: React.FC = () => {
               <Table style={{ tableLayout: 'fixed' }} className="min-w-[820px]">
                 <TableHeader>
                   <TableRow>
-                    <TableHead className="w-10">
-                      <Checkbox
-                        checked={scope.subnets.length > 0 && selectedSubnetIds.size === scope.subnets.length}
-                        onCheckedChange={toggleAllSelected}
-                        aria-label="Select all subnets for bulk label apply"
-                      />
-                    </TableHead>
+                    {canWrite && (
+                      <TableHead className="w-10">
+                        <Checkbox
+                          checked={scope.subnets.length > 0 && selectedSubnetIds.size === scope.subnets.length}
+                          onCheckedChange={toggleAllSelected}
+                          aria-label="Select all subnets for bulk label apply"
+                        />
+                      </TableHead>
+                    )}
                     <TableHead className="w-[15%]">Subnet / IP</TableHead>
                     <TableHead className="w-16 text-right">Hosts</TableHead>
                     <TableHead>Description</TableHead>
@@ -821,16 +874,18 @@ const Scopes: React.FC = () => {
                     <TableHead className="w-[15%]">Site</TableHead>
                     <TableHead className="w-[13%]">Labels</TableHead>
                     <TableHead className="w-24">Added</TableHead>
-                    <TableHead className="w-24 text-right">Actions</TableHead>
+                    {canWrite && <TableHead className="w-24 text-right">Actions</TableHead>}
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {scope.subnets.length === 0 ? (
                     <TableRow>
-                      <TableCell colSpan={8} className="py-xl text-center text-muted-foreground">
+                      <TableCell colSpan={canWrite ? 8 : 6} className="py-xl text-center text-muted-foreground">
                         {debouncedSubnetSearch.trim()
                           ? `No subnets match "${debouncedSubnetSearch.trim()}". Try a different search or clear it.`
-                          : "No entries in this project's scope yet. Add one above or upload a file."}
+                          : canWrite
+                            ? "No entries in this project's scope yet. Add one above or upload a file."
+                            : "No entries in this project's scope yet."}
                       </TableCell>
                     </TableRow>
                   ) : (
@@ -843,13 +898,15 @@ const Scopes: React.FC = () => {
                           className="group/row"
                           data-state={selectedSubnetIds.has(subnet.id) ? 'selected' : undefined}
                         >
-                          <TableCell>
-                            <Checkbox
-                              checked={selectedSubnetIds.has(subnet.id)}
-                              onCheckedChange={() => toggleSubnetSelected(subnet.id)}
-                              aria-label={`Select ${subnet.cidr} for bulk label apply`}
-                            />
-                          </TableCell>
+                          {canWrite && (
+                            <TableCell>
+                              <Checkbox
+                                checked={selectedSubnetIds.has(subnet.id)}
+                                onCheckedChange={() => toggleSubnetSelected(subnet.id)}
+                                aria-label={`Select ${subnet.cidr} for bulk label apply`}
+                              />
+                            </TableCell>
+                          )}
                           <TableCell>
                             {isEditing ? (
                               <div className="min-w-0 space-y-xxs">
@@ -927,6 +984,8 @@ const Scopes: React.FC = () => {
                               <TableCell>
                                 {subnet.description ? (
                                   <span className="break-words text-metadata">{subnet.description}</span>
+                                ) : !canWrite ? (
+                                  <span className="text-metadata text-muted-foreground" aria-label="No description">—</span>
                                 ) : (
                                   <EmptyCellEdit
                                     label={`Add a description for ${subnet.cidr}`}
@@ -937,6 +996,8 @@ const Scopes: React.FC = () => {
                               <TableCell>
                                 {subnet.site ? (
                                   <span className="break-words text-metadata">{subnet.site}</span>
+                                ) : !canWrite ? (
+                                  <span className="text-metadata text-muted-foreground" aria-label="No site">—</span>
                                 ) : (
                                   <EmptyCellEdit
                                     label={`Add a site for ${subnet.cidr}`}
@@ -952,6 +1013,7 @@ const Scopes: React.FC = () => {
                               {formatDate(subnet.created_at)}
                             </span>
                           </TableCell>
+                          {canWrite && (
                           <TableCell className="text-right">
                             {isEditing ? (
                               <div className="flex justify-end gap-xxs">
@@ -1019,6 +1081,7 @@ const Scopes: React.FC = () => {
                               </div>
                             )}
                           </TableCell>
+                          )}
                         </TableRow>
                       );
                     })
@@ -1051,7 +1114,7 @@ const Scopes: React.FC = () => {
         {/* v5.193.0 — domain scope alongside subnet scope.  Refreshes the
             coverage numbers on change (name-reachable hosts move between states). */}
         {scope != null && (
-          <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} />
+          <ScopeDomainsCard scopeId={scope.id} refreshKey={domainsRefreshKey} onChanged={loadData} canEdit={canWrite} />
         )}
 
         {coverage && coverage.out_of_scope_hosts > 0 && (

@@ -7,13 +7,11 @@ Implements conflict resolution and audit tracking for data changes.
 
 import json
 import logging
-from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 from sqlalchemy.orm import Session, noload
 from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
-from app.db import models
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
 from app.services.os_family import os_family_from_name
 
@@ -148,6 +146,52 @@ class HostDeduplicationService:
         self._ws_fresh_port_ids = set()
         self._ws_history_checked = set()
         self._name_cache = ObservationCache()
+
+    def _reset_working_set(self) -> None:
+        self._ws_host_id = None
+        self._ws_scan_id = None
+        self._ws_ports = {}
+        self._ws_scripts = {}
+        self._ws_fresh_port_ids = set()
+        self._ws_history_checked = set()
+
+    def forget_session_rows(self) -> None:
+        """Forget every ORM row held here.  Call it after the caller detached
+        its session's objects (``commit()`` + ``expunge_all()``, the Nessus
+        batch boundary) — review 2026-10-01 R3.
+
+        The caches outlive the session's objects: a detached, expired row
+        raises ``DetachedInstanceError`` on its first attribute read.  For the
+        name memo that error was caught and logged as a skipped name, so a
+        name first seen in one batch lost every later name→address
+        observation; a detached history row took its update with it.
+        Everything is re-read from the database on next use — the rows are
+        committed, so the indexed lookups find them."""
+        from app.services.dns_name_service import ObservationCache
+
+        self._pending_host_history = {}
+        self._pending_port_history = {}
+        self._reset_working_set()
+        self._name_cache = ObservationCache()
+
+    def release_committed_history(self) -> None:
+        """Let go of the history rows that are already in the database (review
+        2026-10-01 R7).  Call it between hosts, after a flush or commit.
+
+        The pending-history dicts exist to find a row added in THIS parse
+        before it was flushed.  Kept for the whole file they pinned one ORM
+        object per host and per port in the identity map — 800k ports is 800k
+        objects, every one expired and reloaded by each heartbeat commit.  A
+        flushed row is found by the uq_host_scan / uq_port_scan lookup on a
+        repeat, so only rows not yet flushed stay.  The working set goes too:
+        it vouches "this port has no history row yet", which stops being true
+        once the row it would have found here is dropped."""
+        from sqlalchemy import inspect as sa_inspect
+
+        for cache in (self._pending_host_history, self._pending_port_history):
+            for key in [k for k, row in cache.items() if sa_inspect(row).persistent]:
+                del cache[key]
+        self._reset_working_set()
 
     def find_or_create_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any], project_id: int = None) -> Host:
         """
@@ -370,10 +414,21 @@ class HostDeduplicationService:
             self._record_host_scan_history(new_host.id, scan_id, host_data, is_new=True)
             return new_host
     
-    def find_or_create_port(self, host_id: int, scan_id: int, port_data: Dict[str, Any]) -> Port:
+    def find_or_create_port(
+        self, host_id: int, scan_id: int, port_data: Dict[str, Any], *, isolated: bool = False,
+    ) -> Port:
         """
         Find existing port by host_id + port_number + protocol or create new one.
         Updates existing port with new information.
+
+        ``isolated=True`` (review 2026-10-01 R7) is the caller's statement that
+        it wraps this host in its OWN savepoint and, on an ``IntegrityError``,
+        rolls that back, calls ``discard_rolled_back_state()`` and processes
+        the host again.  The new port is then inserted without a savepoint of
+        its own: SAVEPOINT + RELEASE around every new port was two extra
+        statements per port (1.6M on an 800k-port file) to cover a concurrent
+        insert the caller's retry covers as well.  The default keeps the
+        per-port savepoint for callers that have no such retry.
         """
         port_number = port_data.get('port_number')
         protocol = port_data.get('protocol', 'tcp')
@@ -392,6 +447,15 @@ class HostDeduplicationService:
         else:
             # Create new port
             new_port = self._create_new_port(host_id, scan_id, port_data)
+            if isolated:
+                # The caller's savepoint is the isolation; a lost race
+                # surfaces as IntegrityError for its retry.
+                self.db.add(new_port)
+                self.db.flush()  # Get the ID
+                self._ws_ports[(port_number, protocol)] = new_port
+                self._ws_fresh_port_ids.add(new_port.id)
+                self._record_port_scan_history(new_port.id, scan_id, port_data, is_new=True)
+                return new_port
             # Savepoint first, then add — see find_or_create_host (H2).
             nested = self.db.begin_nested()
             self.db.add(new_port)
@@ -661,7 +725,6 @@ class HostDeduplicationService:
         Update existing host with new data using conflict resolution strategy.
         Strategy: "Most recent wins" with some intelligence for better data.
         """
-        updated = False
         prior_scan = host.last_updated_scan_id  # captured before we overwrite it
 
         # Display name: decided by ONE rule (dns_name_service
@@ -673,10 +736,12 @@ class HostDeduplicationService:
         # hostname conflict rows stay as history; none are added.
         from app.services.dns_name_service import apply_hostname_candidate
         new_hostname = host_data.get('hostname')
-        if new_hostname and apply_hostname_candidate(
-            host, new_hostname, host_data.get('hostname_source') or 'scanner',
-        ):
-            updated = True
+        if new_hostname:
+            # Called for its effect on ``host``; whether it replaced the name
+            # is not needed here.
+            apply_hostname_candidate(
+                host, new_hostname, host_data.get('hostname_source') or 'scanner',
+            )
 
         # Update state (most recent wins) — but 'unknown' carries no
         # information and must never clobber a known state.  gnmap, for
@@ -697,7 +762,6 @@ class HostDeduplicationService:
             new_reason = host_data.get('state_reason')
             if new_reason:
                 host.state_reason = new_reason
-            updated = True
 
         # Update OS information if new scan has higher accuracy or we don't have OS info
         new_accuracy = host_data.get('os_accuracy', 0)
@@ -712,7 +776,6 @@ class HostDeduplicationService:
                 host.os_type = host_data.get('os_type')
                 host.os_vendor = host_data.get('os_vendor')
                 host.os_accuracy = new_accuracy
-                updated = True
         
         # Always update last seen and scan reference
         host.last_seen = func.now()

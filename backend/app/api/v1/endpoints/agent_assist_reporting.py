@@ -29,10 +29,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session, defer, selectinload
 
 from app.api.deps import check_agent_rate_limit
-from app.api.v1.endpoints.agent_assist import _load_assist_session
-# The Reports page's own serializer and loader: the agent sees the report the
-# page shows, field for field.
-from app.api.v1.endpoints.client_reports import _load, _serialize, report_file_response, report_scope_response
+from app.api.v1.endpoints.agent_common import load_agent_session
+from app.api.v1.endpoints.client_reports import report_file_response, report_scope_response
 from app.api.v1.endpoints.scanner_observations import IssueHostOut, IssuePageOut, IssueRowOut
 from app.db.models_agent import Agent
 from app.db.models_project import ProjectRole
@@ -41,6 +39,9 @@ from app.db.session import get_db
 from app.schemas.client_reports import ReportFileOut, ReportOut
 from app.services import scanner_observation_service as observations
 from app.services.client_report_service import ClientReportService
+# The Reports page's own serializer and loader: the agent sees the report the
+# page shows, field for field.
+from app.services.client_report_views import load_report, serialize_report
 
 router = APIRouter()
 
@@ -79,7 +80,7 @@ def list_assist_scanner_observations(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     try:
         page = observations.list_issues(
             db, session.project_id, search=search, severity=severity, include_judged=include_judged,
@@ -114,7 +115,7 @@ def list_assist_scanner_observation_hosts(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     items = [
         IssueHostOut(**vars(h))
         for h in observations.issue_hosts(db, session.project_id, issue_key, limit=limit, offset=offset)
@@ -153,10 +154,18 @@ class AssistReportFinding(BaseModel):
     steps_to_reproduce: Optional[str] = None
     affected: List[Dict[str, Any]] = Field(default_factory=list)
     affected_count: int = 0
-    # Addendum only: why it is in this document ("new" / "new_hosts") and,
-    # for "new_hosts", the endpoints added since the baseline.
+    # Addendum only: why it is in this document ("new" / "new_hosts" /
+    # "severity_changed") and, for "new_hosts", the endpoints added since the
+    # baseline; for a re-rated finding, the severity the baseline reported.
     change: Optional[str] = None
     new_affected: List[Dict[str, Any]] = Field(default_factory=list)
+    previous_severity: Optional[str] = None
+    previous_severity_label: Optional[str] = None
+    # How the finding was confirmed, as the report prints it (templates that
+    # opt in): tool, host, command, summary, a trimmed output excerpt, when
+    # and by whom.  `confirmations_omitted` = further records not printed.
+    confirmations: List[Dict[str, Any]] = Field(default_factory=list)
+    confirmations_omitted: int = 0
     # Report images: fetch one with assist_get_image(attachment_id=…).
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -191,7 +200,7 @@ def list_assist_client_reports(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
+    session = load_agent_session(db, request)
     role = _operator_role(request) or ""
     rows = (
         db.query(Report)
@@ -203,15 +212,9 @@ def list_assist_client_reports(
     rows.sort(key=lambda r: (r.status != ReportStatus.DRAFT, -(r.number or 0), -(r.id)))
     latest = ClientReportService(db).latest_issued(session.project_id)
     return AssistClientReportList(
-        items=[_serialize(db, r, role, with_summary=False) for r in rows],
+        items=[serialize_report(db, r, role, with_summary=False) for r in rows],
         latest_issued_id=latest.id if latest else None,
     )
-
-
-class _ProjectRef:
-    """``_load`` takes the page's Project dependency; it reads only ``.id``."""
-    def __init__(self, project_id: int):
-        self.id = project_id
 
 
 @router.get(
@@ -225,10 +228,10 @@ def get_assist_client_report(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    session = _load_assist_session(db, request)
-    report = _load(db, _ProjectRef(session.project_id), report_id)
+    session = load_agent_session(db, request)
+    report = load_report(db, session.project_id, report_id)
     dataset, summary = ClientReportService(db).content(report)
-    base = _serialize(db, report, _operator_role(request) or "", with_summary=False)
+    base = serialize_report(db, report, _operator_role(request) or "", with_summary=False)
     dataset = dataset or {}
     findings = []
     for item in dataset.get("findings") or []:
@@ -238,6 +241,11 @@ def get_assist_client_report(
         row["evidence"] = [
             {"attachment_id": e.get("attachment_id"), "caption": e.get("caption")}
             for e in (item.get("evidence") or [])
+        ]
+        # The report's own entries, minus the render's private keys.
+        row["confirmations"] = [
+            {k: v for k, v in c.items() if not k.startswith("_")}
+            for c in (item.get("confirmations") or [])
         ]
         findings.append(AssistReportFinding(**row))
     return AssistClientReport(
@@ -269,8 +277,8 @@ def download_assist_client_report_scope(
 ):
     """v2.441.0 — the page's scope-file download, for agents (same builder,
     same bytes, same SHA-256 as the report prints)."""
-    session = _load_assist_session(db, request)
-    report = _load(db, _ProjectRef(session.project_id), report_id)
+    session = load_agent_session(db, request)
+    report = load_report(db, session.project_id, report_id)
     return report_scope_response(ClientReportService(db), report)
 
 
@@ -285,8 +293,8 @@ def download_assist_client_report_file(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ) -> FileResponse:
-    session = _load_assist_session(db, request)
-    report = _load(db, _ProjectRef(session.project_id), report_id)
+    session = load_agent_session(db, request)
+    report = load_report(db, session.project_id, report_id)
     record = next((f for f in report.files if f.format == fmt), None)
     if record is None:
         raise HTTPException(status_code=404, detail=f"This report has no {fmt} file.")

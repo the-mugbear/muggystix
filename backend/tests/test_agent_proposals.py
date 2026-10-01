@@ -149,7 +149,15 @@ def test_evidence_output_over_the_cap_is_refused(client, db_session, test_projec
         "host_id": host.id, "tool": "curl", "outcome": "info", "summary": "big",
         "raw_output": "x" * (5 * 1024 * 1024 + 1),
     })
-    assert r.status_code == 413, r.text
+    # The documented contract (AGENT_GUIDE): over 5 MB is a 413, and the
+    # refusal never echoes the oversize text back.
+    assert r.status_code == 413, r.text[:300]
+    assert len(r.text) < 2000
+    r = client.post("/api/v1/agent/evidence", headers=key, json={
+        "host_id": host.id, "tool": "curl", "outcome": "info", "summary": "big",
+        "raw_output": "é" * (5 * 1024 * 1024 // 2 + 1),
+    })
+    assert r.status_code == 413, r.text[:300]
 
 
 def test_evidence_outcome_is_an_enum_and_the_host_must_be_in_the_project(client, db_session, test_project):
@@ -510,7 +518,7 @@ def test_the_author_and_owner_get_one_notification_per_agent_session(client, db_
     agent it is is not told about their own run."""
     from app.db.models_project import Notification
     key, sid = _start(client, test_project)  # operator: the fixture admin
-    host = _host(db_session, test_project)
+    _host(db_session, test_project)
     alice = _member(db_session, test_project, 421, "prop-alice")
     bob = _member(db_session, test_project, 422, "prop-bob")
     f1 = Finding(project_id=test_project.id, title="First", severity="low", status="open",

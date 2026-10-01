@@ -249,7 +249,7 @@ def main() -> int:
               file=sys.stderr)
         return 1
 
-    print(f"Loading IANA bootstrap…", file=sys.stderr)
+    print("Loading IANA bootstrap…", file=sys.stderr)
     bootstrap = Bootstrap(args.timeout)
     if not bootstrap.load():
         print("Could not load the IANA bootstrap registry — check connectivity.",

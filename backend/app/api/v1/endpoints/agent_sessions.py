@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
 from app.core.security import check_permissions
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.db.models_agent import AgentSession, AgentSessionWorkflow
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, ProjectRole
@@ -38,6 +38,7 @@ from app.services.agent_session_service import (
     resume_agent_session,
     summarise_by_model_tool,
 )
+from app.services.mcp_client_setup_service import build_session_mcp_clients
 
 
 router = APIRouter()
@@ -369,7 +370,6 @@ def resume_project_agent_session(
     under that operator's name.  An admin who needs to take over ends this
     session and starts their own.
     """
-    from app.api.v1.endpoints.assist import _build_mcp_clients
     from app.services.agent_prompt_service import build_session_instructions, resolve_base_url
 
     session = (
@@ -427,7 +427,7 @@ def resume_project_agent_session(
         agent_id=agent.id,
         api_key=raw_key,
         instructions=instructions,
-        mcp_clients=[c.model_dump() for c in _build_mcp_clients(
+        mcp_clients=[c.model_dump() for c in build_session_mcp_clients(
             mcp_url, raw_key, project_name=project.name, agent_session_id=session.id,
         )],
         mcp_url=mcp_url,

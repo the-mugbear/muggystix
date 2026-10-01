@@ -16,11 +16,11 @@ from app.db.models_confidence import (
     NETEXEC_RAW_OUTPUT_LIMIT, NetexecResult, HostConfidence, PortConfidence, ConflictHistory,
 )
 from app.services.confidence_service import (
-    ConfidenceService, ScanType, DataSource, ConfidenceScore
+    ConfidenceService, ConfidenceScore
 )
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.db.models_vulnerability import VulnerabilitySource
-from app.parsers.parser_utils import correlate_scan, read_tool_text
+from app.parsers.parser_utils import announce_scan, correlate_scan, read_tool_text
 from app.services import smb_signing as smb_signing_states
 from app.services.misconfig_checks import record_misconfig
 from app.services.line_shapes import ShapeTally, nxc_line_shape
@@ -377,6 +377,7 @@ class NetexecParser:
         # or failed import has a committed partial scan: named here so the
         # dispatcher removes it, as for nmap / masscan.
         self._created_scan_id = scan.id
+        announce_scan(self.db, scan)
 
         try:
             # v2.420.0 — UTF-16 (a PowerShell redirect) decoded, stray NUL

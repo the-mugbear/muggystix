@@ -22,7 +22,7 @@ from app.db import models
 from app.db.models import HostFollow, FollowStatus, HostTag, HostTagAssignment
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership, Notification, ProjectRole
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.services.webhook_dispatcher import stage_dispatch
 

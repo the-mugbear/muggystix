@@ -13,6 +13,8 @@ import {
 } from 'lucide-react';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
 import { useConfirm } from '../hooks/useConfirm';
+import { ListPage, useListQuery } from '../hooks/useListQuery';
+import { useProjectRole } from '../hooks/useProjectRole';
 import {
   discardIngestionJob,
   dismissIngestionJob,
@@ -160,6 +162,8 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => (
   </Badge>
 );
 
+const SORT_KEYS: IngestionResultsSortBy[] = ['created_at', 'original_filename', 'status', 'tool_name', 'file_size'];
+
 const ParseErrors: React.FC = () => {
   const navigate = useNavigate();
   // v5.135.0 — Scans links here with ?error_id=N. Previously it navigated to
@@ -171,85 +175,87 @@ const ParseErrors: React.FC = () => {
   // (`?job_id=`), which is this list's own row id.
   const focusJobId = Number(searchParams.get('job_id')) || null;
   const toast = useToast();
-  const [data, setData] = useState<IngestionResultsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  // Retry, discard, dismiss and re-process are a project analyst's (R32).
+  const { canWrite } = useProjectRole();
   const [expandedRow, setExpandedRow] = useState<number | null>(null);
 
   const [selectedParseError, setSelectedParseError] = useState<ParseError | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
-  // v2.86.2 — search runs server-side now (300ms debounce); status
-  // and sort knobs were added alongside.  Pre-v2.86.2 the page only
-  // filtered the partial slice it had loaded, which silently missed
-  // matches further down the list when projects had >100 ingest jobs.
-  const [searchText, setSearchText] = useState('');
-  const debouncedSearchText = useDebouncedValue(searchText, 300);
-  // URL-backed so other surfaces can deep-link a filtered view (the queue
-  // health card links here for failed / queued / in-flight jobs). Local state
-  // would have made those links land on an unfiltered list.
-  const statusFilter = searchParams.get('status') ?? 'all';
-  const setStatusFilter = useCallback((value: string) => {
+  // URL-backed (B15: search, sort, direction and page joined `status`), so a
+  // filtered view can be shared and survives a reload, and so other surfaces
+  // can deep-link one (the queue health card links here for failed / queued /
+  // in-flight jobs).  Replace, not push: typing must not fill the history.
+  // Changing a filter or the sort drops `page` — the result set can shrink
+  // below the current page.
+  const setParams = useCallback((changes: Record<string, string | null>, keepPage = false) => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
-      if (value === 'all') next.delete('status');
-      else next.set('status', value);
-      return next;
+      for (const [key, value] of Object.entries(changes)) {
+        if (value === null || value === '') next.delete(key); else next.set(key, value);
+      }
+      if (!keepPage) next.delete('page');
+      return next.toString() === prev.toString() ? prev : next;
     }, { replace: true });
   }, [setSearchParams]);
+  // v2.86.2 — search runs server-side (300ms debounce); status and sort
+  // knobs were added alongside.  Pre-v2.86.2 the page only filtered the
+  // partial slice it had loaded, which silently missed matches further down
+  // the list when projects had >100 ingest jobs.
+  const urlSearch = searchParams.get('search') ?? '';
+  const [searchText, setSearchText] = useState(urlSearch);
+  const debouncedSearchText = useDebouncedValue(searchText, 300);
+  useEffect(() => {
+    // Only a term the operator typed moves the URL (and resets the page): on
+    // mount the two already agree, and a shared link's `page` must survive.
+    if (debouncedSearchText.trim() !== urlSearch) setParams({ search: debouncedSearchText.trim() });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedSearchText]);
+  const statusFilter = searchParams.get('status') ?? 'all';
+  const setStatusFilter = useCallback((value: string) => {
+    setParams({ status: value === 'all' ? null : value });
+  }, [setParams]);
   const [confirmEl, askConfirm] = useConfirm();
   const [bulkDismissing, setBulkDismissing] = useState(false);
-  const [sortBy, setSortBy] = useState<IngestionResultsSortBy>('created_at');
-  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const sortParam = searchParams.get('sort');
+  const sortBy: IngestionResultsSortBy = SORT_KEYS.includes(sortParam as IngestionResultsSortBy)
+    ? (sortParam as IngestionResultsSortBy) : 'created_at';
+  const sortOrder: 'asc' | 'desc' = searchParams.get('dir') === 'asc' ? 'asc' : 'desc';
+  const setSortBy = (value: IngestionResultsSortBy) => setParams({ sort: value === 'created_at' ? null : value });
+  const setSortOrder = (value: 'asc' | 'desc') => setParams({ dir: value === 'desc' ? null : value });
   // v5.135.0 — the page used to request skip:0/limit:100 unconditionally and
   // discard the `total` the endpoint already returns, so anything past the
   // 100th upload was unreachable by browsing and the truncation was invisible.
-  const [page, setPage] = useState(0);
+  // 1-based in the URL (`?page=2`), 0-based here.
+  const page = Math.max(0, (Number(searchParams.get('page')) || 1) - 1);
+  const setPage = (next: number) => setParams({ page: next > 0 ? String(next + 1) : null }, true);
   // Fixed: no control has ever changed it (it was state with an unused setter).
   // v5.288.0 — 25, like the other lists (was 50).
   const pageSize = 25;
 
-  // v5.289.0 — which query the loaded `data` answers.  A "Superseded —
-  // imported by job #N" link changes the filter AND names a row in one
-  // navigation; the focus effect must wait for the new list, not search the
-  // old one and report the row missing.
-  const queryKey = `${statusFilter}|${debouncedSearchText}|${sortBy}|${sortOrder}|${page}`;
-  const [dataKey, setDataKey] = useState<string | null>(null);
-
-  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
-  const loadData = async () => {
-    const key = queryKey;
-    try {
-      setLoading(true);
-      setError(null);
-      const result = await getIngestionResults({
-        skip: page * pageSize,
-        limit: pageSize,
-        status: statusFilter === 'all' ? undefined : statusFilter,
-        search: debouncedSearchText.trim() || undefined,
-        sortBy,
-        sortOrder,
-      });
-      setData(result);
-      setDataKey(key);
-      setLoadedAt(new Date());
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Failed to load ingestion results.'));
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  // Refetch whenever any filter or sort knob changes (debouncedSearchText
-  // is the 300ms-stable view of the search box so a fast typist doesn't
-  // fire a request per keystroke).
-  useEffect(() => {
-    loadData();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [debouncedSearchText, statusFilter, sortBy, sortOrder, page, pageSize]);
-
-  // A filter/sort change can shrink the result set below the current page, so
-  // go back to the first page rather than landing on an empty one.
-  useEffect(() => { setPage(0); }, [debouncedSearchText, statusFilter, sortBy, sortOrder]);
+  // One request lane (R33): a slow response for an earlier filter, sort or
+  // page never replaces the rows of the current one — and `list.rows` is
+  // non-null only for the query the URL names, which is what the row-focus
+  // effect below waits for (v5.289.0: a "Superseded — imported by job #N"
+  // link changes the filter AND names a row in one navigation).
+  const appliedSearch = urlSearch;
+  const list = useListQuery<IngestionResultItem, ListPage<IngestionResultItem> & IngestionResultsResponse>(
+    ({ limit }) => getIngestionResults({
+      skip: page * pageSize,
+      limit,
+      status: statusFilter === 'all' ? undefined : statusFilter,
+      search: appliedSearch || undefined,
+      sortBy,
+      sortOrder,
+    }),
+    [statusFilter, appliedSearch, sortBy, sortOrder, page],
+    { pageSize, maxReload: pageSize, errorMessage: 'Failed to load ingestion results.' },
+  );
+  const { loading, error, loadedAt } = list;
+  const loadData = list.reload;
+  // The chips keep their last counts while the next query loads.
+  const [summary, setSummary] = useState<IngestionResultsResponse['summary'] | undefined>(undefined);
+  const latestSummary = list.response?.summary;
+  useEffect(() => { if (latestSummary) setSummary(latestSummary); }, [latestSummary]);
 
   const handleViewParseError = async (item: IngestionResultItem) => {
     // Audit CRIT-8 — pre-fix this catch synthesized a fake ParseError
@@ -286,12 +292,12 @@ const ParseErrors: React.FC = () => {
   // param is cleared afterwards so a later manual collapse isn't undone by a
   // re-render, and so the URL doesn't keep re-focusing on refresh.
   useEffect(() => {
-    if ((focusErrorId === null && focusJobId === null) || loading || dataKey !== queryKey) return;
+    if ((focusErrorId === null && focusJobId === null) || loading || list.rows === null) return;
     // Scans links with the PARSE ERROR id, so resolve it back to the row that
     // produced it. Matching it against `i.id` (the job id) meant the link
     // almost never focused anything, and on a numeric collision focused an
     // unrelated row.  A `job_id` link IS the row id.
-    const row = (data?.items ?? []).find(
+    const row = list.rows.find(
       (i) =>
         (focusErrorId !== null && i.parse_error_id === focusErrorId) ||
         (focusJobId !== null && i.id === focusJobId),
@@ -322,16 +328,15 @@ const ParseErrors: React.FC = () => {
         ?.scrollIntoView({ block: 'center' });
     });
     clearFocus();
-  }, [focusErrorId, focusJobId, loading, data, dataKey, queryKey, setSearchParams]);
+  }, [focusErrorId, focusJobId, loading, list.rows, setSearchParams]);
 
-  const summary = data?.summary;
   // v2.86.2 — items come pre-filtered + pre-sorted from the server; no
   // more client-side filtering of the partial slice.  The old
   // useMemo-over-allItems block was removed alongside.
-  const items = data?.items ?? [];
+  const items = list.rows ?? [];
   // The true match count for the active filters — distinct from items.length,
   // which is only the current page.
-  const totalMatching = data?.total ?? 0;
+  const totalMatching = list.total;
 
   // v5.242.0 — dismiss what is on screen in one action. A project that imported
   // a folder of fixtures has a dozen "unsupported format" failures; clearing
@@ -458,7 +463,7 @@ const ParseErrors: React.FC = () => {
             variant="outline"
             size="sm"
             className="h-8"
-            onClick={() => setSortOrder((prev) => (prev === 'asc' ? 'desc' : 'asc'))}
+            onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
             aria-label={`Sort direction: ${DIRECTION_LABEL[sortBy][sortOrder]} — click for ${
               DIRECTION_LABEL[sortBy][sortOrder === 'asc' ? 'desc' : 'asc']
             }`}
@@ -516,14 +521,14 @@ const ParseErrors: React.FC = () => {
               onClick={() => setStatusFilter('superseded')}>
               Review {summary.total_superseded} superseded
             </Button>
-          ) : supersededShown.length > 0 && (
+          ) : canWrite && supersededShown.length > 0 && (
             <Button size="sm" variant="outline" className="ml-auto" disabled={bulkDismissing || loading}
               onClick={() => void dismissSuperseded()}>
               {bulkDismissing && <Loader2 className="size-3 animate-spin" aria-hidden />}
               Dismiss {supersededShown.length} superseded
             </Button>
           )}
-          {dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
+          {canWrite && dismissable.length > 0 && (statusFilter === 'needs_attention' || statusFilter === 'failed') && (
             <Button size="sm" variant="outline"
               className={supersededShown.length > 0 || (summary.total_superseded ?? 0) > 0 ? undefined : 'ml-auto'}
               disabled={bulkDismissing || loading}
@@ -741,7 +746,7 @@ const ParseErrors: React.FC = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => Math.max(p - 1, 0))}
+                  onClick={() => setPage(Math.max(page - 1, 0))}
                   disabled={page === 0 || loading}
                 >
                   Previous
@@ -749,7 +754,7 @@ const ParseErrors: React.FC = () => {
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => setPage((p) => p + 1)}
+                  onClick={() => setPage(page + 1)}
                   disabled={loading || (page + 1) * pageSize >= totalMatching}
                 >
                   Next
@@ -870,6 +875,7 @@ const ParseErrors: React.FC = () => {
  */
 const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void }> = ({ item, onChanged }) => {
   const toast = useToast();
+  const { canWrite } = useProjectRole();
   const [saving, setSaving] = useState(false);
   const blocked = item.status === 'failed' || (item.status === 'completed' && !!item.partial);
   if (!blocked) return null;
@@ -880,6 +886,7 @@ const DismissAction: React.FC<{ item: IngestionResultItem; onChanged: () => void
       </span>
     );
   }
+  if (!canWrite) return null;
   return (
     <Button
       size="sm"
@@ -910,6 +917,8 @@ const RowDetail: React.FC<{
   navigate: ReturnType<typeof useNavigate>;
   onChanged: () => void;
 }> = ({ item, onViewParseError, navigate, onChanged }) => {
+  const toast = useToast();
+  const { canWrite } = useProjectRole();
   // v5.231.0 — retry with a reviewed format / explicit re-process, on the
   // retained file (phase E).
   const [retryOpen, setRetryOpen] = useState(false);
@@ -939,7 +948,7 @@ const RowDetail: React.FC<{
           <Button size="sm" variant="outline" onClick={() => onViewParseError(item)}>
             View Details
           </Button>
-          {item.file_retained && (
+          {canWrite && item.file_retained && (
             <Button size="sm" onClick={() => setRetryOpen(true)}>
               Review format and retry
             </Button>
@@ -965,6 +974,7 @@ const RowDetail: React.FC<{
         <p className="text-metadata text-muted-foreground">
           Stored but not imported. Nothing runs until you start it; a staged file expires 24 hours after upload.
         </p>
+        {canWrite && (
         <div className="flex flex-wrap items-center gap-xs">
           <Button size="sm" onClick={() => setRetryOpen(true)} disabled={!item.file_retained}>
             Review format and import
@@ -977,13 +987,15 @@ const RowDetail: React.FC<{
                 await discardIngestionJob(item.id);
                 onChanged();
               } catch (err) {
-                console.error('Could not discard the staged job:', err);
+                // Said, not only logged (R34): the button used to do nothing.
+                toast.error(formatApiError(err, 'Could not discard the staged upload.'));
               }
             }}
           >
             Discard
           </Button>
         </div>
+        )}
         <FormatRetryDialog
           open={retryOpen}
           onOpenChange={setRetryOpen}
@@ -1073,7 +1085,7 @@ const RowDetail: React.FC<{
             <ExternalLink className="size-4" aria-hidden /> View Scan
           </Button>
         )}
-        {item.status === 'completed' && item.file_retained && (
+        {canWrite && item.status === 'completed' && item.file_retained && (
           <Button size="sm" variant="outline" onClick={() => setReprocessOpen(true)}
             title="Run the retained file through the pipeline again as a new import">
             Re-process…

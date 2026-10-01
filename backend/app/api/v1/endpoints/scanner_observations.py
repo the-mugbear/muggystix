@@ -14,7 +14,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_project, require_project_role
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.core.security import log_audit_event
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole

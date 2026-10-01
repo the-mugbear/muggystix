@@ -6,12 +6,22 @@ from typing import Dict, List
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import correlate_scan, ensure_scan, extract_first_ip, persist_host_observation
+from app.parsers.parser_utils import (
+    ProgressBeat, beat_while_reading, correlate_scan, ensure_scan, extract_first_ip,
+    normalize_ip, persist_host_observation,
+)
 from app.services.host_deduplication_service import HostDeduplicationService
 
 
 OPEN_LINE_PATTERN = re.compile(r"open\s+((?:\d{1,3}\.){3}\d{1,3}):(\d+)", re.IGNORECASE)
 LIST_PATTERN = re.compile(r"((?:\d{1,3}\.){3}\d{1,3}).*?\[([0-9,\s]+)\]")
+# IPv6 (review 2026-10-01 B12).  RustScan prints a Rust `SocketAddr`, whose
+# IPv6 form is bracketed — `Open [2001:db8::1]:443` — and a bare `IpAddr` in
+# the summary line, `2001:db8::1 -> [443,80]`.  The candidate is validated as
+# an address before it is used.
+OPEN_LINE_V6_PATTERN = re.compile(r"open\s+\[([0-9A-Fa-f:.]+)\]:(\d+)", re.IGNORECASE)
+LIST_V6_PATTERN = re.compile(r"(?:^|\s)([0-9A-Fa-f]*:[0-9A-Fa-f:.]+)\s+->\s+\[([0-9,\s]+)\]")
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 # nmap's port table header / report line, printed after RustScan's own lines.
 _NMAP_REPORT_LINE = re.compile(r"^PORT\s+STATE\s+SERVICE|^Nmap scan report for ", re.IGNORECASE)
 
@@ -38,10 +48,33 @@ class RustScanParser:
         # review R11/R12).
         embedded_nmap = False
 
+        def add_port(address: str, port: int) -> None:
+            if 0 < port <= 65535:
+                hosts.setdefault(address, []).append(
+                    {"port_number": port, "protocol": "tcp", "state": "open"}
+                )
+
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
+            # R6 — the read phase heartbeats (only the committed scan row exists).
+            for line in beat_while_reading(handle, "lines read"):
+                if "\x1b" in line:
+                    line = _ANSI.sub("", line)
                 if not embedded_nmap and _NMAP_REPORT_LINE.search(line):
                     embedded_nmap = True
+                v6 = OPEN_LINE_V6_PATTERN.search(line)
+                if v6:
+                    address = normalize_ip(v6.group(1))
+                    if address and ":" in address:
+                        add_port(address, int(v6.group(2)))
+                        continue
+                v6_list = LIST_V6_PATTERN.search(line)
+                if v6_list:
+                    address = normalize_ip(v6_list.group(1))
+                    if address and ":" in address:
+                        for port_text in v6_list.group(2).split(","):
+                            if port_text.strip().isdigit():
+                                add_port(address, int(port_text.strip()))
+                        continue
                 match = OPEN_LINE_PATTERN.search(line)
                 if match:
                     ip_address = extract_first_ip(match.group(1))
@@ -73,12 +106,16 @@ class RustScanParser:
             # "processed successfully" with zero hosts).
             raise ValueError(
                 "No RustScan open-port lines found (expected `Open 10.0.0.5:22` or "
-                "`10.0.0.5 -> [22,80]`; IPv4 only)."
+                "`10.0.0.5 -> [22,80]`; IPv6 as `Open [2001:db8::1]:22`)."
                 + (" The file holds an nmap report: import nmap's own output (-oX) for it."
                    if embedded_nmap else "")
             )
 
+        # R6 — heartbeat between hosts (no savepoint wraps a host here; each
+        # host's rows are written within its own iteration).
+        beat = ProgressBeat("hosts", every=200)
         for ip_address, ports in hosts.items():
+            beat.tick()
             persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,

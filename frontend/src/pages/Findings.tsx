@@ -28,6 +28,7 @@ import {
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
@@ -68,6 +69,7 @@ import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
 import ScannerObservations from '../components/findings/ScannerObservations';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
+import { endpointPreviewTitle } from '../utils/findingEndpoints';
 
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
 // cell's title. Falls back safely on a missing/invalid value rather than
@@ -102,7 +104,7 @@ type OwnerFilterValue = 'any' | 'me' | 'unowned';
  * URL param so a link can land on either.
  */
 const Findings: React.FC = () => {
-  const { hasPermission } = useAuth();
+  const { canWrite } = useProjectRole();
   const [searchParams, setSearchParams] = useSearchParams();
   const view = searchParams.get('view') === 'observations' ? 'observations' : 'findings';
   const setView = (next: 'findings' | 'observations') => {
@@ -146,7 +148,7 @@ const Findings: React.FC = () => {
           ))}
         </div>
       </div>
-      {view === 'observations' ? <ScannerObservations canManage={hasPermission('analyst')} /> : <FindingsList />}
+      {view === 'observations' ? <ScannerObservations canManage={canWrite} /> : <FindingsList />}
     </div>
   );
 };
@@ -154,9 +156,9 @@ const Findings: React.FC = () => {
 const FindingsList: React.FC = () => {
   const toast = useToast();
   const navigate = useNavigate();
-  const { hasPermission, user } = useAuth();
+  const { user } = useAuth();
   // Viewers may read findings but not dispose/select; analyst+ may triage.
-  const canManage = hasPermission('analyst');
+  const { canWrite: canManage } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
   const [findings, setFindings] = useState<Finding[]>([]);
   const [total, setTotal] = useState(0);
@@ -720,9 +722,7 @@ const FindingsList: React.FC = () => {
                       <span
                         className="block truncate text-caption text-muted-foreground"
                         data-testid={`finding-hosts-${f.id}`}
-                        title={f.hosts
-                          .map((h) => (h.ip_address ?? '—') + (h.hostname ? ` (${h.hostname})` : ''))
-                          .join(', ')}
+                        title={endpointPreviewTitle(f.hosts, f.host_count)}
                       >
                         <Link
                           to={`/hosts/${f.hosts[0].host_id}`}
@@ -731,7 +731,9 @@ const FindingsList: React.FC = () => {
                           {safeFallback(f.hosts[0].ip_address)}
                         </Link>
                         {f.hosts[0].hostname && <span> {f.hosts[0].hostname}</span>}
-                        {f.host_count > 1 && <span> +{f.host_count - 1}</span>}
+                        {/* `hosts` is a preview of at most five; the total is
+                            `host_count` (C2) — never hosts.length. */}
+                        {f.host_count > 1 && <span> +{(f.host_count - 1).toLocaleString()} more</span>}
                         {describeEndpointStates(f.endpoint_status_counts, f.host_count) && (
                           <span> · {describeEndpointStates(f.endpoint_status_counts, f.host_count)}</span>
                         )}

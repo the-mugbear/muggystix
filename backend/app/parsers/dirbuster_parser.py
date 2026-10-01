@@ -27,6 +27,8 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.parsers.streaming_json import iter_json_records
 from app.parsers.parser_utils import (
+    ProgressBeat,
+    beat_while_reading,
     correlate_scan,
     ensure_scan,
     normalize_ip,
@@ -263,7 +265,7 @@ class DirBusterParser:
         hosts: Dict[HostKey, List[dict]] = {}
         with open(file_path, "r", encoding="utf-8", errors="ignore", newline="") as fh:
             reader = csv.DictReader(fh)
-            for row in reader:
+            for row in beat_while_reading(reader, "rows read"):
                 raw_url = row.get("url") or row.get("URL") or row.get("FUZZ") or ""
                 parsed = _parse_url(raw_url)
                 if not parsed:
@@ -292,7 +294,7 @@ class DirBusterParser:
     def _parse_text(self, file_path: str) -> Dict[HostKey, List[dict]]:
         hosts: Dict[HostKey, List[dict]] = {}
         with open(file_path, "r", encoding="utf-8", errors="ignore") as fh:
-            for line in fh:
+            for line in beat_while_reading(fh, "lines read"):
                 line = line.strip()
                 if not line or line.startswith("#") or line.startswith("="):
                     continue
@@ -352,7 +354,8 @@ class DirBusterParser:
 
     def _parse_entries(self, entries) -> Dict[HostKey, List[dict]]:
         hosts: Dict[HostKey, List[dict]] = {}
-        for entry in entries:
+        # R6 — the read phase heartbeats (only the committed scan row exists).
+        for entry in beat_while_reading(entries, "results read"):
             if not isinstance(entry, dict):
                 continue
             # feroxbuster's first line describes the run, not a path.
@@ -380,7 +383,11 @@ class DirBusterParser:
         hosts: Dict[HostKey, List[dict]],
         scan: models.Scan,
     ) -> None:
+        # R6 — heartbeat between web services, counted in paths (one service can
+        # carry a million of them); outside the host's savepoint.
+        beat = ProgressBeat("paths", every=5000)
         for (ip, port, scheme), findings in hosts.items():
+            beat.tick(len(findings) or 1)
             # The name carries no confidence, so should_replace_service lets it
             # fill a blank but never replace an nmap identification (v2.390.3;
             # before that this parser queried "is the port already named?" per

@@ -65,7 +65,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'RustScan',
     formats: '.txt',
-    desc: 'Console output: "Open 10.0.0.1:22" lines or bracketed lists ("10.0.0.1 -> [22,80]").',
+    desc: 'Console output: "Open 10.0.0.1:22" lines or bracketed lists ("10.0.0.1 -> [22,80]"); IPv6 as "Open [2001:db8::1]:22".',
     hint: 'Put "rustscan" in the filename or keep the banner in the file.',
   },
   // ── Vulnerability scanners ─────────────────────────────────────────────
@@ -134,13 +134,13 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'dnsx (ProjectDiscovery)',
     formats: '.json / .jsonl',
-    desc: 'DNS resolution run locally against your resolvers (-j -resp). A/AAAA/CNAME/MX/NS/TXT/SOA/PTR records are ingested; PTR answers set the host name. Resolution failures are reported as parser warnings.',
-    hint: '"dnsx" in the filename, or records carrying host + a record-type array.',
+    desc: 'DNS resolution run locally against your resolvers (-j -resp). A/AAAA/CNAME/MX/NS/TXT/SOA/SRV/CAA/PTR records are ingested, plus any other type dnsx lists; PTR answers set the host name. A successful zone transfer (-axfr) is kept record by record, the import says which server allowed it, and a server that is a host of the project gets the scanner observation "DNS zone transfer allowed". Resolution failures are reported as parser warnings.',
+    hint: '"dnsx" in the filename, or records carrying host + a record-type array or an axfr object.',
   },
   {
     tool: 'DNS records (CSV)',
     formats: '.csv',
-    desc: 'One row per record: record type, name, address. Header aliases accepted (type / hostname / ip / value); comma, tab or semicolon delimited.',
+    desc: 'One row per record: record type, name, address. Header aliases accepted (type / hostname / ip / value); comma, tab or semicolon delimited. A UTF-16 file (what PowerShell’s > writes) or one that starts with a UTF-8 byte-order mark is accepted.',
     hint: 'Recognised by the header row alone.',
   },
   // ── Active Directory and SMB ───────────────────────────────────────────

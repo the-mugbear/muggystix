@@ -3,6 +3,11 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+#: Raw output kept per evidence record.  ``agent_evidence_service`` holds the
+#: rule (and re-exports this); it lives here so the schema does not import a
+#: service.
+RAW_OUTPUT_MAX_BYTES = 5 * 1024 * 1024
+
 TestStatus = Literal["proposed", "in_progress", "done", "dismissed"]
 TestPriority = Literal["critical", "high", "medium", "low", "info"]
 
@@ -77,12 +82,20 @@ class HostTestResult(BaseModel):
     outcome: Literal["finding", "no_finding", "inconclusive", "failed"]
     summary: str = Field(..., min_length=1, max_length=10_000)
     command: Optional[str] = Field(None, max_length=10_000, description="The command as run; defaults to the test's.")
+    # Review 2026-10-01 R10 — capped by the evidence service (5 MB, a 413),
+    # which measures the text BEFORE hashing it.  Deliberately no
+    # ``max_length`` here: that turns the documented 413 into a 422 whose
+    # body echoes the oversize input back.
     raw_output: Optional[str] = None
     observed_ip: Optional[str] = Field(None, max_length=45)
 
-    @field_validator("summary", "command", "observed_ip")
+    # Every text field but ``raw_output``, whose NULs the evidence service
+    # removes (tool output carries them; refusing a paste for one byte helps
+    # nobody).  ``request_key`` was not covered: a NUL in it reached Postgres
+    # and failed the request with a 500.
+    @field_validator("request_key", "summary", "command", "observed_ip", mode="before")
     @classmethod
     def no_nul(cls, value):
-        if value and "\x00" in value:
+        if isinstance(value, str) and "\x00" in value:
             raise ValueError("NUL is not allowed in text")
         return value

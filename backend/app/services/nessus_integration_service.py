@@ -10,7 +10,7 @@ from datetime import datetime
 from sqlalchemy.orm import Session
 
 from app.parsers.nessus_parser import NessusParser, NessusHost
-from app.db.models import Host, Scan
+from app.db.models import Host, HostScanHistory, Scan
 from app.services.vulnerability_service import VulnerabilityService
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
@@ -55,6 +55,12 @@ class NessusIntegrationService:
         self.dedup_service = HostDeduplicationService(db)
         self.correlation_service = SubnetCorrelationService(db)
         self._commit_batch_size = max(1, settings.NESSUS_COMMIT_BATCH_SIZE)
+        # See NmapXMLParser — id of the incrementally-committed Scan, so the
+        # dispatcher can delete a partial scan when the import does not
+        # finish (review 2026-10-01 C1: Nessus never said which one it was).
+        self._created_scan_id: Optional[int] = None
+        # How many created-port ids are already on the job row (R2).
+        self._ports_recorded = 0
 
     def process_nessus_file(self, file_path: str, scan_name: Optional[str] = None, **kwargs) -> Dict[str, Any]:
         """
@@ -72,6 +78,7 @@ class NessusIntegrationService:
         # them).  Resolved by the upload route from the form field / project
         # setting / deployment default; this layer only honours it.
         skip_informational = bool(kwargs.get("skip_informational", False))
+        from app.services.ingestion_service import ParseFailure, note_scan_created, report_progress
         try:
             scan_info, hosts_iter = self.parser.iter_file(file_path)
 
@@ -79,6 +86,9 @@ class NessusIntegrationService:
             scan = self._create_scan_record(scan_info, scan_name, project_id=project_id)
             scan_id = scan.id
             scan_label = scan.filename
+            self._created_scan_id = scan_id
+            # R1 — on the job row with the scan's first commit.
+            note_scan_created(self.db, scan_id)
 
             # Process hosts and vulnerabilities
             hosts_processed = 0
@@ -86,11 +96,16 @@ class NessusIntegrationService:
             vulnerabilities_found = 0
             vuln_write_failures = 0
             informational_skipped = 0
+            report_items_unreadable = 0
+            # B12 — hosts whose scan says it did / did not authenticate.
+            hosts_credentialed = 0
+            hosts_uncredentialed = 0
             severity_counts = {"info": 0, "low": 0, "medium": 0, "high": 0, "critical": 0}
             clock = ScanClock()
 
             for nessus_host in hosts_iter:
                 _observe_nessus_host_times(clock, nessus_host.host_properties or {})
+                report_items_unreadable += nessus_host.unreadable_items
                 result = self._process_nessus_host(
                     nessus_host, scan, project_id=project_id,
                     skip_informational=skip_informational,
@@ -98,6 +113,10 @@ class NessusIntegrationService:
                 if result:
                     host, vuln_stats = result
                     hosts_processed += 1
+                    if nessus_host.credentialed is True:
+                        hosts_credentialed += 1
+                    elif nessus_host.credentialed is False:
+                        hosts_uncredentialed += 1
                     vulnerabilities_found += vuln_stats.get("total", 0)
                     vuln_write_failures += vuln_stats.get("write_failures", 0)
                     informational_skipped += vuln_stats.get("info_skipped", 0)
@@ -106,10 +125,13 @@ class NessusIntegrationService:
                             severity_counts[severity_name] += count
 
                     if hosts_processed % self._commit_batch_size == 0:
-                        from app.services.ingestion_service import report_progress
+                        # R2 — in the transaction the heartbeat commits.
+                        self._record_created_ports()
                         report_progress(f"{hosts_processed} hosts, {vulnerabilities_found} vulns")
                         self.db.commit()
                         self.db.expunge_all()
+                        # R3 — the dedup caches held the rows just detached.
+                        self.dedup_service.forget_session_rows()
                         scan = self.db.get(Scan, scan_id)
                         if not scan:
                             raise RuntimeError("Scan record disappeared during Nessus ingestion")
@@ -139,6 +161,9 @@ class NessusIntegrationService:
             if scan:
                 clock.apply(scan)
 
+            # R2 — the last, partial batch's ports, in the commit that makes
+            # them durable.
+            self._record_created_ports()
             self.db.commit()
 
             # Correlate hosts to subnets
@@ -179,6 +204,13 @@ class NessusIntegrationService:
                     f"{host_processing_failures} host(s) failed to process and were skipped. "
                     f"Check backend logs for the per-host error detail."
                 )
+            # Review 2026-10-01 N9 — report items the parser could not read
+            # were logged and dropped; the import said nothing.
+            if report_items_unreadable:
+                warnings.append(
+                    f"{report_items_unreadable} report item(s) could not be read and were skipped. "
+                    f"Check backend logs for the per-item error detail."
+                )
 
             if hosts_processed == 0:
                 logger.warning(
@@ -193,8 +225,8 @@ class NessusIntegrationService:
                     'error': 'No hosts were successfully processed',
                     'warnings': warnings,
                     'message': (
-                        f'Nessus scan parsed but 0 hosts were ingested. '
-                        f'Check backend logs for per-host errors.'
+                        'Nessus scan parsed but 0 hosts were ingested. '
+                        'Check backend logs for per-host errors.'
                     ),
                 }
 
@@ -238,7 +270,7 @@ class NessusIntegrationService:
                 scan_id, scan_label, hosts_processed, vulnerabilities_found,
                 vuln_write_failures, host_processing_failures,
             )
-            partial = bool(vuln_write_failures or host_processing_failures)
+            partial = bool(vuln_write_failures or host_processing_failures or report_items_unreadable)
             return {
                 'success': True,
                 'partial': partial,
@@ -247,7 +279,10 @@ class NessusIntegrationService:
                 'host_processing_failures': host_processing_failures,
                 'vulnerabilities_found': vulnerabilities_found,
                 'vuln_write_failures': vuln_write_failures,
+                'report_items_unreadable': report_items_unreadable,
                 'informational_skipped': informational_skipped,
+                'hosts_credentialed': hosts_credentialed,
+                'hosts_uncredentialed': hosts_uncredentialed,
                 'severity_counts': severity_counts,
                 'scan_name': scan_label,
                 'warnings': warnings,
@@ -259,11 +294,28 @@ class NessusIntegrationService:
                     f'{hosts_processed} hosts and {vulnerabilities_found} vulnerabilities'
                     + (f', {informational_skipped} informational skipped'
                        if skip_informational else '')
+                    # Said only when the file says it: an unauthenticated
+                    # scan that found nothing looked at the host from outside.
+                    + (f'; credentialed checks ran on {hosts_credentialed} host(s), '
+                       f'not on {hosts_uncredentialed}'
+                       if (hosts_credentialed or hosts_uncredentialed) else '')
                     + (f' ({vuln_write_failures} vuln write failures, '
-                       f'{host_processing_failures} host failures)' if partial else '')
+                       f'{host_processing_failures} host failures, '
+                       f'{report_items_unreadable} unreadable report items)' if partial else '')
                 )
             }
 
+        except ParseFailure:
+            # Review 2026-10-01 C1 — cancel, timeout, a superseded attempt and
+            # a worker shutdown arrive from report_progress as ParseFailure /
+            # ShutdownRequested (both RuntimeError).  The blanket handler
+            # below turned them into ``success: False``, so a restart FAILED
+            # the job instead of handing it back, and the batches already
+            # committed stayed in a scan nothing pointed at.  They are the
+            # dispatcher's to handle: it deletes the partial scan
+            # (``_created_scan_id``) and re-queues or fails the job.
+            self.db.rollback()
+            raise
         except Exception as e:
             self.db.rollback()
             logger.error(f"Error processing Nessus file {file_path}: {str(e)}")
@@ -297,6 +349,39 @@ class NessusIntegrationService:
 
         return scan
 
+    def _record_created_ports(self) -> None:
+        """Put the ids of the ports this import has created on its job row,
+        in the CURRENT transaction (review 2026-10-01 R2) — called just before
+        each batch commit, so a committed port is always one the job names.
+
+        Nessus writes no ``PortScanHistory`` (it would change the port counts
+        on the Scans page, the dashboard and the scan diff), so without this a
+        failed attempt's ports on hosts that already existed could not be
+        found again.  Cleanup only.  The whole list is rewritten when it grew
+        — one row write per batch (50 hosts by default); a JSON array of
+        100k ids is about 1 MB."""
+        from app.services.ingestion_service import note_ports_created
+
+        ids = self.vulnerability_service.created_port_ids
+        if len(ids) == self._ports_recorded:
+            return
+        note_ports_created(self.db, ids)
+        self._ports_recorded = len(ids)
+
+    def _record_credentialed(self, host_id: int, scan_id: int, credentialed: Optional[bool]) -> None:
+        """Whether this scan authenticated to the host, on the host's row in
+        the scan (``host_scan_history.credentialed``).  Nothing is written
+        when the file does not say.  The history row was added by the dedup
+        service a moment ago and may still be pending, so it is flushed
+        before the one-statement update."""
+        if credentialed is None:
+            return
+        self.db.flush()
+        self.db.query(HostScanHistory).filter(
+            HostScanHistory.host_id == host_id,
+            HostScanHistory.scan_id == scan_id,
+        ).update({HostScanHistory.credentialed: credentialed}, synchronize_session=False)
+
     def _process_nessus_host(
         self,
         nessus_host: NessusHost,
@@ -326,6 +411,7 @@ class NessusIntegrationService:
             host = self.dedup_service.find_or_create_host(
                 nessus_host.ip_address, scan.id, host_data, project_id=project_id
             )
+            self._record_credentialed(host.id, scan.id, nessus_host.credentialed)
 
             # Process vulnerabilities using vulnerability service
             vuln_stats = self.vulnerability_service.process_nessus_vulnerabilities(
@@ -341,4 +427,7 @@ class NessusIntegrationService:
             # Rollback only the savepoint — the outer transaction (and scan
             # record) remain intact so subsequent hosts can still proceed.
             savepoint.rollback()
+            # The history / name rows the savepoint added are gone (record
+            # isolation rule, v2.419.0).
+            self.dedup_service.discard_rolled_back_state()
             return None

@@ -175,7 +175,7 @@ def test_regression_q_matches_legacy_param(client, db_session, test_project):
         ("port:80", {"ports": "80"}),
         ("os:linux", {"os_filter": "linux"}),
         ("state:up", {"state": "up"}),
-        (f"tag:prod", {"tags": str(pid)}),
+        ("tag:prod", {"tags": str(pid)}),
         ("has:web", {"has_web_interface": "true"}),
         ("has:critical", {"has_critical_vulns": "true"}),
     ]

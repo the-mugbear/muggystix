@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Dict, Iterable, List, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Type
 from uuid import uuid4
 
 from fastapi import UploadFile
@@ -28,7 +28,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.parsers import content_detection as _cd  # v2.27.0 — content sniffers extracted
-from app.db.models import Host, HostScanHistory, IngestionJob
+from app.db.models import IngestionJob
 # Imported as a module (not `from … import SessionLocal`) so tests can rebind
 # app.db.session.SessionLocal onto the test engine and have these background
 # sessions land in the test DB — same pattern as agent_api_log_service.
@@ -129,6 +129,246 @@ def report_progress(progress: str) -> None:
     svc.update_heartbeat(
         db, job_id, progress, claimed_at=getattr(_active_job, "claimed_at", None),
     )
+
+
+def note_scan_created(db: Session, scan_id: Optional[int]) -> None:
+    """Called by a parser right after it flushed its Scan row (review
+    2026-10-01 R1).
+
+    Under an active job this stamps ``ingestion_jobs.in_progress_scan_id`` and
+    COMMITS — the job's pointer and the scan row become durable in the same
+    transaction, so there is no moment at which a committed scan exists that
+    its job does not name.  A worker killed at any later point leaves a row
+    the next claim (or the reaper) can clean up from; before this the id lived
+    only in the parser object.  Committed at once rather than left for the
+    first heartbeat: the UPDATE holds the job's row lock, and an operator's
+    cancel (``FOR UPDATE`` on that row) would wait on it until then.
+
+    No active job (a parser driven directly, e.g. tests): does nothing, and
+    the caller's transaction is left as it was.  Never call it inside a
+    record savepoint — the commit would end it.
+    """
+    job_id = getattr(_active_job, "job_id", None)
+    if scan_id is None or job_id is None or getattr(_active_job, "db", None) is not db:
+        return
+    _active_job.scan_id = scan_id
+    written = _transitions.stamp(
+        db, job_id, getattr(_active_job, "claimed_at", None), in_progress_scan_id=scan_id,
+    )
+    if written == 0:
+        # Not this attempt's job any more (cancelled, or reaped and re-claimed):
+        # nothing of this parse may be committed.  The caller's rollback
+        # discards the scan with everything else.
+        raise ParseFailure(
+            "Job no longer owned by this attempt",
+            user_message="Cancelled or superseded before the import started",
+        )
+    db.commit()
+
+
+def note_ports_created(db: Session, port_ids: Sequence[int]) -> None:
+    """Called by an import path that writes NO ``PortScanHistory`` (Nessus)
+    just before each batch commit, with every port id the attempt has created
+    so far (review 2026-10-01 R2).
+
+    Under an active job this stamps ``ingestion_jobs.in_progress_created_port_ids``
+    in the CALLER'S transaction and does not commit: the list and the ports it
+    names become durable together, in the commit the next heartbeat performs,
+    so a hard kill between commits cannot leave a committed port the job does
+    not name.  ``delete_partial_scan`` reads it; nothing else does.
+
+    No active job (a service driven directly): does nothing.
+    """
+    job_id = getattr(_active_job, "job_id", None)
+    if job_id is None or getattr(_active_job, "db", None) is not db:
+        return
+    ids = [int(i) for i in port_ids]
+    written = _transitions.stamp(
+        db, job_id, getattr(_active_job, "claimed_at", None),
+        in_progress_created_port_ids=ids or None,
+    )
+    if written == 0:
+        raise ParseFailure(
+            "Job no longer owned by this attempt",
+            user_message="Cancelled or superseded before the import finished",
+        )
+
+
+def _port_is_only_this_attempts(port_id, scan_id: Optional[int]) -> List[Any]:
+    """The guards under which a port an attempt created may be deleted: no
+    OTHER scan saw it and nothing else refers to it.  One list for the ports
+    found through port history and for the ones a job row remembers.
+
+    ``scan_id`` None (the attempt's scan row is already gone): any history,
+    observation, script or web row at all protects the port."""
+    from sqlalchemy import exists, true
+    from sqlalchemy.orm import aliased
+
+    from app.db import models
+    from app.db.models_findings import FindingHost
+    from app.db.models_vulnerability import Vulnerability
+
+    other_ph = aliased(models.PortScanHistory)
+
+    def another_scan(column):
+        return column.is_distinct_from(scan_id) if scan_id is not None else true()
+
+    return [
+        ~exists().where(other_ph.port_id == port_id, another_scan(other_ph.scan_id)),
+        ~exists().where(models.Annotation.port_id == port_id),
+        ~exists().where(FindingHost.port_id == port_id),
+        ~exists().where(Vulnerability.port_id == port_id, another_scan(Vulnerability.scan_id)),
+        ~exists().where(models.Script.port_id == port_id, another_scan(models.Script.scan_id)),
+        ~exists().where(models.WebInterface.port_id == port_id, another_scan(models.WebInterface.scan_id)),
+    ]
+
+
+_PORT_ID_CHUNK = 5000
+
+
+def delete_recorded_ports(db: Session, port_ids: Sequence[Any], scan_id: Optional[int]) -> int:
+    """Delete the ports in ``port_ids`` (a job row's record of what its
+    attempt created) that are still only that attempt's.  A port another scan
+    has since observed, or that anything refers to, stays.  Ids that no longer
+    exist (their host was deleted, a rolled-back record) match nothing."""
+    from sqlalchemy import delete
+
+    from app.db import models
+
+    ids = sorted({i for i in port_ids if isinstance(i, int) and not isinstance(i, bool)})
+    removed = 0
+    for start in range(0, len(ids), _PORT_ID_CHUNK):
+        removed += db.execute(
+            delete(models.Port)
+            .where(models.Port.id.in_(ids[start:start + _PORT_ID_CHUNK]))
+            .where(*_port_is_only_this_attempts(models.Port.id, scan_id))
+            .execution_options(synchronize_session=False)
+        ).rowcount
+    return removed
+
+
+def _delete_job_recorded_ports(db: Session, scan_id: int) -> int:
+    """Delete the ports recorded on the job(s) whose in-progress scan is
+    ``scan_id`` and clear the record.  Keyed on the SCAN, not on a job id: a
+    stale attempt cleaning up after itself must never read the list a newer
+    attempt of the same job is writing (that one names a different scan)."""
+    from sqlalchemy import select, update
+
+    rows = db.execute(
+        select(IngestionJob.id, IngestionJob.in_progress_created_port_ids)
+        .where(IngestionJob.in_progress_scan_id == scan_id)
+    ).all()
+    removed = 0
+    for job_id, port_ids in rows:
+        if not isinstance(port_ids, list):
+            continue
+        removed += delete_recorded_ports(db, port_ids, scan_id)
+        db.execute(
+            update(IngestionJob).where(IngestionJob.id == job_id)
+            .values(in_progress_created_port_ids=None)
+            .execution_options(synchronize_session=False)
+        )
+    return removed
+
+
+def delete_partial_scan(db: Session, scan_id: int) -> Dict[str, int]:
+    """Delete the scan an import attempt left unfinished, and what ONLY that
+    attempt created (review 2026-10-01 R2).  The one implementation, used by
+    the in-process cleanup (cancel, timeout, shutdown hand-back, parser
+    failure) and by the cleanup of a dead attempt's scan (re-claim, reap).
+
+    Deleting the scan alone left every host and port the attempt introduced:
+    ``last_updated_scan_id`` is SET NULL, so they stayed in the inventory with
+    no scan behind them and the retry then reported "0 new hosts" for hosts
+    this very file introduced.  Findings and name observations are SET NULL
+    too, so the retry found the attempt's rows "first recorded by" nothing.
+
+    Removed, in this order:
+
+    * hosts whose history says this scan CREATED them and no other scan saw
+      them — unless a person or an agent has worked on the host (a note, a
+      follow, a tag, a finding endpoint, a test, an evidence record, a
+      proposal about one of its observations): work is never deleted to tidy
+      an import;
+    * on the hosts that stay, ports this scan created that no other scan saw
+      and nothing else refers to — found through ``port_scan_history``, and,
+      for an import that writes none (Nessus), through the ids its job row
+      remembers (``in_progress_created_port_ids``); the same guards for both;
+    * scanner observations this scan first recorded (``scan_id`` never moves
+      to a later scan) unless a finding or a proposal refers to them, and the
+      name observations it made;
+    * the scan — its history, scripts and web rows cascade.
+
+    Statements only (no rows loaded); the caller commits.  Returns the counts
+    for the log line.
+    """
+    from sqlalchemy import delete, exists, select
+    from sqlalchemy.orm import aliased
+
+    from app.db import models
+    from app.db.models_findings import Finding, FindingHost, FindingVulnerability
+    from app.db.models_host_tests import HostTest
+    from app.db.models_proposals import AgentProposal, EvidenceRecord
+    from app.db.models_vulnerability import Vulnerability
+
+    HH, PH = models.HostScanHistory, models.PortScanHistory
+    other_hh = aliased(HH)
+    host_vuln = aliased(Vulnerability)
+
+    def _no(column, target):
+        return ~exists().where(column == target)
+
+    created_hosts = (
+        select(HH.host_id)
+        .where(HH.scan_id == scan_id, HH.host_created.is_(True))
+        .where(~exists().where(other_hh.host_id == HH.host_id, other_hh.scan_id != scan_id))
+        .where(_no(models.Annotation.host_id, HH.host_id))
+        .where(_no(models.HostFollow.host_id, HH.host_id))
+        .where(_no(models.HostTagAssignment.host_id, HH.host_id))
+        .where(_no(FindingHost.host_id, HH.host_id))
+        .where(_no(HostTest.host_id, HH.host_id))
+        .where(_no(EvidenceRecord.host_id, HH.host_id))
+        .where(~exists().where(
+            host_vuln.host_id == HH.host_id,
+            AgentProposal.vulnerability_id == host_vuln.id,
+        ))
+    )
+    hosts = db.execute(
+        delete(models.Host).where(models.Host.id.in_(created_hosts))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+
+    # Ports of the deleted hosts went with them; these are on hosts that stay.
+    created_ports = (
+        select(PH.port_id)
+        .where(PH.scan_id == scan_id, PH.port_created.is_(True))
+        .where(*_port_is_only_this_attempts(PH.port_id, scan_id))
+    )
+    ports = db.execute(
+        delete(models.Port).where(models.Port.id.in_(created_ports))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    # ...and the ports an attempt that writes no port history (Nessus) said it
+    # created, remembered on the job row that names this scan as in progress.
+    ports += _delete_job_recorded_ports(db, scan_id)
+
+    observations = db.execute(
+        delete(Vulnerability)
+        .where(Vulnerability.scan_id == scan_id)
+        .where(~exists().where(Finding.vuln_id == Vulnerability.id))
+        .where(~exists().where(FindingVulnerability.vuln_id == Vulnerability.id))
+        .where(~exists().where(AgentProposal.vulnerability_id == Vulnerability.id))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    db.execute(
+        delete(models.DNSRecord).where(models.DNSRecord.scan_id == scan_id)
+        .execution_options(synchronize_session=False)
+    )
+    db.execute(
+        delete(models.Scan).where(models.Scan.id == scan_id)
+        .execution_options(synchronize_session=False)
+    )
+    return {"hosts": hosts, "ports": ports, "observations": observations}
 
 
 ParserDescriptor = Tuple[str, Type, str]
@@ -525,7 +765,17 @@ class IngestionService:
                 return False
             if job is None:
                 return False
+            # R1 — a job cancelled while it WAITED (no claim token) will not
+            # be claimed again; if an earlier, dead attempt left a scan on it,
+            # nothing else would remove it.  A running parse (token set)
+            # deletes its own scan when its next heartbeat sees the cancel.
+            waiting_with_leftover = job.started_at is None and (
+                isinstance(job.in_progress_scan_id, int)
+                or isinstance(job.in_progress_created_port_ids, list)
+            )
             db.commit()
+            if waiting_with_leftover:
+                self._discard_dead_attempt_scan(db, job_id)
             return True
 
     def requeue_job(self, job_id: int) -> str:
@@ -842,6 +1092,12 @@ class IngestionService:
                 return 0
             permanently_failed = len(reaped.failed)
             db.commit()
+            # R1 — a job reaped to 'failed' will not be claimed again, so the
+            # dead attempt's partial scan is removed here.  A re-queued one is
+            # cleaned when it is claimed (_run_job), by the worker that then
+            # owns it.
+            for _failed_id in reaped.failed:
+                self._discard_dead_attempt_scan(db, _failed_id)
             # Alert admins about jobs the reaper could NOT recover (over retry
             # cap / file gone). Routine crash-requeues stay quiet; only the
             # actionable permanent failures notify. Best-effort — never let a
@@ -895,6 +1151,74 @@ class IngestionService:
         self._run_job(job_id, claimed_at=claimed_at)
         return True
 
+    def _discard_partial_scan(self, db: Session, scan_id: int, *, why: str) -> bool:
+        """Roll back whatever the failed attempt left pending, then delete its
+        committed partial scan and what only it created (``delete_partial_scan``).
+
+        Best-effort: a cleanup that fails is logged and must not replace the
+        error that got us here — the scan stays named on the job row, so the
+        next claim tries again."""
+        try:
+            db.rollback()
+            removed = delete_partial_scan(db, scan_id)
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.warning("Could not delete partial scan %s (%s)", scan_id, why, exc_info=True)
+            return False
+        logger.info(
+            "Deleted partial scan %s (%s): %d host(s), %d port(s), %d scanner observation(s) "
+            "that only it had created",
+            scan_id, why, removed["hosts"], removed["ports"], removed["observations"],
+        )
+        return True
+
+    def _discard_attempt_scan(self, db: Session, parser: object) -> bool:
+        """Delete the scan THIS attempt's parser committed, if it got that
+        far.  The id comes from the parser (``_created_scan_id``) or from what
+        it announced through ``note_scan_created``.  True when one was
+        deleted."""
+        scan_id = getattr(parser, "_created_scan_id", None)
+        if not isinstance(scan_id, int):
+            scan_id = getattr(_active_job, "scan_id", None)
+        _active_job.scan_id = None
+        if isinstance(scan_id, int):
+            return self._discard_partial_scan(db, scan_id, why="import did not finish")
+        return False
+
+    def _discard_dead_attempt_scan(self, db: Session, job_id: int) -> None:
+        """Delete the scan a previous attempt of ``job_id`` left unfinished
+        (review 2026-10-01 R1): the worker died, or was reaped, after the scan
+        was committed and before the job finished."""
+        job = db.get(IngestionJob, job_id)
+        stale_scan_id = job.in_progress_scan_id if job is not None else None
+        if not isinstance(stale_scan_id, int):
+            # R2 — the attempt's scan row is already gone (someone deleted the
+            # partial scan; the FK nulled the pointer) but the job still
+            # remembers ports it created.  Remove the ones nothing at all
+            # refers to and drop the record.
+            recorded = job.in_progress_created_port_ids if job is not None else None
+            if isinstance(recorded, list):
+                try:
+                    removed = delete_recorded_ports(db, recorded, None)
+                    job.in_progress_created_port_ids = None
+                    db.commit()
+                    logger.info(
+                        "Job %s: removed %d port(s) a dead attempt created (its scan was already gone)",
+                        job_id, removed,
+                    )
+                except Exception:  # noqa: BLE001 — best-effort, like _discard_partial_scan
+                    db.rollback()
+                    logger.warning("Could not remove a dead attempt's ports for job %s", job_id, exc_info=True)
+            return
+        if stale_scan_id == job.scan_id:
+            # The scan the job FINISHED with — never an attempt's leftover.
+            job.in_progress_scan_id = None
+            job.in_progress_created_port_ids = None
+            db.commit()
+            return
+        self._discard_partial_scan(db, stale_scan_id, why=f"left by a dead attempt of job {job_id}")
+
     def _fail_job_guarded(
         self,
         db: Session,
@@ -928,6 +1252,11 @@ class IngestionService:
                 job_id, claimed_at,
             )
             return False
+        # R1 — the row was this attempt's when it failed, so a scan still
+        # named on it is this attempt's too: one the in-process cleanup did
+        # not reach (a failure after the parser returned).  Not done on a
+        # stale write (above): that row's scan is its new owner's.
+        self._discard_dead_attempt_scan(db, job_id)
         return True
 
     def _run_job(self, job_id: int, claimed_at: Optional[datetime] = None) -> None:
@@ -953,6 +1282,10 @@ class IngestionService:
                         "cancel-before-start write skipped; the row is no longer "
                         "this attempt's", job_id, claimed_at,
                     )
+                else:
+                    # R1 — nothing will parse this job again; drop what an
+                    # earlier dead attempt left.
+                    self._discard_dead_attempt_scan(db, job_id)
                 return
 
             # Status already set to "processing" by poll_and_run_one;
@@ -961,6 +1294,18 @@ class IngestionService:
             _active_job.db = db
             _active_job.job_id = job_id
             _active_job.claimed_at = claimed_at
+            _active_job.scan_id = None
+
+            # R1 — a scan still named on the row belongs to an attempt that
+            # died (hard kill, reaped lease) after committing it.  Delete it
+            # before parsing, or this attempt imports into a second scan and
+            # the first is orphaned.
+            # (A real id only: test doubles answer every attribute truthily.)
+            if isinstance(job.in_progress_scan_id, int) or isinstance(
+                job.in_progress_created_port_ids, list
+            ):
+                self._discard_dead_attempt_scan(db, job_id)
+                job = db.get(IngestionJob, job_id)
 
             result = self._process_job(db, job)
             job = db.get(IngestionJob, job_id)  # Refresh job state
@@ -973,7 +1318,13 @@ class IngestionService:
                 # completed, even though the parser's data committed.
                 # Fencing token: a re-claimed job belongs to the newer
                 # attempt; this one's result must not be published over it.
-                _claimed = _transitions.complete(db, job_id, claimed_at)
+                # R1 — the scan is finished: it stops being "in progress" in
+                # the same statement that completes the job.
+                # R2 — and its record of created ports (cleanup only) goes too.
+                _claimed = _transitions.complete(
+                    db, job_id, claimed_at,
+                    in_progress_scan_id=None, in_progress_created_port_ids=None,
+                )
                 if not _claimed:
                     logger.info(
                         "Ingestion job %s no longer 'processing' (cancelled) — not "
@@ -989,6 +1340,10 @@ class IngestionService:
                     _scan_id = result.get("scan_id")
                     if job.status == "failed" and job.scan_id is None and _scan_id:
                         job.scan_id = _scan_id
+                        # Kept and linked, so no longer a leftover to delete
+                        # if the operator re-queues the job (R1).
+                        job.in_progress_scan_id = None
+                        job.in_progress_created_port_ids = None
                         job.message = (
                             f"Cancelled after the import had written scan #{_scan_id}: "
                             "its data is in the inventory. Delete that scan to undo it."
@@ -1103,7 +1458,7 @@ class IngestionService:
                 job_id,
                 exc.user_message or exc.underlying_error or str(exc),
             )
-        except Exception as exc:  # pragma: no cover - defensive logging
+        except Exception:  # pragma: no cover - defensive logging
             # Unexpected exceptions (something other than a clean
             # ParseFailure) could be transient — DB hiccup, memory
             # pressure, an upstream service that went away mid-parse.
@@ -1137,6 +1492,7 @@ class IngestionService:
             _active_job.service = None
             _active_job.db = None
             _active_job.job_id = None
+            _active_job.scan_id = None
             self._cancelled.discard(job_id)
             db.close()
 
@@ -1290,27 +1646,51 @@ class IngestionService:
         # both code paths.
         warnings_parts: List[str] = []
 
+        # The scan this attempt creates is announced by the parser
+        # (note_scan_created); a fallback attempt must not inherit the
+        # previous parser's.
+        _active_job.scan_id = None
+
         if parser_class is NessusIntegrationService:
             parser_instance = NessusIntegrationService(db)
-            result = parser_instance.process_nessus_file(
-                storage_path, filename, project_id=project_id,
-                # v2.341.0 — resolved at upload time (form field, else the
-                # project's setting); the worker only carries it through.
-                skip_informational=bool(options.get("skip_informational", False)),
-            )
+            try:
+                result = parser_instance.process_nessus_file(
+                    storage_path, filename, project_id=project_id,
+                    # v2.341.0 — resolved at upload time (form field, else the
+                    # project's setting); the worker only carries it through.
+                    skip_informational=bool(options.get("skip_informational", False)),
+                )
+            except Exception:
+                # Review 2026-10-01 C1 — cancel, timeout and shutdown now
+                # propagate out of the Nessus import (they used to come back
+                # as ``success: False``); its committed batches are removed
+                # exactly as for every other streaming parser.
+                self._discard_attempt_scan(db, parser_instance)
+                raise
             if not result.get("success"):
+                # C1 — a failed Nessus import (an error, a truncated export,
+                # no host processed) used to leave the hosts and observations
+                # of its committed batches in a scan no job pointed at, and
+                # the re-upload the message asks for then made a second scan.
+                # A failed import leaves nothing behind, like the others.
+                removed = self._discard_attempt_scan(db, parser_instance)
                 nessus_error_msg = result.get("error") or result.get("message") or "Nessus processing failed"
+                user_msg = result.get("message") or result.get("error")
+                if removed and user_msg:
+                    # The service's message describes what it had written
+                    # ("only N hosts were ingested"); say what is left.
+                    user_msg = f"{user_msg} Nothing from this file was kept."
                 parse_error = log_parse_error(
                     db=db,
                     filename=filename,
                     error_type="parsing_error",
                     file_type="nessus_xml",
-                    custom_message=result.get("message") or nessus_error_msg,
+                    custom_message=user_msg or nessus_error_msg,
                     project_id=project_id,
                 )
                 raise ParseFailure(
                     "Nessus processing failed",
-                    user_message=result.get("message") or result.get("error"),
+                    user_message=user_msg,
                     error_id=parse_error.id,
                     underlying_error=result.get("error"),
                 )
@@ -1360,18 +1740,10 @@ class IngestionService:
                 # can't reach it and the fallback parser re-ingests the same file
                 # under a SECOND Scan, orphaning the first. Delete exactly the id
                 # this parser created (race-free — not a project-wide id sweep).
-                partial_scan_id = getattr(parser, "_created_scan_id", None)
-                if partial_scan_id is not None:
-                    try:
-                        db.rollback()
-                        from app.db.models import Scan as _Scan
-                        db.query(_Scan).filter(_Scan.id == partial_scan_id).delete(
-                            synchronize_session=False
-                        )
-                        db.commit()
-                    except Exception:  # noqa: BLE001
-                        # Best-effort cleanup; the outer handler still rolls back.
-                        db.rollback()
+                # Review 2026-10-01 R1/R2/R6: every parser now names its scan
+                # (a heartbeat commits, so each of them can leave one), and
+                # the hosts and ports only this attempt created go with it.
+                self._discard_attempt_scan(db, parser)
                 raise
             # Ensure scan and all hosts are tagged with the project
             if project_id and scan:

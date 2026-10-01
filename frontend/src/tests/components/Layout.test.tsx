@@ -16,7 +16,7 @@ vi.mock('../../components/UserMenu', () => ({ default: () => null }));
 vi.mock('../../contexts/AuthContext', () => ({
   useAuth: () => ({ hasPermission: (role: string) => role !== 'admin' || isAdmin, isAuthenticated: true }),
 }));
-let project: { id: number; name: string; status: string } | null = null;
+let project: { id: number; name: string; status: string; my_role?: string } | null = null;
 let isAdmin = false;
 vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: project }) }));
 vi.mock('../../contexts/ThemeContext', () => ({
@@ -86,6 +86,21 @@ describe('Layout shell', () => {
     expect(within(strip).getAllByRole('link').map((a) => a.textContent)).toEqual(
       ['Hosts', 'Names', 'Scans', 'Ingestion Results', 'Scope'],
     );
+  });
+
+  // Review 2026-10-01 — the server lets every member READ the scope, so a
+  // viewer keeps the Scope tab (the page hides its own write controls);
+  // Ingestion Results' reads need analyst, so that tab is not offered.
+  it('a project viewer or auditor keeps Scope and is not offered Ingestion Results', () => {
+    for (const my_role of ['viewer', 'auditor']) {
+      project = { id: 1, name: 'Demo', status: 'active', my_role };
+      const { unmount } = renderAt('/hosts');
+      const strip = screen.getByRole('navigation', { name: 'Inventory sections' });
+      expect(within(strip).getAllByRole('link').map((a) => a.textContent), my_role).toEqual(
+        ['Hosts', 'Names', 'Scans', 'Scope'],
+      );
+      unmount();
+    }
   });
 
   it('Administration is for global administrators only', () => {

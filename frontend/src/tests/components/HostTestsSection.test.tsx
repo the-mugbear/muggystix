@@ -397,8 +397,9 @@ describe('HostTestsSection — from a result to a finding', () => {
     await waitFor(() => expect(api.createFindingFromEvidence).toHaveBeenCalledWith(90, {
       title: 'No X-Frame-Options header.', severity: 'high',
     }));
-    // The page is told which finding, so it can offer the write-up.
-    expect(onFindingCreated).toHaveBeenCalledWith(77);
+    // The page is told which finding — and what the server made of it (joined
+    // or new, and its status) — so it can offer the write-up in true words.
+    expect(onFindingCreated).toHaveBeenCalledWith(77, { finding_id: 77, joined_issue: false });
     // Settled: it leaves To do, and under Done it names its finding.
     await waitFor(() => expect(tab(/To do/)).toHaveTextContent('To do 0'));
     await userEvent.click(tab(/Done/));

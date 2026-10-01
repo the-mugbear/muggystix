@@ -19,9 +19,13 @@
 # (or restore a matching-or-older backup) instead.
 #
 # Usage:
-#   ./scripts/restore-db.sh                       # pick from ./backups/ interactively
-#   ./scripts/restore-db.sh backups/nm-pgdump-YYYYMMDD-HHMMSS.dump
+#   ./scripts/restore-db.sh                       # pick from the backup directory interactively
+#   ./scripts/restore-db.sh ../<project>-db-backups/nm-pgdump-YYYYMMDD-HHMMSS.dump
 #   ./scripts/restore-db.sh --no-safety-backup    # skip the pre-restore safety backup
+#
+# The backup is READ BACK before anything is touched (pg_restore --list for a
+# dump, a tar listing for a volume snapshot and for the uploads archive): a
+# truncated or corrupt file is refused while the current database still exists.
 #
 # Flags:
 #   --no-safety-backup     Don't take a fresh backup of the CURRENT database
@@ -56,7 +60,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,40p' "$0"
+            sed -n '2,45p' "$0"
             exit 0
             ;;
         --)
@@ -157,6 +161,31 @@ resolve_volume() {
     return 1
 }
 
+# --- An image this host already has, to run tar / pg_restore in (mirror of
+# backup-db.sh) ---------------------------------------------------------------
+# It used to be `alpine`, which the stack never ships: on an isolated network
+# a volume restore or the uploads restore failed on the pull — after the
+# database had already been dropped (review 2026-10-01 R30).  The db
+# container's own image when there is one, else what compose resolves for the
+# service; never pulled.
+helper_image() {
+    local cid img
+    cid="$($DC ps -aq db 2>/dev/null | head -1)"
+    if [[ -n "$cid" ]]; then
+        img="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null)"
+        if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
+            printf '%s\n' "$img"
+            return 0
+        fi
+    fi
+    img="$($DC config --images db 2>/dev/null | head -1)"
+    if [[ -n "$img" ]] && docker image inspect "$img" >/dev/null 2>&1; then
+        printf '%s\n' "$img"
+        return 0
+    fi
+    return 1
+}
+
 echo "=============================================="
 echo "   BlueStick — Database Restore"
 echo "=============================================="
@@ -195,6 +224,66 @@ print_info "Selected: $BACKUP_FILE"
 # Everything that belongs with the selected backup (its uploads archive; the
 # volume tar itself) is read from the directory it is IN.
 BACKUP_FILE_DIR="$(cd "$(dirname "$BACKUP_FILE")" && pwd)"
+
+# --- Read the backup back BEFORE anything is destroyed ----------------------
+# The dump used to be handed to pg_restore only after DROP DATABASE: a
+# truncated file (full disk at backup time, an interrupted copy between
+# hosts) was discovered with the database already gone (review 2026-10-01
+# B11).  Resolved here, while the db container still exists, and reused for
+# every tar/pg_restore below — so nothing later depends on pulling an image.
+if ! HELPER_IMAGE="$(helper_image)"; then
+    print_error "No database image on this host to validate and restore with."
+    print_error "Start the stack once ($DC up -d db) or load the image, then re-run."
+    exit 1
+fi
+
+uploads_archive=""
+[[ -f "${BACKUP_FILE}.meta" ]] && \
+    uploads_archive="$(grep -E '^uploads_archive=' "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+
+validate_backup() {
+    case "$BACKUP_FILE" in
+      *.dump)
+        local entries
+        entries="$(docker run --rm -i --entrypoint pg_restore "$HELPER_IMAGE" --list \
+            < "$BACKUP_FILE" 2>/dev/null | grep -c '^[0-9]')" || true
+        if [[ "${entries:-0}" -eq 0 ]]; then
+            print_error "This dump cannot be read (pg_restore --list found no table of contents):"
+            print_error "    $BACKUP_FILE"
+            print_error "It is truncated, corrupt, or from a newer PostgreSQL than this stack runs."
+            return 1
+        fi
+        print_success "Dump is readable ($entries entries)."
+        ;;
+      *.tar.gz)
+        # PG_VERSION at the top is what makes a tar a PGDATA snapshot.
+        if ! tar tzf "$BACKUP_FILE" 2>/dev/null | grep -qE '^(\./)?PG_VERSION$'; then
+            print_error "This archive is unreadable or is not a PostgreSQL volume snapshot:"
+            print_error "    $BACKUP_FILE"
+            return 1
+        fi
+        print_success "Volume snapshot is readable."
+        ;;
+      *)
+        print_error "Unrecognised backup type (expected .dump or .tar.gz): $BACKUP_FILE"
+        return 1
+        ;;
+    esac
+    if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
+        if ! tar tzf "$BACKUP_FILE_DIR/$uploads_archive" >/dev/null 2>&1; then
+            print_error "The uploads archive that belongs to this backup is unreadable:"
+            print_error "    $BACKUP_FILE_DIR/$uploads_archive"
+            print_error "To restore the database alone, remove the uploads_archive= line from"
+            print_error "    ${BACKUP_FILE}.meta"
+            return 1
+        fi
+        print_success "Uploads archive is readable."
+    fi
+}
+if ! validate_backup; then
+    print_error "Nothing was changed."
+    exit 1
+fi
 
 # --- Credential-encryption key check ---------------------------------------
 # If the backup was taken under a different CREDENTIAL_ENCRYPTION_KEY/SECRET_KEY
@@ -281,7 +370,10 @@ if [[ "$NO_SAFETY_BACKUP" -eq 1 ]]; then
     print_warning "state will be unrecoverable."
 else
     print_info "Taking a safety backup of the CURRENT database first..."
-    if ! "$SCRIPT_DIR/backup-db.sh"; then
+    # BACKUP_KEEP=0: no retention pass here.  The backup being restored may be
+    # the oldest one in the directory, and pruning "older than the newest N"
+    # after adding one more would delete it moments before it is read.
+    if ! BACKUP_KEEP=0 "$SCRIPT_DIR/backup-db.sh"; then
         print_error "Safety backup failed — aborting restore."
         print_error "Re-run with --no-safety-backup to override (only do this if the"
         print_error "current database is already unrecoverable)."
@@ -336,10 +428,14 @@ SQL
     print_warning "Stopping ALL containers..."
     $DC down
     print_info "Replacing the contents of volume '$vol'..."
-    docker run --rm \
+    # The archive is streamed in on stdin (it is the operator's 0600 file; no
+    # bind mount of the backup directory is needed).  find -mindepth 1 also
+    # removes dot-entries, which `rm -rf /data/*` left behind.
+    docker run --rm -i \
         -v "$vol":/data \
-        -v "$BACKUP_FILE_DIR":/backup:ro \
-        alpine sh -c "rm -rf /data/* 2>/dev/null; tar xzf /backup/$(basename "$BACKUP_FILE") -C /data"
+        --entrypoint sh \
+        "$HELPER_IMAGE" -c "find /data -mindepth 1 -delete; tar xzf - -C /data" \
+        < "$BACKUP_FILE"
     print_success "Volume contents replaced."
     ;;
 
@@ -353,16 +449,16 @@ esac
 # Extracted OVER ./uploads while the app is stopped: files in the archive
 # replace their namesakes; anything newer is left in place (an orphan file is
 # harmless, a deleted one is not).  ingestion_queue is never in the archive.
-uploads_archive=""
-[[ -f "${BACKUP_FILE}.meta" ]] && \
-    uploads_archive="$(grep -E '^uploads_archive=' "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+# ($uploads_archive was read from the .meta, and the archive read back, before
+# anything was touched — see validate_backup.)
 if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
     print_info "Restoring uploads/ (evidence images, issued reports, screenshots) from $uploads_archive..."
     mkdir -p "$PROJECT_ROOT/uploads"
-    if docker run --rm \
+    if docker run --rm -i \
         -v "$PROJECT_ROOT/uploads":/uploads \
-        -v "$BACKUP_FILE_DIR":/backup:ro \
-        alpine tar xzf "/backup/$uploads_archive" -C /uploads; then
+        --entrypoint tar \
+        "$HELPER_IMAGE" xzf - -C /uploads \
+        < "$BACKUP_FILE_DIR/$uploads_archive"; then
         print_success "Uploads restored."
     else
         print_error "Restoring uploads/ failed — evidence images and issued report files may be missing."
@@ -380,14 +476,30 @@ echo ""
 print_info "Starting the full stack — the backend will migrate the schema forward..."
 $DC up -d
 
-print_info "Waiting for the backend to become healthy..."
+# The backend serves only after `alembic upgrade head`, and an older backup
+# may have many revisions (some of them data migrations) to run: the wait was
+# 150 s, after which a healthy, still-migrating backend was reported as not
+# having come up.  RESTORE_HEALTH_TIMEOUT (seconds, default 1800); the loop
+# ends early when the container has exited or keeps restarting.
+RESTORE_HEALTH_TIMEOUT="${RESTORE_HEALTH_TIMEOUT:-1800}"
+print_info "Waiting for the backend to become healthy (it migrates the restored schema first; up to ${RESTORE_HEALTH_TIMEOUT}s)..."
 ok=0
+state="unknown"
+waited=0
 bid="$($DC ps -q backend 2>/dev/null || true)"
-for _ in $(seq 1 30); do
+while [[ "$waited" -lt "$RESTORE_HEALTH_TIMEOUT" ]]; do
     status="unknown"
-    [[ -n "$bid" ]] && status="$(docker inspect --format '{{.State.Health.Status}}' "$bid" 2>/dev/null || echo unknown)"
+    if [[ -n "$bid" ]]; then
+        status="$(docker inspect --format '{{.State.Health.Status}}' "$bid" 2>/dev/null || echo unknown)"
+        state="$(docker inspect --format '{{.State.Status}}' "$bid" 2>/dev/null || echo unknown)"
+    fi
     if [[ "$status" == "healthy" ]]; then ok=1; break; fi
+    if [[ "$state" == "exited" || "$state" == "dead" ]]; then break; fi
+    # restart: unless-stopped turns a failing boot into a restart loop.
+    restarts="$(docker inspect --format '{{.RestartCount}}' "$bid" 2>/dev/null || echo 0)"
+    if [[ "$restarts" =~ ^[0-9]+$ && "$restarts" -ge 3 ]]; then state="crash-looping ($restarts restarts)"; break; fi
     sleep 5
+    waited=$((waited + 5))
     bid="$($DC ps -q backend 2>/dev/null || true)"
 done
 
@@ -395,7 +507,12 @@ echo ""
 if [[ "$ok" -eq 1 ]]; then
     print_success "Restore complete — backend healthy, schema migrated to head."
 else
-    print_error "Backend did not become healthy within the timeout."
+    if [[ "$state" == "running" ]]; then
+        print_warning "The backend is still starting after ${RESTORE_HEALTH_TIMEOUT}s (container running) — it may"
+        print_warning "still be migrating the restored schema.  Follow:  $DC logs -f backend"
+    else
+        print_error "The backend did not come up (container state: $state)."
+    fi
     print_warning "If the backup's schema is NEWER than the deployed code, alembic"
     print_warning "cannot migrate it forward.  Inspect the migration log:"
     echo "    $DC logs backend | grep -iE 'alembic|revision'"

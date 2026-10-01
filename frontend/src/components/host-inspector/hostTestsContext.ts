@@ -6,7 +6,7 @@
  */
 import { createContext, useContext } from 'react';
 
-import type { HostTest } from '../../services/api';
+import type { HostTest, PromotedEvidence } from '../../services/api';
 import { openInspectorSection } from './InspectorSection';
 
 /** The weakness a hand-written test is meant to confirm. */
@@ -45,7 +45,7 @@ export interface HostTestsController {
   /** Text typed in the panel and not saved. */
   resultDraft: boolean;
   /** A finding was made (or joined) from a result. */
-  onFindingCreated: (findingId: number) => void;
+  onFindingCreated: (findingId: number, made?: PromotedEvidence) => void;
 }
 
 const Ctx = createContext<HostTestsController | null>(null);

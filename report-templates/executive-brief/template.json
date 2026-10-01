@@ -5,6 +5,7 @@
   "formats": ["docx", "html"],
   "scope_inline_max": 25,
   "scope_domains_inline_max": 25,
+  "evidence_records": false,
   "postprocess": {
     "docx": "scripts/fix-docx-report.py"
   },

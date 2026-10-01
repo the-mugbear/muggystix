@@ -9,7 +9,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List, Optional, Set, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 
 from lxml import etree
 
@@ -18,7 +18,9 @@ from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import ScanClock, correlate_scan, epoch_to_utc
+from app.parsers.parser_utils import (
+    ProgressBeat, ScanClock, announce_scan, beat_while_reading, correlate_scan, epoch_to_utc, without_nul,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +35,18 @@ logger = logging.getLogger(__name__)
 # one upsert per IP, exact counts.  Only a genuinely huge scan flushes, trading
 # some repeat host-upserts for bounded RAM.
 _COLLECT_FLUSH_IPS = 100_000
+# Review 2026-10-01 R6 — heartbeat while COLLECTING, every this many records.
+_READ_BEAT_EVERY = 50_000
+
+
+def _port_reason(raw: Any) -> Optional[str]:
+    """Why masscan calls the port open (``syn-ack``).  A banner record repeats
+    the port with ``reason="response"`` — that is the banner arriving, not the
+    port's state — so it is not a reason."""
+    if not isinstance(raw, str):
+        return None
+    value = raw.strip().lower()[:50]
+    return None if not value or value == "response" else value
 
 
 class MasscanParser:
@@ -52,6 +66,7 @@ class MasscanParser:
         # v2.390.0 — `--banners` output: (ip, port, proto, kind) → the latest banner.
         self._banners: Dict[Tuple[str, int, str, str], str] = {}
         self._truncated_at: Optional[str] = None
+        self._unread_lines = 0
         self.last_parse_stats = None
         start = time.time()
         scan = self._create_scan_record(filename)
@@ -145,6 +160,18 @@ class MasscanParser:
                     "summary": None,
                     "partial": True,
                 }
+            elif self._unread_lines:
+                # N9 — list lines that were not records (reported the way the
+                # sibling parsers report skipped rows).
+                self.last_parse_stats = {
+                    "skipped": self._unread_lines,
+                    "warnings": (
+                        f"{self._unread_lines} line{'s' if self._unread_lines != 1 else ''} of the "
+                        "list file were not masscan records and were skipped"
+                    ),
+                    "summary": None,
+                    "partial": True,
+                }
             return scan
         except Exception:
             self.db.rollback()
@@ -191,11 +218,23 @@ class MasscanParser:
             )
             raise
 
+        read_beat = ProgressBeat("records read", every=_READ_BEAT_EVERY)
         try:
             for event, elem in context:
                 tag = strip_namespace(elem.tag)
 
                 if event == "start" and tag in {"nmaprun", "masscan"}:
+                    # Review 2026-10-01 R4 — masscan writes nmap's XML dialect
+                    # (<nmaprun scanner="masscan">), so this parser read ANY
+                    # nmap file: tried as the fallback after the nmap parser
+                    # failed, it imported open ports only — no services,
+                    # scripts or OS — and the job completed.  A root that
+                    # names another scanner is not masscan output.
+                    scanner = (elem.get("scanner") or "").strip().lower()
+                    if scanner and scanner != "masscan":
+                        raise ValueError(
+                            f"Not masscan XML: the file says it was written by '{scanner}'."
+                        )
                     scan.version = elem.get("version")
                     scan.command_line = elem.get("args")
                     scan.tool_name = elem.get("scanner", "masscan")
@@ -204,6 +243,9 @@ class MasscanParser:
                         scan.time_source = models.SCAN_TIME_TOOL_RUN
 
                 if event == "end" and tag == "host":
+                    # R6 — the read phase heartbeats (a file of few hosts and
+                    # very many records never reaches the flush threshold).
+                    read_beat.tick()
                     host_info = self._extract_xml_host(elem)
                     if host_info:
                         host_ports[host_info["ip_address"]].extend(host_info["ports"])
@@ -237,7 +279,7 @@ class MasscanParser:
     ) -> Dict[str, List[Dict[str, Any]]]:
         host_ports: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
 
-        for entry in self._iter_json_entries(file_path):
+        for entry in beat_while_reading(self._iter_json_entries(file_path), every=_READ_BEAT_EVERY):
             ip_address = entry.get("ip") or entry.get("addr")
             if not ip_address:
                 continue
@@ -258,6 +300,7 @@ class MasscanParser:
                     "port_number": port_number,
                     "protocol": protocol,
                     "state": state,
+                    "reason": _port_reason(port_info.get("reason")),
                 })
             # Flush at entry boundaries so an IP's ports from one record stay
             # together in the same persist call.
@@ -274,7 +317,9 @@ class MasscanParser:
         gnmap_lines_seen = 0
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
+            # NUL removed (review 2026-10-01 R5): a banner line is stored, and
+            # PostgreSQL text cannot hold NUL.
+            for line in beat_while_reading(without_nul(handle), "lines read", every=_READ_BEAT_EVERY):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
@@ -300,6 +345,9 @@ class MasscanParser:
                 # Simple list format: open tcp 80 10.0.0.1
                 parts = line.split()
                 if len(parts) < 4:
+                    # Review 2026-10-01 N9 — counted: a line that is not a
+                    # list record was dropped without the import saying so.
+                    self._unread_lines += 1
                     continue
                 state, protocol, port_str, ip_address = parts[:4]
                 # `--banners`: "banner tcp 80 10.0.0.1 <epoch> <kind> <text…>"
@@ -311,6 +359,7 @@ class MasscanParser:
                 try:
                     port_number = int(port_str)
                 except ValueError:
+                    self._unread_lines += 1
                     continue
                 # `open tcp 80 10.0.0.1 1711938600` — 5th field is epoch.
                 if len(parts) >= 5:
@@ -406,12 +455,18 @@ class MasscanParser:
             if host_id is None:
                 continue
 
-            seen: Set[Tuple[int, str]] = set()
+            seen: Dict[Tuple[int, str], Dict[str, Any]] = {}
             for port_data in host_ports.get(ip, []):
                 key = (port_data["port_number"], str(port_data.get("protocol", "tcp")).lower())
-                if key in seen:
+                kept = seen.get(key)
+                if kept is not None:
+                    # masscan writes a port once per record (the SYN-ACK, then
+                    # one per banner): the first record is kept, and takes the
+                    # reason from whichever record carries one.
+                    if not kept.get("reason") and port_data.get("reason"):
+                        kept["reason"] = port_data["reason"]
                     continue
-                seen.add(key)
+                seen[key] = port_data
                 rows.append((host_id, port_data))
         return rows
 
@@ -571,9 +626,12 @@ class MasscanParser:
             params[f"proto_{idx}"] = port_data.get("protocol", "tcp")
             params[f"st_{idx}"] = port_data.get("state", "open")
             params[f"svc_{idx}"] = port_data.get("service_name")
+            # Review 2026-10-01 B12 — why the port is open (XML `<state
+            # reason="syn-ack">`, JSON `reason`); the list format has none.
+            params[f"rsn_{idx}"] = port_data.get("reason") or None
             values_clauses.append(
                 f"(:hid_{idx}, :pn_{idx}, :proto_{idx}, :st_{idx}, "
-                f":svc_{idx}, :scan_id, TRUE)"
+                f":rsn_{idx}, :svc_{idx}, :scan_id, TRUE)"
             )
 
         # service_name merge MIRRORS the canonical rule in
@@ -586,11 +644,20 @@ class MasscanParser:
         # longer/better nmap service name. Keep in lockstep.
         sql = (
             "INSERT INTO ports_v2 "
-            "(host_id, port_number, protocol, state, service_name, "
+            "(host_id, port_number, protocol, state, reason, service_name, "
             "last_updated_scan_id, is_active) "
             "VALUES " + ", ".join(values_clauses) + " "
             "ON CONFLICT (host_id, port_number, protocol) DO UPDATE SET "
             "state = EXCLUDED.state, last_seen = NOW(), "
+            # reason MIRRORS host_deduplication_service._update_port: it
+            # belongs to the observation that set the state.  A scan that
+            # gives none (the list format) keeps the stored one while the
+            # state is unchanged; a changed state drops a reason that
+            # described the old one.
+            "reason = CASE "
+            "WHEN EXCLUDED.reason IS NOT NULL THEN EXCLUDED.reason "
+            "WHEN ports_v2.state IS DISTINCT FROM EXCLUDED.state THEN NULL "
+            "ELSE ports_v2.reason END, "
             "last_updated_scan_id = EXCLUDED.last_updated_scan_id, "
             "is_active = TRUE, "
             "service_name = CASE "
@@ -695,6 +762,7 @@ class MasscanParser:
         self.db.add(scan)
         self.db.flush()
         self._created_scan_id = scan.id
+        announce_scan(self.db, scan)
         return scan
 
     def _note_banner(self, ip: str, port: int, protocol: Optional[str], kind: Optional[str], banner: str) -> None:
@@ -721,8 +789,8 @@ class MasscanParser:
         if not self._banners:
             return
         by_ip: Dict[str, List[Tuple[int, str, str, str]]] = {}
-        for (ip, port, proto, kind), text in self._banners.items():
-            by_ip.setdefault(ip, []).append((port, proto, kind, text))
+        for (ip, port, proto, kind), banner in self._banners.items():
+            by_ip.setdefault(ip, []).append((port, proto, kind, banner))
         ips = list(by_ip)
         for start in range(0, len(ips), self._BANNER_CHUNK):
             chunk = ips[start:start + self._BANNER_CHUNK]
@@ -736,8 +804,8 @@ class MasscanParser:
                 )
             }
             wanted = {
-                (port_ids[(ip, port, proto)], f"masscan-{kind}"): text
-                for ip in chunk for port, proto, kind, text in by_ip[ip]
+                (port_ids[(ip, port, proto)], f"masscan-{kind}"): banner
+                for ip in chunk for port, proto, kind, banner in by_ip[ip]
                 if (ip, port, proto) in port_ids
             }
             if not wanted:
@@ -749,15 +817,15 @@ class MasscanParser:
                     models.Script.script_id.like("masscan-%"),
                 )
             }
-            for (pid, script_id), text in wanted.items():
+            for (pid, script_id), banner in wanted.items():
                 row = existing.get((pid, script_id))
                 if row is not None:
                     # scan_id stays the first recorder: it cascades on delete,
                     # and a failed import's cleanup deletes its scan (H2).
-                    row.output = text
+                    row.output = banner
                     row.last_seen = func.now()
                 else:
-                    self.db.add(models.Script(port_id=pid, script_id=script_id, output=text, scan_id=scan_id))
+                    self.db.add(models.Script(port_id=pid, script_id=script_id, output=banner, scan_id=scan_id))
             self.db.flush()
         self._banners = {}
 
@@ -789,6 +857,7 @@ class MasscanParser:
                     "port_number": port_number,
                     "protocol": protocol,
                     "state": state,
+                    "reason": _port_reason(state_elem.get("reason") if state_elem is not None else None),
                 })
 
         if not ports:
@@ -858,6 +927,7 @@ class MasscanParser:
 
     # Set per parse in parse_file; None when a collector is driven directly.
     _clock: Optional[ScanClock] = None
+    _unread_lines = 0
 
     def _observe_epoch(self, raw: Any) -> None:
         if self._clock is not None:

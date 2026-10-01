@@ -39,7 +39,7 @@ import struct
 import sys
 import time
 import zlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 sys.path.insert(0, "/app")
 

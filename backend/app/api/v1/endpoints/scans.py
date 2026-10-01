@@ -4,7 +4,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, desc, case, cast, distinct, and_, text, or_, exists, literal, String
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, Field
 
 from app.db.session import get_db
 from app.db import models
@@ -28,13 +28,14 @@ from app.services.format_registry import format_label
 from app.services.import_attention_service import superseded_import_condition
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
-from app.services.host_query_common import escape_like
+from app.services.scan_inventory_filters import apply_scan_inventory_filters
+from app.services.scan_snapshot_service import ScanHostSnapshot, scan_host_snapshots
 from app.services.scan_diff_service import (
     ScanDiffResponse,
     ScanNotInProject,
     compute_scan_diff,
 )
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole
@@ -171,32 +172,9 @@ _ADMIN_RESPONSES = {
     403: {"description": "Insufficient permissions — admin role required"},
 }
 
-def _apply_scan_inventory_filters(query, *, search, tool, created_after, uploaded_by=None):
-    """Apply the /scans page's search / tool / date-range / uploader filters.
-
-    Shared by the list endpoint and the summary endpoint so the headline
-    totals can never drift from the rows the table shows.  Assumes
-    ``models.Scan`` is part of the query's FROM clause.
-    """
-    if search and search.strip():
-        needle = f"%{search.strip()}%"
-        query = query.filter(
-            (models.Scan.filename.ilike(needle))
-            | (models.Scan.tool_name.ilike(needle))
-            | (models.Scan.scan_type.ilike(needle))
-        )
-    if tool and tool.strip():
-        tool_lower = tool.strip().lower()
-        query = query.filter(
-            (func.lower(models.Scan.tool_name) == tool_lower)
-            | (func.lower(models.Scan.scan_type) == tool_lower)
-        )
-    if created_after is not None:
-        query = query.filter(models.Scan.created_at >= created_after)
-    if uploaded_by is not None:
-        query = query.filter(models.Scan.uploaded_by_id == uploaded_by)
-    return query
-
+# The search / tool / date-range / uploader filters every /scans list shares
+# are ``scan_inventory_filters.apply_scan_inventory_filters`` (a service since
+# the 2026-10-01 review, B4 — the agents' scan list reads it too).
 
 _UPLOADED_BY = Query(
     None, ge=1,
@@ -468,9 +446,9 @@ def get_scans(
         .filter(models.Scan.project_id == project.id)
     )
     # v2.82.0 tool filter / v2.83.0 date-range filter / search — all shared
-    # with the summary endpoint via _apply_scan_inventory_filters so the
+    # with the summary endpoint via apply_scan_inventory_filters so the
     # headline totals can't drift from the rows shown here.
-    scans_query = _apply_scan_inventory_filters(
+    scans_query = apply_scan_inventory_filters(
         scans_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     if ids:
@@ -804,7 +782,7 @@ def get_scans_summary(
         .outerjoin(models.HostScanHistory, models.Scan.id == models.HostScanHistory.scan_id)
         .filter(models.Scan.project_id == project.id)
     )
-    host_agg = _apply_scan_inventory_filters(
+    host_agg = apply_scan_inventory_filters(
         host_agg, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     host_row = host_agg.one()
@@ -823,7 +801,7 @@ def get_scans_summary(
             models.PortScanHistory.state_at_scan == "open",
         )
     )
-    open_services_query = _apply_scan_inventory_filters(
+    open_services_query = apply_scan_inventory_filters(
         open_services_query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by
     )
     open_services = open_services_query.scalar() or 0
@@ -838,14 +816,14 @@ def get_scans_summary(
         db.query(tool_expr, func.count(models.Scan.id))
         .filter(models.Scan.project_id == project.id)
     )
-    tool_counts_q = _apply_scan_inventory_filters(
+    tool_counts_q = apply_scan_inventory_filters(
         tool_counts_q, search=search, tool=None, created_after=created_after, uploaded_by=uploaded_by
     )
     tool_counts = {label: int(n) for label, n in tool_counts_q.group_by(tool_expr).all() if label}
 
     # Who uploaded what matches the other filters — never narrowed by the
     # uploader filter itself, so the chooser keeps offering everyone else.
-    uploaders_q = _apply_scan_inventory_filters(
+    uploaders_q = apply_scan_inventory_filters(
         db.query(User.id, User.username, User.full_name, func.count(models.Scan.id))
         .select_from(models.Scan)
         .join(User, User.id == models.Scan.uploaded_by_id)
@@ -1123,7 +1101,7 @@ def get_import_history(
     )
     newest_match: Dict[int, datetime] = {}
     if batches:
-        matching = _apply_scan_inventory_filters(
+        matching = apply_scan_inventory_filters(
             db.query(models.Scan.batch_id, func.max(models.Scan.created_at))
             .filter(
                 models.Scan.project_id == project.id,
@@ -1138,7 +1116,7 @@ def get_import_history(
         if (b.id in newest_match) or not filters_active
     ]
 
-    unbatched = _apply_scan_inventory_filters(
+    unbatched = apply_scan_inventory_filters(
         db.query(models.Scan.id, models.Scan.created_at)
         .filter(models.Scan.project_id == project.id, models.Scan.batch_id.is_(None)),
         search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
@@ -1200,7 +1178,7 @@ def list_scan_batches(
     batch with ``GET /scans/?batch_id=…``."""
     def _matching(query):
         query = query.filter(models.Scan.project_id == project.id, models.Scan.batch_id.isnot(None))
-        return _apply_scan_inventory_filters(
+        return apply_scan_inventory_filters(
             query, search=search, tool=tool, created_after=created_after, uploaded_by=uploaded_by,
         )
 
@@ -1741,7 +1719,7 @@ def delete_scan(
             "hosts_removed": len(orphan_host_ids),
         }
 
-    except Exception as e:
+    except Exception:
         db.rollback()
         logger.exception("Failed to delete scan %s", scan_id)
         raise HTTPException(status_code=500, detail="Error deleting scan")
@@ -1850,70 +1828,10 @@ def get_scan_command_explanation(
     }
 
 # ---------------------------------------------------------------------------
-# As-scanned host snapshots (v2.299.0)
-#
-# The Scan Detail page rendered the CURRENT Host rows of everything the scan
-# had ever seen — current state, current hostname, and every port the host has
-# today — under headings that read as a record of the scan.  So a host that was
-# down on the day and is up now showed as up "in" that scan, and ports found
-# months later appeared in it.  The counts were fixed in v2.298.0; this is the
-# per-host table behind them.
-#
-# Deliberately a separate DTO rather than HostSchema with extra fields: the two
-# answer different questions, and a shared shape is how "current" leaked into
-# an audit view in the first place.  Note there is no OS here — os_info_updated
-# records only WHETHER a scan touched the OS, not what it said, so an
-# as-scanned OS cannot be reconstructed.  Better to omit it than to print
-# today's value under a historical heading.
+# As-scanned host snapshots (v2.299.0) — the query and its shapes live in
+# ``services/scan_snapshot_service.py`` so the agent read
+# (``GET /agent/assist/scans/{id}/hosts``) returns the same rows.
 # ---------------------------------------------------------------------------
-
-def _service_name_at_scan(service_info: Optional[str]) -> Optional[str]:
-    """The service name THIS scan recorded for a port, from the
-    ``PortScanHistory.service_info`` JSON the dedup path writes per (port,
-    scan).  NULL means the scan recorded no service — reported as none, never
-    filled from the live Port row (that would leak a later scan's value into
-    an as-scanned view)."""
-    if not service_info:
-        return None
-    try:
-        import json
-
-        data = json.loads(service_info)
-    except (TypeError, ValueError):
-        return None
-    if not isinstance(data, dict):
-        return None
-    name = data.get("service_name")
-    return name if isinstance(name, str) and name else None
-
-
-class ScanPortSnapshot(BaseModel):
-    port_number: int
-    protocol: Optional[str] = None
-    #: State THIS scan observed. The port's current state may differ.
-    state_at_scan: Optional[str] = None
-    service_name: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ScanHostSnapshot(BaseModel):
-    host_id: int
-    #: Addresses are stable, so this is both the as-scanned and current value.
-    ip_address: str
-    hostname_at_scan: Optional[str] = None
-    state_at_scan: Optional[str] = None
-    #: True when this scan is the one that first discovered the host.
-    host_created: bool = False
-    observed_port_count: int = 0
-    open_port_count: int = 0
-    ports: List[ScanPortSnapshot] = Field(default_factory=list)
-
-
-#: Ports listed per host row. Beyond this the row reports counts only — a scan
-#: of a host with 65k open ports must not produce a 65k-element row.
-_SNAPSHOT_PORT_CAP = 50
-
 
 @router.get(
     "/{scan_id}/host-snapshots",
@@ -1937,103 +1855,16 @@ def get_scan_host_snapshots(
     Every field is read from the observation tables (``HostScanHistory``,
     ``PortScanHistory``), so the response is stable: re-running it after later
     scans, or after a port is remediated, returns the same thing.  Use
-    ``GET /hosts/scan/{scan_id}`` for the hosts' *current* records.
+    ``GET /hosts/scan/{scan_id}`` for the hosts' *current* records.  Each row
+    carries ``credentialed`` — whether this scan authenticated to the host
+    (true / false when the scanner said so, null when it did not).
     """
-    scan = db.query(models.Scan).filter(
-        models.Scan.id == scan_id,
-        models.Scan.project_id == project.id,
-    ).first()
-    if not scan:
+    try:
+        return scan_host_snapshots(
+            db, project.id, scan_id, state=state, search=search, skip=skip, limit=limit,
+        )
+    except ScanNotInProject:
         raise HTTPException(status_code=404, detail="Scan not found")
-
-    base = (
-        db.query(models.HostScanHistory, models.Host)
-        .join(models.Host, models.Host.id == models.HostScanHistory.host_id)
-        .filter(models.HostScanHistory.scan_id == scan_id)
-    )
-    if state:
-        base = base.filter(models.HostScanHistory.state_at_scan == state)
-    if search:
-        escaped = escape_like(search)
-        like = f"%{escaped}%"
-        base = base.filter(
-            or_(
-                models.Host.ip_address.ilike(like),
-                models.HostScanHistory.hostname_at_scan.ilike(like),
-            )
-        )
-
-    total = base.with_entities(func.count(models.HostScanHistory.id)).scalar() or 0
-    rows = (
-        base.order_by(models.Host.ip_address)
-        .offset(skip)
-        .limit(limit)
-        .all()
-    )
-
-    host_ids = [host.id for _hist, host in rows]
-    ports_by_host: Dict[int, List[ScanPortSnapshot]] = {}
-    # Per-host totals counted for EVERY observed row; snapshot objects (and
-    # the service_info JSON decode) built only for the first _SNAPSHOT_PORT_CAP
-    # per host (v2.332.1).  The cap used to be applied after constructing a
-    # snapshot for every row, so a page of broad-scan hosts materialised and
-    # parsed thousands of objects it then threw away.
-    observed_counts: Dict[int, int] = {}
-    open_counts: Dict[int, int] = {}
-    if host_ids:
-        # One query for the page's observed ports.  Joined to Port only for
-        # its identity columns (number/protocol); membership, state AND the
-        # service come from the observation.  v2.332.0 — service_name used to
-        # be read from the live Port row, so a later scan re-fingerprinting a
-        # port silently rewrote every older scan's "as scanned" view.  The
-        # per-scan value has been written to PortScanHistory.service_info all
-        # along; this is its first reader.
-        port_rows = (
-            db.query(
-                models.Port.host_id,
-                models.Port.port_number,
-                models.Port.protocol,
-                models.PortScanHistory.state_at_scan,
-                models.PortScanHistory.service_info,
-            )
-            .select_from(models.PortScanHistory)
-            .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
-            .filter(
-                models.PortScanHistory.scan_id == scan_id,
-                models.Port.host_id.in_(host_ids),
-            )
-            .order_by(models.Port.port_number)
-            .all()
-        )
-        for host_id, number, protocol, state_at_scan, service_info in port_rows:
-            observed_counts[host_id] = observed_counts.get(host_id, 0) + 1
-            if state_at_scan == "open":
-                open_counts[host_id] = open_counts.get(host_id, 0) + 1
-            shown = ports_by_host.setdefault(host_id, [])
-            if len(shown) >= _SNAPSHOT_PORT_CAP:
-                continue
-            shown.append(
-                ScanPortSnapshot(
-                    port_number=number,
-                    protocol=protocol,
-                    state_at_scan=state_at_scan,
-                    service_name=_service_name_at_scan(service_info),
-                )
-            )
-
-    items = []
-    for hist, host in rows:
-        items.append(ScanHostSnapshot(
-            host_id=host.id,
-            ip_address=host.ip_address,
-            hostname_at_scan=hist.hostname_at_scan,
-            state_at_scan=hist.state_at_scan,
-            host_created=bool(hist.host_created),
-            observed_port_count=observed_counts.get(host.id, 0),
-            open_port_count=open_counts.get(host.id, 0),
-            ports=ports_by_host.get(host.id, []),
-        ))
-    return Paginated[ScanHostSnapshot].build(items, total, skip, limit)
 
 
 @router.get(

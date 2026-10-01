@@ -201,6 +201,19 @@ describe('navigation manifest', () => {
     expect(mismatches).toEqual([]);
   });
 
+  // Review 2026-10-01 — a page stays reachable for every role the server lets
+  // READ it (style guide §40).  Scope's GETs are open to every member, so its
+  // route and nav entry are `viewer` and the page hides its write controls;
+  // Ingestion Results' GETs need analyst, so the page is not offered below it.
+  it('Scope is every member\'s page; Ingestion Results is an analyst\'s', () => {
+    const manifest = Object.fromEntries(NAV_PAGES.map((p) => [p.path, p.requiredRole]));
+    const appRoles = appRouteRoles();
+    expect(manifest['/scopes']).toBe('viewer');
+    expect(appRoles['/scopes']).toBe('viewer');
+    expect(manifest['/ingestion-results']).toBe('analyst');
+    expect(appRoles['/ingestion-results']).toBe('analyst');
+  });
+
   it('every hub landing has a route gated at the hub role (HUB_DEFS coverage)', () => {
     const appRoles = appRouteRoles();
     for (const hub of HUB_DEFS) {

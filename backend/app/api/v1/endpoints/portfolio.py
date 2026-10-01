@@ -22,7 +22,7 @@ from app.db.models_project import Project, ProjectMembership
 from app.db.models_host_tests import ACTIVE_TEST_STATUSES, HostTest
 from app.services.engagement_metrics_service import project_engagement
 from app.services.project_signals_service import project_signals
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 
 logger = logging.getLogger(__name__)
 router = APIRouter()

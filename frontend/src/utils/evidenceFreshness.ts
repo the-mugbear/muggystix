@@ -55,7 +55,31 @@ export interface FreshnessFact {
   /** How to read it: current, a gap, or not applicable. */
   tone: 'ok' | 'gap' | 'na' | 'warn';
   title: string;
+  /** Plain words printed after the value ("42d ago · not credentialed"). */
+  note?: string;
+  /** `warn` = worth knowing (the warning text token), never a severity colour. */
+  noteTone?: 'plain' | 'warn';
 }
+
+/** Whether the vulnerability scan authenticated — words beside "assessed",
+ *  not a different kind of assessed. One wording for the inspector. */
+export const CREDENTIALED_WORDS: Record<'yes' | 'no' | 'not_stated', { note: string; tone: 'plain' | 'warn'; title: string }> = {
+  yes: {
+    note: 'credentialed',
+    tone: 'plain',
+    title: 'A vulnerability scan authenticated to this host, so it checked installed software and settings from the inside.',
+  },
+  no: {
+    note: 'not credentialed',
+    tone: 'warn',
+    title: 'The vulnerability scan did not authenticate to this host: it saw only what is exposed on the network. Few or no results from it is weaker evidence than a credentialed scan.',
+  },
+  not_stated: {
+    note: 'credentials not stated',
+    tone: 'plain',
+    title: 'No scan of this host said whether it authenticated (an OpenVAS or Nuclei scan, or an import from before this was recorded).',
+  },
+};
 
 /** The at-a-glance freshness line: one fact per assessment domain. */
 export const freshnessFacts = (a: HostAssessment): FreshnessFact[] => {
@@ -67,6 +91,7 @@ export const freshnessFacts = (a: HostAssessment): FreshnessFact[] => {
     tone: a.last_observed_at ? 'ok' : 'gap',
     title: 'The newest scan that saw this host at all. It says nothing about which checks that scan ran.',
   });
+  const creds = a.vuln_assessed && a.vuln_scan_credentialed ? CREDENTIALED_WORDS[a.vuln_scan_credentialed] : undefined;
   facts.push(
     a.vuln_assessed
       ? {
@@ -74,7 +99,10 @@ export const freshnessFacts = (a: HostAssessment): FreshnessFact[] => {
           label: 'Vulnerabilities',
           value: ago(a.last_vuln_assessed_at) ?? 'assessed',
           tone: 'ok',
-          title: 'Newest vulnerability observation on this host.',
+          title: creds
+            ? `Newest vulnerability observation on this host. ${creds.title}`
+            : 'Newest vulnerability observation on this host.',
+          ...(creds ? { note: creds.note, noteTone: creds.tone } : {}),
         }
       : {
           key: 'vulns',

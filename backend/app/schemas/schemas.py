@@ -1,5 +1,4 @@
-import re
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 from datetime import datetime
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from enum import Enum
@@ -445,6 +444,11 @@ class HostAssessment(BaseModel):
     last_observed_at: Optional[datetime] = None
     vuln_assessed: bool = False
     last_vuln_assessed_at: Optional[datetime] = None
+    # Did a vulnerability scan authenticate to this host?  "yes" (any scan
+    # says so), "no" (one says it did not, none says it did), "not_stated"
+    # (assessed, no scan said) — null when not assessed.  It never changes
+    # ``vuln_assessed``.
+    vuln_scan_credentialed: Optional[Literal["yes", "no", "not_stated"]] = None
     web_eligible: bool = False
     web_assessed: bool = False
     last_web_assessed_at: Optional[datetime] = None
@@ -907,6 +911,9 @@ class ReportJobSchema(BaseModel):
     format: str
     report_type: str
     status: str
+    # Who asked for it: the requester may dismiss / retry / cancel their own
+    # job without being an analyst, so the dialog needs to know whose it is.
+    requested_by_id: Optional[int] = None
     message: Optional[str] = None
     error_message: Optional[str] = None
     result_filename: Optional[str] = None

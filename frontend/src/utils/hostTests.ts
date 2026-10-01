@@ -8,7 +8,23 @@
  * real outcome exists for it — those are the backend's definitions
  * (`host_test_queries`), not derived here.
  */
-import type { HostTest, HostTestStatus } from '../services/api';
+import type { Host, HostTest, HostTestStatus } from '../services/api';
+
+/**
+ * A host row's test counts, by what they mean.
+ *
+ * The API still names them after test plans (removed v2.442.0):
+ * `test_plan_entry_count` is the host's tests proposed or in progress, and
+ * `test_execution_count` is its evidence records with a tested outcome.  This
+ * is the ONLY place that reads the wire names — when the backend renames
+ * them, change the `Host` type and these two lines.
+ */
+export const hostTestCounts = (
+  row: Pick<Host, 'test_plan_entry_count' | 'test_execution_count'>,
+): { toDo: number; recorded: number } => ({
+  toDo: row.test_plan_entry_count ?? 0,
+  recorded: row.test_execution_count ?? 0,
+});
 
 export const HOST_TEST_STATUS_LABEL: Record<HostTestStatus, string> = {
   proposed: 'Proposed',
@@ -74,6 +90,19 @@ export const testResultState = (
     case 'info': return { label: 'context recorded', tone: 'muted' };
     default: return { label: test.evidence_count > 0 ? `${test.evidence_count} evidence` : 'not run', tone: 'muted' };
   }
+};
+
+/** What to say once a test result has become a finding.  The words come from
+ *  the RESPONSE: a result that joined an existing finding did not create one,
+ *  and did not change that finding's status. */
+export const promotedResultMessage = (
+  made: { finding_id: number; joined_issue?: boolean; status?: string | null },
+): string => {
+  const state = made.status ? made.status.replace(/_/g, ' ') : null;
+  if (made.joined_issue) {
+    return `Joined the existing finding #${made.finding_id}${state ? `, which stays ${state}` : ''}.`;
+  }
+  return `On finding #${made.finding_id}${state ? ` (${state})` : ''}.`;
 };
 
 /** One phrase for a weakness's tests, for its collapsed row. */

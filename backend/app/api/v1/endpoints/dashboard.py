@@ -21,7 +21,7 @@ from app.services.host_follow_service import HostFollowService
 # new-scans-since) were removed: GET /workbench batches all four from the same
 # operations_read_service functions and is what the Operations page calls.  The
 # DTO re-exports went with them; nothing imported them from this module.
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project
 from app.db.models_auth import User
 from app.db.models_project import Project

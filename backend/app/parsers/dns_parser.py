@@ -1,9 +1,16 @@
 import csv
+import io
 import ipaddress
 from typing import Dict, List, Optional
 from sqlalchemy.orm import Session
 from app.db import models
-from app.parsers.parser_utils import correlate_scan
+from app.parsers.parser_utils import (
+    ProgressBeat,
+    announce_scan,
+    correlate_scan,
+    read_tool_text,
+    record_savepoint,
+)
 from app.services.dns_name_service import (
     ObservationCache,
     apply_hostname_candidate,
@@ -57,14 +64,22 @@ class DNSParser:
         )
         self.db.add(scan)
         self.db.flush()
+        announce_scan(self.db, scan)
 
         hosts_created = 0
         hosts_updated = 0
         dns_records_processed = 0
         self._rejected = 0
         self._reject_examples: List[str] = []
+        beat = ProgressBeat("DNS records")
 
-        with open(file_path, 'r', encoding='utf-8') as csvfile:
+        # Review 2026-10-01 R5 — read like every tool text that reaches a Text
+        # column (UTF-16 decoded, NUL removed).  The strict utf-8 open failed
+        # the whole file on a UTF-16 CSV, which the upload validator admits
+        # (Excel's "Unicode text", a PowerShell redirect).
+        # A UTF-8 byte-order mark (Excel's "CSV UTF-8") would otherwise become
+        # part of the first header name.
+        with io.StringIO(read_tool_text(file_path).text.lstrip('﻿'), newline='') as csvfile:
             sample = csvfile.read(1024)
             csvfile.seek(0)
 
@@ -114,51 +129,64 @@ class DNSParser:
                     # project-scoped DNS reads and uncounted in the producing
                     # scan's dns_record_count.
                     ttl_raw = (normalized_row.get('ttl') or '').strip()
-                    record_observation(
-                        self.db,
-                        project_id=self._project_id,
-                        name=dns_name,
-                        record_type=record_type,
-                        value=ip_address,
-                        scan_id=scan.id,
-                        ttl=int(ttl_raw) if ttl_raw.isdigit() else None,
-                        cache=self._name_cache,
-                    )
+                    # Review 2026-10-01 R5 — the row's writes are one unit.
+                    # The handler below "rejected" a row whose statement had
+                    # failed and carried on in a session that could no longer
+                    # flush, so every later row was rejected too and the
+                    # import failed (the record-isolation rule, v2.419.0).
+                    row_host_created = row_host_updated = False
+                    with record_savepoint(self.db, on_rollback=self._reset_caches):
+                        record_observation(
+                            self.db,
+                            project_id=self._project_id,
+                            name=dns_name,
+                            record_type=record_type,
+                            value=ip_address,
+                            scan_id=scan.id,
+                            ttl=int(ttl_raw) if ttl_raw.isdigit() else None,
+                            cache=self._name_cache,
+                        )
+
+                        # For PTR records, also create/update the host.
+                        # Filter by project_id so a DNS upload in project A
+                        # cannot rewrite hostnames on a host owned by project
+                        # B (Host is unique by ``(project_id, ip_address)`` —
+                        # without the filter, ``.first()`` returns an
+                        # arbitrary cross-project row).
+                        if record_type == 'PTR':
+                            existing_host = self.db.query(models.Host).filter(
+                                models.Host.ip_address == ip_address,
+                                models.Host.project_id == self._project_id,
+                            ).first()
+
+                            if existing_host:
+                                # PTR outranks scanner/forward names but never an
+                                # operator's correction (was: unconditional overwrite).
+                                if apply_hostname_candidate(existing_host, dns_name, 'ptr'):
+                                    row_host_updated = True
+                            else:
+                                host_data = {
+                                    'hostname': dns_name,
+                                    'hostname_source': 'ptr',
+                                    'names_recorded': True,  # record_observation above wrote it
+                                    'state': 'unknown',
+                                }
+                                self.dedup_service.find_or_create_host(
+                                    ip_address, scan.id, host_data, project_id=self._project_id
+                                )
+                                row_host_created = True
+                    # Counted only once the row's savepoint is released.
                     dns_records_processed += 1
-
-                    # For PTR records, also create/update the host.
-                    # Filter by project_id so a DNS upload in project A
-                    # cannot rewrite hostnames on a host owned by project
-                    # B (Host is unique by ``(project_id, ip_address)`` —
-                    # without the filter, ``.first()`` returns an
-                    # arbitrary cross-project row).
-                    if record_type == 'PTR':
-                        existing_host = self.db.query(models.Host).filter(
-                            models.Host.ip_address == ip_address,
-                            models.Host.project_id == self._project_id,
-                        ).first()
-
-                        if existing_host:
-                            # PTR outranks scanner/forward names but never an
-                            # operator's correction (was: unconditional overwrite).
-                            if apply_hostname_candidate(existing_host, dns_name, 'ptr'):
-                                hosts_updated += 1
-                        else:
-                            host_data = {
-                                'hostname': dns_name,
-                                'hostname_source': 'ptr',
-                                'names_recorded': True,  # record_observation above wrote it
-                                'state': 'unknown',
-                            }
-                            self.dedup_service.find_or_create_host(
-                                ip_address, scan.id, host_data, project_id=self._project_id
-                            )
-                            hosts_created += 1
+                    hosts_created += row_host_created
+                    hosts_updated += row_host_updated
 
                 except Exception as e:
                     logger.warning(f"Error processing DNS record row {i}: {str(e)}")
                     self._reject(i, str(e)[:80])
                     continue
+                # Heartbeat OUTSIDE the row's savepoint and its handler: a
+                # cancel or timeout stops the import, it is not a bad row.
+                beat.tick()
 
         logger.info(f"Processed {i} DNS records from CSV")
 
@@ -213,6 +241,12 @@ class DNSParser:
             f"Processed: {dns_records_processed} DNS records"
         )
         return scan
+
+    def _reset_caches(self) -> None:
+        """After a row's savepoint rolled back (see record_savepoint): the
+        name memo and the dedup caches may hold rows that no longer exist."""
+        self._name_cache = ObservationCache()
+        self.dedup_service.discard_rolled_back_state()
 
     def _normalize_row_keys(self, row: Dict[str, str]) -> Dict[str, str]:
         """Normalize CSV column names to handle different formats"""

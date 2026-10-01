@@ -10,7 +10,9 @@ import ijson
 from sqlalchemy.orm import Session
 
 from app.db import models
-from app.parsers.parser_utils import correlate_scan, ensure_scan, extract_first_ip, persist_host_observation
+from app.parsers.parser_utils import (
+    ProgressBeat, correlate_scan, ensure_scan, extract_first_ip, persist_host_observation,
+)
 from app.services.host_deduplication_service import HostDeduplicationService
 
 logger = logging.getLogger(__name__)
@@ -61,9 +63,12 @@ class BloodHoundParser:
         entries_seen = 0
         imported = 0
         no_address: list[str] = []
+        # R6 — heartbeat between objects (nothing here is inside a savepoint).
+        beat = ProgressBeat("objects")
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
+            beat.tick()
             entries_seen += 1
             properties = entry.get("Properties") or entry.get("properties") or {}
             ip_address = extract_first_ip(

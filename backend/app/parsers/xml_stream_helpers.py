@@ -27,7 +27,7 @@ pattern (defusedxml wraps stdlib ElementTree).  This module's
 """
 from __future__ import annotations
 
-from typing import Iterable, Tuple
+from typing import Tuple
 
 from lxml import etree
 

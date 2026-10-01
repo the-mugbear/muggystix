@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { useAppTheme } from '../contexts/ThemeContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useRoleGate } from '../hooks/useProjectRole';
 import { useHorizontalOverflowGuard } from '../hooks/useHorizontalOverflowGuard';
 import { useProject } from '../contexts/ProjectContext';
 import PendingProposalsButton from './proposals/PendingProposalsButton';
@@ -191,6 +192,9 @@ export default function Layout({ children }: LayoutProps) {
   }, [location.pathname]);
   const { themeName, setThemeName, availableThemes } = useAppTheme();
   const { hasPermission, isAuthenticated } = useAuth();
+  // Nav entries: `analyst` / `auditor` mean the PROJECT role (R32); `admin`
+  // the account role.  The same gate ProtectedRoute applies to the route.
+  const allowed = useRoleGate();
   const { currentProject } = useProject();
 
   // Notifications-poll error/backoff state. On consecutive failures
@@ -398,8 +402,8 @@ export default function Layout({ children }: LayoutProps) {
   // background re-renders (notification ticks, theme changes) don't
   // re-filter on every pass.
   const visibleHubChildren = React.useMemo(
-    () => (activeHub?.children ?? []).filter((child) => hasPermission(child.requiredRole)),
-    [activeHub, hasPermission],
+    () => (activeHub?.children ?? []).filter((child) => allowed(child.requiredRole)),
+    [activeHub, allowed],
   );
 
   // The single active secondary tab is the LONGEST matching child path, not
@@ -495,10 +499,10 @@ export default function Layout({ children }: LayoutProps) {
         aria-label="Primary navigation"
       >
         {HUBS.map((hub, index) => {
-          if (!hasPermission(hub.requiredRole)) return null;
+          if (!allowed(hub.requiredRole)) return null;
           // A hub whose pages this role can open none of would only redirect
           // to Operations (e.g. Settings for a viewer) — leave it out.
-          if (hub.children.length > 0 && !hub.children.some((c) => hasPermission(c.requiredRole))) return null;
+          if (hub.children.length > 0 && !hub.children.some((c) => allowed(c.requiredRole))) return null;
           const selected = hub.id === activeHub?.id;
           const { Icon } = hub;
           // Utility hubs (Settings, Reference) sit at the foot, under a rule:

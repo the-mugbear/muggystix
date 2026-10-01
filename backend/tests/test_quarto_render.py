@@ -153,6 +153,131 @@ HOSTILE_MD = (
 )
 
 
+# A command line / tool output (review 2026-10-01 B8): fences that would end a
+# code block, a div fence, shortcodes, raw HTML, a raw-attribute block, a
+# heading, control characters and a terminal colour code.
+HOSTILE_CODE = (
+    "{{< env HOME >}} `tick` $(id) ; cat /etc/passwd\n"
+    "```\n"
+    "after the fence {{< include /etc/passwd >}}\n"
+    ":::\n"
+    "::: {.callout-note}\n"
+    "<script>alert('code')</script>\n"
+    "```{=html}\n<b id=\"rawcode\">raw</b>\n```\n"
+    "~~~\n"
+    "# A heading in tool output\n"
+    "![secret](/etc/passwd) [x](javascript:alert(3))\n"
+    "\x1b[31mred\x1b[0m \x07bell\x00nul\n"
+    "END-OF-HOSTILE-CODE"
+)
+
+
+def test_code_placeholders_only_take_data_paths_and_print_nothing_when_empty(tmp_path):
+    (tmp_path / "t.qmd").write_text(
+        '<% for c in findings[0].confirmations %>[<< code(c, "command") >>|<< code(c, "output") >>]<% endfor %>'
+    )
+    data = {"findings": [{"confirmations": [
+        {"_path": "findings.0.confirmations.0", "command": "id; `x` {{< env HOME >}}", "output": "  "},
+    ]}]}
+    out = quarto_render.render_source(tmp_path, "t.qmd", data)
+    # The text itself is nowhere in the source: only where to find it.
+    assert '::: {.bs-code key="findings.0.confirmations.0.command"}\n:::' in out
+    assert "env HOME" not in out and "`x`" not in out
+    assert out.count("bs-code") == 1           # the empty output prints nothing
+    for bad in ({"_path": 'findings.0" onclick="x'}, {"_path": "../etc"}, {}):
+        (tmp_path / "bad.qmd").write_text('<< code(item, "command") >>')
+        with pytest.raises(RenderError):
+            quarto_render.render_source(tmp_path, "bad.qmd", {"item": bad})
+
+
+# --- review 2026-10-01 R14: a timeout ends the whole process group ------------------
+
+def _alive(pid: int) -> bool:
+    """Running — a zombie nobody reaped yet is dead."""
+    try:
+        stat = Path(f"/proc/{pid}/stat").read_text()
+    except OSError:
+        return False
+    return stat.rsplit(")", 1)[1].split()[0] != "Z"
+
+
+def _fake_quarto(tmp_path: Path, body: str) -> Path:
+    script = tmp_path / "quarto"
+    script.write_text("#!/bin/sh\n" + body)
+    script.chmod(0o755)
+    return script
+
+
+def _tiny_template(tmp_path: Path) -> Path:
+    folder = tmp_path / "tpl"
+    (folder / "scripts").mkdir(parents=True)
+    (folder / "report.qmd").write_text("---\ntitle: x\n---\nbody\n")
+    return folder
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+def test_a_render_timeout_kills_what_the_launcher_started(tmp_path):
+    """The real ``quarto`` is a bash script that runs deno WITHOUT exec.
+    ``subprocess.run(timeout=…)`` killed bash only: deno carried on as an
+    orphan after every timed-out render.  The fake launcher does the same
+    with a ``sleep``."""
+    import time
+    pidfile = tmp_path / "child.pid"
+    quarto = _fake_quarto(tmp_path, f"sleep 40 &\necho $! > {pidfile}\nwait\n")
+    started = time.monotonic()
+    with pytest.raises(RenderError) as exc:
+        quarto_render.render(_tiny_template(tmp_path), "report.qmd", {}, ["html"], tmp_path / "out",
+                             timeout=1, quarto=str(quarto))
+    elapsed = time.monotonic() - started
+    assert "took longer than 1s" in str(exc.value)
+    assert elapsed < 15, f"the render blocked for {elapsed:.0f}s on the launcher's child"
+    child = int(pidfile.read_text())
+    assert not _alive(child), "the launcher's child survived the timeout"
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+def test_a_child_that_ignores_term_is_killed(tmp_path, monkeypatch):
+    import time
+    monkeypatch.setattr(quarto_render, "KILL_GRACE_SECONDS", 0.5)
+    pidfile = tmp_path / "child.pid"
+    quarto = _fake_quarto(tmp_path, f"trap '' TERM\n(trap '' TERM; sleep 40) &\necho $! > {pidfile}\nwait\n")
+    started = time.monotonic()
+    with pytest.raises(RenderError):
+        quarto_render.render(_tiny_template(tmp_path), "report.qmd", {}, ["html"], tmp_path / "out",
+                             timeout=1, quarto=str(quarto))
+    assert time.monotonic() - started < 15
+    assert not _alive(int(pidfile.read_text()))
+
+
+def test_a_post_processor_timeout_is_a_render_error_without_paths(tmp_path):
+    """It was an uncaught TimeoutExpired: the job's error was the whole
+    command line, temporary work directory included."""
+    folder = _tiny_template(tmp_path)
+    (folder / "scripts" / "slow.py").write_text("import time\ntime.sleep(40)\n")
+    quarto = _fake_quarto(tmp_path, "echo '<html></html>' > report.html\n")
+    with pytest.raises(RenderError) as exc:
+        quarto_render.render(folder, "report.qmd", {}, ["html"], tmp_path / "out", timeout=1,
+                             quarto=str(quarto), postprocess={"html": "scripts/slow.py"})
+    message = str(exc.value)
+    assert message == "The html post-processor took longer than 1s."
+    assert "bs-report-" not in message and "/tmp" not in message
+
+
+def test_a_render_that_finishes_is_unchanged(tmp_path):
+    folder = _tiny_template(tmp_path)
+    (folder / "scripts" / "ok.py").write_text(
+        "import sys\nopen(sys.argv[1], 'a').write('<!-- post -->')\n"
+    )
+    quarto = _fake_quarto(tmp_path, "echo '<html>ok</html>' > report.html\necho noise >&2\n")
+    files = quarto_render.render(folder, "report.qmd", {}, ["html"], tmp_path / "out", timeout=30,
+                                 quarto=str(quarto), postprocess={"html": "scripts/ok.py"})
+    assert files["html"].read_text() == "<html>ok</html>\n<!-- post -->"
+    failing = _fake_quarto(tmp_path, "echo 'ERROR: bad yaml' >&2\nexit 3\n")
+    with pytest.raises(RenderError) as exc:
+        quarto_render.render(folder, "report.qmd", {}, ["html"], tmp_path / "out2", timeout=30, quarto=str(failing))
+    assert "exit 3" in str(exc.value) and "ERROR: bad yaml" in str(exc.value)
+
+
 # v2.409.0 — every template shipped in report-templates/ is held to the same
 # contract, not only the first one.
 SHIPPED_TEMPLATES = sorted(
@@ -184,6 +309,20 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     block.update(report_scope.summarise(subnets, []))
     data["scope"] = report_scope.attach_file(block, project_slug="hostile", number=1, report_id=1)
     manifest = json.loads((template / "template.json").read_text())
+    # Review 2026-10-01 B8 — how the finding was confirmed: a command line and
+    # a tool's output are the most hostile text a report carries.  Every field
+    # of the entry is hostile here, whether or not this template prints it.
+    data["findings"][0]["confirmations"] = [{
+        "_path": "findings.0.confirmations.0", "id": 1, "outcome": "finding",
+        "tool": HOSTILE, "host": HOSTILE, "by": HOSTILE, "date": "2026-10-01",
+        "executed_at": "2026-10-01T00:00:00+00:00", "by_agent": False,
+        "summary": HOSTILE_MD, "command": "CONFIRM-COMMAND " + HOSTILE_CODE,
+        "output": "CONFIRM-OUTPUT\n" + HOSTILE_CODE, "output_truncated": True,
+    }]
+    data["findings"][0]["confirmations_omitted"] = 2
+    # B17 — a re-rated finding's earlier severity is a label; hostile all the same.
+    data["findings"][0]["previous_severity"] = "medium"
+    data["findings"][0]["previous_severity_label"] = HOSTILE
 
     files = quarto_render.render(
         template, manifest.get("entry", "report.qmd"), data, ["html", "docx"], tmp_path,
@@ -211,6 +350,22 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     # The typed heading became bold text, not a report section.
     assert "A heading an author typed" in html
     assert 'id="a-heading-an-author-typed"' not in html
+    # The command and the output never became markup, in any template.
+    assert '<b id="rawcode"' not in html and "<b id" not in docx
+    assert "<script>alert('code')" not in html
+    assert 'id="a-heading-in-tool-output"' not in html
+    if manifest.get("evidence_records") is True:
+        # … and where the template prints them, they are there, whole and
+        # verbatim: the fence and the div in the text closed nothing.
+        for text in (html, docx):
+            assert "CONFIRM-COMMAND" in text and "CONFIRM-OUTPUT" in text
+            assert "after the fence" in text and "END-OF-HOSTILE-CODE" in text
+        block = html[html.index("CONFIRM-OUTPUT"):]
+        block = block[:block.index("</pre>")]
+        assert "END-OF-HOSTILE-CODE" in block                      # one block, not split by its own fences
+        assert "&lt;script&gt;alert(" in block
+        assert "{{&lt; include /etc/passwd &gt;}}" in block
+        assert "\x1b" not in html and "\x00" not in docx
 
 
 @needs_template

@@ -207,3 +207,25 @@ def test_snapshot_service_name_is_what_this_scan_recorded(
     ports = {p["port_number"]: p for p in body["items"][0]["ports"]}
     assert ports[22]["service_name"] == "ssh", "live Port.service_name leaked into the scan record"
     assert ports[8080]["service_name"] is None, "a scan that recorded no service must not borrow today's"
+
+
+def test_snapshot_says_whether_the_scan_authenticated(client, db_session, test_project):
+    """Review 2026-10-01: ``host_scan_history.credentialed`` was stored and
+    returned by no route.  True / False are what the scanner said; NULL is
+    "the scan did not say" and stays null — never coerced to false."""
+    pid = test_project.id
+    scan = _scan(db_session, pid, "authenticated.nessus")
+    rows = {}
+    for ip, value in (("10.40.9.1", True), ("10.40.9.2", False), ("10.40.9.3", None)):
+        host = models.Host(project_id=pid, ip_address=ip, state="up")
+        db_session.add(host)
+        db_session.flush()
+        db_session.add(models.HostScanHistory(
+            host_id=host.id, scan_id=scan.id, state_at_scan="up", credentialed=value,
+            discovered_at=datetime.now(timezone.utc),
+        ))
+        rows[ip] = value
+    db_session.commit()
+
+    body = client.get(f"/api/v1/projects/{pid}/scans/{scan.id}/host-snapshots").json()
+    assert {r["ip_address"]: r["credentialed"] for r in body["items"]} == rows

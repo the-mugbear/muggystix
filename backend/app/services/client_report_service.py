@@ -44,7 +44,7 @@ import re
 from collections import defaultdict
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, load_only, noload, selectinload
@@ -56,6 +56,7 @@ from app.db.models_findings import (
     Finding, FindingHost, FindingHostStatus, FindingStatus, FindingVulnerability,
 )
 from app.db.models_project import Project
+from app.db.models_proposals import EvidenceRecord
 from app.db.models_reports import (
     RenderStatus, Report, ReportKind, ReportProfile, ReportStatus,
 )
@@ -109,6 +110,21 @@ TEAM_ROLES = {"admin": "Engagement lead", "analyst": "Tester"}
 # Formats every renderer can place (Word and HTML alike).
 REPORT_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif"}
 
+# How a finding was confirmed (review 2026-10-01 B8): its linked evidence
+# records whose outcome is ``finding``.  There is no per-record "in report"
+# mark, so the outcome is the rule; the caps keep one noisy test from filling
+# the report (and the snapshot) with tool output.
+CONFIRMATION_OUTCOME = "finding"
+CONFIRMATIONS_PER_FINDING = 10
+CONFIRMATION_COMMAND_CHARS = 600
+CONFIRMATION_SUMMARY_CHARS = 600
+CONFIRMATION_OUTPUT_CHARS = 1500
+CONFIRMATION_OUTPUT_LINES = 30
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b[@-Z\\-_]")
+_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+# IN-list size for the batched evidence lookups.
+_ID_CHUNK = 5000
+
 _REF = re.compile(r"^F-(\d+)$")
 
 
@@ -161,6 +177,83 @@ def stored_file_path(storage_path: str) -> Path:
     if not target.is_file():
         raise FileNotFoundError("The file is missing from report storage.")
     return target
+
+
+def _severity_value(value) -> Optional[str]:
+    """A severity as compared between a baseline and now: the enum's value,
+    trimmed, lower-case — "High", "high " and Severity.HIGH are one rating.
+    None when nothing is stored (a baseline frozen before severity was)."""
+    text = str(getattr(value, "value", value) or "").strip().lower()
+    return text or None
+
+
+def report_excerpt(text: Optional[str], *, max_chars: int, max_lines: Optional[int] = None) -> Tuple[Optional[str], bool]:
+    """``(text, cut)`` — tool text made fit to print: terminal colour codes
+    and control characters removed (one NUL or ESC makes a Word file
+    unreadable), line endings normalised, then cut to ``max_lines`` and
+    ``max_chars``.  None when nothing printable is left."""
+    if not text:
+        return None, False
+    clean = _ANSI.sub("", str(text)).replace("\r\n", "\n").replace("\r", "\n")
+    clean = _CONTROL.sub("", clean)
+    clean = "\n".join(line.rstrip() for line in clean.split("\n")).strip("\n")
+    cut = False
+    if max_lines is not None:
+        lines = clean.split("\n")
+        if len(lines) > max_lines:
+            clean, cut = "\n".join(lines[:max_lines]), True
+    if len(clean) > max_chars:
+        clean, cut = clean[:max_chars].rstrip(), True
+    return (clean or None), cut
+
+
+def finding_image_attachments(
+    db: Session, findings: Iterable[Tuple[int, Optional[int]]], *, marked_only: bool,
+) -> Dict[int, List[Tuple[NoteAttachment, Optional[str]]]]:
+    """Every finding's attached files, in attachment order: finding id →
+    ``[(attachment, the note's actor_type), …]``.
+
+    ``findings`` is ``(finding id, evidence_annotation_id)`` pairs.  A file
+    belongs to a finding when it hangs on one of the finding's own comments
+    (``annotations.finding_id``) or on its source-note thread (the
+    ``evidence_annotation_id`` root and its replies).  ``marked_only`` keeps
+    only files marked for the report (``include_in_report``): the client
+    report passes True; the host report and the drafter's captions pass False
+    (their unmarked images are a parked decision — it is this one argument).
+
+    ONE statement per ``_ID_CHUNK`` findings (review 2026-10-01 R16): the
+    host report and the drafter each ran two queries per finding."""
+    pairs = [(fid, root) for fid, root in findings if fid is not None]
+    out: Dict[int, List[Tuple[NoteAttachment, Optional[str]]]] = defaultdict(list)
+    for start in range(0, len(pairs), _ID_CHUNK):
+        chunk = pairs[start:start + _ID_CHUNK]
+        finding_ids = {fid for fid, _ in chunk}
+        roots: Dict[int, List[int]] = defaultdict(list)
+        for fid, root in chunk:
+            if root:
+                roots[root].append(fid)
+        conds = [Annotation.finding_id.in_(finding_ids)]
+        if roots:
+            conds += [Annotation.id.in_(list(roots)), Annotation.thread_root_id.in_(list(roots))]
+        query = (
+            db.query(
+                NoteAttachment, Annotation.id, Annotation.finding_id, Annotation.thread_root_id,
+                Annotation.actor_type,
+            )
+            .join(Annotation, Annotation.id == NoteAttachment.annotation_id)
+            .filter(or_(*conds))
+        )
+        if marked_only:
+            query = query.filter(NoteAttachment.include_in_report.is_(True))
+        for att, ann_id, ann_finding, ann_root, actor_type in query.order_by(NoteAttachment.id).all():
+            targets = set()
+            if ann_finding in finding_ids:
+                targets.add(ann_finding)
+            targets.update(roots.get(ann_id, ()))
+            targets.update(roots.get(ann_root, ()))
+            for fid in targets:
+                out[fid].append((att, actor_type))
+    return dict(out)
 
 
 class ClientReportService:
@@ -356,46 +449,150 @@ class ClientReportService:
         issuing, never a block)."""
         by_finding: Dict[int, List[dict]] = defaultdict(list)
         skipped = by_agent = 0
-        finding_ids = {f.id for f in findings}
-        roots: Dict[int, int] = {
-            f.evidence_annotation_id: f.id for f in findings if f.evidence_annotation_id
-        }
-        if not finding_ids:
-            return {}, 0, 0
-        conds = [Annotation.finding_id.in_(finding_ids)]
-        if roots:
-            conds += [Annotation.id.in_(roots), Annotation.thread_root_id.in_(roots)]
-        rows = (
-            self.db.query(
-                NoteAttachment, Annotation.id, Annotation.finding_id, Annotation.thread_root_id,
-                Annotation.actor_type,
-            )
-            .join(Annotation, Annotation.id == NoteAttachment.annotation_id)
-            .filter(or_(*conds), NoteAttachment.include_in_report.is_(True))
-            .order_by(NoteAttachment.id)
-            .all()
+        counted = set()
+        attached = finding_image_attachments(
+            self.db, [(f.id, f.evidence_annotation_id) for f in findings], marked_only=True,
         )
-        for att, ann_id, ann_finding, ann_root, actor_type in rows:
-            targets = set()
-            if ann_finding in finding_ids:
-                targets.add(ann_finding)
-            if ann_id in roots:
-                targets.add(roots[ann_id])
-            if ann_root in roots:
-                targets.add(roots[ann_root])
-            ext = REPORT_IMAGE_TYPES.get(att.content_type)
-            if ext is None:
-                skipped += 1
-                continue
-            if actor_type == "agent" and targets:
-                by_agent += 1
-            for fid in targets:
+        for fid, rows in attached.items():
+            for att, actor_type in rows:
+                first = att.id not in counted
+                counted.add(att.id)
+                ext = REPORT_IMAGE_TYPES.get(att.content_type)
+                if ext is None:
+                    skipped += first
+                    continue
+                if actor_type == "agent":
+                    by_agent += first
                 by_finding[fid].append({
                     "attachment_id": att.id,
                     "file": f"evidence/{att.id}.{ext}",
                     "caption": att.filename,
                 })
         return dict(by_finding), skipped, by_agent
+
+    def _records_in_report(self, template_name: Optional[str]) -> bool:
+        """Whether the report's template prints how findings were confirmed:
+        ``template.json`` → ``"evidence_records": true``.  Opt-in — a template
+        that does not ask gets none in its data, so none is frozen at issue
+        either."""
+        try:
+            return report_template_service.get_template(template_name).evidence_records
+        except report_template_service.TemplateError:
+            return False
+
+    def _confirmations(self, findings: List[Finding]) -> Tuple[Dict[int, List[dict]], Dict[int, int], int]:
+        """How each finding was confirmed (review 2026-10-01 B8): its linked
+        evidence records with outcome ``finding`` — the tool, the command as
+        run, when, who, and a trimmed excerpt of the output.  Returns (by
+        finding, further records not shown per finding, count recorded by an
+        agent — a warning before issuing, like agent images).
+
+        Only records on a system the report lists for that finding: a host
+        judged a false positive, or one the finding was never attached to, is
+        not in the report, so neither is what was run against it.  A finding
+        with no systems keeps all of its records.
+
+        Everything here is tool or user text.  It travels in ``data.json``
+        and is printed escaped or as a verbatim block the filter fills
+        (``code()``) — never as ``.qmd`` source."""
+        from app.db.models_agent import AgentSession
+        from app.db.models_auth import User
+
+        by_id = {f.id: f for f in findings}
+        ids = list(by_id)
+        rows = []
+        for start in range(0, len(ids), _ID_CHUNK):
+            rows += (
+                self.db.query(
+                    EvidenceRecord.id, EvidenceRecord.finding_id, EvidenceRecord.host_id,
+                    EvidenceRecord.tool, EvidenceRecord.command, EvidenceRecord.summary,
+                    EvidenceRecord.raw_output_preview, EvidenceRecord.raw_output_bytes,
+                    EvidenceRecord.executed_at, EvidenceRecord.created_at,
+                    EvidenceRecord.agent_session_id, EvidenceRecord.recorded_by_user_id,
+                )
+                .filter(
+                    EvidenceRecord.finding_id.in_(ids[start:start + _ID_CHUNK]),
+                    EvidenceRecord.outcome == CONFIRMATION_OUTCOME,
+                )
+                .all()
+            )
+        if not rows:
+            return {}, {}, 0
+        rows.sort(key=lambda r: (r.executed_at or r.created_at, r.id) if (r.executed_at or r.created_at)
+                  else (datetime.min.replace(tzinfo=timezone.utc), r.id))
+
+        listed: Dict[int, Dict[int, str]] = {}
+        for f in findings:
+            listed[f.id] = {
+                fh.host_id: (fh.host.ip_address if fh.host is not None else f"host {fh.host_id}")
+                for fh in f._report_endpoints
+            }
+        loose_hosts = {r.host_id for r in rows if not by_id[r.finding_id].hosts}
+        addresses = dict(
+            self.db.query(Host.id, Host.ip_address).filter(Host.id.in_(loose_hosts)).all()
+        ) if loose_hosts else {}
+
+        session_ids = {r.agent_session_id for r in rows if r.agent_session_id}
+        operators = dict(
+            self.db.query(AgentSession.id, AgentSession.started_by_id)
+            .filter(AgentSession.id.in_(session_ids)).all()
+        ) if session_ids else {}
+        user_ids = {r.recorded_by_user_id for r in rows if r.recorded_by_user_id} | {
+            uid for uid in operators.values() if uid
+        }
+        names = {
+            uid: (full_name or "").strip() or username
+            for uid, full_name, username in
+            self.db.query(User.id, User.full_name, User.username).filter(User.id.in_(user_ids))
+        } if user_ids else {}
+
+        out: Dict[int, List[dict]] = defaultdict(list)
+        omitted: Dict[int, int] = defaultdict(int)
+        by_agent = 0
+        for r in rows:
+            finding = by_id[r.finding_id]
+            if finding.hosts:
+                host = listed[finding.id].get(r.host_id)
+                if host is None:
+                    continue
+            else:
+                host = addresses.get(r.host_id) or f"host {r.host_id}"
+            if len(out[finding.id]) >= CONFIRMATIONS_PER_FINDING:
+                omitted[finding.id] += 1
+                continue
+            when = r.executed_at or r.created_at
+            if when is not None and when.tzinfo is None:
+                when = when.replace(tzinfo=timezone.utc)
+            if r.agent_session_id:
+                by_agent += 1
+                operator = names.get(operators.get(r.agent_session_id))
+                by = (f"{operator} (agent session {r.agent_session_id})" if operator
+                      else f"Agent session {r.agent_session_id}")
+            else:
+                by = names.get(r.recorded_by_user_id)
+            command, _ = report_excerpt(r.command, max_chars=CONFIRMATION_COMMAND_CHARS)
+            summary, _ = report_excerpt(r.summary, max_chars=CONFIRMATION_SUMMARY_CHARS)
+            output, cut = report_excerpt(
+                r.raw_output_preview, max_chars=CONFIRMATION_OUTPUT_CHARS, max_lines=CONFIRMATION_OUTPUT_LINES,
+            )
+            if output and not cut and r.raw_output_bytes:
+                # The stored preview is itself the start of a longer output.
+                cut = len((r.raw_output_preview or "").encode("utf-8", errors="replace")) < r.raw_output_bytes
+            out[finding.id].append({
+                "id": r.id,
+                "tool": report_excerpt(r.tool, max_chars=100)[0] or "",
+                "host": host,
+                "outcome": CONFIRMATION_OUTCOME,
+                "summary": summary,
+                "command": command,
+                "output": output,
+                "output_truncated": bool(output and cut),
+                "executed_at": _iso(when),
+                "date": when.date().isoformat() if when is not None else None,
+                "by": by,
+                "by_agent": bool(r.agent_session_id),
+            })
+        return dict(out), dict(omitted), by_agent
 
     def _pending_proposals(self, finding_ids: List[int]) -> Dict[int, int]:
         """Pending agent proposals per finding (v2.437.0): a finding with one
@@ -480,6 +677,11 @@ class ClientReportService:
         ports = self._ports(findings)
         corroboration = self._corroboration([f.id for f in findings])
         evidence, skipped_images, agent_images = self._evidence(findings)
+        confirmations: Dict[int, List[dict]] = {}
+        confirmations_omitted: Dict[int, int] = {}
+        agent_records = 0
+        if self._records_in_report(report.template):
+            confirmations, confirmations_omitted, agent_records = self._confirmations(findings)
 
         endpoints: Dict[int, Dict[str, dict]] = {
             f.id: {endpoint_key(fh): self._endpoint(fh, ports) for fh in f._report_endpoints}
@@ -527,27 +729,45 @@ class ClientReportService:
 
         # Which findings the document shows.
         delta = None
-        shown: List[Tuple[Finding, Optional[str], List[dict]]] = []
+        # (finding, change, new endpoints, the severity the baseline gave it
+        # when that differs from now).
+        shown: List[Tuple[Finding, Optional[str], List[dict], Optional[str]]] = []
         if report.kind == ReportKind.ADDENDUM:
             withdrawn = self._withdrawn(report.project_id, baseline_reported, live_reported)
             for f in findings:
                 prior = baseline_reported.get(str(f.id))
                 if prior is None:
-                    shown.append((f, "new", []))
+                    shown.append((f, "new", [], None))
                     continue
+                # Re-rated since the baseline (owner's decision 2026-10-01,
+                # review B17): the client has this finding at another
+                # severity, and "Nothing has changed" was wrong for a Medium
+                # raised to Critical.  Severity ONLY — a title is wording and
+                # a status is remediation tracking, which a report never
+                # does.  Against the baseline's frozen value, never a date; a
+                # baseline that stored no severity counts as unchanged.
+                was, now = _severity_value(prior.get("severity")), _severity_value(f.severity)
+                previous = was if (was and now and was != now) else None
                 new_keys = [k for k in endpoints[f.id] if k not in (prior.get("endpoints") or {})]
                 if new_keys:
-                    shown.append((f, "new_hosts", [endpoints[f.id][k] for k in new_keys]))
+                    # Both at once: listed ONCE, with its new systems, and it
+                    # carries the earlier severity too.
+                    shown.append((f, "new_hosts", [endpoints[f.id][k] for k in new_keys], previous))
+                elif previous:
+                    shown.append((f, "severity_changed", [], previous))
             delta = {
-                "new_findings": sum(1 for _, c, _ in shown if c == "new"),
-                "findings_with_new_endpoints": sum(1 for _, c, _ in shown if c == "new_hosts"),
+                "new_findings": sum(1 for _, c, _, _ in shown if c == "new"),
+                "findings_with_new_endpoints": sum(1 for _, c, _, _ in shown if c == "new_hosts"),
+                # Every re-rated finding, including one also listed for its
+                # new systems.
+                "findings_with_changed_severity": sum(1 for _, _, _, p in shown if p),
                 "withdrawn": withdrawn,
             }
         else:
-            shown = [(f, None, []) for f in findings]
+            shown = [(f, None, [], None) for f in findings]
 
         items = []
-        for index, (f, change, new_affected) in enumerate(shown):
+        for index, (f, change, new_affected, previous_severity) in enumerate(shown):
             affected = list(endpoints[f.id].values())
             items.append({
                 "_path": f"findings.{index}",
@@ -569,7 +789,18 @@ class ClientReportService:
                 "affected_count": len(affected),
                 "new_affected": new_affected,
                 "change": change,
+                "previous_severity": previous_severity,
+                "previous_severity_label": (
+                    SEVERITY_LABEL.get(previous_severity, previous_severity) if previous_severity else None
+                ),
                 "evidence": evidence.get(f.id, []),
+                # How it was confirmed (B8): each entry has its own data path
+                # so the template's code() can name its command and output.
+                "confirmations": [
+                    {"_path": f"findings.{index}.confirmations.{n}", **entry}
+                    for n, entry in enumerate(confirmations.get(f.id, []))
+                ],
+                "confirmations_omitted": confirmations_omitted.get(f.id, 0),
                 "corroboration": corroboration.get(f.id, []),
             })
 
@@ -649,6 +880,10 @@ class ClientReportService:
             "images_skipped": skipped_images,
             # v2.437.0 — warnings before issuing, never blocks.
             "agent_images": agent_images,
+            # B8 — test results printed as "how it was confirmed", and how
+            # many of them an agent recorded (a warning, never a block).
+            "evidence_records": sum(len(i["confirmations"]) for i in items),
+            "agent_evidence_records": agent_records,
             "pending_proposals": [
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
                 for item in items if pending.get(item["id"])
@@ -665,6 +900,7 @@ class ClientReportService:
             "delta": {
                 "new_findings": delta["new_findings"],
                 "findings_with_new_endpoints": delta["findings_with_new_endpoints"],
+                "findings_with_changed_severity": delta["findings_with_changed_severity"],
                 "withdrawn": len(delta["withdrawn"]),
             } if delta else None,
         }
@@ -722,8 +958,13 @@ class ClientReportService:
         report in issue order, so a reference that fell out of a later
         ``reported`` (issued before v2.390.4, when withdrawn entries were
         dropped) is still known and never handed to another finding."""
+        # Only the ``reported`` key of each snapshot (review 2026-10-01 R16):
+        # a snapshot also holds the whole dataset — every finding's text — and
+        # every draft view, save and preview fetched and parsed all of it, for
+        # each issued report, to read this one small map.  The JSON path is
+        # taken in the database (``->`` on Postgres, json_extract on SQLite).
         rows = (
-            self.db.query(Report.snapshot)
+            self.db.query(Report.snapshot["reported"])
             .filter(
                 Report.project_id == project_id,
                 Report.status.in_((ReportStatus.ISSUED, ReportStatus.SUPERSEDED)),
@@ -733,8 +974,10 @@ class ClientReportService:
             .all()
         )
         ledger: Dict[str, dict] = {}
-        for (snapshot,) in rows:
-            for fid, entry in ((snapshot or {}).get("reported") or {}).items():
+        for (reported,) in rows:
+            if not isinstance(reported, dict):
+                continue  # no snapshot, or one without the key
+            for fid, entry in reported.items():
                 if isinstance(entry, dict):
                     ledger[fid] = entry
         return ledger
@@ -774,9 +1017,17 @@ class ClientReportService:
             .first()
         )
 
-    def issue(self, report_id: int, project_id: int, *, user_id: int, fingerprint: str) -> Report:
+    def issue(
+        self, report_id: int, project_id: int, *, user_id: int,
+        fingerprint: Union[str, Callable[[Report], str]],
+    ) -> Report:
         """Freeze a draft.  Serialised per project (the project row is locked)
         so two issues cannot take the same number.
+
+        ``fingerprint`` is the template fingerprint to record, or a callable
+        given the LOCKED report that returns it (review 2026-10-01 R13) — the
+        template is only certain once the row cannot change.  It is called
+        before anything is written, so it may refuse by raising.
 
         ``FOR NO KEY UPDATE`` (``key_share=True``), not ``FOR UPDATE``: two
         issues still exclude each other, but the lock no longer blocks the
@@ -826,6 +1077,9 @@ class ClientReportService:
                     + ". Compare this addendum against the current issue before issuing it, or it "
                     "would list again what the client already has."
                 )
+
+        if callable(fingerprint):
+            fingerprint = fingerprint(report)
 
         number = (
             self.db.query(func.max(Report.number)).filter(Report.project_id == project_id).scalar() or 0

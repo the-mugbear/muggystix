@@ -36,7 +36,7 @@ import re
 import socket
 import ssl
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 from xml.sax.saxutils import escape as xml_escape

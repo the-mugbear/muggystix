@@ -314,7 +314,7 @@ def test_the_addendum_delta_is_by_finding_and_endpoint_and_never_remediation(cli
     add = _create(client, test_project, kind="addendum")
     assert add["baseline"]["number"] == 1
     assert add["title"] == "Addendum to report #1"
-    assert add["summary"]["delta"] == {"new_findings": 1, "findings_with_new_endpoints": 1, "withdrawn": 2}
+    assert add["summary"]["delta"] == {"new_findings": 1, "findings_with_new_endpoints": 1, "findings_with_changed_severity": 0, "withdrawn": 2}
 
     dataset, reported, _ = __import__("app.services.client_report_service", fromlist=["x"]).ClientReportService(
         db_session).build(db_session.get(Report, add["id"]))
@@ -340,7 +340,7 @@ def test_the_addendum_delta_is_by_finding_and_endpoint_and_never_remediation(cli
     db_session.commit()
     second = _create(client, test_project, kind="addendum")
     assert second["baseline"]["number"] == 2
-    assert second["summary"]["delta"] == {"new_findings": 0, "findings_with_new_endpoints": 0, "withdrawn": 1}
+    assert second["summary"]["delta"] == {"new_findings": 0, "findings_with_new_endpoints": 0, "findings_with_changed_severity": 0, "withdrawn": 1}
 
 
 def _refs(db_session, report_id):
@@ -389,7 +389,7 @@ def test_a_revision_keeps_the_references_the_client_already_has(client, db_sessi
 def test_an_addendum_is_issued_only_against_the_current_issue(client, db_session, test_project):
     a = _host(db_session, test_project, "10.45.0.1")
     _finding(db_session, test_project, "Lima", "high", hosts=[a])
-    first = _issue(client, test_project, _create(client, test_project)["id"])
+    _issue(client, test_project, _create(client, test_project)["id"])
     one = _create(client, test_project, kind="addendum")
     two = _create(client, test_project, kind="addendum")
     _finding(db_session, test_project, "Mike", "high", hosts=[a])

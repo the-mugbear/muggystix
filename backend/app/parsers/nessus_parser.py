@@ -108,6 +108,35 @@ class NessusHost:
     fqdn: Optional[str]
     vulnerabilities: List[NessusVulnerability]
     host_properties: Dict[str, str]
+    # Review 2026-10-01 N9 — <ReportItem>s that raised while being read.  They
+    # were logged and dropped, so the import reported nothing missing.
+    unreadable_items: int = 0
+    # Review 2026-10-01 B12 — whether Nessus ran its local (authenticated)
+    # checks on this host.  None when the file does not say.
+    credentialed: Optional[bool] = None
+
+
+# Plugin 19506 ("Nessus Scan Information") prints `Credentialed checks : no`
+# or `Credentialed checks : yes, as 'svc' via ssh`.
+_CREDENTIALED_LINE = re.compile(r"^\s*Credentialed checks\s*:\s*(yes|no)\b", re.IGNORECASE | re.MULTILINE)
+SCAN_INFORMATION_PLUGIN_ID = "19506"
+
+
+def credentialed_status(host_properties: Dict[str, str], vulnerabilities: Iterable["NessusVulnerability"]) -> Optional[bool]:
+    """Did Nessus authenticate to this host?  The host's own
+    ``<tag name="Credentialed_Scan">true|false</tag>`` answers it; a file
+    without the tag is read from plugin 19506's output.  None when neither
+    is present — never a guess from which plugins fired."""
+    tag = (host_properties.get("Credentialed_Scan") or "").strip().lower()
+    if tag in ("true", "false"):
+        return tag == "true"
+    for vuln in vulnerabilities:
+        if vuln.plugin_id != SCAN_INFORMATION_PLUGIN_ID or not vuln.plugin_output:
+            continue
+        match = _CREDENTIALED_LINE.search(vuln.plugin_output)
+        if match:
+            return match.group(1).lower() == "yes"
+    return None
 
 
 class NessusParser:
@@ -124,7 +153,6 @@ class NessusParser:
 
     def parse_file(self, file_path: str, **kwargs) -> Dict[str, Any]:
         """Parse Nessus XML file and return structured data"""
-        project_id = kwargs.get("project_id")
         try:
             scan_info, hosts_iter = self.iter_file(file_path)
             hosts = list(hosts_iter)
@@ -309,6 +337,7 @@ class NessusParser:
         fqdn = host_properties.get('host-fqdn')
 
         # Parse vulnerability items
+        unreadable_items = 0
         for report_item in report_host.findall('ReportItem'):
             try:
                 vuln = self._parse_vulnerability(report_item)
@@ -316,9 +345,12 @@ class NessusParser:
                     vulnerabilities.append(vuln)
             except Exception as e:
                 logger.warning(f"Error parsing vulnerability: {e}")
+                unreadable_items += 1
                 continue
 
         return NessusHost(
+            unreadable_items=unreadable_items,
+            credentialed=credentialed_status(host_properties, vulnerabilities),
             ip_address=ip_address,
             hostname=hostname,
             operating_system=operating_system,

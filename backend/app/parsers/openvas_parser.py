@@ -14,6 +14,7 @@ from __future__ import annotations
 # so any tampering shows up in one place — see the audit-finding C1
 # comment block in that module.
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Optional
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.parser_utils import (
+    ProgressBeat,
     ScanClock,
     correlate_scan,
     ensure_scan,
@@ -45,6 +47,18 @@ logger = logging.getLogger(__name__)
 # at once.  100 is a balance: small enough that the session stays
 # bounded, large enough that the per-flush overhead doesn't dominate.
 _FLUSH_BATCH_SIZE = 100
+
+
+_EXPLOIT_MATURITY = re.compile(r"(?:^|/)E:(POC|P|F|H|A)(?:/|$)", re.IGNORECASE)
+
+
+def vector_states_exploit(vector: Optional[str]) -> bool:
+    """True when a CVSS vector's exploit-maturity metric says exploit code
+    exists: ``E:P`` / ``E:F`` / ``E:H`` (3.x), ``E:POC`` / ``E:F`` / ``E:H``
+    (2.0), ``E:A`` / ``E:P`` (4.0) — the same bar as the Nessus path's
+    ``exploit_code_maturity``.  ``E:U`` (unproven), ``E:X`` / ``E:ND`` (not
+    defined) and a base-only vector state nothing."""
+    return bool(vector and _EXPLOIT_MATURITY.search(vector))
 
 
 def _observe_report_time(clock: ScanClock, raw: Optional[str]) -> None:
@@ -83,6 +97,7 @@ class OpenVASParser:
         # chain on a mis-routed file (review 2026-09-23 R6; R13 of 09-21).
         seen = recorded = failed = 0
         saw_report = False
+        beat = ProgressBeat("results")
         try:
             context = iterparse_safe(file_path, events=("end",))
             processed = 0
@@ -96,6 +111,20 @@ class OpenVASParser:
                     continue
                 if tag == "report":
                     saw_report = True
+                    continue
+                if tag == "host" and elem.find("ip") is not None:
+                    # The report's own per-host block (never a result's
+                    # <host>, which holds the address as text).
+                    sp = self.db.begin_nested()
+                    try:
+                        self._process_report_host(elem, scan.id, project_id)
+                        sp.commit()
+                    except Exception as exc:  # noqa: BLE001 — isolate one bad block
+                        sp.rollback()
+                        self.dedup_service.discard_rolled_back_state()
+                        logger.warning("Skipping malformed OpenVAS report host: %s", exc)
+                    finally:
+                        clear_element(elem)
                     continue
                 if tag != "result":
                     continue
@@ -120,6 +149,10 @@ class OpenVASParser:
                     clear_element(elem)
                 if processed and processed % _FLUSH_BATCH_SIZE == 0:
                     self.db.flush()
+                # R6 — heartbeat between results, outside the result's
+                # savepoint: a cancel or timeout stops the import instead of
+                # being counted as a malformed result.
+                beat.tick()
         except (ET.ParseError, XMLSyntaxError) as exc:
             raise ValueError(f"Invalid or truncated OpenVAS XML: {exc}") from exc
 
@@ -162,6 +195,9 @@ class OpenVASParser:
         ip_address = extract_first_ip(host_text)
         if not ip_address:
             return False
+        # GMP writes the name it resolved inside the result's host element:
+        # `<host>10.0.0.5<hostname>web01</hostname></host>`.
+        result_hostname = self._find_text(result, "host/hostname")
 
         port_number, protocol = self._parse_port(self._find_text(result, "port"))
         ports = []
@@ -178,6 +214,7 @@ class OpenVASParser:
             dedup_service=self.dedup_service,
             scan_id=scan_id,
             ip_address=ip_address,
+            hostname=result_hostname,
             ports=ports,
             project_id=project_id,
         )
@@ -238,6 +275,7 @@ class OpenVASParser:
             (("summary", "Summary"), ("insight", "Insight"), ("impact", "Impact"), ("affected", "Affected"))
             if tags.get(key, "").strip()
         )
+        cvss_vector = self._cvss_vector(nvt, tags)
         detection = self._find_text(result, "description")
         qod = self._find_text(result, ".//qod/value")
         evidence = "\n".join(p for p in (detection, f"Quality of detection: {qod}%" if qod else None) if p) or None
@@ -257,6 +295,60 @@ class OpenVASParser:
             solution=self._find_text(result, ".//solution"),
             references=references or None,
             plugin_output=evidence,
+            cvss_vector=cvss_vector,
+            # Only what the report states: a vector whose exploit-maturity
+            # metric says exploit code exists.  Never inferred from severity,
+            # and EPSS is a probability, not a statement that one exists.
+            exploitable=vector_states_exploit(cvss_vector) or None,
+        )
+        return True
+
+    def _cvss_vector(self, nvt, tags: dict) -> Optional[str]:
+        """The NVT's CVSS vector: the ``<severities>`` block (GMP 20.08+,
+        ``<severity type="cvss_base_v3"><value>CVSS:3.1/…``; a v3 entry wins
+        over a v2 one), else the ``cvss_base_vector=`` tag older reports
+        carry."""
+        if nvt is not None:
+            chosen = None
+            for severity in nvt.findall(".//severities/severity"):
+                value = self._find_text(severity, "value")
+                if not value or "/" not in value or ":" not in value:
+                    continue
+                kind = (severity.get("type") or "").lower()
+                if "v3" in kind or "v4" in kind or value.upper().startswith("CVSS:"):
+                    return value
+                chosen = chosen or value
+            if chosen:
+                return chosen
+        tagged = (tags.get("cvss_base_vector") or "").strip()
+        return tagged if "/" in tagged and ":" in tagged else None
+
+    def _process_report_host(self, host_elem, scan_id: int, project_id: Optional[int]) -> bool:
+        """A report-level ``<host>``: ``<ip>`` plus ``<detail><name>…</name>
+        <value>…</value></detail>`` rows.  ``best_os_txt`` is the operating
+        system GVM settled on and ``hostname`` the name it resolved; both are
+        recorded on the host.  True when the host was written."""
+        ip_address = extract_first_ip(self._find_text(host_elem, "ip"))
+        if not ip_address:
+            return False
+        details: dict = {}
+        for detail in host_elem.findall("detail"):
+            name = self._find_text(detail, "name")
+            value = self._find_text(detail, "value")
+            if name and value and name not in details:
+                details[name] = value
+        os_name = details.get("best_os_txt")
+        hostname = details.get("hostname")
+        if not os_name and not hostname:
+            return False
+        host_data = {"os_name": os_name[:255]} if os_name else None
+        persist_host_observation(
+            dedup_service=self.dedup_service,
+            scan_id=scan_id,
+            ip_address=ip_address,
+            hostname=hostname,
+            host_data=host_data,
+            project_id=project_id,
         )
         return True
 

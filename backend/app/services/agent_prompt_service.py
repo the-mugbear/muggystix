@@ -19,7 +19,7 @@ from the newest entry, so version and changelog can't drift).
 """
 
 import logging
-from typing import Any, Optional
+from typing import Optional
 
 from fastapi import Request
 

@@ -103,6 +103,8 @@ class ReportTemplateOut(BaseModel):
     description: str
     formats: List[str]
     assets: List[ReportTemplateAssetOut] = []
+    # Whether this template prints how each finding was confirmed.
+    evidence_records: bool = False
 
 
 ReportTemplateAssetOut.model_rebuild()

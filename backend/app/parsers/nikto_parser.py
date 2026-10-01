@@ -14,7 +14,9 @@ from app.db import models
 from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.streaming_json import iter_json_records
 from app.parsers.parser_utils import (
+    ProgressBeat,
     ScanClock,
+    without_nul,
     correlate_scan,
     ensure_scan,
     extract_first_ip,
@@ -76,6 +78,7 @@ class NiktoParser:
         self.db = db
         self.dedup_service = HostDeduplicationService(db)
         self._name_cache = ObservationCache()
+        self._beat = ProgressBeat("findings")
 
     def parse_file(self, file_path: str, filename: str, **kwargs) -> models.Scan:
         self._project_id = kwargs.get("project_id")
@@ -200,7 +203,7 @@ class NiktoParser:
             if first.lstrip('"').lower().startswith("nikto"):
                 self._parse_native_csv(handle, scan)
                 return
-            reader = csv.DictReader(handle)
+            reader = csv.DictReader(without_nul(handle))
             for row in reader:
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("targetip") or row.get("host") or ""))
                 if not ip_address:
@@ -225,7 +228,7 @@ class NiktoParser:
         A row with an empty message is the target line, not a finding.
         v2.387.0: this was read as a headed CSV, every row found no ``ip``
         column, and the file imported with nothing."""
-        for row in csv.reader(handle):
+        for row in csv.reader(without_nul(handle)):
             if len(row) < 7 or row[0].lower().startswith("nikto"):
                 continue
             hostname, ip_raw, port_raw, ref, _method, uri, message = (c.strip() for c in row[:7])
@@ -271,7 +274,8 @@ class NiktoParser:
         current_port = 80
 
         with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-            for line in handle:
+            # NUL removed (review 2026-10-01 R5): the finding text is stored.
+            for line in without_nul(handle):
                 ip_match = TARGET_IP_PATTERN.search(line)
                 if ip_match:
                     current_ip = extract_first_ip(ip_match.group(1))
@@ -345,6 +349,8 @@ class NiktoParser:
         # guard for the JSON, text and CSV paths.
         if hostname and normalize_ip(hostname):
             hostname = None
+        # R6 — heartbeat between findings (nothing of this one is written yet).
+        self._beat.tick()
         host, port_map = persist_host_observation(
             dedup_service=self.dedup_service,
             scan_id=scan.id,

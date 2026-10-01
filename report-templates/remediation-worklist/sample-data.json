@@ -71,7 +71,11 @@
       "affected_count": 2,
       "new_affected": [],
       "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
       "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
       "corroboration": ["Nessus", "OpenVAS"]
     },
     {
@@ -97,7 +101,11 @@
       "affected_count": 2,
       "new_affected": [],
       "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
       "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
       "corroboration": []
     },
     {
@@ -122,7 +130,11 @@
       "affected_count": 1,
       "new_affected": [],
       "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
       "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
       "corroboration": []
     },
     {
@@ -147,7 +159,11 @@
       "affected_count": 1,
       "new_affected": [],
       "change": null,
+      "previous_severity": null,
+      "previous_severity_label": null,
       "evidence": [],
+      "confirmations": [],
+      "confirmations_omitted": 0,
       "corroboration": []
     }
   ],

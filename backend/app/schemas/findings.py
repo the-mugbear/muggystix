@@ -49,6 +49,10 @@ class FindingResponse(BaseModel):
     owner_name: Optional[str] = None
     evidence_annotation_id: Optional[int] = None
     vuln_id: Optional[int] = None
+    # ``host_count`` is the true number of endpoint rows.  On a LIST row
+    # ``hosts`` is a preview of at most five of them (review 2026-10-01 C2 —
+    # it used to carry every endpoint of every row); ``GET /findings/{id}``
+    # returns them all.
     host_count: int = 0
     hosts: List[FindingHostInfo] = []
     # v2.349.0 — {open: n, remediated: n, retest: n} over the endpoint rows.
@@ -74,6 +78,16 @@ class FindingResponse(BaseModel):
 class EndpointStatusUpdate(BaseModel):
     """Body for PATCH /findings/{id}/endpoints/{finding_host_id}."""
     host_status: str
+
+
+class EndpointStatusBulkUpdate(BaseModel):
+    """Body for PATCH /findings/{id}/endpoints (review 2026-10-01 B13): the
+    same change as the single route, for the endpoints a person selected.
+    All-or-nothing — every id must be an endpoint of this finding."""
+    finding_host_ids: List[int] = Field(..., min_length=1, max_length=500)
+    host_status: str
+    # Recorded with each endpoint's history line ("retest 2026-10-01").
+    summary: Optional[str] = Field(None, max_length=2000)
 
 
 class FindingListResponse(BaseModel):

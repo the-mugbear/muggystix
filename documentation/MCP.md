@@ -82,16 +82,18 @@ What that takes, beyond "which hosts match X":
 | "How much of this did we actually assess?" | `assist_get_coverage` |
 | "Has anyone tested this host, and what happened?" | `host_tests_list {host_id}` (the tests and their status), `list_evidence {host_id}` (what was run and what came back) |
 | "Which segment is worst?" | `assist_list_segments` — ranked worst-first |
-| "What has the team been working on?" | `assist_list_recent_notes` (`status=open` = outstanding work) |
+| "What has the team been working on?" | `assist_list_recent_notes` (discussion; outstanding work is `host_tests_list` with `active_only`) |
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
-| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history; `assist_get_image` to look at one |
+| "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history, and up to 100 scanner rows (`scanner_evidence_total` / `scanner_evidence_truncated` say when there are more); `assist_get_image` to look at one |
 | "What's worth a look? What's mine? What changed since I was last here?" | `assist_list_worth_a_look` · `assist_get_workbench` (v2.428.0) |
 | "Which ranges has nobody touched?" | `assist_get_terrain` |
 | "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
 | "What changed between these two scans?" | `assist_compare_scans` |
+| "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
+| "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
-| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) |
+| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) — each finding with its `confirmations` (the test results the report prints; `confirmations_omitted` for the rest) and, in an addendum, its `change` (`new` · `new_hosts` · `severity_changed`, with `previous_severity`); `delta.findings_with_changed_severity`, `summary.evidence_records` / `agent_evidence_records` |
 
 Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
@@ -141,7 +143,7 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (56 tools at v2.442.0, as `tools/list`
+Every session sees the WHOLE catalogue (58 tools at v2.448.0, as `tools/list`
 returns it) — nothing is filtered by workflow since
 v2.337.0. Eight of those belong to the session rather than to any kind of work:
 **`agent_identity`** (what am I, what may I write, when does my key expire),

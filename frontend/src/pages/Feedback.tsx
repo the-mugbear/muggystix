@@ -24,6 +24,7 @@ import {
 import { useToast } from '../contexts/ToastContext';
 import { useProject } from '../contexts/ProjectContext';
 import { useDebouncedValue } from '../hooks/useDebouncedValue';
+import { ListPage, useListQuery } from '../hooks/useListQuery';
 import LastUpdated from '../components/LastUpdated';
 import TimeAgo from '../components/TimeAgo';
 import PostureLead from '../components/posture/PostureLead';
@@ -47,6 +48,9 @@ import {
 import { cn } from '../utils/cn';
 
 const PAGE = 50;
+
+/** The first page carries the measures' stats beside the rows. */
+type FeedbackPage = ListPage<AgentFeedbackEntry> & { stats?: FeedbackStats };
 
 const STATUSES = [
   { value: 'new', label: 'New' },
@@ -121,14 +125,7 @@ const Feedback: React.FC = () => {
 
   useEffect(() => { setParam('q', debouncedSearch); }, [debouncedSearch, setParam]);
 
-  const [rows, setRows] = useState<AgentFeedbackEntry[]>([]);
-  const [total, setTotal] = useState(0);
-  const [hasMore, setHasMore] = useState(false);
   const [stats, setStats] = useState<FeedbackStats | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [updatingId, setUpdatingId] = useState<number | null>(null);
 
@@ -148,41 +145,37 @@ const Feedback: React.FC = () => {
     return q;
   }, [status, source, minRating, content, projectFilter, debouncedSearch]);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [page, s] = await Promise.all([listAgentFeedback(query), getAgentFeedbackStats()]);
-      setRows(page.items);
-      setTotal(page.total);
-      setHasMore(page.has_more);
-      setStats(s);
-      setLastFetched(new Date());
-    } catch (err: unknown) {
-      setError(formatApiError(err, 'Could not load agent feedback.'));
-    } finally {
-      setLoading(false);
-    }
-  }, [query]);
-
-  useEffect(() => { load(); }, [load]);
+  // One request lane for the filters, the refresh and "Show more" (R33): a
+  // slow response for an earlier filter or search term never replaces the
+  // rows of the current one.
+  const list = useListQuery<AgentFeedbackEntry, FeedbackPage>(
+    async ({ offset, limit }) => {
+      const rowsQuery = listAgentFeedback({ ...query, limit, ...(offset > 0 ? { skip: offset } : {}) });
+      if (offset > 0) return rowsQuery;
+      const [page, s] = await Promise.all([rowsQuery, getAgentFeedbackStats()]);
+      return { ...page, stats: s };
+    },
+    [query],
+    { pageSize: PAGE, errorMessage: 'Could not load agent feedback.' },
+  );
+  const rows = list.rows ?? [];
+  const { total, loading, loadingMore, error, loadedAt: lastFetched } = list;
+  const load = list.reload;
+  const hasMore = rows.length < total;
+  // The measures keep their last value while a new filter loads.
+  const latestStats = list.response?.stats;
+  useEffect(() => { if (latestStats) setStats(latestStats); }, [latestStats]);
 
   const loadMore = async () => {
-    setLoadingMore(true);
     try {
-      const page = await listAgentFeedback({ ...query, skip: rows.length });
-      setRows((prev) => [...prev, ...page.items]);
-      setTotal(page.total);
-      setHasMore(page.has_more);
+      await list.loadMore();
     } catch (err: unknown) {
       toast.error(formatApiError(err, 'Could not load more feedback.'));
-    } finally {
-      setLoadingMore(false);
     }
   };
 
   const replaceRow = (updated: AgentFeedbackEntry) =>
-    setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
+    list.setRows((prev) => prev.map((r) => (r.id === updated.id ? updated : r)));
 
   const changeStatus = async (entry: AgentFeedbackEntry, next: string) => {
     if (next === entry.status) return;
@@ -252,7 +245,7 @@ const Feedback: React.FC = () => {
             session's own API calls before acting on it.
           </p>
         </div>
-        <LastUpdated compact lastFetched={lastFetched} onRefresh={load} isLoading={loading} label="agent feedback" />
+        <LastUpdated compact lastFetched={lastFetched} onRefresh={() => void load()} isLoading={loading} label="agent feedback" />
       </div>
 
       {stats && (

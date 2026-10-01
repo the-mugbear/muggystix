@@ -7,13 +7,13 @@ Notifications span projects — they're user-scoped, not project-scoped.
 
 from typing import List, Optional
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
 
 from app.db.session import get_db
 from app.db.models_auth import User
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.services.notification_service import NotificationService
 
 router = APIRouter(dependencies=[Depends(get_current_user)])

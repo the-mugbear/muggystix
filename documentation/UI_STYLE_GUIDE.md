@@ -235,7 +235,7 @@ Anything else gets cut.  A card whose first impression is a row of pastel chips 
 - Validation content must wrap safely.
 - Inline action rows must remain usable when labels or messages are long.
 - Submit and destructive actions must retain stable placement.
-- Use the v4 form primitives: `<Input>`, `<Textarea>`, `<Label>`, `<Select>`, `<Checkbox>`, `<Switch>`, `<RadioGroup>`, `<Combobox>`, `<PasswordInput>` from `src/components/ui/`.
+- Use the v4 form primitives: `<Input>`, `<Textarea>`, `<Label>`, `<Select>`, `<Checkbox>`, `<Switch>`, `<Combobox>`, `<PasswordInput>` from `src/components/ui/`.
 - Always pair an `<Input>` with a `<Label htmlFor=…>` — `<Input>` does not generate an id, so always pass `id` and a matching `htmlFor`.
 
 ### 11. Dialogs and Drawers
@@ -522,12 +522,12 @@ When editing the current frontend:
 Every primitive lives under `src/components/ui/`:
 
 - Surface: `Card` / `CardHeader` / `CardTitle` / `CardDescription` / `CardContent` / `CardFooter`
-- Form: `Input` / `Textarea` / `Label` / `Select` / `Checkbox` / `Switch` / `RadioGroup` / `PasswordInput` / `Combobox` / `CharacterCount`
+- Form: `Input` / `Textarea` / `Label` / `Select` / `Checkbox` / `Switch` / `PasswordInput` / `Combobox` / `CharacterCount`
 - Action: `Button` / `Badge` (17 variants — see §9) / `SeverityBadge`
 - Feedback: `Alert` (info / success / warning / destructive / default) / `Tooltip` / `InfoTip` / `InlineLoader`
 - Layout: `Tabs` / `Accordion` / `Separator` / `Avatar`
-- Overlay: `Dialog` / `ConfirmDialog` (via `useConfirm`) / `SideSheet` / `Popover` / `DropdownMenu`
-- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `MetaField` / `CodeBlock` / `SeverityBar` / `BreakableName`
+- Overlay: `Dialog` / `ConfirmDialog` (`src/components/ConfirmDialog.tsx`, always via `useConfirm`) / `SideSheet` / `Popover` / `DropdownMenu`
+- Data: `Table` (static) / `DataTable` + `DataTableShell` + `DataTablePagination` (TanStack-backed) / `CodeBlock` / `SeverityBar` / `BreakableName`
 
 ### 37. Suggested Shared Utilities
 These are good candidates for standardization if repeated:
@@ -572,6 +572,68 @@ cancelled-flag guard is the convention.
 For requests that should be physically aborted (large downloads, expensive
 endpoints), use `AbortController` and pass `controller.signal` to the API
 client — `controller.abort()` in the cleanup.
+
+### 39. List pages fetch with `useListQuery` (2026-10-01)
+A list page — rows that refetch when a filter, sort or page changes — fetches
+through `hooks/useListQuery.ts`.  Do not hand-roll `loading` / `error` /
+`rows` state for a new list.
+
+```tsx
+const list = useListQuery(
+  ({ offset, limit, signal }) => listThings({ status, offset, limit }, signal),
+  [status],                       // what decides WHEN to refetch
+  { pageSize: 50, poll: 60_000 }, // poll is optional
+);
+// list.rows (null until loaded) · list.total · list.loading · list.error
+// list.reload() after a change · list.loadMore() for "Show more"
+```
+
+The hook guarantees three things, the same on every list:
+
+- **The latest request wins.**  A slow response for an earlier filter never
+  replaces the current rows.  The filter, a reload, the poll tick and "load
+  more" share one lane.
+- **A failed load is an `error`, never an empty list.**
+- **A reload keeps what "load more" had loaded.**
+
+Proposals, Ingestion Results and Feedback use it.  A page that already has a
+guard of its own (`useLatestRequest`, a generation counter) moves when it is
+next reworked — do not migrate one for its own sake.  A fetch with **no**
+guard is a defect: give it `useLatestRequest` at least.
+
+Detail pages (`/findings/:id`, `/scans/:id`…) are remounted on navigation by
+the route error boundary's `key={location.pathname}` (`App.tsx`), which is
+what keeps a late response for the previous id from landing.  A component
+that stays mounted across ids (the host inspector) must carry its own guard.
+
+### 40. Controls follow the project role (2026-10-01)
+"May this person do that here" is answered by `hooks/useProjectRole.ts`:
+`canWrite` (project analyst and above), `canExport` (auditor and above),
+`isProjectAdmin`, `isGlobalAdmin`.  The account role is binary (admin /
+member), so `hasPermission('analyst')` is true for every member and must not
+gate anything; keep `hasPermission('admin')` for instance-wide surfaces
+(users, system settings, audit log, Oversight).
+
+- **Hidden, not disabled.**  A control the caller's role cannot use is not
+  rendered.  A viewer or auditor gets a read-only page — rows, counts, links,
+  and exports where the role allows — without add rows, editors, selection
+  checkboxes or action columns.
+- **No dead-end copy.**  An empty state or hint must not tell a reader to use
+  a control they do not have.
+- **An unknown role shows the control.**  Until the project role has loaded
+  the server decides; only a role known to be too low hides a control.
+- **A page follows the server's READ rule, a control its WRITE rule.**  When
+  the server lets a role read a page's data, the page stays in the nav and
+  reachable for that role, read-only (Scope: every member reads it, analysts
+  change it — route and nav entry are `viewer`).  A page leaves the nav, and
+  its route refuses, only when the server refuses that role the read as well
+  (Ingestion Results: its GETs need analyst).  Never hide a readable page
+  because its writes are out of reach.
+- **`requiredRole` names two different roles.**  On a route or nav entry,
+  `analyst` / `auditor` mean the project role (`useRoleGate`), `admin` means
+  the account role, and `viewer` means any signed-in account.  The route in
+  `App.tsx` and the entry in `config/navigation.tsx` must agree
+  (`tests/navigation.test.ts`).
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

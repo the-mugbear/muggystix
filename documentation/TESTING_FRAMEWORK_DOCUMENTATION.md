@@ -10,14 +10,22 @@
 ## The gates (run locally — there is no hosted CI)
 
 The GitHub Actions workflow was removed in 2026-09: it had never run on this repository, so it
-enforced nothing. The same three gates exist as local commands; run them before a push.
+enforced nothing. **One command runs all three gates — `./scripts/check.sh` (or `make check`;
+`--fast` skips the migration round trip) — and it is what to run before a push.** It runs the
+backend suite in the **report-worker** image (the backend image plus Quarto, `report-templates/`
+mounted) and **fails if any test skipped for want of Quarto or the templates**: with the plain
+`backend` recipe below, the client-report tests — the hostile-text contract among them — skip,
+and the run is green without them. Its second step is `ruff check` over `backend/` in the same
+image (pyflakes rules only, `backend/ruff.toml`): any finding fails the gate. It ends with a
+one-screen summary and a non-zero exit on any failure. The gates, for running one alone:
 
 - **Migrations** — `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and walks EVERY
   revision down and back up, so a migration with a broken or no-op `downgrade()` is caught.
   `alembic check` (model-vs-migration drift) is what catches a model module missing from
   `app/db/model_registry.py`.
-- **Backend** — `python -m pytest -q` in a one-off container (recipe below). The recipes pass
-  `--no-cov` for speed; drop it to check the `--cov-fail-under=68` floor in `backend/pytest.ini`.
+- **Backend** — `python -m pytest -q` in a one-off container (recipe below). The recipes and
+  `check.sh` pass `--no-cov` for speed, so the `--cov-fail-under=68` floor in
+  `backend/pytest.ini` is **not enforced by any routine run**; drop `--no-cov` to measure it.
 - **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` → `npm run build`.
   `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it
   (and fails the image build).
@@ -41,7 +49,7 @@ Run locally after installing backend dependencies:
 
 ```bash
 cd backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt -c constraints.txt
 python -m pytest --no-cov -q          # quick smoke
 python -m pytest                       # full run with coverage
 ```

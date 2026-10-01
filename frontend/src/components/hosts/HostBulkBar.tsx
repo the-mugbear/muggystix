@@ -24,6 +24,7 @@ import {
   listProjectMembers,
 } from '../../services/api';
 import { useAuth } from '../../contexts/AuthContext';
+import { useProjectRole } from '../../hooks/useProjectRole';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
@@ -95,6 +96,10 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   onApplied,
 }) => {
   const { user } = useAuth();
+  // Tagging, assigning and proposing tests are a project analyst's (R32).
+  // Review status is the caller's own, and copying IPs changes nothing, so a
+  // viewer or auditor keeps those two.
+  const { canWrite } = useProjectRole();
   const toast = useToast();
   const [allMatching, setAllMatching] = useState(false);
   const [working, setWorking] = useState(false);
@@ -125,9 +130,10 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
   const [newTagName, setNewTagName] = useState('');
 
   useEffect(() => {
+    if (!canWrite) return;  // the pickers these fill are not rendered
     listHostTags().then(setTags).catch(() => setTags([]));
     listProjectMembers().then(setMembers).catch(() => setMembers([]));
-  }, []);
+  }, [canWrite]);
 
   // Leaving select-all-matching when the page selection changes keeps the
   // displayed count honest.
@@ -282,6 +288,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
           Copy IPs
         </Button>
 
+        {canWrite && (<>
         {/* Tags */}
         <Popover>
           <PopoverTrigger asChild>
@@ -372,6 +379,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
             )}
           </DropdownMenuContent>
         </DropdownMenu>
+        </>)}
 
         {/* Status */}
         <DropdownMenu>
@@ -393,6 +401,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
         </DropdownMenu>
 
         {/* Propose tests — the selection becomes a fixed target list. */}
+        {canWrite && (
         <Button
           size="sm"
           variant="outline"
@@ -402,6 +411,7 @@ const HostBulkBar: React.FC<HostBulkBarProps> = ({
         >
           <ClipboardList className="size-3.5" aria-hidden /> Propose tests
         </Button>
+        )}
 
         <Button size="sm" variant="ghost" onClick={onClear} disabled={working} aria-label="Clear selection">
           <X className="size-3.5" aria-hidden /> Clear

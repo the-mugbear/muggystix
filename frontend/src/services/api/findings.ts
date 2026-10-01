@@ -46,7 +46,6 @@ export interface Finding {
   owner_name: string | null;
   evidence_annotation_id: number | null;
   vuln_id: number | null;
-  exec_result_id: number | null;
   host_count: number;
   hosts: FindingHostInfo[];
   /** v5.225.0 — {open, remediated, retest} over the endpoint rows. */
@@ -242,6 +241,18 @@ export const setFindingEndpointStatus = async (
   return response.data;
 };
 
+/** Review 2026-10-01 B13 — set SEVERAL endpoint rows' state in one call
+ *  (`PATCH /findings/{id}/endpoints`): at most 500 ids, all-or-nothing, the
+ *  same rules as the single-endpoint route.  `summary` is recorded with each
+ *  endpoint's history line.  Returns the finding with every endpoint. */
+export const setFindingEndpointsStatus = async (
+  findingId: number,
+  body: { finding_host_ids: number[]; host_status: FindingHostStatus; summary?: string },
+): Promise<Finding> => {
+  const response = await api.patch<Finding>(`${p()}/findings/${findingId}/endpoints`, body);
+  return response.data;
+};
+
 export interface FindingEndpointRef {
   host_id: number;
   name_id?: number | null;
@@ -257,12 +268,6 @@ export const addFindingHosts = async (
     host_ids: hostIds,
     endpoints,
   });
-  return response.data;
-};
-
-/** Detach EVERY endpoint row on a host. Prefer removeFindingEndpoint for one row. */
-export const removeFindingHost = async (findingId: number, hostId: number): Promise<Finding> => {
-  const response = await api.delete<Finding>(`${p()}/findings/${findingId}/hosts/${hostId}`);
   return response.data;
 };
 

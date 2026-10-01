@@ -215,7 +215,7 @@ export function groupVulnerabilities(vulns: HostVulnerability[]): VulnGroup[] {
       const source = (m.source ?? 'unknown').toLowerCase();
       const ident = m.plugin_id?.trim()
         || (m.title ? normalizeVulnTitle(m.title) : `row:${m.id}`);
-      const dk = `${source} ${ident}`;
+      const dk = `${source}\u0000${ident}`;
       const bucket = detailBuckets.get(dk);
       if (bucket) {
         if (typeof m.port_number === 'number') bucket.ports.add(m.port_number);

@@ -171,6 +171,9 @@ export interface Host {
   follow?: HostFollowInfo | null;
   notes?: Annotation[];
   note_count?: number;
+  /** Legacy wire names (test plans were removed in v2.442.0): the host's tests
+   *  proposed or in progress, and its evidence records with a tested outcome.
+   *  Read them through `utils/hostTests.hostTestCounts`, never directly. */
   test_plan_entry_count?: number;
   test_execution_count?: number;
   // v2.12.0: count of web interfaces (httpx / eyewitness / nikto rows)
@@ -386,6 +389,11 @@ export interface HostAssessment {
   last_observed_at: string | null;
   vuln_assessed: boolean;
   last_vuln_assessed_at: string | null;
+  /** Did a vulnerability scan authenticate to this host? `yes` (any scan says
+   *  so), `no` (one says it did not, none says it did), `not_stated`
+   *  (assessed, no scan said); null when the host is not assessed. It sits
+   *  beside `vuln_assessed` and never changes it. */
+  vuln_scan_credentialed?: 'yes' | 'no' | 'not_stated' | null;
   web_eligible: boolean;
   web_assessed: boolean;
   last_web_assessed_at: string | null;

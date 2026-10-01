@@ -46,10 +46,10 @@ from typing import List, Optional, Set
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-from sqlalchemy import DateTime, String, and_, cast, exists, func, or_
+from sqlalchemy import DateTime, and_, cast, exists, func, or_
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.db import models
 from app.services.host_query_common import escape_like
 from app.db.models_proposals import EvidenceRecord

@@ -3,7 +3,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
-from sqlalchemy import and_, desc, func, case, or_
+from sqlalchemy import and_, func, case, or_
 from pydantic import BaseModel
 
 from app.db.session import get_db
@@ -18,8 +18,8 @@ from app.services.staged_import_service import (
     file_retained,
     retained_until,
 )
-from app.schemas.schemas import ParseError, ParseErrorSummary, ParseErrorCreate
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.schemas.schemas import ParseErrorSummary
+from app.api.deps import get_current_user
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_current_project, require_project_role
 from app.db.models_project import Project, ProjectRole
@@ -786,7 +786,7 @@ def delete_parse_error(
             "message": "Parse error deleted successfully",
             "jobs_updated": jobs_cleared,
         }
-    except Exception as exc:  # pragma: no cover - defensive
+    except Exception:  # pragma: no cover - defensive
         db.rollback()
         logger.exception("Failed to delete parse error %d", error_id)
         raise HTTPException(status_code=500, detail="Failed to delete parse error")

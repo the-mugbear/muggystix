@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_project import Project
 from app.db.models_auth import User
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project
 from app.services.attention_service import compute_project_attention, compute_site_attention
 

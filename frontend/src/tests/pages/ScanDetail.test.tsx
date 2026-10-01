@@ -4,7 +4,7 @@
  * one for the tabs; a missing hostname read "N/A" here and "No hostname"
  * everywhere else.
  */
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -78,5 +78,68 @@ describe('ScanDetail', () => {
     expect(strip).toHaveTextContent('none reported up');
     expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
     expect(screen.getByRole('heading', { name: 'What this scan recorded' })).toBeInTheDocument();
+  });
+
+  // Review 2026-10-01 — host_scan_history.credentialed was stored and shown nowhere.
+  it('has no Authenticated column when the scan said nothing about logging in', async () => {
+    renderPage();
+    await screen.findByText('No hostname');
+    expect(screen.queryByRole('columnheader', { name: 'Authenticated' })).not.toBeInTheDocument();
+    expect(screen.queryByTestId('scanned-ports')).not.toBeInTheDocument();
+  });
+
+  it('says per host whether the scan authenticated, and leaves "did not say" blank', async () => {
+    api.getScanHostSnapshots.mockResolvedValue({
+      items: [
+        { host_id: 1, ip_address: '10.0.0.1', hostname_at_scan: 'a.corp', state_at_scan: 'up', host_created: false, credentialed: true, open_port_count: 0, observed_port_count: 0 },
+        { host_id: 2, ip_address: '10.0.0.2', hostname_at_scan: 'b.corp', state_at_scan: 'up', host_created: false, credentialed: false, open_port_count: 0, observed_port_count: 0 },
+        { host_id: 3, ip_address: '10.0.0.3', hostname_at_scan: 'c.corp', state_at_scan: 'up', host_created: false, credentialed: null, open_port_count: 0, observed_port_count: 0 },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByRole('columnheader', { name: 'Authenticated' })).toBeInTheDocument();
+    const rowOf = (ip: string) => screen.getByRole('button', { name: ip }).closest('tr')!;
+    expect(rowOf('10.0.0.1')).toHaveTextContent('Credentialed');
+    expect(rowOf('10.0.0.1')).not.toHaveTextContent('Not credentialed');
+    expect(rowOf('10.0.0.2')).toHaveTextContent('Not credentialed');
+    expect(rowOf('10.0.0.3')).not.toHaveTextContent(/credentialed/i);
+  });
+
+  // nmap's scanned port list: returned by GET /scans/{id} since forever, read by nothing.
+  it('prints what the scan was asked to probe, one entry per protocol', async () => {
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 2, up_hosts: 0, total_ports: 4, open_ports: 3,
+      scan_info: [
+        { id: 1, scan_id: 9, type: 'syn', protocol: 'tcp', numservices: 1000, services: '1-1000' },
+        { id: 2, scan_id: 9, type: 'udp', protocol: 'udp', numservices: 2, services: '53,161' },
+      ],
+    });
+    renderPage();
+    const line = await screen.findByTestId('scanned-ports');
+    expect(line).toHaveTextContent('Scanned: tcp 1-1000 · udp 53,161');
+    expect(screen.queryByRole('button', { name: 'Show the whole list' })).not.toBeInTheDocument();
+  });
+
+  it('clamps a long port list behind an expander and survives empty rows', async () => {
+    const long = Array.from({ length: 400 }, (_, i) => String(i * 7 + 1)).join(',');
+    api.getScan.mockResolvedValue({
+      id: 9, filename: 'sweep.xml', tool_name: 'nmap', created_at: '2026-09-19T10:00:00Z',
+      total_hosts: 2, up_hosts: 0, total_ports: 4, open_ports: 3,
+      scan_info: [
+        { id: 1, scan_id: 9, type: 'syn', protocol: 'tcp', numservices: 400, services: long },
+        { id: 2, scan_id: 9, type: null, protocol: null, numservices: null, services: null },
+        { id: 3, scan_id: 9, type: 'udp', protocol: 'udp', numservices: 5, services: null },
+      ],
+    });
+    renderPage();
+    const line = await screen.findByTestId('scanned-ports');
+    expect(line).toHaveTextContent('· udp 5 ports');
+    expect(line.querySelector('p')).toHaveClass('line-clamp-2', 'break-all');
+    const toggle = screen.getByRole('button', { name: 'Show the whole list' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(toggle);
+    expect(line.querySelector('p')).not.toHaveClass('line-clamp-2');
+    expect(screen.getByRole('button', { name: 'Show less' })).toHaveAttribute('aria-expanded', 'true');
   });
 });

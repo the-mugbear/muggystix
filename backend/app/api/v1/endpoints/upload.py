@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.auth import get_current_user, require_role
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.db.models import IngestionJob, ScanBatch
 from app.db.models_auth import User, UserRole

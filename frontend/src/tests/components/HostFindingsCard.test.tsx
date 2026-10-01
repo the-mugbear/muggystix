@@ -10,6 +10,7 @@ vi.mock('react-router-dom', async () => {
 });
 const api = vi.hoisted(() => ({
   listFindings: vi.fn(),
+  getFinding: vi.fn(),
   setFindingStatus: vi.fn(),
   setFindingEndpointStatus: vi.fn(),
 }));
@@ -89,5 +90,59 @@ describe('HostFindingsCard', () => {
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
     await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(7, 'confirmed'));
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
+  });
+
+  // Review 2026-10-01 C2 — a list row carries at most five endpoints.  With
+  // `host_id` the server leads the preview with THIS host's rows, so a cut
+  // preview still holds this host's state and the card reads no finding whole
+  // (it used to: one GET /findings/{id} per shared finding).
+  it('reads this host\'s state from a cut preview that leads with it — no read per finding', async () => {
+    const user = userEvent.setup();
+    const preview = [row(31, HOST, 'remediated'), row(1, 101, 'open'), row(2, 102, 'open'), row(3, 103, 'open'), row(4, 104, 'open')];
+    const listed = finding({ host_count: 300, hosts: preview });
+    api.listFindings.mockResolvedValue({ items: [listed] });
+    api.setFindingEndpointStatus.mockResolvedValue({ ...listed, hosts: [row(31, HOST, 'retest'), ...preview.slice(1)] });
+    renderCard();
+
+    const state = await screen.findByLabelText('State of Weak TLS on this host');
+    expect(state).toHaveTextContent('Remediated here');
+    expect(api.listFindings).toHaveBeenCalledWith({ host_id: HOST, limit: 100 });
+    expect(api.getFinding).not.toHaveBeenCalled();
+
+    await user.click(state);
+    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(7, 31, 'retest'));
+    expect(api.getFinding).not.toHaveBeenCalled();
+  });
+
+  // The one case the preview cannot answer: it is cut AND every row in it is
+  // this host's (more named endpoints here than the preview holds), so the
+  // rows beyond it would be left out of the state and of a change to it.
+  it('reads a finding whole only when the cut preview is all this host\'s named endpoints', async () => {
+    const user = userEvent.setup();
+    const names = (n: number, status: string) =>
+      Array.from({ length: n }, (_, i) => row(40 + i, HOST, status, `v${i}.corp`));
+    const listed = finding({ host_count: 7, hosts: names(5, 'open') });
+    const whole = finding({ host_count: 7, hosts: [...names(6, 'open'), row(90, 6, 'open')] });
+    api.listFindings.mockResolvedValue({ items: [listed] });
+    api.getFinding.mockResolvedValue(whole);
+    api.setFindingEndpointStatus.mockResolvedValue(whole);
+    renderCard();
+
+    const state = await screen.findByLabelText('State of Weak TLS on this host');
+    await waitFor(() => expect(api.getFinding).toHaveBeenCalledWith(7));
+    await user.click(state);
+    await user.click(await screen.findByRole('option', { name: 'Retest here' }));
+    // Every one of this host's six rows — the sixth was not in the preview.
+    await waitFor(() => expect(api.setFindingEndpointStatus).toHaveBeenCalledTimes(6));
+    expect(api.setFindingEndpointStatus).toHaveBeenCalledWith(7, 45, 'retest');
+    expect(api.setFindingEndpointStatus).not.toHaveBeenCalledWith(7, 90, 'retest');
+  });
+
+  it('does not read findings whose preview is already every endpoint', async () => {
+    api.listFindings.mockResolvedValue({ items: [finding({})] });
+    renderCard();
+    await screen.findByText('Weak TLS');
+    expect(api.getFinding).not.toHaveBeenCalled();
   });
 });

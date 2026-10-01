@@ -10,7 +10,9 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import DNS_OBS_DISCOVERED
-from app.parsers.parser_utils import correlate_scan, ensure_scan, extract_first_ip, persist_host_observation
+from app.parsers.parser_utils import (
+    ProgressBeat, correlate_scan, ensure_scan, extract_first_ip, persist_host_observation,
+)
 from app.parsers.streaming_json import iter_json_records
 from app.services.dns_name_service import ObservationCache, record_observation
 from app.services.host_deduplication_service import HostDeduplicationService
@@ -79,6 +81,9 @@ class AmassParser:
 
         suffix = Path(filename).suffix.lower()
         records_added = set()
+        # R6 — heartbeat between names (each name's host write is isolated by
+        # persist_host_observation; the tick is outside it).
+        beat = ProgressBeat("names")
 
         if suffix in (".json", ".jsonl"):
             # Streams large amass / subfinder exports rather than
@@ -90,6 +95,7 @@ class AmassParser:
             # record's address list.
             rows = iter_json_records(file_path, tool_label="Amass JSON")
             for row in rows:
+                beat.tick()
                 hostname = row.get("name") or row.get("host") or row.get("domain")
                 if not hostname:
                     continue
@@ -113,6 +119,7 @@ class AmassParser:
                     cleaned = line.strip()
                     if not cleaned or cleaned.startswith("#"):
                         continue
+                    beat.tick()
                     parts = cleaned.split()
                     hostname = parts[0]
                     # "name address": the second column whole (IPv6 too),

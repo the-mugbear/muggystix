@@ -272,7 +272,7 @@ export const ProjectProvider: React.FC<{ children: ReactNode }> = ({ children })
   if (!currentProject && projects.length === 0) {
     return (
       <EmptyProjectStartScreen
-        canCreate={hasPermission('admin') || hasPermission('analyst')}
+        canCreate={hasPermission('admin')}
         onCreated={refreshProjects}
         onSignOut={logout}
       />

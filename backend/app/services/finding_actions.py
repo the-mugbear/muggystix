@@ -103,6 +103,7 @@ def promote_or_dismiss_vulnerability(
     owner_id: Optional[int] = None,
     summary: Optional[str] = None,
     scope: Optional[str] = None,
+    confirm_only_on_join: bool = False,
 ) -> Finding:
     """Promote a scanner observation to a finding, or dismiss it.
 
@@ -112,6 +113,12 @@ def promote_or_dismiss_vulnerability(
     not for every host carrying the issue.  The default for a promotion stays
     "issue".  Accepted risk is issue-wide: a decision about the issue, not a
     host.  The caller commits.
+
+    ``confirm_only_on_join`` (review 2026-10-01 R9) is for a caller that
+    reports ONE host's result rather than a judgment of the issue — a test's
+    evidence.  Joining an existing finding then changes its status only from
+    open / retest to confirmed (see ``FindingService.promote_vulnerability``).
+    The promote / dismiss click and an accepted proposal leave it off.
     """
     status = status or FindingStatus.CONFIRMED.value
     is_fp = status == FindingStatus.FALSE_POSITIVE.value
@@ -132,6 +139,7 @@ def promote_or_dismiss_vulnerability(
         vuln=vuln, project_id=project_id, actor_id=actor_id,
         severity=severity, status=status, owner_id=owner_id, summary=summary,
         only_this_host=(scope == "host"),
+        confirm_only_on_join=confirm_only_on_join,
     )
     if not is_fp:
         # v2.445.0 — the results of tests that confirmed this issue on this

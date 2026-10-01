@@ -22,14 +22,6 @@ export interface Scope {
   subnets_limit?: number | null;
 }
 
-export interface ScopeSummary {
-  id: number;
-  name: string;
-  description: string | null;
-  created_at: string;
-  subnet_count: number;
-}
-
 export interface Subnet {
   id: number;
   scope_id: number;
@@ -159,10 +151,6 @@ export interface ScopeHostMappingsResult {
 
 // --- Scopes ---
 
-export const getScopes = async (): Promise<ScopeSummary[]> => {
-  const response = await api.get(`${p()}/scopes/`);
-  return response.data;
-};
 /**
  * Fetch the project's single scope (v2.9.4+).  A project now has
  * exactly one conceptual scope; this endpoint creates it on the fly

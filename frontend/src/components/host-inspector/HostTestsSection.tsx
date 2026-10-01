@@ -21,6 +21,7 @@ import { Bot, ChevronDown, ChevronRight, ClipboardList, Loader2, MoreHorizontal,
 
 import {
   createFindingFromEvidence,
+  PromotedEvidence,
   listEvidenceRecords,
   updateHostTest,
   type EvidenceRecord,
@@ -103,7 +104,7 @@ const inFilter = (t: HostTest, f: Filter): boolean => f === 'all' || filterOf(t)
 const PromoteEvidence: React.FC<{
   rec: EvidenceRecord;
   test: HostTest;
-  onCreated: (findingId: number) => void;
+  onCreated: (made: PromotedEvidence) => void;
 }> = ({ rec, test, onCreated }) => {
   const linked = !!test.issue_key;
   // The result says what was found; the test's description says what was
@@ -125,7 +126,7 @@ const PromoteEvidence: React.FC<{
       // them only if the observation it named has since left the host: while
       // it is there, the observation names and rates its own finding.
       const made = await createFindingFromEvidence(rec.id, { title: title.trim(), severity });
-      onCreated(made.finding_id);
+      onCreated(made);
     } catch (err) {
       setError(formatApiError(err, 'Could not create the finding.'));
     } finally {
@@ -247,9 +248,9 @@ const TestEvidence: React.FC<{ test: HostTest; ctl: HostTestsController }> = ({ 
                 <PromoteEvidence
                   rec={rec}
                   test={test}
-                  onCreated={(findingId) => {
-                    setItems((prev) => prev?.map((r) => (r.id === rec.id ? { ...r, finding_id: findingId } : r)) ?? prev);
-                    ctl.onFindingCreated(findingId);
+                  onCreated={(made) => {
+                    setItems((prev) => prev?.map((r) => (r.id === rec.id ? { ...r, finding_id: made.finding_id } : r)) ?? prev);
+                    ctl.onFindingCreated(made.finding_id, made);
                   }}
                 />
               )}
@@ -647,7 +648,7 @@ export interface HostTestsSectionProps {
   userId?: number;
   /** Typed-but-unsaved text in the section (the inspector's leave guard). */
   onDirtyChange?: (dirty: boolean) => void;
-  onFindingCreated?: (findingId: number) => void;
+  onFindingCreated?: (findingId: number, made?: PromotedEvidence) => void;
   onResultRecorded?: () => void;
 }
 

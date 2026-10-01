@@ -16,7 +16,7 @@
  * page (`/agent-sessions/:id`) — and the analytics last.
  */
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Bot, ChevronRight, Loader2, Play, RefreshCw, Search } from 'lucide-react';
 import {
   AgentSessionKind,
@@ -423,9 +423,31 @@ const ProjectActivity: React.FC = () => {
   const controls = useAgentSessionControls(refresh);
   const canStartAgent = useCanStartAgentSession();
 
-  const [kindFilter, setKindFilter] = useState<'' | AgentSessionKind>('');
-  const [modelFilter, setModelFilter] = useState('');
-  const [toolFilter, setToolFilter] = useState('');
+  // B15 — the history's filters live in the URL (`?kind=&model=&tool=`,
+  // replace not push), so a filtered history can be shared and survives a
+  // reload.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const kindParam = searchParams.get('kind');
+  const kindFilter: '' | AgentSessionKind = kindParam === 'project' || kindParam === 'assist' ? kindParam : '';
+  const modelFilter = searchParams.get('model') ?? '';
+  const toolFilter = searchParams.get('tool') ?? '';
+  const setFilter = useCallback((key: 'kind' | 'model' | 'tool', value: string) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) next.set(key, value); else next.delete(key);
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
+  const setKindFilter = (value: '' | AgentSessionKind) => setFilter('kind', value);
+  const setModelFilter = (value: string) => setFilter('model', value);
+  const setToolFilter = (value: string) => setFilter('tool', value);
+  // One navigation: successive setSearchParams calls in a tick each start
+  // from the same URL, so three of them would clear only the last.
+  const clearFilters = () => setSearchParams((prev) => {
+    const next = new URLSearchParams(prev);
+    ['kind', 'model', 'tool'].forEach((k) => next.delete(k));
+    return next;
+  }, { replace: true });
 
   const knownModels = useMemo(() => {
     if (!summary) return [];
@@ -761,11 +783,7 @@ const ProjectActivity: React.FC = () => {
                     <Button
                       size="sm"
                       variant="outline"
-                      onClick={() => {
-                        setKindFilter('');
-                        setModelFilter('');
-                        setToolFilter('');
-                      }}
+                      onClick={clearFilters}
                       className="mt-xs"
                     >
                       Clear filters

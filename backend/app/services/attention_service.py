@@ -23,7 +23,6 @@ key changes, not the model.
 """
 from __future__ import annotations
 
-import ipaddress
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -32,7 +31,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
-from app.db.models import FollowStatus, HostFollow, HostSubnetMapping, Scan, Scope, Site, Subnet
+from app.db.models import FollowStatus, HostFollow, Scan, Site
 from app.db.models_findings import (
     ACTIVE_FINDING_STATUSES as _ACTIVE_FINDING_STATUSES, Finding, FindingHost, finding_active_on_host,
 )

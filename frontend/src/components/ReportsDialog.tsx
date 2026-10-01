@@ -44,6 +44,8 @@ import {
 } from './ui/select';
 import { cn } from '../utils/cn';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
+import { useProjectRole } from '../hooks/useProjectRole';
+import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { Link } from 'react-router-dom';
 
@@ -129,6 +131,13 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
   // Recent async report jobs — so navigating away / reopening doesn't strand a
   // long-running or completed export; you can re-download from here.
   const [recentJobs, setRecentJobs] = useState<ReportJob[]>([]);
+  // Retry / cancel / dismiss are a project analyst's, or the person's who
+  // asked for that job (R32).  A job that does not say who asked for it keeps
+  // its controls — the server decides.
+  const { canWrite } = useProjectRole();
+  const { user } = useAuth();
+  const mayManageJob = (job: ReportJob) =>
+    canWrite || job.requested_by_id == null || job.requested_by_id === user?.id;
   // Effective per-format host caps for this deployment (GET /reports/limits).
   // null until loaded — the over-cap warning stays hidden rather than showing
   // a number the server won't honour.
@@ -536,6 +545,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
             <div className="mt-xxs space-y-xxs">
               {recentJobs.map((job) => {
                 const running = job.status === 'queued' || job.status === 'processing';
+                const mayManage = mayManageJob(job);
                 return (
                   <div
                     key={job.id}
@@ -578,7 +588,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                       {job.status}
                       {job.truncated ? ' · capped' : ''}
                     </Badge>
-                    {job.status === 'failed' && (
+                    {mayManage && job.status === 'failed' && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -589,7 +599,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                         Retry
                       </Button>
                     )}
-                    {job.status === 'queued' && (
+                    {mayManage && job.status === 'queued' && (
                       <Button
                         size="sm"
                         variant="ghost"
@@ -610,6 +620,7 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                         Download
                       </Button>
                     )}
+                    {mayManage && (
                     <Button
                       size="sm"
                       variant="ghost"
@@ -619,13 +630,15 @@ const ReportsDialog: React.FC<ReportsDialogProps> = ({ open, onClose, filters, t
                         try {
                           await dismissReportJob(job.id);
                           refreshRecentJobs();
-                        } catch {
-                          /* non-fatal */
+                        } catch (e) {
+                          // Said (R34): the ✕ used to do nothing on a refusal.
+                          setError(formatApiError(e, 'That report could not be dismissed.'));
                         }
                       }}
                     >
                       ✕
                     </Button>
+                    )}
                   </div>
                 );
               })}

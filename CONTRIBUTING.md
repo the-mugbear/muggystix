@@ -15,7 +15,7 @@ code and that, if violated, cause subtle breakage. For system topology see
 
 ```bash
 # Backend (dev server, hot reload)
-cd backend && pip install -r requirements.txt
+cd backend && pip install -r requirements-dev.txt -c constraints.txt   # runtime + pytest/ruff
 export DATABASE_URL=... SECRET_KEY=...        # both required; see the warning below
 uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 
@@ -39,14 +39,65 @@ in the user menu (top-right) under **About BlueStick**. They must match
 `platform_version.json` after a rebuild — they're the visual confirmation that the running app
 includes your changes.
 
+## Dependencies, base images and lint
+
+- **Python packages.** `backend/requirements.txt` is what the application needs to run;
+  `backend/requirements-dev.txt` adds pytest and ruff; `backend/constraints.txt` fixes the
+  version of **every** installed package, transitive ones included, and the Dockerfile installs
+  with `-c constraints.txt` — so a rebuild resolves to the same set. The dev tools are installed
+  in the image by default (build arg `INSTALL_DEV=true`) because the suite, `scripts/check.sh`
+  and `scripts/test-alembic-roundtrip.sh` all run in a one-off container of that image;
+  `INSTALL_DEV=false` in `.env` builds without them. **To change a dependency:** edit the pin in
+  `requirements*.txt` *and* its line in `constraints.txt` (pip refuses the build when they
+  disagree), rebuild, run `scripts/check.sh`, then replace the list in `constraints.txt` with
+  `docker compose exec -T backend pip freeze` from the new image.
+- **Base images** are pinned to exact release tags (not digests): `postgres:16.13` in
+  `docker-compose.yml`; `python:3.11.16-slim-trixie` in `backend/Dockerfile`;
+  `node:22.23.2-alpine` and `nginx:1.31.3-alpine` in `frontend/Dockerfile`. Moving one is a
+  deliberate commit: change the tag, rebuild, run the gate. `.env` can override each
+  (`POSTGRES_IMAGE`, `PYTHON_IMAGE`, `NODE_IMAGE`, `NGINX_IMAGE`) for a host that cannot pull.
+- **Lint: ruff, pyflakes (`F`) rules only** — `backend/ruff.toml`. Unused imports and
+  variables, undefined names, redefinitions: defects, not style. No formatter, no import
+  sorting, no pycodestyle; adding a rule family is a separate decision. The migration chain is
+  excluded (a revision is never edited to please a linter).
+
+  ```bash
+  R=$PWD; docker compose -f "$R/docker-compose.yml" --project-directory "$R" run --rm --no-deps \
+    -v "$R/backend:/app" backend sh -c "cd /app && ruff check . --no-cache"   # needs an image built with ruff in it
+  ```
+
+  **It is a step of `check.sh`** (since 2026-10-01: the tree had 124 findings when the config
+  landed, one of them an undefined name, and has none now): any finding fails the gate. Run it
+  from `/app` as above — with an explicit `--config` ruff resolves the per-file ignores
+  (`tests/**`) against the working directory, so from anywhere else the tests' fixture imports
+  are reported. `--no-cache` keeps a root-owned `.ruff_cache` out of the working tree.
+
 ## Running tests
 
 There is **no hosted CI** (the GitHub Actions workflow was removed in 2026-09: it had never run
-on this repository). The gates are the same three, run locally before a push. **Migrations** —
+on this repository). **The gate is one command, run before every push:**
+
+```bash
+./scripts/check.sh          # or: make check
+./scripts/check.sh --fast   # without the Alembic round trip
+```
+
+It runs (1) the backend suite in the **report-worker** image — the backend image plus Quarto —
+with `report-templates/` mounted, and **fails if any test skipped for want of Quarto or the
+templates**: in the plain `backend` image (the recipe further down) the client-report tests,
+the hostile-text contract among them, skip, and that run is green without them; (2) frontend
+`tsc --noEmit` and `vitest run`; (3) `scripts/test-alembic-roundtrip.sh`, which ends with
+`alembic check`. Every step runs even when one fails, a one-screen summary ends the run, and
+the exit status is non-zero on any failure. It needs the stack up and the images built, builds
+and pulls nothing, and sets `BLUESTICK_SKIP_DB_INIT=1`. From a git worktree it tests the
+worktree's source inside the main checkout's compose project.
+
+What each step is, for running one alone: **Migrations** —
 `scripts/test-alembic-roundtrip.sh` boots a throwaway Postgres and walks every revision down
 and back up, so a migration needs a genuinely reversible `downgrade()`; `alembic check` catches
-model/migration drift. **Backend** — `pytest` (the recipe below; drop `--no-cov` to check the
-coverage floor, `--cov-fail-under` in `backend/pytest.ini`). **Frontend** — `tsc --noEmit` →
+model/migration drift. **Backend** — `pytest` (the recipe below; it passes `--no-cov`, as
+`check.sh` does, so the `--cov-fail-under` floor in `backend/pytest.ini` is **not** enforced by
+any routine run — drop `--no-cov` to measure coverage by hand). **Frontend** — `tsc --noEmit` →
 `vitest run` → `npm run build`. `tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an
 unused import fails the image build.
 

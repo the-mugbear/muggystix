@@ -203,7 +203,9 @@ export const NAV_PAGES: NavPage[] = [
   },
   {
     // The page's own title is "Scope": a project has exactly one (v2.9.4).
-    id: 'scopes', path: '/scopes', label: 'Scope', requiredRole: 'analyst', hub: 'inventory',
+    // Every member reads it (the server opens the GETs to viewers); the page
+    // hides its own write controls below analyst (style guide §40).
+    id: 'scopes', path: '/scopes', label: 'Scope', requiredRole: 'viewer', hub: 'inventory',
     palette: { Icon: ScopeIcon, keywords: ['scope', 'subnets', 'domains', 'cidr'], order: 6 },
   },
 

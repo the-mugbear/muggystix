@@ -22,6 +22,8 @@ import re
 from collections import defaultdict
 from typing import Dict, List, Optional
 
+from app.services.csv_utils import csv_safe
+
 #: The cutoff when a template does not set one: about one page of the table.
 DEFAULT_INLINE_MAX = 25
 #: Sites shown in the report's summary table; the rest are one "Other sites" row.
@@ -29,10 +31,6 @@ SITE_ROWS = 15
 OTHER_SITES = "Other sites"
 NO_SITE = "No site"
 
-#: A spreadsheet runs a cell that starts with one of these as a formula (CSV
-#: injection).  Scope text is typed by people, so such a cell gets a leading
-#: apostrophe, which spreadsheets show as text and do not evaluate.
-_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
 _SLUG = re.compile(r"[^a-z0-9]+")
 
 
@@ -92,9 +90,10 @@ def summarise(
     }
 
 
-def _cell(value) -> str:
-    text = "" if value is None else str(value)
-    return "'" + text if text.startswith(_FORMULA_START) else text
+# Scope text is typed by people, so a cell a spreadsheet would run as a
+# formula gets a leading apostrophe.  The rule is ``csv_utils``' — one copy
+# for every CSV BlueStick writes (review 2026-10-01 N5).
+_cell = csv_safe
 
 
 def scope_csv(scope: dict) -> bytes:

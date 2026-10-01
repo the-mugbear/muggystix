@@ -8,7 +8,7 @@ infra required.
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.v1.endpoints.auth import require_role
+from app.api.deps import require_role
 from app.db.models_auth import User
 from app.db.session import get_db
 from app.services.queue_metrics_service import queue_metrics

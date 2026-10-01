@@ -7,12 +7,12 @@ pentest coordination platform.
 
 import logging
 from typing import Iterable, List, Optional, Set, Tuple
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 
 from app.db.models_project import (
-    Notification, NoteMention, Project, ProjectMembership, ProjectRole,
+    Notification, NoteMention, Project, ProjectMembership,
 )
 from app.db.models_auth import User, UserRole
 from app.db.models import Annotation
@@ -139,6 +139,22 @@ class NotificationService:
             )
             .all()
         )
+
+    def _current_members(self, project_id: int, user_ids: Iterable[int]) -> Set[int]:
+        """Those of ``user_ids`` who are active and hold a membership of the
+        project NOW — the one recipient filter for note notifications."""
+        ids = set(user_ids)
+        if not ids:
+            return set()
+        return {
+            uid for (uid,) in self.db.query(ProjectMembership.user_id)
+            .join(User, User.id == ProjectMembership.user_id)
+            .filter(
+                ProjectMembership.project_id == project_id,
+                ProjectMembership.user_id.in_(ids),
+                User.is_active.is_(True),
+            ).all()
+        }
 
     def mention_outcome(
         self, body: Optional[str], project_id: int, notifications: Iterable[Notification],
@@ -280,15 +296,7 @@ class NotificationService:
             return []
         # Only current, active members of this project: someone removed from
         # the project must not keep receiving its note bodies.
-        recipients = {
-            uid for (uid,) in self.db.query(ProjectMembership.user_id)
-            .join(User, User.id == ProjectMembership.user_id)
-            .filter(
-                ProjectMembership.project_id == project.id,
-                ProjectMembership.user_id.in_(recipients),
-                User.is_active.is_(True),
-            ).all()
-        }
+        recipients = self._current_members(project.id, recipients)
 
         ctx = self._note_context(note)
         verb = "replied" if note.parent_id is not None else "commented"
@@ -338,6 +346,14 @@ class NotificationService:
                 .all()
             )
         } - exclude
+        if not follower_ids:
+            return []
+        # Only current, active members of this project — the rule
+        # ``notify_discussion_participants`` applies (review 2026-10-01 R12).
+        # A follow row outlives a membership, so someone removed from the
+        # project kept receiving the body of every new note on hosts they had
+        # reviewed.
+        follower_ids = self._current_members(project.id, follower_ids)
         if not follower_ids:
             return []
 
@@ -549,6 +565,62 @@ class NotificationService:
         self.db.add(notification)
         return notification
 
+    def notify_host_tests_assigned(self, tests: Iterable, actor_id: Optional[int]) -> List[Notification]:
+        """Tell each person the host tests just assigned to them (review
+        2026-10-01 B9 — assigning a test told nobody).
+
+        ONE notification per assignee per call, however many tests the call
+        assigned: a batch of 200 is one line, not 200.  Nothing for a test a
+        person gave themself (or their own agent gave them).  ``source_type``
+        is ``host_test`` and ``source_id`` the first test; ``host_id`` is set
+        when every test is on one host, so the notification opens that host's
+        Tests section — with several hosts it is null and the page sends the
+        person to their work list.  The caller commits."""
+        from app.db.models import Host
+
+        per_user: dict = {}
+        for test in tests:
+            uid = test.assigned_to_id
+            if uid is None or uid == actor_id:
+                continue
+            per_user.setdefault(uid, []).append(test)
+        if not per_user:
+            return []
+        actor = self.db.get(User, actor_id) if actor_id else None
+        host_ids = {t.host_id for rows in per_user.values() for t in rows}
+        addresses = dict(self.db.query(Host.id, Host.ip_address).filter(Host.id.in_(host_ids)).all())
+        notifications = []
+        for uid, rows in per_user.items():
+            hosts = {t.host_id for t in rows}
+            first = rows[0]
+            one_host = next(iter(hosts)) if len(hosts) == 1 else None
+            where = (
+                str(addresses.get(one_host) or f"host #{one_host}") if one_host is not None
+                else f"{len(hosts)} hosts"
+            )
+            title = (
+                f"Test assigned to you on {where}" if len(rows) == 1
+                else f"{len(rows)} tests assigned to you on {where}"
+            )
+            what = (first.description or "").strip()
+            if len(what) > 160:
+                what = what[:159] + "…"
+            more = f" (and {len(rows) - 1} more)" if len(rows) > 1 else ""
+            notification = Notification(
+                user_id=uid,
+                project_id=first.project_id,
+                type="assignment",
+                title=title[:255],
+                body=f"{display_name(actor)} assigned you: {what}{more}",
+                source_type="host_test",
+                source_id=first.id,
+                host_id=one_host,
+                actor_id=actor_id,
+            )
+            self.db.add(notification)
+            notifications.append(notification)
+        return notifications
+
     def get_notifications(
         self,
         user_id: int,
@@ -571,7 +643,7 @@ class NotificationService:
 
     def mark_read(self, notification_ids: List[int], user_id: int) -> int:
         """Mark specific notifications as read. Returns count updated."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)  # read_at is timezone-aware (review 2026-10-01 N1)
         updated = self.db.query(Notification).filter(
             Notification.id.in_(notification_ids),
             Notification.user_id == user_id,
@@ -584,7 +656,7 @@ class NotificationService:
 
     def mark_all_read(self, user_id: int) -> int:
         """Mark all notifications as read for a user."""
-        now = datetime.utcnow()
+        now = datetime.now(timezone.utc)
         updated = self.db.query(Notification).filter(
             Notification.user_id == user_id,
             Notification.is_read == False,

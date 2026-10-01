@@ -148,6 +148,22 @@ CHECKS: Dict[str, MisconfigCheck] = {c.id: c for c in (
         description="An NFS export's access list names no hosts or networks, so any host may mount it.",
         solution="Restrict each export to the hosts or networks that need it (/etc/exports).",
     ),
+    # Review 2026-10-01 — dnsx -axfr: a name server handed a whole zone over.
+    # Recorded on the NAME SERVER's host (the chain entry's resolver), on its
+    # DNS port, and only when that host is already in the inventory.
+    MisconfigCheck(
+        id="dns_zone_transfer_allowed",
+        title="DNS zone transfer allowed",
+        severity=VulnerabilitySeverity.MEDIUM,
+        description=(
+            "The name server answered a zone transfer (AXFR) request from the scanning "
+            "host with the zone's records, so anyone who can reach it can list every name in the zone."
+        ),
+        solution=(
+            "Allow zone transfers only to the zone's secondary name servers "
+            "(BIND allow-transfer, Windows DNS \"Only to the following servers\"), ideally with TSIG."
+        ),
+    ),
 )}
 
 

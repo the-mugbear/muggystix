@@ -56,12 +56,22 @@ const config: Config = {
           DEFAULT: 'hsl(var(--secondary) / <alpha-value>)',
           foreground: 'hsl(var(--secondary-foreground) / <alpha-value>)',
         },
+        // 5.327.0 — `--muted`, `--accent`, `--border` and `--sidebar-accent`
+        // carry their OWN alpha ("H S% L% / A", theme/cssVars.ts
+        // `toHslComponentsWithAlpha`).  Wrapped with `/ <alpha-value>` they
+        // compiled to `hsl(H S% L% / A / 1)`, which is invalid: the browser
+        // dropped the declaration, so every hover, selected-row and muted
+        // fill painted nothing and `border-border` fell back to the text
+        // colour.  (The bug 5.72.0 fixed for `--input` alone.)  These four
+        // take the variable as it is; a `/NN` modifier still applies —
+        // Tailwind 4 emits it as `color-mix(in oklab, <colour> NN%,
+        // transparent)` — so `bg-accent/45` is 45% of the token.
         muted: {
-          DEFAULT: 'hsl(var(--muted) / <alpha-value>)',
+          DEFAULT: 'hsl(var(--muted))',
           foreground: 'hsl(var(--muted-foreground) / <alpha-value>)',
         },
         accent: {
-          DEFAULT: 'hsl(var(--accent) / <alpha-value>)',
+          DEFAULT: 'hsl(var(--accent))',
           foreground: 'hsl(var(--accent-foreground) / <alpha-value>)',
         },
         destructive: {
@@ -91,13 +101,13 @@ const config: Config = {
           low: 'hsl(var(--sev-low) / <alpha-value>)',
           'low-foreground': 'hsl(var(--sev-low-foreground) / <alpha-value>)',
         },
-        border: 'hsl(var(--border) / <alpha-value>)',
+        border: 'hsl(var(--border))',
         input: 'hsl(var(--input) / <alpha-value>)',
         ring: 'hsl(var(--ring) / <alpha-value>)',
         sidebar: {
           DEFAULT: 'hsl(var(--sidebar) / <alpha-value>)',
           foreground: 'hsl(var(--sidebar-foreground) / <alpha-value>)',
-          accent: 'hsl(var(--sidebar-accent) / <alpha-value>)',
+          accent: 'hsl(var(--sidebar-accent))',
           'accent-foreground': 'hsl(var(--sidebar-accent-foreground) / <alpha-value>)',
         },
       },

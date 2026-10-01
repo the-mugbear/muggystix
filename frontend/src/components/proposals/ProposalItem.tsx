@@ -15,7 +15,8 @@ import { acceptProposal, Proposal, rejectProposal } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 import { announceProposalsChanged, shortClient } from '../../utils/proposalEvents';
-import { formatRelativeTime } from '../../utils/relativeTime';
+import { cn } from '../../utils/cn';
+import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { Label } from '../ui/label';
@@ -145,10 +146,28 @@ interface Props {
   showTarget?: boolean;
   /** Link the target line to its finding — off on the finding's own page. */
   linkTarget?: boolean;
+  /** The list cursor's marker and highlight (`useListCursor().cursorRowProps`). */
+  rowProps?: { className?: string; 'data-list-cursor'?: 'true' };
 }
 
+/** Where a decided proposal's change now lives (B14): the finding an accepted
+ *  "new finding" made, or the endpoint row an endpoint-status one is about.
+ *  Null when the proposal's own target line already links there. */
+export const proposalOutcomeLink = (pr: Proposal): { to: string; label: string } | null => {
+  if (pr.kind === 'finding_create' && pr.status === 'accepted' && pr.result_finding_id != null) {
+    return { to: `/findings/${pr.result_finding_id}`, label: 'Open the finding it created' };
+  }
+  if (pr.kind === 'endpoint_status' && pr.finding_id != null && pr.finding_host_id != null) {
+    return {
+      to: `/findings/${pr.finding_id}?endpoint=${pr.finding_host_id}#endpoints`,
+      label: pr.target.host_ip ? `Show ${pr.target.host_ip} on the finding` : 'Show the endpoint on the finding',
+    };
+  }
+  return null;
+};
+
 const ProposalItem: React.FC<Props> = ({
-  proposal: pr, canDecide, onDecided, showTarget = false, linkTarget = true,
+  proposal: pr, canDecide, onDecided, showTarget = false, linkTarget = true, rowProps,
 }) => {
   const toast = useToast();
   const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
@@ -158,6 +177,8 @@ const ProposalItem: React.FC<Props> = ({
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const pending = pr.status === 'pending';
+  const outcome = proposalOutcomeLink(pr);
+  const decidedWhen = formatRelativeTime(pr.decided_at, { fallback: '' });
 
   const decide = async (action: 'accept' | 'reject', editedValue?: string, note?: string) => {
     setBusy(action);
@@ -179,7 +200,11 @@ const ProposalItem: React.FC<Props> = ({
   };
 
   return (
-    <article className="min-w-0 space-y-xs border-b border-border py-sm last:border-b-0" data-proposal={pr.id}>
+    <article
+      data-list-cursor={rowProps?.['data-list-cursor']}
+      className={cn('min-w-0 space-y-xs border-b border-border py-sm last:border-b-0', rowProps && 'px-xs', rowProps?.className)}
+      data-proposal={pr.id}
+    >
       <div className="flex min-w-0 flex-wrap items-baseline gap-x-sm gap-y-xxs">
         {showTarget && (
           pr.finding_id != null && linkTarget
@@ -216,10 +241,19 @@ const ProposalItem: React.FC<Props> = ({
         </p>
       )}
       {pending && pr.error && <p className="break-words text-caption text-warning">Last attempt failed: {pr.error}</p>}
-      {!pending && (pr.decided_by || pr.decision_note) && (
+      {!pending && (pr.decided_by || pr.decision_note || decidedWhen) && (
         <p className="break-words text-caption text-muted-foreground">
-          {pr.decided_by ? `${pr.status === 'superseded' ? 'Superseded' : 'Decided'} by ${pr.decided_by}` : 'Superseded'}
+          {pr.decided_by
+            ? `${pr.status === 'superseded' ? 'Superseded' : 'Decided'} by ${pr.decided_by}`
+            : pr.status === 'superseded' ? 'Superseded' : 'Decided'}
+          {/* B14 — when, not only who (the absolute time on hover). */}
+          {decidedWhen && <> · <time dateTime={pr.decided_at ?? undefined} title={formatTimestamp(pr.decided_at)}>{decidedWhen}</time></>}
           {pr.decision_note ? ` — ${pr.decision_note}` : ''}
+        </p>
+      )}
+      {outcome && (
+        <p className="min-w-0 text-caption">
+          <Link to={outcome.to} className="break-words text-info hover:underline">{outcome.label}</Link>
         </p>
       )}
       {error && <p className="break-words text-caption text-destructive">{error}</p>}
@@ -229,7 +263,7 @@ const ProposalItem: React.FC<Props> = ({
           <p className="text-caption text-muted-foreground">
             The agent that proposed it reads this — say what to change so its next proposal can follow it.
           </p>
-          <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting}
+          <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting} autoFocus
             onChange={(e) => setRejecting(e.target.value)} disabled={busy !== null} />
           <div className="flex flex-wrap gap-xs">
             <Button size="sm" variant="outline" onClick={() => void decide('reject', undefined, rejecting)} disabled={busy !== null}>
@@ -242,7 +276,8 @@ const ProposalItem: React.FC<Props> = ({
       )}
       {pending && canDecide && editing === null && rejecting === null && (
         <div className="flex flex-wrap gap-xs">
-          <Button size="sm" variant="outline" onClick={() => void decide('accept')} disabled={busy !== null}>
+          <Button size="sm" variant="outline" data-proposal-action="accept"
+            onClick={() => void decide('accept')} disabled={busy !== null}>
             {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
             Accept
           </Button>
@@ -251,7 +286,8 @@ const ProposalItem: React.FC<Props> = ({
               <Pencil className="size-4" aria-hidden /> Accept and edit
             </Button>
           )}
-          <Button size="sm" variant="ghost" onClick={() => setRejecting('')} disabled={busy !== null}>
+          <Button size="sm" variant="ghost" data-proposal-action="reject"
+            onClick={() => setRejecting('')} disabled={busy !== null}>
             <X className="size-4" aria-hidden /> Reject…
           </Button>
         </div>

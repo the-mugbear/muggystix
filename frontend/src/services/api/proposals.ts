@@ -154,10 +154,19 @@ export const listEvidenceRecords = async (
 export const getEvidenceRawOutput = async (id: number): Promise<string> =>
   (await api.get<string>(`${p()}/evidence/${id}/raw`, { responseType: 'text' })).data;
 
+/** What promoting a result made.  `status` is the finding's as it now stands:
+ *  a result that JOINED a finding the team already concluded leaves that
+ *  finding's status alone, so it can differ from the one asked for. */
+export interface PromotedEvidence {
+  finding_id: number;
+  joined_issue?: boolean;
+  status?: string;
+}
+
 /** Promote an evidence record whose outcome is a finding (409 when it already
  *  belongs to one, 422 for any other outcome). */
 export const createFindingFromEvidence = async (
   evidenceId: number,
   body: { title?: string; severity?: 'critical' | 'high' | 'medium' | 'low' | 'info'; status?: 'open' | 'confirmed' },
-): Promise<{ finding_id: number; joined_issue?: boolean }> =>
-  (await api.post<{ finding_id: number; joined_issue?: boolean }>(`${p()}/evidence/${evidenceId}/finding`, body)).data;
+): Promise<PromotedEvidence> =>
+  (await api.post<PromotedEvidence>(`${p()}/evidence/${evidenceId}/finding`, body)).data;

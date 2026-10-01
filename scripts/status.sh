@@ -94,6 +94,54 @@ else
 fi
 echo
 
+# Newest backup and its age (review 2026-10-01 B11).  Backups are only taken
+# by a deploy, a restore's safety copy or by hand, so on a host nobody has
+# redeployed for a month the newest one is a month old — and nothing said so.
+print_header "Backups"
+BACKUP_DIR="${BACKUP_DIR:-$(dirname "$PROJECT_ROOT")/$(basename "$PROJECT_ROOT")-db-backups}"
+BACKUP_WARN_DAYS="${BACKUP_WARN_DAYS:-7}"
+# `|| true`: with no match ls exits non-zero, and this script runs under set -e.
+newest_backup="$(ls -1t "$BACKUP_DIR"/nm-pgdump-*.dump "$BACKUP_DIR"/nm-pgdata-*.tar.gz 2>/dev/null | head -1 || true)"
+if [[ -z "$newest_backup" ]]; then
+    print_warning "No database backup found in $BACKUP_DIR"
+    echo "  Take one:  ./scripts/backup-db.sh"
+else
+    backup_count="$(ls -1 "$BACKUP_DIR"/nm-pgdump-*.dump "$BACKUP_DIR"/nm-pgdata-*.tar.gz 2>/dev/null | wc -l | tr -d ' ')"
+    backup_mtime="$(stat -c %Y "$newest_backup" 2>/dev/null || stat -f %m "$newest_backup" 2>/dev/null || echo 0)"
+    backup_age_s=$(( $(date +%s) - backup_mtime ))
+    if (( backup_age_s < 3600 )); then
+        backup_age="$(( backup_age_s / 60 )) minute(s)"
+    elif (( backup_age_s < 172800 )); then
+        backup_age="$(( backup_age_s / 3600 )) hour(s)"
+    else
+        backup_age="$(( backup_age_s / 86400 )) day(s)"
+    fi
+    backup_line="Newest backup: $(basename "$newest_backup"), $backup_age old ($backup_count kept in $BACKUP_DIR)"
+    if (( backup_age_s > BACKUP_WARN_DAYS * 86400 )); then
+        print_warning "$backup_line"
+        echo "  Older than ${BACKUP_WARN_DAYS} day(s) (BACKUP_WARN_DAYS). Take one:  ./scripts/backup-db.sh"
+    else
+        print_success "$backup_line"
+    fi
+    if ! grep -q '^uploads_archive=' "$newest_backup.meta" 2>/dev/null; then
+        print_warning "It has no uploads archive: evidence images and issued reports are not in it."
+    fi
+fi
+echo
+
+# One-off data corrections this instance has no recorded run of (the
+# data-repair ledger, review 2026-10-01 B10).  Read-only; prints the commands.
+print_header "Data Repairs"
+if pending_repairs="$($DC exec -T backend python scripts/data_repairs.py --pending 2>/dev/null)"; then
+    if [[ -n "$pending_repairs" ]]; then
+        print_warning "Data repairs not yet applied:"
+        echo "$pending_repairs" | sed 's/^/  /'
+    else
+        print_success "Every known data repair has been applied"
+    fi
+else
+    print_info "Could not read the data-repair ledger (backend not running, or older than the ledger)"
+fi
 echo
 
 # Show available scripts

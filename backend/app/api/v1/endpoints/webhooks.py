@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User
 from app.db.models_project import Project, ProjectRole, WebhookConfig
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.services.llm_provider_service import encrypt_secret
 from app.services.webhook_dispatcher import (

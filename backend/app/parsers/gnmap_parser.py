@@ -2,6 +2,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 from app.db import models
+from app.parsers.parser_utils import announce_scan, without_nul
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
 import logging
@@ -45,17 +46,20 @@ class GnmapParser:
         )
 
         # Save scan to get ID
-        logger.info(f"Saving initial scan record to database")
+        logger.info("Saving initial scan record to database")
         self.db.add(scan)
         self.db.flush()
         scan_id = scan.id
         self._created_scan_id = scan_id
+        announce_scan(self.db, scan)
 
         hosts_processed = 0
         host_lines_seen = 0
 
         with open(file_path, 'r', encoding='utf-8', errors='ignore') as handle:
-            for raw_line in handle:
+            # NUL removed (review 2026-10-01 R5): the command line and names
+            # are stored, and PostgreSQL text cannot hold NUL.
+            for raw_line in without_nul(handle):
                 line = raw_line.strip()
                 if not line:
                     continue
@@ -88,6 +92,9 @@ class GnmapParser:
                         logger.info(f"Processed {hosts_processed} host observations")
                         from app.services.ingestion_service import report_progress
                         report_progress(f"{hosts_processed} hosts")
+                        # R7 — committed (under a job): stop pinning every
+                        # history row for the rest of the file.
+                        self.dedup_service.release_committed_history()
 
                 except Exception as e:
                     # ParseFailure (cancel/timeout, raised by report_progress after

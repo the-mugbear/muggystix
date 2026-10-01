@@ -7,7 +7,9 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.parsers.parser_utils import (
+    ProgressBeat,
     ScanClock,
+    beat_while_reading,
     correlate_scan,
     ensure_scan,
     extract_first_ip,
@@ -48,7 +50,8 @@ class NaabuParser:
             # silently demoted JSONL to the text path that parses each
             # JSON line as a `host:port` token — zero hosts ingested.
             rows = iter_json_records(file_path, tool_label="Naabu JSON")
-            for row in rows:
+            # R6 — the read phase heartbeats too (nothing is written yet).
+            for row in beat_while_reading(rows):
                 clock.observe(parse_rfc3339(row.get("timestamp")))
                 ip_address = extract_first_ip(str(row.get("ip") or row.get("host") or row.get("url") or ""))
                 port = row.get("port")
@@ -64,7 +67,7 @@ class NaabuParser:
                 )
         else:
             with open(file_path, "r", encoding="utf-8", errors="ignore") as handle:
-                for line in handle:
+                for line in beat_while_reading(handle, "lines read"):
                     ip_address, port, scheme = parse_host_port_token(line)
                     if not ip_address or port is None:
                         continue
@@ -88,7 +91,11 @@ class NaabuParser:
             )
 
         clock.apply(scan)
+        # R6 — heartbeat between hosts, outside the host's savepoint
+        # (persist_host_observation(isolate=True)).
+        beat = ProgressBeat("hosts")
         for ip_address, ports in hosts.items():
+            beat.tick()
             persist_host_observation(
                 dedup_service=self.dedup_service,
                 scan_id=scan.id,

@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from app.db.session import get_db
 from app.db.models_auth import User
 from app.db.models_llm import LLMProvider, LLMProviderType
-from app.api.v1.endpoints.auth import get_current_user
+from app.api.deps import get_current_user
 from app.services.llm_provider_service import (
     LLMProviderService, test_connection, chat_completion,
 )
@@ -311,7 +311,7 @@ def complete(
         # Configuration error (missing base_url, missing API key for a
         # provider that needs one, etc).  These are user-facing.
         raise HTTPException(status_code=400, detail=str(exc))
-    except Exception as exc:  # noqa: BLE001
+    except Exception:  # noqa: BLE001
         # Code review nitpick #1: don't leak upstream exception text to
         # the client.  Log the detail server-side and return a stable
         # user-facing message so error responses don't carry provider

@@ -431,7 +431,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Full detail for one host, as the host inspector shows it: identity, "
             "names seen at the address, OS detail, ports with service detail and "
             "NSE script output (bounded), severity counts, your review status, tags, "
-            "assignees, scope membership, per-domain assessment state, weakness "
+            "assignees, scope membership, per-domain assessment state (with "
+            "assessment.vuln_scan_credentialed: did a vulnerability scan log in "
+            "to the host — yes / no / not_stated), weakness "
             "flags (smb_unsigned, weak_tls…), SMB signing, certificates, network "
             "attribution, scan conflicts (each has resolved_at = when the shown "
             "value was picked, not that anyone settled it), note_count and "
@@ -653,7 +655,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "TLS…). Every other tool reports what WAS found; this is what stops "
             "\"no critical findings\" being reported as \"no critical "
             "exposure\". Cite it whenever a report or an answer implies "
-            "completeness."
+            "completeness. The vuln_assessment domain carries `credentialed` "
+            "{credentialed, not_credentialed, credentials_not_stated} — of the "
+            "assessed hosts, how many a scanner logged in to; a clean result "
+            "from a scan that did not authenticate is weaker evidence. List "
+            "each with assist_list_hosts q=vulnscan:credentialed | "
+            "uncredentialed | unstated."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/coverage",
@@ -841,6 +848,34 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "additionalProperties": False,
         },
     },
+    "assist_list_scan_hosts": {
+        "description": (
+            "The hosts ONE scan observed, as it observed them (the scan page's "
+            "'As scanned' table; scan_id from assist_list_scans): state and "
+            "hostname at scan, whether the scan first discovered the host, the "
+            "ports it saw (at most 50 listed per host; the counts are exact) and "
+            "credentialed — whether the scan authenticated to the host: true / "
+            "false when the scanner said so (Nessus), null when it did not say. "
+            "Null is 'not stated', never 'no'. Read total and has_more; page with skip."
+        ),
+        "method": "GET",
+        "path": "/api/v1/agent/assist/scans/{scan_id}/hosts",
+        "path_params": ["scan_id"],
+        "query_params": ["state", "search", "skip", "limit"],
+        "defaults": {"limit": 100},
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "scan_id": {"type": "integer", "description": "Scan id (assist_list_scans)"},
+                "state": {"type": "string", "maxLength": 40, "description": "Only hosts the scan observed in this state (up, down…)."},
+                "search": {"type": "string", "maxLength": 200, "description": "Address or hostname at scan."},
+                "skip": {"type": "integer", "minimum": 0, "default": 0},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100},
+            },
+            "required": ["scan_id"],
+            "additionalProperties": False,
+        },
+    },
     "assist_list_ingestion_issues": {
         "description": (
             "Uploads that failed, are still in flight, or parsed but dropped "
@@ -890,7 +925,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Also: `report_text` (what the client report says — description, "
             "impact, recommendation, references, steps to reproduce, CVSS vector "
             "and score), `endpoint_status_counts` (per-host state), and "
-            "`status_history` (who changed the status, when, from → to, and why)."
+            "`status_history` (who changed the status, when, from → to, and why). "
+            "scanner_evidence lists at most 100 scanner rows: "
+            "scanner_evidence_total is how many there are, and "
+            "scanner_evidence_truncated says the list was cut."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/findings/{finding_id}",
@@ -979,10 +1017,16 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "One client report and what it says: engagement details, executive "
             "summary, counts, and every finding as the report states it (ref, "
-            "report text, affected endpoints, evidence attachment ids). An issued "
+            "report text, affected endpoints, evidence attachment ids, and "
+            "confirmations — the test results it prints as how the finding was "
+            "confirmed, with confirmations_omitted for those left out). An issued "
             "report is its frozen text (content_source issued_snapshot); a draft "
             "is what it would say now (draft_live). For 'what did we tell the "
-            "client', read the latest issued one. Files carry a download_path."
+            "client', read the latest issued one. Files carry a download_path. "
+            "In an addendum each finding's change is new, new_hosts or "
+            "severity_changed (previous_severity = what the baseline reported), "
+            "and delta counts them (findings_with_changed_severity). summary "
+            "carries evidence_records and agent_evidence_records."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",
@@ -1169,7 +1213,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     ),
                 },
                 "summary": {"type": "string", "minLength": 1, "maxLength": 10000, "description": "What it showed, in a sentence or two."},
-                "raw_output": {"type": "string", "description": "The tool's output (up to 5 MB)."},
+                "raw_output": {"type": "string", "maxLength": 5242880, "description": "The tool's output (up to 5 MB)."},
                 "observed_ip": {"type": "string", "maxLength": 45, "description": "The address actually reached."},
                 "executed_at": {"type": "string", "format": "date-time"},
                 **AGENT_MODEL_PROP,
@@ -1237,7 +1281,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "rationale": {"type": "string", "maxLength": 10000, "description": (
                     "Why — what you changed and why, what the reviewer should check. Your critique goes here."
                 )},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
                 **AGENT_MODEL_PROP,
             },
             "required": ["finding_id", "fields"],
@@ -1263,7 +1307,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "status": {"type": "string", "enum": ["open", "confirmed"], "default": "open"},
                 "report_text": {"type": "object", "additionalProperties": {"type": "string"}},
                 "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
                 **AGENT_MODEL_PROP,
             },
             "required": ["title", "severity", "host_ids"],
@@ -1291,7 +1335,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
                 "summary": {"type": "string", "maxLength": 2000},
                 "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
                 **AGENT_MODEL_PROP,
             },
             "required": ["vulnerability_id", "action"],
@@ -1315,7 +1359,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "finding_host_id": {"type": "integer", "minimum": 1},
                 "host_status": {"type": "string", "enum": ["open", "remediated", "retest", "false_positive"]},
                 "rationale": {"type": "string", "maxLength": 10000},
-                "evidence_ids": {"type": "array", "items": {"type": "integer"}},
+                "evidence_ids": {"type": "array", "items": {"type": "integer"}, "maxItems": 100},
                 **AGENT_MODEL_PROP,
             },
             "required": ["finding_id", "finding_host_id", "host_status"],

@@ -237,7 +237,7 @@ async def _key_identity(
     caller: Optional[Tuple[str, int]] = None,
     user_agent: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """What this key is — workflow, operator, the phases it has open.  Live,
+    """What this key is — its session, project and operator.  Live,
     unaudited (see above).  None when there is no usable key or the lookup
     fails, so a caller falls back to asking the agent for the id."""
     if not api_key:

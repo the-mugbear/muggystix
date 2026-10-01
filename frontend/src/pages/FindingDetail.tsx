@@ -19,10 +19,8 @@ import {
   FindingStatusHistoryEntry,
   Annotation,
   ProjectMember,
-  FindingHostStatus,
   getFinding,
   getFindingHistory,
-  setFindingEndpointStatus,
   setFindingStatus,
   updateFinding,
   deleteFinding,
@@ -44,12 +42,14 @@ import FindingCommentThread from '../components/FindingCommentThread';
 import AddFindingHostsDialog from '../components/AddFindingHostsDialog';
 import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
 import { DetailSkeleton } from '../components/PageSkeleton';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
+import FindingEndpoints from '../components/findings/FindingEndpoints';
 import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -59,11 +59,8 @@ import {
 } from '../components/ui/dialog';
 import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
-import {
-  Table, TableBody, TableCell, TableHead, TableHeader, TableRow,
-} from '../components/ui/table';
 import { safeFallback } from '../utils/uiStyles';
-import { ENDPOINT_STATUS_LABEL, STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates } from '../utils/findingStatus';
+import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -89,10 +86,13 @@ const FindingDetail: React.FC = () => {
   // internal /findings path so a crafted link can't send the operator off-site.
   const [searchParams] = useSearchParams();
   const returnTo = safeFindingsReturn(searchParams.get(RETURN_PARAM));
-  const { hasPermission, user } = useAuth();
+  // `?endpoint=<finding_host id>` — a proposal's link to the row it is about.
+  const focusEndpointId = Number(searchParams.get('endpoint')) || null;
+  const { user } = useAuth();
   // Findings routes admit viewers (read-only); analyst+ may dispose/detach.
   // Gate the write affordances so viewers see history without 403-bait controls.
-  const canManage = hasPermission('analyst');
+  // Triage is a project analyst's (R32): a viewer or auditor reads the page.
+  const { canWrite: canManage } = useProjectRole();
   const [confirmDialog, confirm] = useConfirm();
 
   const [finding, setFinding] = useState<Finding | null>(null);
@@ -248,22 +248,16 @@ const FindingDetail: React.FC = () => {
 
   // v5.225.0 — one endpoint's own state (design review item 7).  Changes the
   // row, never the finding's status; the history trail names the endpoint.
-  const [endpointSaving, setEndpointSaving] = useState<number | null>(null);
   const endpointSummary = useMemo(
     () => (finding ? describeEndpointStates(finding.endpoint_status_counts, finding.host_count) : null),
     [finding],
   );
-  const handleEndpointStatus = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
-    if (!finding || row.host_status === hostStatus) return;
-    setEndpointSaving(row.id);
-    try {
-      await setFindingEndpointStatus(finding.id, row.id, hostStatus);
-      await refresh('status');
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
-    } finally {
-      setEndpointSaving(null);
-    }
+  // The endpoint routes answer with the finding, so a change updates the page
+  // from the response (C2: no second read of thousands of endpoints); only
+  // the history, which the change appended to, is re-read.
+  const handleEndpointsChanged = (updated: Finding) => {
+    setFinding(updated);
+    void loadHistory();
   };
 
   const handleStatus = (status: FindingStatus) => {
@@ -589,82 +583,14 @@ const FindingDetail: React.FC = () => {
           </Button>
         ) : undefined}
       >
-          <div className="overflow-x-auto">
-            <Table className="table-fixed">
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Host</TableHead>
-                  <TableHead className="w-44">State on this endpoint</TableHead>
-                  <TableHead className="w-16" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {finding.hosts.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={3} className="py-lg text-center text-muted-foreground">
-                      No hosts attached.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  finding.hosts.map((h) => (
-                    <TableRow key={h.id}>
-                      <TableCell className="truncate">
-                        <Link to={`/hosts/${h.host_id}`} className="font-mono text-info hover:underline">
-                          {h.ip_address || `Host ${h.host_id}`}
-                        </Link>
-                        {h.hostname && <span className="ml-xs text-caption text-muted-foreground">{h.hostname}</span>}
-                        {h.fqdn && h.name_id != null && (
-                          <Link
-                            to={`/names?name_id=${h.name_id}`}
-                            className="ml-xs font-mono text-caption text-info hover:underline"
-                            title="Named endpoint this finding applies to on this host"
-                          >
-                            {h.fqdn}
-                          </Link>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {canManage ? (
-                          <Select
-                            value={h.host_status}
-                            onValueChange={(v) => void handleEndpointStatus(h, v as FindingHostStatus)}
-                            disabled={endpointSaving === h.id}
-                          >
-                            <SelectTrigger
-                              className="h-7 w-[10rem] text-caption"
-                              aria-label={`State of ${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id}`}
-                            >
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {(Object.keys(ENDPOINT_STATUS_LABEL) as FindingHostStatus[]).map((s) => (
-                                <SelectItem key={s} value={s}>{ENDPOINT_STATUS_LABEL[s]}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        ) : (
-                          <Badge variant={h.host_status === 'open' ? 'warning' : h.host_status === 'remediated' ? 'success' : h.host_status === 'false_positive' ? 'outline' : 'info'}>
-                            {ENDPOINT_STATUS_LABEL[h.host_status] ?? h.host_status}
-                          </Badge>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        {canManage && (
-                          <Button
-                            variant="ghost" size="icon"
-                            onClick={() => handleRemoveEndpoint(h)}
-                            aria-label={`Detach ${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id} from finding`}
-                          >
-                            <Trash2 className="size-4" aria-hidden />
-                          </Button>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </div>
+          <FindingEndpoints
+            key={finding.id}
+            finding={finding}
+            canManage={canManage}
+            onChanged={handleEndpointsChanged}
+            onRemove={(row) => void handleRemoveEndpoint(row)}
+            focusEndpointId={focusEndpointId}
+          />
       </PostureSection>
 
       <FindingProposalsPanel

@@ -213,7 +213,7 @@ export const subnetHostsHref = (cidr: string): string => buildHostsUrl({ subnets
  * matrix's "Unassigned" column. That column used to pass null, which DROPPED the
  * site filter — a cell counting 3 hosts opened every site's affected hosts.
  */
-export const UNASSIGNED_SITE = Symbol('unassigned-site');
+const UNASSIGNED_SITE = Symbol('unassigned-site');
 
 export const familyCellHostsHref = (
   conditions: string[],
