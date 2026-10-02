@@ -127,6 +127,9 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # statements is still caught.
     # v2.451.1 — 24 measured: the team roster's two statements (its distinct
     # count and its rows) went with ``team_review``.
+    # v2.452.0 — still 24 measured (bound = measured + 2): paging the lists
+    # added no statement to this call.  The page's own light call
+    # (``include_rows=false``) is bounded in ``test_operations_tabs.py``.
     assert counter["n"] <= 26, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )

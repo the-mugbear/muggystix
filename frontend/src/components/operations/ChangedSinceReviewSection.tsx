@@ -16,13 +16,17 @@
  *
  * One line per host, a selection column and both actions in bulk.  Readers (a
  * role that cannot write) get the rows and the links, no checkboxes and no
- * actions.  The count and "Open all N in Hosts" open `follow:revisit` — the
- * same rows, counted by the same predicate.
+ * actions.  "Open all N in Hosts" opens `follow:revisit` — the same rows,
+ * counted by the same predicate.
+ *
+ * 5.331.0 — the content of Operations' "Changed since review" tab: the tab
+ * is its heading and carries its count; this is one page of the list (the
+ * caller pages it — `Pager`), with the panel's states from `ListBody`.
  */
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import type { ReviewFollowupRow, ReviewFollowupsResponse } from '../../services/api';
+import type { ReviewFollowupRow } from '../../services/api';
 import { followHost, markStillReviewed } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
@@ -33,11 +37,12 @@ import { isPageShortcutEvent } from '../../utils/keyboard';
 import { CHANGED_SINCE_REVIEW_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { runLimited } from '../../utils/runLimited';
-import PostureSection, { SectionCount } from '../posture/PostureSection';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
-import { BulkBar, ListFooter, useRowSelection } from './QueueParts';
+import {
+  BulkBar, ListBody, PagedFooter, useRowSelection, type ListState, type Pager,
+} from './QueueParts';
 
 export const CHANGED_SINCE_REVIEW_TITLE = 'Changed since review';
 /** Requests at once when a bulk action is one call per host. */
@@ -52,19 +57,23 @@ export const canConfirmReview = (row: ReviewFollowupRow) =>
 const ago = (iso: string | null) => (iso ? formatRelativeTime(iso, { style: 'compact' }) : '');
 const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
 
+const NO_ROWS: ReviewFollowupRow[] = [];
+
 export const ChangedSinceReviewSection: React.FC<{
-  data: ReviewFollowupsResponse;
+  /** The page of the list on screen; null while it loads or when it failed. */
+  rows: ReviewFollowupRow[] | null;
+  state: ListState;
+  pager: Pager;
   /** The reader's project role allows writes (hooks/useProjectRole). */
   canWrite: boolean;
-  /** After an action: refresh the queues without blanking the page. */
+  /** After an action: refresh the list and the counts without blanking the page. */
   onChanged: () => void;
-  /** This list owns the page's j / k / Enter / x keys right now. */
+  /** This list owns the page's j / k / Enter / x keys (the tab on screen). */
   keysActive?: boolean;
-  onActivate?: () => void;
-}> = ({ data, canWrite, onChanged, keysActive = false, onActivate }) => {
+}> = ({ rows: loaded, state, pager, canWrite, onChanged, keysActive = true }) => {
   const toast = useToast();
   const navigate = useNavigate();
-  const rows = data.items;
+  const rows = loaded ?? NO_ROWS;
   const keys = React.useMemo(() => rows.map(rowKey), [rows]);
   const selection = useRowSelection(keys);
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
@@ -79,9 +88,9 @@ export const ChangedSinceReviewSection: React.FC<{
     return () => clearTimeout(t);
   }, [armed]);
 
-  const hostTotal = data.total;
+  const hostTotal = pager.total;
   const navState = fromOperationsQueue(rows.map((r) => r.host_id), CHANGED_SINCE_REVIEW_TITLE,
-    { partial: data.total > rows.length }).state;
+    { partial: pager.total > rows.length, tab: 'changed' }).state;
 
   const { cursorRowProps, cursorId } = useListCursor(
     rows.length,
@@ -174,34 +183,21 @@ export const ChangedSinceReviewSection: React.FC<{
   };
 
   return (
-    <PostureSection
-      title={<>
-        <span>{CHANGED_SINCE_REVIEW_TITLE}</span>
-        {hostTotal > 0 && (
-          <SectionCount>
-            <Link
-              to={buildHostsUrl({ q: CHANGED_SINCE_REVIEW_QUERY })}
-              aria-label={`${hosts(hostTotal)} you reviewed changed since review — view hosts`}
-              className="rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              {hostTotal.toLocaleString()}
-            </Link>
-          </SectionCount>
-        )}
-      </>}
-      description={<>
+    <div className="min-w-0">
+      <p className="mb-sm text-caption text-muted-foreground">
         Hosts you reviewed that are not done: the host gained open ports or critical / high scanner
         observations after your review, or you concluded{' '}
         <span className="font-medium text-foreground">“Needs more evidence”</span>.
         A teammate’s reviews are not listed here.
-      </>}
-    >
-      {rows.length === 0 ? (
-        <p className="text-metadata text-muted-foreground">
-          Nothing to re-check: no host you reviewed has changed since your review, and no review of yours is waiting on evidence.
-        </p>
-      ) : (
-        <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
+      </p>
+      <ListBody
+        rows={loaded}
+        state={state}
+        what="the hosts you reviewed"
+        empty="Nothing here — a host you reviewed shows when it gains open ports or critical / high scanner observations after your review, or when you conclude “needs more evidence”."
+      >
+        {() => (
+        <div>
           {canWrite && (
             <BulkBar count={picked.length} noun="review" onClear={selection.clear} outcome={outcome}>
               <Button
@@ -323,17 +319,19 @@ export const ChangedSinceReviewSection: React.FC<{
             </TableBody>
           </Table>
           </div>
-          <ListFooter
+          <PagedFooter
+            pager={pager}
             shown={rows.length}
-            total={data.total}
+            noun="hosts"
             openAll={{
               to: buildHostsUrl({ q: CHANGED_SINCE_REVIEW_QUERY }),
               label: `Open all ${hosts(hostTotal)} in Hosts`,
             }}
           />
         </div>
-      )}
-    </PostureSection>
+        )}
+      </ListBody>
+    </div>
   );
 };
 

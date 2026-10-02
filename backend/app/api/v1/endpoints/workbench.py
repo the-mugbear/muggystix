@@ -15,7 +15,7 @@ drift, with no router-to-router dependency (CR4-2).
 """
 import logging
 from datetime import datetime, timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
@@ -34,7 +34,15 @@ from app.api.deps import get_current_project
 from app.services.address_terrain_service import AddressTerrainResponse, compute_address_terrain
 from app.services.operations_read_service import (
     compute_investigation_queue,
+    compute_my_attention_queue,
+    compute_my_findings,
+    compute_my_tasks,
+    compute_review_followups,
     InvestigationQueueResponse,
+    MyAttentionResponse,
+    MyFindingsResponse,
+    MyTasksResponse,
+    ReviewFollowupsResponse,
 )
 from app.services.host_follow_service import HostFollowService
 from app.services.workbench_service import WorkbenchResponse, compute_workbench
@@ -73,7 +81,7 @@ class StillReviewedResponse(BaseModel):
 @router.get(
     "",
     response_model=WorkbenchResponse,
-    summary="Operations workbench — personal queue, tasks, team roster, and since-last-visit diff in one call",
+    summary="Operations workbench — the caller's counts (and list previews), blockers and the since-last-visit diff in one call",
 )
 def get_workbench(
     include_investigate: bool = Query(
@@ -82,6 +90,15 @@ def get_workbench(
             "Include the engagement-wide untouched queue ('Untouched, with a reason'). Operations passes "
             "false and loads it from GET /workbench/investigate so the personal "
             "sections are not held up by it (v2.424.1)."
+        ),
+    ),
+    include_rows: bool = Query(
+        True,
+        description=(
+            "False returns every count, the blockers and the since-last-visit diff "
+            "with every `items` list empty (v2.452.0): Operations shows one list "
+            "at a time and pages it through GET /workbench/findings, /hosts, "
+            "/tests, /followups or /investigate."
         ),
     ),
     db: Session = Depends(get_db),
@@ -94,7 +111,112 @@ def get_workbench(
     workbench cannot drift.  ``since_last_visit`` reflects the durable
     per-user cursor; advance it with ``POST /workbench/seen``.
     """
-    return compute_workbench(db, current_user, project, include_investigate=include_investigate)
+    return compute_workbench(
+        db, current_user, project,
+        include_investigate=include_investigate, include_rows=include_rows,
+    )
+
+
+# ---------------------------------------------------------------------------
+# The Operations tabs' lists (v2.452.0).  Each is the SAME function that
+# produces the tab's count in ``GET /workbench``, paged — never a second
+# definition of a list.  ``tests/test_operations_tabs.py`` pins, per tab,
+# count == the size of the list these routes page through.
+# ---------------------------------------------------------------------------
+
+_PAGE_LIMIT = Query(25, ge=1, le=100)
+_PAGE_OFFSET = Query(0, ge=0, description="Rows to skip, in the list's own order.")
+
+
+@router.get(
+    "/findings",
+    response_model=MyFindingsResponse,
+    summary="Findings that need the caller, paged — the Operations 'Findings' tab",
+)
+def get_my_findings(
+    limit: int = _PAGE_LIMIT,
+    offset: int = _PAGE_OFFSET,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Findings the caller owns that need something from them — under
+    investigation, required report text missing, a proposal to decide — each
+    row's ``needs`` saying which.  Severity first.  ``total_open`` is the whole
+    list (``my_work.findings_needing_me``) whatever the page."""
+    return compute_my_findings(db, current_user, project, limit=limit, offset=offset)
+
+
+@router.get(
+    "/hosts",
+    response_model=MyAttentionResponse,
+    summary="Hosts the caller has In Review, paged — the Operations 'Hosts' tab",
+)
+def get_my_hosts(
+    limit: int = _PAGE_LIMIT,
+    offset: int = _PAGE_OFFSET,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """The caller's In Review hosts, most recently taken first, with open
+    ports and critical / high scanner observations.  ``in_review_count`` is
+    the whole list (``my_work.hosts_in_review``) — the hosts ``follow:mine``
+    lists."""
+    return compute_my_attention_queue(db, current_user, project, limit=limit, offset=offset)
+
+
+@router.get(
+    "/tests",
+    response_model=MyTasksResponse,
+    summary="Tests to do that are the caller's or free to claim, paged — the Operations 'Tests' tab",
+)
+def get_my_tests(
+    kind: Optional[Literal["assigned", "in_review", "triage"]] = Query(
+        None,
+        description=(
+            "Only this kind: assigned (to the caller), in_review (on a host the caller "
+            "is reviewing), triage (unassigned critical / high — free to claim). "
+            "Each test is under ONE kind, its strongest. The counts stay whole-list."
+        ),
+    ),
+    limit: int = _PAGE_LIMIT,
+    offset: int = _PAGE_OFFSET,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """One list, each test once: assigned to the caller, then on a host they
+    are reviewing, then free to claim; by priority within a kind.  The list's
+    size is ``total_open`` (no ``kind``) or ``group_counts[kind]``;
+    ``group_counts.triage`` is shared work, outside ``my_work.total``."""
+    return compute_my_tasks(db, current_user, project, limit=limit, group=kind, offset=offset)
+
+
+@router.get(
+    "/followups",
+    response_model=ReviewFollowupsResponse,
+    summary="The caller's finished reviews that are not done, paged — the Operations 'Changed since review' tab",
+)
+def get_my_followups(
+    limit: int = _PAGE_LIMIT,
+    offset: int = _PAGE_OFFSET,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Hosts the caller reviewed that changed after that review, or that they
+    concluded "needs more evidence" — the hosts ``follow:revisit`` lists;
+    oldest review first.  ``total`` is the whole list whatever the page.
+
+    A failure is a 503 that says so — never an empty list, which would read
+    as "nothing changed"."""
+    try:
+        return compute_review_followups(db, current_user, project, limit=limit, offset=offset)
+    except Exception:
+        logger.exception("review follow-ups failed for project %s", project.id)
+        db.rollback()
+        raise HTTPException(status_code=503, detail="The reviewed hosts could not be checked for changes.")
 
 
 @router.get(

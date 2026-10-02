@@ -271,7 +271,7 @@ const sections: GuideSection[] = [
           <li><strong>Planned</strong> — a host with a test that is proposed or in progress (<Mono>has:planned</Mono>). <strong>Tested</strong> — a host with evidence of a test that ran: a finding, no finding, or inconclusive (<Mono>has:tested</Mono>). An attempt that could not run does not count.</li>
           <li><strong>A test is closed by its result</strong>, not by a "done" button — a test nobody ran is dismissed with a reason instead.</li>
           <li><strong>Two people, one test</strong> — a change made on an out-of-date copy is refused, and the list is read again, rather than one overwriting the other.</li>
-          <li><strong>Your queue</strong> — tests assigned to you and tests on hosts you have in review are on Operations under My work; unassigned critical or high tests anyone may claim are listed beside them, under Available to claim, and are not counted as yours.</li>
+          <li><strong>Your queue</strong> — tests assigned to you and tests on hosts you have in review are on Operations' Tests tab; unassigned critical or high tests anyone may claim are listed in the same table as “free to claim”, shown beside the tab's count and not counted as yours.</li>
           <li><strong>A finding</strong> an agent believes its evidence shows is a <em>proposal</em> for a person to accept — see Proposals.</li>
         </UnorderedList>
       </div>

@@ -1,9 +1,9 @@
 /**
  * Dashboard + Operations-workbench API client.
  *
- * Dashboard summary stats, the Operations workbench (`GET /workbench`: my
- * queue, tasks, notes, findings, team review, since-last-visit, the
- * investigation queue, follow-ups, blockers) and agent-activity analytics.
+ * Dashboard summary stats, the Operations workbench (`GET /workbench`: the
+ * caller's counts, since-last-visit, blockers; one paged route per tab's
+ * list) and agent-activity analytics.
  *
  * Extracted from the api.ts monolith.  Consumers still import these from
  * ``../services/api`` — the barrel re-exports this module.
@@ -63,6 +63,8 @@ export type MyTaskReason = 'assigned' | 'in_review' | 'triage';
 
 export interface MyTaskItem {
   test_id: number;
+  /** What runs the test (v2.452.0). */
+  tool?: string | null;
   description: string;
   label: string | null;
   revision: number;
@@ -269,17 +271,34 @@ export interface ReviewFollowupsResponse {
 }
 
 export const getWorkbench = async (
-  opts: { includeInvestigate?: boolean } = {},
+  opts: { includeInvestigate?: boolean; includeRows?: boolean } = {},
 ): Promise<WorkbenchResponse> => {
   // v2.424.1 — Operations leaves the untouched queue out and loads it with
   // getInvestigationQueue(): on a large project it is most of the time, and
   // the personal sections should not wait for it.
+  // v2.452.0 — and the rows: `includeRows: false` is the light call the tab
+  // bar counts from; each tab pages its own list (the functions below).
   const params: Record<string, boolean> = {};
   if (opts.includeInvestigate === false) params.include_investigate = false;
+  if (opts.includeRows === false) params.include_rows = false;
   const response = await api.get(`${p()}/workbench`, {
     params: Object.keys(params).length ? params : undefined,
   });
   return response.data;
+};
+
+/** One page of an Operations tab's list. */
+export interface WorkbenchPage {
+  limit?: number;
+  offset?: number;
+  signal?: AbortSignal;
+}
+
+const pageParams = (page: WorkbenchPage): Record<string, number | string> => {
+  const params: Record<string, number | string> = {};
+  if (page.limit != null) params.limit = page.limit;
+  if (page.offset) params.offset = page.offset;
+  return params;
 };
 
 /** The untouched queue alone. Rejects (503) when it could not be computed —
@@ -287,15 +306,50 @@ export const getWorkbench = async (
  *  the queue's own order; the totals stay whole-queue. */
 export const getInvestigationQueue = async (
   tier?: number | null,
-  page: { limit?: number; offset?: number } = {},
+  page: WorkbenchPage = {},
 ): Promise<InvestigationQueueResponse> => {
-  const params: Record<string, number> = {};
+  const params = pageParams(page);
   if (tier) params.tier = tier;
-  if (page.limit != null) params.limit = page.limit;
-  if (page.offset) params.offset = page.offset;
   const response = await api.get(`${p()}/workbench/investigate`, {
     params: Object.keys(params).length ? params : undefined,
+    signal: page.signal,
   });
+  return response.data;
+};
+
+// -- the Operations tabs' lists (v2.452.0) -----------------------------------
+// Each is the function that produces the tab's count in `GET /workbench`,
+// paged: the count on a tab is the size of the list it pages through.
+
+/** Findings the caller owns that need them; `total_open` is the whole list. */
+export const getMyFindingsPage = async (page: WorkbenchPage = {}): Promise<MyFindingsResponse> => {
+  const response = await api.get(`${p()}/workbench/findings`, { params: pageParams(page), signal: page.signal });
+  return response.data;
+};
+
+/** Hosts the caller has In Review; `in_review_count` is the whole list. */
+export const getMyReviewHostsPage = async (page: WorkbenchPage = {}): Promise<MyAttentionResponse> => {
+  const response = await api.get(`${p()}/workbench/hosts`, { params: pageParams(page), signal: page.signal });
+  return response.data;
+};
+
+/** Tests to do that are the caller's or free to claim — one list, each test
+ *  under its strongest reason. With `kind`, only that kind; the list's size
+ *  is `total_open` (every kind) or `group_counts[kind]`. */
+export const getMyTestsPage = async (
+  kind: MyTaskReason | null = null,
+  page: WorkbenchPage = {},
+): Promise<MyTasksResponse> => {
+  const params = pageParams(page);
+  if (kind) params.kind = kind;
+  const response = await api.get(`${p()}/workbench/tests`, { params, signal: page.signal });
+  return response.data;
+};
+
+/** The caller's finished reviews that are not done. Rejects (503) when they
+ *  could not be checked — never an empty list. */
+export const getReviewFollowupsPage = async (page: WorkbenchPage = {}): Promise<ReviewFollowupsResponse> => {
+  const response = await api.get(`${p()}/workbench/followups`, { params: pageParams(page), signal: page.signal });
   return response.data;
 };
 

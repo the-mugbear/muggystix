@@ -19,6 +19,9 @@ export interface OperationsNavState {
    *  first part. A flag, not a number: the server's totals count ROWS, and a
    *  row is not always a host. */
   queuePartial?: boolean;
+  /** The tab of Operations it was opened from (5.331.0): "Back to my work"
+   *  returns to that tab, not to whichever opens by default. */
+  operationsTab?: string;
 }
 
 // -- the exact Hosts list behind each Operations count (5.329.0) -------------
@@ -77,16 +80,25 @@ export const uniqueHostIds = (ids: Array<number | null | undefined>): number[] =
 export const fromOperationsQueue = (
   hostIds: Array<number | null | undefined>,
   queueLabel: string,
-  options: { partial?: boolean } = {},
+  options: { partial?: boolean; tab?: string } = {},
 ): { state: OperationsNavState } => {
   const ids = uniqueHostIds(hostIds);
-  if (ids.length <= 1) return { state: { fromOperations: true } };
+  const back = options.tab ? { operationsTab: options.tab } : {};
+  if (ids.length <= 1) return { state: { fromOperations: true, ...back } };
   return {
     state: {
       fromOperations: true,
       hostIds: ids,
       queueLabel,
       ...(options.partial ? { queuePartial: true } : {}),
+      ...back,
     },
   };
+};
+
+/** Where "Back to my work" goes: Operations, on the tab the host was opened
+ *  from when the navigation named one of the page's tabs. */
+export const operationsBackPath = (state: { operationsTab?: unknown } | null | undefined): string => {
+  const tab = state?.operationsTab;
+  return typeof tab === 'string' && /^[a-z]+$/.test(tab) ? `/operations?tab=${tab}` : '/operations';
 };

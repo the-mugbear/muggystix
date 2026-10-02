@@ -11,6 +11,11 @@
  *
  * Not carried: the row's "Upload evidence" button. A row has one action now;
  * the "no vulnerability data yet" step is on the row's tooltip.
+ *
+ * 5.331.0 — it is the content of Operations' "Pick up" tab: the tab is the
+ * heading and carries the count, the queue is paged like every tab ("1–25 of
+ * N" — "Show 15 more" and the 100-row ceiling went), and the footer's link
+ * to every untouched host is worded as the larger list it is.
  */
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -63,12 +68,24 @@ const queue = (over: Partial<InvestigationQueueResponse> = {}): InvestigationQue
 const onChanged = vi.fn();
 const onTier = vi.fn();
 const onRetry = vi.fn();
-const onMore = vi.fn();
-const props = (over: Partial<UntouchedQueueSectionProps> = {}): UntouchedQueueSectionProps => ({
-  data: queue(), loading: false, unavailable: false, onRetry, tier: null, onTier, onMore,
-  canWrite: true, onChanged, ...over,
-});
-const renderIt = (over: Partial<UntouchedQueueSectionProps> = {}) =>
+const onPage = vi.fn();
+/** The props the tab's container hands the table: the response (totals and
+ *  tiers), one page of its rows, and the size of the list being paged — the
+ *  whole queue, or the chosen tier's hosts. */
+const props = (over: Partial<UntouchedQueueSectionProps> & { page?: number } = {}): UntouchedQueueSectionProps => {
+  const { page = 0, ...rest } = over;
+  const data = rest.data === undefined ? queue() : rest.data;
+  const tier = rest.tier ?? null;
+  const total = data ? (tier != null ? (data.tier_counts?.[tier - 1] ?? 0) : data.queue_total) : 0;
+  return {
+    data,
+    rows: data ? data.items : null,
+    state: { loading: false, error: null, onRetry },
+    pager: { page, pageSize: 25, total, onPage },
+    tier, onTier, canWrite: true, onChanged, ...rest,
+  };
+};
+const renderIt = (over: Partial<UntouchedQueueSectionProps> & { page?: number } = {}) =>
   render(<MemoryRouter><LocationProbe /><UntouchedQueueSection {...props(over)} /></MemoryRouter>);
 const rowOf = (ip: string) => screen.getByRole('link', { name: ip }).closest('tr') as HTMLElement;
 const q = (el: HTMLElement) => new URL(el.getAttribute('href')!, 'https://x').searchParams.get('q');
@@ -121,8 +138,12 @@ describe('Untouched, with a reason — tiers', () => {
 describe('Untouched, with a reason — rows', () => {
   it('one line: address, name, the reasons in words, the tier', () => {
     renderIt();
-    expect(screen.getByRole('heading', { name: /Untouched, with a reason/ })).toBeInTheDocument();
-    expect(screen.queryByText('Worth a look')).not.toBeInTheDocument();
+    // The tab is the heading: the panel repeats none.
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Untouched, with a reason' })).toBeInTheDocument();
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(
+      ['', 'Host', 'Name', 'Why', 'Tier', 'Action'],
+    );
     const first = rowOf('10.0.0.7');
     expect(within(first).getByText('dc01.corp.local')).toBeInTheDocument();
     const why = within(first).getByText('1 critical vulnerability with a known public exploit · MySQL, SSH, Telnet open');
@@ -165,40 +186,61 @@ describe('Untouched, with a reason — rows', () => {
     expect(lastLocation?.pathname).toBe('/hosts/101');
     expect(lastLocation?.state).toEqual({
       fromOperations: true, hostIds: [101, 102, 103, 104, 105, 106, 107], queueLabel: 'Untouched, with a reason',
+      operationsTab: 'pickup',
     });
   });
 });
 
-describe('Untouched, with a reason — the count and its list', () => {
+describe('Untouched, with a reason — the list and what its link opens', () => {
   it('a tier a query expresses opens exactly that Hosts list', () => {
-    renderIt({ tier: 2, data: queue({ items: [item({ tier: 2, tier_label: TIERS[1] })] }) });
-    expect(screen.getByText('1 of 30')).toBeInTheDocument();
+    renderIt({ tier: 2, data: queue({ items: [item({ tier: 2, tier_label: TIERS[1] })] }), page: 1 });
+    // The tier's 30 hosts are the list being paged.
+    expect(screen.getByText('26–26 of 30')).toBeInTheDocument();
     const all = screen.getByRole('link', { name: 'Open all 30 hosts in Hosts' });
     expect(q(all)).toBe('has:untouched AND has:critical AND NOT has:critical_exploit');
     expect(screen.queryByRole('button', { name: /Show .* more/ })).not.toBeInTheDocument();
   });
 
-  it('where no query expresses the set, the link names what it opens and the queue pages here', () => {
+  it('where no query expresses the queue, the link says it opens a larger list — every untouched host', () => {
     renderIt();
-    expect(screen.getByText('2 of 112')).toBeInTheDocument();
-    // Never "Open all 112": no Hosts query lists those 112.
-    expect(screen.queryByRole('link', { name: /Open all 112/ })).not.toBeInTheDocument();
-    const all = screen.getByRole('link', { name: 'Open all 290 untouched hosts in Hosts' });
+    expect(screen.getByText('1–2 of 112')).toBeInTheDocument();
+    expect(screen.getByText('page 1 of 5')).toBeInTheDocument();
+    // Never "Open all 112" (no Hosts query lists those 112), and never a bare
+    // "Open all 290 untouched hosts" under a list of 112 (walkthrough
+    // 2026-10-02: it read as this list).
+    expect(screen.queryByRole('link', { name: /^Open all/ })).not.toBeInTheDocument();
+    const all = screen.getByRole('link', { name: 'All 290 untouched hosts in Hosts, with or without a reason' });
     expect(q(all)).toBe('has:untouched');
-    fireEvent.click(screen.getByRole('button', { name: 'Show 15 more' }));
-    expect(onMore).toHaveBeenCalled();
+    // Paged like every tab: no "Show more".
+    expect(screen.queryByRole('button', { name: /Show .* more/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 25 hosts' }));
+    expect(onPage).toHaveBeenLastCalledWith(1);
+    expect(screen.getByRole('button', { name: 'Previous 25 hosts' })).toBeDisabled();
+  });
+
+  it('a tier no query expresses (4, 5) gets the same honest link', () => {
+    renderIt({ tier: 4, data: queue({ items: [collect] }) });
+    expect(screen.getByText('1–1 of 74')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'All 290 untouched hosts in Hosts, with or without a reason' })).toBeInTheDocument();
   });
 
   it('says so when nothing untouched has a reason, and opens the untouched hosts', () => {
     renderIt({ data: queue({ items: [], queue_total: 0, untouched_total: 12, tier_counts: [0, 0, 0, 0, 0] }) });
     expect(screen.getByText(/untouched, none with a weakness or change on record/)).toBeInTheDocument();
+    expect(screen.getByText(/^Nothing here —/)).toBeInTheDocument();
     expect(q(screen.getByRole('link', { name: '12 hosts' }))).toBe('has:untouched');
     expect(screen.queryByRole('group', { name: 'Filter by tier' })).not.toBeInTheDocument();
   });
 
   it('says every host has been touched when none is untouched', () => {
     renderIt({ data: queue({ items: [], queue_total: 0, untouched_total: 0, tier_counts: [0, 0, 0, 0, 0] }) });
-    expect(screen.getByText('Every host has been touched by someone.')).toBeInTheDocument();
+    expect(screen.getByText(/^Nothing here — every host has been touched by someone\./)).toBeInTheDocument();
+  });
+
+  it('an empty tier says so, with the chips still there to leave it', () => {
+    renderIt({ tier: 2, data: queue({ items: [], tier_counts: [3, 0, 4, 74, 1] }) });
+    expect(screen.getByText('Nothing here — no untouched host is in this tier.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /All tiers/ })).toBeInTheDocument();
   });
 });
 
@@ -239,20 +281,26 @@ describe('Untouched, with a reason — actions', () => {
 });
 
 describe('Untouched, with a reason — states', () => {
-  it('a queue the server could not compute reads as unavailable, never as "no work"', () => {
-    renderIt({ data: null, unavailable: true });
-    expect(screen.getByRole('heading', { name: 'Untouched, with a reason' })).toBeInTheDocument();
-    expect(screen.getByRole('alert')).toHaveTextContent(/could not be computed/);
-    expect(screen.queryByText(/Every host has been touched/)).not.toBeInTheDocument();
+  it('a queue the server could not compute reads "could not be checked", never as "no work"', () => {
+    renderIt({ data: null, state: { loading: false, error: 'The untouched-hosts queue could not be computed.', onRetry } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not be checked.*could not be computed.*not an empty list/);
+    expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/every host has been touched/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
     expect(onRetry).toHaveBeenCalled();
   });
 
-  it('says it is looking while the queue loads, and renders nothing without one', () => {
-    const { unmount } = renderIt({ data: null, loading: true });
-    expect(screen.getByRole('status')).toHaveTextContent(/Finding untouched hosts/);
-    unmount();
-    renderIt({ data: null });
-    expect(screen.queryByText('Untouched, with a reason')).not.toBeInTheDocument();
+  it('while the queue loads it is a skeleton — never the empty line', () => {
+    renderIt({ data: null, state: { loading: true, error: null, onRetry } });
+    expect(screen.getByRole('status', { name: /Loading the untouched hosts/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+  });
+
+  it('the tier chips stay while another page or tier loads', () => {
+    // The container keeps the last response; the rows are not in yet.
+    renderIt({ rows: null, state: { loading: true, error: null, onRetry } });
+    expect(screen.getByRole('group', { name: 'Filter by tier' })).toBeInTheDocument();
+    expect(screen.getByRole('status', { name: /Loading/ })).toBeInTheDocument();
+    expect(screen.queryByRole('table')).not.toBeInTheDocument();
   });
 });

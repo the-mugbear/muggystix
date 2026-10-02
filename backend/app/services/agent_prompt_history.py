@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.7.0",
+        "app_version": "2.452.0",
+        "summary": (
+            "The Operations page is tabs now — Findings, Hosts, Tests, Changed since "
+            "review, Pick up — one full list at a time, paged; it no longer shows "
+            "five-row samples. assist_get_workbench is unchanged in shape (the same "
+            "counts, the same PREVIEW lists) and each my_tasks row now carries `tool`. "
+            "Its description and the guide say how to read a WHOLE list: hosts in "
+            "review = assist_list_hosts q=follow:mine; changed since review = "
+            "q=follow:revisit; tests assigned = host_tests_list mine=true "
+            "active_only=true; tests on hosts in review = host_tests_list "
+            "q=follow:mine active_only=true; the untouched queue = "
+            "assist_list_worth_a_look (limit/offset). Findings that need the operator "
+            "have no whole-list agent read beyond the workbench's preview and its "
+            "count. The page's own paged routes (GET /workbench/findings, /hosts, "
+            "/tests, /followups) are person-side; they are not agent reads."
+        ),
+    },
+    {
         "version": "4.6.1",
         "app_version": "2.451.1",
         "summary": (

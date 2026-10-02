@@ -2,16 +2,23 @@
  * Operations — what should I do next?  The signed-in person's page, and only
  * theirs (owner, 2026-10-02, 5.330.0): project status is Posture's.
  *
- * Top to bottom:
+ * Top to bottom (5.331.0 — tabs, one list at a time; UI_STYLE_GUIDE §42):
  *
  *   header            title · Start Agent Session · updated-at + refresh
- *   lead              one sentence; every number links to what it counts
- *   since last visit  what changed while the reader was away
+ *   lead              one sentence; every number opens the tab it counts
+ *   since last visit  what changed while the reader was away (only then)
  *   blocked           stopped imports, with the action that unblocks them
- *   My work           only what needs the reader, each row saying what
- *   Changed since review      the reader's OWN reviews that are not done
- *   Untouched, with a reason  what to pick up next (nobody's yet)
+ *   tab bar           Findings · Hosts · Tests · Changed since review · Pick up,
+ *                     each with its count
+ *   the one list      the selected tab's full table, 25 rows a page
  *   Your agent sessions       one line, the reader's own sessions
+ *
+ * It was six lists stacked at one weight — "My work" with five groups of
+ * five-row samples in sentence rows, then two queue tables — each with its
+ * own "more", and the same host could show three times.  The tab is in the
+ * URL (`?tab=`; with none, the first non-empty tab in bar order opens), the
+ * counts come from one light workbench call, and only the selected tab's rows
+ * are fetched (`components/operations/OperationsTabs`).
  *
  * What left in 5.330.0, and where it is: the measures strip (tested x of y,
  * untouched with a critical observation — the terrain's sentence states both),
@@ -23,44 +30,42 @@
  * (Agent Sessions, Collaboration and Posture hold them).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-dom';
-import { AlertTriangle, Loader2, MessageCircleQuestion, Sparkles } from 'lucide-react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { AlertTriangle, Loader2, MessageCircleQuestion, RefreshCw, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
   OperationsBlockers,
   ProjectCoverageResponse,
   SinceLastVisit,
   WorkbenchResponse,
-  InvestigationQueueResponse,
   getProjectCoverage,
   getWorkbench,
   getInvestigationQueue,
   markWorkbenchSeen,
 } from '../services/api';
+import type { MyTaskReason } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { projectRoleAtLeast } from '../utils/projectRole';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
 import { formatApiError } from '../utils/apiErrors';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
-import MyWorkCard, { MY_WORK_ID, personalWorkCounts } from '../components/MyWorkCard';
 import AgentSessionsLine from '../components/operations/AgentSessionsLine';
-import ChangedSinceReviewSection, { CHANGED_SINCE_REVIEW_TITLE } from '../components/operations/ChangedSinceReviewSection';
-import UntouchedQueueSection, {
-  UNTOUCHED_MAX_ROWS, UNTOUCHED_PAGE,
-} from '../components/operations/UntouchedQueueSection';
-import { UnavailableLine } from '../components/operations/QueueParts';
-import UpdatedAt from '../components/UpdatedAt';
+import OperationsTabs from '../components/operations/OperationsTabs';
 import LastUpdated from '../components/LastUpdated';
-import { Alert, AlertDescription } from '../components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import PostureSection from '../components/posture/PostureSection';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
 import { agentInstruction } from '../utils/agentRuns';
 import { cn } from '../utils/cn';
+import {
+  firstNonEmptyTab, operationsTabCounts, personalTotal, tabFromParams, tabSearch,
+  testKindFromParams, tierFromParams,
+  type OperationsTab, type OperationsTabCounts,
+} from '../utils/operationsTabs';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 
 /** The page's independently fetched sources, each with its own load time. */
@@ -71,9 +76,6 @@ const oldestLoad = (loaded: Partial<Record<LoadedSource, Date>>): Date | null =>
   return times.length ? times.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b)) : null;
 };
 
-/** In-page targets of the lead's links. */
-const CHANGED_ID = 'changed-since-review';
-const UNTOUCHED_ID = 'untouched-queue';
 const IMPORT_ERRORS_PATH = '/parse-errors?status=needs_attention';
 
 const LINK = 'rounded underline decoration-1 underline-offset-4 hover:text-info focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
@@ -226,15 +228,8 @@ const BlockersStrip: React.FC<{
 // Page
 // ---------------------------------------------------------------------------
 
-/** `?tier=N` — the tier the untouched queue is narrowed to. */
-const tierFrom = (params: URLSearchParams): number | null => {
-  const v = Number(params.get('tier'));
-  return Number.isInteger(v) && v >= 1 && v <= 5 ? v : null;
-};
-
 const Operations: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
   const { currentProject } = useProject();
   // Write controls — Review, Still reviewed, Re-open, Claim, the selection
   // columns — follow the project role (UI_STYLE_GUIDE §40): hidden for a
@@ -251,67 +246,61 @@ const Operations: React.FC = () => {
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // Operations owns ONE /workbench fetch covering My work, the changed-since-
-  // review queue, the blockers and the since-last-visit diff (P2).
+  // Operations owns ONE light /workbench fetch: every tab's count, the
+  // blockers and the since-last-visit diff — no rows (5.331.0).  A tab's rows
+  // are its panel's own request, made when the tab is opened.
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [workbenchLoading, setWorkbenchLoading] = useState(true);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
 
-  // v5.304.1 — the untouched queue loads on its own request: on a large
-  // project it was most of the workbench's time, and My work waited for it.
-  const [investigate, setInvestigate] = useState<InvestigationQueueResponse | null>(null);
-  const [investigateLoading, setInvestigateLoading] = useState(true);
-  const [investigateUnavailable, setInvestigateUnavailable] = useState(false);
-  const [investigateMoreBusy, setInvestigateMoreBusy] = useState(false);
-  const investigateGenRef = useRef(0);
-  // The tier the queue is narrowed to lives in the URL (?tier=), so a link to
-  // "the exploitable criticals" can be shared and survives a reload.  Refs
-  // too, so a refresh or an action reloads what is being looked at.
-  const [pageParams, setPageParams] = useSearchParams();
-  const investigateTier = tierFrom(pageParams);
-  const investigateTierRef = useRef<number | null>(investigateTier);
-  const investigateLimitRef = useRef(UNTOUCHED_PAGE);
-  // `quiet`: after an action in a queue — keep what is shown until the new
-  // queue arrives instead of flashing the loading line.
-  const loadInvestigate = useCallback((quiet = false) => {
-    const gen = ++investigateGenRef.current;
-    if (!quiet) setInvestigateLoading(true);
-    return getInvestigationQueue(investigateTierRef.current, { limit: investigateLimitRef.current })
+  // The untouched queue's SIZE, on its own request (v5.304.1: on a large
+  // project the queue was most of the workbench's time): one row is asked
+  // for, the totals are whole-queue.  null = not known — loading, or it could
+  // not be computed — and never shown as 0.
+  const [pickupTotal, setPickupTotal] = useState<number | null>(null);
+  const [pickupLoading, setPickupLoading] = useState(true);
+  const pickupGenRef = useRef(0);
+  // `quiet`: after an action — keep the count shown until the new one arrives.
+  const loadPickupTotal = useCallback((quiet = false) => {
+    const gen = ++pickupGenRef.current;
+    if (!quiet) setPickupLoading(true);
+    return getInvestigationQueue(null, { limit: 1 })
       .then((q) => {
-        if (gen !== investigateGenRef.current) return;
-        setInvestigate(q);
-        setInvestigateUnavailable(false);
+        if (gen !== pickupGenRef.current) return;
+        setPickupTotal(q.queue_total);
       })
       .catch(() => {
-        if (gen !== investigateGenRef.current) return;
-        setInvestigate(null);
-        setInvestigateUnavailable(true);
+        if (gen !== pickupGenRef.current) return;
+        setPickupTotal(null);
       })
       .finally(() => {
-        if (gen !== investigateGenRef.current) return;
-        setInvestigateLoading(false);
+        if (gen !== pickupGenRef.current) return;
+        setPickupLoading(false);
       });
   }, []);
-  const setInvestigateTier = useCallback((tier: number | null) => {
-    investigateTierRef.current = tier;
-    investigateLimitRef.current = UNTOUCHED_PAGE;
-    const next = new URLSearchParams(pageParams);
-    if (tier == null) next.delete('tier'); else next.set('tier', String(tier));
-    setPageParams(next, { replace: true });
-    void loadInvestigate(true);
-  }, [pageParams, setPageParams, loadInvestigate]);
-  // Back / Forward (or an edited address) changes the tier without a click.
-  useEffect(() => {
-    if (investigateTierRef.current === investigateTier) return;
-    investigateTierRef.current = investigateTier;
-    investigateLimitRef.current = UNTOUCHED_PAGE;
-    void loadInvestigate(true);
-  }, [investigateTier, loadInvestigate]);
-  const showMoreUntouched = useCallback(() => {
-    investigateLimitRef.current = Math.min(UNTOUCHED_MAX_ROWS, investigateLimitRef.current + UNTOUCHED_PAGE);
-    setInvestigateMoreBusy(true);
-    void loadInvestigate(true).finally(() => setInvestigateMoreBusy(false));
-  }, [loadInvestigate]);
+
+  // The tab, the Pick up tier and the Tests kind live in the URL, so a link
+  // to "the exploitable criticals" or "what is free to claim" can be shared,
+  // survives a reload, and Back / Forward walk the tabs.  Nothing is
+  // remembered anywhere else.
+  const [pageParams, setPageParams] = useSearchParams();
+  const urlTab = tabFromParams(pageParams);
+  const tier = tierFromParams(pageParams);
+  const testKind = testKindFromParams(pageParams);
+  const setTab = useCallback((tab: OperationsTab) => {
+    // A new history entry: Back returns to the tab the reader came from.
+    setPageParams(tabSearch(pageParams, tab));
+  }, [pageParams, setPageParams]);
+  const setTier = useCallback((next: number | null) => {
+    const params = new URLSearchParams(pageParams);
+    if (next == null) params.delete('tier'); else params.set('tier', String(next));
+    setPageParams(params, { replace: true });
+  }, [pageParams, setPageParams]);
+  const setTestKind = useCallback((next: MyTaskReason | null) => {
+    const params = new URLSearchParams(pageParams);
+    if (next == null) params.delete('kind'); else params.set('kind', next);
+    setPageParams(params, { replace: true });
+  }, [pageParams, setPageParams]);
 
   const [sinceDismissed, setSinceDismissed] = useState(false);
   // §27: do NOT advance the "since last visit" cursor merely because the page
@@ -356,11 +345,11 @@ const Operations: React.FC = () => {
     setWorkbenchLoading(true);
     setWorkbenchError(null);
 
-    // The workbench and the queue are independent of the coverage load —
-    // each isolates its own failure, so an outage shows that section's error
-    // state (with Retry) instead of blanking the page.
-    void loadInvestigate();
-    getWorkbench({ includeInvestigate: false })
+    // The workbench and the queue's total are independent of the coverage
+    // load — each isolates its own failure, so an outage shows as counts that
+    // "could not be checked" instead of blanking the page.
+    void loadPickupTotal();
+    getWorkbench({ includeInvestigate: false, includeRows: false })
       .then((wb) => {
         if (isStale()) return;
         setWorkbench(wb);
@@ -403,33 +392,36 @@ const Operations: React.FC = () => {
       setError(formatApiError(err, 'Failed to load Operations data.'));
     }
     setCoverageLoading(false);
-  }, [loadInvestigate, markLoaded]);
+  }, [loadPickupTotal, markLoaded]);
 
   useEffect(() => {
     void reload();
-    // Once per mount: `reload` is stable, and the tier in the URL is read
-    // through its ref.
+    // Once per mount: `reload` is stable.
   }, [reload]);
 
-  // After an action in a queue (take, still reviewed, re-open, claim, undo):
-  // the workbench and the queue, without spinners (5.304.0).  The full
-  // `reload` blanked every section and moved the page under the pointer
-  // after each click.
-  const refreshWorkbenchQuietly = useCallback(() => {
-    getWorkbench({ includeInvestigate: false })
+  // After an action in a list (take, still reviewed, re-open, claim, undo):
+  // the counts, without spinners (5.304.0) — the list re-reads its own rows
+  // in place.  The full `reload` blanked the page and moved it under the
+  // pointer after each click.
+  const countsGenRef = useRef(0);
+  const refreshCountsQuietly = useCallback(() => {
+    const gen = ++countsGenRef.current;
+    getWorkbench({ includeInvestigate: false, includeRows: false })
       .then((wb) => {
+        // Two actions in a row: only the newer answer is the state now.
+        if (gen !== countsGenRef.current) return;
         setWorkbench(wb);
         markLoaded('workbench');
       })
       .catch(() => { /* the next full refresh reports it */ });
     // Taking a host into review moves it out of the untouched queue.
-    void loadInvestigate(true);
-  }, [loadInvestigate, markLoaded]);
+    void loadPickupTotal(true);
+  }, [loadPickupTotal, markLoaded]);
 
-  // The page Refresh: the agent-sessions line fetches for itself, so
-  // `reload` alone left it showing what it loaded on mount. The key is
-  // bumped only here (not inside `reload`, which also runs
-  // on mount — that would fetch it twice).
+  // The page Refresh: the selected tab's list and the agent-sessions line
+  // fetch for themselves, so `reload` alone left them showing what they
+  // loaded on mount. The key is bumped only here (not inside `reload`, which
+  // also runs on mount — that would fetch them twice).
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshAll = useCallback(() => {
     setRefreshKey((k) => k + 1);
@@ -467,31 +459,20 @@ const Operations: React.FC = () => {
     refresh: refreshAssistSessions,
   } = useMyAssistSessions();
 
-  // The lead's in-page links (#my-work …): go to the section.
-  // A navigation asks once; the scroll happens when its section exists (it may
-  // still be loading on arrival) and is then forgotten, so a later refresh of
-  // the queues never drags the page back.
-  const pendingHashRef = useRef<string | null>(null);
-  useEffect(() => {
-    pendingHashRef.current = location.hash.replace(/^#/, '') || null;
-  }, [location.key, location.hash]);
-  useEffect(() => {
-    const id = pendingHashRef.current;
-    if (!id) return;
-    const el = document.getElementById(id);
-    if (!el) return;
-    pendingHashRef.current = null;
-    el.scrollIntoView?.({ block: 'start' });
-  });
-  // A link to a section of this page, keeping the page's own parameters.
-  const here = (id: string) => `${location.search}#${id}`;
+  // The tab bar's counts: the workbench's own totals and the queue's.
+  const counts: OperationsTabCounts = operationsTabCounts(workbench, pickupTotal);
 
-  // One list owns j / k / Enter / x at a time: the queue the reader last
-  // pointed at or focused.  Two window listeners would both move.
-  const [keysIn, setKeysIn] = useState<'changed' | 'untouched' | null>(null);
-
-  const followups = workbench?.followups ?? null;
-  const followupsUnavailable = workbench?.followups_unavailable ?? false;
+  // With no `?tab=`, the first non-empty tab in bar order opens.  Decided
+  // ONCE, when the counts first arrive (or fail): finishing the last finding
+  // must not move the reader to another tab under their hands.
+  const [defaultTab, setDefaultTab] = useState<OperationsTab | null>(null);
+  useEffect(() => {
+    if (defaultTab != null || workbenchLoading) return;
+    setDefaultTab(workbench ? firstNonEmptyTab(operationsTabCounts(workbench, null)) : 'findings');
+  }, [defaultTab, workbench, workbenchLoading]);
+  const tab = urlTab ?? defaultTab;
+  // A link that opens a tab of this page, keeping the page's parameters.
+  const toTab = (target: OperationsTab, kind?: MyTaskReason | null) => tabSearch(pageParams, target, kind);
 
   return (
     <div className="min-w-0 p-md md:p-lg">
@@ -584,17 +565,27 @@ const Operations: React.FC = () => {
       )}
 
       {coverage && coverage.total_hosts > 0 && (
-        // One column read top to bottom (UI_STYLE_GUIDE §7): a lead sentence,
-        // the callouts, then sections over thin rules.  No measures strip
-        // (5.330.0): the page's two counts are in the lead and the section
-        // headings, and project status is on Posture.
+        // One column (UI_STYLE_GUIDE §7, §42): a lead sentence, the callouts,
+        // the tab bar, the ONE selected list.  No measures strip (5.330.0):
+        // the page's counts are in the lead and on the tabs, and project
+        // status is on Posture.
         <div className="flex min-w-0 flex-col gap-lg">
           {workbench && !workbenchError && (
-            <OperationsLead
-              workbench={workbench}
-              untouched={investigateUnavailable ? null : (investigate?.queue_total ?? null)}
-              here={here}
-            />
+            <OperationsLead workbench={workbench} counts={counts} toTab={toTab} />
+          )}
+          {workbenchError && !workbenchLoading && (
+            // The counts could not be read: the tabs say "—", and each list
+            // still answers for itself.
+            <Alert variant="destructive">
+              <AlertTitle>Couldn't load your work's counts</AlertTitle>
+              <AlertDescription>
+                <p className="break-words">{workbenchError}</p>
+                <p className="mt-xxs">The tabs below still load their own lists; a count shown as “—” could not be checked.</p>
+                <Button size="sm" variant="outline" className="mt-xs" onClick={() => void reload()}>
+                  <RefreshCw className="size-3.5" aria-hidden /> Retry
+                </Button>
+              </AlertDescription>
+            </Alert>
           )}
           {/* Since your last visit — what changed in this project while the
               operator was away (durable per-user cursor, P2). */}
@@ -611,57 +602,23 @@ const Operations: React.FC = () => {
             unavailable={workbench?.blockers_unavailable ?? false}
           />
 
-          {/* Mine: one full-width column.  (It shared the row with a feed of
-              what the reader had already done.) */}
-          <MyWorkCard
-            queue={workbench?.my_queue ?? null}
-            tasks={workbench?.my_tasks ?? null}
-            findings={workbench?.my_findings ?? null}
-            totals={workbench?.my_work ?? null}
-            loading={workbenchLoading}
-            error={workbenchError}
-            onRetry={() => void reload()}
-            onChanged={refreshWorkbenchQuietly}
+          {/* The reader's work, one list at a time: the bar's counts come
+              from the workbench; only the selected tab's rows are fetched. */}
+          <OperationsTabs
+            tab={tab}
+            onTab={setTab}
+            counts={counts}
+            countsLoading={workbenchLoading}
+            pickupLoading={pickupLoading}
             canWrite={canWrite}
-            updated={<UpdatedAt at={loadedAt.workbench ?? null} hideWhenFresh />}
+            refreshKey={refreshKey}
+            onCountsChanged={refreshCountsQuietly}
+            tier={tier}
+            onTier={setTier}
+            testKind={testKind}
+            onTestKind={setTestKind}
+            testGroups={workbench?.my_tasks?.group_counts ?? null}
           />
-
-          {/* Yours to re-check, then what nobody has picked up yet. */}
-          <div id={CHANGED_ID} className="min-w-0 scroll-mt-md">
-            {!workbenchLoading && !workbenchError && followupsUnavailable && (
-              <PostureSection title={<span>{CHANGED_SINCE_REVIEW_TITLE}</span>}>
-                <UnavailableLine onRetry={() => void reload()}>
-                  Unavailable — the hosts you reviewed could not be checked for open questions or later
-                  changes. This is not a confirmation that none changed.
-                </UnavailableLine>
-              </PostureSection>
-            )}
-            {!workbenchLoading && !workbenchError && !followupsUnavailable && followups && (
-              <ChangedSinceReviewSection
-                data={followups}
-                canWrite={canWrite}
-                onChanged={refreshWorkbenchQuietly}
-                keysActive={keysIn === 'changed'}
-                onActivate={() => setKeysIn('changed')}
-              />
-            )}
-          </div>
-          <div id={UNTOUCHED_ID} className="min-w-0 scroll-mt-md">
-            <UntouchedQueueSection
-              data={investigate}
-              loading={investigateLoading}
-              unavailable={investigateUnavailable}
-              onRetry={() => void loadInvestigate()}
-              tier={investigateTier}
-              onTier={setInvestigateTier}
-              onMore={showMoreUntouched}
-              moreBusy={investigateMoreBusy}
-              canWrite={canWrite}
-              onChanged={refreshWorkbenchQuietly}
-              keysActive={keysIn === 'untouched'}
-              onActivate={() => setKeysIn('untouched')}
-            />
-          </div>
 
           <AgentSessionsLine refreshKey={refreshKey} />
         </div>
@@ -684,39 +641,49 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
  * the hosts they reviewed that changed — then what stopped (imports) and what
  * can be picked up next (the untouched queue), from the same payloads the
  * sections below render, so the sentence and the sections cannot disagree.
- * 5.329.0 — every number is a link to the section or list it counts, and
- * "your queue" counts work: a finding you own is in it only when it needs
- * you.  5.330.0 — no "Across the team": the changed reviews are the reader's
- * own.  Blocked work colours it; a queue alone does not (work is the page's
- * normal state).
+ * 5.329.0 — every number is a link to the list it counts, and "your queue"
+ * counts work: a finding you own is in it only when it needs you.  5.330.0 —
+ * no "Across the team": the changed reviews are the reader's own.  5.331.0 —
+ * the links open TABS (`?tab=`), and the queue is said in its three parts,
+ * each the count on its tab; the caption is one line.  Blocked work colours
+ * it; a queue alone does not (work is the page's normal state).
  */
 const OperationsLead: React.FC<{
   workbench: WorkbenchResponse;
-  /** The untouched queue's size; null until it is known (it loads on its own
-   *  request) or when it could not be computed — never counted as zero. */
-  untouched: number | null;
-  here: (id: string) => string;
-}> = ({ workbench, untouched, here }) => {
-  const { total } = personalWorkCounts(
-    workbench.my_queue, workbench.my_tasks, workbench.my_findings, workbench.my_work,
-  );
+  /** The tab bar's counts — the same numbers, so the sentence and the tabs
+   *  cannot disagree.  A count that is not known is never said as zero. */
+  counts: OperationsTabCounts;
+  toTab: (tab: OperationsTab, kind?: MyTaskReason | null) => string;
+}> = ({ workbench, counts, toTab }) => {
+  const total = personalTotal(workbench);
   const b = workbench.blockers;
   const known = !workbench.blockers_unavailable && b;
   const failed = known ? b.failed_import_count : 0;
   const partial = known ? b.partial_import_count : 0;
   const blocked = failed + partial;
   // The reader's own reviews (5.330.0); a failed check is not counted as zero
-  // in words — the section below says "unavailable".
-  const changed = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
-  const worth = untouched ?? 0;
+  // in words — its tab says "—".
+  const changed = counts.changed ?? 0;
+  const worth = counts.pickup ?? 0;
+  const claim = counts.toClaim ?? 0;
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
+
+  // The queue in its parts — each the count on its tab; they add up to `total`.
+  const part = (key: OperationsTab, v: number | null, one: string, many: string) =>
+    ((v ?? 0) > 0 ? [{ key, text: s(v ?? 0, one, many) }] : []);
+  const mine: Array<{ key: OperationsTab; text: string }> = [
+    ...part('findings', counts.findings, 'finding', 'findings'),
+    ...part('hosts', counts.hosts, 'host', 'hosts'),
+    ...part('tests', counts.tests, 'test', 'tests'),
+  ];
 
   // What else the page holds: stopped imports, and what can be picked up next.
   const also: Array<{ key: string; to: string; text: string }> = [
     failed > 0 ? { key: 'failed', to: IMPORT_ERRORS_PATH, text: `${s(failed, 'import', 'imports')} failed` } : null,
     partial > 0 ? { key: 'partial', to: IMPORT_ERRORS_PATH, text: `${s(partial, 'import', 'imports')} finished partial` } : null,
-    worth > 0 ? { key: 'untouched', to: here(UNTOUCHED_ID), text: `${s(worth, 'untouched host has', 'untouched hosts have')} a reason to look` } : null,
+    worth > 0 ? { key: 'untouched', to: toTab('pickup'), text: `${s(worth, 'untouched host has', 'untouched hosts have')} a reason to look` } : null,
+    claim > 0 ? { key: 'claim', to: toTab('tests', 'triage'), text: `${s(claim, 'test is', 'tests are')} free to claim` } : null,
   ].filter((p): p is { key: string; to: string; text: string } => !!p);
 
   const tone: LeadTone = blocked > 0 ? 'critical' : total > 0 || changed > 0 || also.length ? 'neutral' : 'clear';
@@ -724,15 +691,28 @@ const OperationsLead: React.FC<{
   return (
     <PostureLead
       tone={tone}
-      restsOn="Your queue: hosts you have in review, tests assigned to you or on those hosts, and findings you own that need something. Changed since review counts only reviews you finished. Failed imports and untouched hosts are nobody’s yet — anyone can take them; the project’s status is on Posture."
+      restsOn="Your queue is findings you own that need something, hosts you have In Review, and tests assigned to you or on those hosts; what is to pick up is nobody’s yet."
     >
       {total > 0 ? (
-        <>You have <Link to={here(MY_WORK_ID)} className={LINK}>{s(total, 'item', 'items')}</Link> in your queue</>
+        <>
+          You have {s(total, 'item', 'items')} in your queue
+          {mine.length > 0 && (
+            <>
+              {' — '}
+              {mine.map((p, i) => (
+                <React.Fragment key={p.key}>
+                  {i > 0 && (i === mine.length - 1 ? ' and ' : ', ')}
+                  <Link to={toTab(p.key, null)} className={LINK}>{p.text}</Link>
+                </React.Fragment>
+              ))}
+            </>
+          )}
+        </>
       ) : 'Nothing is waiting on you'}
       {changed > 0 && (
         <>
           {total > 0 ? ', and ' : ', but '}
-          <Link to={here(CHANGED_ID)} className={LINK}>
+          <Link to={toTab('changed')} className={LINK}>
             {s(changed, 'host you reviewed has', 'hosts you reviewed have')} changed since
           </Link>
         </>

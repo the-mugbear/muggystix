@@ -14,36 +14,34 @@
  *    once, under the heading;
  *  - a selection column and "Review" in bulk.
  *
- * The count opens its exact Hosts list where a query expresses the tier
- * (`TIER_QUERY`); where none does, the queue pages in place and the link
- * names what it does open — every untouched host.
+ * 5.331.0 — the content of Operations' "Pick up" tab: the tab is its heading
+ * and carries its count; the list is paged like every tab's (`Pager`).  The
+ * footer's link opens the exact Hosts list where a query expresses it — a
+ * tier 1–3 chip (`TIER_QUERY`).  No query expresses the whole queue (or tier
+ * 4 / 5), so there the link is worded as what it opens: every untouched
+ * host, with or without a reason — a larger list than this one.
  */
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { Loader2 } from 'lucide-react';
 
 import type { InvestigateRow, InvestigationQueueResponse } from '../../services/api';
 import { followHost, unfollowHost } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatApiError } from '../../utils/apiErrors';
-import { cn } from '../../utils/cn';
 import { buildHostsUrl } from '../../utils/drilldownLinks';
 import { isPageShortcutEvent } from '../../utils/keyboard';
 import { TIER_QUERY, UNTOUCHED_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { runLimited } from '../../utils/runLimited';
-import PostureSection, { SectionCount } from '../posture/PostureSection';
 import { Button } from '../ui/button';
 import { Checkbox } from '../ui/checkbox';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
-import { BulkBar, ListFooter, UnavailableLine, useRowSelection } from './QueueParts';
+import {
+  BulkBar, FilterChips, ListBody, PagedFooter, useRowSelection, type ListState, type Pager,
+} from './QueueParts';
 
 export const UNTOUCHED_QUEUE_TITLE = 'Untouched, with a reason';
-/** Rows per page of the queue, and per "Show more". */
-export const UNTOUCHED_PAGE = 15;
-/** The queue route's ceiling for one request. */
-export const UNTOUCHED_MAX_ROWS = 100;
 const BULK_CONCURRENCY = 6;
 
 const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
@@ -51,78 +49,31 @@ const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
 /** One line of why: the reasons the server stated, in its order. */
 export const reasonLine = (row: InvestigateRow): string => row.reasons.map((r) => r.text).join(' · ');
 
-/** The tiers as filter chips with their whole-queue counts, in tier order. */
-const TierChips: React.FC<{
-  tiers: string[];
-  counts: number[];
-  total: number;
-  selected: number | null;
-  onSelect?: (tier: number | null) => void;
-}> = ({ tiers, counts, total, selected, onSelect }) => {
-  const chip = (on: boolean, first: boolean) => cn(
-    'inline-flex max-w-full items-center gap-xxs rounded-chip border px-xs py-px text-caption',
-    'focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-    on ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-foreground hover:bg-accent',
-    // The tier to act on first is marked by position and weight, not by size.
-    first && 'font-semibold',
-  );
-  return (
-    <div role="group" aria-label="Filter by tier" className="mb-sm flex min-w-0 flex-wrap items-center gap-xs">
-      <button type="button" aria-pressed={selected == null} onClick={() => onSelect?.(null)}
-        disabled={!onSelect} className={chip(selected == null, false)}>
-        All tiers <span className="tabular-nums">{total.toLocaleString()}</span>
-      </button>
-      {tiers.map((label, i) => {
-        const tier = i + 1;
-        const n = counts[i] ?? 0;
-        const on = selected === tier;
-        return n > 0 || on ? (
-          <button
-            key={label}
-            type="button"
-            aria-pressed={on}
-            disabled={!onSelect}
-            onClick={() => onSelect?.(on ? null : tier)}
-            title={on ? 'Show every tier' : `Show only: ${label}`}
-            className={chip(on, tier === 1)}
-          >
-            <span className="min-w-0 truncate">{label}</span>
-            <span className="tabular-nums">{n.toLocaleString()}</span>
-          </button>
-        ) : (
-          <span key={label} className="inline-flex items-center gap-xxs px-xs text-caption text-muted-foreground">
-            {label} <span className="tabular-nums">0</span>
-          </span>
-        );
-      })}
-    </div>
-  );
-};
-
 export interface UntouchedQueueSectionProps {
+  /** The queue's totals and tiers — the last response, kept while the next
+   *  page or tier loads so the chips do not blink; null before the first. */
   data: InvestigationQueueResponse | null;
-  loading: boolean;
-  unavailable: boolean;
-  onRetry: () => void;
+  /** The page of the queue on screen; null while it loads or when it failed. */
+  rows: InvestigateRow[] | null;
+  state: ListState;
+  pager: Pager;
   /** The tier the rows are narrowed to (null = every tier). */
   tier: number | null;
   onTier: (tier: number | null) => void;
-  /** Bring the next page of rows; absent when the queue cannot hold more. */
-  onMore?: () => void;
-  moreBusy?: boolean;
   canWrite: boolean;
   onChanged: () => void;
+  /** This list owns the page's j / k / Enter / x keys (the tab on screen). */
   keysActive?: boolean;
-  onActivate?: () => void;
 }
 
+const NO_ROWS: InvestigateRow[] = [];
+
 export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
-  data, loading, unavailable, onRetry, tier, onTier, onMore, moreBusy = false,
-  canWrite, onChanged, keysActive = false, onActivate,
+  data, rows: loaded, state, pager, tier, onTier, canWrite, onChanged, keysActive = true,
 }) => {
   const toast = useToast();
   const navigate = useNavigate();
-  const rows = React.useMemo(() => data?.items ?? [], [data]);
+  const rows = loaded ?? NO_ROWS;
   const keys = React.useMemo(() => rows.map((r) => r.host_id), [rows]);
   const selection = useRowSelection(keys);
   const [takingId, setTakingId] = React.useState<number | null>(null);
@@ -130,8 +81,10 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
   const [outcome, setOutcome] = React.useState<string | null>(null);
 
   const queueTotal = data?.queue_total ?? 0;
-  const listTotal = tier != null ? (data?.tier_counts?.[tier - 1] ?? rows.length) : queueTotal;
-  const navState = fromOperationsQueue(keys, UNTOUCHED_QUEUE_TITLE, { partial: listTotal > rows.length }).state;
+  // The list being paged: the whole queue, or the chosen tier's hosts.
+  const listTotal = pager.total;
+  const navState = fromOperationsQueue(keys, UNTOUCHED_QUEUE_TITLE,
+    { partial: listTotal > rows.length, tab: 'pickup' }).state;
 
   const { cursorRowProps, cursorId } = useListCursor(
     rows.length,
@@ -195,72 +148,61 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
     if (done > 0) onChanged();
   };
 
-  const title = (
-    <>
-      <span>{UNTOUCHED_QUEUE_TITLE}</span>
-      {data && queueTotal > 0 && <SectionCount>{queueTotal.toLocaleString()}</SectionCount>}
-    </>
-  );
   const description = (
     'Hosts nobody has touched — no review, assignment, note, test, evidence or finding — that carry a '
     + 'reason to look. Every reason here is scanner-reported and unconfirmed. Ordered by the stated tier, '
     + `never a score${canWrite ? '; Review takes a host into your queue' : ''}.`
   );
 
-  if (unavailable) {
-    return (
-      <PostureSection title={<span>{UNTOUCHED_QUEUE_TITLE}</span>}>
-        <UnavailableLine onRetry={onRetry}>
-          Unavailable — this queue could not be computed, so it says nothing about whether
-          hosts are waiting. Your own work above is unaffected.
-        </UnavailableLine>
-      </PostureSection>
-    );
-  }
-  if (!data) {
-    return loading ? (
-      <PostureSection title={<span>{UNTOUCHED_QUEUE_TITLE}</span>}>
-        <p role="status" className="flex items-center gap-xs text-caption text-muted-foreground">
-          <Loader2 className="size-3.5 animate-spin" aria-hidden />
-          Finding untouched hosts with a reason to look…
-        </p>
-      </PostureSection>
-    ) : null;
-  }
-
-  // The list this count opens: the tier's own query where one exists.
+  // The exact Hosts list of what is paged here, where a query expresses it.
   const tierQuery = tier != null ? TIER_QUERY[tier] : undefined;
+  const untouchedTotal = data?.untouched_total ?? 0;
   const openAll = tierQuery
     ? { to: buildHostsUrl({ q: tierQuery }), label: `Open all ${hosts(listTotal)} in Hosts` }
     // No query expresses this set (every tier together, or tier 4 / 5): the
-    // link opens what it says — every untouched host — and the queue pages here.
-    : {
-        to: buildHostsUrl({ q: UNTOUCHED_QUERY }),
-        label: `Open all ${data.untouched_total.toLocaleString()} untouched hosts in Hosts`,
-      };
-  const canPage = !tierQuery && rows.length < listTotal && rows.length < UNTOUCHED_MAX_ROWS && onMore;
-  const nextPage = Math.min(UNTOUCHED_PAGE, listTotal - rows.length, UNTOUCHED_MAX_ROWS - rows.length);
+    // link says what it opens — a LARGER list than this one.
+    : data
+      ? {
+          to: buildHostsUrl({ q: UNTOUCHED_QUERY }),
+          label: `All ${untouchedTotal.toLocaleString()} untouched host${untouchedTotal === 1 ? '' : 's'} in Hosts, with or without a reason`,
+        }
+      : undefined;
+
+  const empty = tier != null && queueTotal > 0
+    ? 'Nothing here — no untouched host is in this tier.'
+    : untouchedTotal > 0
+      ? <>
+          Nothing here —{' '}
+          <Link to={buildHostsUrl({ q: UNTOUCHED_QUERY })} className="text-info hover:underline">
+            {hosts(untouchedTotal)}
+          </Link>{' '}
+          {untouchedTotal === 1 ? 'is' : 'are'} untouched, none with a weakness or change on record. A host shows here
+          when a scan reports one on it.
+        </>
+      : 'Nothing here — every host has been touched by someone. A newly imported host shows here when it carries a weakness or a change.';
 
   return (
-    <PostureSection title={title} description={description}>
-      {data.tier_counts && queueTotal > 0 && (
-        <TierChips tiers={data.tiers} counts={data.tier_counts} total={queueTotal} selected={tier} onSelect={onTier} />
+    <div className="min-w-0">
+      <p className="mb-sm text-caption text-muted-foreground">{description}</p>
+      {data?.tier_counts && queueTotal > 0 && (
+        <FilterChips
+          label="Filter by tier"
+          allLabel="All tiers"
+          allCount={queueTotal}
+          chips={data.tiers.map((label, i) => ({
+            key: i + 1,
+            label,
+            count: data.tier_counts?.[i] ?? 0,
+            // The tier to act on first is marked by position and weight.
+            strong: i === 0,
+          }))}
+          selected={tier}
+          onSelect={onTier}
+        />
       )}
-      {rows.length === 0 ? (
-        <p className="text-metadata text-muted-foreground">
-          {tier != null && queueTotal > 0
-            ? 'No untouched host is in this tier.'
-            : data.untouched_total > 0
-              ? <>
-                  <Link to={buildHostsUrl({ q: UNTOUCHED_QUERY })} className="text-info hover:underline">
-                    {hosts(data.untouched_total)}
-                  </Link>{' '}
-                  {data.untouched_total === 1 ? 'is' : 'are'} untouched, none with a weakness or change on record.
-                </>
-              : 'Every host has been touched by someone.'}
-        </p>
-      ) : (
-        <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
+      <ListBody rows={loaded} state={state} what="the untouched hosts with a reason to look" empty={empty}>
+        {() => (
+        <div>
           {canWrite && (
             <BulkBar count={selection.selected.length} noun="host" onClear={selection.clear} outcome={outcome}>
               <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={() => void takeMany()}>
@@ -363,21 +305,11 @@ export const UntouchedQueueSection: React.FC<UntouchedQueueSectionProps> = ({
             </TableBody>
           </Table>
           </div>
-          <ListFooter
-            shown={rows.length}
-            total={listTotal}
-            openAll={openAll}
-            more={canPage ? { label: `Show ${nextPage} more`, onClick: onMore, busy: moreBusy } : undefined}
-          >
-            {!tierQuery && rows.length >= UNTOUCHED_MAX_ROWS && rows.length < listTotal && (
-              <span className="text-caption text-muted-foreground">
-                The first {UNTOUCHED_MAX_ROWS} are listed here — narrow to a tier, or take some into review, to reach the rest.
-              </span>
-            )}
-          </ListFooter>
+          <PagedFooter pager={pager} shown={rows.length} noun="hosts" openAll={openAll} />
         </div>
-      )}
-    </PostureSection>
+        )}
+      </ListBody>
+    </div>
   );
 };
 

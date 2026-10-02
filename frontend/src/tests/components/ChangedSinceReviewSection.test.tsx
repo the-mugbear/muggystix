@@ -13,6 +13,12 @@
  * counts the rows on screen — and adds what the design review asked for: an
  * answer other than re-opening ("Still reviewed"), selection, bulk actions,
  * one-line rows, and a count that opens its exact list.
+ *
+ * 5.331.0 — it is the content of Operations' "Changed since review" tab: the
+ * tab is the heading and carries the count (pinned in `Operations.test.tsx`),
+ * the list is one PAGE ("1–25 of N", previous / next — no "3 of 26"), and the
+ * panel has the three states every tab has: loading, could not be checked,
+ * empty.
  */
 import React from 'react';
 import { render, screen, fireEvent, waitFor, within } from '@testing-library/react';
@@ -57,11 +63,26 @@ const data = (items: ReviewFollowupRow[], over: Partial<ReviewFollowupsResponse>
 });
 
 const onChanged = vi.fn();
-const renderIt = (d: ReviewFollowupsResponse, extra: Partial<React.ComponentProps<typeof ChangedSinceReviewSection>> = {}) =>
+const onPage = vi.fn();
+const onRetry = vi.fn();
+type Props = React.ComponentProps<typeof ChangedSinceReviewSection>;
+/** The props the tab's container hands the table for one page of the list. */
+const propsFor = (d: ReviewFollowupsResponse, extra: Partial<Props> & { page?: number } = {}): Props => {
+  const { page = 0, ...rest } = extra;
+  return {
+    rows: d.items,
+    state: { loading: false, error: null, onRetry },
+    pager: { page, pageSize: 25, total: d.total, onPage },
+    canWrite: true,
+    onChanged,
+    ...rest,
+  };
+};
+const renderIt = (d: ReviewFollowupsResponse, extra: Partial<Props> & { page?: number } = {}) =>
   render(
     <MemoryRouter>
       <LocationProbe />
-      <ChangedSinceReviewSection data={d} canWrite onChanged={onChanged} {...extra} />
+      <ChangedSinceReviewSection {...propsFor(d, extra)} />
     </MemoryRouter>,
   );
 const rowOf = (ip: string) => screen.getByRole('link', { name: ip }).closest('tr') as HTMLElement;
@@ -76,8 +97,12 @@ beforeEach(() => {
 describe('Changed since review — what it shows', () => {
   it('one line per host: address, name, what changed, how long ago the reader reviewed it', () => {
     renderIt(data([row(), openQuestion, observed]));
-    expect(screen.getByRole('heading', { name: /Changed since review/ })).toBeInTheDocument();
-    expect(screen.queryByText('Needs another look')).not.toBeInTheDocument();
+    // The tab is the heading: the panel repeats none.
+    expect(screen.queryByRole('heading')).not.toBeInTheDocument();
+    expect(screen.getByRole('table', { name: 'Changed since review' })).toBeInTheDocument();
+    expect(screen.getAllByRole('columnheader').map((h) => h.textContent)).toEqual(
+      ['', 'Host', 'Name', 'What changed', 'Reviewed', 'Action'],
+    );
     const first = rowOf('10.8.0.2');
     expect(within(first).getByText('app01.corp.local')).toBeInTheDocument();
     expect(within(first).getByText('3 open ports first seen after the review (80, 445, 8080)')).toHaveClass('truncate');
@@ -91,24 +116,38 @@ describe('Changed since review — what it shows', () => {
     expect(screen.getByText(/A teammate’s reviews are not listed here/)).toBeInTheDocument();
   });
 
-  it('the count is in hosts and opens exactly the reader’s Hosts list', () => {
-    renderIt(data([row(), openQuestion, observed], { total: 26 }));
+  it('the footer is the one paging pattern, and its link opens exactly the reader’s Hosts list', () => {
+    renderIt(data([row(), openQuestion, observed], { total: 53 }), { page: 1 });
     const q = (el: HTMLElement) => new URL(el.getAttribute('href')!, 'https://x').searchParams.get('q');
-    const count = screen.getByRole('link', { name: '26 hosts you reviewed changed since review — view hosts' });
+    // Where the rows on screen sit in the whole list, then previous / next.
+    expect(screen.getByText('26–28 of 53')).toBeInTheDocument();
+    expect(screen.getByText('page 2 of 3')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Next 25 hosts' }));
+    expect(onPage).toHaveBeenLastCalledWith(2);
+    fireEvent.click(screen.getByRole('button', { name: 'Previous 25 hosts' }));
+    expect(onPage).toHaveBeenLastCalledWith(0);
     // `follow:revisit` — the reader's own; the team-wide query it used to open
     // lists every teammate's reviews.
-    expect(q(count)).toBe('follow:revisit');
-    // One footer pattern: what is on screen, then the whole list.
-    expect(screen.getByText('3 of 26')).toBeInTheDocument();
-    expect(q(screen.getByRole('link', { name: 'Open all 26 hosts in Hosts' }))).toBe('follow:revisit');
+    expect(q(screen.getByRole('link', { name: 'Open all 53 hosts in Hosts' }))).toBe('follow:revisit');
+    // No sample ("3 of 53"), no "more".
+    expect(screen.queryByText('3 of 53')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /Show .* more/ })).not.toBeInTheDocument();
   });
 
-  it('opens a host with the way back, and the section as its queue', () => {
+  it('a list that fits one page has no previous / next', () => {
+    renderIt(data([row(), observed]));
+    expect(screen.getByText('1–2 of 2')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Next 25/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Previous 25/ })).not.toBeInTheDocument();
+  });
+
+  it('opens a host with the way back to this tab, and the page as its queue', () => {
     renderIt(data([row(), openQuestion]));
     fireEvent.click(screen.getByRole('link', { name: '10.8.0.2' }));
     expect(lastLocation?.pathname).toBe('/hosts/21');
-    expect(lastLocation?.state).toEqual({ fromOperations: true, hostIds: [21, 22], queueLabel: 'Changed since review' });
+    expect(lastLocation?.state).toEqual({
+      fromOperations: true, hostIds: [21, 22], queueLabel: 'Changed since review', operationsTab: 'changed',
+    });
   });
 
   it('a 200-character hostname and reason stay on the row’s one line', () => {
@@ -125,11 +164,30 @@ describe('Changed since review — what it shows', () => {
     expect(table.parentElement).toHaveClass('overflow-x-auto', 'min-w-0');
   });
 
-  it('with nothing to re-check it says so — a real empty state, not a missing section', () => {
+  it('with nothing to re-check it says so, and what would put a host here', () => {
     renderIt(data([]));
-    expect(screen.getByRole('heading', { name: /Changed since review/ })).toBeInTheDocument();
-    expect(screen.getByText(/Nothing to re-check/)).toBeInTheDocument();
+    expect(screen.getByText(/^Nothing here — a host you reviewed shows when/)).toBeInTheDocument();
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
+  });
+
+  it('while the page loads it is a skeleton — never the empty line', () => {
+    renderIt(data([]), { rows: null, state: { loading: true, error: null, onRetry } });
+    expect(screen.getByRole('status', { name: /Loading the hosts you reviewed/ })).toBeInTheDocument();
+    expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+  });
+
+  it('a failed read says "could not be checked", never "nothing here"', () => {
+    renderIt(data([]), { rows: null, state: { loading: false, error: 'HTTP 503', onRetry } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/Could not be checked.*HTTP 503.*not an empty list/);
+    expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(onRetry).toHaveBeenCalled();
+  });
+
+  it('a failed refresh keeps the rows that were shown, and says they are as last loaded', () => {
+    renderIt(data([row()]), { state: { loading: false, error: 'HTTP 500', onRetry } });
+    expect(screen.getByRole('alert')).toHaveTextContent(/could not be refreshed/);
+    expect(screen.getByRole('link', { name: '10.8.0.2' })).toBeInTheDocument();
   });
 });
 
@@ -239,7 +297,7 @@ describe('Changed since review — selection and bulk', () => {
     rerender(
       <MemoryRouter>
         <LocationProbe />
-        <ChangedSinceReviewSection data={data([row({ host_id: 31, ip_address: '10.8.1.1' }), observed])} canWrite onChanged={onChanged} />
+        <ChangedSinceReviewSection {...propsFor(data([row({ host_id: 31, ip_address: '10.8.1.1' }), observed]))} />
       </MemoryRouter>,
     );
     expect(screen.getByText('1 review selected')).toBeInTheDocument();
@@ -252,7 +310,7 @@ describe('Changed since review — selection and bulk', () => {
     expect(screen.queryByRole('toolbar')).not.toBeInTheDocument();
     rerender(
       <MemoryRouter>
-        <ChangedSinceReviewSection data={many()} canWrite onChanged={onChanged} keysActive />
+        <ChangedSinceReviewSection {...propsFor(many(), { keysActive: true })} />
       </MemoryRouter>,
     );
     fireEvent.keyDown(window, { key: 'j' });

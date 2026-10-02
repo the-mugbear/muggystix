@@ -1,44 +1,35 @@
 /**
- * The Operations page (redesigned 5.329.0 — design review 2026-10-02; the
- * reader's own page since 5.330.0).
+ * The Operations page — tabs, one list at a time (5.331.0; the reader's own
+ * page since 5.330.0, redesigned 5.329.0).
  *
- * Pins the page's shape: a lead whose numbers are links, My work at full
- * width, the reader's own changed reviews, the untouched queue and one line
- * for the reader's agent sessions — and NO project status: no measures strip,
- * no terrain, no exposure block (Posture has them).  The sections' own
- * behaviour is in their component tests (MyWorkCard, ChangedSinceReview-
- * Section, UntouchedQueueSection).
+ * Pins the page's shape: a lead whose numbers open tabs, a tab bar with
+ * counts, the ONE selected list, and one line for the reader's agent sessions
+ * — and NO project status (Posture has it).  Each list's own behaviour is in
+ * its component test (`OperationsTables`, `ChangedSinceReviewSection`,
+ * `UntouchedQueueSection`); paging's mechanics in `usePagedList.test`.
  *
- * 5.330.0 — what the removed tests here guarded, and where it is now:
- *  - "four measures, each opening exactly what it counts": tested / untouched
- *    critical are the terrain's sentence (`AddressTerrainSection.test.tsx`;
- *    count == list in `backend/tests/test_operations_redesign.py` and
- *    `test_address_terrain.py`); changed-since-review and my-queue are the
- *    lead and the section headings (below, `ChangedSinceReviewSection.test`,
- *    `MyWorkCard.test`);
- *  - "a measure that could not be counted says so — never a zero": the
- *    terrain's and the exposure section's failure states
- *    (`AddressTerrainSection.test`, `PostureExposureSection.test`), and the
- *    followups-unavailable test below;
- *  - the Exposure describe (scope states, severity bar, failed count):
- *    `tests/components/PostureExposureSection.test.tsx`;
- *  - the terrain's position: `tests/pages/SecurityPostureOverview.test.tsx`.
+ * 5.331.0 — what the removed tests here guarded, and where it is now:
+ *  - "the sections, in order" (My work · Changed since review · Untouched):
+ *    the tab bar's order, below;
+ *  - "renders sensibly with hosts but no reviews, tests or findings" (three
+ *    empty lines at once): one empty line per tab — the component tests — and
+ *    "with nothing anywhere" below;
+ *  - the lead's `#my-work` / `#changed-since-review` / `#untouched-queue`
+ *    anchors: the lead's links open tabs, below;
+ *  - "Show 15 more asks the server for a longer page": the queue is paged
+ *    ("a tab pages through its whole list", below; `usePagedList.test`);
+ *  - "one list at a time owns the keyboard": only one list is on screen
+ *    ("only the selected tab is mounted", below);
+ *  - "a failed check of the reviewed hosts says so": the tab's count reads
+ *    "—" (below), and the list's own failure line (`ChangedSinceReviewSection`).
  *
- * What the previous version of this file guarded, and where it is now:
- *  - the `?start=agent-session` deep link, the setup blocks, the since-last-
- *    visit banner, the blocked strip, the error alert, "no card anywhere",
- *    the queue on its own request — kept below;
- *  - the Runs section (its fetch, the Mine toggle and its localStorage key,
- *    the Active chip) — the section is gone: the agent-sessions line below,
- *    and `tests/utils/agentRuns.test.ts` for the sentence both pages print;
- *  - Project state's coverage tiles ("With tests to do", "Tested", "Outside
- *    scope") — "Tested" is a measure now; tests-to-do and the assessment are
- *    Posture's; the three scope states stay, in the Exposure section below;
- *  - "page Refresh refetches the self-fetching panels" — kept, for the panels
- *    that still fetch for themselves (the agent-sessions line).
+ * 5.330.0 — what left for Posture: the measures strip, the terrain, the
+ * Exposure block (`AddressTerrainSection.test`, `PostureExposureSection.test`,
+ * `SecurityPostureOverview.test`).  Earlier: the Runs section, the activity
+ * column and Project state (Agent Sessions, Collaboration, Posture).
  */
-import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
+import { act, render, screen, waitFor, fireEvent, within } from '@testing-library/react';
+import { MemoryRouter, RouterProvider, createMemoryRouter } from 'react-router-dom';
 
 // Override the global setupTests.ts react-router-dom mock so useNavigate
 // is observable here.
@@ -79,7 +70,8 @@ const emptyWorkbench = {
     new_high_findings: 0,
   },
 };
-const emptyQueue = { items: [], queue_total: 0, untouched_total: 0, tiers: [], tier_counts: [] };
+const TIERS = ['Exploitable critical', 'Critical vulnerability', 'Exploit available', 'High-value service, new or changed', 'Scans disagree'];
+const emptyQueue = { items: [], queue_total: 0, untouched_total: 0, tiers: TIERS, tier_counts: [0, 0, 0, 0, 0] };
 
 vi.mock('../../services/api', () => ({
   getProjectCoverage: vi.fn(),
@@ -89,6 +81,10 @@ vi.mock('../../services/api', () => ({
   getAddressTerrain: vi.fn(),
   getWorkbench: vi.fn(),
   getInvestigationQueue: vi.fn(),
+  getMyFindingsPage: vi.fn(),
+  getMyReviewHostsPage: vi.fn(),
+  getMyTestsPage: vi.fn(),
+  getReviewFollowupsPage: vi.fn(),
   markWorkbenchSeen: vi.fn(),
   markStillReviewed: vi.fn(),
   followHost: vi.fn(),
@@ -116,6 +112,8 @@ vi.mock('../../contexts/ProjectContext', () => ({
     currentProject: { id: 1, name: 'P', ...(projectRole.value ? { my_role: projectRole.value } : {}) },
   }),
 }));
+const toast = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }));
+vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
 
 import * as api from '../../services/api';
 import Operations from '../../pages/Operations';
@@ -128,6 +126,16 @@ function renderPage(entry = '/operations') {
       <Operations />
     </MemoryRouter>,
   );
+}
+
+/** With a router the test can drive: where the page is, and Back. */
+function renderRouted(entry = '/operations') {
+  const router = createMemoryRouter(
+    [{ path: '/operations', element: <Operations /> }],
+    { initialEntries: [entry] },
+  );
+  render(<RouterProvider router={router} />);
+  return router;
 }
 
 const baseCoverage = {
@@ -175,6 +183,76 @@ const session = (over: Record<string, unknown> = {}) => ({
 
 const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'https://x').searchParams.get('q');
 
+// -- a project with work in every tab (the owner's: 24 · 37 · 40 · 27 · 112) --
+const busy = (over: Record<string, unknown> = {}) => ({
+  ...emptyWorkbench,
+  my_queue: { items: [], in_review_count: 37, watching_count: 0 },
+  my_tasks: {
+    items: [], total_open: 55,
+    reason_counts: { assigned: 12, in_review: 30, triage: 15 },
+    group_counts: { assigned: 12, in_review: 28, triage: 15 },
+  },
+  my_findings: { items: [], total_open: 24 },
+  my_work: {
+    total: 101, hosts_in_review: 37, tests_assigned: 12, tests_on_hosts_in_review: 28,
+    findings_needing_me: 24, to_claim: 15,
+  },
+  followups: { items: [], total: 27 },
+  ...over,
+});
+const findingRow = (id: number) => ({
+  finding_id: id, title: `Weak TLS ${id}`, severity: 'critical', status: 'open', host_id: null,
+  host_count: 3, evidence_annotation_id: null, updated_at: null,
+  needs: [{ kind: 'under_investigation', text: 'under investigation' }], missing_text: [], pending_proposals: 0,
+});
+const hostRow = (id: number) => ({
+  host_id: id, ip_address: `10.9.0.${id}`, hostname: null, follow_status: 'in_review',
+  open_port_count: 2, critical_vulns: 1, high_vulns: 0, last_viewed_at: null, follow_updated_at: null,
+});
+const testRow = (id: number, reason = 'triage') => ({
+  test_id: id, tool: 'nxc', description: `SMB signing ${id}`, label: null, revision: 4,
+  host_id: 5, host_ip: '10.0.0.5', host_hostname: null, priority: 'high', status: 'proposed',
+  rationale: null, updated_at: null, reasons: [reason], assigned_to_id: reason === 'assigned' ? 7 : null,
+});
+const followRow = {
+  host_id: 21, ip_address: '10.8.0.2', hostname: 'app01',
+  reviewed_at: '2026-09-01T00:00:00Z', review_conclusion: 'no_issue', review_summary: null,
+  reasons: [{ kind: 'new_ports', text: '1 open port first seen after the review (8443)' }],
+};
+const queueRow = {
+  host_id: 7, ip_address: '10.0.0.7', hostname: null, tier: 1, tier_label: 'Exploitable critical',
+  reasons: [{ kind: 'critical_exploitable', text: '1 critical vulnerability with a known public exploit' }],
+  evidence: { sources: [], last_seen: null, confirmation: 'scanner' },
+  next_action: { kind: 'review', text: 'Take it into review.', generic: true },
+};
+const busyQueue = { items: [queueRow], queue_total: 112, untouched_total: 251, tiers: TIERS, tier_counts: [3, 30, 4, 74, 1] };
+
+const withWork = (over: Record<string, unknown> = {}) => {
+  mockedApi.getWorkbench.mockResolvedValue(busy(over));
+  mockedApi.getInvestigationQueue.mockResolvedValue(busyQueue);
+  mockedApi.getMyFindingsPage.mockResolvedValue({ items: [findingRow(21), findingRow(1)], total_open: 24 });
+  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [hostRow(1), hostRow(2)], in_review_count: 37, watching_count: 0 });
+  mockedApi.getMyTestsPage.mockResolvedValue({
+    items: [testRow(31, 'assigned'), testRow(32)], total_open: 55,
+    reason_counts: { assigned: 12, in_review: 30, triage: 15 },
+    group_counts: { assigned: 12, in_review: 28, triage: 15 },
+  });
+  mockedApi.getReviewFollowupsPage.mockResolvedValue({ items: [followRow], total: 27 });
+};
+
+const tab = (name: RegExp | string) => screen.getByRole('tab', { name });
+const selectedTab = () => screen.getAllByRole('tab').find((t) => t.getAttribute('aria-selected') === 'true')?.textContent;
+/** Radix selects a tab on mouse down. */
+const openTab = (name: RegExp | string) => fireEvent.mouseDown(tab(name), { button: 0 });
+const listCalls = () => ({
+  findings: mockedApi.getMyFindingsPage.mock.calls.length,
+  hosts: mockedApi.getMyReviewHostsPage.mock.calls.length,
+  tests: mockedApi.getMyTestsPage.mock.calls.length,
+  changed: mockedApi.getReviewFollowupsPage.mock.calls.length,
+  // The queue's ROWS: every request but the count's (one row, no tier).
+  pickup: mockedApi.getInvestigationQueue.mock.calls.filter((c) => c[1]?.limit !== 1).length,
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   navigateSpy.mockReset();
@@ -183,6 +261,10 @@ beforeEach(() => {
   mockedApi.getProjectCoverage.mockResolvedValue(baseCoverage);
   mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
+  mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0 });
+  mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [], in_review_count: 0, watching_count: 0 });
+  mockedApi.getMyTestsPage.mockResolvedValue({ ...emptyWorkbench.my_tasks });
+  mockedApi.getReviewFollowupsPage.mockResolvedValue({ items: [], total: 0 });
   mockedApi.markWorkbenchSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
   mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [session()], total: 1 });
 });
@@ -198,7 +280,7 @@ describe('Operations page', () => {
 
   it('does not open the dialog without the param', async () => {
     renderPage();
-    await screen.findByRole('heading', { name: /My work/ });
+    await screen.findByRole('tablist');
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
@@ -212,23 +294,38 @@ describe('Operations page', () => {
     });
   });
 
-  describe('shape (5.330.0): the reader’s own page', () => {
-    it('the sections, in order, and nothing of what was removed', async () => {
+  describe('shape (5.331.0): a tab bar and one list', () => {
+    it('lead, tab bar with counts, the one selected list, the agent line — and nothing else', async () => {
+      withWork();
       renderPage();
-      await screen.findByRole('heading', { name: /Untouched, with a reason/ });
+      await screen.findByRole('table');
       await screen.findByText(/session of yours live now/);
-      const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
-      expect(headings).toEqual([
-        'My work',
-        'Changed since review',
-        'Untouched, with a reason',
+      await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
+
+      // The bar, in order, each tab with its count.
+      expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+        'Findings24', 'Hosts37', 'Tests40+ 15 to claim', 'Changed since review27', 'Pick up112',
       ]);
-      expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-      // The agent line closes the page.
+      // Which number is which, for a screen reader too.
+      expect(tab(/^Tests/)).toHaveAccessibleName('Tests: 40 yours, 15 free to claim');
+      // ONE list on screen: one panel, one table.
+      expect(screen.getAllByRole('tabpanel')).toHaveLength(1);
+      expect(screen.getAllByRole('table')).toHaveLength(1);
+      // No stack of sections: the page's only heading is its title.
+      expect(screen.getAllByRole('heading').map((h) => h.textContent)).toEqual(['Operations']);
+
       const before = (x: Element, y: Element) =>
         // eslint-disable-next-line no-bitwise
         !!(x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
-      expect(before(screen.getByRole('heading', { name: /Untouched, with a reason/ }), screen.getByText(/session of yours live now/))).toBe(true);
+      const lead = screen.getByText(/in your queue/);
+      expect(before(lead, screen.getByRole('tablist'))).toBe(true);
+      expect(before(screen.getByRole('tablist'), screen.getByRole('tabpanel'))).toBe(true);
+      // The agent line closes the page.
+      expect(before(screen.getByRole('tabpanel'), screen.getByText(/session of yours live now/))).toBe(true);
+
+      // No samples and no "more": the list is paged.
+      expect(screen.queryByRole('button', { name: /Show .* more|Show fewer/ })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^My work$|Available to claim|waiting on you/)).not.toBeInTheDocument();
 
       // 5.330.0 — project status left for Posture: no measures strip, no
       // terrain, no exposure block, and no request for any of them.
@@ -244,84 +341,187 @@ describe('Operations page', () => {
       // Gone since 5.329.0: the subtitle, the Runs list, the recent-activity column, Project state.
       expect(screen.queryByText(/Project-wide coordination view/)).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: /^Runs$/ })).not.toBeInTheDocument();
-      expect(screen.queryByRole('group', { name: /Runs status filter|Scope of runs view/ })).not.toBeInTheDocument();
       expect(screen.queryByText(/My recent activity/)).not.toBeInTheDocument();
       expect(screen.queryByText('Project state')).not.toBeInTheDocument();
-      expect(screen.queryByText('With tests to do')).not.toBeInTheDocument();
       // Nothing waits on an approval, and nothing speaks of plans.
       expect(screen.queryByText(/approv|plan entr|in any plan/i)).toBeNull();
     });
 
     it('renders no card anywhere on the page', async () => {
+      withWork();
       renderPage();
-      await screen.findByRole('heading', { name: /Untouched, with a reason/ });
+      await screen.findByRole('table');
       expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
     });
 
-    it('asks for the workbench without the queue, and loads the queue on its own request', async () => {
+    it('the counts are one light request, and the queue’s total one row', async () => {
+      withWork();
       renderPage();
-      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalled());
-      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false });
-      expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(null, { limit: 15 });
+      await screen.findByRole('table');
+      // No rows and no queue in the workbench; the queue's size on its own.
+      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false, includeRows: false });
+      expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(null, { limit: 1 });
     });
 
-    it('renders sensibly with hosts but no reviews, tests or findings', async () => {
+    it('requests only the selected tab’s rows', async () => {
+      withWork();
+      renderPage('/operations?tab=hosts');
+      await screen.findByRole('link', { name: '10.9.0.1' });
+      expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
+      // Opening another tab fetches that tab's, and only then.
+      openTab(/^Changed since review/);
+      await screen.findByRole('link', { name: '10.8.0.2' });
+      expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 1, pickup: 0 });
+      // The list that was left is gone from the page.
+      expect(screen.queryByRole('link', { name: '10.9.0.1' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('table')).toHaveLength(1);
+    });
+
+    it('with nothing anywhere it opens Pick up and says what an empty list means', async () => {
       renderPage();
-      // The queues say what an empty one means.
-      expect(await screen.findByText(/Nothing to re-check: no host you reviewed has changed/)).toBeInTheDocument();
-      expect(await screen.findByText('Every host has been touched by someone.')).toBeInTheDocument();
-      expect(screen.getByText(/Nothing is waiting on you\. Work shows here/)).toBeInTheDocument();
+      expect(await screen.findByText(/^Nothing here — every host has been touched by someone/)).toBeInTheDocument();
+      expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+        'Findings0', 'Hosts0', 'Tests0', 'Changed since review0', 'Pick up0',
+      ]);
+      expect(selectedTab()).toBe('Pick up0');
+      expect(screen.getByText('Nothing is waiting on you.')).toBeInTheDocument();
+    });
+  });
+
+  describe('which tab opens', () => {
+    it('with no ?tab=, the first NON-EMPTY tab in bar order', async () => {
+      // No finding needs the reader; hosts are the first list with rows.
+      withWork({
+        my_findings: { items: [], total_open: 0 },
+        my_work: { ...busy().my_work, findings_needing_me: 0, total: 77 },
+      });
+      const router = renderRouted();
+      await screen.findByRole('link', { name: '10.9.0.1' });
+      expect(selectedTab()).toBe('Hosts37');
+      expect(listCalls()).toEqual({ findings: 0, hosts: 1, tests: 0, changed: 0, pickup: 0 });
+      // The default is not written into the address.
+      expect(router.state.location.search).toBe('');
+    });
+
+    it('Tests opens for claimable tests alone — the tab lists them', async () => {
+      withWork({
+        my_findings: { items: [], total_open: 0 },
+        my_queue: { items: [], in_review_count: 0, watching_count: 0 },
+        my_work: {
+          total: 0, hosts_in_review: 0, tests_assigned: 0, tests_on_hosts_in_review: 0,
+          findings_needing_me: 0, to_claim: 15,
+        },
+      });
+      renderPage();
+      await screen.findByRole('table', { name: 'Tests to do' });
+      expect(selectedTab()).toBe('Tests0+ 15 to claim');
+    });
+
+    it('does not move when the tab it opened on empties', async () => {
+      withWork();
+      renderPage();
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(selectedTab()).toBe('Findings24');
+      // The last finding was dealt with; the page is refreshed.
+      mockedApi.getWorkbench.mockResolvedValue(busy({
+        my_findings: { items: [], total_open: 0 },
+        my_work: { ...busy().my_work, findings_needing_me: 0, total: 77 },
+      }));
+      mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0 });
+      fireEvent.click(screen.getByRole('button', { name: 'Refresh Operations' }));
+      await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings0'));
+      expect(selectedTab()).toBe('Findings0');
+      expect(await screen.findByText(/^Nothing here — a finding you own shows when/)).toBeInTheDocument();
+    });
+
+    it('?tab= is read on arrival, written on a click, and Back returns', async () => {
+      withWork();
+      const router = renderRouted('/operations?tab=tests');
+      await screen.findByRole('table', { name: 'Tests to do' });
+      expect(selectedTab()).toBe('Tests40+ 15 to claim');
+
+      openTab(/^Changed since review/);
+      await screen.findByRole('table', { name: 'Changed since review' });
+      expect(router.state.location.search).toBe('?tab=changed');
+
+      await act(async () => { await router.navigate(-1); });
+      await screen.findByRole('table', { name: 'Tests to do' });
+      expect(router.state.location.search).toBe('?tab=tests');
+      await act(async () => { await router.navigate(1); });
+      await screen.findByRole('table', { name: 'Changed since review' });
+    });
+
+    it('an unknown ?tab= is no tab: the default opens', async () => {
+      withWork();
+      renderPage('/operations?tab=everything');
+      await screen.findByRole('table', { name: 'Findings that need me' });
+    });
+
+    it('remembers nothing in the browser', async () => {
+      withWork();
+      const setItem = vi.spyOn(Storage.prototype, 'setItem');
+      renderPage();
+      await screen.findByRole('table');
+      openTab(/^Hosts/);
+      await screen.findByRole('table', { name: 'Hosts I am reviewing' });
+      expect(setItem).not.toHaveBeenCalled();
+      setItem.mockRestore();
     });
   });
 
   describe('lead', () => {
-    const wb = (extra: Record<string, unknown>) => ({
-      ...emptyWorkbench,
-      my_queue: { items: [], in_review_count: 2, watching_count: 0 },
-      // An older server may still send assigned notes; they are not work (5.325.0).
-      my_notes: { items: [], total_open: 1, overdue_count: 1 },
-      my_findings: { items: [], total_open: 3 },
-      my_work: {
-        total: 5, hosts_in_review: 2, tests_assigned: 0, tests_on_hosts_in_review: 0,
-        findings_needing_me: 3, to_claim: 0,
-      },
-      since_last_visit: { is_first_visit: true, as_of: null },
-      ...extra,
-    });
-
-    it('is about the reader: their queue, their changed reviews, then what to pick up — every number a link', async () => {
-      mockedApi.getWorkbench.mockResolvedValue(wb({
-        followups: { items: [], total: 6 },
-        blockers: { failed_import_count: 2, partial_import_count: 0, imports: [] },
-      }));
-      mockedApi.getInvestigationQueue.mockResolvedValue({ ...emptyQueue, queue_total: 4, untouched_total: 9 });
-      renderPage();
+    it('is about the reader: their queue in its three parts, their changed reviews, then what to pick up — each a link to its tab', async () => {
+      withWork({ blockers: { failed_import_count: 2, partial_import_count: 0, imports: [] } });
+      const router = renderRouted('/operations?tab=hosts&tier=2');
       const lead = (await screen.findByText(/in your queue/)).closest('p') as HTMLElement;
       await within(lead).findByRole('link', { name: /untouched hosts have a reason to look/ });
       expect(lead).toHaveTextContent(
-        'You have 5 items in your queue, and 6 hosts you reviewed have changed since. To pick up: 2 imports failed and 4 untouched hosts have a reason to look.',
+        'You have 101 items in your queue — 24 findings, 37 hosts and 40 tests, and 27 hosts you reviewed have changed since. '
+        + 'To pick up: 2 imports failed, 112 untouched hosts have a reason to look and 15 tests are free to claim.',
       );
       expect(lead).not.toHaveTextContent(/Across the team/);
-      expect(within(lead).getByRole('link', { name: '5 items' })).toHaveAttribute('href', '/operations#my-work');
-      expect(within(lead).getByRole('link', { name: '2 imports failed' }))
-        .toHaveAttribute('href', '/parse-errors?status=needs_attention');
-      expect(within(lead).getByRole('link', { name: '6 hosts you reviewed have changed since' }))
-        .toHaveAttribute('href', '/operations#changed-since-review');
-      expect(within(lead).getByRole('link', { name: '4 untouched hosts have a reason to look' }))
-        .toHaveAttribute('href', '/operations#untouched-queue');
-      // No number in the sentence is plain text: take the links out, and no digit is left.
+      // The links open tabs of this page, keeping its other parameters.
+      const href = (name: string | RegExp) => within(lead).getByRole('link', { name }).getAttribute('href');
+      expect(href('24 findings')).toBe('/operations?tab=findings&tier=2');
+      expect(href('37 hosts')).toBe('/operations?tab=hosts&tier=2');
+      expect(href('40 tests')).toBe('/operations?tab=tests&tier=2');
+      expect(href('27 hosts you reviewed have changed since')).toBe('/operations?tab=changed&tier=2');
+      expect(href('112 untouched hosts have a reason to look')).toBe('/operations?tab=pickup&tier=2');
+      // "Free to claim" opens the Tests tab narrowed to exactly those.
+      expect(href('15 tests are free to claim')).toBe('/operations?tab=tests&tier=2&kind=triage');
+      expect(href('2 imports failed')).toBe('/parse-errors?status=needs_attention');
+      // The one number that is not a link is the SUM of the three beside it —
+      // the three tabs' counts.
       const plain = lead.cloneNode(true) as HTMLElement;
       plain.querySelectorAll('a').forEach((a) => a.remove());
-      expect(plain.textContent).not.toMatch(/\d/);
-      expect(screen.getByText(/findings you own that need something/)).toBeInTheDocument();
+      expect(plain.textContent?.match(/\d+/g)).toEqual(['101']);
+      expect(24 + 37 + 40).toBe(101);
+      // One line of caption.
+      expect(screen.getByText(/^Your queue is findings you own that need something/).textContent?.length).toBeLessThan(200);
+
+      // A link switches the tab.
+      fireEvent.click(within(lead).getByRole('link', { name: '15 tests are free to claim' }));
+      await screen.findByRole('table', { name: 'Tests to do' });
+      expect(router.state.location.search).toBe('?tab=tests&tier=2&kind=triage');
+      expect(screen.getByRole('button', { name: /^Free to claim/ })).toHaveAttribute('aria-pressed', 'true');
+      await waitFor(() => expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(
+        'triage', expect.objectContaining({ offset: 0, limit: 25 }),
+      ));
     });
 
     it('says nothing is waiting when nothing is, and never counts an unavailable queue', async () => {
       mockedApi.getInvestigationQueue.mockRejectedValue(new Error('503'));
       renderPage();
       expect(await screen.findByText('Nothing is waiting on you.')).toBeInTheDocument();
-      expect(await screen.findByText(/Unavailable — this queue could not be computed/)).toBeInTheDocument();
-      expect(screen.queryByText(/reason to look/)).not.toBeInTheDocument();
+      // The tab says the count could not be checked — never 0 — and so does its list.
+      await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up—'));
+      expect(tab(/^Pick up/)).toHaveAccessibleName('Pick up: could not be checked');
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Could not be checked/);
+      expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+      // And the lead does not turn the failure into a count.
+      expect(screen.queryByText(/ha(s|ve) a reason to look/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/To pick up/)).not.toBeInTheDocument();
     });
 
     it('with an empty queue it still says a host the reader reviewed changed', async () => {
@@ -332,100 +532,159 @@ describe('Operations page', () => {
     });
   });
 
-  describe('the two queues', () => {
-    const followRow = {
-      host_id: 21, ip_address: '10.8.0.2', hostname: 'app01',
-      reviewed_at: '2026-09-01T00:00:00Z', review_conclusion: 'no_issue', review_summary: null,
-      reasons: [{ kind: 'new_ports', text: '1 open port first seen after the review (8443)' }],
-    };
-    const queueRow = {
-      host_id: 7, ip_address: '10.0.0.7', hostname: null, tier: 1, tier_label: 'Exploitable critical',
-      reasons: [{ kind: 'critical_exploitable', text: '1 critical vulnerability with a known public exploit' }],
-      evidence: { sources: [], last_seen: null, confirmation: 'scanner' },
-      next_action: { kind: 'review', text: 'Take it into review.', generic: true },
-    };
-    const tiers = ['Exploitable critical', 'Critical vulnerability', 'Exploit available', 'High-value service, new or changed', 'Scans disagree'];
-    const withQueues = () => {
-      mockedApi.getWorkbench.mockResolvedValue({
-        ...emptyWorkbench, followups: { items: [followRow], total: 1 },
-      });
-      mockedApi.getInvestigationQueue.mockResolvedValue({
-        items: [queueRow], queue_total: 40, untouched_total: 90, tiers, tier_counts: [3, 30, 4, 2, 1],
-      });
-    };
+  describe('counts that could not be loaded', () => {
+    it('a failed check of the reviewed hosts is "—" on its tab, and not a count in the lead', async () => {
+      withWork({ followups: { items: [], total: 0 }, followups_unavailable: true });
+      renderPage();
+      await screen.findByRole('table');
+      expect(tab(/^Changed since review/)).toHaveTextContent('Changed since review—');
+      expect(tab(/^Changed since review/)).toHaveAccessibleName('Changed since review: could not be checked');
+      expect(screen.queryByText(/changed since/)).not.toBeInTheDocument();
+    });
 
-    it('the tier lives in the URL: it is read on arrival and written on a click', async () => {
-      withQueues();
-      renderPage('/operations?tier=2');
-      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(2, { limit: 15 }));
+    it('a failed workbench is "—" on every tab it counts, said once, and the lists still answer', async () => {
+      withWork();
+      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      renderPage();
+      expect(await screen.findByText('Couldn\'t load your work\'s counts')).toBeInTheDocument();
+      await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up112'));
+      expect(screen.getAllByRole('tab').map((t) => t.textContent)).toEqual([
+        'Findings—', 'Hosts—', 'Tests—', 'Changed since review—', 'Pick up112',
+      ]);
+      // No count to choose by: the first tab opens, and its list loads for itself.
+      expect(await screen.findByRole('table', { name: 'Findings that need me' })).toBeInTheDocument();
+      expect(screen.queryByText(/in your queue|Nothing is waiting/)).not.toBeInTheDocument();
+    });
+
+    it('while the counts load the bar is there, with no number invented', async () => {
+      let release: (v: unknown) => void = () => undefined;
+      mockedApi.getWorkbench.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+      renderPage();
+      await screen.findByRole('tablist');
+      expect(tab(/^Findings/)).toHaveTextContent('Findings…');
+      expect(tab(/^Findings/)).toHaveAccessibleName('Findings: loading');
+      // No list is chosen — or fetched — before the counts say which.
+      expect(screen.queryByRole('tabpanel')).not.toBeInTheDocument();
+      expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
+      await act(async () => { release(busy()); });
+      await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings24'));
+    });
+  });
+
+  describe('the list on screen', () => {
+    it('a tab pages through its whole list: next asks the server for the next 25', async () => {
+      withWork();
+      renderPage('/operations?tab=tests');
+      await screen.findByRole('table', { name: 'Tests to do' });
+      expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(null, expect.objectContaining({ offset: 0, limit: 25 }));
+      expect(screen.getByText('1–2 of 55')).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: 'Next 25 tests' }));
+      await waitFor(() => expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(
+        null, expect.objectContaining({ offset: 25, limit: 25 }),
+      ));
+      expect(await screen.findByText('26–27 of 55')).toBeInTheDocument();
+    });
+
+    it('the Pick up tier lives in the URL: read on arrival, written on a click, and the list follows', async () => {
+      withWork();
+      const router = renderRouted('/operations?tab=pickup&tier=2');
+      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(
+        2, expect.objectContaining({ offset: 0, limit: 25 }),
+      ));
       const chip = await screen.findByRole('button', { name: /Critical vulnerability/ });
       expect(chip).toHaveAttribute('aria-pressed', 'true');
+      // The tier's 30 hosts are the list being paged — not the queue's 112.
+      expect(await screen.findByText('1–1 of 30')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Exploit available/ }));
-      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenLastCalledWith(3, { limit: 15 }));
+      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenLastCalledWith(
+        3, expect.objectContaining({ offset: 0, limit: 25 }),
+      ));
+      expect(router.state.location.search).toBe('?tab=pickup&tier=3');
       await waitFor(() => expect(screen.getByRole('button', { name: /Exploit available/ })).toHaveAttribute('aria-pressed', 'true'));
+      // The tab's count stays the whole queue's.
+      expect(tab(/^Pick up/)).toHaveTextContent('Pick up112');
     });
 
-    it('"Show 15 more" asks the server for a longer page of the same queue', async () => {
-      withQueues();
-      renderPage();
-      fireEvent.click(await screen.findByRole('button', { name: 'Show 15 more' }));
-      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenLastCalledWith(null, { limit: 30 }));
+    it('the Pick up footer never offers the 251 untouched hosts as this list of 112', async () => {
+      withWork();
+      renderPage('/operations?tab=pickup');
+      const all = await screen.findByRole('link', { name: 'All 251 untouched hosts in Hosts, with or without a reason' });
+      expect(q(all)).toBe('has:untouched');
+      expect(screen.queryByRole('link', { name: /^Open all/ })).not.toBeInTheDocument();
     });
 
-    it('the changed reviews open exactly the reader’s list in Hosts', async () => {
-      withQueues();
-      renderPage();
-      expect(q(await screen.findByRole('link', { name: 'Open all 1 host in Hosts' }))).toBe('follow:revisit');
-      // No reviewer column: every row is the reader's own.
-      expect(screen.queryByText(/^by you/)).not.toBeInTheDocument();
+    it('the changed reviews and the hosts in review each open exactly their list in Hosts', async () => {
+      withWork();
+      renderPage('/operations?tab=changed');
+      expect(q(await screen.findByRole('link', { name: 'Open all 27 hosts in Hosts' }))).toBe('follow:revisit');
+      openTab(/^Hosts/);
+      expect(q(await screen.findByRole('link', { name: 'Open all 37 in Hosts' }))).toBe('follow:mine');
+      // Findings and Tests have no page that lists exactly them: no link.
+      openTab(/^Findings/);
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(screen.queryByRole('link', { name: /Open all|All findings/ })).not.toBeInTheDocument();
     });
 
-    it('an action refreshes the queues quietly, not the whole page', async () => {
-      withQueues();
+    it('an action refreshes the counts and its own list quietly, not the whole page', async () => {
+      withWork();
       mockedApi.markStillReviewed.mockResolvedValue({ host_ids: [21] });
-      renderPage();
+      renderPage('/operations?tab=changed');
       fireEvent.click(await screen.findByRole('button', { name: 'Still reviewed' }));
       await waitFor(() => expect(mockedApi.markStillReviewed).toHaveBeenCalledWith([21]));
       await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockedApi.getReviewFollowupsPage).toHaveBeenCalledTimes(2));
+      // The queue's count too: taking a host into review changes it.
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledTimes(2));
-      // Coverage — the structural fetch — was not repeated.
+      // Coverage — the structural fetch — was not repeated, and no other tab's list was read.
       expect(mockedApi.getProjectCoverage).toHaveBeenCalledTimes(1);
+      expect(listCalls()).toMatchObject({ findings: 0, hosts: 0, tests: 0, pickup: 0 });
+      // The rows stayed on screen while it re-read.
+      expect(screen.getByRole('link', { name: '10.8.0.2' })).toBeInTheDocument();
     });
 
-    it('one list at a time owns the keyboard', async () => {
-      withQueues();
-      renderPage();
-      const changed = (await screen.findByRole('link', { name: '10.8.0.2' })).closest('tr') as HTMLElement;
-      const untouched = (await screen.findByRole('link', { name: '10.0.0.7' })).closest('tr') as HTMLElement;
-      // Neither, until the reader points at one.
+    it('a list that fails says "could not be checked" — never an empty list — and Retry reads it again', async () => {
+      withWork();
+      mockedApi.getMyReviewHostsPage.mockRejectedValueOnce(new Error('HTTP 500'));
+      renderPage('/operations?tab=hosts');
+      expect(await screen.findByRole('alert')).toHaveTextContent(/Could not be checked.*not an empty list/);
+      expect(screen.queryByText(/Nothing here/)).not.toBeInTheDocument();
+      // The tab bar stays, with its counts.
+      expect(tab(/^Hosts/)).toHaveTextContent('Hosts37');
+      fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+      expect(await screen.findByRole('link', { name: '10.9.0.1' })).toBeInTheDocument();
+    });
+
+    it('the keyboard moves through the one list on screen', async () => {
+      withWork();
+      renderPage('/operations?tab=changed');
+      const row = (await screen.findByRole('link', { name: '10.8.0.2' })).closest('tr') as HTMLElement;
       fireEvent.keyDown(window, { key: 'j' });
-      expect(document.querySelector('[data-list-cursor]')).toBeNull();
-      fireEvent.mouseEnter(untouched.closest('table')!.parentElement!);
-      fireEvent.keyDown(window, { key: 'j' });
-      expect(untouched).toHaveAttribute('data-list-cursor', 'true');
-      expect(changed).not.toHaveAttribute('data-list-cursor');
+      expect(row).toHaveAttribute('data-list-cursor', 'true');
+      expect(document.querySelectorAll('[data-list-cursor]')).toHaveLength(1);
     });
 
-    it('a failed check of the reviewed hosts says so, never "nothing to re-check"', async () => {
-      mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, followups_unavailable: true });
-      renderPage();
-      expect(await screen.findByText(/the hosts you reviewed could not be checked/)).toBeInTheDocument();
-      expect(screen.queryByText(/Nothing to re-check/)).not.toBeInTheDocument();
-      // And the lead does not turn the failure into a count.
-      expect(screen.queryByText(/changed since\./)).not.toBeInTheDocument();
-    });
-
-    it('a reader (viewer) gets both queues without a write control', async () => {
+    it('a reader (viewer) gets every tab without a write control', async () => {
       projectRole.value = 'viewer';
       accountRole.value = 'member';
-      withQueues();
-      renderPage();
+      withWork();
+      renderPage('/operations?tab=changed');
+      const writes = () => {
+        expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
+        for (const name of ['Still reviewed', 'Re-open review', 'Review', 'Claim']) {
+          expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
+        }
+        expect(screen.queryByRole('columnheader', { name: 'Action' })).not.toBeInTheDocument();
+      };
       await screen.findByRole('link', { name: '10.8.0.2' });
+      writes();
+      openTab(/^Pick up/);
       await screen.findByRole('link', { name: '10.0.0.7' });
-      expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
-      for (const name of ['Still reviewed', 'Re-open review', 'Review', 'Claim']) {
-        expect(screen.queryByRole('button', { name })).not.toBeInTheDocument();
-      }
+      writes();
+      openTab(/^Tests/);
+      await screen.findByRole('table', { name: 'Tests to do' });
+      // The claimable test is listed; the Claim is not offered.
+      expect(screen.getByText('free to claim')).toBeInTheDocument();
+      writes();
     });
   });
 
@@ -521,12 +780,14 @@ describe('Operations page', () => {
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
-    it('shows the setup block alone: no queues, no sections', async () => {
+    it('shows the setup block alone: no tab bar, no list', async () => {
       mockedApi.getProjectCoverage.mockResolvedValue(noHosts);
       renderPage();
       await screen.findByText(/Scope is registered — time to discover hosts/);
-      expect(screen.queryByRole('heading', { name: /My work|Changed since review|Untouched/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('tablist')).not.toBeInTheDocument();
+      expect(screen.queryByRole('table')).not.toBeInTheDocument();
       expect(screen.queryByText('Your agent sessions')).not.toBeInTheDocument();
+      expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
     });
 
     it('a brand-new project gets the welcome block and no refresh chrome', async () => {
@@ -569,7 +830,7 @@ describe('Operations page', () => {
       mockedApi.markWorkbenchSeen.mockRejectedValue(new Error('offline'));
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: /Acknowledge updates/ }));
-      expect(await screen.findByRole('alert')).toBeInTheDocument();
+      expect(await screen.findByText(/Could not save the acknowledgement|offline/)).toBeInTheDocument();
       expect(screen.getByText('Since your last visit')).toBeInTheDocument();
     });
 
@@ -592,10 +853,12 @@ describe('Operations page', () => {
         ],
       };
 
-      it('names what is blocked and carries the recovery action', async () => {
+      it('names what is blocked and carries the recovery action, above the tab bar', async () => {
         mockedApi.getWorkbench.mockResolvedValue({ ...workbench(since), blockers });
         renderPage();
-        expect(await screen.findByRole('heading', { name: 'Blocked' })).toBeInTheDocument();
+        const heading = await screen.findByRole('heading', { name: 'Blocked' });
+        // eslint-disable-next-line no-bitwise
+        expect(heading.compareDocumentPosition(screen.getByRole('tablist')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
         expect(screen.getByText('1 import failed · 1 finished partial')).toBeInTheDocument();
         fireEvent.click(screen.getByRole('button', { name: 'Inspect import errors' }));
         expect(navigateSpy).toHaveBeenCalledWith('/parse-errors?status=needs_attention');
@@ -623,16 +886,21 @@ describe('Operations page', () => {
     });
   });
 
-  it('page Refresh also refetches what fetches for itself (the agent-sessions line)', async () => {
-    renderPage();
+  it('page Refresh also refetches what fetches for itself: the list on screen and the agent-sessions line', async () => {
+    withWork();
+    renderPage('/operations?tab=hosts');
     // On mount: the Start-Agent-Session badge's hook and the line, one each
     // (the same filters since 5.330.0).  Refresh re-asks for the line only.
     const sessionReads = () => mockedApi.listAgentSessions.mock.calls.length;
     await waitFor(() => expect(sessionReads()).toBe(2));
+    await screen.findByRole('link', { name: '10.9.0.1' });
     const refresh = await screen.findByRole('button', { name: 'Refresh Operations' });
     await waitFor(() => expect(refresh).not.toBeDisabled());
     fireEvent.click(refresh);
     await waitFor(() => expect(sessionReads()).toBe(3));
     await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(mockedApi.getMyReviewHostsPage).toHaveBeenCalledTimes(2));
+    // Still only the selected tab's rows.
+    expect(listCalls()).toEqual({ findings: 0, hosts: 2, tests: 0, changed: 0, pickup: 0 });
   });
 });

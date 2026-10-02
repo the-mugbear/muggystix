@@ -220,16 +220,29 @@ def compute_since_last_visit(
 
 def compute_workbench(
     db: Session, current_user: User, project: Project, include_investigate: bool = True,
+    include_rows: bool = True,
 ) -> WorkbenchResponse:
     """Batch the Operations personal-work surface into one response, for
     ``current_user``.  Each engagement-wide section that fails is reported as
-    ``*_unavailable`` rather than rendered as an empty (``nothing to do``) one."""
-    my_queue = compute_my_attention_queue(db, current_user, project, limit=10)
+    ``*_unavailable`` rather than rendered as an empty (``nothing to do``) one.
+
+    ``include_rows=False`` (v2.452.0) is the page's light call: every count —
+    ``my_work``, the sections' own totals, ``followups.total`` — the blockers
+    and the since-last-visit diff, with every ``items`` list empty.  Operations
+    shows one list at a time and pages it through its own route
+    (``GET /workbench/findings|hosts|tests|followups|investigate``), each the
+    same function called here, so a tab's count is the size of its list.  The
+    agents' read keeps the previews."""
+    preview = (lambda n: n) if include_rows else (lambda n: 0)
+    my_queue = compute_my_attention_queue(db, current_user, project, limit=preview(10))
     # Per group (assigned / on hosts in review / to claim), so no group's
     # rows are cut by another's.
-    my_tasks = compute_my_tasks(db, current_user, project, limit=10)
-    recent_notes = compute_my_recent_notes(db, current_user, project, limit=8)
-    my_findings = compute_my_findings(db, current_user, project, limit=15)
+    my_tasks = compute_my_tasks(db, current_user, project, limit=preview(10))
+    recent_notes = (
+        compute_my_recent_notes(db, current_user, project, limit=8)
+        if include_rows else MyRecentNotesResponse()
+    )
+    my_findings = compute_my_findings(db, current_user, project, limit=preview(15))
     groups = my_tasks.group_counts
     my_work = MyWorkTotals(
         hosts_in_review=my_queue.in_review_count,
@@ -257,7 +270,7 @@ def compute_workbench(
         investigate_unavailable = True
     followups_unavailable = False
     try:
-        followups = compute_review_followups(db, current_user, project, limit=15)
+        followups = compute_review_followups(db, current_user, project, limit=preview(15))
     except Exception:
         logger.exception("review follow-ups failed for project %s", project.id)
         db.rollback()

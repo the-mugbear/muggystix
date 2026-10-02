@@ -147,8 +147,8 @@ Use the Tailwind classes above directly. The old `sx`-style constants (`singleLi
 - **One control per hand-off to the agent** (v5.322.0): a section has a single "Ask agent" menu (`hooks/useAgentTask`), not a button per task. With a live session the task is copied and a toast says so; the Start Agent Session dialog opens only when there is none.
 - **Whatever an agent can be asked to write, a person can write** (v5.324.0): beside an "Ask agent" control sits the plain action ("Add test"). An analyst with no agent session must never be left without a way to record their own work.
 - **A status filter over a list already on the page is a segmented control with counts**, filtered in the browser — not a dropdown that asks the server again and hides how much is behind each choice.
-- **A preview of a longer list has ONE way to the rest** (5.329.0, the Operations review): "x of N", then "Open all N in Hosts" (or Findings) linking the EXACT list — the count on the link is the length of the list it opens, pinned by a test against the server's predicate. "Show N more" in place is only for a list no page can express (tests across hosts, a tier with no query), never beside an "Open all". If the only link available opens a wider set, its label names that set and its count ("Open all 290 untouched hosts"), never the preview's. `components/operations/QueueParts.tsx` (`ListFooter`).
-- **A work queue is a table of one-line rows** (5.329.0): identity, the reason in words, provenance, the action — `table-fixed`, every text cell truncating with its full value on `title`. What is true of every row by the queue's definition is said once under the heading, never on each row. A queue of near-identical rows gets a selection column and its actions in bulk (`useRowSelection`, `BulkBar`): one request when the server has a bulk route, otherwise `utils/runLimited`; a partial failure says what moved, what did not and why. When two such lists share a page, one of them owns the keyboard at a time — the one the reader last pointed at or focused.
+- **A preview of a longer list has ONE way to the rest** (5.329.0, the Operations review): "x of N", then "Open all N in Hosts" (or Findings) linking the EXACT list — the count on the link is the length of the list it opens, pinned by a test against the server's predicate. "Show N more" in place is only for a list no page can express (tests across hosts, a tier with no query), never beside an "Open all". If the only link available opens a wider set, its label says it is wider ("All 251 untouched hosts in Hosts, with or without a reason" under a queue of 112 — "Open all 251 untouched hosts" was read as that queue), never the preview's count. A personal work page does not preview at all — see §42.
+- **A work queue is a table of one-line rows** (5.329.0): identity, the reason in words, provenance, the action — `table-fixed`, every text cell truncating with its full value on `title`. What is true of every row by the queue's definition is said once under the heading, never on each row. A queue of near-identical rows gets a selection column and its actions in bulk (`useRowSelection`, `BulkBar`): one request when the server has a bulk route, otherwise `utils/runLimited`; a partial failure says what moved, what did not and why. When two such lists share a page, one of them owns the keyboard at a time — the one the reader last pointed at or focused (Operations shows one list at a time since 5.331.0, §42: the list on screen owns the keys).
 - **A personal page carries nothing about the project as a whole** (5.330.0, owner 2026-10-02): Operations is the signed-in person's page — their queue, the reviews THEY finished that changed, what to pick up next, their own agent sessions — and has no measures strip: its two counts are in the lead sentence and the section headings. A number, list or map that describes the project (tested x of y, untouched critical exposure, where the team has been, scanner observations by severity, the scope states) is project status and belongs on the Posture overview, as a `PostureSection`. A measure that only restates what a heading already says, or that the reader cannot act on from that page, is visual vanity: remove it rather than move it. A list on a personal page is filtered to the person on the SERVER, and the link to "all N" opens that same person's list (`follow:revisit`, `follow:mine`) — never the team-wide query.
 - **A filter over tiers or categories is a row of chips with counts, in the stated order** — never bars scaled to the largest (the tier to act on first then gets the smallest mark), and never a status or severity colour for something that is neither. Emphasis is order and weight.
 - **A priority is not a severity.** A test's priority, a tier, a rank: an `outline` badge that says what it is ("critical priority"). The `severity-*` variants are for a finding's or a scanner observation's severity only. (Operations follows this since 5.329.0; the host inspector's test rows — `HostTestsSection` `PRIORITY_VARIANT` — still wear the severity ramp and move when that section is next reworked.)
@@ -698,6 +698,47 @@ gate anything; keep `hasPermission('admin')` for instance-wide surfaces
 - A list keeps its own order across responses (the finding's endpoints: by
   address — numerically, `utils/ipAddress.compareAddresses` — then name).  A
   row must not move because the server answered a change with it last.
+
+### 42. A personal work page is tabs: one full list at a time (2026-10-02)
+A page that holds several lists of the reader's own work (Operations) does not
+stack them.  Six lists at one visual weight, each a five-row sample with its
+own "more", in two row styles, were "hard to parse and follow" on a large
+project, and the same host could appear three times.  The shape is:
+
+    title row → lead sentence → callouts (only when there is something)
+    → tab bar with counts → the ONE selected list as a full table → foot line
+
+- **A tab bar with counts** (`components/ui/tabs`, Radix: arrow keys move
+  between tabs).  A count that is still loading reads "…"; one that could not
+  be checked reads "—" — never 0 — and the tab's panel then says "could not be
+  checked", never an empty list.  When a tab LISTS more than it counts (Tests
+  lists claimable tests, which are not the reader's), the label shows the
+  second number separately ("Tests 40 + 15 to claim") and the panel says which
+  number is which.
+- **One list on screen, complete, paged.**  No samples, no "Show N more".  One
+  footer on every tab (`QueueParts.PagedFooter`): "1–25 of N", previous / next,
+  25 rows a page.  It carries ONE link to another page, and only when that
+  page lists EXACTLY the tab's list ("Open all N in Hosts"); a link to a wider
+  list says so in its label, and a tab with no exact list has no link.
+- **Counts and rows are separate requests.**  The counts come from one light
+  call; a tab's rows are fetched when the tab is opened, through
+  `hooks/usePagedList` (on `useListQuery`, §39).  Each list route is the
+  function that produced the tab's count, and a backend test pins count ==
+  the list paged through, with fixtures larger than a page.
+- **The tab is in the URL** (`?tab=`, plus the tab's own filters), a click is
+  a history entry, and nothing is remembered in localStorage.  With no `?tab=`
+  the first NON-EMPTY tab in bar order opens — decided once per visit, so
+  finishing a list does not move the reader.  The lead sentence's numbers are
+  links that open tabs, not `#anchors`.
+- **Every tab is a table** (§8): labelled headers — the age column included —
+  explicit widths, one line per row, the full value on `title`.  The tab is
+  the list's heading; the panel repeats none.
+- **Three states in the panel, the tab bar staying put** (`QueueParts.ListBody`):
+  a skeleton while the list loads; "Could not be checked … This is not an
+  empty list" with Retry when it failed; and one line when it is empty —
+  "Nothing here — …" saying what would put something here.
+- Write controls follow §40; selection follows §41; a row cursor is
+  `useListCursor({getId})` and belongs to the list on screen.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

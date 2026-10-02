@@ -375,6 +375,23 @@ page read it). "What is the team already reviewing?" is
 `assist_list_hosts q=follow:in_review` — any teammate's, `total` for the count;
 the operator's own are `q=follow:mine`.
 
+**Operations as tabs (v2.452.0, prompt 4.7.0)** — no new tool. The page now
+shows ONE full list at a time (Findings · Hosts · Tests · Changed since review
+· Pick up), each paged through its own person-side route (`GET
+/workbench/findings|hosts|tests|followups|investigate`), every one the function
+that produces its count in the workbench. `assist_get_workbench` keeps its
+shape — the counts and the PREVIEW lists — and each `my_tasks` row gained
+`tool`. The whole lists were already agent reads, so none was added:
+`assist_list_hosts q=follow:mine` (hosts in review), `q=follow:revisit`
+(changed since review), `host_tests_list mine=true active_only=true` (tests
+assigned), `host_tests_list q=follow:mine active_only=true` (tests on hosts in
+review — every test to do on those hosts), `assist_list_worth_a_look` with
+`limit` / `offset` (the untouched queue). **One gap, stated rather than
+closed:** findings that need the operator have no whole-list agent read beyond
+the workbench's 15-row preview and `my_work.findings_needing_me`
+(`assist_list_findings owner=me` lists every finding owned, needing them or
+not). The tool description says all of this.
+
 **Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
 — fields, not tools: a finding comment in `assist_get_finding` carries
 `parent_id` / `thread_root_id`, as host notes already did, so its thread can be

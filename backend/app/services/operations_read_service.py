@@ -74,7 +74,7 @@ class MyAttentionResponse(BaseModel):
 
 
 def compute_my_attention_queue(
-    db: Session, current_user: User, project: Project, limit: int = 10,
+    db: Session, current_user: User, project: Project, limit: int = 10, offset: int = 0,
 ) -> MyAttentionResponse:
     """Return the current user's personal review queue for this project.
 
@@ -82,30 +82,50 @@ def compute_my_attention_queue(
     by most recent follow update.  Watching hosts are *not* returned —
     Watching represents passive monitoring, not active work, and the
     queue widget is for "what do I need to do today?".
+
+    ``limit`` / ``offset`` page the list in that order (v2.452.0 — the
+    Operations "Hosts" tab, ``GET /workbench/hosts``); ``in_review_count`` is
+    the whole list whatever they say, and ``limit=0`` returns the count alone
+    (one statement).
     """
-    # Pull the user's in_review follow rows scoped to this project.
-    follows = (
-        db.query(HostFollow, models.Host)
+    mine = (
+        HostFollow.user_id == current_user.id,
+        models.Host.project_id == project.id,
+        HostFollow.status == FollowStatus.IN_REVIEW,
+    )
+    # The whole list's size, independent of the page asked for — the same
+    # hosts ``follow:mine`` lists.
+    in_review_count = (
+        db.query(func.count(HostFollow.id))
         .join(models.Host, HostFollow.host_id == models.Host.id)
-        .filter(
-            HostFollow.user_id == current_user.id,
-            models.Host.project_id == project.id,
-            HostFollow.status == FollowStatus.IN_REVIEW,
-        )
-        # Most recently touched first; NULL updated_at lands last.
+        .filter(*mine)
+        .scalar()
+    ) or 0
+    if not in_review_count or limit <= 0:
+        return MyAttentionResponse(items=[], in_review_count=in_review_count, watching_count=0)
+
+    # Columns, not the Host entity: a row shows an address and a name.
+    follows = (
+        db.query(HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname)
+        .join(models.Host, HostFollow.host_id == models.Host.id)
+        .filter(*mine)
+        # Most recently touched first; NULL updated_at lands last.  The id
+        # makes the order total, so two pages never share or skip a row.
         .order_by(
             desc(HostFollow.updated_at.is_(None)),  # NULLs last
             desc(HostFollow.updated_at),
             desc(HostFollow.created_at),
+            HostFollow.id,
         )
+        .offset(max(0, offset))
         .limit(limit)
         .all()
     )
-
     if not follows:
-        return MyAttentionResponse(items=[], in_review_count=0, watching_count=0)
+        # A page past the end: the count still describes the list.
+        return MyAttentionResponse(items=[], in_review_count=in_review_count, watching_count=0)
 
-    host_ids = [host.id for _, host in follows]
+    host_ids = [row[1] for row in follows]
 
     # Batch vuln summary lookup — one query for all rows.
     vuln_service = VulnerabilityService(db)
@@ -125,32 +145,20 @@ def compute_my_attention_queue(
     port_count_map = {hid: cnt for hid, cnt in port_count_rows}
 
     items: List[MyAttentionHost] = []
-    for follow, host in follows:
-        sev = (vuln_map.get(host.id) or {}).get("by_severity", {})
+    for follow, host_id, ip_address, hostname in follows:
+        sev = (vuln_map.get(host_id) or {}).get("by_severity", {})
         items.append(MyAttentionHost(
-            host_id=host.id,
-            ip_address=host.ip_address,
-            hostname=host.hostname,
+            host_id=host_id,
+            ip_address=str(ip_address),
+            hostname=hostname,
             follow_status=follow.status.value if hasattr(follow.status, "value") else str(follow.status),
-            open_port_count=port_count_map.get(host.id, 0),
+            open_port_count=port_count_map.get(host_id, 0),
             critical_vulns=sev.get("critical", 0),
             high_vulns=sev.get("high", 0),
             last_viewed_at=follow.last_viewed_at,
             follow_updated_at=follow.updated_at or follow.created_at,
         ))
 
-    # Total in_review count across the user's queue (independent of
-    # `limit`) so the widget can show "showing 10 of 23 in your queue".
-    in_review_count = (
-        db.query(func.count(HostFollow.id))
-        .join(models.Host, HostFollow.host_id == models.Host.id)
-        .filter(
-            HostFollow.user_id == current_user.id,
-            models.Host.project_id == project.id,
-            HostFollow.status == FollowStatus.IN_REVIEW,
-        )
-        .scalar()
-    ) or 0
     return MyAttentionResponse(
         items=items,
         in_review_count=in_review_count,
@@ -251,9 +259,13 @@ _FOLLOWUP_PORT_SAMPLE = 6
 
 
 def compute_review_followups(
-    db: Session, current_user: User, project: Project, limit: int = 15,
+    db: Session, current_user: User, project: Project, limit: int = 15, offset: int = 0,
 ) -> ReviewFollowupsResponse:
     """The CALLER'S reviewed hosts whose review is not the end of the matter.
+
+    ``limit`` / ``offset`` page the list in its own order (v2.452.0 — the
+    Operations "Changed since review" tab, ``GET /workbench/followups``);
+    ``total`` is the whole list whatever they say.
 
     A teammate's review is never listed (v2.451.0), whatever happened to the
     host after it.  Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
@@ -356,7 +368,8 @@ def compute_review_followups(
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
     rows.sort(key=lambda r: (_when(r), r.host_id))
-    return ReviewFollowupsResponse(items=rows[:limit], total=len(rows))
+    start = max(0, offset)
+    return ReviewFollowupsResponse(items=rows[start:start + max(0, limit)], total=len(rows))
 
 
 # The ordering is a stated tier, not a weighted score (the risk-scoring
@@ -729,6 +742,8 @@ def compute_investigation_queue(
 
 class MyTaskItem(BaseModel):
     test_id: int
+    #: What runs the test (v2.452.0 — the Tests tab's "tool · description").
+    tool: Optional[str] = None
     description: str
     label: Optional[str] = None
     revision: int
@@ -762,8 +777,13 @@ class MyTasksResponse(BaseModel):
     group_counts: MyTasksReasonCounts = Field(default_factory=MyTasksReasonCounts)
 
 
+#: The three groups a test is listed under, by its strongest reason.
+MY_TASK_GROUPS = ("assigned", "in_review", "triage")
+
+
 def compute_my_tasks(
     db: Session, current_user: User, project: Project, limit: int = 15,
+    group: Optional[str] = None, offset: Optional[int] = None,
 ) -> MyTasksResponse:
     """Return the caller's authoritative personal task queue.
 
@@ -780,7 +800,19 @@ def compute_my_tasks(
     list let a busy group take every row, so Operations said "15 to claim"
     over a list with no claimable row in it.  Each group now brings its own
     top rows, and ``group_counts`` says how many each holds.
+
+    **Paged (v2.452.0 — the Operations "Tests" tab, ``GET /workbench/tests``):**
+    with ``offset`` (or ``group``) the rows are ONE list in the order above —
+    every test once, under its strongest reason — cut to ``limit`` rows from
+    ``offset``, optionally narrowed to one ``group`` (``MY_TASK_GROUPS``).
+    The list's size is ``total_open`` (every group) or that group's
+    ``group_counts`` entry: the same counting statement either way, so a tab's
+    count and the list it pages through cannot disagree.  ``limit=0`` returns
+    the counts alone.
     """
+    if group is not None and group not in MY_TASK_GROUPS:
+        raise ValueError(f"unknown task group {group!r}")
+    paged = offset is not None or group is not None
     # Materialize the caller's In Review host_ids once — used both in the
     # SQL filter and for Python-side reason tagging.
     in_review_host_ids = {
@@ -829,33 +861,52 @@ def compute_my_tasks(
         else_=5,
     )
 
-    # Rank inside each group and keep each group's top rows — one statement.
-    ranked = (
-        db.query(
-            HostTest.id.label("tid"),
-            reason_rank_case.label("reason_rank"),
-            func.row_number().over(
-                partition_by=reason_rank_case,
-                order_by=(
-                    priority_rank_case,
-                    desc(HostTest.updated_at.is_(None)),  # NULLs last
-                    desc(HostTest.updated_at),
-                    HostTest.id,
-                ),
-            ).label("rn"),
+    in_group_order = (
+        priority_rank_case,
+        desc(HostTest.updated_at.is_(None)),  # NULLs last
+        desc(HostTest.updated_at),
+        HostTest.id,
+    )
+    mine_or_claimable = or_(assigned_cond, in_review_cond, triage_cond)
+    if limit <= 0:
+        ordered = []
+    elif paged:
+        # One list, each test once, in the stated order — a page of it.
+        page_q = (
+            db.query(HostTest, models.Host.ip_address, models.Host.hostname)
+            .join(models.Host, HostTest.host_id == models.Host.id)
+            .filter(*base_filters, mine_or_claimable)
         )
-        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
-        .subquery("ranked")
-    )
-    # Host columns, not the entity (an address and a name are all a row shows).
-    ordered = (
-        db.query(HostTest, models.Host.ip_address, models.Host.hostname)
-        .join(ranked, ranked.c.tid == HostTest.id)
-        .join(models.Host, HostTest.host_id == models.Host.id)
-        .filter(ranked.c.rn <= max(1, limit))
-        .order_by(ranked.c.reason_rank, ranked.c.rn)
-        .all()
-    )
+        if group is not None:
+            page_q = page_q.filter(reason_rank_case == MY_TASK_GROUPS.index(group))
+        ordered = (
+            page_q.order_by(reason_rank_case, *in_group_order)
+            .offset(max(0, offset or 0))
+            .limit(limit)
+            .all()
+        )
+    else:
+        # Rank inside each group and keep each group's top rows — one statement.
+        ranked = (
+            db.query(
+                HostTest.id.label("tid"),
+                reason_rank_case.label("reason_rank"),
+                func.row_number().over(
+                    partition_by=reason_rank_case, order_by=in_group_order,
+                ).label("rn"),
+            )
+            .filter(*base_filters, mine_or_claimable)
+            .subquery("ranked")
+        )
+        # Host columns, not the entity (an address and a name are all a row shows).
+        ordered = (
+            db.query(HostTest, models.Host.ip_address, models.Host.hostname)
+            .join(ranked, ranked.c.tid == HostTest.id)
+            .join(models.Host, HostTest.host_id == models.Host.id)
+            .filter(ranked.c.rn <= limit)
+            .order_by(ranked.c.reason_rank, ranked.c.rn)
+            .all()
+        )
 
     def reasons_for(entry) -> List[str]:
         out: List[str] = []
@@ -869,7 +920,8 @@ def compute_my_tasks(
 
     items = [
         MyTaskItem(
-            test_id=entry.id, description=entry.description, label=entry.label, revision=entry.revision,
+            test_id=entry.id, tool=entry.tool, description=entry.description, label=entry.label,
+            revision=entry.revision,
             host_id=entry.host_id,
             host_ip=str(host_ip),
             host_hostname=host_hostname,
@@ -897,7 +949,7 @@ def compute_my_tasks(
             func.count(case((reason_rank_case == 1, HostTest.id))).label("g_in_review"),
             func.count(case((reason_rank_case == 2, HostTest.id))).label("g_triage"),
         )
-        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
+        .filter(*base_filters, mine_or_claimable)
         .one()
     )
     total_open = counts_row.total or 0
@@ -1007,7 +1059,7 @@ class MyFindingsResponse(BaseModel):
 
 
 def compute_my_findings(
-    db: Session, current_user: User, project: Project, limit: int = 15,
+    db: Session, current_user: User, project: Project, limit: int = 15, offset: int = 0,
 ) -> MyFindingsResponse:
     """The caller's owned findings that need something from their owner
     (review 2026-10-02 — owning a confirmed, written-up finding is a state,
@@ -1023,6 +1075,11 @@ def compute_my_findings(
 
     Severity-ranked.  Three statements whatever the number of findings: the
     rows (with the total as a window), their hosts, their pending proposals.
+
+    ``limit`` / ``offset`` page the list in that order (v2.452.0 — the
+    Operations "Findings" tab, ``GET /workbench/findings``); ``total_open`` is
+    the whole list whatever they say (a page past the end, or ``limit=0``,
+    counts with one statement of the same filter).
     """
     from app.db.models_vulnerability import severity_rank as _severity_rank
     from app.services import proposal_service
@@ -1038,6 +1095,11 @@ def compute_my_findings(
     investigating = Finding.status.in_(UNDER_INVESTIGATION)
     text_owed = and_(reportable_finding_condition(), missing_required_text_condition())
     blank = blank_required_text()
+    needs_me = (
+        Finding.project_id == project.id,
+        Finding.owner_id == current_user.id,
+        or_(investigating, text_owed, proposal_service.has_pending_proposal_condition()),
+    )
     findings = (
         db.query(
             Finding.id, Finding.title, Finding.severity, Finding.status,
@@ -1046,15 +1108,19 @@ def compute_my_findings(
             *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
             func.count().over().label("total"),
         )
-        .filter(
-            Finding.project_id == project.id,
-            Finding.owner_id == current_user.id,
-            or_(investigating, text_owed, proposal_service.has_pending_proposal_condition()),
-        )
+        .filter(*needs_me)
         .order_by(severity_rank, desc(Finding.updated_at), Finding.id)
+        .offset(max(0, offset))
         .limit(limit)
         .all()
-    )
+    ) if limit > 0 else []
+    if not findings:
+        # No row to carry the window: nothing needs the owner, the page is
+        # past the end, or only the count was asked for.
+        total = 0
+        if offset > 0 or limit <= 0:
+            total = int(db.query(func.count(Finding.id)).filter(*needs_me).scalar() or 0)
+        return MyFindingsResponse(items=[], total_open=total)
     finding_ids = [f.id for f in findings]
 
     # host_count per finding + one representative host_id, in one query.

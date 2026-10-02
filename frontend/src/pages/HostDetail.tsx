@@ -17,6 +17,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { formatApiError } from '../utils/apiErrors';
 import { isPageShortcutEvent } from '../utils/keyboard';
+import { operationsBackPath } from '../utils/operationsQueue';
 
 export default function HostDetail() {
   const { hostId } = useParams<{ hostId: string }>();
@@ -32,6 +33,8 @@ export default function HostDetail() {
     /** The Operations section it was opened from (utils/operationsQueue). */
     queueLabel?: string;
     queuePartial?: boolean;
+    /** The Operations tab it was opened from: where Back returns. */
+    operationsTab?: string;
     fromHosts?: string;
     fromScan?: { id: number; filename: string };
     hostIds?: number[];
@@ -98,7 +101,7 @@ export default function HostDetail() {
 
   const handleBackToHosts = async () => {
     if (!(await confirmDiscardDraft())) return;
-    if (navState?.fromOperations) navigate('/operations');
+    if (navState?.fromOperations) navigate(operationsBackPath(navState));
     else if (navState?.fromHosts) navigate(navState.fromHosts);
     else navigate('/hosts');
   };

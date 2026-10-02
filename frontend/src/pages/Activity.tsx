@@ -146,8 +146,9 @@ const Activity: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   // The author filter lives in the URL (`?author=<id>` or `?author=me`,
-  // 5.329.0), so "my activity" is a link — Operations' My work points here —
-  // and the choice survives a reload.  `me` resolves to the signed-in account.
+  // 5.329.0), so "my activity" is a link (Operations' "My work" heading
+  // carried one until the page became tabs, 5.331.0) and the choice survives
+  // a reload.  `me` resolves to the signed-in account.
   const { user } = useAuth();
   const authorParam = searchParams.get('author') ?? '';
   const authorFilter = authorParam === 'me'
