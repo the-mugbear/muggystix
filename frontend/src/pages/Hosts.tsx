@@ -535,7 +535,13 @@ export default function Hosts() {
     let restoredDefault: string | null = null;
     try {
       restoredDefault = sessionStorage.getItem(projectScopedKey('projectDefaultName'));
-      if (restoredDefault && Object.keys(initialFilters).length > 0) {
+      // Only when the filters being restored ARE the session's (the default
+      // or its edits).  A link that brings its own query used to keep the
+      // banner — "hosts outside it are not listed" over a list that was not
+      // the default view at all (acceptance feedback #31, 2026-10-02).
+      const filtersAreTheSessions = restoredFromSession
+        || canonicalFilters(initialFilters) === canonicalFilters(savedState?.filters ?? {});
+      if (restoredDefault && filtersAreTheSessions && Object.keys(initialFilters).length > 0) {
         skipActiveClearRef.current = true;
         setAppliedProjectDefault(restoredDefault);
         // The default is also where later edits start: "<name> · Modified",

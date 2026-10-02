@@ -135,8 +135,8 @@ Two things an assist agent is routinely asked for, and how each is served:
   writes. BlueStick hosts no templates and stores no finished report; its job is
   the data (`assist_count_hosts` for numbers, `assist_list_hosts` with a `q=` to
   isolate a set, `assist_get_host_vulnerabilities` for the evidence behind a claim
-  (raw scanner observations on the host — not triaged findings; it was named
-  `assist_get_host_findings` before the vocabulary was fixed), and
+  (raw scanner observations on the host — not triaged findings;
+  `GET /agent/assist/hosts/{host_id}/vulnerabilities`), and
   the `report-context.ndjson` download when the report spans more hosts than is
   sensible one at a time). The finished document is written next to the template.
   Copyable starting points live in [report-templates/](report-templates/).

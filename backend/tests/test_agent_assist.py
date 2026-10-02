@@ -362,13 +362,13 @@ def test_assist_findings_endpoint_returns_evidence(client, test_project, db_sess
 
     body = _start_session(client, test_project.id)
     resp = client.get(
-        f"/api/v1/agent/assist/hosts/{host.id}/findings",
+        f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities",
         headers=_auth_headers(body["api_key"]),
     )
     assert resp.status_code == 200, resp.text
     d = resp.json()
     assert d["total"] == 2 and d["has_more"] is False
-    f0 = d["findings"][0]
+    f0 = d["items"][0]
     assert f0["severity"] == "critical"     # worst-first ordering
     assert f0["cve_id"] == "CVE-2024-1"
     assert f0["exploitable"] is True
@@ -401,20 +401,20 @@ def test_assist_findings_severity_filter_and_pagination(client, test_project, db
     headers = _auth_headers(body["api_key"])
     # severity filter
     crit = client.get(
-        f"/api/v1/agent/assist/hosts/{host.id}/findings?severity=critical", headers=headers
+        f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities?severity=critical", headers=headers
     ).json()
     assert crit["total"] == 3
     # pagination
     page = client.get(
-        f"/api/v1/agent/assist/hosts/{host.id}/findings?limit=2", headers=headers
+        f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities?limit=2", headers=headers
     ).json()
-    assert len(page["findings"]) == 2 and page["total"] == 4 and page["has_more"] is True
+    assert len(page["items"]) == 2 and page["total"] == 4 and page["has_more"] is True
 
 
 def test_assist_findings_404_for_host_outside_project(client, test_project):
     body = _start_session(client, test_project.id)
     resp = client.get(
-        "/api/v1/agent/assist/hosts/999999/findings",
+        "/api/v1/agent/assist/hosts/999999/vulnerabilities",
         headers=_auth_headers(body["api_key"]),
     )
     assert resp.status_code == 404

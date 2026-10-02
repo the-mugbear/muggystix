@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, Query, Request
 from sqlalchemy.orm import Session
 
 from app.api.deps import check_agent_rate_limit, get_current_project, require_project_role
-from app.api.v1.endpoints.agent_common import load_agent_session
+from app.api.v1.endpoints.agent_common import load_agent_session, require_project_host
 from app.api.deps import get_current_user
 from app.db.models_agent import Agent
 from app.db.models_auth import User
@@ -59,6 +59,7 @@ def make_router(reader, writer):
                 agent_session_id: int | None = Query(None, gt=0), mine: bool = False, q: str | None = None, active_only: bool = False,
                 limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                 actor: Actor = Depends(reader), db: Session = Depends(get_db)):
+        require_project_host(db, actor.project_id, host_id)
         return tests.list_tests(db, actor.project_id, actor.who.user_id, host_id=host_id, status=status,
                                 label=label, assigned_to_id=assigned_to_id, agent_session_id=agent_session_id,
                                 mine=mine, q=q, active_only=active_only, limit=limit, offset=offset)

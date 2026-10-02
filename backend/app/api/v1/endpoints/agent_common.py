@@ -46,15 +46,47 @@ def load_agent_session(db: Session, request: Request) -> AgentSession:
 #: The discrete host filters' meaning, shown to agents in every route that
 #: takes them (OpenAPI and the MCP schemas carry it).
 PORTS_PARAM_HELP = (
-    "Comma-separated port numbers; a host matches with any of them OPEN. "
+    "Comma-separated port numbers; a host matches with ANY of them open. "
+    "For hosts with ALL of them open use q instead: q=port:80 port:443. "
     "No ranges or names (a value that is not a number is a 422)."
 )
 SERVICES_PARAM_HELP = (
     "Comma-separated service names, matched on the service the scanner "
     "identified on an OPEN port, on any port number — the Hosts page's "
     "services filter and the DSL's service:. A port found open without a "
-    "service name (masscan) does not match; ask ports= for standard ports."
+    "service name (masscan) does not match; ask ports= for standard ports. "
+    "The name is the scanner's own: SMB is usually 'microsoft-ds' (or ask "
+    "ports=445), not 'smb'. A comma list is ANY of them."
 )
+
+
+def require_project_host(db: Session, project_id: int, host_id: Optional[int]) -> None:
+    """404 when a ``host_id`` FILTER names a host that is not in the project.
+
+    A list filtered by a host that is not there used to answer 200 with no
+    rows — "no tests / no evidence / no findings on that host" said about a
+    host that does not exist here, while the host reads answered 404 for the
+    same id (agent feedback #30, 2026-10-02).  Another project's host and a
+    nonexistent one are the same answer.
+    """
+    if host_id is None:
+        return
+    found = (
+        db.query(models.Host.id)
+        .filter(models.Host.id == host_id, models.Host.project_id == project_id)
+        .first()
+    )
+    if found is None:
+        raise HTTPException(status_code=404, detail="Host not found in this project")
+
+
+def unknown_value_error(name: str, value: str, allowed) -> HTTPException:
+    """The 422 for a filter value that is not one of a closed set: an unknown
+    value must never read as an ordinary empty result."""
+    return HTTPException(
+        status_code=422,
+        detail=f"Unknown {name} {value!r}. Accepted: {', '.join(sorted(allowed))}.",
+    )
 
 
 def parse_port_list(ports: str) -> List[int]:

@@ -210,7 +210,8 @@ def test_another_projects_host_test_is_not_found(client, db_session, test_projec
     assert client.patch(f"{base(other)}/{row['id']}",
                         json={"expected_revision": row["revision"], "status": "in_progress"}).status_code == 404
     assert client.get(base(other)).json() == {"items": [], "total": 0, "has_more": False}
-    assert client.get(base(other), params={"host_id": host.id}).json()["total"] == 0
+    # A host of another project is not found — never "no tests on that host".
+    assert client.get(base(other), params={"host_id": host.id}).status_code == 404
 
     headers = agent_headers(client, other)
     assert client.get(f"/api/v1/agent/host-tests/{row['id']}", headers=headers).status_code == 404

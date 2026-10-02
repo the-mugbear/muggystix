@@ -137,12 +137,21 @@ class AssistFinding(BaseModel):
 
 
 class AssistFindingsResponse(BaseModel):
-    """Paginated host findings. total/has_more let an agent report complete
-    coverage without guessing (unlike the bare host arrays)."""
+    """A page of one host's SCANNER ROWS (vulnerability rows, not project
+    findings).  total/has_more let an agent report complete coverage without
+    guessing.
+
+    The rows are ``items`` — they were keyed ``findings`` until v2.453.4, the
+    word this product keeps for what the team has judged; an agent reading
+    ``findings`` here took scanner rows for adjudicated findings (feedback
+    #30).  The route moved with it: ``/assist/hosts/{id}/vulnerabilities``
+    (it ended ``/findings``).  The class names predate the vocabulary."""
     host_id: int
     total: int
     has_more: bool
-    findings: List[AssistFinding] = Field(default_factory=list)
+    limit: int
+    offset: int
+    items: List[AssistFinding] = Field(default_factory=list)
 
 
 class ScanInfoBrief(ScanInfoBase):

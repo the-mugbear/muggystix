@@ -307,7 +307,7 @@ def test_agent_scan_list_carries_the_scanned_port_list(client, db_session, test_
     db_session.commit()
     headers = _start(client, pid)
 
-    rows = {r["id"]: r for r in client.get("/api/v1/agent/assist/scans", headers=headers).json()}
+    rows = {r["id"]: r for r in client.get("/api/v1/agent/assist/scans", headers=headers).json()["items"]}
     assert rows[scan.id]["scan_info"] == [
         {"type": "syn", "protocol": "tcp", "numservices": 1000, "services": "1-1000"},
     ]
@@ -362,13 +362,18 @@ def test_the_mcp_tools_round_trip(client, db_session, test_project):
     assert q["isError"] is False, q
     assert all(r["tier"] == 1 for r in q["structuredContent"]["items"])
 
-    # The domain must reach the endpoint: an unknown one is a 404, a known one
-    # answers.
+    # The domain must reach the endpoint: a known one answers; an unknown one
+    # is refused by the advertised enum before any call is made.
     gaps = call("assist_list_evidence_gaps", {"domain": "web_tls"}, rid=3)
     assert gaps["isError"] is False, gaps
     assert gaps["structuredContent"]["domain"] == "web_tls"
-    bad = call("assist_list_evidence_gaps", {"domain": "nope"}, rid=4)
-    assert bad["isError"] is True
+    bad = client.post("/api/v1/mcp", json={
+        "jsonrpc": "2.0", "id": 4, "method": "tools/call",
+        "params": {"name": "assist_list_evidence_gaps", "arguments": {"domain": "nope"}},
+    }, headers=headers).json()
+    refused = bad.get("error") or bad["result"]
+    assert "error" in bad or refused["isError"] is True, bad
+    assert "web_tls" in str(bad), "the refusal names the accepted domains"
 
     diff = call("assist_compare_scans", {"a": scan.id, "b": other.id}, rid=5)
     assert diff["isError"] is False, diff

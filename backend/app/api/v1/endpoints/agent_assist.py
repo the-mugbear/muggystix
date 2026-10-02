@@ -19,6 +19,7 @@ behind their own approval/confirmation surface.
 """
 
 import json
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +29,10 @@ from pydantic import BaseModel, Field
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
-from app.db.session import disable_statement_timeout, get_db
+from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
+from app.services.operations_read_service import blocked_import_condition
+from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
+from app.services.vulnerability_service import VulnerabilityService
 from app.db import models
 from app.db.models_agent import (
     Agent,
@@ -59,6 +63,8 @@ from app.api.v1.endpoints.agent_common import (
     apply_agent_host_filters,
     batch_host_enrichment,
     load_agent_session,
+    require_project_host,
+    unknown_value_error,
 )
 from app.services import dns_name_service, host_detail_service
 from app.services.attribution_correlation import attributions_for_host
@@ -86,6 +92,8 @@ from app.services.posture_service import compute_posture
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
 from app.services.systemic_insight_service import compute_systemic_insights
 from app.services.subnet_insight_service import compute_subnet_insights
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -232,8 +240,25 @@ def get_assist_context(
         )
     ]
 
+    # The view the Hosts page OPENS on for every member, when a project admin
+    # set one.  The operator's "the hosts I see" may be this set, not the whole
+    # project (feedback #31: the page showed 157, the agent answered 419 and
+    # could not know why).  ``filters`` is the page's own filter object.
+    default_view = (
+        db.query(models.HostFilterView.name, models.HostFilterView.filter_json)
+        .filter(
+            models.HostFilterView.project_id == project.id,
+            models.HostFilterView.is_project_default.is_(True),
+        )
+        .first()
+    )
+
     return {
         "prompt_version": PROMPT_VERSION,
+        "default_host_view": (
+            {"name": default_view.name, "filters": (default_view.filter_json or {}).get("filters", default_view.filter_json)}
+            if default_view else None
+        ),
         "session": {
             "id": session.id,
             "purpose": session.purpose,
@@ -1272,11 +1297,11 @@ _DESC_CAP = 2000
 
 
 @router.get(
-    "/assist/hosts/{host_id}/findings",
+    "/assist/hosts/{host_id}/vulnerabilities",
     response_model=AssistFindingsResponse,
-    summary="Read a host's individual findings (CVE/plugin, port, evidence, remediation)",
+    summary="Read a host's scanner rows (CVE/plugin, port, evidence, remediation) — raw observations, not findings",
 )
-def get_assist_host_findings(
+def get_assist_host_vulnerabilities(
     request: Request,
     host_id: int = Path(..., gt=0),
     severity: Optional[str] = Query(
@@ -1307,7 +1332,11 @@ def get_assist_host_findings(
     if severity:
         wanted_values = {s.strip().lower() for s in severity.split(",") if s.strip()}
         # Compare against enum members (the column is a PG enum; lower() on it
-        # errors). Unknown severity strings simply match nothing.
+        # errors).  An unknown severity is refused: it used to match nothing
+        # and read as "no such rows on this host" (agent feedback #30).
+        known = {m.value for m in VulnerabilitySeverity}
+        for value in sorted(wanted_values - known):
+            raise unknown_value_error("severity", value, known)
         wanted = [m for m in VulnerabilitySeverity if m.value in wanted_values]
         q = q.filter(Vulnerability.severity.in_(wanted)) if wanted else q.filter(False)
     total = q.count()
@@ -1370,7 +1399,9 @@ def get_assist_host_findings(
         host_id=host_id,
         total=total,
         has_more=offset + len(rows) < total,
-        findings=findings,
+        limit=limit,
+        offset=offset,
+        items=findings,
     )
 
 
@@ -1500,7 +1531,7 @@ def list_assist_findings(
     """Project-wide findings, with the totals an analyst is actually asking for.
 
     v2.292.0.  Assist could only see findings one host at a time
-    (``/assist/hosts/{id}/findings``), so "what are the critical findings on
+    (``/assist/hosts/{id}/vulnerabilities``, scanner rows), so "what are the critical findings on
     this engagement?" — the question the Findings page exists to answer — meant
     walking every host and reassembling the spine client-side.  Findings are
     deliberately host-spanning in this schema (one finding, many hosts), so that
@@ -1519,6 +1550,13 @@ def list_assist_findings(
     status = _unfiltered(status)
     severity = _unfiltered(severity)
     source = _unfiltered(source)
+    # A status that is not one answered ``total: 0`` — "no such findings" for a
+    # misspelt or retired value (agent feedback #30).
+    if status is not None:
+        status = status.strip().lower()
+        if status not in _FINDING_STATUSES:
+            raise unknown_value_error("status", status, _FINDING_STATUSES | {"all"})
+    require_project_host(db, session.project_id, host_id)
 
     owner_id = None
     if owner:
@@ -1567,6 +1605,16 @@ def list_assist_findings(
             )
         )
     return AssistFindingsPage(total=total, severity_counts=counts, findings=findings)
+
+
+#: The statuses a finding can be listed by, and the two GROUPS the pages link
+#: with (``FindingService``: active = still being worked, resolved = every
+#: terminal one).  ``watching`` is retired: no page offers it, so it is not
+#: accepted here either.
+_FINDING_STATUSES = frozenset({
+    "open", "confirmed", "false_positive", "accepted_risk", "remediated", "retest",
+    "active", "resolved",
+})
 
 
 def _unfiltered(value: Optional[str]) -> Optional[str]:
@@ -2284,9 +2332,18 @@ def list_assist_names(
 # Scans — list (read-only)
 # ---------------------------------------------------------------------------
 
+class AssistScansPage(BaseModel):
+    """A page of scans with the total, like every other list an agent counts."""
+    items: List[ScanBrief]
+    total: int
+    has_more: bool
+    limit: int
+    offset: int
+
+
 @router.get(
     "/assist/scans",
-    response_model=List[ScanBrief],
+    response_model=AssistScansPage,
     summary="List scans in this project (most recent first)",
 )
 def list_assist_scans(
@@ -2305,11 +2362,15 @@ def list_assist_scans(
     # The Scans page's own filter (v2.429.1, MCP acceptance run 2: "the last
     # two nmap scans" meant reading every scan).
     session = _load_assist_session(db, request)
+    matching = apply_scan_inventory_filters(
+        db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
+        search=None, tool=tool, created_after=None,
+    )
+    # The whole answer to "how many nmap scans?" (agent feedback #30: this was
+    # a bare array, the one list an agent had to page to the end to count).
+    total = matching.with_entities(func.count(models.Scan.id)).order_by(None).scalar() or 0
     scans = (
-        apply_scan_inventory_filters(
-            db.query(models.Scan).filter(models.Scan.project_id == session.project_id),
-            search=None, tool=tool, created_after=None,
-        )
+        matching
         # id breaks a tie: scans imported together share created_at, and a
         # page boundary between them would repeat or skip one.
         # scan_info (nmap's scanned port list) is on every row: one load for
@@ -2332,7 +2393,9 @@ def list_assist_scans(
         row = ScanBrief.model_validate(s)
         row.ingestion_job_id = jobs.get(s.id)
         out.append(row)
-    return out
+    return AssistScansPage(
+        items=out, total=total, has_more=offset + len(out) < total, limit=limit, offset=offset,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -2435,7 +2498,26 @@ def get_assist_posture(
     """
     session = _load_assist_session(db, request)
     p = compute_posture(db, session.project_id)
+    # Posture's "Scanner observations" block: raw scanner rows by severity and
+    # the hosts carrying each — the service the page reads (``GET
+    # /dashboard/stats``).  An agent had the total and no breakdown (feedback
+    # #31).  Null when it could not be counted, never zeros.
+    scanner_observations = None
+    try:
+        stats = VulnerabilityService(db).get_dashboard_statistics(project_id=session.project_id)
+        scanner_observations = {
+            "total": stats["total_vulnerabilities"],
+            "by_severity": stats["severity_breakdown"],
+            "hosts_with_observations": stats["hosts_with_vulnerabilities"],
+            "hosts_by_severity": stats.get("hosts_by_severity", {}),
+        }
+    except Exception as exc:  # the page shows "could not be counted" too
+        if is_statement_timeout(exc):
+            raise
+        db.rollback()
+        logger.warning("assist posture: scanner observation counts unavailable: %s", exc)
     return {
+        "scanner_observations": scanner_observations,
         "label": p["label"],
         "conclusion": p["conclusion"],
         "reasons": p["reasons"],
@@ -2523,8 +2605,10 @@ def get_assist_patterns(
 
 class AssistIngestionIssue(BaseModel):
     """One upload that failed, is still in flight, or landed incomplete."""
-    #: ``failed`` (the worker gave up), ``degraded`` (parsed, but rows were
-    #: dropped) or ``parse_error`` (a recorded failure with no job row).
+    #: ``failed`` (the worker gave up), ``expired`` (a staged upload nobody
+    #: started within 24 hours — never imported, nothing failed), ``degraded``
+    #: (parsed, but rows were dropped) or ``parse_error`` (a recorded failure
+    #: with no job row).
     kind: str
     filename: str
     tool_name: Optional[str] = None
@@ -2544,7 +2628,22 @@ class AssistIngestionIssue(BaseModel):
 class AssistIngestionIssues(BaseModel):
     queued: int = 0
     processing: int = 0
-    failed: int = 0
+    failed: int = Field(0, description=(
+        "Imports that went wrong — the Ingestion Results page's Failed count. "
+        "Staged uploads that expired or were discarded are counted apart."
+    ))
+    expired: int = Field(0, description=(
+        "Staged uploads nobody started within 24 hours: never imported, nothing "
+        "failed. The page's Expired count."
+    ))
+    discarded: int = Field(0, description=(
+        "Staged uploads the operator discarded. Not listed in `issues`."
+    ))
+    needs_attention: int = Field(0, description=(
+        "Failed or partial imports nobody has dismissed and no later import of "
+        "the same file has replaced — the page's Needs attention count and "
+        "Operations' blocked imports."
+    ))
     degraded: int = 0
     #: Unresolved parse errors with NO surviving job row — the ones that would
     #: otherwise go unreported, since a failed job already carries its error.
@@ -2674,10 +2773,33 @@ def list_assist_ingestion_issues(
         )
     orphan_errors = orphan_query.order_by(models.ParseError.created_at.desc()).all()
 
+    # A staged upload that expired, or that the operator discarded, is written
+    # with the job status ``failed`` although nothing failed.  The page counts
+    # them apart (``parse_errors._expired_job`` / ``_discarded_job``, the same
+    # two message tests); this read counted all three as failed imports —
+    # 48 where the page said 16 failed + 32 expired (agent feedback #31).
+    def _staged_kind(job) -> str:
+        message = job.error_message or ""
+        if message.startswith(EXPIRED_MESSAGE_PREFIX):
+            return "expired"
+        if message == DISCARDED_MESSAGE:
+            return "discarded"
+        return "failed"
+
+    kinds = {j.id: _staged_kind(j) for j in failed_jobs}
+    discarded = sum(1 for k in kinds.values() if k == "discarded")
+    expired = sum(1 for k in kinds.values() if k == "expired")
+    failed_jobs = [j for j in failed_jobs if kinds[j.id] != "discarded"]
+    needs_attention = (
+        db.query(func.count(models.IngestionJob.id))
+        .filter(models.IngestionJob.project_id == pid, blocked_import_condition())
+        .scalar()
+    ) or 0
+
     issues: List[AssistIngestionIssue] = []
     for j in failed_jobs:
         issues.append(AssistIngestionIssue(
-            kind="failed",
+            kind=kinds[j.id],
             filename=j.original_filename or j.filename,
             tool_name=j.tool_name,
             message=(
@@ -2723,7 +2845,10 @@ def list_assist_ingestion_issues(
     return AssistIngestionIssues(
         queued=queued,
         processing=processing,
-        failed=len(failed_jobs),
+        failed=len(failed_jobs) - expired,
+        expired=expired,
+        discarded=discarded,
+        needs_attention=int(needs_attention),
         degraded=len(degraded_jobs),
         unresolved_parse_errors=len(orphan_errors),
         unresolved_parse_errors_total=unresolved_total,

@@ -325,7 +325,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "members and their project roles, host/port/scope/scan "
             "totals, the scope list (capped at 50), and recent scans. It carries "
             "NO findings — use assist_list_hosts to locate hosts and "
-            "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first."
+            "assist_get_host_vulnerabilities for the scanner vulns on one. Call this first. "
+            "default_host_view (name + filters) is the view the Hosts page OPENS on "
+            "for everyone when a project admin set one: your unfiltered counts are "
+            "the whole project, so when the operator asks about 'the hosts I see', "
+            "say which set you counted."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/context",
@@ -368,16 +372,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "q": {"type": "string", "description": "Boolean query DSL (see tool description)."},
-                "search": {"type": "string", "description": "Substring match on IP, hostname, or OS."},
+                "search": {"type": "string", "description": "Substring of IP, hostname or OS NAME only. It is not the Hosts page's search box: for that pass the word as q (q=windows also matches the OS family)."},
                 "state": {"type": "string", "description": "Host state filter (e.g. up)."},
-                "ports": {"type": "string", "description": (
-                    "Comma-separated port numbers, any of them OPEN. No ranges or names (422)."
-                )},
-                "services": {"type": "string", "description": (
-                    "Comma-separated service names, matched on the service the scanner identified "
-                    "on an OPEN port, on any port — the Hosts page's service: (a masscan-only open "
-                    "port has no name and does not match; use ports= for standard ports)."
-                )},
+                "ports": {"type": "string", "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422)."},
+                "services": {"type": "string", "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port — the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match."},
                 "subnets": {"type": "string", "description": "Comma-separated CIDR blocks."},
                 "has_critical_vulns": {"type": "boolean"},
                 "has_high_vulns": {"type": "boolean"},
@@ -415,10 +413,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "type": "object",
             "properties": {
                 "q": {"type": "string", "description": "Boolean query DSL (see assist_list_hosts)."},
-                "search": {"type": "string"},
+                "search": {"type": "string", "description": "Substring of IP, hostname or OS NAME only. It is not the Hosts page's search box: for that pass the word as q (q=windows also matches the OS family)."},
                 "state": {"type": "string"},
-                "ports": {"type": "string"},
-                "services": {"type": "string"},
+                "ports": {"type": "string", "description": "Comma-separated port numbers, ANY of them open. For ALL of them open use q: q=port:80 port:443. No ranges or names (422)."},
+                "services": {"type": "string", "description": "Comma-separated service names, ANY of them, matched on the service the scanner identified on an OPEN port, on any port — the Hosts page's service:. The name is the scanner's own: SMB is usually microsoft-ds, not smb (or use ports=445). A masscan-only open port has no name and does not match."},
                 "subnets": {"type": "string"},
                 "has_critical_vulns": {"type": "boolean"},
                 "has_high_vulns": {"type": "boolean"},
@@ -460,7 +458,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Every raw scanner vulnerability on a host with evidence: severity, "
             "CVE/plugin id, title, affected port/service, CVSS, description, "
             "remediation, scanner evidence. Worst-severity first. Use this to cite "
-            "specifics in a report, not just counts. NOTE: these are scanner rows — "
+            "specifics in a report, not just counts. Returns {host_id, items, total, "
+            "has_more, limit, offset}. NOTE: these are scanner rows — "
             "each `id` is a vulnerability id, NOT a project-Finding id, so do not "
             "pass it to assist_get_finding. The triaged project Findings (the spine "
             "assist_list_findings / assist_get_finding work on) are a separate set. "
@@ -470,7 +469,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "and `finding_endpoint_status` (this host's own state on it)."
         ),
         "method": "GET",
-        "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
+        "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
         "path_params": ["host_id"],
         "query_params": ["severity", "limit", "offset"],
         "defaults": {"limit": 50},
@@ -517,10 +516,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "properties": {
                 "status": {
                     "type": "string",
+                    "enum": [
+                        "open", "confirmed", "false_positive", "accepted_risk",
+                        "remediated", "retest", "active", "resolved", "all",
+                    ],
                     "description": (
-                        "open / confirmed / false_positive / accepted_risk / remediated / "
-                        "retest (assist_get_vocabulary lists them), or 'all' / omitted "
-                        "for every status."
+                        "A status, or a group: active (still being worked) / resolved "
+                        "(every terminal status). 'all' or omitted for every status. "
+                        "Any other value is a 422."
                     ),
                 },
                 "severity": {"type": "string", "enum": ["critical", "high", "medium", "low", "info"]},
@@ -659,7 +662,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "TLS…). Every other tool reports what WAS found; this is what stops "
             "\"no critical findings\" being reported as \"no critical "
             "exposure\". Cite it whenever a report or an answer implies "
-            "completeness. The vuln_assessment domain carries `credentialed` "
+            "completeness. (The three SCOPE states — hosts in subnet scope, in "
+            "name scope only, outside scope — are not here: count them with "
+            "assist_count_hosts q=scope:subnet / scope:name / scope:none; they add "
+            "up to the host total.) The vuln_assessment domain carries `credentialed` "
             "{credentialed, not_credentialed, credentials_not_stated} — of the "
             "assessed hosts, how many a scanner logged in to; a clean result "
             "from a scan that did not authenticate is weaker evidence. List "
@@ -706,7 +712,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "build a report's executive summary from it rather than inventing "
             "a judgement from counts. Note that label='insufficient_evidence' "
             "means the estate has NOT been assessed enough to judge — it is "
-            "not a clean bill of health, and reporting it as one is wrong."
+            "not a clean bill of health, and reporting it as one is wrong. "
+            "scanner_observations is the raw scanner rows (not findings): total, "
+            "by_severity, and hosts_by_severity — 'how many criticals?' has four "
+            "answers (critical findings, critical scanner issues, critical scanner "
+            "rows, hosts carrying one): say which you are giving."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/posture",
@@ -854,7 +864,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "input_schema": {
             "type": "object",
             "properties": {
-                "domain": {"type": "string"},
+                "domain": {
+                    "type": "string",
+                    "enum": [
+                        "port_discovery", "service_detection", "os_detection",
+                        "vuln_assessment", "web_tls", "auth_smb_ad", "validation",
+                    ],
+                },
                 "segment": {"type": "string"},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 50},
             },
@@ -919,8 +935,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "rows. CHECK THIS BEFORE REPORTING THAT SOMETHING IS ABSENT: 'no "
             "web servers in that range' and 'the httpx upload failed to parse' "
             "look identical from every other tool, and only one of them is a "
-            "finding about the network. kind=failed means nothing from that "
-            "file is in the project; kind=degraded means the file IS in the "
+            "finding about the network. Counts as the Ingestion Results page "
+            "states them: failed (an import went wrong), expired (a staged upload "
+            "nobody started — never imported, nothing failed), discarded, and "
+            "needs_attention (failed or partial, not dismissed, not replaced by a "
+            "later import — say this one for 'how many imports need attention'). "
+            "kind=failed means nothing from that "
+            "file is in the project; kind=expired the same, because it was never "
+            "started; kind=degraded means the file IS in the "
             "project but rows were dropped, so counts drawn from it are "
             "undercounts (everything else reports that job as completed); "
             "queued/processing mean data is still arriving. If has_issues is "
@@ -1188,7 +1210,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "carries ingestion_job_id, the import that produced it — the job_id "
             "assist_list_uninterpreted_lines takes (a scan id is not a job id). "
             "tool narrows to one tool's scans, as the Scans page's chips do — "
-            "'the last two nmap scans' is tool=nmap, limit=2."
+            "'the last two nmap scans' is tool=nmap, limit=2. Returns {items, "
+            "total, has_more, limit, offset}: `total` is the whole count for the "
+            "filter, so 'how many nmap scans?' is one call with limit=1."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scans",
@@ -1200,7 +1224,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "limit": {"type": "integer", "minimum": 1, "maximum": 500, "default": 100},
                 "offset": {
                     "type": "integer", "minimum": 0,
-                    "description": "Skip this many (newest first). Page until a page is shorter than limit.",
+                    "description": "Skip this many (newest first). Page while has_more is true.",
                 },
                 "tool": {"type": "string", "maxLength": 100, "description": "A tool name (nmap, nessus, netexec…) or scan type."},
             },

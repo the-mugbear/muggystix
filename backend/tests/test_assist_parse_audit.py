@@ -65,7 +65,7 @@ def test_scanner_observations_name_their_catalog_check(client, db_session, test_
     db_session.commit()
     key = _start(client, test_project)
     data = _mcp(client, key, "assist_get_host_vulnerabilities", host_id=host.id)["structuredContent"]
-    assert [f["check_id"] for f in data["findings"]] == ["vnc_no_auth"]
+    assert [f["check_id"] for f in data["items"]] == ["vnc_no_auth"]
 
 
 def test_uninterpreted_lines_are_listed_per_import(client, db_session, test_project):

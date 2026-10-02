@@ -21,6 +21,37 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.8.4",
+        "app_version": "2.453.4",
+        "summary": (
+            "From the UI-parity pass (feedback #31): assist_list_ingestion_issues "
+            "counts failed / expired / discarded / needs_attention as the Ingestion "
+            "Results page does (expired staged uploads are not failed imports); "
+            "assist_get_posture carries scanner_observations by severity; "
+            "assist_get_context carries default_host_view (the view the Hosts page "
+            "opens on). The guide lists the questions with more than one correct "
+            "number (ports ANY vs ALL, SMB = microsoft-ds, web servers, criticals, "
+            "open vs active findings, planned hosts) and tells the agent to say "
+            "which it answered; search= is not the page's search box (use q). "
+            "assist_get_host_vulnerabilities returns its scanner rows as `items` "
+            "(they were keyed `findings`), with limit and offset; its route is "
+            "GET /agent/assist/hosts/{id}/vulnerabilities (it ended /findings)."
+        ),
+    },
+    {
+        "version": "4.8.3",
+        "app_version": "2.453.3",
+        "summary": (
+            "From acceptance feedback #30: assist_list_scans returns {items, total, "
+            "has_more, limit, offset}; assist_list_findings refuses an unknown status "
+            "(422; active / resolved are accepted groups) and host vulnerabilities an "
+            "unknown severity; a host_id filter naming a host that is not in the "
+            "project is a 404 on host tests, evidence and findings; "
+            "assist_list_evidence_gaps advertises its domain keys; the three scope "
+            "counts are assist_count_hosts q=scope:subnet|name|none."
+        ),
+    },
+    {
         "version": "4.8.2",
         "app_version": "2.453.2",
         "summary": (

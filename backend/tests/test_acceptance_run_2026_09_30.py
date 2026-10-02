@@ -89,7 +89,9 @@ def test_the_scan_list_says_whether_a_time_is_an_instant(client, db_session, tes
     hdr = _key(client, test_project)
 
     for path in ("/api/v1/agent/assist/scans", "/api/v1/agent/scans"):
-        rows = {r["id"]: r for r in client.get(path, headers=hdr).json()}
+        body = client.get(path, headers=hdr).json()
+        # The assist list is a page with its total; /agent/scans is a plain list.
+        rows = {r["id"]: r for r in (body["items"] if isinstance(body, dict) else body)}
         assert rows[instant.id]["time_source"] == "tool_run"
         assert rows[instant.id]["start_time"].endswith(("Z", "+00:00")), path
         assert rows[wall_clock.id]["time_source"] == "tool_clock"
@@ -109,6 +111,8 @@ def test_the_scan_list_pages_past_its_limit(client, db_session, test_project):
     for offset in (0, 2, 4):
         page = client.get("/api/v1/agent/assist/scans", headers=hdr,
                           params={"limit": 2, "offset": offset}).json()
-        seen += [r["id"] for r in page]
+        assert page["total"] == 5 and page["has_more"] is (offset < 3), page
+        assert (page["limit"], page["offset"]) == (2, offset)
+        seen += [r["id"] for r in page["items"]]
     assert sorted(seen) == sorted(s.id for s in scans)
     assert len(seen) == len(set(seen))

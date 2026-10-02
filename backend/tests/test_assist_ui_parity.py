@@ -367,7 +367,7 @@ def test_scan_rows_name_their_import_job(client, db_session, test_project):
     db_session.commit()
     r = client.post(f"/api/v1/projects/{test_project.id}/assist/start", json={"purpose": "scans"})
     headers = {"X-API-Key": r.json()["api_key"]}
-    rows = client.get("/api/v1/agent/assist/scans", headers=headers).json()
+    rows = client.get("/api/v1/agent/assist/scans", headers=headers).json()["items"]
     row = next(x for x in rows if x["id"] == scan.id)
     assert row["ingestion_job_id"] == job.id
 
@@ -506,7 +506,9 @@ def test_scans_narrow_to_one_tool(client, db_session, test_project):
         db_session.add(models.Scan(project_id=test_project.id, filename=name, tool_name=tool))
     db_session.commit()
     headers = _assist(client, test_project.id)
-    rows = client.get("/api/v1/agent/assist/scans", params={"tool": "nmap"}, headers=headers).json()
+    page = client.get("/api/v1/agent/assist/scans", params={"tool": "nmap"}, headers=headers).json()
+    rows = page["items"]
+    assert page["total"] == 2, "the total is the filtered count, not the project's"
     assert sorted(r["filename"] for r in rows) == ["a.xml", "c.xml"]
 
 
@@ -603,8 +605,9 @@ def test_scanner_rows_say_how_the_finding_stands_on_this_host(client, db_session
     headers = _assist(client, pid)
 
     def agent_row(host, vuln):
-        body = client.get(f"/api/v1/agent/assist/hosts/{host.id}/findings", headers=headers).json()
-        return next(r for r in body["findings"] if r["id"] == vuln.id)
+        body = client.get(f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities", headers=headers).json()
+        assert "findings" not in body, "scanner rows are items, never findings"
+        return next(r for r in body["items"] if r["id"] == vuln.id)
 
     def page_row(host, vuln):
         body = client.get(f"/api/v1/projects/{pid}/hosts/{host.id}").json()
@@ -646,3 +649,126 @@ def test_a_findings_endpoints_carry_the_id_a_proposal_needs(client, db_session, 
         "rationale": "from the id the read returned",
     })
     assert proposed.status_code == 201, proposed.text
+
+
+# ---------------------------------------------------------------------------
+# Agent feedback #30 (acceptance run, session 81, 2026-10-02)
+# ---------------------------------------------------------------------------
+
+def test_an_unknown_filter_value_is_refused_not_answered_with_nothing(client, db_session, test_project):
+    """``status=bogus`` (and the retired ``watching``) answered ``total: 0`` — an
+    ordinary empty result for a value that means nothing."""
+    host = models.Host(project_id=test_project.id, ip_address="10.71.0.1", state="up")
+    db_session.add(host)
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+
+    for value in ("bogus", "watching"):
+        r = client.get("/api/v1/agent/assist/findings", params={"status": value}, headers=headers)
+        assert r.status_code == 422 and value in r.text and "confirmed" in r.text, r.text
+    for value in ("all", "open", "CONFIRMED", "active", "resolved"):
+        assert client.get(
+            "/api/v1/agent/assist/findings", params={"status": value}, headers=headers,
+        ).status_code == 200, value
+
+    path = f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities"
+    bad = client.get(path, params={"severity": "critical,bogus"}, headers=headers)
+    assert bad.status_code == 422 and "bogus" in bad.text
+    assert client.get(path, params={"severity": "critical,high"}, headers=headers).status_code == 200
+
+
+def test_a_list_filtered_by_a_host_that_is_not_here_is_not_found(client, db_session, test_project):
+    """``host_id`` of another project's host, or of none, answered 200 with no
+    rows on three lists while the host reads answered 404."""
+    from app.db.models_project import Project
+
+    other = Project(name="elsewhere", slug="elsewhere-fb30")
+    db_session.add(other)
+    db_session.flush()
+    foreign = models.Host(project_id=other.id, ip_address="10.71.0.2", state="up")
+    mine = models.Host(project_id=test_project.id, ip_address="10.71.0.2", state="up")
+    db_session.add_all([foreign, mine])
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+
+    for path in ("/api/v1/agent/assist/findings", "/api/v1/agent/host-tests", "/api/v1/agent/evidence"):
+        for host_id in (foreign.id, 999_999):
+            r = client.get(path, params={"host_id": host_id}, headers=headers)
+            assert r.status_code == 404, (path, host_id, r.text)
+        assert client.get(path, params={"host_id": mine.id}, headers=headers).status_code == 200, path
+    # The page's own route is the same handler.
+    page = client.get(f"/api/v1/projects/{test_project.id}/host-tests", params={"host_id": foreign.id})
+    assert page.status_code == 404
+
+
+def test_the_evidence_gap_tool_advertises_exactly_the_domains():
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+    from app.services.evidence_service import EVIDENCE_DOMAINS
+
+    advertised = TOOLS["assist_list_evidence_gaps"]["input_schema"]["properties"]["domain"]["enum"]
+    assert advertised == [d["key"] for d in EVIDENCE_DOMAINS]
+
+
+# ---------------------------------------------------------------------------
+# Agent feedback #31 — the agent's numbers against the pages' (2026-10-02)
+# ---------------------------------------------------------------------------
+
+def test_expired_staged_uploads_are_not_failed_imports(client, db_session, test_project):
+    """The agent said 48 imports failed where Ingestion Results said 16 failed
+    and 32 expired: a staged upload nobody started is written ``failed``."""
+    from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
+
+    def job(name, message):
+        db_session.add(models.IngestionJob(
+            project_id=test_project.id, filename=name, original_filename=name,
+            storage_path=f"/tmp/{name}", status="failed", error_message=message,
+        ))
+
+    job("broke.xml", "Parser error: not well-formed")
+    job("late-1.xml", f"{EXPIRED_MESSAGE_PREFIX} not started within 24 hours")
+    job("late-2.xml", f"{EXPIRED_MESSAGE_PREFIX} not started within 24 hours")
+    job("dropped.xml", DISCARDED_MESSAGE)
+    db_session.commit()
+
+    agent = client.get("/api/v1/agent/assist/ingestion-issues", headers=_assist(client, test_project.id)).json()
+    page = client.get(f"/api/v1/projects/{test_project.id}/parse-errors/ingestion-results").json()
+    summary = page.get("summary") or page
+    assert (agent["failed"], agent["expired"], agent["discarded"]) == (1, 2, 1)
+    assert (agent["failed"], agent["expired"], agent["discarded"]) == (
+        summary["total_failed"], summary["total_expired"], summary["total_discarded"])
+    assert agent["needs_attention"] == summary["total_needs_attention"]
+    kinds = sorted(i["kind"] for i in agent["issues"])
+    assert kinds == ["expired", "expired", "failed"], "a discarded upload is not an issue"
+
+
+def test_posture_carries_the_scanner_rows_by_severity(client, db_session, test_project):
+    from app.db.models_vulnerability import VulnerabilitySeverity
+
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus", tool_name="nessus")
+    a = models.Host(project_id=test_project.id, ip_address="10.72.0.1", state="up")
+    b = models.Host(project_id=test_project.id, ip_address="10.72.0.2", state="up")
+    db_session.add_all([scan, a, b])
+    db_session.flush()
+    _vuln(db_session, a, scan, VulnerabilitySeverity.CRITICAL, True)
+    _vuln(db_session, a, scan, VulnerabilitySeverity.CRITICAL, False)
+    _vuln(db_session, b, scan, VulnerabilitySeverity.HIGH, False)
+    db_session.commit()
+
+    agent = client.get("/api/v1/agent/assist/posture", headers=_assist(client, test_project.id)).json()
+    page = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats").json()["vulnerability_stats"]
+    rows = agent["scanner_observations"]
+    assert rows["total"] == 3 == page["total_vulnerabilities"]
+    assert (rows["by_severity"]["critical"], rows["by_severity"]["high"]) == (2, 1) == (page["critical"], page["high"])
+    assert rows["hosts_by_severity"]["critical"] == 1 == page["hosts_by_severity"]["critical"]
+
+
+def test_context_names_the_view_the_hosts_page_opens_on(client, db_session, test_project, test_user):
+    headers = _assist(client, test_project.id)
+    assert client.get("/api/v1/agent/assist/context", headers=headers).json()["default_host_view"] is None
+    db_session.add(models.HostFilterView(
+        user_id=test_user.id, project_id=test_project.id, name="FTP",
+        filter_json={"filters": {"ports": ["21"]}}, is_project_default=True,
+    ))
+    db_session.commit()
+    view = client.get("/api/v1/agent/assist/context", headers=headers).json()["default_host_view"]
+    assert view == {"name": "FTP", "filters": {"ports": ["21"]}}

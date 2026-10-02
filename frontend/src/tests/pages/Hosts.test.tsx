@@ -436,6 +436,33 @@ describe('Hosts', () => {
     expect(sessionStorage.getItem(projectScopedKey('projectDefaultName'))).toBe('Web tier');
   });
 
+  // Acceptance feedback #31 — a link carrying its own query kept the banner
+  // ("hosts outside it are not listed") over a list that was not the default.
+  it('a link with its own query is not labelled as the project default view', async () => {
+    mockedApi.getProjectDefaultView.mockResolvedValue({
+      id: 9, name: 'Web tier', filter_json: { filters: { ports: ['443'] } },
+      is_project_default: true, created_at: '2026-09-01T00:00:00Z', updated_at: null,
+    });
+    sessionStorage.setItem(
+      projectScopedKey('hostFiltersState'),
+      JSON.stringify({ filters: { ports: ['443'] }, followFilter: 'all', onlyWithNotes: false }),
+    );
+    sessionStorage.setItem(projectScopedKey('projectDefaultName'), 'Web tier');
+    routerState.search = '?q=has%3Acritical';
+    try {
+      renderHosts();
+    } finally {
+      routerState.search = '';
+    }
+
+    await screen.findByRole('table');
+    await waitFor(() => {
+      const calls = mockedApi.getHosts.mock.calls;
+      expect(calls[calls.length - 1][0]).toMatchObject({ q: 'has:critical' });
+    });
+    expect(screen.queryByText(/Project default view applied/)).not.toBeInTheDocument();
+  });
+
   it('forwards a command-bar query as the q param to getHosts', async () => {
     const user = userEvent.setup({ skipHover: true });
     renderHosts();
