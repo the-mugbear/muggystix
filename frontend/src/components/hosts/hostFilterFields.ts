@@ -302,12 +302,11 @@ export const HOST_FILTER_FIELDS: HostFilterField[] = [
   {
     kind: 'choice', id: 'followFilter', key: 'followFilter', keys: ['followFilter'], chipKey: 'followFilter',
     // Not "common": the toolbar's Review menu is the everyday control for this.
-    label: 'Team review', category: 'work', keywords: ['review', 'reviewed', 'unreviewed', 'watching', 'status'],
+    label: 'Team review', category: 'work', keywords: ['review', 'reviewed', 'unreviewed', 'status'],
     help: 'The team\'s review state — shared, not yours alone.',
     choices: [
       { value: undefined, label: 'Any' },
       { value: 'none', label: 'Not started', help: 'Nobody has taken it In review or marked it Reviewed.' },
-      { value: 'watching', label: 'Watching' },
       { value: 'in_review', label: 'In review' },
       { value: 'reviewed', label: 'Reviewed' },
     ],

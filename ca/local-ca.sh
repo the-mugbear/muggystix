@@ -480,8 +480,9 @@ cmd_install() {
     if [[ -z "$(cd "$root_dir" && $dc ps -q frontend 2>/dev/null)" ]]; then
         # A fresh copy: nothing to restart.  deploy.sh keeps a certificate
         # pair it finds (it only generates a self-signed one when none exists).
+        # A first install is option 2; option 1 is for every later rebuild.
         echo ""
-        info "BlueStick is not running here yet.  Start it: (cd '$root_dir' && ./scripts/deploy.sh), option 1."
+        info "BlueStick is not running here yet.  Start it: (cd '$root_dir' && ./scripts/deploy.sh) — option 2 on a first install, option 1 if this instance has run before."
         info "It keeps this certificate.  Then check it from here: ./ca/local-ca.sh verify https://$host_ip '$ca'"
         info "Now: shred -u '$key'   (the copy you brought over; the installed one is in ssl/certs)"
         info "Analyst machines: ./ca/local-ca.sh trust-help rootCA.crt"

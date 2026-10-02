@@ -166,7 +166,7 @@ shred -u /tmp/bluestick-cert/networkmapper.key            # the copy you brought
 2. the current directory;
 3. the folder above the script.
 
-A folder counts only if it has `docker-compose.yml` and `.env` (`HOST_IP` is read from it). `ssl/certs/` is not required: on a copy that has never been deployed, `install` creates it, and tells you to start BlueStick with `./scripts/deploy.sh` (option 1), which keeps the certificate it finds.
+A folder counts only if it has `docker-compose.yml` and `.env` (`HOST_IP` is read from it). `ssl/certs/` is not required: on a copy that has never been deployed, `install` creates it, and tells you to start BlueStick with `./scripts/deploy.sh` — option 2 on a first install, option 1 on an instance that has run before — which keeps the certificate it finds.
 
 **Upgrading by file copy (`upgrade-instance.sh`)?** Either order works:
 - Upgrade first (the old certificate is carried across and deployed), then run `install` on the running deployment.

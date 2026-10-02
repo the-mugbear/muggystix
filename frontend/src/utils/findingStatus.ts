@@ -19,7 +19,7 @@ export const STATUS_LABEL: Record<FindingStatus, string> = {
 /**
  * Terminal dispositions — moving a finding here prompts for a "why" summary
  * that lands on the disposition-history trail as the audit rationale. The
- * summary is optional (the prompt offers Skip), but the prompt itself always
+ * summary is optional (the prompt offers "Save without a reason"), but the prompt itself always
  * appears for these moves so the rationale is never silently lost.
  */
 export const TERMINAL_STATUSES = new Set<FindingStatus>([

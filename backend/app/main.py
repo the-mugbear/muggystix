@@ -209,7 +209,7 @@ _OPENAPI_TAGS = [
     },
     {
         "name": "host-follow",
-        "description": "Track review progress on individual hosts (watching → in_review → reviewed).",
+        "description": "Track review progress on individual hosts (in_review → reviewed).",
     },
     {
         "name": "host-notes",

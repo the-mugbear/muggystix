@@ -827,11 +827,11 @@ const FindingsList: React.FC = () => {
             </DialogTitle>
             <DialogDescription>
               {summaryPrompt?.kind === 'bulk'
-                ? 'A justification is required — one reason is recorded on every selected finding’s history and carried into reports.'
+                ? 'Why? One reason is recorded on every selected finding’s history and carried into reports. You can save without one.'
                   + (summaryPrompt.offscreen > 0
                     ? ` ${summaryPrompt.offscreen} of the ${summaryPrompt.ids.length} selected ${summaryPrompt.offscreen === 1 ? 'is' : 'are'} not on this page.`
                     : '')
-                : 'A justification is required for a terminal disposition — it’s kept on the finding’s history and carried into the report.'}
+                : 'Why? The reason is kept on the finding’s history and carried into the report. You can save without one.'}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -847,17 +847,16 @@ const FindingsList: React.FC = () => {
               Cancel
             </Button>
             <Button
-              disabled={!summaryText.trim()}
               onClick={() => {
                 const p = summaryPrompt;
-                const summary = summaryText.trim();
+                const summary = summaryText.trim() || undefined;
                 setSummaryPrompt(null);
                 if (!p) return;
                 if (p.kind === 'single') void applyStatus(p.findingId, p.status, p.title, summary);
                 else void runBulk(p.ids, p.status, summary);
               }}
             >
-              Save
+              {summaryText.trim() ? 'Save' : 'Save without a reason'}
             </Button>
           </DialogFooter>
         </DialogContent>

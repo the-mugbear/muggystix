@@ -32,7 +32,7 @@ from app.services.agent_session_service import note_agent_model
 
 router = APIRouter()
 
-_MODEL = Field(None, max_length=200, description="The model you are running as (optional).")
+_MODEL = Field(None, max_length=100, description="The model you are running as (optional).")
 
 
 def _who(db: Session, request: Request, agent_model: Optional[str]) -> proposals.Attribution:

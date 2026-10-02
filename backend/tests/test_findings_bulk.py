@@ -6,7 +6,7 @@ one PATCH per finding from the browser, unbounded and partially failable,
 and ownership could only be changed one detail page at a time.
 
 The properties worth pinning are the ones a naive loop-in-the-client gets
-wrong: project scoping, the terminal-justification rule surviving the batch,
+wrong: project scoping, the optional reason for a terminal move,
 one notification instead of N, and honest reporting when some ids are
 rejected.
 """
@@ -58,22 +58,21 @@ def test_bulk_status_applies_to_every_selected_finding(
         assert f.status == "confirmed"
 
 
-def test_bulk_status_enforces_the_terminal_justification_rule(
+def test_bulk_status_accepts_a_terminal_move_without_a_reason(
     client, db_session, test_project, three_findings
 ):
-    """A terminal disposition without a reason must fail the whole batch —
-    dispositioning some findings unjustified would corrupt the audit trail
-    that reports are built from."""
+    """The reason is asked for by the page and optional on the server
+    (owner, 2026-10-02): a terminal move without one applies to every finding."""
     ids = [f.id for f in three_findings]
     resp = client.post(
         _url(test_project.id, "status"),
         json={"finding_ids": ids, "status": "false_positive"},
     )
-    assert resp.status_code == 422, resp.text
+    assert resp.status_code == 200, resp.text
 
     for f in three_findings:
         db_session.refresh(f)
-        assert f.status == "open", "no finding may be dispositioned without a reason"
+        assert f.status == "false_positive"
 
 
 def test_bulk_status_accepts_a_terminal_move_with_a_justification(

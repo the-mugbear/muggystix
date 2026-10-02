@@ -542,7 +542,7 @@ All paths are relative to `/api/v1`. Include `X-API-Key: nm_agent_...` on every 
 | GET | `/agent/scopes` | List scopes |
 | POST | `/agent/hosts/{id}/notes` | Create a note on a host — a project write |
 | GET | `/agent/hosts/{id}/notes` | List notes for a host |
-| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "watching"}`) — a project write |
+| POST | `/agent/hosts/{id}/follow` | Set review status (`{"status": "in_review"}`) — a project write |
 | PATCH | `/agent/hosts/{id}` | Correct operator-curated host attributes (`hostname` / `os_name`) after investigation — a project write. Only these two fields; scan-derived facts (ports/services/vulns) are never editable here |
 | POST | `/agent/feedback` | **File structured feedback at the moment you hit friction** (a retry, a guess, a workaround, a re-read of this guide) — several short submissions per session. Over MCP the tool is `submit_feedback`. Your session is attributed from your key; `source` names the kind of work: `assist` (queries and notes), `reconnaissance` (scope reads, scanning, uploads) or `testing` (proposing host tests, recording evidence). One submission is about one kind of work. |
 | GET | `/agent/identity` | **Who am I** — `session_id`, the project, the operator and their role, `can_write_project_data`, `key_expires_at` / `renew_path` / `renewable_until`. A session has nothing "open": after a resume, what it did before is in `GET /agent/host-tests?agent_session_id=` and `GET /agent/evidence?agent_session_id=`. |
@@ -688,7 +688,7 @@ A note has no status: the body is `{"body": "..."}` and nothing else. A check yo
 
 2. **Be specific in rationale.** Include the service, port and version or observation you read. "Needs review" is not useful. Say *why* this host warrants this test.
 
-3. **Use follow status to track your review.** `POST /agent/hosts/{id}/follow` with `{"status": "watching"}` marks hosts you've assessed so neither you nor the user revisits them unnecessarily. Never mark a host `reviewed` on your own initiative.
+3. **Use follow status to track your review.** `POST /agent/hosts/{id}/follow` with `{"status": "in_review"}` takes a host into the operator's review queue when they ask you to work on it; `none` clears it. Never mark a host `reviewed` on your own initiative — that is the operator's conclusion.
 
 4. **Markdown works in notes.** Use headers, lists, and bold text for readability — analysts read these in the UI.
 
@@ -769,7 +769,7 @@ All under `/agent/assist/*`.  X-API-Key header on every call:
 | Endpoint | Purpose |
 |---|---|
 | `POST /agent/hosts/{host_id}/notes` | Add a note. Body `{"body": "..."}`. A note is discussion for the team — context, a question, a handoff — and has no status: a check you ran is evidence (`POST /agent/evidence`), a check to run is a host test. An `@username` in an agent's note notifies nobody — ask the operator to mention someone. |
-| `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`watching` \| `in_review` \| `reviewed`). |
+| `POST /agent/hosts/{host_id}/follow` | Set review status. Body `{"status": "in_review"}` (`in_review` \| `reviewed`; `none` clears it). |
 | `PATCH /agent/hosts/{host_id}` | Correct a host's `hostname` / `os_name` after investigation. Body `{"hostname": "...", "os_name": "..."}` — send only the field you're fixing; only these two are editable (setting `os_name` re-derives `os_family`). Use when your investigation established the real hostname/OS a scan mis-detected. |
 
 **Whether you may write is your operator's project role, not a per-session grant.** `GET /agent/identity` returns `can_write_project_data` — check it once at start rather than discovering the answer from a 403. `true` means you can write anywhere in the project, `false` means nowhere in it. The role is re-checked on every request, so it can change mid-session if the operator's membership changes.

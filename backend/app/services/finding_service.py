@@ -694,14 +694,10 @@ class FindingService:
     ) -> Finding:
         _validate_status(status)
         if status != finding.status:
-            # Terminal determinations must be justified — the rationale lives in
-            # the status-history summary (surfaced by the history endpoint and
-            # the report).
-            if status in _TERMINAL_STATUSES and not (summary and summary.strip()):
-                raise HTTPException(
-                    status_code=422,
-                    detail=f"A justification is required to set a finding to '{status}'.",
-                )
+            # A reason for a terminal determination is ASKED FOR, never required
+            # (owner, 2026-10-02): the pages always prompt, and an empty answer is
+            # accepted.  When given it lives in the status-history summary
+            # (surfaced by the history endpoint and the report).
             old = finding.status
             finding.status = status
             record_status_transition(

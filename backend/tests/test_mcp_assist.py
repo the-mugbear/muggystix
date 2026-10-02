@@ -256,7 +256,7 @@ def test_an_endpoint_refusal_stays_a_tool_result_not_a_transport_error(
         "jsonrpc": "2.0", "id": 13, "method": "tools/call",
         "params": {
             "name": "assist_set_follow",
-            "arguments": {"host_id": 999_999, "status": "watching"},
+            "arguments": {"host_id": 999_999, "status": "in_review"},
         },
     }, headers={"X-API-Key": body["api_key"]})
 
@@ -275,7 +275,7 @@ def test_write_tool_without_key_also_answers_401(client):
     """
     resp = _rpc(client, {
         "jsonrpc": "2.0", "id": 13, "method": "tools/call",
-        "params": {"name": "assist_set_follow", "arguments": {"host_id": 1, "status": "watching"}},
+        "params": {"name": "assist_set_follow", "arguments": {"host_id": 1, "status": "in_review"}},
     })
     assert resp.status_code == 401
     assert "X-API-Key" in resp.json()["error"]["message"]

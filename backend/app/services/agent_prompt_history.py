@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.5.1",
+        "app_version": "2.450.1",
+        "summary": (
+            "The retired `watching` review state is no longer offered: set_follow takes "
+            "`in_review`, `reviewed` or `none`, and the guide no longer tells an agent to "
+            "mark assessed hosts `watching` — take a host `in_review` when the operator "
+            "asks for it to be worked, and never mark one `reviewed` on your own. "
+            "`agent_model` is at most 100 characters on every route. Closing a finding "
+            "(false positive / accepted risk / remediated) no longer requires a reason on "
+            "the server; give one anyway whenever you propose such a change."
+        ),
+    },
+    {
         "version": "4.5.0",
         "app_version": "2.450.0",
         "summary": (

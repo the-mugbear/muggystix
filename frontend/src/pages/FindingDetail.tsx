@@ -741,8 +741,8 @@ const FindingDetail: React.FC = () => {
           <DialogHeader>
             <DialogTitle>Mark {summaryPrompt ? STATUS_LABEL[summaryPrompt.status] : ''}</DialogTitle>
             <DialogDescription>
-              A justification is required for a terminal disposition — it's kept on the
-              finding's history and carried into the report.
+              Why? The reason is kept on the finding's history and carried into the
+              report. You can save without one.
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -758,14 +758,13 @@ const FindingDetail: React.FC = () => {
               Cancel
             </Button>
             <Button
-              disabled={!summaryText.trim()}
               onClick={() => {
                 const p = summaryPrompt;
                 setSummaryPrompt(null);
-                if (p) void applyStatus(p.status, summaryText.trim());
+                if (p) void applyStatus(p.status, summaryText.trim() || undefined);
               }}
             >
-              Save
+              {summaryText.trim() ? 'Save' : 'Save without a reason'}
             </Button>
           </DialogFooter>
         </DialogContent>

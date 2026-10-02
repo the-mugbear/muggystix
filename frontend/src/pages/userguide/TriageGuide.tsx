@@ -192,7 +192,7 @@ const sections: GuideSection[] = [
           hosts, and promotes several at once.
         </Para>
         <UnorderedList>
-          <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open, Retest), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a justification, kept on the finding's history and carried into the report.</li>
+          <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open, Retest), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a reason — you can save without one —, kept on the finding's history and carried into the report.</li>
           <li><strong>One finding per issue</strong> — the same issue promoted from another host joins the existing finding. Each affected system has its own state (Still present, Remediated here, Retest here, False positive here), so the finding's status is never read as every host's. On the finding's page the systems are listed 100 at a time with a filter; tick several to set their state in one step.</li>
           <li><strong>Who may change what</strong> — severity, owner and status are any analyst's. Renaming or deleting a finding, and its report text, belong to its author or a project admin. A comment is edited or deleted only by its author.</li>
           <li><strong>Report text</strong> — Description, Impact, Recommendation, Steps to reproduce and References are written on the finding and print in the client report. The page says which required sections are still empty.</li>

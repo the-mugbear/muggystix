@@ -68,7 +68,7 @@ class HostBrief(BaseModel):
     # follow write, the agent had to run three DSL queries per host. This is the
     # SESSION OPERATOR's follow status on the host — 'watching' / 'in_review' /
     # 'reviewed', or null when they don't follow it (equivalent to follow:none).
-    follow: Optional[str] = Field(None, description="The assist session operator's follow status on this host (watching/in_review/reviewed), or null if they don't follow it. Check before writing follow state so you don't overwrite a human review.")
+    follow: Optional[str] = Field(None, description="The assist session operator's follow status on this host (in_review/reviewed; `watching` only on rows from before it was retired), or null if they don't follow it. Check before writing follow state so you don't overwrite a human review.")
 
     model_config = ConfigDict(from_attributes=True)
 

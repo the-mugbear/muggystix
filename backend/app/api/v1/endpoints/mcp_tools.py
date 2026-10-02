@@ -105,7 +105,7 @@ SCOPE_ID_PROP = {
 AGENT_MODEL_PROP = {
     "agent_model": {
         "type": "string",
-        "maxLength": 200,
+        "maxLength": 100,
         "description": "The model you are running as (e.g. claude-opus-5-5). Optional; labels this work.",
     }
 }
@@ -1465,8 +1465,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 **HOST_ID_PROP,
                 "status": {
                     "type": "string",
-                    "enum": ["watching", "in_review", "reviewed", "none"],
-                    "description": "watching / in_review / reviewed, or `none` to clear the follow.",
+                    "enum": ["in_review", "reviewed", "none"],
+                    "description": "in_review / reviewed, or `none` to clear the follow.",
                 },
             },
             "required": ["host_id", "status"],

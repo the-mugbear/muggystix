@@ -62,7 +62,7 @@ def _valid_findings(db: Session, project_id: int, finding_ids: List[int]) -> Lis
 class BulkStatusRequest(BaseModel):
     finding_ids: List[int]
     status: str
-    # Terminal dispositions require a justification; the service enforces it.
+    # The reason for a terminal disposition: asked for by the page, optional here.
     summary: Optional[str] = Field(default=None, max_length=4000)
 
 
@@ -80,10 +80,8 @@ def bulk_status(
 ):
     """Apply one status to many findings in a single transaction.
 
-    The justification requirement for terminal statuses is enforced per
-    finding by ``FindingService.set_status``, so a bulk terminal move without
-    a summary fails the whole batch rather than dispositioning some records
-    unjustified — the audit trail stays honest either way.
+    One reason, when given, is recorded on every finding's history.  It is
+    optional (owner, 2026-10-02): the page asks for it and accepts none.
     """
     findings = _valid_findings(db, project.id, payload.finding_ids)
     if not findings:

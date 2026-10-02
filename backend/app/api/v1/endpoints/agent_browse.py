@@ -136,7 +136,7 @@ class SessionEndRequest(BaseModel):
         description="One or two lines on what the session did; lands on the session record.",
     )
     agent_model: Optional[str] = Field(
-        None, max_length=200,
+        None, max_length=100,
         description="The model you are running as (e.g. claude-opus-5-5). Optional; labels the session.",
     )
 

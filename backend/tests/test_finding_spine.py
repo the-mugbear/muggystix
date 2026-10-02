@@ -99,21 +99,22 @@ def test_finding_status_transition_records_one_history_row(client, db_session, t
     assert rows == 3
 
 
-def test_terminal_status_requires_justification(client, test_project):
-    """A terminal determination (false_positive/accepted_risk/remediated) needs
-    a justification summary; working states (confirmed) do not."""
+def test_terminal_status_takes_an_optional_justification(client, test_project):
+    """A terminal determination (false_positive/accepted_risk/remediated) is
+    accepted without a reason — the page asks, the server does not require
+    (owner, 2026-10-02) — and a given reason is kept."""
     fid = client.post(
         f"/api/v1/projects/{test_project.id}/findings",
         json={"title": "dispute", "severity": "high"},
     ).json()["id"]
     url = f"/api/v1/projects/{test_project.id}/findings/{fid}/status"
 
-    for terminal in ("false_positive", "accepted_risk", "remediated"):
+    for terminal in ("accepted_risk", "remediated"):
         r = client.post(url, json={"status": terminal})
-        assert r.status_code == 422, f"{terminal}: {r.text}"
-        assert "justification" in r.text.lower()
+        assert r.status_code == 200, f"{terminal}: {r.text}"
+        assert r.json()["status"] == terminal
 
-    # With a justification it succeeds.
+    # With a justification it succeeds too.
     ok = client.post(url, json={"status": "false_positive", "summary": "duplicate of FND-12"})
     assert ok.status_code == 200, ok.text
 
