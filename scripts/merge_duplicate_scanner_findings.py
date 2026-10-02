@@ -15,8 +15,9 @@ It works on the schema the refused upgrade leaves in place (the upgrade rolled
 back, so the database is at the revision it started from) and on any later
 one: it uses plain SQL and reads the foreign keys from the database's own
 catalog, never the application's models.  It does not import ``app.main``, so
-it starts no migration.  The backend container may be restarting in a loop
-while it runs; that does not matter.
+it starts no migration.  The backend may be retrying the upgrade in a loop
+while it runs: the script holds the migration lock for its whole run, so
+those retries wait for it instead of taking schema locks under it.
 
 What a merge does, per group, in one transaction for the whole run:
 
@@ -291,9 +292,18 @@ def main() -> int:
     parser.add_argument("--apply", action="store_true", help="write the changes (default: dry run)")
     args = parser.parse_args()
 
+    from app.db.init import _migration_lock  # the lock every booting process takes before it migrates
     from app.db.session import engine  # the database only — never app.main (no migration starts)
 
-    with engine.connect() as conn:
+    # Hold the MIGRATION lock for the whole run.  A backend that is failing to
+    # start retries the upgrade about once a second, and each attempt takes
+    # schema locks on the very tables this script updates: the two deadlocked
+    # and PostgreSQL stopped the merge (2026-10-02, the first real run).  With
+    # the lock held, every booting process waits — it polls for this lock
+    # before it touches the schema — and resumes when the merge is done.
+    print("Waiting for the migration lock (a backend retrying the upgrade holds it for about a second at a time)…")
+    with _migration_lock(engine), engine.connect() as conn:
+        print("Migration lock held: no upgrade runs while the merge does.")
         transaction = conn.begin()
         try:
             result = run(conn, project_id=args.project, keep_ids=args.keep, apply=args.apply)
