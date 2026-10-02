@@ -208,3 +208,36 @@ def test_bulk_rejects_an_oversized_batch(client, test_project):
         json={"finding_ids": list(range(1, 5002)), "status": "confirmed"},
     )
     assert resp.status_code == 413, resp.text
+
+
+@pytest.mark.parametrize("action,body", [
+    ("status", {"status": "confirmed"}),
+    ("assign", {"assignee_user_id": None}),
+])
+def test_bulk_response_does_not_reload_each_finding_after_the_commit(
+    client, db_session, test_project, three_findings, action, body
+):
+    """The session expires objects on commit, so reading ``f.id`` afterwards is
+    one SELECT per finding — up to 5,000 for a full batch — only to build
+    ``skipped_ids`` (code review 2026-10-02).  The ids are taken before."""
+    from sqlalchemy import event
+
+    ids = [f.id for f in three_findings]
+    statements = []
+    listener = lambda conn, cur, stmt, *a: statements.append(stmt)  # noqa: E731
+    event.listen(db_session.bind, "before_cursor_execute", listener)
+    try:
+        resp = client.post(
+            _url(test_project.id, action), json={"finding_ids": ids + [999_999], **body},
+        )
+    finally:
+        event.remove(db_session.bind, "before_cursor_execute", listener)
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["affected"] == 3
+    assert resp.json()["skipped_ids"] == [999_999]
+    reloads = [
+        s for s in statements
+        if s.lstrip().upper().startswith("SELECT") and "FROM findings" in s
+        and "WHERE findings.id = " in s
+    ]
+    assert reloads == [], f"{len(reloads)} per-finding reloads after the commit"

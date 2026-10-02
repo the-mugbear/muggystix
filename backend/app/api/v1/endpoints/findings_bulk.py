@@ -95,9 +95,11 @@ def bulk_status(
             actor_id=current_user.id,
             summary=payload.summary,
         )
+    # Before the commit: it expires every object, and reading ``f.id``
+    # afterwards is one SELECT per finding.
+    found = {f.id for f in findings}
     db.commit()
 
-    found = {f.id for f in findings}
     return BulkResult(
         affected=len(findings),
         requested=len(payload.finding_ids),
@@ -175,8 +177,8 @@ def bulk_assign(
             )
         )
 
+    found = {f.id for f in findings}  # before the commit expires them
     db.commit()
-    found = {f.id for f in findings}
     return BulkResult(
         affected=len(findings),
         requested=len(payload.finding_ids),

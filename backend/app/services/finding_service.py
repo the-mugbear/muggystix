@@ -28,9 +28,8 @@ from app.services.vuln_identity import issue_key_for
 
 _VALID_SEVERITIES = {s.value for s in FindingSeverity}
 _VALID_STATUSES = {s.value for s in FindingStatus}
-# Final dispositions that an analyst must justify when setting (the rationale is
-# recorded in the status-history summary).  Working states (open/confirmed/
-# retest) don't require one.
+# Final dispositions — the "resolved" status group.  The pages ask for a reason
+# when setting one (kept in the status-history summary); it is optional.
 _TERMINAL_STATUSES = {
     FindingStatus.FALSE_POSITIVE.value,
     FindingStatus.ACCEPTED_RISK.value,
