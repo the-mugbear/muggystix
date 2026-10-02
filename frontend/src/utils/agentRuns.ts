@@ -60,20 +60,29 @@ export interface LiveSessionsSummary {
  * Sessions' lead and the Operations line both print this, so the two pages
  * cannot disagree — Operations used to list the stored status, where a
  * session whose key ran out read "active" beside "Resumable" on the other.
- * `active` is the project's active sessions (`LIVE_SESSION_FILTERS`).
+ * `active` is the project's active sessions (`LIVE_SESSION_FILTERS`) on
+ * Agent Sessions, and the reader's own on Operations (`options.mine`).
  */
 export const liveSessionsSummary = (
   active: AgentSessionRow[],
   now: number = Date.now(),
+  /** `mine` (5.330.0): `active` is the READER'S OWN active sessions
+   *  (`myActiveSessionFilters`) — Operations' line. The counting is the same;
+   *  only the wording says whose they are. Agent Sessions passes nothing. */
+  options: { mine?: boolean } = {},
 ): LiveSessionsSummary => {
   const connected = active.filter((r) => keyState(r, now)?.tone === 'ok').length;
   const resumable = active.filter((r) => keyState(r, now)?.tone === 'warn').length;
   const n = (v: number, one: string) => `${v.toLocaleString()} ${v === 1 ? one : `${one}s`}`;
   let text: string;
   if (active.length === 0) {
-    text = 'No agent session is live on this project.';
+    text = options.mine
+      ? 'You have no agent session live on this project.'
+      : 'No agent session is live on this project.';
   } else {
-    text = `${n(connected, 'session')} live now`;
+    text = options.mine
+      ? `${n(connected, 'session')} of yours live now`
+      : `${n(connected, 'session')} live now`;
     if (resumable > 0) {
       text += `; ${resumable.toLocaleString()} more waiting to be resumed (the key ran out, the session did not)`;
     }

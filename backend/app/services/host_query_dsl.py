@@ -410,18 +410,19 @@ _HAS_KEYWORDS = {
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
     "stale_review": (lambda ctx: P.stale_review_predicate(ctx.db),
                      "Marked Reviewed, but re-scanned since the review (evidence changed)."),
-    # Operations' "Changed since review" queue, as a list: the queue's rows
-    # are built from the same two conditions (host_query_predicates), so its
-    # count opens exactly these hosts (with `OR conclusion:needs_evidence`,
-    # the queue's other half).
+    # Changed after ANYONE'S finished review — the team-wide list.  Operations'
+    # "Changed since review" queue is the caller's own reviews (v2.451.0) and
+    # opens `follow:revisit`, built from the same two conditions.
     "changed_since_review": (lambda ctx: P.changed_since_review_predicate(ctx.db),
                              "Reviewed, then changed: an open port first seen, or a critical / high "
                              "scanner observation recorded, after the review."),
 }
 
 # ``mine`` — the CALLER has it In Review (Operations' "In review" group);
-# the others are team-level (see ``follow_predicate``).
-_FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any", "mine"}
+# ``revisit`` — a finished review of the CALLER'S that is not done (Operations'
+# "Changed since review" list, v2.451.0); the others are team-level (see
+# ``follow_predicate``).
+_FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any", "mine", "revisit"}
 
 
 def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -747,7 +748,9 @@ _FIELD_SPECS: List[FieldSpec] = [
                           "credentialed, uncredentialed or unstated."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
               description="Review state — in_review / reviewed / none / in_review_any (any teammate's), "
-                          "or mine (you have it In Review)."),
+                          "mine (you have it In Review), or revisit (a finished review of yours that "
+                          "is not done: it concluded “needs more evidence”, or the host gained an open "
+                          "port or a critical / high scanner observation after it)."),
     FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
               description="What a finished review concluded — e.g. `conclusion:needs_evidence` "
                           "is every reviewed host whose question is still open."),

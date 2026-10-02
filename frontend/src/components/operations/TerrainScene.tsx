@@ -1,6 +1,7 @@
 /**
  * The terrain's WebGL scene (5.306.0) — three.js, loaded in its own chunk only
- * when the Operations terrain scrolls into view (AddressTerrainSection).
+ * when the reader opens the map of "Where the team has been"
+ * (AddressTerrainSection — a section of the Posture overview since 5.330.0).
  *
  * One draw call for every tower band (an InstancedMesh with a colour per
  * instance), one for the beacons, one invisible box per block for picking.

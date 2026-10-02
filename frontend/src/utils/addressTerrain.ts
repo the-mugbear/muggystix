@@ -1,5 +1,6 @@
 /**
- * The Operations terrain (5.306.0) — pure layout and vocabulary, no three.js.
+ * The address terrain (5.306.0; shown on Posture since 5.330.0) — pure layout
+ * and vocabulary, no three.js.
  *
  * Each address block (/24; IPv6 /64) is a plot. The blocks of a /16 form a
  * district: in address order along a Hilbert curve, so consecutive blocks stay

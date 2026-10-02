@@ -1,4 +1,5 @@
-"""The engagement by address block — the Operations terrain (v2.426.0).
+"""The engagement by address block — the address terrain (v2.426.0; Posture's
+"Where the team has been" since v2.451.0, on Operations before).
 
 Every host of the project, grouped into its /24 (IPv6: its /64), and within a
 block counted by how far the team has taken it:

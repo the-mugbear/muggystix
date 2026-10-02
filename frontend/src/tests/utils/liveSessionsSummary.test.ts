@@ -41,6 +41,16 @@ describe('liveSessionsSummary', () => {
       .toBe('0 sessions live now; 2 more waiting to be resumed (the key ran out, the session did not).');
   });
 
+  // 5.330.0 — Operations passes the reader's own sessions: the same counting,
+  // worded as theirs.  Agent Sessions' team-wide wording (above) is unchanged.
+  it('`mine` words the same counts as the reader’s own', () => {
+    expect(liveSessionsSummary([], NOW, { mine: true }).text).toBe('You have no agent session live on this project.');
+    expect(liveSessionsSummary([row(), row({ id: 2 })], NOW, { mine: true }).text).toBe('2 sessions of yours live now.');
+    const one = liveSessionsSummary([row(), lapsed(2)], NOW, { mine: true });
+    expect(one).toMatchObject({ connected: 1, resumable: 1, waiting: true });
+    expect(one.text).toBe('1 session of yours live now; 1 more waiting to be resumed (the key ran out, the session did not).');
+  });
+
   it('an active row past its lifetime is neither live nor resumable', () => {
     const over = row({
       key_expires_at: new Date(NOW - 48 * HOUR).toISOString(),

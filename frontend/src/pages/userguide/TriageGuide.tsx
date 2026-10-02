@@ -114,7 +114,7 @@ const sections: GuideSection[] = [
         <Subhead>Working the list</Subhead>
         <UnorderedList>
           <li><strong>Sorting</strong> — by critical scanner observations, exploit reported, open ports, most discoveries, most notes, IP address (numerically) or hostname.</li>
-          <li><strong>Review workflow</strong> — take a host <strong>In Review</strong>, then mark it <strong>Reviewed</strong>. Review is the team's, not yours alone: <Mono>follow:in_review</Mono> and <Mono>follow:reviewed</Mono> match a host <em>any</em> teammate has in that state, <Mono>follow:none</Mono> a host nobody has taken, and <Mono>follow:mine</Mono> the hosts <em>you</em> have In Review. A reviewed host that later gains an open port or a critical / high scanner observation is listed on Operations under <em>Changed since review</em> (<Mono>has:changed_since_review</Mono>).</li>
+          <li><strong>Review workflow</strong> — take a host <strong>In Review</strong>, then mark it <strong>Reviewed</strong>. Review is the team's, not yours alone: <Mono>follow:in_review</Mono> and <Mono>follow:reviewed</Mono> match a host <em>any</em> teammate has in that state, <Mono>follow:none</Mono> a host nobody has taken, and <Mono>follow:mine</Mono> the hosts <em>you</em> have In Review. A host <em>you</em> reviewed that later gains an open port or a critical / high scanner observation is listed on your Operations page under <em>Changed since review</em> (<Mono>follow:revisit</Mono>); <Mono>has:changed_since_review</Mono> lists such hosts whoever reviewed them.</li>
           <li><strong>Assignment</strong> — assign hosts to teammates; find yours with <Mono>assigned:me</Mono>. Taking a host In Review also makes it yours.</li>
           <li><strong>Notes</strong> — threaded notes with @mentions for collaboration.</li>
           <li><strong>Export targets / Export hosts</strong> (auditors and above) — <em>Export targets</em> writes the filtered list in tool formats (IP list, Nmap targets, …); <em>Export hosts</em> builds a host report. Both honour the full active filter + query.</li>
@@ -156,7 +156,8 @@ const sections: GuideSection[] = [
         <UnorderedList>
           <li><Mono>has:critical AND NOT follow:in_review_any</Mono> — critical-vuln hosts nobody is reviewing yet.</li>
           <li><Mono>follow:mine</Mono> — the hosts <em>you</em> have in review (the other <Mono>follow:</Mono> values — <Mono>in_review</Mono>, <Mono>in_review_any</Mono>, <Mono>reviewed</Mono>, <Mono>none</Mono> — count any teammate's review).</li>
-          <li><Mono>has:changed_since_review OR conclusion:needs_evidence</Mono> — reviewed hosts that are not done: Operations' "Changed since review".</li>
+          <li><Mono>follow:revisit</Mono> — hosts <em>you</em> reviewed that are not done (they changed after your review, or you concluded that more evidence is needed): Operations' "Changed since review".</li>
+          <li><Mono>has:changed_since_review OR conclusion:needs_evidence</Mono> — the same question for the whole team: any reviewed host that is not done.</li>
           <li><Mono>has:untouched AND has:critical</Mono> — hosts with a critical scanner observation that nobody has taken into review, been assigned, noted, tested or put in a finding: Operations' "Untouched, with a reason" starts from these.</li>
           <li><Mono>vulnscan:uncredentialed</Mono> — hosts assessed by a vulnerability scan that did not authenticate (<Mono>credentialed</Mono> and <Mono>unstated</Mono> are the other two values).</li>
           <li><Mono>cve:CVE-2021-44228 OR vuln:"log4j"</Mono> — Log4Shell exposure by CVE or title.</li>
@@ -219,7 +220,7 @@ const sections: GuideSection[] = [
           useful when you need the shape of the engagement, not an individual host.
         </Para>
         <UnorderedList>
-          <li><strong>Posture</strong> — the overview: one sentence on where the project stands, what that rests on, where to focus, and a grid of weakness families by site (or by subnet when the project defines no site).</li>
+          <li><strong>Posture</strong> — the overview: one sentence on where the project stands, what that rests on, where to focus, and a grid of weakness families by site (or by subnet when the project defines no site). Below the grid: <em>Where the team has been</em> — how far each address block has been taken (tested, planned, someone has it, untouched); the sentence and the block to go to first are always shown, and <em>Show the map</em> opens the 3D map and its table view (the choice is remembered) — then <em>Scanner observations and scope</em>: scanner observations by severity (not yet judged) and the three scope states (in scope subnets, reached only through an in-scope name, outside scope), each number opening its hosts.</li>
           <li><strong>Segments</strong> — which sites and subnets need attention first: exposure, open assessment work and hygiene (EOL OS, weak TLS, risky services) per segment.</li>
           <li><strong>Patterns</strong> — estate-wide weaknesses: where a single weakness is spread across many hosts.</li>
           <li><strong>Evidence</strong> — per kind of evidence, how many eligible hosts were assessed, and the gaps with the step that closes each. For vulnerability scans it also counts the assessed hosts whose scan was credentialed, not credentialed, or did not say; each count opens its hosts (<Mono>vulnscan:</Mono>). All three count as assessed.</li>
@@ -228,17 +229,16 @@ const sections: GuideSection[] = [
           A project is one assessment window: evidence is assessed, not assessed or not applicable,
           and dates are shown as provenance — nothing goes "stale". For the day-to-day analyst view,{' '}
           <strong>Operations</strong> stays your home base (your work, blocked imports, the hosts
-          that changed since their review and the untouched hosts with a reason to look);{' '}
+          you reviewed that changed since, and the untouched hosts with a reason to look) — it is
+          about you, and the project's status is here on Posture;{' '}
           <strong>Portfolio</strong> rolls the same counts up across every project you belong to.
         </Para>
         <Subhead>Operations, top to bottom</Subhead>
         <UnorderedList>
           <li><strong>My work</strong> lists only what needs you: tests assigned to you, findings that need you — each row says why (under investigation, required report text missing, a proposal to decide) — hosts you are reviewing, and tests on those hosts. <em>Available to claim</em> (unassigned critical or high tests) is listed beside them and not counted as yours.</li>
-          <li><strong>Changed since review</strong> — reviewed hosts that changed afterwards, or whose review concluded that more evidence is needed. <em>Still reviewed</em> says you saw the change and your review stands (your own finished reviews only); <em>Re-open review</em> puts the host back In Review under you. Tick rows to do either in bulk.</li>
+          <li><strong>Changed since review</strong> — hosts <em>you</em> reviewed that changed afterwards, or that you concluded need more evidence. A teammate's reviews are not listed (on Hosts, <Mono>has:changed_since_review</Mono> shows everyone's). <em>Still reviewed</em> says you saw the change and your review stands; <em>Re-open review</em> puts the host back In Review and clears your conclusion. Tick rows to do either in bulk; <em>Open all N in Hosts</em> opens exactly this list.</li>
           <li><strong>Untouched, with a reason</strong> — hosts nobody has touched that carry a reason to look, ordered by a stated tier (never a score). The tier chips filter the list; <em>Review</em> takes a host — or the ticked hosts — into your queue.</li>
-          <li><strong>Where the team has been</strong> — how far each address block has been taken: tested, planned, someone has it, untouched. The sentence and the block to go to first are always shown; <em>Show the map</em> opens the 3D map and its table view, and the choice is remembered.</li>
-          <li><strong>Agent sessions</strong> — one line: how many sessions are live and how many wait to be resumed. The list is on Workflows → Agent Sessions.</li>
-          <li><strong>Exposure</strong> — scanner observations by severity (not yet judged) and the three scope states: in scope subnets, reached only through an in-scope name, outside scope.</li>
+          <li><strong>Your agent sessions</strong> — one line: how many of your own sessions are live and how many wait to be resumed. Every session of the project is on Workflows → Agent Sessions.</li>
         </UnorderedList>
       </div>
     ),

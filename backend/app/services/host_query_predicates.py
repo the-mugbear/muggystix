@@ -773,7 +773,7 @@ def untouched_conditions(db: Session) -> List[ColumnElement]:
     """Nobody has touched the host: no review or assignment (any HostFollow),
     no note, no host test that was not dismissed, no evidence record, no
     finding endpoint.  The ONE definition —
-    the "Worth a look" queue, ``has:untouched`` and the Operations terrain
+    the "Worth a look" queue, ``has:untouched`` and the address terrain
     all use it (v2.426.0)."""
     from app.db.models_findings import FindingHost
 
@@ -949,8 +949,11 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
       * ``in_review`` / ``in_review_any`` → some teammate has it In Review.
       * ``reviewed`` → some teammate has marked it Reviewed.
 
-      * ``mine`` → the CALLER has it In Review (v2.450.0), the one per-user
-        value; "assigned to me" is the ``assigned`` filter.  Any
+      * ``mine`` → the CALLER has it In Review (v2.450.0); "assigned to me"
+        is the ``assigned`` filter.
+      * ``revisit`` → a finished review of the CALLER'S that is not done
+        (v2.451.0, ``my_review_followup_predicate``).  These two are the only
+        per-user values.  Any
     other value (the retired ``watching`` follow state) falls through to the
     caller's own row so a legacy saved view / DSL query still resolves.
     """
@@ -976,6 +979,10 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
             HostFollow.status == FollowStatus.IN_REVIEW.value,
         )
         return models.Host.id.in_(mine)
+    if status == "revisit":
+        # A finished review of the CALLER'S that is not done — exactly
+        # Operations' "Changed since review" list.
+        return my_review_followup_predicate(current_user)
     # Legacy per-user fallback (e.g. the retired 'watching' state).
     follow_ids = db.query(HostFollow.host_id).filter(
         HostFollow.user_id == current_user.id, HostFollow.status == status
@@ -1000,9 +1007,11 @@ def review_conclusion_predicate(db: Session, conclusions: Sequence[str]) -> Colu
 # What "the host changed after it was reviewed" means, ONCE: an open port
 # first seen after ``HostFollow.reviewed_at``, or a critical / high scanner
 # observation recorded after it.  Operations' "Changed since review" queue
-# (``operations_read_service.compute_review_followups``) builds its rows from
-# these two conditions and ``has:changed_since_review`` lists the same hosts,
-# so the queue's count and the Hosts list it opens cannot disagree.  Measured
+# (``operations_read_service.compute_review_followups``, the CALLER'S reviews
+# since v2.451.0) builds its rows from these two conditions, and so do
+# ``follow:revisit`` (the caller's — the list that queue opens) and
+# ``has:changed_since_review`` (anyone's review), so a count and the Hosts
+# list it opens cannot disagree.  Measured
 # against ``reviewed_at`` — never ``updated_at``, which every view bumps.  A
 # review with no baseline (NULL) has nothing to be "after".
 
@@ -1043,6 +1052,41 @@ def changed_since_review_predicate(db: Session) -> ColumnElement:
             hf.host_id == models.Host.id,
             hf.status == FollowStatus.REVIEWED.value,
             or_(new_port, new_vuln),
+        )
+        .correlate(models.Host)
+    )
+
+
+def my_review_followup_predicate(current_user: User) -> ColumnElement:
+    """Host with a finished review of the CALLER'S that is not the end of the
+    matter (v2.451.0, ``follow:revisit``): that review concluded "needs more
+    evidence", or the host changed after it.  Both halves are tested on the
+    SAME follow row — the caller's — which is why this is one predicate and
+    not ``has:changed_since_review OR conclusion:needs_evidence`` narrowed by
+    a "reviewed by me" value: a host the caller reviewed cleanly, and that
+    changed after a TEAMMATE'S older review, is not the caller's to re-check.
+
+    Operations' "Changed since review" (``compute_review_followups``) builds
+    its rows from the same conditions on the same rows, so the section's count
+    is the length of this list.  One correlated EXISTS."""
+    hf = aliased(HostFollow)
+    new_port = (
+        exists()
+        .where(models.Port.host_id == hf.host_id, port_after_review_condition(hf))
+        .correlate(hf)
+    )
+    new_vuln = (
+        exists()
+        .where(Vulnerability.host_id == hf.host_id, vuln_after_review_condition(hf))
+        .correlate(hf)
+    )
+    return (
+        exists()
+        .where(
+            hf.host_id == models.Host.id,
+            hf.user_id == current_user.id,
+            hf.status == FollowStatus.REVIEWED.value,
+            or_(hf.review_conclusion == "needs_evidence", new_port, new_vuln),
         )
         .correlate(models.Host)
     )

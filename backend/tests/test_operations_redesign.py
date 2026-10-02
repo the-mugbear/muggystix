@@ -2,12 +2,15 @@
 
 What the page gained, each pinned where it is computed:
 
-* the measures strip — every number is the length of the Hosts list it opens;
+* (v2.451.0) the measures strip is gone — project status is Posture's; the
+  terrain's sums, which Posture's sentence states, are still the lengths of
+  the Hosts lists they open;
 * "Findings that need me" — a finding is listed for a reason, and a
   confirmed, written-up finding is not work;
 * "My work" adds up — each test counted once, no group cut by another's rows;
-* "Changed since review" — its host count is its DSL list, and "Still
-  reviewed" re-stamps the reviewer's own review, all or nothing;
+* "Changed since review" — the caller's own reviews only (v2.451.0), its
+  count is its DSL list (``follow:revisit``), and "Still reviewed" re-stamps
+  the reviewer's own review, all or nothing;
 * the activity feed says what Agent Sessions says about a session.
 
 The ``client`` fixture authenticates as ``test_user`` (id=1).
@@ -126,7 +129,8 @@ def _proposal(db, pid, **over):
 
 
 # ---------------------------------------------------------------------------
-# Measures — the count and the list agree
+# Project status left the workbench (v2.451.0); the terrain's sums still agree
+# with the Hosts lists they open
 # ---------------------------------------------------------------------------
 
 def _seed_measures(db, pid, user_id):
@@ -148,74 +152,47 @@ def _seed_measures(db, pid, user_id):
     return {h.ip_address for h in crit_untouched}
 
 
-def test_measures_count_exactly_the_hosts_their_lists_open(client, db_session, test_project, test_user):
+def test_the_terrain_sentence_counts_exactly_the_hosts_its_lists_open(
+    client, db_session, test_project, test_user,
+):
+    """Posture's "Where the team has been" sentence sums the terrain's blocks
+    ("reached x of y, z tested; n untouched hosts carry a critical
+    observation") and links to Hosts lists — each sum is its list's length.
+    (Ported from the Operations measures strip, removed in v2.451.0: it stated
+    the same three numbers.)"""
     pid = test_project.id
     crit_untouched = _seed_measures(db_session, pid, test_user.id)
-
-    r = client.get(_wb(pid, "/measures"))
-    assert r.status_code == 200, r.text
-    m = r.json()
-    assert m["total_hosts"] == 8
+    blocks = client.get(_wb(pid, "/terrain")).json()["blocks"]
+    assert sum(b["hosts"] for b in blocks) == 8
 
     tested_list = _host_ips(client, pid, "has:tested")
-    assert tested_list == {"10.20.0.1"}
-    assert m["tested_hosts"] == len(tested_list)
-    # The complement, the strip's second line.
-    assert len(_host_ips(client, pid, "NOT has:tested")) == m["total_hosts"] - m["tested_hosts"]
+    assert tested_list == {"10.20.0.1"}                 # a failed attempt is not a test
+    assert sum(b["tested"] for b in blocks) == len(tested_list)
 
     untouched_critical_list = _host_ips(client, pid, "has:untouched has:critical")
     assert untouched_critical_list == crit_untouched
-    assert m["untouched_critical_hosts"] == len(untouched_critical_list) == 3
+    assert sum(b["critical_untouched"] for b in blocks) == len(untouched_critical_list) == 3
 
 
-def test_measures_agree_with_the_terrain(client, db_session, test_project, test_user):
-    """The strip's two numbers are the terrain's, summed over its blocks."""
+def test_the_workbench_carries_no_project_status(client, db_session, test_project, test_user):
+    """Operations is the reader's own page (v2.451.0): no ``measures`` block,
+    no ``/workbench/measures`` route — project status is Posture's."""
     pid = test_project.id
     _seed_measures(db_session, pid, test_user.id)
-    m = client.get(_wb(pid, "/measures")).json()
-    blocks = client.get(_wb(pid, "/terrain")).json()["blocks"]
-    assert m["untouched_critical_hosts"] == sum(b["critical_untouched"] for b in blocks)
-    assert m["tested_hosts"] == sum(b["tested"] for b in blocks)
-    assert m["total_hosts"] == sum(b["hosts"] for b in blocks)
-
-
-def test_the_workbench_embeds_the_measures_unless_asked_not_to(client, db_session, test_project, test_user):
-    pid = test_project.id
-    _seed_measures(db_session, pid, test_user.id)
-    alone = client.get(_wb(pid, "/measures")).json()
-    embedded = client.get(_wb(pid)).json()
-    assert embedded["measures"] == alone and embedded["measures_unavailable"] is False
-    # Operations leaves them out and asks beside the workbench.
-    without = client.get(_wb(pid), params={"include_measures": "false"}).json()
-    assert without["measures"] is None and without["measures_unavailable"] is False
-
-
-def test_failed_measures_are_unavailable_never_zero(client, test_project, monkeypatch):
-    from app.api.v1.endpoints import workbench as route
-    from app.services import workbench_service
-
-    def _boom(*a, **k):
-        raise RuntimeError("down")
-
-    monkeypatch.setattr(workbench_service, "compute_operations_measures", _boom)
-    body = client.get(_wb(test_project.id)).json()
-    assert body["measures"] is None and body["measures_unavailable"] is True
-    # The personal sections still came back.
+    body = client.get(_wb(pid)).json()
+    assert "measures" not in body and "measures_unavailable" not in body
     assert "my_queue" in body and "my_work" in body
-
-    monkeypatch.setattr(route, "compute_measures", _boom)
-    r = client.get(_wb(test_project.id, "/measures"))
-    assert r.status_code == 503 and "could not be computed" in r.json()["detail"]
+    assert client.get(_wb(pid, "/measures")).status_code == 404
 
 
-def test_the_agents_workbench_carries_the_same_measures(db_session, test_project, test_user):
+def test_the_agents_workbench_carries_the_same_queue_total(db_session, test_project, test_user):
     """Agent parity: the agents' read is the same service, so it carries the
-    strip's numbers and the queue's total."""
-    from app.services.workbench_service import compute_measures, compute_workbench
+    queue's total — and, like the page, no project-wide measures."""
+    from app.services.workbench_service import compute_workbench
 
     _seed_measures(db_session, test_project.id, test_user.id)
     wb = compute_workbench(db_session, test_user, test_project, include_investigate=False)
-    assert wb.measures == compute_measures(db_session, test_project)
+    assert not hasattr(wb, "measures")
     assert wb.my_work.total == wb.my_work.hosts_in_review == 1
 
 
@@ -224,7 +201,7 @@ def test_the_agents_workbench_carries_the_same_measures(db_session, test_project
 # ---------------------------------------------------------------------------
 
 def _my_findings(client, pid):
-    r = client.get(_wb(pid), params={"include_measures": "false", "include_investigate": "false"})
+    r = client.get(_wb(pid), params={"include_investigate": "false"})
     assert r.status_code == 200, r.text
     return r.json()["my_findings"]
 
@@ -356,7 +333,7 @@ def test_every_group_brings_its_own_rows_and_the_total_is_their_sum(
     _finding(db_session, pid, test_user.id, "Does not", status="confirmed")
     db_session.commit()
 
-    body = client.get(_wb(pid), params={"include_measures": "false"}).json()
+    body = client.get(_wb(pid)).json()
     tasks = body["my_tasks"]
     assert tasks["group_counts"] == {"assigned": 2, "in_review": 20, "triage": 4}
     assert sum(tasks["group_counts"].values()) == tasks["total_open"] == 26
@@ -420,26 +397,92 @@ def _seed_followups(client, db, pid):
     return hosts
 
 
-def test_changed_since_review_count_is_its_hosts_list(client, db_session, test_project, test_user):
+def _teammates_followups(db, pid, mine):
+    """A teammate's reviews that ARE follow-ups for the teammate, on hosts
+    that are not follow-ups for the caller: their own changed host, their own
+    open question, and — the case a "reviewed by me" filter over the team-wide
+    predicates gets wrong — a host the CALLER reviewed cleanly (``mine``
+    ["clean"]) that changed after the teammate's OLDER review."""
+    mate = _user(db, "teammate-reviewer")
+    long_ago = datetime.now(timezone.utc) - timedelta(days=3)
+    theirs_changed = _host(db, pid, "10.24.5.1")
+    theirs_open = _host(db, pid, "10.24.5.2")
+    db.add(models.Port(host_id=theirs_changed.id, port_number=445, protocol="tcp", state="open",
+                       first_seen=datetime.now(timezone.utc) - timedelta(days=1)))
+    # After the teammate's review of "clean", before the caller's.
+    db.add(models.Port(host_id=mine["clean"].id, port_number=3389, protocol="tcp", state="open",
+                       first_seen=datetime.now(timezone.utc) - timedelta(days=1)))
+    db.add_all([
+        models.HostFollow(host_id=theirs_changed.id, user_id=mate.id, status=FollowStatus.REVIEWED,
+                          review_conclusion="no_issue", reviewed_at=long_ago),
+        models.HostFollow(host_id=theirs_open.id, user_id=mate.id, status=FollowStatus.REVIEWED,
+                          review_conclusion="needs_evidence", reviewed_at=long_ago),
+        models.HostFollow(host_id=mine["clean"].id, user_id=mate.id, status=FollowStatus.REVIEWED,
+                          review_conclusion="no_issue", reviewed_at=long_ago),
+        # The teammate also reviewed one of the caller's changed hosts: still
+        # ONE row for the caller.
+        models.HostFollow(host_id=mine["ported"].id, user_id=mate.id, status=FollowStatus.REVIEWED,
+                          review_conclusion="no_issue", reviewed_at=long_ago),
+    ])
+    db.commit()
+    return {"10.24.5.1", "10.24.5.2"}
+
+
+def test_changed_since_review_lists_only_the_callers_reviews(client, db_session, test_project, test_user):
+    """Operations is the reader's own page (v2.451.0): a teammate's review is
+    never listed, whatever happened to its host.  It listed every reviewer's,
+    marked "by you"."""
     pid = test_project.id
     hosts = _seed_followups(client, db_session, pid)
-    # A second reviewer of a changed host: two ROWS, still one HOST.
-    second = _user(db_session, "second-reviewer")
-    db_session.add(models.HostFollow(
-        host_id=hosts["ported"].id, user_id=second.id, status=FollowStatus.REVIEWED,
-        review_conclusion="no_issue", reviewed_at=datetime.now(timezone.utc) - timedelta(minutes=5),
-    ))
-    db_session.commit()
+    theirs = _teammates_followups(db_session, pid, hosts)
 
-    followups = client.get(_wb(pid), params={"include_measures": "false"}).json()["followups"]
-    assert followups["total"] == 4 and followups["mine_total"] == 3
-    assert followups["host_total"] == 3
+    followups = client.get(_wb(pid)).json()["followups"]
+    listed = [r["ip_address"] for r in followups["items"]]
+    assert sorted(listed) == ["10.24.0.2", "10.24.0.3", "10.24.0.4"]     # one row per host
+    assert not theirs & set(listed)
+    assert "10.24.0.1" not in listed            # changed after THEIR review, not after mine
+    assert followups["total"] == 3
+    assert set(followups) == {"items", "total"}
+    assert all({"mine", "reviewer", "reviewer_id"}.isdisjoint(r) for r in followups["items"])
 
-    changed = _host_ips(client, pid, "has:changed_since_review")
-    assert changed == {"10.24.0.3", "10.24.0.4"}
-    whole_queue = _host_ips(client, pid, "has:changed_since_review OR conclusion:needs_evidence")
-    assert whole_queue == {r["ip_address"] for r in followups["items"]}
-    assert len(whole_queue) == followups["host_total"]
+
+def test_changed_since_review_count_is_its_hosts_list(client, db_session, test_project, test_user):
+    """"Open all N in Hosts" opens ``follow:revisit`` — exactly the section's
+    hosts.  The team-wide query it used to open is a different, larger list."""
+    pid = test_project.id
+    hosts = _seed_followups(client, db_session, pid)
+    theirs = _teammates_followups(db_session, pid, hosts)
+
+    followups = client.get(_wb(pid)).json()["followups"]
+    mine = _host_ips(client, pid, "follow:revisit")
+    assert mine == {r["ip_address"] for r in followups["items"]} == {"10.24.0.2", "10.24.0.3", "10.24.0.4"}
+    assert len(mine) == followups["total"]
+
+    team_wide = _host_ips(client, pid, "has:changed_since_review OR conclusion:needs_evidence")
+    assert team_wide == mine | theirs | {"10.24.0.1"}
+    # Narrowing the team-wide predicates to hosts the caller reviewed is NOT
+    # the caller's list: 10.24.0.1 changed after the teammate's review only.
+    assert "10.24.0.1" in _host_ips(
+        client, pid, "follow:reviewed (has:changed_since_review OR conclusion:needs_evidence)",
+    )
+
+    # A review that went back In Review is not concluded: it leaves the list.
+    r = client.post(f"/api/v1/projects/{pid}/hosts/{hosts['open_q'].id}/follow", json={"status": "in_review"})
+    assert r.status_code == 200, r.text
+    assert _host_ips(client, pid, "follow:revisit") == {"10.24.0.3", "10.24.0.4"}
+    assert client.get(_wb(pid)).json()["followups"]["total"] == 2
+
+
+def test_the_agents_followups_are_its_operators(db_session, client, test_project, test_user):
+    """The agent read is the same service, keyed to the session's operator."""
+    from app.services.workbench_service import compute_workbench
+
+    pid = test_project.id
+    hosts = _seed_followups(client, db_session, pid)
+    _teammates_followups(db_session, pid, hosts)
+    wb = compute_workbench(db_session, test_user, test_project, include_investigate=False)
+    assert {r.ip_address for r in wb.followups.items} == {"10.24.0.2", "10.24.0.3", "10.24.0.4"}
+    assert wb.followups.total == 3
 
 
 def test_still_reviewed_restamps_the_review_and_keeps_the_conclusion(
@@ -466,7 +509,7 @@ def test_still_reviewed_restamps_the_review_and_keeps_the_conclusion(
     assert follow.review_conclusion == "no_issue" and follow.review_summary == "looked at ssh"
     assert follow.reviewed_at > past
     # It has left the queue and its list — until it changes again.
-    rows = client.get(_wb(pid), params={"include_measures": "false"}).json()["followups"]["items"]
+    rows = client.get(_wb(pid)).json()["followups"]["items"]
     assert "10.24.0.3" not in {row["ip_address"] for row in rows}
     assert "10.24.0.3" not in _host_ips(client, pid, "has:changed_since_review")
 
@@ -684,3 +727,30 @@ def test_an_active_session_with_no_valid_key_does_not_read_active(
     assert not any("(active)" in s for s in by_link.values())
     # The keys of the page's sessions in ONE read — not one per row.
     assert len(statements) == 1, statements
+
+
+def test_the_sessions_line_asks_for_the_readers_own_sessions(
+    client, db_session, test_project, test_user, test_agent,
+):
+    """Operations' agent-sessions line (5.330.0) sends ``kind=project
+    status=active user_id=<me>``: a teammate's live session is not in the
+    answer.  It sent no ``user_id`` and counted the whole project's."""
+    from app.db.models_agent import AgentSession
+
+    mate = _user(db_session, "session-teammate")
+    now = datetime.now(timezone.utc)
+    mine, theirs, mine_ended = (
+        AgentSession(workflow="project", project_id=test_project.id, agent_id=test_agent.id,
+                     started_by_id=who, status=status, started_at=now - timedelta(hours=1))
+        for who, status in ((test_user.id, "active"), (mate.id, "active"), (test_user.id, "ended"))
+    )
+    db_session.add_all([mine, theirs, mine_ended])
+    db_session.commit()
+
+    url = f"/api/v1/projects/{test_project.id}/agent-sessions"
+    whole_project = client.get(url, params={"kind": "project", "status": "active"}).json()["sessions"]
+    assert {s["id"] for s in whole_project} == {mine.id, theirs.id}
+
+    r = client.get(url, params={"kind": "project", "status": "active", "user_id": test_user.id})
+    assert r.status_code == 200, r.text
+    assert [s["id"] for s in r.json()["sessions"]] == [mine.id]

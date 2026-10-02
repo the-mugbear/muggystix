@@ -1,27 +1,29 @@
 /**
  * "Changed since review" (5.329.0; it was "Needs another look", v5.237.0).
  *
- * Reviewed hosts that are not done: the host gained open ports or critical /
- * high scanner observations after its review, or the review concluded "needs
- * more evidence".  The definition is unchanged; what changed (design review
- * 2026-10-02) is that a reviewer can now ANSWER a change:
+ * The READER'S OWN reviewed hosts that are not done (5.330.0 — Operations is
+ * the reader's page; it listed every teammate's reviews, marked "by you"):
+ * the host gained open ports or critical / high scanner observations after
+ * the reader's review, or the reader concluded "needs more evidence".  The
+ * team-wide lists are on Hosts (`has:changed_since_review`,
+ * `conclusion:needs_evidence`).  Two answers:
  *
  *  - **Still reviewed** — "I saw the change; my review stands": the review
- *    date moves to now, the conclusion stays.  Only on the reader's own
- *    review, and never on a "needs more evidence" conclusion (an open
- *    question is not answered by looking again).
- *  - **Re-open review** — back In Review under the reader (as before, with a
- *    confirming second click on one's own review, which clears its conclusion).
+ *    date moves to now, the conclusion stays.  Never on a "needs more
+ *    evidence" conclusion (an open question is not answered by looking again).
+ *  - **Re-open review** — back In Review, with a confirming second click: it
+ *    clears the conclusion.
  *
- * One line per review, a selection column and both actions in bulk — the page
- * showed 29 near-identical rows with one button each.  Readers (a role that
- * cannot write) get the rows and the links, no checkboxes and no actions.
+ * One line per host, a selection column and both actions in bulk.  Readers (a
+ * role that cannot write) get the rows and the links, no checkboxes and no
+ * actions.  The count and "Open all N in Hosts" open `follow:revisit` — the
+ * same rows, counted by the same predicate.
  */
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
 import type { ReviewFollowupRow, ReviewFollowupsResponse } from '../../services/api';
-import { followHost, markStillReviewed, unfollowHost } from '../../services/api';
+import { followHost, markStillReviewed } from '../../services/api';
 import { useToast } from '../../contexts/ToastContext';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatApiError } from '../../utils/apiErrors';
@@ -41,10 +43,11 @@ export const CHANGED_SINCE_REVIEW_TITLE = 'Changed since review';
 /** Requests at once when a bulk action is one call per host. */
 const BULK_CONCURRENCY = 6;
 
-const rowKey = (row: ReviewFollowupRow) => `${row.host_id}-${row.reviewer_id}`;
-/** "Still reviewed" is the reviewer's own answer, and not to an open question. */
+/** One row per host: every row is the reader's own review. */
+const rowKey = (row: ReviewFollowupRow) => String(row.host_id);
+/** "Still reviewed" is not an answer to an open question. */
 export const canConfirmReview = (row: ReviewFollowupRow) =>
-  row.mine && row.review_conclusion !== 'needs_evidence';
+  row.review_conclusion !== 'needs_evidence';
 
 const ago = (iso: string | null) => (iso ? formatRelativeTime(iso, { style: 'compact' }) : '');
 const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
@@ -67,7 +70,7 @@ export const ChangedSinceReviewSection: React.FC<{
   const [busyKey, setBusyKey] = React.useState<string | null>(null);
   const [bulkBusy, setBulkBusy] = React.useState(false);
   const [outcome, setOutcome] = React.useState<string | null>(null);
-  // Re-opening YOUR finished review clears its conclusion, which no undo puts
+  // Re-opening a finished review clears its conclusion, which no undo puts
   // back exactly: it asks for a second click (one row, or the bulk button).
   const [armed, setArmed] = React.useState<string | null>(null);
   React.useEffect(() => {
@@ -76,7 +79,7 @@ export const ChangedSinceReviewSection: React.FC<{
     return () => clearTimeout(t);
   }, [armed]);
 
-  const hostTotal = data.host_total ?? data.total;
+  const hostTotal = data.total;
   const navState = fromOperationsQueue(rows.map((r) => r.host_id), CHANGED_SINCE_REVIEW_TITLE,
     { partial: data.total > rows.length }).state;
 
@@ -124,7 +127,7 @@ export const ChangedSinceReviewSection: React.FC<{
 
   const reopenOne = async (row: ReviewFollowupRow) => {
     const key = rowKey(row);
-    if (row.mine && armed !== key) {
+    if (armed !== key) {
       setArmed(key);
       return;
     }
@@ -132,24 +135,7 @@ export const ChangedSinceReviewSection: React.FC<{
     setBusyKey(key);
     try {
       await followHost(row.host_id, 'in_review');
-      toast.success(
-        row.mine ? `${row.ip_address} is back in your review queue` : `${row.ip_address} is now in your review queue`,
-        row.mine
-          ? { autoHideMs: 2500 }
-          // Taking over someone else's reviewed host added a review of yours;
-          // theirs is untouched, so removing yours is an exact undo.
-          : {
-              autoHideMs: 6000,
-              action: {
-                label: 'Undo',
-                onClick: () => {
-                  unfollowHost(row.host_id)
-                    .then(onChanged)
-                    .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
-                },
-              },
-            },
-      );
+      toast.success(`${row.ip_address} is back in your review queue`, { autoHideMs: 2500 });
       onChanged();
     } catch (err) {
       toast.error(formatApiError(err, 'Could not re-open the review.'));
@@ -160,11 +146,10 @@ export const ChangedSinceReviewSection: React.FC<{
 
   const picked = rows.filter((r) => selection.isSelected(rowKey(r)));
   const confirmable = picked.filter(canConfirmReview);
-  const pickedHostIds = [...new Set(picked.map((r) => r.host_id))];
-  const pickedMine = picked.filter((r) => r.mine).length;
+  const pickedHostIds = picked.map((r) => r.host_id);
 
   const reopenMany = async () => {
-    if (pickedMine > 0 && armed !== 'bulk') {
+    if (armed !== 'bulk') {
       setArmed('bulk');
       return;
     }
@@ -196,7 +181,7 @@ export const ChangedSinceReviewSection: React.FC<{
           <SectionCount>
             <Link
               to={buildHostsUrl({ q: CHANGED_SINCE_REVIEW_QUERY })}
-              aria-label={`${hosts(hostTotal)} changed since review — view hosts`}
+              aria-label={`${hosts(hostTotal)} you reviewed changed since review — view hosts`}
               className="rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
             >
               {hostTotal.toLocaleString()}
@@ -205,15 +190,15 @@ export const ChangedSinceReviewSection: React.FC<{
         )}
       </>}
       description={<>
-        Reviewed hosts that are not done: the host gained open ports or critical / high scanner
-        observations after its review, or the review concluded{' '}
-        <span className="font-medium text-foreground">“Needs more evidence”</span>
-        {data.total > 0 && ` — ${data.mine_total.toLocaleString()} of ${data.total.toLocaleString()} reviews are yours`}.
+        Hosts you reviewed that are not done: the host gained open ports or critical / high scanner
+        observations after your review, or you concluded{' '}
+        <span className="font-medium text-foreground">“Needs more evidence”</span>.
+        A teammate’s reviews are not listed here.
       </>}
     >
       {rows.length === 0 ? (
         <p className="text-metadata text-muted-foreground">
-          Nothing to re-check: no reviewed host has changed since its review, and no review is waiting on evidence.
+          Nothing to re-check: no host you reviewed has changed since your review, and no review of yours is waiting on evidence.
         </p>
       ) : (
         <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
@@ -224,14 +209,14 @@ export const ChangedSinceReviewSection: React.FC<{
                 disabled={bulkBusy || confirmable.length === 0}
                 onClick={() => void stillReviewed(confirmable, setBulkBusy)}
                 title={confirmable.length < picked.length
-                  ? `${picked.length - confirmable.length} of the selected reviews cannot be confirmed here: someone else's, or concluded “needs more evidence”.`
+                  ? `${picked.length - confirmable.length} of the selected reviews cannot be confirmed here: concluded “needs more evidence”.`
                   : 'You looked at what changed and your review stands: the review date moves to now, the conclusion stays.'}
               >
                 Still reviewed ({confirmable.length})
               </Button>
               <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={() => void reopenMany()}>
                 {armed === 'bulk'
-                  ? `Click to confirm — clears ${pickedMine} conclusion${pickedMine === 1 ? '' : 's'}`
+                  ? `Click to confirm — clears ${picked.length} conclusion${picked.length === 1 ? '' : 's'}`
                   : `Re-open review (${pickedHostIds.length})`}
               </Button>
             </BulkBar>
@@ -252,12 +237,12 @@ export const ChangedSinceReviewSection: React.FC<{
                   </TableHead>
                 )}
                 {/* Fixed widths that fit a narrowed window: the name and the
-                    reviewer give way first (both stay on the row's tooltips),
-                    the reason keeps what is left. */}
+                    review's age give way first (both stay on the row's
+                    tooltips), the reason keeps what is left. */}
                 <TableHead className="w-[8.5rem]">Host</TableHead>
                 <TableHead className="hidden w-[18%] lg:table-cell">Name</TableHead>
                 <TableHead>What changed</TableHead>
-                <TableHead className="hidden w-[9rem] md:table-cell">Reviewed</TableHead>
+                <TableHead className="hidden w-[6rem] md:table-cell">Reviewed</TableHead>
                 {canWrite && <TableHead className="w-[14.5rem] text-right">Action</TableHead>}
               </TableRow>
             </TableHeader>
@@ -266,7 +251,6 @@ export const ChangedSinceReviewSection: React.FC<{
                 const key = rowKey(row);
                 const isSelected = selection.isSelected(key);
                 const reason = row.reasons.map((r) => r.text).join(' · ');
-                const who = row.mine ? 'you' : row.reviewer || 'someone else';
                 const when = ago(row.reviewed_at);
                 return (
                   <TableRow
@@ -280,7 +264,7 @@ export const ChangedSinceReviewSection: React.FC<{
                         <Checkbox
                           checked={isSelected}
                           onCheckedChange={() => selection.toggle(key)}
-                          aria-label={`Select ${row.ip_address}, reviewed by ${who}`}
+                          aria-label={`Select ${row.ip_address}`}
                         />
                       </TableCell>
                     )}
@@ -297,15 +281,18 @@ export const ChangedSinceReviewSection: React.FC<{
                     <TableCell className="hidden truncate align-middle text-muted-foreground lg:table-cell" title={row.hostname ?? undefined}>
                       {row.hostname || '—'}
                     </TableCell>
-                    <TableCell className="truncate align-middle" title={`${reason} — reviewed by ${who}${when ? ` ${when} ago` : ''}`}>{reason}</TableCell>
+                    <TableCell className="truncate align-middle" title={reason}>{reason}</TableCell>
+                    {/* The age only: every row is the reader's own review. */}
                     <TableCell
                       className="hidden truncate align-middle text-caption text-muted-foreground md:table-cell"
                       title={[
-                        `Reviewed by ${who}${row.reviewed_at ? ` on ${new Date(row.reviewed_at).toLocaleString()}` : ''}.`,
+                        row.reviewed_at
+                          ? `You reviewed it on ${new Date(row.reviewed_at).toLocaleString()}.`
+                          : 'Your review has no recorded date.',
                         row.review_summary ? `“${row.review_summary}”` : null,
                       ].filter(Boolean).join(' ')}
                     >
-                      by {who}{when ? ` · ${when}` : ''}
+                      {when || '—'}
                     </TableCell>
                     {canWrite && (
                       <TableCell className="whitespace-nowrap py-xxs text-right align-middle">
@@ -324,11 +311,9 @@ export const ChangedSinceReviewSection: React.FC<{
                           size="sm" variant="ghost" className={cn('h-7', !canConfirmReview(row) && 'text-info')}
                           disabled={busyKey === key || bulkBusy}
                           onClick={() => void reopenOne(row)}
-                          title={row.mine
-                            ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared — click again to confirm.'
-                            : `Take this host into review yourself. ${row.reviewer ?? 'The reviewer'}'s conclusion stays on record.`}
+                          title="Put this host back In Review. It returns to your queue and your conclusion is cleared — click again to confirm."
                         >
-                          {armed === key ? 'Confirm: clears the conclusion' : row.mine ? 'Re-open review' : 'Review'}
+                          {armed === key ? 'Confirm: clears the conclusion' : 'Re-open review'}
                         </Button>
                       </TableCell>
                     )}

@@ -4,8 +4,10 @@
  * A snapshot, not a time series, and it ends at the report (no remediation or
  * response tracking). Top to bottom: the conclusion and what it rests on, four
  * quiet measures, ONE ranked comparison ("Where to focus"), the decisions it
- * leads to, then the full family × site grid and the promoted findings as
- * reference. Sections over thin rules, not cards (v5.254.0). Composes the
+ * leads to, then the full family × site grid, "Where the team has been" (the
+ * address terrain) and "Scanner observations and scope" — both moved here
+ * from Operations in 5.330.0, each loading for itself — and the promoted
+ * findings as reference. Sections over thin rules, not cards (v5.254.0). Composes the
  * attention + systemic + finding aggregates (GET /posture); links DOWN into
  * Segments / Patterns / Evidence / Findings for the detail.
  *
@@ -37,6 +39,8 @@ import { InfoTip } from '../components/ui/info-tip';
 import LastUpdated from '../components/LastUpdated';
 import SeverityBar from '../components/ui/SeverityBar';
 import DispositionPipeline from '../components/posture/DispositionPipeline';
+import ExposureSection from '../components/posture/ExposureSection';
+import AddressTerrainSection from '../components/operations/AddressTerrainSection';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import FocusComparison from '../components/posture/FocusComparison';
@@ -189,6 +193,15 @@ const SecurityPosture: React.FC = () => {
           <WhereToFocus data={data} />
           <ReviewDecisions priorities={data.priorities} />
           <ConditionSegmentHeatmap data={data} />
+          {/* 5.330.0 — project status that was on Operations, after the
+              coverage grid: how far the team has taken each address block
+              (one request when the section nears the viewport; the 3D map and
+              three.js only when the reader opens it — the app's one 3D
+              surface), then what the scanners reported and where the hosts
+              stand against scope.  Each loads for itself; `reloadNonce` is
+              the page's Refresh. */}
+          <AddressTerrainSection refreshKey={reloadNonce} />
+          <ExposureSection refreshKey={reloadNonce} />
           <PromotedFindings data={data} />
         </div>
       ) : null}

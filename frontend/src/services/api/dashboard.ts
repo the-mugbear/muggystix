@@ -159,16 +159,6 @@ export interface MyWorkTotals {
   to_claim: number;
 }
 
-/** The measures strip's project-wide numbers (v2.450.0) — each counted with
- *  the predicate its Hosts list uses. */
-export interface OperationsMeasures {
-  total_hosts: number;
-  /** `has:tested` */
-  tested_hosts: number;
-  /** `has:untouched has:critical` */
-  untouched_critical_hosts: number;
-}
-
 // --- Operations workbench (batched personal surface + since-last-visit) ---
 
 // v2.363.0 — work that has stopped and will not resume by itself.
@@ -266,7 +256,8 @@ export interface WorkbenchResponse {
   /** The queue could not be computed: `investigate` is an empty placeholder
    *  and must read as "unavailable", never as "no work". */
   investigate_unavailable?: boolean;
-  /** Reviewed hosts that are not done (v2.359.0). */
+  /** The caller's own reviewed hosts that are not done (v2.359.0; the
+   *  caller's only since v2.451.0). */
   followups?: ReviewFollowupsResponse;
   followups_unavailable?: boolean;
   blockers?: OperationsBlockers;
@@ -274,21 +265,16 @@ export interface WorkbenchResponse {
   blockers_unavailable?: boolean;
   /** The caller's queue as one number (v2.450.0). */
   my_work?: MyWorkTotals;
-  /** `null` when requested with `includeMeasures: false`. */
-  measures?: OperationsMeasures | null;
-  measures_unavailable?: boolean;
 }
 
 // v2.359.0 — a reviewed host left every queue for good. Two kinds are not
 // done: a review concluded "needs more evidence", and a host that changed
-// AFTER it was reviewed. Re-opening the review is the one action.
+// AFTER it was reviewed.  v2.451.0 — every row is the CALLER'S own review
+// (one row per host); a teammate's is never listed.
 export interface ReviewFollowupRow {
   host_id: number;
   ip_address: string;
   hostname: string | null;
-  reviewer_id: number;
-  reviewer: string | null;
-  mine: boolean;
   reviewed_at: string | null;
   review_conclusion: string | null;
   review_summary: string | null;
@@ -297,24 +283,19 @@ export interface ReviewFollowupRow {
 
 export interface ReviewFollowupsResponse {
   items: ReviewFollowupRow[];
-  /** Rows: one per (host, reviewer). */
+  /** The caller's hosts in the list — the section's count, and the length of
+   *  the Hosts list it opens (`follow:revisit`). */
   total: number;
-  mine_total: number;
-  /** Distinct hosts behind the rows — the section's count, and the length of
-   *  the Hosts list it opens (v2.450.0). */
-  host_total?: number;
 }
 
 export const getWorkbench = async (
-  opts: { includeInvestigate?: boolean; includeMeasures?: boolean } = {},
+  opts: { includeInvestigate?: boolean } = {},
 ): Promise<WorkbenchResponse> => {
   // v2.424.1 — Operations leaves the untouched queue out and loads it with
   // getInvestigationQueue(): on a large project it is most of the time, and
-  // the personal sections should not wait for it.  v2.450.0 — the measures
-  // strip's counts likewise (getOperationsMeasures()).
+  // the personal sections should not wait for it.
   const params: Record<string, boolean> = {};
   if (opts.includeInvestigate === false) params.include_investigate = false;
-  if (opts.includeMeasures === false) params.include_measures = false;
   const response = await api.get(`${p()}/workbench`, {
     params: Object.keys(params).length ? params : undefined,
   });
@@ -335,13 +316,6 @@ export const getInvestigationQueue = async (
   const response = await api.get(`${p()}/workbench/investigate`, {
     params: Object.keys(params).length ? params : undefined,
   });
-  return response.data;
-};
-
-/** The measures strip's project-wide numbers. Rejects (503) when they could
- *  not be counted — callers show "unavailable", never zero. */
-export const getOperationsMeasures = async (): Promise<OperationsMeasures> => {
-  const response = await api.get(`${p()}/workbench/measures`);
   return response.data;
 };
 
@@ -429,7 +403,7 @@ export const getAgentActivitySummary = async (
   return response.data;
 };
 
-// v2.426.0 — the Operations terrain: hosts by address block (/24, IPv6 /64),
+// v2.426.0 — the address terrain (on Posture since 5.330.0): hosts by address block (/24, IPv6 /64),
 // counted by how far the team has taken them.  tested / planned / worked /
 // untouched are exclusive and add up to `hosts`.
 export interface TerrainBlock {

@@ -224,8 +224,8 @@ function groupTotals(
 /**
  * What is waiting on the reader, as one number, and what is free to claim.
  * The server adds it up (`my_work`, v2.450.0); the fallback is the same sum
- * over the sections.  Shared with the Operations lead and the measures strip,
- * so the three cannot disagree.
+ * over the sections.  Shared with the Operations lead, so the two cannot
+ * disagree.
  */
 export function personalWorkCounts(
   queue: MyAttentionResponse | null,

@@ -3,7 +3,7 @@
  * ranked "Where to focus" comparison and the decisions list, rendered from one
  * realistic response. Worst-case strings included: nothing may be hover-only.
  */
-import { render, screen, within, fireEvent } from '@testing-library/react';
+import { render, screen, within, fireEvent, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -14,14 +14,29 @@ vi.mock('../../services/api/client', () => ({
   getCurrentProjectId: () => 1,
 }));
 const getPostureMock = vi.fn();
+// 5.330.0 — the two sections that moved here from Operations load for
+// themselves: the address terrain, and scanner observations + scope.
+const getAddressTerrainMock = vi.fn();
+const getDashboardStatsMock = vi.fn();
+const getProjectCoverageMock = vi.fn();
 // The barrel, as the page imports it; the link builder is the real one.
 vi.mock('../../services/api', async () => {
   const insights = await vi.importActual<typeof import('../../services/api/insights')>('../../services/api/insights');
   return {
     getPosture: (...a: unknown[]) => getPostureMock(...a),
+    getAddressTerrain: (...a: unknown[]) => getAddressTerrainMock(...a),
+    getDashboardStats: (...a: unknown[]) => getDashboardStatsMock(...a),
+    getProjectCoverage: (...a: unknown[]) => getProjectCoverageMock(...a),
     gridCellHostsHref: insights.gridCellHostsHref,
     downloadSystemicReport: vi.fn(),
   };
+});
+// The 3D scene is three.js in its own chunk: loading it is what "Show the
+// map" costs, so the page can be shown not to ask for it.
+const sceneLoads = vi.hoisted(() => ({ n: 0 }));
+vi.mock('../../components/operations/TerrainScene', () => {
+  sceneLoads.n += 1;
+  return { default: () => null };
 });
 vi.mock('../../contexts/ProjectContext', () => ({
   useProject: () => ({ currentProject: { id: 1, name: 'P' } }),
@@ -85,8 +100,114 @@ const renderPage = async () => {
   await screen.findByText('Where to focus');
 };
 
+const LONG_CIDR = '2001:0db8:85a3:0000:0000:8a2e:0370:7334/64';
+const terrain = {
+  blocks: [
+    { cidr: '10.0.0.0/24', hosts: 250, tested: 3, planned: 25, worked: 30, untouched: 192, critical: 15, critical_untouched: 12 },
+    { cidr: LONG_CIDR, hosts: 40, tested: 0, planned: 0, worked: 0, untouched: 40, critical: 0, critical_untouched: 0 },
+  ],
+  total_hosts: 290, unplaced_hosts: 0, truncated: false,
+};
+const stats = {
+  total_scans: 9, total_hosts: 142, total_ports: 0, up_hosts: 0, open_ports: 0, total_subnets: 0,
+  recent_scans: [], subnet_stats: [],
+  vulnerability_stats: {
+    critical: 9, high: 154, medium: 20, low: 4, info: 900, hosts_with_vulnerabilities: 130,
+    hosts_by_severity: { critical: 7, high: 122, medium: 15, low: 4 },
+  },
+};
+const coverage = {
+  project_id: 1, total_hosts: 142, total_scopes: 1, scopes: [],
+  hosts_in_subnet_scope: 128, hosts_name_scope_only: 2, hosts_outside_scope: 12,
+};
+
 describe('SecurityPosture — overview', () => {
-  beforeEach(() => { getPostureMock.mockReset().mockResolvedValue(response); });
+  beforeEach(() => {
+    getPostureMock.mockReset().mockResolvedValue(response);
+    getAddressTerrainMock.mockReset().mockResolvedValue(terrain);
+    getDashboardStatsMock.mockReset().mockResolvedValue(stats);
+    getProjectCoverageMock.mockReset().mockResolvedValue(coverage);
+    try { localStorage.removeItem('nm.operations.terrainOpen'); } catch { /* no storage */ }
+  });
+
+  // 5.330.0 — project status that was on Operations.
+  describe('what moved here from Operations', () => {
+    const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'http://x').searchParams.get('q');
+
+    it('the sections, in order: the terrain and the scanner/scope section after the grid, before the findings', async () => {
+      await renderPage();
+      await screen.findByText(/The team has reached/);
+      await screen.findByText('Scope');
+      const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent ?? '');
+      const at = (re: RegExp) => headings.findIndex((h) => re.test(h));
+      expect(at(/^Where to focus/)).toBeGreaterThanOrEqual(0);
+      expect(at(/^Every family ×/)).toBeGreaterThan(at(/^Decisions for this review/));
+      expect(at(/^Where the team has been/)).toBe(at(/^Every family ×/) + 1);
+      expect(at(/^Scanner observations and scope/)).toBe(at(/^Where the team has been/) + 1);
+      expect(at(/^Promoted findings/)).toBe(at(/^Scanner observations and scope/) + 1);
+      // Sections, not cards.
+      expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
+    });
+
+    it('“Where the team has been”: the sentence and the hot block; the map stays closed and unfetched', async () => {
+      await renderPage();
+      const section = (await screen.findByText(/The team has reached/)).closest('section')!;
+      expect(within(section).getByText(/The team has reached/)).toHaveTextContent('The team has reached 58 of 290 hosts (3 tested)');
+      expect(q(within(section).getByRole('link', { name: /12 untouched hosts carry a critical scanner observation/ })))
+        .toBe('has:untouched has:critical');
+      const hot = within(section).getByRole('complementary', { name: 'Most untouched critical exposure' });
+      expect(q(within(hot).getByRole('link', { name: 'Open 250 hosts' }))).toBe('subnet:"10.0.0.0/24"');
+      // Closed by default, and three.js was not asked for.  (jsdom has no
+      // WebGL, so the control offers the table.)
+      expect(within(section).getByRole('button', { name: /Show the (map|table)/ })).toHaveAttribute('aria-expanded', 'false');
+      expect(within(section).queryByRole('table')).not.toBeInTheDocument();
+      expect(sceneLoads.n).toBe(0);
+      expect(getAddressTerrainMock).toHaveBeenCalledTimes(1);
+      // Nothing in it points back at Operations.
+      for (const a of within(section).getAllByRole('link')) expect(a.getAttribute('href')).not.toMatch(/operations/);
+    });
+
+    it('a long block name truncates in the opened table and never widens the page', async () => {
+      await renderPage();
+      const section = (await screen.findByText(/The team has reached/)).closest('section')!;
+      fireEvent.click(within(section).getByRole('button', { name: /Show the (map|table)/ }));
+      const table = await within(section).findByRole('table');
+      expect(table).toHaveClass('table-fixed');
+      expect(within(table).getByTitle(LONG_CIDR)).toHaveClass('truncate');
+    });
+
+    it('scanner observations by severity and the three scope states, each opening its list', async () => {
+      await renderPage();
+      const section = (await screen.findByRole('heading', { name: 'Scanner observations and scope' })).closest('section')!;
+      expect(await within(section).findByRole('heading', { name: /Scanner observations by severity/, level: 3 })).toBeInTheDocument();
+      expect(within(section).getByText(/187 observations, informational excluded/)).toBeInTheDocument();
+      const scopeLine = within(section).getByText('Scope').parentElement as HTMLElement;
+      expect(q(within(scopeLine).getByRole('link', { name: /128 in scope subnets/ }))).toBe('scope:subnet');
+      expect(q(within(scopeLine).getByRole('link', { name: /12 outside scope/ }))).toBe('scope:none');
+      // It is ON Posture now: no "…are on Posture →" pointer back to itself.
+      expect(within(section).queryByRole('link', { name: /Posture/ })).not.toBeInTheDocument();
+    });
+
+    it('a failed terrain or count says so and leaves the rest of the page', async () => {
+      getAddressTerrainMock.mockRejectedValue(new Error('503'));
+      getDashboardStatsMock.mockRejectedValue(new Error('stats down'));
+      await renderPage();
+      expect(await screen.findByText('The address map could not be loaded.')).toBeInTheDocument();
+      expect(await screen.findByText(/Scanner observations could not be counted — this is not a clean project/)).toBeInTheDocument();
+      expect(screen.getByRole('heading', { name: /^Promoted findings/ })).toBeInTheDocument();
+      expect(screen.getByText('Action required')).toBeInTheDocument();
+    });
+
+    it('the page Refresh reloads both', async () => {
+      await renderPage();
+      await screen.findByText(/The team has reached/);
+      await screen.findByText('Scope');
+      fireEvent.click(screen.getByRole('button', { name: /Refresh posture/i }));
+      await waitFor(() => expect(getAddressTerrainMock).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(getDashboardStatsMock).toHaveBeenCalledTimes(2));
+      expect(getProjectCoverageMock).toHaveBeenCalledTimes(2);
+    });
+  });
 
   it('leads with the conclusion and says what it rests on', async () => {
     await renderPage();

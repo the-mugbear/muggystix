@@ -122,7 +122,10 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # one, untouched-with-a-critical in the other) and one for the pending
     # proposals of the findings shown; "Findings that need me" takes its total
     # as a window, so its old count statement went.
-    assert counter["n"] <= 30, (
+    # v2.451.0 — 26 measured: the measures strip's two statements went with
+    # it (project status is Posture's); the bound follows, so a new N+1 of two
+    # statements is still caught.
+    assert counter["n"] <= 28, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
@@ -287,11 +290,10 @@ def test_review_followups_resurface_open_questions_and_changes(client, db_sessio
     assert body["followups_unavailable"] is False
     rows = {r["ip_address"]: r for r in body["followups"]["items"]}
     assert set(rows) == {"10.8.0.2", "10.8.0.3"}
-    assert body["followups"]["total"] == 2 and body["followups"]["mine_total"] == 2
+    assert body["followups"]["total"] == 2
 
     assert [r["kind"] for r in rows["10.8.0.2"]["reasons"]] == ["needs_evidence"]
     assert rows["10.8.0.2"]["review_summary"] == "waiting on the creds test"
-    assert rows["10.8.0.2"]["mine"] is True and rows["10.8.0.2"]["reviewer"] == "test-admin"
 
     kinds = {r["kind"]: r["text"] for r in rows["10.8.0.3"]["reasons"]}
     assert set(kinds) == {"new_ports", "new_vulns"}

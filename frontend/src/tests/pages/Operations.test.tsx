@@ -1,11 +1,28 @@
 /**
- * The Operations page (redesigned 5.329.0 — design review 2026-10-02).
+ * The Operations page (redesigned 5.329.0 — design review 2026-10-02; the
+ * reader's own page since 5.330.0).
  *
- * Pins the page's shape: a lead whose numbers are links, ONE strip of four
- * measures, My work at full width, the two team queues, the terrain, one line
- * for agent sessions, and what is left of "Project state".  The sections'
- * own behaviour is in their component tests (MyWorkCard, ChangedSinceReview-
- * Section, UntouchedQueueSection, AddressTerrainSection).
+ * Pins the page's shape: a lead whose numbers are links, My work at full
+ * width, the reader's own changed reviews, the untouched queue and one line
+ * for the reader's agent sessions — and NO project status: no measures strip,
+ * no terrain, no exposure block (Posture has them).  The sections' own
+ * behaviour is in their component tests (MyWorkCard, ChangedSinceReview-
+ * Section, UntouchedQueueSection).
+ *
+ * 5.330.0 — what the removed tests here guarded, and where it is now:
+ *  - "four measures, each opening exactly what it counts": tested / untouched
+ *    critical are the terrain's sentence (`AddressTerrainSection.test.tsx`;
+ *    count == list in `backend/tests/test_operations_redesign.py` and
+ *    `test_address_terrain.py`); changed-since-review and my-queue are the
+ *    lead and the section headings (below, `ChangedSinceReviewSection.test`,
+ *    `MyWorkCard.test`);
+ *  - "a measure that could not be counted says so — never a zero": the
+ *    terrain's and the exposure section's failure states
+ *    (`AddressTerrainSection.test`, `PostureExposureSection.test`), and the
+ *    followups-unavailable test below;
+ *  - the Exposure describe (scope states, severity bar, failed count):
+ *    `tests/components/PostureExposureSection.test.tsx`;
+ *  - the terrain's position: `tests/pages/SecurityPostureOverview.test.tsx`.
  *
  * What the previous version of this file guarded, and where it is now:
  *  - the `?start=agent-session` deep link, the setup blocks, the since-last-
@@ -50,7 +67,7 @@ const emptyWorkbench = {
     findings_needing_me: 0, to_claim: 0,
   },
   team_review: { reviewers: [], total_hosts_in_review: 0 },
-  followups: { items: [], total: 0, mine_total: 0, host_total: 0 },
+  followups: { items: [], total: 0 },
   since_last_visit: {
     last_viewed_at: null,
     is_first_visit: true,
@@ -64,19 +81,15 @@ const emptyWorkbench = {
   },
 };
 const emptyQueue = { items: [], queue_total: 0, untouched_total: 0, tiers: [], tier_counts: [] };
-const emptyStats = {
-  total_scans: 0, total_hosts: 0, total_ports: 0, up_hosts: 0, open_ports: 0, total_subnets: 0,
-  recent_scans: [], subnet_stats: [],
-};
 
 vi.mock('../../services/api', () => ({
   getProjectCoverage: vi.fn(),
   listAgentSessions: vi.fn(),
+  // Posture's reads: mocked only so the page can be shown NOT to make them.
   getDashboardStats: vi.fn(),
+  getAddressTerrain: vi.fn(),
   getWorkbench: vi.fn(),
   getInvestigationQueue: vi.fn(),
-  getOperationsMeasures: vi.fn(),
-  getAddressTerrain: vi.fn(),
   markWorkbenchSeen: vi.fn(),
   markStillReviewed: vi.fn(),
   followHost: vi.fn(),
@@ -162,7 +175,6 @@ const session = (over: Record<string, unknown> = {}) => ({
 });
 
 const q = (el: HTMLElement) => new URL(el.getAttribute('href') ?? '', 'https://x').searchParams.get('q');
-const measure = (label: string) => screen.getByTitle(label).closest('div') as HTMLElement;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -170,11 +182,8 @@ beforeEach(() => {
   projectRole.value = undefined;
   accountRole.value = 'admin';
   mockedApi.getProjectCoverage.mockResolvedValue(baseCoverage);
-  mockedApi.getDashboardStats.mockResolvedValue(emptyStats);
   mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
-  mockedApi.getOperationsMeasures.mockResolvedValue({ total_hosts: 142, tested_hosts: 23, untouched_critical_hosts: 33 });
-  mockedApi.getAddressTerrain.mockResolvedValue({ blocks: [], total_hosts: 0, unplaced_hosts: 0, truncated: false });
   mockedApi.markWorkbenchSeen.mockResolvedValue({ last_viewed_at: '2026-01-01T00:00:00Z' });
   mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [session()], total: 1 });
 });
@@ -204,29 +213,36 @@ describe('Operations page', () => {
     });
   });
 
-  describe('shape (5.329.0)', () => {
-    it('the sections, in order, and nothing of the three removed', async () => {
+  describe('shape (5.330.0): the reader’s own page', () => {
+    it('the sections, in order, and nothing of what was removed', async () => {
       renderPage();
       await screen.findByRole('heading', { name: /Untouched, with a reason/ });
-      await screen.findByText(/session live now/);
+      await screen.findByText(/session of yours live now/);
       const headings = screen.getAllByRole('heading', { level: 2 }).map((h) => h.textContent);
       expect(headings).toEqual([
         'My work',
         'Changed since review',
         'Untouched, with a reason',
-        expect.stringMatching(/^Where the team has been/),
-        'Exposure',
       ]);
       expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1);
-      // The measures come before any section; the agent line after the terrain.
+      // The agent line closes the page.
       const before = (x: Element, y: Element) =>
         // eslint-disable-next-line no-bitwise
         !!(x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
-      const strip = screen.getByRole('group', { name: 'Where the engagement stands' });
-      expect(before(strip, screen.getByRole('heading', { name: /My work/ }))).toBe(true);
-      expect(before(screen.getByRole('heading', { name: /Where the team has been/ }), screen.getByText(/session live now/))).toBe(true);
+      expect(before(screen.getByRole('heading', { name: /Untouched, with a reason/ }), screen.getByText(/session of yours live now/))).toBe(true);
 
-      // Gone: the subtitle, the Runs list, the recent-activity column, Project state.
+      // 5.330.0 — project status left for Posture: no measures strip, no
+      // terrain, no exposure block, and no request for any of them.
+      expect(screen.queryByRole('group', { name: 'Where the engagement stands' })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Tested$|not yet tested|Untouched hosts with a critical observation/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Where the team has been/)).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /Show the (map|table)/ })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Exposure$|Scanner observations by severity|in scope subnets|outside scope/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Across the team/)).not.toBeInTheDocument();
+      expect(mockedApi.getAddressTerrain).not.toHaveBeenCalled();
+      expect(mockedApi.getDashboardStats).not.toHaveBeenCalled();
+
+      // Gone since 5.329.0: the subtitle, the Runs list, the recent-activity column, Project state.
       expect(screen.queryByText(/Project-wide coordination view/)).not.toBeInTheDocument();
       expect(screen.queryByRole('heading', { name: /^Runs$/ })).not.toBeInTheDocument();
       expect(screen.queryByRole('group', { name: /Runs status filter|Scope of runs view/ })).not.toBeInTheDocument();
@@ -239,91 +255,21 @@ describe('Operations page', () => {
 
     it('renders no card anywhere on the page', async () => {
       renderPage();
-      await screen.findByRole('heading', { name: /Exposure/ });
+      await screen.findByRole('heading', { name: /Untouched, with a reason/ });
       expect(document.querySelector('.rounded-panel.border.bg-card')).toBeNull();
     });
 
-    it('asks for the workbench without the queue or the measures, and loads each on its own request', async () => {
+    it('asks for the workbench without the queue, and loads the queue on its own request', async () => {
       renderPage();
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalled());
-      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false, includeMeasures: false });
-      expect(mockedApi.getOperationsMeasures).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getWorkbench).toHaveBeenCalledWith({ includeInvestigate: false });
       expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(null, { limit: 15 });
-    });
-  });
-
-  describe('measures strip', () => {
-    const busy = {
-      ...emptyWorkbench,
-      my_queue: { items: [], in_review_count: 2, watching_count: 0 },
-      my_findings: { items: [], total_open: 3 },
-      my_work: {
-        total: 5, hosts_in_review: 2, tests_assigned: 0, tests_on_hosts_in_review: 0,
-        findings_needing_me: 3, to_claim: 4,
-      },
-      followups: { items: [], total: 31, mine_total: 29, host_total: 30 },
-    };
-
-    it('four measures, each opening exactly what it counts', async () => {
-      mockedApi.getWorkbench.mockResolvedValue(busy);
-      renderPage();
-      const strip = await screen.findByRole('group', { name: 'Where the engagement stands' });
-      await within(strip).findByRole('link', { name: 'Tested — view hosts' });
-      // At most four, on one baseline.
-      expect(strip.children).toHaveLength(4);
-
-      const tested = within(strip).getByRole('link', { name: 'Tested — view hosts' });
-      expect(tested).toHaveTextContent('23 of 142 hosts');
-      expect(q(tested)).toBe('has:tested');
-      expect(q(within(strip).getByRole('link', { name: '119 not yet tested' }))).toBe('NOT has:tested');
-
-      const critical = within(strip).getByRole('link', { name: 'Untouched hosts with a critical observation — view hosts' });
-      expect(critical).toHaveTextContent('33');
-      expect(q(critical)).toBe('has:untouched has:critical');
-
-      const changed = within(strip).getByRole('link', { name: 'Changed since review — go to the list' });
-      expect(changed).toHaveTextContent('30');
-      expect(changed).toHaveAttribute('href', '/operations#changed-since-review');
-      expect(within(strip).getByText('29 of 31 reviews yours')).toBeInTheDocument();
-
-      const mine = within(strip).getByRole('link', { name: 'My queue — go to My work' });
-      expect(mine).toHaveTextContent('5');
-      expect(mine).toHaveAttribute('href', '/operations#my-work');
-      expect(within(strip).getByRole('link', { name: '4 more to claim' }))
-        .toHaveAttribute('href', '/operations#available-to-claim');
-    });
-
-    it('a measure that could not be counted says so — never a zero', async () => {
-      mockedApi.getOperationsMeasures.mockRejectedValue(new Error('503'));
-      renderPage();
-      const strip = await screen.findByRole('group', { name: 'Where the engagement stands' });
-      const alerts = await within(strip).findAllByRole('alert');
-      expect(alerts.map((a) => a.textContent)).toEqual([
-        expect.stringContaining('Tested hosts could not be counted — this is not a zero.'),
-        expect.stringContaining('Untouched critical exposure could not be counted — this is not a zero.'),
-      ]);
-      expect(within(measure('Tested')).getByLabelText('Unavailable')).toHaveTextContent('—');
-      expect(within(strip).queryByRole('link', { name: 'Tested — view hosts' })).not.toBeInTheDocument();
-      // The workbench's two measures are unaffected.
-      expect(within(strip).getByText('nothing is waiting on you')).toBeInTheDocument();
-
-      mockedApi.getOperationsMeasures.mockResolvedValue({ total_hosts: 142, tested_hosts: 23, untouched_critical_hosts: 0 });
-      fireEvent.click(within(strip).getAllByRole('button', { name: 'Retry' })[0]);
-      expect(await within(strip).findByRole('link', { name: 'Tested — view hosts' })).toBeInTheDocument();
-      // A real zero reads as one, without a link to an empty list.
-      expect(within(strip).getByText('every host with a critical observation has been touched')).toBeInTheDocument();
-      expect(within(strip).queryByRole('link', { name: /critical observation — view hosts/ })).not.toBeInTheDocument();
     });
 
     it('renders sensibly with hosts but no reviews, tests or findings', async () => {
-      mockedApi.getOperationsMeasures.mockResolvedValue({ total_hosts: 142, tested_hosts: 0, untouched_critical_hosts: 0 });
       renderPage();
-      const strip = await screen.findByRole('group', { name: 'Where the engagement stands' });
-      expect(await within(strip).findByRole('link', { name: '142 not yet tested' })).toBeInTheDocument();
-      expect(within(strip).getByText('no review to re-check')).toBeInTheDocument();
-      expect(within(strip).getByText('nothing is waiting on you')).toBeInTheDocument();
       // The queues say what an empty one means.
-      expect(await screen.findByText(/Nothing to re-check/)).toBeInTheDocument();
+      expect(await screen.findByText(/Nothing to re-check: no host you reviewed has changed/)).toBeInTheDocument();
       expect(await screen.findByText('Every host has been touched by someone.')).toBeInTheDocument();
       expect(screen.getByText(/Nothing is waiting on you\. Work shows here/)).toBeInTheDocument();
     });
@@ -344,22 +290,23 @@ describe('Operations page', () => {
       ...extra,
     });
 
-    it('opens with what is waiting on you, then across the team — every number a link', async () => {
+    it('is about the reader: their queue, their changed reviews, then what to pick up — every number a link', async () => {
       mockedApi.getWorkbench.mockResolvedValue(wb({
-        followups: { items: [], total: 7, mine_total: 7, host_total: 6 },
+        followups: { items: [], total: 6 },
         blockers: { failed_import_count: 2, partial_import_count: 0, imports: [] },
       }));
       mockedApi.getInvestigationQueue.mockResolvedValue({ ...emptyQueue, queue_total: 4, untouched_total: 9 });
       renderPage();
-      const lead = (await screen.findByText(/in your queue\./)).closest('p') as HTMLElement;
+      const lead = (await screen.findByText(/in your queue/)).closest('p') as HTMLElement;
       await within(lead).findByRole('link', { name: /untouched hosts have a reason to look/ });
       expect(lead).toHaveTextContent(
-        'You have 5 items in your queue. Across the team: 2 imports failed, 6 reviewed hosts have changed since review and 4 untouched hosts have a reason to look.',
+        'You have 5 items in your queue, and 6 hosts you reviewed have changed since. To pick up: 2 imports failed and 4 untouched hosts have a reason to look.',
       );
+      expect(lead).not.toHaveTextContent(/Across the team/);
       expect(within(lead).getByRole('link', { name: '5 items' })).toHaveAttribute('href', '/operations#my-work');
       expect(within(lead).getByRole('link', { name: '2 imports failed' }))
         .toHaveAttribute('href', '/parse-errors?status=needs_attention');
-      expect(within(lead).getByRole('link', { name: '6 reviewed hosts have changed since review' }))
+      expect(within(lead).getByRole('link', { name: '6 hosts you reviewed have changed since' }))
         .toHaveAttribute('href', '/operations#changed-since-review');
       expect(within(lead).getByRole('link', { name: '4 untouched hosts have a reason to look' }))
         .toHaveAttribute('href', '/operations#untouched-queue');
@@ -377,11 +324,18 @@ describe('Operations page', () => {
       expect(await screen.findByText(/Unavailable — this queue could not be computed/)).toBeInTheDocument();
       expect(screen.queryByText(/reason to look/)).not.toBeInTheDocument();
     });
+
+    it('with an empty queue it still says a host the reader reviewed changed', async () => {
+      mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, followups: { items: [], total: 1 } });
+      renderPage();
+      const lead = (await screen.findByText(/Nothing is waiting on you/)).closest('p') as HTMLElement;
+      expect(lead).toHaveTextContent('Nothing is waiting on you, but 1 host you reviewed has changed since.');
+    });
   });
 
-  describe('the two team queues', () => {
+  describe('the two queues', () => {
     const followRow = {
-      host_id: 21, ip_address: '10.8.0.2', hostname: 'app01', reviewer_id: 7, reviewer: 'test-admin', mine: true,
+      host_id: 21, ip_address: '10.8.0.2', hostname: 'app01',
       reviewed_at: '2026-09-01T00:00:00Z', review_conclusion: 'no_issue', review_summary: null,
       reasons: [{ kind: 'new_ports', text: '1 open port first seen after the review (8443)' }],
     };
@@ -394,7 +348,7 @@ describe('Operations page', () => {
     const tiers = ['Exploitable critical', 'Critical vulnerability', 'Exploit available', 'High-value service, new or changed', 'Scans disagree'];
     const withQueues = () => {
       mockedApi.getWorkbench.mockResolvedValue({
-        ...emptyWorkbench, followups: { items: [followRow], total: 1, mine_total: 1, host_total: 1 },
+        ...emptyWorkbench, followups: { items: [followRow], total: 1 },
       });
       mockedApi.getInvestigationQueue.mockResolvedValue({
         items: [queueRow], queue_total: 40, untouched_total: 90, tiers, tier_counts: [3, 30, 4, 2, 1],
@@ -419,14 +373,22 @@ describe('Operations page', () => {
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenLastCalledWith(null, { limit: 30 }));
     });
 
-    it('an action refreshes the queues and the measures quietly, not the whole page', async () => {
+    it('the changed reviews open exactly the reader’s list in Hosts', async () => {
+      withQueues();
+      renderPage();
+      expect(q(await screen.findByRole('link', { name: 'Open all 1 host in Hosts' }))).toBe('follow:revisit');
+      // No reviewer column: every row is the reader's own.
+      expect(screen.queryByText(/^by you/)).not.toBeInTheDocument();
+    });
+
+    it('an action refreshes the queues quietly, not the whole page', async () => {
       withQueues();
       mockedApi.markStillReviewed.mockResolvedValue({ host_ids: [21] });
       renderPage();
       fireEvent.click(await screen.findByRole('button', { name: 'Still reviewed' }));
       await waitFor(() => expect(mockedApi.markStillReviewed).toHaveBeenCalledWith([21]));
       await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
-      await waitFor(() => expect(mockedApi.getOperationsMeasures).toHaveBeenCalledTimes(2));
+      await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledTimes(2));
       // Coverage — the structural fetch — was not repeated.
       expect(mockedApi.getProjectCoverage).toHaveBeenCalledTimes(1);
     });
@@ -448,10 +410,10 @@ describe('Operations page', () => {
     it('a failed check of the reviewed hosts says so, never "nothing to re-check"', async () => {
       mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, followups_unavailable: true });
       renderPage();
-      expect(await screen.findByText(/reviewed hosts could not be checked/)).toBeInTheDocument();
+      expect(await screen.findByText(/the hosts you reviewed could not be checked/)).toBeInTheDocument();
       expect(screen.queryByText(/Nothing to re-check/)).not.toBeInTheDocument();
-      const strip = screen.getByRole('group', { name: 'Where the engagement stands' });
-      expect(within(strip).getByText(/Reviewed hosts could not be counted/)).toBeInTheDocument();
+      // And the lead does not turn the failure into a count.
+      expect(screen.queryByText(/changed since\./)).not.toBeInTheDocument();
     });
 
     it('a reader (viewer) gets both queues without a write control', async () => {
@@ -469,67 +431,50 @@ describe('Operations page', () => {
   });
 
   describe('agent sessions: one line', () => {
-    it('says what Agent Sessions says, from the same request, and links there', async () => {
-      mockedApi.listAgentSessions.mockResolvedValue({
-        project_id: 1, total: 2,
-        sessions: [
-          session(),
-          // The key ran out, the session did not: resumable — never "active".
-          session({ id: 100, key_expires_at: new Date(Date.now() - 3_600_000).toISOString() }),
-        ],
-      });
+    it('is about the reader’s own sessions: asks the server for those only, and links to the list', async () => {
+      // What the server returns for `user_id=7`: the reader's two sessions.
+      // A teammate's live session is not in the answer, so it is not counted.
+      mockedApi.listAgentSessions.mockImplementation(async (filters: Record<string, unknown>) => (
+        filters?.user_id === 7
+          ? {
+              project_id: 1, total: 2,
+              sessions: [
+                session(),
+                // The key ran out, the session did not: resumable — never "active".
+                session({ id: 100, key_expires_at: new Date(Date.now() - 3_600_000).toISOString() }),
+              ],
+            }
+          : {
+              project_id: 1, total: 3,
+              sessions: [session(), session({ id: 100 }), session({ id: 101, user_id: 9, user_username: 'sam' })],
+            }
+      ));
       renderPage();
       const line = await screen.findByRole('link', {
-        name: '1 session live now; 1 more waiting to be resumed (the key ran out, the session did not).',
+        name: '1 session of yours live now; 1 more waiting to be resumed (the key ran out, the session did not).',
       });
       expect(line).toHaveAttribute('href', '/agent-activity');
-      // The sessions line asks for the project's active sessions — the request
-      // Agent Sessions' lead is built from.
-      expect(mockedApi.listAgentSessions.mock.calls.map((c) => c[0]))
-        .toContainEqual({ kind: 'project', status: 'active', limit: 100 });
+      expect(screen.getByText('Your agent sessions')).toBeInTheDocument();
+      // Never the project-wide request (Agent Sessions' own): every call
+      // names the reader.
+      const asked = mockedApi.listAgentSessions.mock.calls.map((c) => c[0]);
+      expect(asked.length).toBeGreaterThan(0);
+      for (const filters of asked) expect(filters).toEqual({ kind: 'project', status: 'active', user_id: 7 });
       expect(screen.queryByText(/\(active\)|^active$|^ended$/)).not.toBeInTheDocument();
+    });
+
+    it('with none of the reader’s own live it says so — whatever teammates run', async () => {
+      mockedApi.listAgentSessions.mockResolvedValue({ project_id: 1, sessions: [], total: 0 });
+      renderPage();
+      expect(await screen.findByRole('link', { name: 'You have no agent session live on this project.' }))
+        .toHaveAttribute('href', '/agent-activity');
     });
 
     it('a failed read says so, never "no session is live"', async () => {
       mockedApi.listAgentSessions.mockRejectedValue(new Error('offline'));
       renderPage();
       expect(await screen.findByText(/could not be checked — this is not a confirmation that none is live/)).toBeInTheDocument();
-      expect(screen.queryByText(/No agent session is live/)).not.toBeInTheDocument();
-    });
-  });
-
-  describe('exposure (what is left of Project state)', () => {
-    it('the three scope states add up to every host, each opening its own list', async () => {
-      renderPage();
-      // 128 + 2 + 12 = 142; no scope names.
-      const scopeLine = (await screen.findByText('Scope')).parentElement as HTMLElement;
-      expect(q(within(scopeLine).getByRole('link', { name: /128 in scope subnets/ }))).toBe('scope:subnet');
-      expect(q(within(scopeLine).getByRole('link', { name: /2 reached only through an in-scope name/ }))).toBe('scope:name');
-      expect(q(within(scopeLine).getByRole('link', { name: /12 outside scope/ }))).toBe('scope:none');
-      expect(screen.queryByText('Internal /24')).not.toBeInTheDocument();
-      expect(screen.getByRole('link', { name: 'Exposure and assessment coverage are on Posture →' }))
-        .toHaveAttribute('href', '/posture');
-    });
-
-    it('keeps scanner observations by severity — they are counted nowhere else', async () => {
-      mockedApi.getDashboardStats.mockResolvedValue({
-        ...emptyStats,
-        vulnerability_stats: {
-          critical: 9, high: 154, medium: 20, low: 4, info: 900, hosts_with_vulnerabilities: 130,
-          hosts_by_severity: { critical: 7, high: 122, medium: 15, low: 4 },
-        },
-      });
-      renderPage();
-      expect(await screen.findByRole('heading', { name: /Scanner observations by severity/, level: 3 })).toBeInTheDocument();
-      expect(screen.getByText(/187 observations, informational excluded/)).toBeInTheDocument();
-    });
-
-    it('a failed count says so and does not blank the page', async () => {
-      mockedApi.getDashboardStats.mockRejectedValue(new Error('stats down'));
-      renderPage();
-      expect(await screen.findByText(/Scanner observations could not be counted — this is not a clean project/)).toBeInTheDocument();
-      expect(screen.getByRole('heading', { name: /My work/ })).toBeInTheDocument();
-      expect(screen.queryByText('Failed to load Operations data.')).not.toBeInTheDocument();
+      expect(screen.queryByText(/no agent session live/i)).not.toBeInTheDocument();
     });
   });
 
@@ -577,12 +522,12 @@ describe('Operations page', () => {
       expect(navigateSpy).not.toHaveBeenCalled();
     });
 
-    it('shows the setup block alone: no measures of zero, no queues, no sections', async () => {
+    it('shows the setup block alone: no queues, no sections', async () => {
       mockedApi.getProjectCoverage.mockResolvedValue(noHosts);
       renderPage();
       await screen.findByText(/Scope is registered — time to discover hosts/);
-      expect(screen.queryByRole('group', { name: 'Where the engagement stands' })).not.toBeInTheDocument();
-      expect(screen.queryByRole('heading', { name: /My work|Changed since review|Untouched|Exposure/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole('heading', { name: /My work|Changed since review|Untouched/ })).not.toBeInTheDocument();
+      expect(screen.queryByText('Your agent sessions')).not.toBeInTheDocument();
     });
 
     it('a brand-new project gets the welcome block and no refresh chrome', async () => {
@@ -681,13 +626,14 @@ describe('Operations page', () => {
 
   it('page Refresh also refetches what fetches for itself (the agent-sessions line)', async () => {
     renderPage();
-    const sessionLine = () => mockedApi.listAgentSessions.mock.calls
-      .filter((c) => c[0]?.limit === 100).length;
-    await waitFor(() => expect(sessionLine()).toBe(1));
+    // On mount: the Start-Agent-Session badge's hook and the line, one each
+    // (the same filters since 5.330.0).  Refresh re-asks for the line only.
+    const sessionReads = () => mockedApi.listAgentSessions.mock.calls.length;
+    await waitFor(() => expect(sessionReads()).toBe(2));
     const refresh = await screen.findByRole('button', { name: 'Refresh Operations' });
     await waitFor(() => expect(refresh).not.toBeDisabled());
     fireEvent.click(refresh);
-    await waitFor(() => expect(sessionLine()).toBe(2));
-    await waitFor(() => expect(mockedApi.getOperationsMeasures).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(sessionReads()).toBe(3));
+    await waitFor(() => expect(mockedApi.getWorkbench).toHaveBeenCalledTimes(2));
   });
 });

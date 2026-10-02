@@ -32,9 +32,7 @@ from app.services.operations_read_service import (
     compute_investigation_queue,
     compute_review_followups,
     compute_blockers,
-    compute_operations_measures,
     OperationsBlockers,
-    OperationsMeasures,
     InvestigationQueueResponse,
     ReviewFollowupsResponse,
     MyAttentionResponse,
@@ -114,8 +112,9 @@ class WorkbenchResponse(BaseModel):
     # True when the queue could not be computed: ``investigate`` is then an
     # empty placeholder and must read as "unavailable", never as "no work".
     investigate_unavailable: bool = False
-    # v2.359.0 — reviewed hosts that are not done: concluded "needs more
-    # evidence", or changed after the review.  Same failure contract as the
+    # v2.359.0 — the CALLER'S reviewed hosts that are not done (v2.451.0: a
+    # teammate's review is not listed): concluded "needs more evidence", or
+    # changed after the review.  Same failure contract as the
     # queue above: unavailable is said, never rendered as "nothing owed".
     followups: ReviewFollowupsResponse = Field(default_factory=ReviewFollowupsResponse)
     followups_unavailable: bool = False
@@ -127,15 +126,10 @@ class WorkbenchResponse(BaseModel):
     # v2.450.0 — the caller's queue as ONE number, and what is free to claim:
     # the sum of the groups "My work" lists (hosts in review, tests assigned,
     # tests on hosts in review, findings that need their owner).  The lead
-    # sentence, the heading and the "My queue" measure all read it.
+    # sentence and the heading both read it.  (The project-wide ``measures``
+    # block — hosts, tested, untouched with a critical observation — went in
+    # v2.451.0: project status is Posture's and the coverage read's.)
     my_work: MyWorkTotals = Field(default_factory=MyWorkTotals)
-    # v2.450.0 — the measures strip's project-wide numbers.  ``None`` when the
-    # caller left them out (``include_measures=false``; Operations loads
-    # ``GET /workbench/measures`` beside the workbench so its first paint does
-    # not wait for two more counts); ``measures_unavailable`` when they could
-    # not be computed — never zeros.
-    measures: Optional[OperationsMeasures] = None
-    measures_unavailable: bool = False
 
 
 def get_cursor(db: Session, user_id: int, project_id: int) -> Optional[OperationsCursor]:
@@ -224,15 +218,8 @@ def compute_since_last_visit(
     )
 
 
-def compute_measures(db: Session, project: Project) -> OperationsMeasures:
-    """The measures strip's project-wide numbers (``GET /workbench/measures``
-    and, embedded, the agents' workbench read) — one implementation."""
-    return compute_operations_measures(db, project)
-
-
 def compute_workbench(
     db: Session, current_user: User, project: Project, include_investigate: bool = True,
-    include_measures: bool = True,
 ) -> WorkbenchResponse:
     """Batch the Operations personal-work surface into one response, for
     ``current_user``.  Each engagement-wide section that fails is reported as
@@ -286,21 +273,8 @@ def compute_workbench(
         db.rollback()
         blockers = OperationsBlockers()
         blockers_unavailable = True
-    measures: Optional[OperationsMeasures] = None
-    measures_unavailable = False
-    if include_measures:
-        try:
-            measures = compute_measures(db, project)
-        except Exception:
-            # A measure that could not be counted is "unavailable", never 0.
-            logger.exception("operations measures failed for project %s", project.id)
-            db.rollback()
-            measures_unavailable = True
-
     return WorkbenchResponse(
         my_work=my_work,
-        measures=measures,
-        measures_unavailable=measures_unavailable,
         my_queue=my_queue,
         my_tasks=my_tasks,
         recent_notes=recent_notes,

@@ -1,5 +1,9 @@
 /**
- * "Where the team has been" — the Operations terrain (5.306.0).
+ * "Where the team has been" — the address terrain (5.306.0).  A section of
+ * the Posture overview since 5.330.0 (it was on Operations, which is the
+ * reader's own page now); the file, the storage key and the route
+ * `/workbench/terrain` keep their names.  Every link it carries opens a
+ * Hosts list, so it reads the same from either page.
  *
  * The project's address space as ground: every /24 (IPv6 /64) a plot on a
  * Hilbert-curve district per /16, every block a tower as tall as its host count,

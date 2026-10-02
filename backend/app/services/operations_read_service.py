@@ -220,17 +220,20 @@ class InvestigationQueueResponse(BaseModel):
 # every queue that way: a review concluded "needs more evidence" (an open
 # question recorded as a closed state), and a host that CHANGED after it was
 # reviewed (the conclusion predates the evidence).  Both resurface here, to
-# the reviewer first.  Re-opening the review (In Review) is the one action:
-# it returns the host to the personal queue and clears the stale conclusion.
+# their REVIEWER and nobody else (v2.451.0: Operations is the reader's own
+# page; it listed every teammate's reviews, and the team-wide lists remain
+# ``has:changed_since_review`` and ``conclusion:needs_evidence`` on Hosts).
+# Two answers: "Still reviewed" (the review stands as of now) and re-opening
+# it (In Review), which returns the host to the personal queue and clears the
+# conclusion.
 # ---------------------------------------------------------------------------
 
 class ReviewFollowupRow(BaseModel):
+    #: One row per host: every row is the caller's own review, and a person
+    #: has at most one review of a host (``uq_host_follow_user``).
     host_id: int
     ip_address: str
     hostname: Optional[str] = None
-    reviewer_id: int
-    reviewer: Optional[str] = None
-    mine: bool = False
     reviewed_at: Optional[datetime] = None
     review_conclusion: Optional[str] = None
     review_summary: Optional[str] = None
@@ -240,14 +243,10 @@ class ReviewFollowupRow(BaseModel):
 
 class ReviewFollowupsResponse(BaseModel):
     items: List[ReviewFollowupRow] = Field(default_factory=list)
-    #: Rows — one per (host, reviewer): two people's reviews of one host are
-    #: two rows.
+    #: Every host of the caller's that is listed — what the section's count
+    #: and "Open all N in Hosts" state, and exactly the hosts
+    #: ``follow:revisit`` lists for the same person.
     total: int = 0
-    mine_total: int = 0
-    #: Distinct HOSTS behind those rows — what the section's count and
-    #: "Open all N in Hosts" state, and exactly the hosts
-    #: ``has:changed_since_review OR conclusion:needs_evidence`` lists.
-    host_total: int = 0
 
 
 _FOLLOWUP_PORT_SAMPLE = 6
@@ -256,18 +255,19 @@ _FOLLOWUP_PORT_SAMPLE = 6
 def compute_review_followups(
     db: Session, current_user: User, project: Project, limit: int = 15,
 ) -> ReviewFollowupsResponse:
-    """Reviewed hosts whose review is not the end of the matter.
+    """The CALLER'S reviewed hosts whose review is not the end of the matter.
 
-    Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
+    A teammate's review is never listed (v2.451.0), whatever happened to the
+    host after it.  Measured against ``HostFollow.reviewed_at`` — never ``updated_at``, which
     every view of the host bumps.  A row reviewed before that column existed
     and never backfilled (NULL) is reported for ``needs_evidence`` only: with
     no baseline there is nothing to call "since".  Three statements whatever
     the number of hosts (follows, new open ports, new critical/high vulns).
 
     What counts as "changed" is ``host_query_predicates.port_after_review_condition``
-    / ``vuln_after_review_condition`` — the same two conditions behind
-    ``has:changed_since_review``, so ``host_total`` is the size of the Hosts
-    list this section opens.
+    / ``vuln_after_review_condition`` — the same two conditions, on the same
+    rows, as ``follow:revisit`` (``P.my_review_followup_predicate``), so
+    ``total`` is the size of the Hosts list this section opens.
     """
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 
@@ -275,13 +275,11 @@ def compute_review_followups(
     # attributes, annotations and tags — five more statements and most of the
     # inventory's weight, for an address and a name.
     follows = (
-        db.query(
-            HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname, User.username,
-        )
+        db.query(HostFollow, models.Host.id, models.Host.ip_address, models.Host.hostname)
         .join(models.Host, models.Host.id == HostFollow.host_id)
-        .outerjoin(User, User.id == HostFollow.user_id)
         .filter(
             models.Host.project_id == project.id,
+            HostFollow.user_id == current_user.id,
             HostFollow.status == FollowStatus.REVIEWED,
         )
         .all()
@@ -315,7 +313,7 @@ def compute_review_followups(
         return f"{n} {one if n == 1 else (many or one + 's')}"
 
     rows: List[ReviewFollowupRow] = []
-    for follow, host_id, ip_address, hostname, username in follows:
+    for follow, host_id, ip_address, hostname in follows:
         reasons: List[InvestigateReason] = []
         if follow.review_conclusion == "needs_evidence":
             reasons.append(InvestigateReason(
@@ -343,17 +341,14 @@ def compute_review_followups(
             host_id=host_id,
             ip_address=str(ip_address),
             hostname=hostname,
-            reviewer_id=follow.user_id,
-            reviewer=username,
-            mine=follow.user_id == current_user.id,
             reviewed_at=follow.reviewed_at,
             review_conclusion=follow.review_conclusion,
             review_summary=follow.review_summary,
             reasons=reasons,
         ))
 
-    # The reviewer's own first; then the oldest conclusion first (it has been
-    # unresolved longest); an unknown review date sorts last.
+    # The oldest conclusion first (it has been unresolved longest); an unknown
+    # review date sorts last.
     far_future = datetime.max.replace(tzinfo=timezone.utc)
 
     def _when(row: ReviewFollowupRow) -> datetime:
@@ -362,13 +357,8 @@ def compute_review_followups(
             return far_future
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
 
-    rows.sort(key=lambda r: (not r.mine, _when(r), r.host_id))
-    return ReviewFollowupsResponse(
-        items=rows[:limit],
-        total=len(rows),
-        mine_total=sum(1 for r in rows if r.mine),
-        host_total=len({r.host_id for r in rows}),
-    )
+    rows.sort(key=lambda r: (_when(r), r.host_id))
+    return ReviewFollowupsResponse(items=rows[:limit], total=len(rows))
 
 
 # The ordering is a stated tier, not a weighted score (the risk-scoring
@@ -1303,53 +1293,6 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
             )
             for r in job_rows[:limit]
         ],
-    )
-
-
-# ---------------------------------------------------------------------------
-# The measures strip (v2.450.0) — where the engagement stands, in two numbers
-# that had been at the bottom of the page or inside the terrain: how many
-# hosts are tested, and how many untouched hosts carry a critical scanner
-# observation.  Each is counted with the predicate its list uses —
-# ``has:tested`` and ``has:untouched has:critical`` — so the number on the
-# strip is the length of the Hosts list it opens.  Two statements: the
-# untouched count has its own WHERE so Postgres drives it from the critical
-# hosts (as an aggregate FILTER it would probe five anti-joins per host).
-# The strip's other two measures (changed since review, my queue) are the
-# workbench's own sections.
-# ---------------------------------------------------------------------------
-class OperationsMeasures(BaseModel):
-    total_hosts: int = 0
-    #: ``has:tested`` — evidence of a test that ran (``host_test_queries``).
-    tested_hosts: int = 0
-    #: ``has:untouched has:critical`` — the terrain's ``critical_untouched``,
-    #: summed over every block.
-    untouched_critical_hosts: int = 0
-
-
-def compute_operations_measures(db: Session, project: Project) -> OperationsMeasures:
-    host = models.Host
-    total, tested = (
-        db.query(
-            func.count(host.id),
-            func.count(host.id).filter(P.has_test_execution_predicate(db, project.id)),
-        )
-        .filter(host.project_id == project.id)
-        .one()
-    )
-    untouched_critical = (
-        db.query(func.count(host.id))
-        .filter(
-            host.project_id == project.id,
-            P.severity_predicate(db, ["CRITICAL"], project.id),
-            *P.untouched_conditions(db),
-        )
-        .scalar()
-    )
-    return OperationsMeasures(
-        total_hosts=int(total or 0),
-        tested_hosts=int(tested or 0),
-        untouched_critical_hosts=int(untouched_critical or 0),
     )
 
 

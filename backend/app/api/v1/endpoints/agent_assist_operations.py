@@ -60,7 +60,7 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 class AgentTerrainResponse(BaseModel):
-    """The Operations terrain, ordered and cut for an agent.  ``blocks_total``
+    """The address terrain, ordered and cut for an agent.  ``blocks_total``
     is every block the service returned; ``truncated`` is the service's own
     flag (more blocks than it draws), ``limited`` says this page left some out."""
     blocks: List[TerrainBlock]
@@ -103,7 +103,7 @@ def _project_and_operator(db: Session, session: AgentSession) -> tuple:
 @router.get(
     "/assist/workbench",
     response_model=WorkbenchResponse,
-    summary="The operator's Operations workbench — my work, the measures, changed since review, since last visit, blockers",
+    summary="The operator's Operations workbench — my work, their reviews that changed, since last visit, blockers",
 )
 def get_assist_workbench(
     request: Request,
@@ -122,11 +122,17 @@ def get_assist_workbench(
     claim), ``my_queue`` (hosts they are reviewing), ``my_tasks`` (host tests
     to do; ``group_counts`` counts each once), ``recent_notes``,
     ``my_findings`` (findings they own that NEED them — each row's ``needs``
-    says why), ``team_review``, ``measures`` (hosts, hosts tested, untouched
-    hosts with a critical observation), ``since_last_visit`` (scans, new
+    says why), ``team_review``, ``since_last_visit`` (scans, new
     hosts, changed hosts, new critical/high scanner observations since the
     operator last marked Operations seen), ``followups`` ("Changed since
-    review"; ``host_total`` hosts) and ``blockers`` (stopped imports).
+    review" — the OPERATOR'S OWN finished reviews that are not done, never a
+    teammate's; ``total`` hosts, the list ``q=follow:revisit``) and
+    ``blockers`` (stopped imports).
+
+    There is no ``measures`` block (v2.451.0): project status — hosts, tested,
+    untouched with a critical observation — is the ``total`` of ``GET
+    /assist/hosts?q=has:tested`` / ``q=has:untouched has:critical`` and, by
+    address block, the terrain; on the page it is Posture's.
 
     Read-only: this never moves the operator's "since last visit" cursor.  A
     section reported ``*_unavailable: true`` could not be computed — say so;
@@ -192,7 +198,7 @@ def get_assist_terrain(
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """The Operations terrain as numbers: per block, hosts ``tested`` /
+    """The address terrain (Posture's "Where the team has been") as numbers: per block, hosts ``tested`` /
     ``planned`` / ``worked`` / ``untouched`` (exclusive, adding up to
     ``hosts``), plus ``critical`` and ``critical_untouched``.  Answers "which
     ranges has nobody touched?".  503 on failure — never an empty map."""

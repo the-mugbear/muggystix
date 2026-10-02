@@ -358,6 +358,17 @@ to decide) — a confirmed, written-up finding is no longer listed, so
 `has:changed_since_review` and `follow:mine`. The page's sections were renamed
 ("Changed since review", "Untouched, with a reason"); the tool names were not.
 
+**Operations is the operator's own page (v2.451.0)** — again payload, by rule 3:
+`assist_get_workbench` lost `measures` / `measures_unavailable` (project status
+is Posture's; an agent reads the `total` of `assist_list_hosts q=has:tested` /
+`q=has:untouched has:critical`, or `assist_get_terrain` by block), and its
+`followups` are the reviews of the session's OPERATOR only — one row per host,
+`total` hosts; `mine`, `mine_total`, `reviewer`, `reviewer_id` and `host_total`
+are gone. One DSL value came with it: `follow:revisit`, the same hosts as a
+list. `has:changed_since_review OR conclusion:needs_evidence` remains the
+team-wide question. `assist_get_terrain` is unchanged; the page that shows it
+is Posture.
+
 **Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
 — fields, not tools: a finding comment in `assist_get_finding` carries
 `parent_id` / `thread_root_id`, as host notes already did, so its thread can be

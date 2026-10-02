@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.6.0",
+        "app_version": "2.451.0",
+        "summary": (
+            "Operations is the operator's own page, and assist_get_workbench follows it. "
+            "`followups` (\"Changed since review\") lists only the reviews of the session's "
+            "OPERATOR — never a teammate's — one row per host; `mine`, `mine_total`, "
+            "`reviewer`, `reviewer_id` and `host_total` are gone and `total` is the host "
+            "count. The same hosts are the new DSL value `follow:revisit` (a finished "
+            "review of the operator's that concluded needs_evidence, or whose host gained "
+            "an open port or a critical/high observation after it); the team-wide list is "
+            "still `has:changed_since_review OR conclusion:needs_evidence`. The workbench "
+            "no longer carries `measures`: hosts tested and untouched critical exposure are "
+            "project status — read the `total` of assist_list_hosts q=has:tested / "
+            "q='has:untouched has:critical', or assist_get_terrain by block. The terrain "
+            "is shown on Posture (\"Where the team has been\"); its route and tool are "
+            "unchanged."
+        ),
+    },
+    {
         "version": "4.5.1",
         "app_version": "2.450.1",
         "summary": (

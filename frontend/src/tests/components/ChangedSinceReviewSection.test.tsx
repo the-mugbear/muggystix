@@ -1,5 +1,11 @@
 /**
- * "Changed since review" (5.329.0; "Needs another look" until then).
+ * "Changed since review" (5.329.0; "Needs another look" until then).  5.330.0 —
+ * the reader's own reviews only: no reviewer on the rows, no "Review"
+ * (take over a teammate's host) action, and the count opens `follow:revisit`.
+ * The tests that pinned a teammate's row ("is not offered on someone else's
+ * review", "taking someone else's reviewed host is one click") went with the
+ * rows; that such rows never arrive is pinned on the server
+ * (`test_changed_since_review_lists_only_the_callers_reviews`).
  *
  * Carries what `MyWorkCardInvestigate.test.tsx` pinned for this queue — it
  * says why each host is back, the reviewer's own review asks once more before
@@ -32,8 +38,8 @@ const LocationProbe: React.FC = () => {
 };
 
 const row = (over: Partial<ReviewFollowupRow> = {}): ReviewFollowupRow => ({
-  host_id: 21, ip_address: '10.8.0.2', hostname: 'app01.corp.local', reviewer_id: 1, reviewer: 'me',
-  mine: true, reviewed_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
+  host_id: 21, ip_address: '10.8.0.2', hostname: 'app01.corp.local',
+  reviewed_at: new Date(Date.now() - 3 * 86_400_000).toISOString(),
   review_conclusion: 'no_issue', review_summary: 'looked at ssh',
   reasons: [{ kind: 'new_ports', text: '3 open ports first seen after the review (80, 445, 8080)' }],
   ...over,
@@ -42,12 +48,12 @@ const openQuestion = row({
   host_id: 22, ip_address: '10.8.0.3', hostname: null, review_conclusion: 'needs_evidence', review_summary: null,
   reasons: [{ kind: 'needs_evidence', text: 'Concluded “needs more evidence” — the question is still open' }],
 });
-const theirs = row({
-  host_id: 23, ip_address: '10.8.0.4', hostname: null, reviewer_id: 9, reviewer: 'sam', mine: false,
+const observed = row({
+  host_id: 23, ip_address: '10.8.0.4', hostname: null,
   reasons: [{ kind: 'new_vulns', text: '1 critical scanner observation recorded after the review' }],
 });
 const data = (items: ReviewFollowupRow[], over: Partial<ReviewFollowupsResponse> = {}): ReviewFollowupsResponse => ({
-  items, total: items.length, mine_total: items.filter((r) => r.mine).length, host_total: items.length, ...over,
+  items, total: items.length, ...over,
 });
 
 const onChanged = vi.fn();
@@ -68,31 +74,33 @@ beforeEach(() => {
 });
 
 describe('Changed since review — what it shows', () => {
-  it('one line per review: address, name, what changed, who reviewed it', () => {
-    renderIt(data([row(), openQuestion, theirs]));
+  it('one line per host: address, name, what changed, how long ago the reader reviewed it', () => {
+    renderIt(data([row(), openQuestion, observed]));
     expect(screen.getByRole('heading', { name: /Changed since review/ })).toBeInTheDocument();
     expect(screen.queryByText('Needs another look')).not.toBeInTheDocument();
     const first = rowOf('10.8.0.2');
     expect(within(first).getByText('app01.corp.local')).toBeInTheDocument();
     expect(within(first).getByText('3 open ports first seen after the review (80, 445, 8080)')).toHaveClass('truncate');
-    expect(within(first).getByText(/^by you/)).toBeInTheDocument();
-    expect(within(rowOf('10.8.0.4')).getByText(/^by sam/)).toBeInTheDocument();
-    // The reviewer's summary is provenance: on the row's tooltip, not a second line.
-    expect(within(first).getByText(/^by you/)).toHaveAttribute('title', expect.stringContaining('“looked at ssh”'));
-    expect(screen.getByText(/2 of 3 reviews are yours/)).toBeInTheDocument();
+    // Every row is the reader's own review: the column is its age, no "by you".
+    expect(screen.queryByText(/\bby (you|sam)\b/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/reviews are yours/)).not.toBeInTheDocument();
+    const age = within(first).getByText('3d');
+    // The reader's summary is provenance: on the row's tooltip, not a second line.
+    expect(age).toHaveAttribute('title', expect.stringContaining('“looked at ssh”'));
+    expect(age).toHaveAttribute('title', expect.stringMatching(/^You reviewed it on /));
+    expect(screen.getByText(/A teammate’s reviews are not listed here/)).toBeInTheDocument();
   });
 
-  it('the count is in hosts and opens exactly its Hosts list', () => {
-    // Two reviewers of one host: four rows, three hosts.
-    renderIt(data([row(), openQuestion, theirs, row({ reviewer_id: 9, reviewer: 'sam', mine: false })],
-      { total: 30, host_total: 26 }));
+  it('the count is in hosts and opens exactly the reader’s Hosts list', () => {
+    renderIt(data([row(), openQuestion, observed], { total: 26 }));
     const q = (el: HTMLElement) => new URL(el.getAttribute('href')!, 'https://x').searchParams.get('q');
-    const count = screen.getByRole('link', { name: '26 hosts changed since review — view hosts' });
-    expect(q(count)).toBe('has:changed_since_review OR conclusion:needs_evidence');
+    const count = screen.getByRole('link', { name: '26 hosts you reviewed changed since review — view hosts' });
+    // `follow:revisit` — the reader's own; the team-wide query it used to open
+    // lists every teammate's reviews.
+    expect(q(count)).toBe('follow:revisit');
     // One footer pattern: what is on screen, then the whole list.
-    expect(screen.getByText('4 of 30')).toBeInTheDocument();
-    expect(q(screen.getByRole('link', { name: 'Open all 26 hosts in Hosts' })))
-      .toBe('has:changed_since_review OR conclusion:needs_evidence');
+    expect(screen.getByText('3 of 26')).toBeInTheDocument();
+    expect(q(screen.getByRole('link', { name: 'Open all 26 hosts in Hosts' }))).toBe('follow:revisit');
     expect(screen.queryByRole('button', { name: /Show .* more/ })).not.toBeInTheDocument();
   });
 
@@ -127,20 +135,21 @@ describe('Changed since review — what it shows', () => {
 
 describe('Changed since review — answering a change', () => {
   it('"Still reviewed" re-stamps the reader’s own review and refreshes', async () => {
-    renderIt(data([row(), theirs]));
+    renderIt(data([row(), observed]));
     fireEvent.click(within(rowOf('10.8.0.2')).getByRole('button', { name: 'Still reviewed' }));
     await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledWith([21]));
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     expect(api.followHost).not.toHaveBeenCalled();
   });
 
-  it('is not offered on an open question, nor on someone else’s review', () => {
-    renderIt(data([row(), openQuestion, theirs]));
+  it('is not offered on an open question; every row can be re-opened', () => {
+    renderIt(data([row(), openQuestion, observed]));
     expect(within(rowOf('10.8.0.2')).getByRole('button', { name: 'Still reviewed' })).toBeInTheDocument();
     expect(within(rowOf('10.8.0.3')).queryByRole('button', { name: 'Still reviewed' })).not.toBeInTheDocument();
     expect(within(rowOf('10.8.0.3')).getByRole('button', { name: 'Re-open review' })).toBeInTheDocument();
-    expect(within(rowOf('10.8.0.4')).queryByRole('button', { name: 'Still reviewed' })).not.toBeInTheDocument();
-    expect(within(rowOf('10.8.0.4')).getByRole('button', { name: 'Review' })).toBeInTheDocument();
+    expect(within(rowOf('10.8.0.4')).getByRole('button', { name: 'Still reviewed' })).toBeInTheDocument();
+    // There is no "Review" (take over a teammate's host): none is listed.
+    expect(screen.queryByRole('button', { name: 'Review' })).not.toBeInTheDocument();
   });
 
   it('a refused "Still reviewed" says nothing was changed and keeps the row', async () => {
@@ -154,7 +163,7 @@ describe('Changed since review — answering a change', () => {
 
   // Re-opening YOUR review clears its conclusion, which no undo restores
   // exactly: it takes a confirming second click.
-  it('re-opening your own review asks once more, then puts it back In Review', async () => {
+  it('re-opening a review asks once more, then puts it back In Review', async () => {
     renderIt(data([row()]));
     fireEvent.click(screen.getByRole('button', { name: 'Re-open review' }));
     expect(api.followHost).not.toHaveBeenCalled();
@@ -163,11 +172,6 @@ describe('Changed since review — answering a change', () => {
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
   });
 
-  it('taking someone else’s reviewed host is one click (theirs stays on record)', async () => {
-    renderIt(data([theirs]));
-    fireEvent.click(screen.getByRole('button', { name: 'Review' }));
-    await waitFor(() => expect(api.followHost).toHaveBeenCalledWith(23, 'in_review'));
-  });
 });
 
 describe('Changed since review — selection and bulk', () => {
@@ -176,7 +180,7 @@ describe('Changed since review — selection and bulk', () => {
     row({ host_id: 31, ip_address: '10.8.1.1' }),
     row({ host_id: 32, ip_address: '10.8.1.2' }),
     openQuestion,
-    theirs,
+    observed,
   ]);
   const tick = (ip: string) => fireEvent.click(within(rowOf(ip)).getByRole('checkbox'));
 
@@ -198,12 +202,12 @@ describe('Changed since review — selection and bulk', () => {
   it('bulk "Still reviewed" is ONE request, for the rows that can be confirmed', async () => {
     renderIt(many());
     fireEvent.click(screen.getByRole('checkbox', { name: 'Select all rows shown' }));
-    // Five selected; the open question and sam's review cannot be confirmed.
-    const still = screen.getByRole('button', { name: 'Still reviewed (3)' });
-    expect(still).toHaveAttribute('title', expect.stringContaining('2 of the selected reviews cannot be confirmed'));
+    // Five selected; the open question cannot be confirmed.
+    const still = screen.getByRole('button', { name: 'Still reviewed (4)' });
+    expect(still).toHaveAttribute('title', expect.stringContaining('1 of the selected reviews cannot be confirmed'));
     fireEvent.click(still);
     await waitFor(() => expect(api.markStillReviewed).toHaveBeenCalledTimes(1));
-    expect(api.markStillReviewed).toHaveBeenCalledWith([21, 31, 32]);
+    expect(api.markStillReviewed).toHaveBeenCalledWith([21, 31, 32, 23]);
     await waitFor(() => expect(onChanged).toHaveBeenCalled());
     await waitFor(() => expect(screen.queryByRole('toolbar')).not.toBeInTheDocument());
   });
@@ -235,7 +239,7 @@ describe('Changed since review — selection and bulk', () => {
     rerender(
       <MemoryRouter>
         <LocationProbe />
-        <ChangedSinceReviewSection data={data([row({ host_id: 31, ip_address: '10.8.1.1' }), theirs])} canWrite onChanged={onChanged} />
+        <ChangedSinceReviewSection data={data([row({ host_id: 31, ip_address: '10.8.1.1' }), observed])} canWrite onChanged={onChanged} />
       </MemoryRouter>,
     );
     expect(screen.getByText('1 review selected')).toBeInTheDocument();
@@ -264,7 +268,7 @@ describe('Changed since review — selection and bulk', () => {
 
 describe('Changed since review — a reader', () => {
   it('gets the rows and the links, without checkboxes or actions', () => {
-    renderIt(data([row(), theirs]), { canWrite: false });
+    renderIt(data([row(), observed]), { canWrite: false });
     expect(screen.getByRole('link', { name: '10.8.0.2' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: /Open all 2 hosts in Hosts/ })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();

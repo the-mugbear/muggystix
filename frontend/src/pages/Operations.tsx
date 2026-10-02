@@ -1,26 +1,25 @@
 /**
- * Operations — what should I do next, and is the team covering the ground?
+ * Operations — what should I do next?  The signed-in person's page, and only
+ * theirs (owner, 2026-10-02, 5.330.0): project status is Posture's.
  *
- * Top to bottom (design review 2026-10-02, 5.329.0):
+ * Top to bottom:
  *
  *   header            title · Start Agent Session · updated-at + refresh
  *   lead              one sentence; every number links to what it counts
- *   measures          ONE strip of four: tested · untouched with a critical
- *                     observation · changed since review · my queue
  *   since last visit  what changed while the reader was away
  *   blocked           stopped imports, with the action that unblocks them
  *   My work           only what needs the reader, each row saying what
- *   Changed since review      ┐ the two team queues: one-line rows,
- *   Untouched, with a reason  ┘ selection, bulk actions, "Open all N"
- *   Where the team has been   the terrain: sentence + hot block; map on demand
- *   Agent sessions    one line, the sentence Agent Sessions leads with
- *   Exposure          scanner observations by severity, the three scope
- *                     states, and the way to Posture
+ *   Changed since review      the reader's OWN reviews that are not done
+ *   Untouched, with a reason  what to pick up next (nobody's yet)
+ *   Your agent sessions       one line, the reader's own sessions
  *
- * It was three pages stacked into one — a personal queue, two triage queues
- * and a project status report: 3,600 px tall, 62 buttons, and the one number
- * that says where the engagement stands was the last thing on it.  The Runs
- * list, the recent-activity column and the Project state section are gone
+ * What left in 5.330.0, and where it is: the measures strip (tested x of y,
+ * untouched with a critical observation — the terrain's sentence states both),
+ * "Where the team has been" and the Exposure block (scanner observations by
+ * severity, the three scope states) are on Posture; teammates' reviews are on
+ * Hosts (`has:changed_since_review`, `conclusion:needs_evidence`); every
+ * session of the project is on Agent Sessions.  Earlier (5.329.0) the Runs
+ * list, the recent-activity column and the Project state section went
  * (Agent Sessions, Collaboration and Posture hold them).
  */
 import React, { useCallback, useEffect, useRef, useState } from 'react';
@@ -28,15 +27,11 @@ import { Link, useLocation, useNavigate, useSearchParams } from 'react-router-do
 import { AlertTriangle, Loader2, MessageCircleQuestion, Sparkles } from 'lucide-react';
 import StartAssistDialog from '../components/StartAssistDialog';
 import {
-  DashboardStats,
   OperationsBlockers,
-  OperationsMeasures as OperationsMeasuresData,
   ProjectCoverageResponse,
   SinceLastVisit,
   WorkbenchResponse,
   InvestigationQueueResponse,
-  getDashboardStats,
-  getOperationsMeasures,
   getProjectCoverage,
   getWorkbench,
   getInvestigationQueue,
@@ -48,11 +43,9 @@ import { useProjectRole } from '../hooks/useProjectRole';
 import { useCanStartAgentSession } from '../hooks/useCanStartAgentSession';
 import { formatApiError } from '../utils/apiErrors';
 import AgentTaskButton from '../components/agent-sessions/AgentTaskButton';
-import MyWorkCard, { MY_WORK_ID, TO_CLAIM_ID, personalWorkCounts } from '../components/MyWorkCard';
-import AddressTerrainSection from '../components/operations/AddressTerrainSection';
+import MyWorkCard, { MY_WORK_ID, personalWorkCounts } from '../components/MyWorkCard';
 import AgentSessionsLine from '../components/operations/AgentSessionsLine';
 import ChangedSinceReviewSection, { CHANGED_SINCE_REVIEW_TITLE } from '../components/operations/ChangedSinceReviewSection';
-import OperationsMeasures from '../components/operations/OperationsMeasures';
 import UntouchedQueueSection, {
   UNTOUCHED_MAX_ROWS, UNTOUCHED_PAGE,
 } from '../components/operations/UntouchedQueueSection';
@@ -62,11 +55,8 @@ import LastUpdated from '../components/LastUpdated';
 import { Alert, AlertDescription } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
-import { InfoTip } from '../components/ui/info-tip';
 import PostureSection from '../components/posture/PostureSection';
 import PostureLead, { type LeadTone } from '../components/posture/PostureLead';
-import SeverityBar from '../components/ui/SeverityBar';
-import { buildHostsUrl } from '../utils/drilldownLinks';
 import { sinceChips, type SinceChip } from '../utils/sinceLastVisit';
 import { filenameSummary } from '../utils/filenameSummary';
 import { agentInstruction } from '../utils/agentRuns';
@@ -74,140 +64,19 @@ import { cn } from '../utils/cn';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 
 /** The page's independently fetched sources, each with its own load time. */
-type LoadedSource = 'workbench' | 'coverage' | 'stats' | 'measures';
+type LoadedSource = 'workbench' | 'coverage';
 /** The oldest load on the page; null until something has loaded. */
 const oldestLoad = (loaded: Partial<Record<LoadedSource, Date>>): Date | null => {
   const times = Object.values(loaded).filter((d): d is Date => d instanceof Date);
   return times.length ? times.reduce((a, b) => (a.getTime() <= b.getTime() ? a : b)) : null;
 };
 
-/** In-page targets of the lead's and the measures' links. */
+/** In-page targets of the lead's links. */
 const CHANGED_ID = 'changed-since-review';
 const UNTOUCHED_ID = 'untouched-queue';
 const IMPORT_ERRORS_PATH = '/parse-errors?status=needs_attention';
 
 const LINK = 'rounded underline decoration-1 underline-offset-4 hover:text-info focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
-
-// ---------------------------------------------------------------------------
-// Exposure — what stays of the old "Project state" section.
-//
-// Its coverage strip is the measures strip now, and the assessment itself is
-// on Posture.  Two things live nowhere else, so they stay, at the bottom:
-// scanner observations by severity (Posture and Findings show FINDINGS by
-// severity; the raw, not-yet-judged rows are only counted here), and the
-// three scope-coverage states.
-// ---------------------------------------------------------------------------
-
-/** One coverage state: its count opens exactly its hosts (`scope:` DSL). */
-const ScopeStateLink: React.FC<{ n: number | undefined; q: string; label: string }> = ({ n, q, label }) => {
-  const count = n ?? 0;
-  return count > 0 ? (
-    <Link to={buildHostsUrl({ q })} className="text-info hover:underline">
-      <strong className="tabular-nums">{count.toLocaleString()}</strong> {label}
-    </Link>
-  ) : (
-    <span className="text-muted-foreground"><span className="tabular-nums">0</span> {label}</span>
-  );
-};
-
-const ExposureSection: React.FC<{
-  stats: DashboardStats | null;
-  statsLoading: boolean;
-  statsError: string | null;
-  onRetry: () => void;
-  coverage: ProjectCoverageResponse;
-  updated?: React.ReactNode;
-}> = ({ stats, statsLoading, statsError, onRetry, coverage, updated }) => {
-  const vuln = stats?.vulnerability_stats;
-  // Informational is excluded from the bar (it dwarfs real severities); the
-  // bar's denominator is the non-info total so its segments fill the rail.
-  const actionableTotal = vuln ? vuln.critical + vuln.high + vuln.medium + vuln.low : 0;
-
-  return (
-    <PostureSection
-      title={<span>Exposure</span>}
-      description={<>
-        What the scanners reported, not yet judged. The assessment — coverage, segments, patterns and
-        evidence — is on{' '}
-        <Link to="/posture" className="text-info hover:underline">Posture</Link>; the judged record on{' '}
-        <Link to="/findings" className="text-info hover:underline">Findings</Link>.
-      </>}
-      actions={updated}
-    >
-      <div className="flex min-w-0 flex-col gap-md">
-        {statsError ? (
-          <UnavailableLine onRetry={onRetry}>
-            Scanner observations could not be counted — this is not a clean project. {statsError}
-          </UnavailableLine>
-        ) : statsLoading && !stats ? (
-          <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden /> Counting scanner observations…
-          </p>
-        ) : vuln && actionableTotal > 0 ? (
-          <div className="max-w-3xl" aria-busy={statsLoading || undefined}>
-            <div className="mb-xs flex flex-wrap items-baseline justify-between gap-x-md gap-y-xxs">
-              <h3 className="inline-flex items-center gap-xxs text-metadata font-semibold text-foreground">
-                Scanner observations by severity
-                <InfoTip text="One per scanner check per port, as imported — not yet judged, and a host usually carries several. Each severity opens the hosts carrying at least one observation of it; that host count is under the number." />
-              </h3>
-              <Link
-                to={buildHostsUrl({ q: 'kind:vulnerability,misconfiguration,informational' })}
-                className="text-caption tabular-nums text-muted-foreground hover:text-info hover:underline"
-              >
-                {actionableTotal.toLocaleString()} observations, informational excluded
-                {' · '}{(vuln.hosts_with_vulnerabilities ?? 0).toLocaleString()} hosts carry one
-              </Link>
-            </div>
-            <SeverityBar
-              variant="summary"
-              counts={vuln}
-              total={actionableTotal}
-              ariaLabel="Scanner observations by severity"
-              // SeverityBar never renders info, but the callback is typed
-              // over all severities — guard so the type narrows to HostSeverity.
-              segmentHref={(sev) => (sev === 'info' ? null : buildHostsUrl({ severity: sev }))}
-              // The counts are observations, the links hosts: the link says so.
-              linkLabel={(sev) => {
-                const n = vuln.hosts_by_severity?.[sev];
-                return n == null ? null : `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
-              }}
-            />
-          </div>
-        ) : stats ? (
-          <p className="text-metadata text-muted-foreground">
-            No critical, high, medium or low scanner observation is recorded — upload a Nessus or
-            OpenVAS scan to populate this.
-          </p>
-        ) : null}
-
-        {/* The three coverage states, adding up to every host; each number
-            opens its hosts.  Scope names are not shown: they are a relic. */}
-        {coverage.total_scopes > 0 ? (
-          <p className="flex min-w-0 flex-wrap items-center gap-x-xs gap-y-xxs text-metadata">
-            <span className="font-semibold text-foreground">Scope</span>
-            <InfoTip text="Every host is in exactly one of these: inside a scope subnet; in no subnet but reached through an in-scope name (the name was approved, not the address); or outside scope — discovered, but nobody approved testing it, so confirm it is in scope before acting on it." />
-            <ScopeStateLink n={coverage.hosts_in_subnet_scope} q="scope:subnet" label="in scope subnets" />
-            <span className="text-muted-foreground" aria-hidden>·</span>
-            <ScopeStateLink n={coverage.hosts_name_scope_only} q="scope:name" label="reached only through an in-scope name" />
-            <span className="text-muted-foreground" aria-hidden>·</span>
-            <ScopeStateLink n={coverage.hosts_outside_scope} q="scope:none" label="outside scope" />
-          </p>
-        ) : (
-          <p className="text-metadata text-muted-foreground">
-            No scope is declared, so every host is outside scope.{' '}
-            <Link to="/scopes" className="text-info hover:underline">Register a scope</Link>
-          </p>
-        )}
-
-        <p className="text-metadata">
-          <Link to="/posture" className="text-info hover:underline">
-            Exposure and assessment coverage are on Posture →
-          </Link>
-        </p>
-      </div>
-    </PostureSection>
-  );
-};
 
 // ---------------------------------------------------------------------------
 // Since your last visit — durable per-user/project diff (P2).
@@ -381,25 +250,12 @@ const Operations: React.FC = () => {
 
   const [coverage, setCoverage] = useState<ProjectCoverageResponse | null>(null);
   const [coverageLoading, setCoverageLoading] = useState(true);
-  const [stats, setStats] = useState<DashboardStats | null>(null);
-  const [statsLoading, setStatsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  // A failed stats request must read "could not be counted", never as an
-  // empty bar — which says "a clean project".  (UX review #8.)
-  const [statsError, setStatsError] = useState<string | null>(null);
   // Operations owns ONE /workbench fetch covering My work, the changed-since-
   // review queue, the blockers and the since-last-visit diff (P2).
   const [workbench, setWorkbench] = useState<WorkbenchResponse | null>(null);
   const [workbenchLoading, setWorkbenchLoading] = useState(true);
   const [workbenchError, setWorkbenchError] = useState<string | null>(null);
-
-  // 5.329.0 — the measures strip's project-wide counts load beside the
-  // workbench (GET /workbench/measures), so the first paint waits for
-  // neither.  A failure is "unavailable", never zeros.
-  const [measures, setMeasures] = useState<OperationsMeasuresData | null>(null);
-  const [measuresLoading, setMeasuresLoading] = useState(true);
-  const [measuresUnavailable, setMeasuresUnavailable] = useState(false);
-  const measuresGenRef = useRef(0);
 
   // v5.304.1 — the untouched queue loads on its own request: on a large
   // project it was most of the workbench's time, and My work waited for it.
@@ -492,43 +348,19 @@ const Operations: React.FC = () => {
     setLoadedAt((prev) => ({ ...prev, [source]: new Date() }));
   }, []);
 
-  const loadMeasures = useCallback((quiet = false) => {
-    const gen = ++measuresGenRef.current;
-    if (!quiet) setMeasuresLoading(true);
-    getOperationsMeasures()
-      .then((m) => {
-        if (gen !== measuresGenRef.current) return;
-        setMeasures(m);
-        setMeasuresUnavailable(false);
-        markLoaded('measures');
-      })
-      .catch(() => {
-        if (gen !== measuresGenRef.current) return;
-        // Never keep an old number under a failed count: it would read as current.
-        setMeasures(null);
-        setMeasuresUnavailable(true);
-      })
-      .finally(() => {
-        if (gen !== measuresGenRef.current) return;
-        setMeasuresLoading(false);
-      });
-  }, [markLoaded]);
-
   const reload = useCallback(async () => {
     const gen = ++reloadGenRef.current;
     const isStale = () => gen !== reloadGenRef.current;
     setError(null);
     setCoverageLoading(true);
-    setStatsLoading(true);
     setWorkbenchLoading(true);
     setWorkbenchError(null);
 
-    // The workbench, the queue and the measures are independent of the
-    // coverage/stats core load — each isolates its own failure, so an outage
-    // shows that section's error state (with Retry) instead of blanking the page.
+    // The workbench and the queue are independent of the coverage load —
+    // each isolates its own failure, so an outage shows that section's error
+    // state (with Retry) instead of blanking the page.
     void loadInvestigate();
-    loadMeasures();
-    getWorkbench({ includeInvestigate: false, includeMeasures: false })
+    getWorkbench({ includeInvestigate: false })
       .then((wb) => {
         if (isStale()) return;
         setWorkbench(wb);
@@ -555,37 +387,23 @@ const Operations: React.FC = () => {
         setWorkbenchLoading(false);
       });
 
-    // RV-10b — settle the core fetches independently. Only coverage is
-    // structural (it gates the whole page), so only its failure raises the
-    // page-level error; the scanner-observation counts degrade on their own.
-    // (No scan-freshness fetch since 5.255.2: a project is one assessment
-    // window, so the age of a scan is not something Operations chases.)
-    const [coverageR, statsR] = await Promise.allSettled([
-      getProjectCoverage(),
-      getDashboardStats(),
-    ]);
-
-    // A newer reload superseded us while these were in flight — drop this
-    // payload so it can't overwrite the fresher one.
-    if (isStale()) return;
-
-    if (coverageR.status === 'fulfilled') {
-      setCoverage(coverageR.value);
+    // Coverage is structural: it says whether the project has scopes and
+    // hosts at all, which decides between the setup blocks and the page — so
+    // its failure raises the page-level error.  (Its scope states and the
+    // scanner-observation counts are shown on Posture since 5.330.0.)
+    try {
+      const value = await getProjectCoverage();
+      // A newer reload superseded us while this was in flight — drop the
+      // payload so it can't overwrite the fresher one.
+      if (isStale()) return;
+      setCoverage(value);
       markLoaded('coverage');
-    } else {
-      setError(formatApiError(coverageR.reason, 'Failed to load Operations data.'));
+    } catch (err) {
+      if (isStale()) return;
+      setError(formatApiError(err, 'Failed to load Operations data.'));
     }
-    if (statsR.status === 'fulfilled') {
-      setStats(statsR.value);
-      setStatsError(null);
-      markLoaded('stats');
-    } else {
-      setStatsError(formatApiError(statsR.reason, 'Could not load project statistics.'));
-    }
-
     setCoverageLoading(false);
-    setStatsLoading(false);
-  }, [loadInvestigate, loadMeasures, markLoaded]);
+  }, [loadInvestigate, markLoaded]);
 
   useEffect(() => {
     void reload();
@@ -594,26 +412,24 @@ const Operations: React.FC = () => {
   }, [reload]);
 
   // After an action in a queue (take, still reviewed, re-open, claim, undo):
-  // the workbench, the queue and the measures, without spinners (5.304.0).
-  // The full `reload` blanked every section and moved the page under the
-  // pointer after each click.
+  // the workbench and the queue, without spinners (5.304.0).  The full
+  // `reload` blanked every section and moved the page under the pointer
+  // after each click.
   const refreshWorkbenchQuietly = useCallback(() => {
-    getWorkbench({ includeInvestigate: false, includeMeasures: false })
+    getWorkbench({ includeInvestigate: false })
       .then((wb) => {
         setWorkbench(wb);
         markLoaded('workbench');
       })
       .catch(() => { /* the next full refresh reports it */ });
-    // Taking a host into review moves it out of the untouched queue and out
-    // of "untouched with a critical observation".
+    // Taking a host into review moves it out of the untouched queue.
     void loadInvestigate(true);
-    loadMeasures(true);
-  }, [loadInvestigate, loadMeasures, markLoaded]);
+  }, [loadInvestigate, markLoaded]);
 
-  // The page Refresh: the terrain and the agent-sessions line fetch for
-  // themselves, so `reload` alone left them showing what they loaded on
-  // mount. The key is bumped only here (not inside `reload`, which also runs
-  // on mount — that would fetch both twice).
+  // The page Refresh: the agent-sessions line fetches for itself, so
+  // `reload` alone left it showing what it loaded on mount. The key is
+  // bumped only here (not inside `reload`, which also runs
+  // on mount — that would fetch it twice).
   const [refreshKey, setRefreshKey] = useState(0);
   const refreshAll = useCallback(() => {
     setRefreshKey((k) => k + 1);
@@ -651,7 +467,7 @@ const Operations: React.FC = () => {
     refresh: refreshAssistSessions,
   } = useMyAssistSessions();
 
-  // The lead's and the measures' in-page links (#my-work …): go to the section.
+  // The lead's in-page links (#my-work …): go to the section.
   // A navigation asks once; the scroll happens when its section exists (it may
   // still be loading on arrival) and is then forgotten, so a later refresh of
   // the queues never drags the page back.
@@ -674,9 +490,6 @@ const Operations: React.FC = () => {
   // pointed at or focused.  Two window listeners would both move.
   const [keysIn, setKeysIn] = useState<'changed' | 'untouched' | null>(null);
 
-  const myQueue = workbench && !workbenchError
-    ? personalWorkCounts(workbench.my_queue, workbench.my_tasks, workbench.my_findings, workbench.my_work)
-    : null;
   const followups = workbench?.followups ?? null;
   const followupsUnavailable = workbench?.followups_unavailable ?? false;
 
@@ -772,7 +585,9 @@ const Operations: React.FC = () => {
 
       {coverage && coverage.total_hosts > 0 && (
         // One column read top to bottom (UI_STYLE_GUIDE §7): a lead sentence,
-        // one strip of measures, the callouts, then sections over thin rules.
+        // the callouts, then sections over thin rules.  No measures strip
+        // (5.330.0): the page's two counts are in the lead and the section
+        // headings, and project status is on Posture.
         <div className="flex min-w-0 flex-col gap-lg">
           {workbench && !workbenchError && (
             <OperationsLead
@@ -781,21 +596,6 @@ const Operations: React.FC = () => {
               here={here}
             />
           )}
-          <OperationsMeasures
-            measures={measures}
-            measuresLoading={measuresLoading}
-            measuresUnavailable={measuresUnavailable}
-            onRetryMeasures={() => loadMeasures()}
-            followups={followups}
-            followupsUnavailable={followupsUnavailable}
-            myQueue={myQueue}
-            workbenchLoading={workbenchLoading}
-            workbenchFailed={!!workbenchError}
-            onRetryWorkbench={() => void reload()}
-            changedHref={here(CHANGED_ID)}
-            myWorkHref={here(MY_WORK_ID)}
-            toClaimHref={here(TO_CLAIM_ID)}
-          />
           {/* Since your last visit — what changed in this project while the
               operator was away (durable per-user cursor, P2). */}
           {workbench && !sinceDismissed && (
@@ -826,12 +626,13 @@ const Operations: React.FC = () => {
             updated={<UpdatedAt at={loadedAt.workbench ?? null} hideWhenFresh />}
           />
 
-          {/* The team's: yours to re-check, then nobody's yet. */}
+          {/* Yours to re-check, then what nobody has picked up yet. */}
           <div id={CHANGED_ID} className="min-w-0 scroll-mt-md">
             {!workbenchLoading && !workbenchError && followupsUnavailable && (
               <PostureSection title={<span>{CHANGED_SINCE_REVIEW_TITLE}</span>}>
                 <UnavailableLine onRetry={() => void reload()}>
-                  Unavailable — reviewed hosts could not be checked for open questions or later changes.
+                  Unavailable — the hosts you reviewed could not be checked for open questions or later
+                  changes. This is not a confirmation that none changed.
                 </UnavailableLine>
               </PostureSection>
             )}
@@ -862,21 +663,7 @@ const Operations: React.FC = () => {
             />
           </div>
 
-          {/* The same team-wide question as ground: one request, loaded when
-              the section nears the viewport; the map (three.js, its own
-              chunk) only when the reader opens it. */}
-          <AddressTerrainSection refreshKey={refreshKey} />
-
           <AgentSessionsLine refreshKey={refreshKey} />
-
-          <ExposureSection
-            stats={stats}
-            statsLoading={statsLoading}
-            statsError={statsError}
-            onRetry={() => void reload()}
-            coverage={coverage}
-            updated={<UpdatedAt at={loadedAt.stats ?? null} stale={!!statsError} hideWhenFresh />}
-          />
         </div>
       )}
     </div>
@@ -893,12 +680,15 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
 );
 
 /**
- * The page's lead (v5.267.0): what is waiting on the reader, then on the team,
- * from the same payloads the sections below render — so the sentence and the
- * sections cannot disagree.  5.329.0 — every number is a link to the section
- * or list it counts, and "your queue" counts work: a finding you own is in it
- * only when it needs you.  Blocked work colours it; a queue alone does not
- * (work is the page's normal state).
+ * The page's lead (v5.267.0): what is waiting on the reader — their queue,
+ * the hosts they reviewed that changed — then what stopped (imports) and what
+ * can be picked up next (the untouched queue), from the same payloads the
+ * sections below render, so the sentence and the sections cannot disagree.
+ * 5.329.0 — every number is a link to the section or list it counts, and
+ * "your queue" counts work: a finding you own is in it only when it needs
+ * you.  5.330.0 — no "Across the team": the changed reviews are the reader's
+ * own.  Blocked work colours it; a queue alone does not (work is the page's
+ * normal state).
  */
 const OperationsLead: React.FC<{
   workbench: WorkbenchResponse;
@@ -915,35 +705,45 @@ const OperationsLead: React.FC<{
   const failed = known ? b.failed_import_count : 0;
   const partial = known ? b.partial_import_count : 0;
   const blocked = failed + partial;
-  const changed = workbench.followups_unavailable
-    ? 0 : (workbench.followups?.host_total ?? workbench.followups?.total ?? 0);
+  // The reader's own reviews (5.330.0); a failed check is not counted as zero
+  // in words — the section below says "unavailable".
+  const changed = workbench.followups_unavailable ? 0 : (workbench.followups?.total ?? 0);
   const worth = untouched ?? 0;
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
-  const team: Array<{ key: string; to: string; text: string }> = [
+  // What else the page holds: stopped imports, and what can be picked up next.
+  const also: Array<{ key: string; to: string; text: string }> = [
     failed > 0 ? { key: 'failed', to: IMPORT_ERRORS_PATH, text: `${s(failed, 'import', 'imports')} failed` } : null,
     partial > 0 ? { key: 'partial', to: IMPORT_ERRORS_PATH, text: `${s(partial, 'import', 'imports')} finished partial` } : null,
-    changed > 0 ? { key: 'changed', to: here(CHANGED_ID), text: `${s(changed, 'reviewed host has', 'reviewed hosts have')} changed since review` } : null,
     worth > 0 ? { key: 'untouched', to: here(UNTOUCHED_ID), text: `${s(worth, 'untouched host has', 'untouched hosts have')} a reason to look` } : null,
   ].filter((p): p is { key: string; to: string; text: string } => !!p);
 
-  const tone: LeadTone = blocked > 0 ? 'critical' : total > 0 || team.length ? 'neutral' : 'clear';
+  const tone: LeadTone = blocked > 0 ? 'critical' : total > 0 || changed > 0 || also.length ? 'neutral' : 'clear';
 
   return (
     <PostureLead
       tone={tone}
-      restsOn="Your queue: hosts you have in review, tests assigned to you or on those hosts, and findings you own that need something. Everything in the second sentence is team-wide — anyone can take it."
+      restsOn="Your queue: hosts you have in review, tests assigned to you or on those hosts, and findings you own that need something. Changed since review counts only reviews you finished. Failed imports and untouched hosts are nobody’s yet — anyone can take them; the project’s status is on Posture."
     >
       {total > 0 ? (
-        <>You have <Link to={here(MY_WORK_ID)} className={LINK}>{s(total, 'item', 'items')}</Link> in your queue.</>
-      ) : 'Nothing is waiting on you.'}
-      {team.length > 0 && (
+        <>You have <Link to={here(MY_WORK_ID)} className={LINK}>{s(total, 'item', 'items')}</Link> in your queue</>
+      ) : 'Nothing is waiting on you'}
+      {changed > 0 && (
         <>
-          {' '}Across the team:{' '}
-          {team.map((part, i) => (
+          {total > 0 ? ', and ' : ', but '}
+          <Link to={here(CHANGED_ID)} className={LINK}>
+            {s(changed, 'host you reviewed has', 'hosts you reviewed have')} changed since
+          </Link>
+        </>
+      )}
+      .
+      {also.length > 0 && (
+        <>
+          {' '}To pick up:{' '}
+          {also.map((part, i) => (
             <React.Fragment key={part.key}>
-              {i > 0 && (i === team.length - 1 ? ' and ' : ', ')}
+              {i > 0 && (i === also.length - 1 ? ' and ' : ', ')}
               <Link to={part.to} className={LINK}>{part.text}</Link>
             </React.Fragment>
           ))}

@@ -26,9 +26,11 @@ export interface OperationsNavState {
 // predicate the server counted with; `backend/tests/test_operations_redesign.py`
 // pins count == list for every one of them.
 
-/** "Changed since review": changed after a finished review, or a review
- *  concluded "needs more evidence". */
-export const CHANGED_SINCE_REVIEW_QUERY = 'has:changed_since_review OR conclusion:needs_evidence';
+/** "Changed since review": a finished review of the CALLER'S whose host
+ *  changed after it, or that concluded "needs more evidence" (5.330.0 — it
+ *  was `has:changed_since_review OR conclusion:needs_evidence`, every
+ *  teammate's reviews; that is still the team-wide list). */
+export const CHANGED_SINCE_REVIEW_QUERY = 'follow:revisit';
 /** The hosts the CALLER has In Review (`follow:in_review` is the team's). */
 export const MY_REVIEW_QUERY = 'follow:mine';
 /** Every host nobody has touched, with or without a reason. */

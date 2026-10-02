@@ -37,10 +37,9 @@ from app.services.operations_read_service import (
     compute_investigation_queue,
     InvestigationQueueResponse,
     MyActivityResponse,
-    OperationsMeasures,
 )
 from app.services.host_follow_service import HostFollowService
-from app.services.workbench_service import WorkbenchResponse, compute_measures, compute_workbench
+from app.services.workbench_service import WorkbenchResponse, compute_workbench
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -87,14 +86,6 @@ def get_workbench(
             "sections are not held up by it (v2.424.1)."
         ),
     ),
-    include_measures: bool = Query(
-        True,
-        description=(
-            "Include the measures strip's project-wide counts (hosts, tested, "
-            "untouched with a critical observation). Operations passes false and "
-            "loads GET /workbench/measures beside this call (v2.450.0)."
-        ),
-    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -105,33 +96,7 @@ def get_workbench(
     workbench cannot drift.  ``since_last_visit`` reflects the durable
     per-user cursor; advance it with ``POST /workbench/seen``.
     """
-    return compute_workbench(
-        db, current_user, project,
-        include_investigate=include_investigate, include_measures=include_measures,
-    )
-
-
-@router.get(
-    "/measures",
-    response_model=OperationsMeasures,
-    summary="The Operations measures: hosts, hosts tested, untouched hosts with a critical observation",
-)
-def get_workbench_measures(
-    db: Session = Depends(get_db),
-    project: Project = Depends(get_current_project),
-):
-    """The project-wide numbers of the Operations strip, on their own request
-    (v2.450.0) so the page's first paint does not wait for them.  Each is
-    counted with the predicate its Hosts list uses — ``has:tested`` and
-    ``has:untouched has:critical`` — so a number is the length of the list it
-    opens.  503 on failure — never zeros, which would read as "nothing tested,
-    nothing exposed"."""
-    try:
-        return compute_measures(db, project)
-    except Exception:
-        logger.exception("operations measures failed for project %s", project.id)
-        db.rollback()
-        raise HTTPException(status_code=503, detail="The Operations measures could not be computed.")
+    return compute_workbench(db, current_user, project, include_investigate=include_investigate)
 
 
 @router.get(
@@ -172,7 +137,8 @@ def get_address_terrain(
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """The Operations terrain (v2.426.0): per block, hosts tested / planned /
+    """The address terrain (v2.426.0; shown on Posture since v2.451.0 — the
+    path keeps its name): per block, hosts tested / planned /
     worked / untouched (exclusive, adding up to ``hosts``) and the critical
     exposure nobody has touched.  503 on failure — never an empty map."""
     try:
