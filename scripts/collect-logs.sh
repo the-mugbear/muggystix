@@ -170,8 +170,13 @@ container_running() {
 DB_UP=false; container_running db && DB_UP=true
 BACKEND_UP=false; container_running backend && BACKEND_UP=true
 
+# lock_timeout: during a boot migration the upgrade holds exclusive locks on
+# the tables it has altered until it commits.  Without a timeout every query
+# here queued behind it and the collection hung (2026-10-02); now a locked
+# table is reported as a failed query and the collection carries on.
 psql_q() {
-    compose exec -T db psql -X -P pager=off -U "$DB_USER" -d "$DB_NAME" "$@"
+    compose exec -T -e PGOPTIONS='-c lock_timeout=5000' \
+        db psql -X -P pager=off -U "$DB_USER" -d "$DB_NAME" "$@"
 }
 # One labelled aggregate query; a query that fails (older schema) says so
 # and the collection carries on.
@@ -365,6 +370,12 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
         echo "backend container not running"
     fi
     if $DB_UP; then
+        # What the database is doing at this moment, and who waits on whom —
+        # a migration in progress, or a stuck one, shows here.  Statement text
+        # is the application's own SQL, cut at 100 characters and scrubbed with
+        # the rest of the bundle.
+        q "Sessions that are not idle (a long in_transaction during boot is the migration)" "SELECT pid, state, coalesce(wait_event_type, '-') AS wait_event_type, date_trunc('second', now() - xact_start) AS in_transaction, date_trunc('second', now() - query_start) AS this_statement, left(regexp_replace(query, '\\s+', ' ', 'g'), 100) AS statement FROM pg_stat_activity WHERE pid <> pg_backend_pid() AND datname = current_database() AND state <> 'idle' ORDER BY xact_start NULLS LAST;"
+        q "Lock waits (empty = nothing is blocked)" "SELECT w.pid AS waiting_pid, b.pid AS blocked_by_pid, date_trunc('second', now() - b.xact_start) AS blocker_in_transaction, left(regexp_replace(b.query, '\\s+', ' ', 'g'), 70) AS blocker_statement FROM pg_stat_activity w JOIN LATERAL unnest(pg_blocking_pids(w.pid)) AS blocker(pid) ON true JOIN pg_stat_activity b ON b.pid = blocker.pid WHERE w.datname = current_database();"
         q "Postgres extensions" "SELECT extname, extversion FROM pg_extension ORDER BY extname;"
         q "Database size on disk" "SELECT pg_size_pretty(pg_database_size(current_database())) AS database_size;"
         q "Largest tables" "SELECT relname AS table, n_live_tup AS rows, pg_size_pretty(pg_total_relation_size(relid)) AS size FROM pg_stat_user_tables ORDER BY pg_total_relation_size(relid) DESC LIMIT 30;"

@@ -125,6 +125,7 @@ npm test -- --run    # Vitest suites
 ```bash
 ./scripts/deploy.sh        # unified deploy menu (start/rebuild, first-time setup, reconfigure IP, nuclear clean, security status, back up .env + SSL, roll back to the previous build)
 ./scripts/status.sh        # container health, the newest backup and its age, data repairs not yet applied
+./scripts/migration-status.sh  # during a slow start after an upgrade: is the migration working, blocked or restarting? Read-only, safe to run while it migrates; --watch refreshes. Never interrupt a migration: it is one transaction and would start over
 ./scripts/check.sh         # THE GATE before a push (there is no CI): backend suite in the report-worker image (fails if a Quarto test skipped), ruff (any finding fails), frontend tsc + vitest, Alembic round trip; --fast skips the last; `make check`
 ./scripts/collect-logs.sh  # ANONYMISED diagnostics bundle (logs, ingestion queue, parser audit, served TLS certificate, agent-surface outcomes, request timing by route, top SQL statements, agent feedback) — read feedback.txt (free text) before sharing; needs python3; --since 72h, --terms FILE, --no-feedback
 ./scripts/backup-db.sh     # database + uploads/ backup (pg_dump, or a raw volume snapshot if Postgres is down); read to its end before it reports success, size + SHA-256 recorded; mode 0600; keeps the newest BACKUP_KEEP (default 10)
