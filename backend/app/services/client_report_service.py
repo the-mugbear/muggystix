@@ -708,9 +708,11 @@ class ClientReportService:
                 when = when.replace(tzinfo=timezone.utc)
             if r.agent_session_id:
                 by_agent += 1
-                operator = names.get(operators.get(r.agent_session_id))
-                by = (f"{operator} (agent session {r.agent_session_id})" if operator
-                      else f"Agent session {r.agent_session_id}")
+                # The client report names the OPERATOR, in full, and nothing
+                # about the session (owner, 2026-10-02): the person whose
+                # agent ran the test answers for it.  `by_agent` stays in the
+                # data for the report page's own count.
+                by = names.get(operators.get(r.agent_session_id))
             else:
                 by = names.get(r.recorded_by_user_id)
             command, _ = report_excerpt(r.command, max_chars=CONFIRMATION_COMMAND_CHARS)

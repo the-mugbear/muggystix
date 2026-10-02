@@ -55,6 +55,42 @@ export function isIPv6Address(value: string): boolean {
   return halves.length === 2 ? count <= 7 : count === 8;
 }
 
+const hex = (n: number, width: number) => n.toString(16).padStart(width, '0');
+
+/** The 32 hex digits of a VALID IPv6 address (`::` and a trailing IPv4 expanded). */
+function ipv6ToHex(value: string): string {
+  const groups = (part: string): string[] => (part === '' ? [] : part.split(':')).flatMap((g) => {
+    if (!g.includes('.')) return [hex(parseInt(g, 16), 4)];
+    const n = ipv4ToInt(g) ?? 0;
+    return [hex(Math.floor(n / 65536), 4), hex(n % 65536, 4)];
+  });
+  const [head, tail] = value.split('::');
+  const before = groups(head);
+  const after = tail === undefined ? [] : groups(tail);
+  const zeros = Array<string>(Math.max(0, 8 - before.length - after.length)).fill('0000');
+  return [...before, ...zeros, ...after].join('');
+}
+
+/**
+ * Orders addresses the way a person reads them: IPv4 by value (10.0.0.9
+ * before 10.0.0.10 — a text sort puts it after), then IPv6 by value, then
+ * anything that is not an address by its text, and no address last.  Use it
+ * wherever rows are listed by address.
+ */
+export function compareAddresses(a: string | null | undefined, b: string | null | undefined): number {
+  const key = (raw: string | null | undefined): string => {
+    const value = (raw ?? '').trim();
+    if (!value) return '3';
+    const v4 = ipv4ToInt(value);
+    if (v4 !== null) return `0${hex(v4, 8)}`;
+    if (isIPv6Address(value)) return `1${ipv6ToHex(value)}`;
+    return `2${value.toLowerCase()}`;
+  };
+  const ka = key(a);
+  const kb = key(b);
+  return ka < kb ? -1 : ka > kb ? 1 : 0;
+}
+
 function isContiguousMask(n: number): boolean {
   // A netmask is ones then zeros; a hostmask is zeros then ones.
   const inverted = (~n) >>> 0;

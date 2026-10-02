@@ -41,7 +41,13 @@ const ENDPOINT_LABELS: Record<string, string> = {
 };
 
 /** A short line naming the change — the Proposals page's row title. */
-export const describeProposal = (pr: Proposal): string => {
+/** What the reject reason is for, in the field itself (the wording of the
+ *  endpoints' "Note for the history (optional), e.g. …").  The single reject
+ *  and the page's "Reject all shown" share it. */
+export const REJECT_NOTE_PLACEHOLDER =
+  'Note for the agent (optional), e.g. cite the evidence record, keep the scanner’s severity';
+
+export const describeProposal =(pr: Proposal): string => {
   const payload = pr.payload ?? {};
   switch (pr.kind) {
     case 'finding_text':
@@ -260,10 +266,11 @@ const ProposalItem: React.FC<Props> = ({
       {pending && canDecide && rejecting !== null && (
         <div className="space-y-xs">
           <Label htmlFor={`reject-${pr.id}`}>Why reject it? (optional)</Label>
-          <p className="text-caption text-muted-foreground">
+          <p id={`reject-${pr.id}-hint`} className="text-caption text-muted-foreground">
             The agent that proposed it reads this — say what to change so its next proposal can follow it.
           </p>
           <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting} autoFocus
+            aria-describedby={`reject-${pr.id}-hint`} placeholder={REJECT_NOTE_PLACEHOLDER}
             onChange={(e) => setRejecting(e.target.value)} disabled={busy !== null} />
           <div className="flex flex-wrap gap-xs">
             <Button size="sm" variant="outline" onClick={() => void decide('reject', undefined, rejecting)} disabled={busy !== null}>

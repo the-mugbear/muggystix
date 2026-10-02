@@ -530,7 +530,7 @@ def test_a_findings_test_results_are_in_the_report_data(client, db_session, test
     # Terminal colour codes and control characters never reach the report;
     # a preview shorter than the stored output is marked as an excerpt.
     assert second["output"] == "[+] 10.63.0.1 pwned\nline two" and second["output_truncated"] is True
-    assert second["by"] == f"Test Admin (agent session {session.id})" and second["by_agent"] is True
+    assert second["by"] == "Test Admin" and second["by_agent"] is True
     assert by_title["Unrelated"]["confirmations"] == [] and by_title["Unrelated"]["confirmations_omitted"] == 0
     assert summary["evidence_records"] == 2 and summary["agent_evidence_records"] == 1
     # The addendum's comparison state carries none of it.

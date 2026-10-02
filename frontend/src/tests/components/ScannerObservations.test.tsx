@@ -148,6 +148,30 @@ describe('ScannerObservations', () => {
     );
   });
 
+  // Visual pass 2026-10-01 — a ticked issue's row is marked, and the header
+  // box says "some" until every issue shown is ticked.
+  it('marks a ticked issue, shows "some" on the header box, and a click there selects the rest', async () => {
+    renderIt();
+    await screen.findByText('SMB Signing not required');
+    const header = screen.getByRole('checkbox', { name: 'Select every issue shown' });
+    const rowOf = (title: string) => screen.getByRole('checkbox', { name: `Select ${title}` }).closest('tr')!;
+    expect(header).toHaveAttribute('aria-checked', 'false');
+
+    // Narrow SMB to two of its three hosts: that selects the issue.
+    fireEvent.click(screen.getByRole('button', { name: /Show the hosts carrying SMB Signing/ }));
+    fireEvent.click(await screen.findByRole('checkbox', { name: 'Include 10.9.0.3' }));
+    expect(rowOf('SMB Signing not required')).toHaveAttribute('data-state', 'selected');
+    expect(rowOf('SMB Signing not required')).toHaveAttribute('aria-selected', 'true');
+    expect(rowOf('TLS Version 1.0 Protocol Detection')).not.toHaveAttribute('data-state');
+    expect(header).toHaveAttribute('aria-checked', 'mixed');
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-checked', 'true');
+    expect(rowOf('TLS Version 1.0 Protocol Detection')).toHaveAttribute('data-state', 'selected');
+    // The issue that was already selected keeps the hosts it was narrowed to.
+    expect(screen.getByText('2 of 3 ticked')).toBeInTheDocument();
+  });
+
   // v5.290.0 — the action bar used to be inserted above the table on the first
   // tick, pushing every row down so the second click hit the wrong issue.
   it('ticking an issue does not move the table: the action slot is there before and after', async () => {

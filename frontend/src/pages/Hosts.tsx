@@ -37,6 +37,7 @@ import { useToast } from '../contexts/ToastContext';
 import { useAuth } from '../contexts/AuthContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useLatestRequest } from '../hooks/useLatestRequest';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { LIST_CURSOR_CLASS } from '../hooks/useListCursor';
 import {
   HOST_BUILT_IN_VIEWS,
@@ -177,6 +178,11 @@ export default function Hosts() {
   // admins too, but the per-project role isn't surfaced here, so we gate the
   // UI on global admin (the common case) — non-admins simply don't see it.
   const canSetProjectDefault = hasPermission('admin');
+  // Both exports are AUDITOR on the server (`/hosts/tool-ready`, the whole
+  // `/reports` router): a project viewer is not offered them, and the
+  // export tray — which reads `/reports/jobs` and `/reports/limits` as it
+  // opens — is never opened for one (style guide §40).
+  const { canExport } = useProjectRole();
   // Name of the project-default view currently applied (drives the banner);
   // null when none.  Persisted to session storage so the banner survives a page
   // refresh (the restored filters ARE the default) — without it an analyst on a
@@ -219,11 +225,11 @@ export default function Hosts() {
   // export tray; the job itself is listed there from the API, so no id
   // plumbing is needed beyond opening the dialog.
   useEffect(() => {
-    if (new URLSearchParams(location.search).get('reports') === '1') {
+    if (canExport && new URLSearchParams(location.search).get('reports') === '1') {
       setReportsDialogOpen(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [location.search]);
+  }, [location.search, canExport]);
   const [toolReadyDialogOpen, setToolReadyDialogOpen] = useState(false);
   const [updatingHostId, setUpdatingHostId] = useState<number | null>(null);
   // v4.51.0 — followFilter + onlyWithNotes now live inside `filters`
@@ -1412,6 +1418,7 @@ export default function Hosts() {
         </div>
         {/* Both exports are secondary: the page's work is triage in the
             table, so no header button is filled as the primary action. */}
+        {canExport && (
         <div className="flex flex-col gap-xs sm:flex-row sm:items-center">
           <Button
             variant="outline"
@@ -1430,6 +1437,7 @@ export default function Hosts() {
             Export hosts
           </Button>
         </div>
+        )}
       </div>
 
       {filterDataError && (
@@ -1893,14 +1901,14 @@ export default function Hosts() {
       )}
 
       <ReportsDialog
-        open={reportsDialogOpen}
+        open={canExport && reportsDialogOpen}
         onClose={() => setReportsDialogOpen(false)}
         filters={exportQueryContext}
         totalHosts={totalHosts}
       />
 
       <ToolReadyOutput
-        open={toolReadyDialogOpen}
+        open={canExport && toolReadyDialogOpen}
         onClose={() => setToolReadyDialogOpen(false)}
         filters={exportQueryContext}
         totalHosts={totalHosts}

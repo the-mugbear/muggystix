@@ -171,6 +171,29 @@ describe('Findings — bulk selection scope', () => {
     );
   });
 
+  // Visual pass 2026-10-01 — a ticked row looks ticked, and the header box
+  // says "some" over a partial selection (it was an empty box).
+  it('marks the ticked row and shows "some" on the header box until all are ticked', async () => {
+    renderFindings();
+    await screen.findByText('Finding 1');
+    const header = screen.getByLabelText('Select all findings on this page');
+    const rowOf = (id: number) => screen.getByLabelText(`Select Finding ${id}`).closest('tr')!;
+    expect(header).toHaveAttribute('aria-checked', 'false');
+    expect(rowOf(2)).toHaveAttribute('aria-selected', 'false');
+
+    await selectFinding(2);
+    expect(rowOf(2)).toHaveAttribute('data-state', 'selected');
+    expect(rowOf(2)).toHaveAttribute('aria-selected', 'true');
+    expect(rowOf(1)).not.toHaveAttribute('data-state');
+    expect(header).toHaveAttribute('aria-checked', 'mixed');
+
+    // A click on "some" selects the rest.
+    fireEvent.click(header);
+    await waitFor(() => expect(screen.getByText(/3 selected/)).toBeInTheDocument());
+    expect(header).toHaveAttribute('aria-checked', 'true');
+    expect(rowOf(1)).toHaveAttribute('data-state', 'selected');
+  });
+
   // Selection spans pages, so the header checkbox must union/subtract the
   // current page — replacing the set made select-all on page 2 silently drop
   // page 1's work, and unchecking wiped everything.

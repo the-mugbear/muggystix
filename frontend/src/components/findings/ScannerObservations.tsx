@@ -25,6 +25,7 @@ import { useLatestRequest } from '../../hooks/useLatestRequest';
 import { useListCursor } from '../../hooks/useListCursor';
 import { formatApiError } from '../../utils/apiErrors';
 import { ENDPOINT_STATUS_LABEL, STATUS_LABEL } from '../../utils/findingStatus';
+import { selectAllState } from '../../utils/selection';
 import { stickyBelowChrome } from '../../utils/uiStyles';
 import type { FindingHostStatus, FindingStatus } from '../../services/api';
 import { SeverityBadge } from '../ui/SeverityBadge';
@@ -212,7 +213,6 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const hostCountFor = (issue: ObservationIssue) => hostChoice.get(issue.issue_key)?.size ?? issue.host_count;
   const chosen = Array.from(selected.values());
   const chosenHosts = chosen.reduce((n, i) => n + hostCountFor(i), 0);
-  const pageAllSelected = issues.length > 0 && issues.every((i) => selected.has(i.issue_key));
 
   const promote = async () => {
     setPromoting(true);
@@ -362,8 +362,14 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                     <TableHead className="w-10">
                       <Checkbox
                         aria-label="Select every issue shown"
-                        checked={pageAllSelected}
-                        onCheckedChange={(v) => issues.forEach((i) => toggleIssue(i, v === true))}
+                        // Some of the issues shown = the dash; a click then
+                        // selects the REST (an issue already selected keeps
+                        // the hosts it was narrowed to).
+                        checked={selectAllState(issues.filter((i) => selected.has(i.issue_key)).length, issues.length)}
+                        onCheckedChange={(v) => issues.forEach((i) => {
+                          if (v === true && selected.has(i.issue_key)) return;
+                          toggleIssue(i, v === true);
+                        })}
                       />
                     </TableHead>
                   )}
@@ -381,7 +387,12 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
                   const narrowed = hostChoice.get(key);
                   return (
                     <React.Fragment key={key}>
-                      <TableRow {...cursorRowProps(index, 'align-top')} data-issue-key={key}>
+                      <TableRow
+                        {...cursorRowProps(index, 'align-top')}
+                        data-issue-key={key}
+                        data-state={selected.has(key) ? 'selected' : undefined}
+                        {...(canManage ? { 'aria-selected': selected.has(key) } : {})}
+                      >
                         {canManage && (
                           <TableCell>
                             <Checkbox

@@ -355,10 +355,15 @@ function App() {
                           </ProtectedRoute>
                         }
                       />
+                      {/* Every client-report route is AUDITOR on the server
+                          (client_reports.py gates the router), so the page
+                          follows that read rule (style guide §40): a project
+                          viewer is not offered Reports, and a direct link
+                          gets the access screen instead of a failed load. */}
                       <Route
                         path="/reports"
                         element={
-                          <ProtectedRoute requiredRole="viewer">
+                          <ProtectedRoute requiredRole="auditor">
                             <Reports />
                           </ProtectedRoute>
                         }
@@ -366,7 +371,7 @@ function App() {
                       <Route
                         path="/reports/:reportId"
                         element={
-                          <ProtectedRoute requiredRole="viewer">
+                          <ProtectedRoute requiredRole="auditor">
                             <ReportDetail />
                           </ProtectedRoute>
                         }

@@ -6,6 +6,7 @@
  * endpoint.  Nothing may read `hosts.length` of a list row as the total.
  */
 import type { Finding, FindingHostInfo, FindingHostStatus } from '../services/api';
+import { compareAddresses } from './ipAddress';
 
 /** Endpoint rows the finding page renders before "Show more". */
 export const ENDPOINT_CAP = 100;
@@ -62,6 +63,27 @@ export const endpointStateCounts = (
   }
   hosts.forEach((h) => { out[h.host_status] = (out[h.host_status] ?? 0) + 1; });
   return out;
+};
+
+/**
+ * The order the endpoint table lists its rows in: by address (numerically),
+ * then by the named endpoint, then by host name, then by row id.
+ *
+ * The server returns a finding's endpoints in whatever order the query gives
+ * them, and a row that was just changed came back LAST — so after every
+ * change the rows moved under the reader (browser pass 2026-10-01).  The
+ * order here depends on nothing a state change touches, so it is the same
+ * for every response.  Returns a new array.
+ */
+export const sortEndpoints = <H extends Pick<FindingHostInfo, 'id' | 'ip_address' | 'hostname' | 'fqdn'>>(
+  hosts: ReadonlyArray<H>,
+): H[] => {
+  const text = (v: string | null | undefined) => (v ?? '').toLowerCase();
+  return [...hosts].sort((a, b) =>
+    compareAddresses(a.ip_address, b.ip_address)
+    || text(a.fqdn).localeCompare(text(b.fqdn))
+    || text(a.hostname).localeCompare(text(b.hostname))
+    || a.id - b.id);
 };
 
 /** The ids from `anchor` to `target` inclusive, in `ordered`'s order — a

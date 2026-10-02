@@ -1,7 +1,8 @@
 /**
  * MarkdownField — "Insert image": a finding's report section may place the
  * finding's own images ticked "In report".  The button lists them, writes
- * `![caption](evidence:<id>)` where the author was typing, and is disabled
+ * `![](evidence:<id>)` where the author was typing — an empty reference, so
+ * the image's stored caption prints (owner, 2026-10-02) — and is disabled
  * with the reason when there is nothing to insert.  A field that is not a
  * finding's (no `images`) has no such button.
  */
@@ -68,7 +69,7 @@ describe('MarkdownField — Insert image', () => {
     fireEvent.click(within(list).getByRole('button', { name: 'Insert image 57: The relayed session' }));
     // On a line of its own, between the paragraphs: a figure is a block.
     expect(onValue).toHaveBeenLastCalledWith(
-      'First paragraph.\n\n![The relayed session](evidence:57)\n\nSecond paragraph.',
+      'First paragraph.\n\n![](evidence:57)\n\nSecond paragraph.',
     );
     expect(screen.queryByRole('list', { name: 'Images to insert' })).not.toBeInTheDocument();
   });
@@ -95,7 +96,7 @@ describe('MarkdownField — Insert image', () => {
     expect(screen.getByRole('button', { name: /^Insert image 59:/ }).querySelector('.animate-spin')).not.toBeNull();
   });
 
-  it('inserts an uncaptioned image with an empty caption, and a long one cut for the source', () => {
+  it('inserts every image as an empty reference, whatever its caption', () => {
     const onValue = vi.fn();
     render(<Field images={images()} onValue={onValue} />);
     fireEvent.click(screen.getByRole('button', { name: 'Insert image' }));
@@ -104,7 +105,8 @@ describe('MarkdownField — Insert image', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Insert image' }));
     fireEvent.click(screen.getByRole('button', { name: /^Insert image 59:/ }));
     const written = onValue.mock.calls[onValue.mock.calls.length - 1][0] as string;
-    expect(written).toMatch(/!\[c{119}…\]\(evidence:59\)$/);
+    // A 2,000-character caption stays on the image, never in the source.
+    expect(written).toMatch(/!\[\]\(evidence:59\)$/);
   });
 
   it('previews a placed image as the image, and an unknown reference as a note', () => {

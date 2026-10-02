@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 
-import { isIpOrCidr, isIPv4Address, isIPv6Address } from '../../utils/ipAddress';
+import { compareAddresses, isIpOrCidr, isIPv4Address, isIPv6Address } from '../../utils/ipAddress';
 
 describe('isIpOrCidr — what ipaddress.ip_network(strict=False) accepts', () => {
   it.each([
@@ -52,5 +52,26 @@ describe('isIpOrCidr — what ipaddress.ip_network(strict=False) accepts', () =>
     expect(isIPv4Address('::1')).toBe(false);
     expect(isIPv6Address('::1')).toBe(true);
     expect(isIPv6Address('10.0.0.1')).toBe(false);
+  });
+});
+
+describe('compareAddresses — the order a person reads addresses in', () => {
+  const sorted = (values: Array<string | null>) => [...values].sort(compareAddresses);
+
+  it('orders IPv4 by value, not by text', () => {
+    expect(sorted(['10.0.0.10', '10.0.0.9', '10.0.0.100', '9.255.255.255', '10.0.1.1']))
+      .toEqual(['9.255.255.255', '10.0.0.9', '10.0.0.10', '10.0.0.100', '10.0.1.1']);
+    expect(sorted(['200.0.0.1', '128.0.0.1', '1.1.1.1'])).toEqual(['1.1.1.1', '128.0.0.1', '200.0.0.1']);
+  });
+
+  it('puts IPv6 after IPv4, by value whatever the spelling', () => {
+    expect(sorted(['fe80::1', '2001:db8::10', '10.0.0.1', '2001:db8::9', '::ffff:10.0.0.2', '::1']))
+      .toEqual(['10.0.0.1', '::1', '::ffff:10.0.0.2', '2001:db8::9', '2001:db8::10', 'fe80::1']);
+    expect(compareAddresses('2001:DB8:0:0:0:0:0:1', '2001:db8::1')).toBe(0);
+  });
+
+  it('puts what is not an address after the addresses, and nothing last', () => {
+    expect(sorted([null, 'portal.example.com', '', '10.0.0.1', 'Alpha'])).toEqual(['10.0.0.1', 'Alpha', 'portal.example.com', null, '']);
+    expect(compareAddresses(null, undefined)).toBe(0);
   });
 });

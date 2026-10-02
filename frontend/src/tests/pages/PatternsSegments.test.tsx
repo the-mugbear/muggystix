@@ -20,7 +20,16 @@ vi.mock('../../services/api', () => ({
   familyCellHostsHref: (keys: string[]) => `/hosts?conditions=${keys.join(',')}`,
   subnetHostsHref: (cidr: string) => `/hosts?subnet=${cidr}`,
 }));
-vi.mock('../../contexts/ProjectContext', () => ({ useProject: () => ({ currentProject: { id: 1, name: 'P' } }) }));
+// The caller's role on the project; unset = not yet known (controls shown).
+const projectRole = vi.hoisted(() => ({ value: undefined as string | undefined }));
+vi.mock('../../contexts/ProjectContext', () => ({
+  useProject: () => ({
+    currentProject: { id: 1, name: 'P', ...(projectRole.value ? { my_role: projectRole.value } : {}) },
+  }),
+}));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: () => true }),
+}));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
@@ -53,6 +62,22 @@ describe('Patterns', () => {
       blind_spots: [condition('smb_signing', 'SMB signing disabled', 'estate_wide', 55)],
       segment_outliers: [], diagnostic_profiles: [],
     });
+  });
+
+  // Browser pass 2026-10-01 — the briefing is a report (AUDITOR on the
+  // server); the copy and the JSON are of what the page already shows.
+  it('offers the briefing to an auditor and not to a project viewer', async () => {
+    projectRole.value = 'viewer';
+    const first = wrap(<Patterns />);
+    await screen.findByText(/reaches most of the estate/);
+    expect(screen.queryByRole('button', { name: /Create briefing/ })).toBeNull();
+    expect(screen.getByRole('button', { name: /Copy summary/ })).toBeInTheDocument();
+    first.unmount();
+
+    projectRole.value = 'auditor';
+    wrap(<Patterns />);
+    expect(await screen.findByRole('button', { name: /Create briefing/ })).toBeInTheDocument();
+    projectRole.value = undefined;
   });
 
   it('names the estate-wide weakness first, once, without cards or an opaque score', async () => {
@@ -104,6 +129,20 @@ describe('Segments', () => {
   beforeEach(() => {
     subnetsMock.mockReset().mockResolvedValue(subnetData);
     postureMock.mockReset().mockResolvedValue({ sites: { adopted: true, items: [site('HQ', 2), site(null, 0)] } });
+  });
+
+  // Browser pass 2026-10-01 — a briefing is a report (AUDITOR on the server).
+  it('offers a site’s briefing to an auditor and not to a project viewer', async () => {
+    projectRole.value = 'viewer';
+    const first = wrap(<Segments />);
+    await screen.findByText(/Start with/);
+    expect(screen.queryByRole('button', { name: 'Create briefing for HQ' })).toBeNull();
+    first.unmount();
+
+    projectRole.value = 'auditor';
+    wrap(<Segments />);
+    expect(await screen.findByRole('button', { name: 'Create briefing for HQ' })).toBeInTheDocument();
+    projectRole.value = undefined;
   });
 
   it('opens on the Site lens when sites exist, and names the worst one', async () => {

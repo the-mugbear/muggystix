@@ -601,7 +601,6 @@ Auxiliary scripts (`scripts/README.md` has the full list):
 - `scripts/check.sh` — the gate (see §10). `scripts/data_repairs.py` — the data-repair ledger (see §8).
 - `scripts/upgrade-instance.sh` — carry a running instance's local state into a freshly copied source tree, then deploy.
 - `scripts/status.sh` — container status, the newest backup's age, data repairs not yet applied.
-- `scripts/transfer-images.sh` — export/import container images for offline or air-gapped moves.
 - `scripts/generate-ssl-cert.sh` / `generate-ssl-cert-simple.sh` — SSL certificate helpers (also invoked by `deploy.sh` during first-time setup).
 
 **Scaling.** The stateless backend and frontend containers can run multiple replicas; the ingestion and report workers are each currently a single long-lived process and should not be replicated as-is (the `FOR UPDATE SKIP LOCKED` claim is safe for multiple workers, but the orphan-reaper logic assumes one reaper per queue). Postgres needs external strategies (managed service, read replicas) for anything beyond single-host deployments. There is no general job scheduler: beyond the two workers' periodic callbacks (the ingestion worker's reaper, backlog check and webhook sweep), the API runs two background loops — expired-session cleanup and agent-API-call / audit-log retention (`startup.py`); re-correlation and vuln refresh remain on-demand.

@@ -70,6 +70,7 @@ import { cn } from '../utils/cn';
 import ScannerObservations from '../components/findings/ScannerObservations';
 import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates, matchesStatusFilter } from '../utils/findingStatus';
 import { endpointPreviewTitle } from '../utils/findingEndpoints';
+import { selectAllState } from '../utils/selection';
 
 // Compact age ("31d") from an ISO timestamp — the full date goes in the
 // cell's title. Falls back safely on a missing/invalid value rather than
@@ -621,7 +622,8 @@ const FindingsList: React.FC = () => {
                   {canManage && (
                     <Checkbox
                       aria-label="Select all findings on this page"
-                      checked={findings.length > 0 && findings.every((f) => selected.has(f.id))}
+                      // Some of this page's rows = the dash, not an empty box.
+                      checked={selectAllState(findings.filter((f) => selected.has(f.id)).length, findings.length)}
                       // Union/subtract THIS page rather than replacing the set.
                       // Selection deliberately spans pages, so replacing it
                       // made select-all on page 2 silently drop page 1's work,
@@ -686,12 +688,17 @@ const FindingsList: React.FC = () => {
                       </>
                     ) : hasActiveFilters
                       ? 'No findings match these filters. Clear them to see all.'
-                      : 'No findings yet. Promote a scanner observation, or a note on a host, to record one here.'}
+                      : 'No findings yet. Promote a scanner observation or a test result, or add one by hand, to record it here.'}
                   </TableCell>
                 </TableRow>
               )}
               {!loading && !error && findings.map((f, i) => (
-                <TableRow key={f.id} data-state={selected.has(f.id) ? 'selected' : undefined} {...cursorRowProps(i)}>
+                <TableRow
+                  key={f.id}
+                  data-state={selected.has(f.id) ? 'selected' : undefined}
+                  {...(canManage ? { 'aria-selected': selected.has(f.id) } : {})}
+                  {...cursorRowProps(i)}
+                >
                   <TableCell>
                     {canManage && (
                       <Checkbox

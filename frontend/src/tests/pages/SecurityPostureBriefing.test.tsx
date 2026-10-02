@@ -19,8 +19,15 @@ vi.mock('../../services/api', () => ({
   downloadSystemicReport: (...a: unknown[]) => downloadMock(...a),
   gridCellHostsHref: () => '/hosts',
 }));
+// The caller's role on the project; unset = not yet known (controls shown).
+const projectRole = vi.hoisted(() => ({ value: undefined as string | undefined }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'P' } }),
+  useProject: () => ({
+    currentProject: { id: 1, name: 'P', ...(projectRole.value ? { my_role: projectRole.value } : {}) },
+  }),
+}));
+vi.mock('../../contexts/AuthContext', () => ({
+  useAuth: () => ({ user: { id: 1, role: 'member' }, hasPermission: () => true }),
 }));
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toastMock }));
 
@@ -35,6 +42,21 @@ describe('SecurityPosture — Create briefing', () => {
     await waitFor(() => expect(downloadMock).toHaveBeenCalledTimes(1));
     expect(downloadMock).toHaveBeenCalledWith();
     expect(toastMock.error).not.toHaveBeenCalled();
+  });
+
+  // Browser pass 2026-10-01 — the briefing is a report (AUDITOR on the
+  // server); a project viewer was offered it and got the 403 as a toast.
+  it('is offered to an auditor and not to a project viewer', async () => {
+    projectRole.value = 'viewer';
+    const first = render(<MemoryRouter><TooltipProvider><SecurityPosture /></TooltipProvider></MemoryRouter>);
+    await screen.findByRole('heading', { name: 'Security Posture' });
+    expect(screen.queryByRole('button', { name: /Create briefing/ })).toBeNull();
+    first.unmount();
+
+    projectRole.value = 'auditor';
+    render(<MemoryRouter><TooltipProvider><SecurityPosture /></TooltipProvider></MemoryRouter>);
+    expect(await screen.findByRole('button', { name: /Create briefing/ })).toBeInTheDocument();
+    projectRole.value = undefined;
   });
 
   it('toasts when the briefing cannot be generated', async () => {

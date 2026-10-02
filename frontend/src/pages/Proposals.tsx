@@ -26,7 +26,7 @@ import { isPageShortcutEvent } from '../utils/keyboard';
 import { announceProposalsChanged } from '../utils/proposalEvents';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
-import ProposalItem from '../components/proposals/ProposalItem';
+import ProposalItem, { REJECT_NOTE_PLACEHOLDER } from '../components/proposals/ProposalItem';
 import { Button } from '../components/ui/button';
 import { Label } from '../components/ui/label';
 import { Textarea } from '../components/ui/textarea';
@@ -200,9 +200,10 @@ const Proposals: React.FC = () => {
         ? 'Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown.'
         : (
           <div className="space-y-xs">
-            <p>Each is marked rejected. The agents that proposed them read the decision and this reason.</p>
+            <p id="bulk-reject-note-hint">Each is marked rejected. The agents that proposed them read the decision and this reason.</p>
             <Label htmlFor="bulk-reject-note">Why reject them? (optional)</Label>
             <Textarea id="bulk-reject-note" rows={2} maxLength={2000}
+              aria-describedby="bulk-reject-note-hint" placeholder={REJECT_NOTE_PLACEHOLDER}
               onChange={(e) => { bulkNote.current = e.target.value; }} />
           </div>
         ),

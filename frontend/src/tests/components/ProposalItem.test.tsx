@@ -37,6 +37,21 @@ const renderItem = (pr: Proposal, onDecided = vi.fn()) => render(
 beforeEach(() => { acceptProposal.mockReset(); rejectProposal.mockReset(); });
 
 describe('ProposalItem', () => {
+  // Browser pass 2026-10-01 — the reject reason opened as a bare box: it is
+  // named by its label, says what the note is for, and reads its hint out.
+  it('names the reject reason, says what it is for, and sends it', async () => {
+    rejectProposal.mockResolvedValue({ ...base, status: 'rejected' });
+    renderItem(base);
+    fireEvent.click(screen.getByRole('button', { name: /Reject…/ }));
+    const reason = screen.getByRole('textbox', { name: 'Why reject it? (optional)' });
+    expect(reason).toHaveFocus();
+    expect(reason).toHaveAttribute('placeholder', expect.stringMatching(/^Note for the agent \(optional\), e\.g\. /));
+    expect(reason).toHaveAccessibleDescription(/The agent that proposed it reads this/);
+    fireEvent.change(reason, { target: { value: 'Cite the evidence.' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Reject$/ }));
+    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(7, 'Cite the evidence.'));
+  });
+
   it('names its source and model, and cites its evidence', () => {
     renderItem(base);
     expect(screen.getByRole('link', { name: 'Agent session #88' })).toHaveAttribute('href', '/agent-sessions/88');

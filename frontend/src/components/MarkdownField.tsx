@@ -212,7 +212,11 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
                         aria-label={`Insert image ${img.id}: ${caption || img.filename}`}
                         onClick={() => {
                           setPickerOpen(false);
-                          apply((e) => insertBlock(e, imageReference(img.id, img.caption)), caret.current);
+                          // An EMPTY reference (owner, 2026-10-02): the image's
+                          // stored caption then always prints, so there is one
+                          // caption to maintain.  Typed alt text still
+                          // overrides it for that placement.
+                          apply((e) => insertBlock(e, imageReference(img.id)), caret.current);
                         }}>
                         <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-control border border-border bg-muted">
                           {src

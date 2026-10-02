@@ -260,7 +260,7 @@ def test_the_pentest_report_prints_how_a_finding_was_confirmed():
     # A finding with neither still asks for evidence; an agent's record names its operator.
     tls = out.split("{#finding-13}")[1].split("{#finding-14}")[0]
     assert "bs-code" not in tls and "Mark the evidence screenshots" in tls
-    assert "by Sam Analyst \\(agent session 7\\)" in out
+    assert "by Sam Analyst" in out and "agent session" not in out
 
 
 @needs_templates

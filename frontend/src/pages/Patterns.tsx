@@ -38,6 +38,7 @@ import { copyToClipboard, downloadTextFile } from '../utils/clipboard';
 import { useToast } from '../contexts/ToastContext';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
@@ -154,6 +155,7 @@ function systemicToMarkdown(data: SystemicInsightsResponse, projectName?: string
 const Patterns: React.FC = () => {
   const { currentProject } = useProject();
   const toast = useToast();
+  const { canExport } = useProjectRole();
   const [data, setData] = useState<SystemicInsightsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -216,10 +218,15 @@ const Patterns: React.FC = () => {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-xs">
-          <Button size="sm" variant="outline" onClick={handleExportReport} disabled={loading || exporting}>
-            {exporting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <FileText className="size-3.5" aria-hidden />}
-            Create briefing
-          </Button>
+          {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on the
+              server): not offered to a project viewer.  Copy and JSON are of
+              what this page already shows. */}
+          {canExport && (
+            <Button size="sm" variant="outline" onClick={handleExportReport} disabled={loading || exporting}>
+              {exporting ? <Loader2 className="size-3.5 animate-spin" aria-hidden /> : <FileText className="size-3.5" aria-hidden />}
+              Create briefing
+            </Button>
+          )}
           <Button size="sm" variant="outline" onClick={handleCopyMarkdown} disabled={loading || !data?.adopted}>
             <Copy className="size-3.5" aria-hidden /> Copy summary
           </Button>

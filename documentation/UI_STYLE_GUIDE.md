@@ -646,8 +646,19 @@ gate anything; keep `hasPermission('admin')` for instance-wide surfaces
   member reads the project's details and tags) and Scanner Integrations
   (every member reads them, global admins change them).  A page leaves the
   nav, and its route refuses, only when the server refuses that role the
-  read as well (Ingestion Results: its GETs need analyst).  Never hide a
-  readable page because its writes are out of reach.
+  read as well (Ingestion Results: its GETs need analyst; Reports — `/reports`
+  and `/reports/:id` — every client-report route needs auditor).  Never hide a
+  readable page because its writes are out of reach.  Proposals and Agent
+  Sessions are every member's pages: the server gives any member those reads
+  (deciding a proposal is analyst, starting a session is auditor).
+- **Getting data out is auditor.**  Every export and report route is AUDITOR
+  on the server (`/export`, `/reports`, `/client-reports`, `/hosts/tool-ready`,
+  `/names/export`), so their controls follow `canExport`: the Hosts page's
+  "Export targets" / "Export hosts" (and the `?reports=1` link, which opens a
+  tray that reads `/reports/jobs` at once), "Create briefing" on Posture,
+  Patterns and a Segments site, the Scope and Names exports.  A copy or
+  download of what the page already shows (Patterns' "Copy summary" / JSON)
+  is not an export.
 - **A SECTION whose read the server restricts is hidden for that role**, not
   shown failing: Project settings' outbound webhooks and webhook deliveries
   are read by project admins only, so nobody else is offered them (they used
@@ -657,6 +668,30 @@ gate anything; keep `hasPermission('admin')` for instance-wide surfaces
   the account role, and `viewer` means any signed-in account.  The route in
   `App.tsx` and the entry in `config/navigation.tsx` must agree
   (`tests/navigation.test.ts`).
+- **A tab shows the account whose token it sends.**  The token is in
+  localStorage, which every tab shares; the account and project a tab shows
+  are in its memory.  When another tab signs in as someone else (or signs
+  out), `AuthProvider` reloads this one (`utils/authSession`) — otherwise it
+  keeps the first account's project on screen and polls it with the second
+  account's token (403 "Not a member of this project"), and a change made
+  there would be recorded as the other person's.
+
+### 41. A selected row looks selected (2026-10-01)
+- A row whose checkbox is ticked carries `data-state="selected"` (the fill
+  `TableRow` and `DataTableShell` paint) and `aria-selected`; a table with no
+  selection states neither.  `DataTableShell` does this by itself for a table
+  built with `selectionColumn()`; a hand-built table sets both on its row.
+- A row that is selected AND under the keyboard cursor keeps both marks: the
+  selected fill, and the cursor's ring (`LIST_CURSOR_CLASS`) over it.
+- A "select all" box has three states — `utils/selection.selectAllState`:
+  empty for none, the tick for all, a **dash** (`checked="indeterminate"`)
+  for some.  `Checkbox` draws the dash; never give "some" the tick or the
+  empty box.  Its name stays the same in every state ("Select all rows on
+  this page"): the state is announced beside it (checked / mixed), and a
+  click on "some" selects the rest.
+- A list keeps its own order across responses (the finding's endpoints: by
+  address — numerically, `utils/ipAddress.compareAddresses` — then name).  A
+  row must not move because the server answered a change with it last.
 
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

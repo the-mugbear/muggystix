@@ -74,6 +74,7 @@ import PostureSection from '../components/posture/PostureSection';
 import { buildHostsUrl } from '../utils/drilldownLinks';
 import { IP_OR_CIDR_HINT, isIpOrCidr } from '../utils/ipAddress';
 import { formatDate, formatTimestamp } from '../utils/relativeTime';
+import { selectAllState } from '../utils/selection';
 
 const plural = (n: number, one: string, many = `${one}s`) =>
   `${n.toLocaleString()} ${n === 1 ? one : many}`;
@@ -873,7 +874,11 @@ const Scopes: React.FC = () => {
                     {canWrite && (
                       <TableHead className="w-10">
                         <Checkbox
-                          checked={scope.subnets.length > 0 && selectedSubnetIds.size === scope.subnets.length}
+                          // Some of the subnets = the dash, not an empty box.
+                          checked={selectAllState(
+                            scope.subnets.filter((s) => selectedSubnetIds.has(s.id)).length,
+                            scope.subnets.length,
+                          )}
                           onCheckedChange={toggleAllSelected}
                           aria-label="Select all subnets for bulk label apply"
                         />
@@ -910,6 +915,7 @@ const Scopes: React.FC = () => {
                           key={subnet.id}
                           className="group/row"
                           data-state={selectedSubnetIds.has(subnet.id) ? 'selected' : undefined}
+                          {...(canWrite ? { 'aria-selected': selectedSubnetIds.has(subnet.id) } : {})}
                         >
                           {canWrite && (
                             <TableCell>

@@ -2,6 +2,7 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useS
 import { useNavigate, useLocation } from 'react-router-dom';
 import { flushSync } from 'react-dom';
 import { createAuthLogger } from '../utils/logger';
+import { accountChangedElsewhere, reloadForAccountChange } from '../utils/authSession';
 import api, { setCurrentProjectId } from '../services/api';
 
 interface User {
@@ -156,6 +157,21 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     run();
     return () => { cancelled = true; };
   }, []);
+
+  // Another tab signed in as someone else, or signed out: the stored token is
+  // no longer this tab's account, but this tab still shows that account's
+  // project and keeps polling it (see utils/authSession).  Start again from
+  // the stored session rather than act as one person while showing another.
+  const currentUserId = user?.id ?? null;
+  useEffect(() => {
+    if (currentUserId == null) return undefined;
+    const onStorage = (event: StorageEvent) => {
+      if (event.storageArea && event.storageArea !== window.localStorage) return;
+      if (accountChangedElsewhere(event, currentUserId)) reloadForAccountChange();
+    };
+    window.addEventListener('storage', onStorage);
+    return () => window.removeEventListener('storage', onStorage);
+  }, [currentUserId]);
 
   const verifyToken = async (authToken: string) => {
     const timer = authLogger.timer('Token verification');

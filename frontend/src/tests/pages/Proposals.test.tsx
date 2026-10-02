@@ -3,7 +3,7 @@
  * re-reads as many rows as are shown, where it used to re-read only the
  * first page and drop the reviewer back to it.
  */
-import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -209,6 +209,22 @@ describe('Proposals page — a filter value it does not know', () => {
       expect.objectContaining({ status: 'rejected', kind: 'finding_text' }),
     ));
     expect(screen.getByTestId('address')).toHaveTextContent('status=rejected&kind=finding_text&scope=all');
+  });
+});
+
+// Browser pass 2026-10-01 — the bulk reason was a bare box in the dialog.
+describe('Proposals page — the bulk reject reason', () => {
+  it('is named, says what it is for, and is sent with the decision', async () => {
+    listProposals.mockResolvedValue({ total: 2, items: page(1, 2), has_more: false });
+    decideProposals.mockResolvedValue({ decided: [1, 2], failed: [] });
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    fireEvent.click(await screen.findByRole('button', { name: /Reject all shown/ }));
+    const reason = await screen.findByRole('textbox', { name: 'Why reject them? (optional)' });
+    expect(reason).toHaveAttribute('placeholder', expect.stringMatching(/^Note for the agent \(optional\), e\.g\. /));
+    expect(reason).toHaveAccessibleDescription(/The agents that proposed them read the decision/);
+    fireEvent.change(reason, { target: { value: 'No evidence cited.' } });
+    fireEvent.click(within(reason.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: 'Reject all shown' }));
+    await waitFor(() => expect(decideProposals).toHaveBeenCalledWith([1, 2], 'reject', 'No evidence cited.'));
   });
 });
 

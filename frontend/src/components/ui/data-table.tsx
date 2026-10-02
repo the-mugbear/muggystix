@@ -132,9 +132,14 @@ export function useDataTable<TData>({
 // skip re-render on the unchanged rows.  Keyboard semantics are
 // preserved verbatim from the prior inline implementation.
 
+/** The id of the column `selectionColumn()` builds. */
+const SELECTION_COLUMN_ID = '__select';
+
 interface DataTableRowProps<TData> {
   row: Row<TData>;
   selected: boolean;
+  /** The table has a selection column (or the caller reports selection). */
+  selectable: boolean;
   onRowClick?: (row: TData, event: React.MouseEvent<HTMLTableRowElement>) => void;
   renderSubRow?: (row: Row<TData>) => React.ReactNode;
   /** Caller-supplied extra className for this row (e.g. a left-border
@@ -148,6 +153,7 @@ interface DataTableRowProps<TData> {
 function DataTableRowImpl<TData>({
   row,
   selected,
+  selectable,
   onRowClick,
   renderSubRow,
   extraClassName,
@@ -178,6 +184,8 @@ function DataTableRowImpl<TData>({
           useHostColumns.tsx for the canonical pattern). */}
       <tr
         data-state={selected ? 'selected' : undefined}
+        // Stated only on a table whose rows can be selected.
+        {...(selectable ? { 'aria-selected': selected } : {})}
         {...(onRowClick ? { onClick: handleClick } : {})}
         {...(rowTitle ? { title: rowTitle } : {})}
         className={cn(
@@ -278,6 +286,7 @@ export function DataTableShell<TData>({
     const label = typeof headerDef === 'string' ? headerDef : first.id;
     return `Sorted by ${label} ${first.desc ? 'descending' : 'ascending'}`;
   }, [sorting, table]);
+  const hasSelectionColumn = table.getAllLeafColumns().some((c) => c.id === SELECTION_COLUMN_ID);
   return (
     <div
       className={cn(
@@ -338,15 +347,21 @@ export function DataTableShell<TData>({
             </tr>
           ) : (
             rows.map((row) => {
-              // Only call TanStack's selection helpers when the caller
-              // opted into selection — otherwise getIsSelected throws on
-              // tables that never registered the row-selection feature.
-              const selected = getRowSelectedState ? getRowSelectedState(row) : false;
+              // A table with the `selectionColumn` marks its ticked rows
+              // without being asked: the Hosts table had the column and no
+              // `getRowSelectedState`, so a ticked row carried no
+              // `data-state` and was never drawn selected (visual pass
+              // 2026-10-01).  TanStack's selection helpers are called only
+              // for such a table; a caller's `getRowSelectedState` still wins.
+              const selected = getRowSelectedState
+                ? getRowSelectedState(row)
+                : hasSelectionColumn && row.getIsSelected();
               return (
                 <DataTableRow
                   key={row.id}
                   row={row}
                   selected={selected}
+                  selectable={hasSelectionColumn || !!getRowSelectedState}
                   onRowClick={onRowClick}
                   renderSubRow={renderSubRow}
                   extraClassName={getRowClassName ? getRowClassName(row) : undefined}
@@ -426,7 +441,7 @@ export function selectionColumn<TData>(opts?: {
   size?: number;
 }): ColumnDef<TData, unknown> {
   return {
-    id: '__select',
+    id: SELECTION_COLUMN_ID,
     size: opts?.size ?? 40,
     header: ({ table }) => (
       <Checkbox

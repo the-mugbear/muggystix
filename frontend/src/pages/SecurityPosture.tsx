@@ -28,6 +28,7 @@ import { buildFindingsUrl, buildHostsUrl, reviewedHostsUrl } from '../utils/dril
 import { formatApiError } from '../utils/apiErrors';
 import { safeFallback } from '../utils/uiStyles';
 import { useProject } from '../contexts/ProjectContext';
+import { useProjectRole } from '../hooks/useProjectRole';
 import { Alert, AlertDescription, AlertTitle } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 // Plain-English "what is this / how it's derived" help — every measure
@@ -87,6 +88,7 @@ const SecurityPosture: React.FC = () => {
   const [reloadNonce, setReloadNonce] = useState(0);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const toast = useToast();
+  const { canExport } = useProjectRole();
   const [briefing, setBriefing] = useState(false);
   // "Create briefing" — the executive systemic report, from this page rather
   // than via the Hosts export detour. Synchronous standalone HTML; the
@@ -144,12 +146,16 @@ const SecurityPosture: React.FC = () => {
         </div>
         <div className="flex flex-col items-end gap-xs">
           <div className="flex items-center gap-xs">
-            <Button size="sm" variant="outline" onClick={createBriefing} disabled={briefing}>
-              {briefing
-                ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
-                : <FileText className="size-3.5" aria-hidden />}
-              Create briefing
-            </Button>
+            {/* The briefing is a report (`/reports/systemic.html`, AUDITOR on
+                the server): not offered to a project viewer. */}
+            {canExport && (
+              <Button size="sm" variant="outline" onClick={createBriefing} disabled={briefing}>
+                {briefing
+                  ? <Loader2 className="size-3.5 animate-spin" aria-hidden />
+                  : <FileText className="size-3.5" aria-hidden />}
+                Create briefing
+              </Button>
+            )}
             <LastUpdated compact lastFetched={loadedAt} onRefresh={load} isLoading={loading} label="posture" />
           </div>
           {data && <EvidenceCurrency evidence={data.evidence} />}

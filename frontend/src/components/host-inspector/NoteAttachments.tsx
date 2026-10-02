@@ -258,6 +258,27 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const [captionSaving, setCaptionSaving] = useState<ReadonlySet<number>>(new Set());
   const [captionUnsaved, setCaptionUnsaved] = useState<Record<number, string>>({});
   const captionMax = reportMarking?.captionMax ?? 2000;
+  // The editor takes the keyboard when it opens (the field used to appear
+  // unfocused, so the next keystrokes went to the page), with a caption that
+  // is being edited selected; when it closes, the keyboard goes back to the
+  // image's caption button.  Keyed on WHICH image is edited, so typing never
+  // re-selects the text.
+  const captionInputRef = useRef<HTMLTextAreaElement>(null);
+  const captionRowsRef = useRef<HTMLDivElement>(null);
+  const editingId = captionEdit?.id ?? null;
+  const lastEditingId = useRef<number | null>(null);
+  useEffect(() => {
+    const previous = lastEditingId.current;
+    lastEditingId.current = editingId;
+    if (editingId != null) {
+      captionInputRef.current?.focus();
+      captionInputRef.current?.select();
+    } else if (previous != null) {
+      captionRowsRef.current
+        ?.querySelector<HTMLElement>(`[data-caption-button="${previous}"]`)
+        ?.focus();
+    }
+  }, [editingId]);
   const forgetUnsaved = (id: number) => setCaptionUnsaved((m) => {
     if (!(id in m)) return m;
     const next = { ...m };
@@ -297,7 +318,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   return (
     <div className={takesSpace ? 'mt-xs space-y-xs' : undefined}>
       {attachments.length > 0 && (
-        <div className={reportMarking ? 'space-y-xs' : 'flex flex-wrap gap-xs'}>
+        <div ref={captionRowsRef} className={reportMarking ? 'space-y-xs' : 'flex flex-wrap gap-xs'}>
           {attachments.map((att) => {
             const url = thumbnailUrl(att.id);
             const loadFailed = !url && thumbnailFailed(att.id);
@@ -355,6 +376,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                   {editing ? (
                     <div className="space-y-xxs">
                       <Textarea
+                        ref={captionInputRef}
                         rows={2}
                         maxLength={captionMax}
                         value={editing.text}
@@ -362,6 +384,26 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                         aria-label={`Caption for ${att.filename}`}
                         placeholder="What the image shows — printed under it in the report"
                         onChange={(e) => setCaptionEdit({ id: att.id, text: e.target.value })}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') {
+                            // Cancels the caption only — not a panel around it.
+                            e.preventDefault();
+                            e.stopPropagation();
+                            forgetUnsaved(att.id);
+                            setCaptionEdit(null);
+                          } else if (
+                            e.key === 'Enter' && !e.shiftKey
+                            // An Enter that confirms an IME composition is the
+                            // input method's, not a save (229 = Safari, which
+                            // clears `isComposing` before the keydown).
+                            && !e.nativeEvent.isComposing && e.keyCode !== 229
+                          ) {
+                            // A caption is one line of words: Enter saves it,
+                            // Shift+Enter still breaks the line.
+                            e.preventDefault();
+                            void saveCaption();
+                          }
+                        }}
                       />
                       <div className="flex flex-wrap items-center gap-xs">
                         <Button type="button" size="sm" disabled={saving} onClick={() => void saveCaption()}>
@@ -391,6 +433,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                       ) : canMark ? (
                         <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-xs text-caption"
                           aria-label={`${caption ? 'Edit' : 'Add'} caption for ${att.filename}`}
+                          data-caption-button={att.id}
                           // A caption this image's last save could not store is
                           // offered again, not the stored one.
                           onClick={() => setCaptionEdit({ id: att.id, text: captionUnsaved[att.id] ?? caption })}>

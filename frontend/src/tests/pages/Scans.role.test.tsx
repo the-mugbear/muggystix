@@ -4,6 +4,7 @@
  * and learned from the 403.  And "Dismiss" on a failed job failed silently.
  */
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
@@ -97,6 +98,21 @@ describe('Scans — a project viewer reads the import history', () => {
     expect(screen.getByRole('button', { name: /Cancel ingestion for waiting.xml/ })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Discard staged upload staged.xml/ })).toBeInTheDocument();
   });
+
+  // 5.328.2 — deleting a scan is the project ADMIN's on the server
+  // (`deletion-impact` and `DELETE /scans/{id}`); an analyst was offered it
+  // and got a 403 on the click.
+  it.each([['analyst', false], ['admin', true]] as const)(
+    'offers "Delete scan" in the row menu to a project %s: %s', async (as, offered) => {
+      role.value = as;
+      renderPage();
+      await screen.findByText('newest.xml');
+      const user = userEvent.setup({ skipHover: true });
+      await user.click(screen.getByRole('button', { name: 'More actions for newest.xml' }));
+      await screen.findByRole('menuitem', { name: /Open scan/ });
+      expect(screen.queryAllByRole('menuitem', { name: /Delete scan/ })).toHaveLength(offered ? 1 : 0);
+    },
+  );
 });
 
 describe('Scans — a failed Dismiss is said (R34)', () => {

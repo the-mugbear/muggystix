@@ -117,6 +117,73 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
+// Browser pass 2026-10-01 — the server answered a change with the changed row
+// LAST, and the table drew the response order: rows jumped under the reader.
+describe('FindingEndpoints — the rows keep their order', () => {
+  const rowOrder = () => [...document.querySelectorAll('[data-endpoint-row]')]
+    .map((tr) => Number(tr.getAttribute('data-endpoint-row')));
+  const named = (id: number, ip: string | null, over: Partial<FindingHostInfo> = {}): FindingHostInfo => ({
+    id, host_id: id, ip_address: ip, hostname: null, host_status: 'open', ...over,
+  });
+
+  it('lists by address — numerically — then by name, whatever order the server sent', () => {
+    render(<Harness initial={finding([
+      named(1, '10.0.0.10'), named(2, '10.0.0.9'), named(3, null, { hostname: 'orphan' }),
+      named(4, '10.0.0.9', { fqdn: 'b.example.com' }), named(5, '10.0.0.9', { fqdn: 'a.example.com' }),
+      named(6, '2001:db8::1'), named(7, '9.0.0.200'),
+    ])} />);
+    expect(rowOrder()).toEqual([7, 2, 5, 4, 1, 6, 3]);
+  });
+
+  it('a single change and a bulk change leave every row where it was', async () => {
+    const start = finding([endpoint(1), endpoint(2), endpoint(3), endpoint(4)]);
+    render(<Harness initial={start} />);
+    expect(rowOrder()).toEqual([1, 2, 3, 4]);
+
+    // The server's answer: the changed row moved to the end.
+    const movedToEnd = (f: Finding, ids: number[], state: FindingHostStatus): Finding => ({
+      ...f,
+      hosts: [
+        ...f.hosts.filter((h) => !ids.includes(h.id)),
+        ...f.hosts.filter((h) => ids.includes(h.id)).map((h) => ({ ...h, host_status: state })),
+      ],
+    });
+    const afterOne = movedToEnd(start, [2], 'remediated');
+    setFindingEndpointStatus.mockResolvedValue(afterOne);
+    fireEvent.change(stateOf(2), { target: { value: 'remediated' } });
+    await waitFor(() => expect(stateOf(2).value).toBe('remediated'));
+    expect(rowOrder()).toEqual([1, 2, 3, 4]);
+
+    setFindingEndpointsStatus.mockResolvedValue(movedToEnd(afterOne, [1, 3], 'retest'));
+    fireEvent.click(box(1));
+    fireEvent.click(box(3));
+    fireEvent.change(screen.getByLabelText('Set the selected endpoints to'), { target: { value: 'retest' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set 2 endpoints' }));
+    await waitFor(() => expect(stateOf(3).value).toBe('retest'));
+    expect(rowOrder()).toEqual([1, 2, 3, 4]);
+  });
+
+  it('a ticked row says it is selected', () => {
+    render(<Harness initial={finding([endpoint(1), endpoint(2)])} />);
+    const row = (id: number) => document.querySelector(`[data-endpoint-row="${id}"]`)!;
+    expect(row(1)).toHaveAttribute('aria-selected', 'false');
+    fireEvent.click(box(1));
+    expect(row(1)).toHaveAttribute('data-state', 'selected');
+    expect(row(1)).toHaveAttribute('aria-selected', 'true');
+    expect(row(2)).toHaveAttribute('aria-selected', 'false');
+    expect(screen.getByLabelText('Select every endpoint shown')).toHaveAttribute('aria-checked', 'mixed');
+  });
+
+  it('a shift-click range follows the order on screen', () => {
+    render(<Harness initial={finding([endpoint(4), endpoint(2), endpoint(3), endpoint(1)])} />);
+    fireEvent.click(box(1));
+    fireEvent.click(box(3), { shiftKey: true });
+    expect(bar()).toHaveTextContent('3 selected');
+    expect(box(2)).toBeChecked();
+    expect(box(4)).not.toBeChecked();
+  });
+});
+
 describe('FindingEndpoints — the selection is of rows the filter shows (S3)', () => {
   it('a row given its own state leaves the selection with the filter', async () => {
     const start = finding([endpoint(1), endpoint(2), endpoint(3)]);

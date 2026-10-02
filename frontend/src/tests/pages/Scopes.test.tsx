@@ -323,6 +323,28 @@ describe('Scopes page — a project viewer reads the scope', () => {
     expect(screen.getByLabelText('Search subnets by CIDR or description')).toBeInTheDocument();
   });
 
+  // Visual pass 2026-10-01 — a ticked subnet looks ticked, and the header box
+  // says "some" over a partial selection (it was an empty box).
+  it('an analyst’s ticked subnet is marked, and the header box shows "some" until all are ticked', async () => {
+    role.value = 'analyst';
+    const second = { ...scope.subnets[0], id: 12, cidr: '10.77.2.0/24', description: 'West segment' };
+    mocked.getDefaultScope.mockResolvedValue({ ...scope, subnets: [scope.subnets[0], second] });
+    renderPage();
+    const first = await screen.findByLabelText('Select 10.77.1.0/24 for bulk label apply');
+    const header = screen.getByLabelText('Select all subnets for bulk label apply');
+    expect(header).toHaveAttribute('aria-checked', 'false');
+    expect(first.closest('tr')).toHaveAttribute('aria-selected', 'false');
+
+    fireEvent.click(first);
+    expect(first.closest('tr')).toHaveAttribute('data-state', 'selected');
+    expect(first.closest('tr')).toHaveAttribute('aria-selected', 'true');
+    expect(header).toHaveAttribute('aria-checked', 'mixed');
+
+    fireEvent.click(header);
+    expect(header).toHaveAttribute('aria-checked', 'true');
+    expect(screen.getByLabelText('Select 10.77.2.0/24 for bulk label apply').closest('tr')).toHaveAttribute('data-state', 'selected');
+  });
+
   it('an auditor reads and exports; an analyst edits', async () => {
     role.value = 'auditor';
     const { unmount } = renderPage();

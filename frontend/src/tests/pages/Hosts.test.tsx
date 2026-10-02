@@ -17,6 +17,33 @@ vi.mock('react-router-dom', async () => {
   };
 });
 
+// Who is looking: setupTests signs in a global admin on a project that names
+// no role (every control shown).  A test sets `viewer.projectRole` to see the
+// page as a project member with that role.
+const viewer = vi.hoisted(() => ({ projectRole: undefined as string | undefined }));
+vi.mock('../../contexts/AuthContext', async () => ({
+  ...(await vi.importActual<typeof import('../../contexts/AuthContext')>('../../contexts/AuthContext')),
+  useAuth: () => ({
+    user: { id: 1, username: 'test-user', role: viewer.projectRole ? 'member' : 'admin' },
+    token: 'mock-token', isAuthenticated: true, isLoading: false, authStatus: 'authenticated' as const,
+    login: vi.fn(), logout: vi.fn(), updateUser: vi.fn(),
+    hasRole: () => !viewer.projectRole, hasPermission: (role: string) => role !== 'admin' || !viewer.projectRole,
+  }),
+}));
+vi.mock('../../contexts/ProjectContext', async () => ({
+  ...(await vi.importActual<typeof import('../../contexts/ProjectContext')>('../../contexts/ProjectContext')),
+  useProject: () => {
+    const project = {
+      id: 1, name: 'Test Project', slug: 'test',
+      ...(viewer.projectRole ? { my_role: viewer.projectRole } : {}),
+    };
+    return {
+      projects: [project], currentProject: project, selectProject: vi.fn(),
+      isLoading: false, refreshProjects: vi.fn(), loadError: null,
+    };
+  },
+}));
+
 // Mock every api function the page imports.  The cleanup pass added
 // the three saved-views helpers (listHostFilterViews,
 // createHostFilterView, deleteHostFilterView) — without them the page
@@ -255,6 +282,34 @@ describe('Hosts', () => {
     routerState.search = '?reports=1&job=7';
     renderHosts();
     await waitFor(() => expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'true'));
+  });
+
+  // Browser pass 2026-10-01 — both exports are AUDITOR on the server
+  // (`/hosts/tool-ready`, the `/reports` router).  A project viewer was
+  // offered them, and the report-finished link opened a tray whose first two
+  // reads (`/reports/jobs`, `/reports/limits`) were refused.
+  describe('exports follow the project role', () => {
+    afterEach(() => { viewer.projectRole = undefined; routerState.search = ''; });
+
+    it('a project viewer is offered no export, and ?reports=1 opens nothing', async () => {
+      viewer.projectRole = 'viewer';
+      routerState.search = '?reports=1&job=7';
+      renderHosts();
+      await screen.findAllByText('10.0.0.5');
+      expect(screen.queryByRole('button', { name: /Export targets/ })).toBeNull();
+      expect(screen.queryByRole('button', { name: /Export hosts/ })).toBeNull();
+      expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'false');
+    });
+
+    it('an auditor has both', async () => {
+      viewer.projectRole = 'auditor';
+      routerState.search = '?reports=1';
+      renderHosts();
+      await screen.findAllByText('10.0.0.5');
+      expect(screen.getByRole('button', { name: /Export targets/ })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /Export hosts/ })).toBeInTheDocument();
+      await waitFor(() => expect(screen.getByTestId('reports-dialog')).toHaveAttribute('data-open', 'true'));
+    });
   });
 
   it('fetches hosts and filter data on mount', async () => {
@@ -552,6 +607,15 @@ describe('Hosts', () => {
       if (box.getAttribute('aria-checked') !== 'true') fireEvent.click(box);
       expect(screen.getByText('1 selected')).toBeInTheDocument();
     });
+    // Visual pass 2026-10-01 — the ticked row is marked (it carried no
+    // `data-state`, so it was never drawn selected), and the header box says
+    // "some", not "all".
+    const tickedRow = screen.getByRole('checkbox', { name: 'Select 10.0.0.3' }).closest('tr')!;
+    expect(tickedRow).toHaveAttribute('data-state', 'selected');
+    expect(tickedRow).toHaveAttribute('aria-selected', 'true');
+    const selectAll = screen.getByRole('checkbox', { name: 'Select all rows on this page' });
+    expect(selectAll).toHaveAttribute('aria-checked', 'mixed');
+    expect(selectAll.querySelector('[data-glyph="some"]')).not.toBeNull();
     await applyCriticalFilter(user);
 
     await waitFor(() =>

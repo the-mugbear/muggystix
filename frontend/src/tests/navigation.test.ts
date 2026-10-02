@@ -226,6 +226,21 @@ describe('navigation manifest', () => {
     }
   });
 
+  // Browser pass 2026-10-01 — every client-report route is AUDITOR at the
+  // router (`client_reports.py`), so a project viewer was offered Reports and
+  // shown "The report list could not be loaded. Insufficient project role".
+  // The page follows the server's READ rule: list and detail both.
+  it('Reports is an auditor\'s page, the list and one report alike', () => {
+    const manifest = Object.fromEntries(NAV_PAGES.map((p) => [p.path, p.requiredRole]));
+    const appRoles = appRouteRoles();
+    expect(manifest['/reports']).toBe('auditor');
+    expect(appRoles['/reports']).toBe('auditor');
+    expect(appRoles['/reports/:reportId']).toBe('auditor');
+    // The Findings hub itself stays every member's: Findings is readable.
+    expect(HUBS.find((h) => h.id === 'findings')!.requiredRole).toBe('viewer');
+    expect(manifest['/findings']).toBe('viewer');
+  });
+
   it('every hub landing has a route gated at the hub role (HUB_DEFS coverage)', () => {
     const appRoles = appRouteRoles();
     for (const hub of HUB_DEFS) {

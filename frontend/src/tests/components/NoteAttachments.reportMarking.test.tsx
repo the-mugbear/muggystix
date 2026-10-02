@@ -114,6 +114,56 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     expect(screen.queryByRole('textbox', { name: 'Caption for shot-1.png' })).not.toBeInTheDocument();
   });
 
+  // Browser pass 2026-10-01 — "Add caption" opened the field without focusing
+  // it, so the next keystrokes went to the page (and its shortcuts).
+  describe('the caption editor takes the keyboard', () => {
+    const setup = (caption: string | null) => {
+      mocked.setNoteAttachmentCaption = vi.fn().mockResolvedValue(att(1, { caption: 'saved' }));
+      render(
+        <NoteAttachments noteId={5} canManage onChanged={vi.fn()} attachments={[att(1, { caption })]}
+          reportMarking={{ canMark: () => true }} />,
+      );
+      fireEvent.click(screen.getByRole('button', { name: `${caption ? 'Edit' : 'Add'} caption for shot-1.png` }));
+      return screen.getByRole('textbox', { name: 'Caption for shot-1.png' }) as HTMLTextAreaElement;
+    };
+
+    it('focuses the field when a caption is added', () => {
+      expect(setup(null)).toHaveFocus();
+    });
+
+    it('selects the existing words when a caption is edited — once, not on every keystroke', () => {
+      const box = setup('Old words');
+      expect(box).toHaveFocus();
+      expect([box.selectionStart, box.selectionEnd]).toEqual([0, 'Old words'.length]);
+      fireEvent.change(box, { target: { value: 'Old words, and more' } });
+      box.setSelectionRange(3, 3);
+      fireEvent.change(box, { target: { value: 'Old words, and more.' } });
+      expect(box).toHaveFocus();
+      expect(box.selectionStart).not.toBe(0);
+    });
+
+    it('Enter saves; Shift+Enter and an Enter that confirms an IME composition do not', async () => {
+      const box = setup(null);
+      fireEvent.change(box, { target: { value: 'The relayed session' } });
+      fireEvent.keyDown(box, { key: 'Enter', shiftKey: true });
+      fireEvent.keyDown(box, { key: 'Enter', isComposing: true });
+      fireEvent.keyDown(box, { key: 'Enter', keyCode: 229 });
+      expect(mocked.setNoteAttachmentCaption).not.toHaveBeenCalled();
+      fireEvent.keyDown(box, { key: 'Enter' });
+      await waitFor(() => expect(mocked.setNoteAttachmentCaption).toHaveBeenCalledWith(1, 'The relayed session'));
+    });
+
+    it('Escape cancels, saves nothing, and hands the keyboard back to the button', async () => {
+      const box = setup('Old words');
+      fireEvent.change(box, { target: { value: 'Half a thought' } });
+      fireEvent.keyDown(box, { key: 'Escape' });
+      expect(screen.queryByRole('textbox', { name: 'Caption for shot-1.png' })).not.toBeInTheDocument();
+      expect(mocked.setNoteAttachmentCaption).not.toHaveBeenCalled();
+      expect(screen.getByTestId('caption-1')).toHaveTextContent('Old words');
+      await waitFor(() => expect(screen.getByRole('button', { name: 'Edit caption for shot-1.png' })).toHaveFocus());
+    });
+  });
+
   it('keeps the caption editor open, with the reason, when the server refuses it', async () => {
     mocked.setNoteAttachmentCaption = vi.fn().mockRejectedValue({
       response: { status: 422, data: { detail: 'A caption is at most 2000 characters (this one is 2001).' } },

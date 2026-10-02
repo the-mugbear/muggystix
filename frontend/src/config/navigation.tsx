@@ -41,12 +41,12 @@ import {
 export type IconComponent = React.FC<{ className?: string }>;
 
 /**
- * Roles used by the nav surfaces.  These mirror the global-role names in
- * AuthContext's ROLE_HIERARCHY; `hasPermission` resolves the hierarchy
- * (e.g. an admin satisfies an `analyst` gate).  `member` maps to analyst
- * level there, so the nav only needs to express these three thresholds.
+ * Roles used by the nav surfaces, resolved by `useRoleGate`
+ * (hooks/useProjectRole.ts): `analyst` and `auditor` are the caller's role on
+ * the CURRENT PROJECT, `admin` is the account role, `viewer` is any signed-in
+ * account.  A page's role is the server's READ floor for it (style guide §40).
  */
-export type NavRole = 'viewer' | 'analyst' | 'admin';
+export type NavRole = 'viewer' | 'auditor' | 'analyst' | 'admin';
 
 export type HubId =
   | 'operations'
@@ -216,7 +216,8 @@ export const NAV_PAGES: NavPage[] = [
   },
   {
     // v5.261.0 — the client report (Quarto): drafts, issued history, addenda.
-    id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'viewer', hub: 'findings',
+    // `auditor`: the server's floor for every client-report read.
+    id: 'reports', path: '/reports', label: 'Reports', requiredRole: 'auditor', hub: 'findings',
     palette: { Icon: FileText, keywords: ['report', 'deliverable', 'addendum', 'client', 'docx'], order: 4.5 },
   },
   // Posture hub — the analytical roll-up + its drill-downs. Tab order here is

@@ -22,7 +22,7 @@ import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
 import {
   ENDPOINT_BULK_MAX, ENDPOINT_CAP, ENDPOINT_STATES, EndpointStateFilter, chunked, endpointStateCounts,
-  filterEndpoints, idRange,
+  filterEndpoints, idRange, sortEndpoints,
 } from '../../utils/findingEndpoints';
 import { ENDPOINT_STATUS_LABEL } from '../../utils/findingStatus';
 import { runLimited } from '../../utils/runLimited';
@@ -93,9 +93,13 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
     () => endpointStateCounts(finding.hosts, finding.endpoint_status_counts),
     [finding.hosts, finding.endpoint_status_counts],
   );
+  // The table's order is its own (by address, then name), never the
+  // response's: the server answers a change with the changed row last, and
+  // drawing that moved rows under the reader after every change.
+  const ordered = useMemo(() => sortEndpoints(finding.hosts), [finding.hosts]);
   const matching = useMemo(
-    () => filterEndpoints(finding.hosts, stateFilter, text),
-    [finding.hosts, stateFilter, text],
+    () => filterEndpoints(ordered, stateFilter, text),
+    [ordered, stateFilter, text],
   );
   const shown = matching.length > limit ? matching.slice(0, limit) : matching;
   const shownIds = useMemo(() => shown.map((h) => h.id), [shown]);
@@ -363,6 +367,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                   key={h.id}
                   data-endpoint-row={h.id}
                   data-state={isSelected(h.id) ? 'selected' : undefined}
+                  {...(canManage ? { 'aria-selected': isSelected(h.id) } : {})}
                   className={h.id === focusEndpointId ? LIST_CURSOR_CLASS : undefined}
                 >
                   {canManage && (

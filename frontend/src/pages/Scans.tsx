@@ -247,9 +247,11 @@ export default function Scans() {
   // sent with each upload. UX review 2026-09-24 — changed in Project settings →
   // Imports; the upload dialog states it and links there.
   const { currentProject } = useProject();
-  // Importing, retrying and deleting are a project analyst's (R32): a viewer
-  // or auditor reads the import history without the write controls.
-  const { canWrite } = useProjectRole();
+  // Importing and retrying are a project analyst's (R32): a viewer or auditor
+  // reads the import history without the write controls.  DELETING a scan is
+  // the project admin's on the server (`deletion-impact` and `DELETE
+  // /scans/{id}`), so an analyst is not offered it either.
+  const { canWrite, isProjectAdmin } = useProjectRole();
   const skipInformational = currentProject?.skip_informational_effective ?? false;
   const debouncedSearchText = useDebouncedValue(searchText, 300);
   const [hasMoreScans, setHasMoreScans] = useState(false);
@@ -1994,7 +1996,7 @@ export default function Scans() {
                                   <DropdownMenuItem onSelect={() => handleViewScan(scan.id)}>
                                     Open scan
                                   </DropdownMenuItem>
-                                  {canWrite && (
+                                  {isProjectAdmin && (
                                     <DropdownMenuItem
                                       onSelect={() => handleDeleteClick(scan)}
                                       className="text-destructive focus:text-destructive"
