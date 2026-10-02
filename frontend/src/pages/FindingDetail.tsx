@@ -579,8 +579,8 @@ const FindingDetail: React.FC = () => {
 
       {/* v5.294.0 (UX review) — sections over thin rules, and the hosts first:
           triage starts from where the issue is, so the affected hosts sit
-          directly under the status row, before the report text and the
-          discussion (they came after both). */}
+          directly under the status row, before the test evidence, the report
+          text and the discussion. */}
       <PostureSection
         className="mb-md"
         title={<>
@@ -614,6 +614,13 @@ const FindingDetail: React.FC = () => {
         findingId={finding.id} canDecide={canManage} reloadKey={proposalsKey}
         onApplied={() => { void refreshAfterProposal(); reloadImages(); }}
       />
+
+      {/* UX review 2026-10-02 U12 — the proof before the prose: what was run
+          and what came back sits directly under the hosts, above the five
+          report-text editors (which, empty, used to push it a screen and a
+          half down).  Order: hosts → test evidence → report text → comments
+          → history. */}
+      <FindingEvidence findingId={finding.id} />
 
       {findingImages.error && (
         // The images' list feeds the report text (placed images), the editor's
@@ -650,8 +657,6 @@ const FindingDetail: React.FC = () => {
         )}
         startEditing={searchParams.get('edit') === 'report-text'}
       />
-
-      <FindingEvidence findingId={finding.id} />
 
       {evidenceError && (
         <PostureSection className="mb-md" title={<span>Evidence note</span>}>

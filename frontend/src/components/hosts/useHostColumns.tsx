@@ -29,6 +29,22 @@ import {
 import { matchedEndpoints, type EndpointMatchCriteria } from '../../utils/endpointMatch';
 import { matchedWeaknesses, type WeaknessMatchCriteria } from '../../utils/weaknessMatch';
 
+/**
+ * The Hosts table's width strategy: each sized column is a share of the table
+ * and Host (unsized) takes what is left — 33%, less the 40px checkbox.  At a
+ * ~870px table (a 1,126px window) that is about 122 / 183 / 165 / 113px and
+ * ~247px for Host, the pixel widths the table had; at 1,840px Exposure and
+ * Attention have ~390 / ~350px, so their chips and reasons sit on one line and
+ * the rows are shorter, and Network fits a typical site name.  Test-pinned:
+ * the shares leave Host between a quarter and 40% of the table.
+ */
+export const HOST_COLUMN_SHARES = {
+  network: '14%',
+  exposure: '21%',
+  attention: '19%',
+  review: '13%',
+} as const;
+
 // Map a tag's palette key to a coloured dot.  Unknown / null colours
 // fall back to a neutral dot — the backend stores whatever string the
 // UI sends, so this must tolerate anything.
@@ -539,7 +555,17 @@ export function useHostColumns({
                   it was the way in. */}
               {/* Never truncated (5.303.0): "192.168.0…" on every row hid the
                   octet that tells the rows apart.  A long IPv6 wraps. */}
-              <div className="break-all font-medium text-foreground underline-offset-2 group-hover:underline" title={host.ip_address}>
+              {/* An IPv4 address never wraps (UX walkthrough U2: "10.10.3.2" /
+                  "3" beside a status word) — the status word wraps below it
+                  instead.  Only an IPv6 address may break. */}
+              <div
+                data-testid="host-address"
+                className={cn(
+                  'font-medium text-foreground underline-offset-2 group-hover:underline',
+                  host.ip_address.includes(':') ? 'break-all' : 'whitespace-nowrap',
+                )}
+                title={host.ip_address}
+              >
                 {host.ip_address}
               </div>
             </div>
@@ -570,15 +596,20 @@ export function useHostColumns({
           const work = testWorkState(host);
           return (
             <div className="relative min-w-0">
-              <div className="flex min-w-0 items-center gap-xs">
-                <StateDot state={host.state} />
-                {opener}
+              {/* Wraps: when the address and the status word do not fit on
+                  one line, the word goes below — the address is never the
+                  one to give way. */}
+              <div className="flex min-w-0 flex-wrap items-center gap-x-xs">
+                <span className="flex min-w-0 max-w-full items-center gap-xs">
+                  <StateDot state={host.state} />
+                  {opener}
+                </span>
                 {/* v5.270.0 — the test-workflow state is a word, not an
                     unexplained coloured left border on the row. */}
                 {work && (
                   <span
                     className={cn(
-                      'shrink-0 text-caption font-medium',
+                      'shrink-0 whitespace-nowrap text-caption font-medium',
                       work.kind === 'tested' ? 'text-info' : 'text-warning',
                     )}
                     title={work.title}
@@ -662,7 +693,14 @@ export function useHostColumns({
         // ~1130px window the floor made the PAGE scroll sideways (the wrapper
         // cannot scroll — the header is sticky to the window) while the Host
         // column truncated every IP.
+        // UX walkthrough 2026-10-02 (U2 + U9) — the four are SHARES of the table
+        // now (HOST_COLUMN_SHARES), about the same pixels as before at a
+        // ~1,130px window: on a wide window the spare width used to go to
+        // Host alone (~650px, mostly empty) while Exposure and Attention
+        // wrapped to three or four lines and a site name was cut.  `size`
+        // is the fallback for a shell that does not read `meta.width`.
         size: 125,
+        meta: { width: HOST_COLUMN_SHARES.network },
         cell: ({ row }) => {
           const host = row.original;
           const lastSeenAge = relativeAge(host.last_seen);
@@ -697,6 +735,7 @@ export function useHostColumns({
         id: 'exposure',
         header: 'Exposure',
         size: 165,
+        meta: { width: HOST_COLUMN_SHARES.exposure },
         cell: ({ row }) => {
           // Open-port count + the host's risk-ranked high-value services
           // (ports of interest), replacing the arbitrary first-3-services
@@ -800,6 +839,7 @@ export function useHostColumns({
         // Not 150: that is tanstack's default size, which DataTableShell reads
         // as "unsized" — the column took half the spare width.
         size: 155,
+        meta: { width: HOST_COLUMN_SHARES.attention },
         cell: ({ row }) => {
           // v5.270.0 — one sentence-case line for the most important reason,
           // then the others spelled out in quiet text ("1 high · 1 finding"),
@@ -830,6 +870,7 @@ export function useHostColumns({
         id: 'review',
         header: 'Review',
         size: 130,
+        meta: { width: HOST_COLUMN_SHARES.review },
         cell: ({ row }) => {
           // v5.270.0 — the column states where the review stands, in quiet
           // text; the action to change it appears on row hover or keyboard

@@ -7,7 +7,7 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 
-import ProjectActivity, { fillCallDays } from '../../pages/ProjectActivity';
+import ProjectActivity, { fillCallDays, HISTORY_COLUMN_WIDTHS } from '../../pages/ProjectActivity';
 
 const emptyActivity = {
   window_days: 14,
@@ -210,6 +210,33 @@ describe('Agent Sessions', () => {
       expect(link).toHaveAttribute('href', '/operations?start=agent-session');
     }
     expect(screen.getByText('No agent has run against this project yet.')).toBeInTheDocument();
+  });
+
+  it('leaves the Session column a real share of the History table (U1)', async () => {
+    // Tailwind's w-N is N × 4px. The fixed columns once summed to the whole
+    // content width at a 1,126px window, so SESSION was 0px wide.
+    const fixedPx = Object.values(HISTORY_COLUMN_WIDTHS)
+      .filter(Boolean)
+      .reduce((sum, cls) => sum + Number(/^w-(\d+)$/.exec(cls)![1]) * 4, 0);
+    expect(HISTORY_COLUMN_WIDTHS.session).toBe('');
+    serve([], [legacyRun()]);
+    renderPage();
+    const table = await screen.findByTestId('runs-table');
+    const minRem = Number(/min-w-\[(\d+)rem\]/.exec(table.className)![1]);
+    expect(minRem * 16 - fixedPx).toBeGreaterThanOrEqual(160);
+    // Every truncated cell says what it cut.
+    for (const el of Array.from(table.querySelectorAll('.truncate'))) {
+      const titled = el.closest('[title]') ?? el.querySelector('[title]');
+      expect(titled, el.textContent ?? '').not.toBeNull();
+    }
+  });
+
+  it('describes a session by what an agent does now, not plans or runs (U6)', async () => {
+    serve([], []);
+    renderPage();
+    const empty = await screen.findByText(/A session lets an agent query this project/);
+    expect(empty.textContent).toMatch(/propose tests on hosts/);
+    expect(empty.textContent).not.toMatch(/plan or execution/);
   });
 
   it('lists one history row per session that opens the session page, a legacy row included', async () => {

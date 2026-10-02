@@ -422,3 +422,31 @@ def test_posture_output_validates_against_response_model(db_session, test_projec
     assert set(dumped) == set(out)
     assert dumped["systemic"] == out["systemic"]
     assert dumped["headline"] == out["headline"]
+
+
+def test_active_critical_findings_lead_the_headline_over_a_widespread_weakness(db_session, test_project):
+    """A pattern's score is unbounded (hosts x spread); it must stay in its
+    band so the findings signal, when there is one, is the first reason."""
+    from app.services.posture_service import _gather_signals
+
+    signals = _gather_signals(
+        db_session, test_project.id,
+        project_att={
+            "exposure": {"by_severity": {"critical": 1}, "active_findings": 1},
+            "neglect": {"total_hosts": 400, "unowned_active_findings": 0,
+                        "unreviewed_hosts": 0, "scan_count": 3},
+        },
+        site_att={"adopted": True, "sites": [{
+            "site": "DMZ", "criticality_tier": 1, "host_count": 100, "owner_name": None,
+            "exposure": {"by_severity": {"critical": 1}, "weighted_score": 5000, "active_findings": 1},
+            "recommended_action": {"text": "Look"},
+        }]},
+        systemic={"blind_spots": [{
+            "label": "Cleartext services", "host_fraction": 0.56, "affected_hosts": 224,
+            "systemic_score": 1_000_000, "subnet_spread": 8, "site_spread": 3,
+        }]},
+        unowned_by_sev={}, review_pct=None, detected_vulns=0,
+    )
+    kinds = [s["priority"]["kind"] for s in signals]
+    assert kinds[:3] == ["exposure", "systemic", "site"]
+    assert "blind spot" not in signals[1]["reason"]

@@ -217,9 +217,11 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
   // showed `![a](<evidence:57>)` as the image while the report printed the
   // alt text and left the image under Evidence.
   it.each(REFERENCE_CASES)('shows an image for %j exactly when the server places it', (text, ids) => {
-    const { c } = withImages(text);
+    // Every id the table names is a loaded image here (58 too — review
+    // 2026-10-02 H5's rows place it beside a fenced example of 57).
+    const { c } = withImages(text, { lookup: (id) => ({ caption: null, src: `blob:${id}` }), ensure: vi.fn() });
     expect(Array.from(c.querySelectorAll('img')).map((i) => i.getAttribute('src')))
-      .toEqual(ids.map(() => 'blob:fifty-seven'));
+      .toEqual(ids.map((id) => `blob:${id}`));
     // A spelling that places nothing is not an "image not available" either:
     // it reads as its alt text, as it will in the report.
     expect(c.querySelector('[role="note"]')).toBeNull();

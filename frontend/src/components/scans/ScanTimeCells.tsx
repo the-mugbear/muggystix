@@ -6,6 +6,7 @@
 import React from 'react';
 
 import { Tooltip, TooltipContent, TooltipTrigger } from '../ui/tooltip';
+import { InfoTip } from '../ui/info-tip';
 import { cn } from '../../utils/cn';
 import {
   describeScanRun,
@@ -60,7 +61,7 @@ interface CellProps {
  */
 export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
   // The hover keeps the zone; the cell drops it — the page names the viewer's
-  // zone once above the table (ViewerZoneNote).
+  // zone once, on the column's heading (ViewerZoneHint).
   const run = describeScanRun(scan, format);
   const upload = describeUpload(scan, format);
   const shown = describeScanRun(scan, { ...format, withZone: false });
@@ -97,15 +98,29 @@ export const ScanWhenCell: React.FC<CellProps> = ({ scan, format }) => {
   );
 };
 
-/** One line above the table: which zone converted times are in. */
-export const ViewerZoneNote: React.FC<{ format?: TimeFormatOptions; className?: string }> = ({ format, className }) => {
+/** What the WHEN column's (i) says: which zone converted times are in. */
+export const viewerZoneExplanation = (format?: TimeFormatOptions): string => {
   const zone = viewerTimeZone(format);
   const detail = [zone.abbr, zone.offset].filter(Boolean).join(', ');
+  return `Times are shown in your time zone, ${zone.name}${detail ? ` (${detail})` : ''}. `
+    + 'A scanner clock with no recorded zone is shown as written. '
+    + "Hover a scan's time to see where it came from.";
+};
+
+/**
+ * Beside the WHEN column's heading: the viewer's zone in its short form, and
+ * the explanation on an (i).  It was a permanent second helper line above the
+ * table (UX walkthrough 2026-10-02, U16); the zone stays visible, the
+ * sentence is one hover or focus away.
+ */
+export const ViewerZoneHint: React.FC<{ format?: TimeFormatOptions; className?: string }> = ({ format, className }) => {
+  const zone = viewerTimeZone(format);
   return (
-    <p className={cn('text-caption text-muted-foreground', className)}>
-      Times are shown in your time zone, {zone.name}
-      {detail ? ` (${detail})` : ''}. A scanner clock with no recorded zone is shown as written. Hover a
-      scan&apos;s time to see where it came from.
-    </p>
+    <span className={cn('inline-flex items-center gap-xxs whitespace-nowrap', className)} data-testid="viewer-zone-hint">
+      <span className="text-caption font-normal normal-case text-muted-foreground" title={zone.name}>
+        {zone.abbr || zone.offset}
+      </span>
+      <InfoTip text={viewerZoneExplanation(format)} label="About the times in this column" />
+    </span>
   );
 };

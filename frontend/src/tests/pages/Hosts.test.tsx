@@ -783,6 +783,13 @@ describe('Hosts — streamlined table', () => {
     await screen.findByText('10.9.0.44');
     const state = screen.getByText('Tested · 2 to do');
     expect(state.getAttribute('title')).toMatch(/^1 test result recorded; 2 tests proposed or in progress/);
+    // U2 — the address never wraps mid-number; the status word goes below it
+    // (their line wraps) instead.
+    const address = screen.getByTestId('host-address');
+    expect(address).toHaveClass('whitespace-nowrap');
+    expect(address).not.toHaveClass('break-all');
+    expect(state).toHaveClass('whitespace-nowrap');
+    expect(state.parentElement).toHaveClass('flex-wrap');
   });
 
   it('one attention line, the other reasons spelled out rather than "+N"', async () => {

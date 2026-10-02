@@ -115,7 +115,7 @@ def compute_project_attention(db: Session, project_id: int) -> Dict[str, Any]:
     # last scan is NOT a step (removed v2.374.1): a project is one assessment
     # window — `scan_staleness_days` below is provenance, never a judgment.
     if scan_count == 0:
-        action = {"kind": "onboard", "text": "No recon yet — upload a scan or start a recon run."}
+        action = {"kind": "onboard", "text": "No scan data yet — upload a scan."}
     elif unowned > 0:
         action = {"kind": "triage", "text": f"{unowned} active finding{'' if unowned == 1 else 's'} unowned — assign an owner."}
     elif by_severity["critical"] > 0:

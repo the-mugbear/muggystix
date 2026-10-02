@@ -1837,8 +1837,10 @@ export default function Hosts() {
                   : undefined
               )}
               bare
-              // The four sized columns and the checkbox take 615px; the Host
-              // column (the only unsized one) gets the rest.  No min-width
+              // The four sized columns are shares of the table
+              // (useHostColumns.HOST_COLUMN_SHARES), so a wide window widens
+              // Exposure, Attention and Network too; the Host column (the
+              // only unsized one) gets the rest.  No min-width
               // (5.303.0): this wrapper cannot scroll (the header is sticky to
               // the window), so a floor made the whole PAGE scroll sideways.
               tableClassName="table-fixed"

@@ -160,7 +160,7 @@ export const StartAssistDialog: React.FC<StartAssistDialogProps> = ({
               <>
                 Copy the setup for your agent — the key is in it. It is valid for{' '}
                 {result.key_ttl_hours} hours and the agent can renew it. The session then
-                shows under <strong>Workflows → Agent Sessions</strong>, where you can follow,
+                shows under <strong>Agents → Agent Sessions</strong>, where you can follow,
                 resume or end it.
               </>
             ) : (

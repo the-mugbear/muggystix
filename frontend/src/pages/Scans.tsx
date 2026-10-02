@@ -76,7 +76,7 @@ import UploadReviewDialog from '../components/scans/UploadReviewDialog';
 import { ScanBatchRow } from '../components/scans/ScanBatchList';
 import { ROW_LINK_CLASS, ScanRowActions } from '../components/scans/ScanRowActions';
 import { hydrateHistoryRows, orderHistoryRows, type HistoryFilters } from '../utils/importHistory';
-import { ScanWhenCell, ViewerZoneNote } from '../components/scans/ScanTimeCells';
+import { ScanWhenCell, ViewerZoneHint } from '../components/scans/ScanTimeCells';
 import { formatDuration } from '../utils/scanTime';
 import {
   Dialog,
@@ -1774,7 +1774,6 @@ export default function Scans() {
               Refresh to try again.
             </p>
           )}
-          {scans.length > 0 && <ViewerZoneNote className="mb-xs" />}
           {(showBatchFiles ? scans.length === 0 : historyRows.length === 0) ? (
             // Filter-aware empty state — section header + filters
             // remain visible so the user can clear or refine without
@@ -1822,6 +1821,7 @@ export default function Scans() {
                       <TableHead className="w-[18%]">
                         <span className="inline-flex flex-wrap items-center gap-x-xs">
                           When
+                          <ViewerZoneHint />
                           {(['start_time', 'created_at'] as const).map((col) => {
                             const label = col === 'start_time' ? 'Ran' : 'Uploaded';
                             const sorted = sortBy === col;
@@ -1848,7 +1848,14 @@ export default function Scans() {
                         </span>
                       </TableHead>
                     ) : (
-                      <TableHead className="w-[18%]">When</TableHead>
+                      // The zone and its explanation ride on the heading (U16):
+                      // they were a second permanent helper line above the table.
+                      <TableHead className="w-[18%]">
+                        <span className="inline-flex flex-wrap items-center gap-x-xs">
+                          When
+                          <ViewerZoneHint />
+                        </span>
+                      </TableHead>
                     )}
                     {historyHeader('new_hosts', 'New hosts', 'w-[10%]')}
                     <TableHead

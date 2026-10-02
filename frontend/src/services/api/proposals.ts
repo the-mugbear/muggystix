@@ -108,6 +108,12 @@ export interface BulkDecision {
   failed: Array<{ id: number; status_code: number; detail: unknown }>;
 }
 
+/** The most ids `POST /proposals/bulk` takes (`BulkDecision.ids`, backend
+ *  proposals.py): one more is a 422 and nothing is decided.  A caller with
+ *  more sends the first `PROPOSAL_BULK_MAX` and says so — never several
+ *  requests: the server's competing-drafts rule must see the set it decides. */
+export const PROPOSAL_BULK_MAX = 200;
+
 /** Each is decided on its own; one refusal does not stop the rest. */
 export const decideProposals = async (
   ids: number[], action: 'accept' | 'reject', note?: string,

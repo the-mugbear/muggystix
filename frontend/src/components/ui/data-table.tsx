@@ -223,6 +223,21 @@ function DataTableRowImpl<TData>({
 
 const DataTableRow = React.memo(DataTableRowImpl) as typeof DataTableRowImpl;
 
+/**
+ * A column's header width.  Three strategies:
+ *  - `meta: { width: '21%' }` — a SHARE of the table, so the column grows
+ *    with the window (the Hosts table: spare width goes to the columns whose
+ *    content wraps, not all to the one unsized column);
+ *  - `size: N` (not 150) — a fixed pixel width;
+ *  - neither (size is tanstack's default 150) — unsized: the column takes
+ *    whatever the others leave.
+ */
+export const columnWidth = (meta: unknown, size: number): string | number | undefined => {
+  const share = (meta as { width?: unknown } | undefined)?.width;
+  if (typeof share === 'string' && share) return share;
+  return size === 150 ? undefined : size;
+};
+
 export interface DataTableShellProps<TData> {
   table: DataTableInstance<TData>;
   /** When set, the header row is `position: sticky`. */
@@ -324,7 +339,7 @@ export function DataTableShell<TData>({
                           : 'none'
                       : undefined
                   }
-                  style={{ width: header.getSize() === 150 ? undefined : header.getSize() }}
+                  style={{ width: columnWidth(header.column.columnDef.meta, header.getSize()) }}
                   className={cn(
                     'h-9 px-sm text-left align-middle text-caption font-semibold uppercase tracking-wider text-muted-foreground',
                     '[&:has([role=checkbox])]:pr-0 [&:has([role=checkbox])]:w-10',

@@ -147,6 +147,19 @@ describe('Scans — the When column', () => {
       .formatToParts(new Date()).find((p) => p.type === 'timeZoneName')?.value;
     if (zone) expect(time.textContent).not.toContain(zone);
   });
+
+  // UX walkthrough 2026-10-02 (U16): the time-zone sentence was a second
+  // permanent helper line above the table.
+  it('names the zone on the When heading, with the explanation on an (i), and one helper line', async () => {
+    renderPage();
+    await screen.findByText('newest.xml');
+    expect(screen.getByText(/^Newest upload first\./)).toBeInTheDocument();
+    expect(screen.queryByText(/Times are shown in your time zone/)).toBeNull();
+    const hint = screen.getByTestId('viewer-zone-hint');
+    expect(hint.closest('th')).toHaveTextContent(/^When/);
+    expect(hint.textContent).not.toBe('');
+    expect(within(hint).getByRole('button', { name: 'About the times in this column' })).toBeInTheDocument();
+  });
 });
 
 describe('Scans — import history', () => {

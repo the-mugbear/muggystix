@@ -30,17 +30,113 @@ export const EVIDENCE_REFERENCE = /!\[((?:[^\]\\\n]|\\.)*)\]\(\s*evidence:(\d{1,
 
 const EVIDENCE_REFERENCE_AT = new RegExp(EVIDENCE_REFERENCE.source, 'y');
 
+// What Python's `str.splitlines` ends a line at, and what `str.strip` removes
+// — spelled out, because `_code_spans` is written with those two and JS's
+// `\s` / line terminators are slightly different sets.
+// (Code points above 0xFF are built from their numbers: an escape written in
+// this file would be easy to lose to an editor that expands it.)
+const chars = (...codes: number[]): string => String.fromCharCode(...codes);
+const LS_PS = chars(0x2028, 0x2029);
+const LINE_END = `\\n\\r\\v\\f\\x1c-\\x1e\\x85${LS_PS}`;
+const LINE = new RegExp(`[^${LINE_END}]*(?:\\r\\n|[${LINE_END}]|$)`, 'g');
+const NOT_BLANK = new RegExp(
+  `[^\\t\\n\\v\\f\\r\\x1c-\\x1f \\x85\\xa0${chars(0x1680, 0x2000)}-${chars(0x200a)}${LS_PS}${chars(0x202f, 0x205f, 0x3000)}]`,
+);
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+const TICKS = /`+/g;
+
+/**
+ * `[start, end)` of every fenced code block and inline code span in `text`,
+ * sorted — the twin of the server's `_code_spans` (report_images.py), rule
+ * for rule; change both together:
+ *
+ *   - a fence opens on a line starting (after at most three spaces) with
+ *     three or more backticks or tildes, and closes on a line that starts
+ *     with at least as many of the same character and has nothing after
+ *     them; an unclosed fence runs to the end of the text;
+ *   - inline code is a run of backticks up to the NEXT run of exactly the
+ *     same length, looked for across consecutive lines outside fences; a run
+ *     with no partner is ordinary text.
+ */
+export const codeSpans = (text: string): Array<[number, number]> => {
+  const spans: Array<[number, number]> = [];
+  const prose: Array<[number, number]> = [];
+  let offset = 0;
+  let fence: string | null = null;
+  let start = 0;
+  for (const [line] of text.matchAll(LINE)) {
+    if (line === '') break;                     // the empty match at the end
+    const opened = FENCE.exec(line);
+    if (fence === null) {
+      if (opened) {
+        fence = opened[1];
+        start = offset;
+      } else {
+        prose.push([offset, offset + line.length]);
+      }
+    } else if (
+      opened && opened[1][0] === fence[0] && opened[1].length >= fence.length
+      && !NOT_BLANK.test(line.slice(opened[0].length))
+    ) {
+      spans.push([start, offset + line.length]);
+      fence = null;
+    }
+    offset += line.length;
+  }
+  if (fence !== null) spans.push([start, text.length]);
+  // Runs of prose lines are joined first: a span may cross a line break.
+  const merged: Array<[number, number]> = [];
+  for (const [a, b] of prose) {
+    const last = merged[merged.length - 1];
+    if (last && last[1] === a) last[1] = b;
+    else merged.push([a, b]);
+  }
+  for (const [a, b] of merged) {
+    const runs = [...text.slice(a, b).matchAll(TICKS)]
+      .map((m) => ({ start: a + (m.index ?? 0), end: a + (m.index ?? 0) + m[0].length }));
+    let i = 0;
+    while (i < runs.length) {
+      const width = runs[i].end - runs[i].start;
+      let close = -1;
+      for (let j = i + 1; j < runs.length; j += 1) {
+        if (runs[j].end - runs[j].start === width) { close = j; break; }
+      }
+      if (close === -1) {
+        i += 1;
+      } else {
+        spans.push([runs[i].start, runs[close].end]);
+        i = close + 1;
+      }
+    }
+  }
+  return spans.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+};
+
+// The spans of the text last asked about: the preview asks once per `![` of
+// the same string.
+let spansOf: { text: string; spans: Array<[number, number]> } | null = null;
+
+/** Whether position `at` of `text` is inside code — where a reference is
+ *  shown as typed and places nothing (the server's `iter_placements`). */
+const inCode = (text: string, at: number): boolean => {
+  if (!text.includes('`') && !text.includes('~~~')) return false;
+  if (spansOf?.text !== text) spansOf = { text, spans: codeSpans(text) };
+  return spansOf.spans.some(([a, b]) => a <= at && at < b);
+};
+
 /**
  * The placement that starts exactly at `at` in `text`, else null — what the
  * preview asks before it shows an image, so it shows one for precisely the
  * references the server counts (`referencedImageIds` finds the same ones).
+ * A reference written inside code is not a placement.
  */
 export const evidenceReferenceAt = (
   text: string, at: number,
 ): { id: number; alt: string; end: number } | null => {
   EVIDENCE_REFERENCE_AT.lastIndex = at;
   const m = EVIDENCE_REFERENCE_AT.exec(text);
-  return m ? { id: Number(m[2]), alt: m[1], end: at + m[0].length } : null;
+  if (!m || inCode(text, at)) return null;
+  return { id: Number(m[2]), alt: m[1], end: at + m[0].length };
 };
 
 /** The target of an image that names one of the finding's images, else null. */
@@ -49,10 +145,15 @@ export const evidenceIdOf = (target: string): number | null => {
   return m ? Number(m[1]) : null;
 };
 
-/** The attachment ids a section's Markdown references, each once, in order. */
+/** The attachment ids a section's Markdown PLACES, each once, in order.  A
+ *  reference inside a fenced code block or an inline code span is printed as
+ *  typed — the report makes no figure of it — so it is not one (the server's
+ *  `referenced_ids`; review 2026-10-02 H5). */
 export const referencedImageIds = (text: string | null | undefined): number[] => {
   const seen: number[] = [];
-  for (const m of (text ?? '').matchAll(EVIDENCE_REFERENCE)) {
+  const source = text ?? '';
+  for (const m of source.matchAll(EVIDENCE_REFERENCE)) {
+    if (inCode(source, m.index ?? 0)) continue;
     const id = Number(m[2]);
     if (!seen.includes(id)) seen.push(id);
   }

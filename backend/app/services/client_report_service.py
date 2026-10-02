@@ -686,8 +686,43 @@ class ClientReportService:
 
         by_id = {f.id: f for f in findings}
         ids = list(by_id)
+        # A finding with endpoints takes only records on a host the report
+        # lists for it — an endpoint row that is not a false positive, which
+        # is what `_report_endpoints` holds (`listed_findings`).  One with no
+        # endpoint at all takes every record.
+        loose = {f.id for f in findings if not f.hosts}
+        on_a_listed_system = exists().where(
+            FindingHost.finding_id == EvidenceRecord.finding_id,
+            FindingHost.host_id == EvidenceRecord.host_id,
+            FindingHost.host_status.is_distinct_from(FindingHostStatus.FALSE_POSITIVE.value),
+        )
+        # The database ranks and cuts (review 2026-10-02 R2): every matching
+        # record used to be loaded — command, summary and output preview
+        # included — and sorted here, to keep ten per finding.  The order is
+        # the one that sort had: when it was run (else recorded), then id.
+        when_run = func.coalesce(EvidenceRecord.executed_at, EvidenceRecord.created_at)
         rows = []
         for start in range(0, len(ids), _ID_CHUNK):
+            chunk = ids[start:start + _ID_CHUNK]
+            with_systems = [i for i in chunk if i not in loose]
+            without = [i for i in chunk if i in loose]
+            eligible = []
+            if with_systems:
+                eligible.append(and_(EvidenceRecord.finding_id.in_(with_systems), on_a_listed_system))
+            if without:
+                eligible.append(EvidenceRecord.finding_id.in_(without))
+            ranked = (
+                self.db.query(
+                    EvidenceRecord.id.label("id"),
+                    func.row_number().over(
+                        partition_by=EvidenceRecord.finding_id,
+                        order_by=(when_run.asc().nulls_first(), EvidenceRecord.id.asc()),
+                    ).label("position"),
+                    func.count().over(partition_by=EvidenceRecord.finding_id).label("eligible"),
+                )
+                .filter(EvidenceRecord.outcome == CONFIRMATION_OUTCOME, or_(*eligible))
+                .subquery()
+            )
             rows += (
                 self.db.query(
                     EvidenceRecord.id, EvidenceRecord.finding_id, EvidenceRecord.host_id,
@@ -695,17 +730,15 @@ class ClientReportService:
                     EvidenceRecord.raw_output_preview, EvidenceRecord.raw_output_bytes,
                     EvidenceRecord.executed_at, EvidenceRecord.created_at,
                     EvidenceRecord.agent_session_id, EvidenceRecord.recorded_by_user_id,
+                    ranked.c.eligible,
                 )
-                .filter(
-                    EvidenceRecord.finding_id.in_(ids[start:start + _ID_CHUNK]),
-                    EvidenceRecord.outcome == CONFIRMATION_OUTCOME,
-                )
+                .join(ranked, ranked.c.id == EvidenceRecord.id)
+                .filter(ranked.c.position <= CONFIRMATIONS_PER_FINDING)
+                .order_by(EvidenceRecord.finding_id, ranked.c.position)
                 .all()
             )
         if not rows:
             return {}, {}, 0
-        rows.sort(key=lambda r: (r.executed_at or r.created_at, r.id) if (r.executed_at or r.created_at)
-                  else (datetime.min.replace(tzinfo=timezone.utc), r.id))
 
         listed: Dict[int, Dict[int, str]] = {}
         for f in findings:
@@ -713,7 +746,9 @@ class ClientReportService:
                 fh.host_id: (fh.host.ip_address if fh.host is not None else f"host {fh.host_id}")
                 for fh in f._report_endpoints
             }
-        loose_hosts = {r.host_id for r in rows if not by_id[r.finding_id].hosts}
+        # Addresses not already loaded with the endpoints: a finding without
+        # systems, and an endpoint added since the findings were read.
+        loose_hosts = {r.host_id for r in rows if r.host_id not in listed[r.finding_id]}
         addresses = dict(
             self.db.query(Host.id, Host.ip_address).filter(Host.id.in_(loose_hosts)).all()
         ) if loose_hosts else {}
@@ -733,19 +768,13 @@ class ClientReportService:
         } if user_ids else {}
 
         out: Dict[int, List[dict]] = defaultdict(list)
-        omitted: Dict[int, int] = defaultdict(int)
+        omitted: Dict[int, int] = {}
         by_agent = 0
         for r in rows:
             finding = by_id[r.finding_id]
-            if finding.hosts:
-                host = listed[finding.id].get(r.host_id)
-                if host is None:
-                    continue
-            else:
-                host = addresses.get(r.host_id) or f"host {r.host_id}"
-            if len(out[finding.id]) >= CONFIRMATIONS_PER_FINDING:
-                omitted[finding.id] += 1
-                continue
+            host = listed[finding.id].get(r.host_id) or addresses.get(r.host_id) or f"host {r.host_id}"
+            if r.eligible > CONFIRMATIONS_PER_FINDING:
+                omitted[finding.id] = r.eligible - CONFIRMATIONS_PER_FINDING
             when = r.executed_at or r.created_at
             if when is not None and when.tzinfo is None:
                 when = when.replace(tzinfo=timezone.utc)

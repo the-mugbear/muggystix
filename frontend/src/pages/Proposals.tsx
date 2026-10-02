@@ -13,8 +13,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, X } from 'lucide-react';
 
 import {
-  decideProposals, getProposalSummary, listProposals, Proposal, ProposalKind, ProposalStatus,
-  ProposalSummary,
+  decideProposals, getProposalSummary, listProposals, Proposal, PROPOSAL_BULK_MAX, ProposalKind,
+  ProposalStatus, ProposalSummary,
 } from '../services/api';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useToast } from '../contexts/ToastContext';
@@ -191,29 +191,48 @@ const Proposals: React.FC = () => {
   const bulk = async (action: 'accept' | 'reject') => {
     const shown = (items ?? []).filter((p) => p.status === 'pending');
     if (!shown.length) return;
+    // The route decides at most PROPOSAL_BULK_MAX in one request, and refuses
+    // a longer list whole (review 2026-10-02 H4).  With more shown, the action
+    // takes the FIRST ones in the list's order and says so — one request,
+    // never several: the server's competing-drafts rule has to see the whole
+    // set it decides.  The list reloads afterwards, so the rest can follow.
+    const batch = shown.slice(0, PROPOSAL_BULK_MAX);
+    const partial = batch.length < shown.length;
+    const verb = action === 'accept' ? 'Accept' : 'Reject';
+    const limitNote = partial
+      ? `One action decides at most ${PROPOSAL_BULK_MAX} proposals: these are the first ${batch.length} of the ${shown.length} shown, in the list’s order. The other ${shown.length - batch.length} stay pending, and the list reloads so they can follow.`
+      : null;
     // 5.317.1 — an optional reason for a bulk rejection (each proposal's
     // decision_note; the proposing agents read it back).
     bulkNote.current = '';
     const ok = await confirm({
-      title: action === 'accept' ? `Accept ${shown.length} proposals?` : `Reject ${shown.length} proposals?`,
+      title: partial
+        ? `${verb} the first ${batch.length} of ${shown.length} proposals shown?`
+        : `${verb} ${shown.length} proposals?`,
       body: action === 'accept'
-        ? 'Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown.'
+        ? (
+          <div className="space-y-xs">
+            <p>Each is applied as you, one by one. Any you may not apply (report text on someone else’s finding), whose target has changed, or that is one of several drafts of the same section (choose those on the finding) is not applied, and the reason is shown.</p>
+            {limitNote && <p>{limitNote}</p>}
+          </div>
+        )
         : (
           <div className="space-y-xs">
             <p id="bulk-reject-note-hint">Each is marked rejected. The agents that proposed them read the decision and this reason.</p>
+            {limitNote && <p>{limitNote}</p>}
             <Label htmlFor="bulk-reject-note">Why reject them? (optional)</Label>
             <Textarea id="bulk-reject-note" rows={2} maxLength={2000}
               aria-describedby="bulk-reject-note-hint" placeholder={REJECT_NOTE_PLACEHOLDER}
               onChange={(e) => { bulkNote.current = e.target.value; }} />
           </div>
         ),
-      confirmLabel: action === 'accept' ? 'Accept all shown' : 'Reject all shown',
+      confirmLabel: partial ? `${verb} the first ${batch.length}` : `${verb} all shown`,
     });
     if (!ok) return;
     setBulkBusy(true);
     try {
       const note = action === 'reject' ? bulkNote.current.trim() || undefined : undefined;
-      const res = await decideProposals(shown.map((p) => p.id), action, note);
+      const res = await decideProposals(batch.map((p) => p.id), action, note);
       if (res.failed.length) {
         // 5.317.2 — "left pending" was wrong for one already decided or
         // superseded meanwhile; the server's reason says what happened.
@@ -233,6 +252,10 @@ const Proposals: React.FC = () => {
   const pending = (scope === 'mine' ? summary?.pending_mine : summary?.pending) ?? 0;
   const byKind = (scope === 'mine' ? summary?.by_kind_mine : summary?.by_kind) ?? {};
   const pendingShown = (items ?? []).filter((p) => p.status === 'pending').length;
+  // What the bulk buttons will act on, said on the buttons themselves.
+  const bulkScope = pendingShown > PROPOSAL_BULK_MAX
+    ? `the first ${PROPOSAL_BULK_MAX} of ${pendingShown} shown`
+    : 'all shown';
 
   return (
     <div className="flex flex-col gap-lg p-md md:p-lg">
@@ -267,9 +290,9 @@ const Proposals: React.FC = () => {
         actions={canDecide && status === 'pending' && pendingShown > 0 ? (
           <>
             <Button size="sm" variant="outline" onClick={() => void bulk('accept')} disabled={bulkBusy}>
-              {bulkBusy && <Loader2 className="size-4 animate-spin" aria-hidden />} Accept all shown
+              {bulkBusy && <Loader2 className="size-4 animate-spin" aria-hidden />} Accept {bulkScope}
             </Button>
-            <Button size="sm" variant="ghost" onClick={() => void bulk('reject')} disabled={bulkBusy}>Reject all shown</Button>
+            <Button size="sm" variant="ghost" onClick={() => void bulk('reject')} disabled={bulkBusy}>Reject {bulkScope}</Button>
           </>
         ) : undefined}
       >

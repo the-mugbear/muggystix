@@ -224,7 +224,11 @@ HOSTILE_IMAGES = (
     '![titled](evidence:1 "title with {{< include /etc/passwd >}}")\n\n'
     '<img src="evidence:1" onerror="alert(6)" id="rawimg">\n\n'
     "![data-alt](data:image/png;base64,SE9TVElMRQ==) ![path-alt](../../etc/passwd) "
-    "![web-alt](https://example.com/x.png) ![unlisted-alt](evidence:2)\n"
+    "![web-alt](https://example.com/x.png) ![unlisted-alt](evidence:2)\n\n"
+    # An example written in code is not a placement (review 2026-10-02 H5): it
+    # prints as the characters typed, and the figure counts below do not move.
+    "Write `![CODESPAN-ALT](evidence:1)` to place it.\n\n"
+    "```\n![CODEFENCE-ALT](evidence:1)\n```\n"
 )
 # A caption is typed by a person: it is printed as one plain string.
 HOSTILE_CAPTION = (
@@ -526,6 +530,8 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     for text in (html, docx):
         # A reference that places nothing leaves its alt text, as any image does.
         assert "foreign-alt" in text and "js-alt" in text and "unlisted-alt" in text
+        assert "CODESPAN-ALT" in text and "CODEFENCE-ALT" in text
+    assert "![CODESPAN-ALT](evidence:1)" in html
 
     for text in (html, docx):
         # Shortcodes were not run: printed, not expanded.

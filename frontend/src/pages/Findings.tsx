@@ -507,7 +507,9 @@ const FindingsList: React.FC = () => {
           label="Search findings"
         />
         <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilterValue)}>
-          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-52')} aria-label="Status">
+          {/* Wide enough for its longest label, "Active (open / confirmed /
+              retest)", to read whole (U4: at w-52 the default was cut). */}
+          <SelectTrigger className={cn(FILTER_TRIGGER_CLASS, 'w-[17rem]')} aria-label="Status">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -644,10 +646,13 @@ const FindingsList: React.FC = () => {
                     column — it rarely decides what to work on next. */}
                 <SortHead field="severity" label="Severity" className="w-24" />
                 <SortHead field="title" label="Title" />
-                <SortHead field="status" label="Status" className="w-36" />
+                {/* U4: Status and Owner are as wide as their content needs
+                    ("False positive" + chevron; a name, truncated with its
+                    title) so the spare width is the Title's. */}
+                <SortHead field="status" label="Status" className="w-32" />
                 <SortHead field="host_count" label="Hosts" className="w-20" />
-                <SortHead field="owner" label="Owner" className="w-36" />
-                <SortHead field="created_at" label="Age" className="w-20" />
+                <SortHead field="owner" label="Owner" className="w-28" />
+                <SortHead field="created_at" label="Age" className="w-16" />
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -718,7 +723,9 @@ const FindingsList: React.FC = () => {
                         trip that drops the context. */}
                     <Link
                       to={findingDetailHref(f.id, searchParams.toString())}
-                      className="block truncate text-info hover:underline"
+                      // Two lines before it is cut (U4: on one line 23 of 50
+                      // titles were truncated at a 1,126px window).
+                      className="line-clamp-2 break-words text-info hover:underline"
                       title={`${f.title} — open finding`}
                     >
                       {f.title}
@@ -784,7 +791,10 @@ const FindingsList: React.FC = () => {
                     {f.host_count > 0 ? f.host_count.toLocaleString() : '—'}
                   </TableCell>
                   <TableCell className="text-caption">
-                    <span className={f.owner_name ? 'block truncate' : 'block truncate text-muted-foreground'}>
+                    <span
+                      className={f.owner_name ? 'block truncate' : 'block truncate text-muted-foreground'}
+                      title={safeFallback(f.owner_name, 'Unassigned')}
+                    >
                       {safeFallback(f.owner_name, 'Unassigned')}
                     </span>
                   </TableCell>

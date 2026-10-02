@@ -9,7 +9,10 @@ the Reports page writes them here instead:
     <UPLOAD_DIR>/template_assets/<template>/<asset id>.json   who, when, size
 
 The metadata file is written last and removed first, so a file without one is
-never used.  ``uploads/`` is already backed up (``backup-db.sh``) and carried
+never used.  Each upload writes its own temporary files (``.<asset id>.<random>
+.tmp``) and publishes file and metadata under a per-asset ``flock``
+(``.<asset id>.lock``, shared by every API worker; ``remove`` takes it too) —
+neither is ever listed as an upload.  ``uploads/`` is already backed up (``backup-db.sh``) and carried
 across upgrades (``upgrade-instance.sh``).
 
 Templates are shared by every project, so an upload is instance-wide branding:
@@ -35,16 +38,19 @@ Validation reads what the bytes ARE, never the name or the browser's type:
 """
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import io
 import json
 import os
 import re
 import struct
+import uuid
 import zipfile
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, Iterator, List, Optional, Tuple
 
 from app.core.config import settings
 
@@ -281,21 +287,70 @@ def save(template_name: str, asset: dict, data: bytes, *, uploaded_by: str,
         "uploaded_by": uploaded_by,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
-    tmp_file = stored.with_name(stored.name + ".tmp")
-    tmp_meta = meta_path.with_name(meta_path.name + ".tmp")
-    tmp_file.write_bytes(data)
-    os.replace(tmp_file, stored)
-    tmp_meta.write_text(json.dumps(meta), encoding="utf-8")
-    os.replace(tmp_meta, meta_path)
+    # Each upload writes temporary files of its OWN (a fixed `<name>.tmp` was
+    # shared by two workers uploading the same asset: one renamed it away and
+    # the other's rename failed, or one's metadata was paired with the
+    # other's bytes), then publishes both under the asset's lock.
+    tmp_file = _write_private(stored.parent, asset["id"], data)
+    tmp_meta = None
+    try:
+        tmp_meta = _write_private(stored.parent, asset["id"], json.dumps(meta).encode("utf-8"))
+        with _publication_lock(template_name, asset["id"]):
+            os.replace(tmp_file, stored)
+            os.replace(tmp_meta, meta_path)
+    finally:
+        tmp_file.unlink(missing_ok=True)  # only still there when it failed
+        if tmp_meta is not None:
+            tmp_meta.unlink(missing_ok=True)
     return meta, warnings
+
+
+def _write_private(folder: Path, asset_id: str, data: bytes) -> Path:
+    """Write ``data`` to a new file no other upload can name.  The name starts
+    with a dot and ends ``.tmp``, so ``uploads`` (``*.json`` with an asset-id
+    stem) never lists it; created with the process umask, as the published
+    file always was (the report worker reads it)."""
+    path = folder / f".{asset_id}.{uuid.uuid4().hex}.tmp"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+@contextmanager
+def _publication_lock(template_name: str, asset_id: str) -> Iterator[None]:
+    """One writer at a time per (template, asset), across PROCESSES: several
+    API workers share the uploads volume, so the lock is ``flock`` on
+    ``.<asset id>.lock`` in the asset's folder.  Held across the file AND its
+    metadata in ``save`` and across ``remove``.  The lock file is never
+    removed (unlinking a lock file another process is waiting on gives two
+    holders) and is never an asset: ``uploads`` reads only ``*.json``."""
+    if not _ASSET_ID.match(asset_id or ""):
+        raise AssetUploadError("Not an asset id.")
+    lock_path = _folder(template_name) / f".{asset_id}.lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o666)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)  # closing the descriptor releases the lock
 
 
 def remove(template_name: str, asset_id: str) -> Optional[dict]:
     """Remove an upload; its metadata, or None when there was none."""
-    meta = uploads(template_name).get(asset_id)
-    if meta is None:
+    if uploads(template_name).get(asset_id) is None:
         return None
-    _stored, meta_path = _paths(template_name, asset_id, meta["kind"])
-    meta_path.unlink(missing_ok=True)  # first: from here on it is not used
-    Path(meta["file"]).unlink(missing_ok=True)
-    return meta
+    with _publication_lock(template_name, asset_id):
+        # Read again under the lock: an upload may have replaced it (even
+        # with another kind of file) since the check above.
+        meta = uploads(template_name).get(asset_id)
+        if meta is None:
+            return None
+        _stored, meta_path = _paths(template_name, asset_id, meta["kind"])
+        meta_path.unlink(missing_ok=True)  # first: from here on it is not used
+        Path(meta["file"]).unlink(missing_ok=True)
+        return meta

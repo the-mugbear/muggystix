@@ -260,6 +260,8 @@ const PostureConclusion: React.FC<{ data: PostureResponse }> = ({ data }) => {
 // ---------------------------------------------------------------------------
 // The measure itself is shared with Oversight (components/posture/PostureMeasure).
 const Measure = PostureMeasure;
+/** A measure's caption wraps; it is never cut (a cut caption hid a link). */
+const MEASURE_CAPTION_CLASS = 'break-words';
 
 const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
   const h = data.headline;
@@ -278,9 +280,12 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
       >
         <SeverityBar counts={sev} variant="compact"
           segmentHref={(s) => buildFindingsUrl({ status: 'active', severity: s })} />
-        <p className="mt-xxs truncate">
+        {/* Captions wrap (UX walkthrough U3): at a 1,126px window all four
+            were cut on one line with no title, the "unreviewed →" link among
+            them. A caption is never truncated; a link in one never splits. */}
+        <p className={`mt-xxs ${MEASURE_CAPTION_CLASS}`}>
           {h.active_exposure.active_findings.toLocaleString()} active ·{' '}
-          <span title="What the tools reported, per host, not yet judged by an analyst. Shown separately, never summed.">
+          <span className="whitespace-nowrap" title="What the tools reported, per host, not yet judged by an analyst. Shown separately, never summed.">
             {h.detected_exposure.vuln_count.toLocaleString()} scanner observations
           </span>
         </p>
@@ -293,11 +298,11 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
         to={reviewedHostsUrl(true)}
         toLabel="Reviewed hosts — view"
       >
-        <p className="truncate">
+        <p className={MEASURE_CAPTION_CLASS}>
           {h.review_coverage.pct == null ? 'no hosts yet' : `${h.review_coverage.pct}%`}
           {' · '}{h.review_coverage.validated_hosts.toLocaleString()} tested
           {unreviewed > 0 && (
-            <> · <Link to={reviewedHostsUrl(false)} className="text-info hover:underline">{unreviewed.toLocaleString()} unreviewed →</Link></>
+            <> · <Link to={reviewedHostsUrl(false)} className="whitespace-nowrap text-info hover:underline">{unreviewed.toLocaleString()} unreviewed →</Link></>
           )}
         </p>
       </Measure>
@@ -309,7 +314,7 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
         to={needsEvidence > 0 ? buildHostsUrl({ q: 'conclusion:needs_evidence' }) : undefined}
         toLabel={`${needsEvidence} hosts still needing evidence — view`}
       >
-        <p className="truncate">{needsEvidence === 0 ? 'no open questions recorded' : 'open questions from finished reviews'}</p>
+        <p className={MEASURE_CAPTION_CLASS}>{needsEvidence === 0 ? 'no open questions recorded' : 'open questions from finished reviews'}</p>
       </Measure>
 
       <Measure
@@ -320,7 +325,7 @@ const ContextStrip: React.FC<{ data: PostureResponse }> = ({ data }) => {
         toLabel="Widespread weaknesses — open Patterns"
       >
         {h.systemic.adopted ? (
-          <p className="truncate">
+          <p className={MEASURE_CAPTION_CLASS}>
             {h.systemic.condition_count === 0
               ? 'no recurring conditions'
               : `of ${h.systemic.condition_count} recurring condition${h.systemic.condition_count === 1 ? '' : 's'} observed`}

@@ -123,7 +123,7 @@ describe('StartAssistDialog', () => {
       await userEvent.click(screen.getByRole('button', { name: /start session/i }));
     });
     expect(await screen.findByText('Connect your agent — session #21')).toBeInTheDocument();
-    expect(screen.getByText(/Workflows → Agent Sessions/)).toBeInTheDocument();
+    expect(screen.getByText(/Agents → Agent Sessions/)).toBeInTheDocument();
   });
 
   // 5.313.0 — no plan approval: the dialog never says a plan waits on you.

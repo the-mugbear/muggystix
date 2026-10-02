@@ -7,13 +7,17 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  captionAsAlt, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
+  captionAsAlt, codeSpans, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
 } from '../../utils/reportImages';
 
-import { REFERENCE_CASES } from './reportImageCases';
+import { CODE_REFERENCE_CASES, REFERENCE_CASES } from './reportImageCases';
 
 describe('one grammar decides what places an image', () => {
   it.each(REFERENCE_CASES)('%j → %j', (text, ids) => {
+    expect(referencedImageIds(text)).toEqual(ids);
+  });
+
+  it.each(CODE_REFERENCE_CASES)('code beside a reference: %j → %j', (text, ids) => {
     expect(referencedImageIds(text)).toEqual(ids);
   });
 
@@ -26,6 +30,33 @@ describe('one grammar decides what places an image', () => {
     // Asked twice, the same answer (the pattern keeps no position between calls).
     expect(evidenceReferenceAt(text, 7)?.id).toBe(57);
     expect(evidenceReferenceAt('![a](<evidence:57>)', 0)).toBeNull();
+  });
+
+  // Review 2026-10-02 H5 — the position asked about is not a placement when
+  // it is inside code, so the preview and the count cannot disagree.
+  it('finds no reference at a position inside code', () => {
+    const text = 'Write `![typed](evidence:57)` then ![shown](evidence:57)';
+    expect(evidenceReferenceAt(text, text.indexOf('![typed'))).toBeNull();
+    expect(evidenceReferenceAt(text, text.indexOf('![shown'))?.id).toBe(57);
+    expect(evidenceReferenceAt('```\n![x](evidence:57)\n```', 4)).toBeNull();
+    expect(evidenceReferenceAt('![x](evidence:57)', 0)?.id).toBe(57);
+  });
+});
+
+describe('codeSpans — the server\'s `_code_spans`, rule for rule', () => {
+  it.each<[string, Array<[number, number]>]>([
+    ['no code', []],
+    ['a `b` c', [[2, 5]]],
+    ['a ``b ` c`` d', [[2, 11]]],
+    ['a ` b `` c', []],                               // no run of the same length
+    ['`a\nb` c', [[0, 5]]],                           // a span may cross a line break
+    ['```\nx\n```\nafter `y`', [[0, 10], [16, 19]]],
+    ['   ~~~~\nx\n~~~\n~~~~  \nz', [[0, 21]]],        // closes on at least as many, nothing after
+    ['    ```\nx', []],                               // four spaces: not a fence (and no pair of runs)
+    ['```\nx\n``` not a close\ny', [[0, 23]]],       // unclosed: to the end
+    ['```\n`a`\n~~~\n```\n`b`', [[0, 16], [16, 19]]], // the other fence character does not close
+  ])('%j → %j', (text, spans) => {
+    expect(codeSpans(text)).toEqual(spans);
   });
 });
 

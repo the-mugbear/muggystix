@@ -74,16 +74,20 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
   // Rows whose own change is in flight — a set: two rows changed in quick
   // succession are both busy, and each stays locked until ITS request is back.
   const [saving, setSaving] = useState<Set<number>>(new Set());
-  // Every change answers with the whole finding.  Responses are applied in
-  // the order the requests were SENT: one that comes back after a later
-  // request's answer was applied is older news and would repaint its rows
-  // stale, so it is dropped (M4).
-  const sent = useRef(0);
-  const applied = useRef(0);
-  const applyResponse = (seq: number, updated: Finding) => {
-    if (seq < applied.current) return;
-    applied.current = seq;
-    onChanged(updated);
+  // Every change answers with the whole finding as it stood when THAT change
+  // committed.  Requests sent together commit in whatever order the server
+  // reaches them, so neither the send order nor the arrival order says which
+  // answer is the newest: one that committed first and answered last would
+  // repaint the other's row with its old state.  Changes therefore go to the
+  // server ONE AT A TIME, in the order they were made, and every answer is
+  // applied — each is newer than the one before it (review 2026-10-02 H2).
+  // A task settles its own failure, so one refused change never holds up or
+  // loses the ones queued behind it.
+  const queue = useRef<Promise<void>>(Promise.resolve());
+  const enqueue = (task: () => Promise<void>): Promise<void> => {
+    const run = queue.current.then(task);
+    queue.current = run.catch(() => undefined);
+    return run;
   };
   const [bulkState, setBulkState] = useState<FindingHostStatus | ''>('');
   const [bulkSummary, setBulkSummary] = useState('');
@@ -162,29 +166,31 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
 
   const setOne = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
     if (row.host_status === hostStatus || saving.has(row.id)) return;
-    sent.current += 1;
-    const seq = sent.current;
+    // Busy from the click, not from the send: a queued row stays locked until
+    // ITS request is back.
     setSaving((prev) => new Set(prev).add(row.id));
-    try {
-      // The route answers with the finding: the row is updated from it, not
-      // from a second read of thousands of endpoints.
-      applyResponse(seq, await setFindingEndpointStatus(finding.id, row.id, hostStatus));
-      // A row given its own state is no longer part of "these, together".
-      setSelected((prev) => {
-        if (!prev.has(row.id)) return prev;
-        const next = new Set(prev);
-        next.delete(row.id);
-        return next;
-      });
-    } catch (err) {
-      toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
-    } finally {
-      setSaving((prev) => {
-        const next = new Set(prev);
-        next.delete(row.id);
-        return next;
-      });
-    }
+    await enqueue(async () => {
+      try {
+        // The route answers with the finding: the row is updated from it, not
+        // from a second read of thousands of endpoints.
+        onChanged(await setFindingEndpointStatus(finding.id, row.id, hostStatus));
+        // A row given its own state is no longer part of "these, together".
+        setSelected((prev) => {
+          if (!prev.has(row.id)) return prev;
+          const next = new Set(prev);
+          next.delete(row.id);
+          return next;
+        });
+      } catch (err) {
+        toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
+      } finally {
+        setSaving((prev) => {
+          const next = new Set(prev);
+          next.delete(row.id);
+          return next;
+        });
+      }
+    });
   };
 
   const applyBulk = async () => {
@@ -196,12 +202,18 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
     // is said and stays selected.
     const submitted = selectedIds;
     const chunks = chunked(submitted, ENDPOINT_BULK_MAX);
-    sent.current += 1;
-    const seq = sent.current;
     setBulkBusy(true);
-    const results = await runLimited(chunks, 1, (ids) =>
-      setFindingEndpointsStatus(finding.id, { finding_host_ids: ids, host_status: hostStatus, summary }));
-    setBulkBusy(false);
+    // Behind any single-row change still on its way (the same queue), so its
+    // answer is the newest when it is applied.
+    let results: PromiseSettledResult<Finding>[] = [];
+    try {
+      await enqueue(async () => {
+        results = await runLimited(chunks, 1, (ids) =>
+          setFindingEndpointsStatus(finding.id, { finding_host_ids: ids, host_status: hostStatus, summary }));
+      });
+    } finally {
+      setBulkBusy(false);
+    }
     let latest: Finding | null = null;
     const doneIds: number[] = [];
     const notDone: number[] = [];
@@ -216,7 +228,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
       }
     });
     const done = doneIds.length;
-    if (latest) applyResponse(seq, latest);
+    if (latest) onChanged(latest);
     // Only what this request changed leaves the selection: what it could not
     // change stays ticked, and so does anything ticked since it started (M5).
     if (done > 0) {

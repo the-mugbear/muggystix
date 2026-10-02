@@ -356,6 +356,35 @@ describe('FindingDetail — layout and the initial status', () => {
     expect(report.closest('.rounded-panel')).toBeNull();
   });
 
+  // UX review 2026-10-02 U12 — five empty editors sat above the proof.
+  it('orders the page: hosts, test evidence, report text, comments, history', async () => {
+    mocked.listEvidenceRecords.mockResolvedValueOnce({
+      total: 1, has_more: false,
+      items: [{
+        id: 31, host_test_id: 4, host_id: 5, host_ip: '10.0.0.5', finding_id: 7, finding_host_id: null,
+        tool: 'nxc', command: 'nxc smb 10.0.0.5', outcome: 'finding', summary: 'Signing is not required',
+        raw_output_preview: 'signing:False', raw_output_bytes: 13, raw_output_truncated_in_preview: false,
+        observed_ip: null, executed_at: '2026-10-01T10:00:00Z', agent_session_id: null, recorded_by: 'Ana',
+        agent_model: null, agent_client: null, created_at: '2026-10-01T10:00:00Z',
+      }],
+    });
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const inOrder = [
+      screen.getByRole('heading', { name: /Affected hosts/ }),
+      await screen.findByRole('heading', { name: /Test evidence/ }),
+      screen.getByRole('heading', { name: /Report text/ }),
+      screen.getByLabelText('New comment'),
+      screen.getByRole('heading', { name: /Disposition history/ }),
+    ];
+    inOrder.slice(1).forEach((el, i) => {
+      // eslint-disable-next-line no-bitwise
+      expect(inOrder[i].compareDocumentPosition(el) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    });
+    // The endpoint table keeps its anchor for `?endpoint=…#endpoints` links.
+    expect(document.getElementById('endpoints')).not.toBeNull();
+  });
+
   it('a status with no recorded change says it was set when the finding was created', async () => {
     mocked.getFinding.mockResolvedValue(finding({ status: 'confirmed', created_by_name: 'ana' }));
     renderAt('/findings/7');

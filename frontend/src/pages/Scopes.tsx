@@ -1148,7 +1148,9 @@ const Scopes: React.FC = () => {
           >
             <ul className="divide-y divide-border/60">
               {coverage.recent_out_of_scope_hosts.map((host) => {
-                const lastSeen = host.last_seen ? new Date(host.last_seen).toLocaleString() : 'Unknown';
+                // The one absolute format ("Sep 25, 2026, 3:46 PM"), not a bare
+                // toLocaleString ("9/25/2026, 3:46:06 PM").
+                const lastSeen = formatTimestamp(host.last_seen, 'Unknown');
                 const scanLabel = host.last_scan_filename
                   ? host.last_scan_filename
                   : host.last_scan_id
@@ -1169,7 +1171,7 @@ const Scopes: React.FC = () => {
                     )}
                     <span
                       className="ml-auto min-w-0 truncate text-caption text-muted-foreground"
-                      title={scanLabel ?? undefined}
+                      title={`last seen ${lastSeen}${scanLabel ? ` · ${scanLabel}` : ''}`}
                     >
                       last seen {lastSeen}
                       {scanLabel && ` · ${scanLabel}`}

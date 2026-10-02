@@ -293,3 +293,96 @@ def test_web_interfaces_page_is_an_mcp_tool(client, db_session, test_project):
     other = mcp("tools/call", name="assist_list_host_web_interfaces",
                 arguments={"host_id": host.id + 100000})
     assert other["result"]["isError"] is True
+
+
+# ---------------------------------------------------------------------------
+# One read of the ports per chunk (review 2026-10-02, R1)
+# ---------------------------------------------------------------------------
+#
+# ``_briefs_for_hosts`` read the same open ports three times — a count, a
+# DISTINCT of the service names, and the rows.  The count and the names are
+# now derived from the rows; what a host's line says is unchanged.
+
+def _port_statements(db_session, call):
+    from sqlalchemy import event
+
+    seen = []
+    bind = db_session.get_bind()
+    engine = getattr(bind, "engine", bind)
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "ports_v2" in statement:
+            seen.append(statement)
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        result = call()
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    return result, seen
+
+
+def test_a_hosts_line_is_built_from_one_read_of_its_ports(db_session, test_project):
+    from app.services import scope_targets_service as targets
+
+    def host(ip):
+        row = models.Host(ip_address=ip, state="up", project_id=test_project.id)
+        db_session.add(row)
+        db_session.flush()
+        return row
+
+    def port(h, number, protocol, service, state="open"):
+        db_session.add(models.Port(
+            host_id=h.id, port_number=number, protocol=protocol, state=state, service_name=service,
+        ))
+
+    empty, busy, shut = host("10.98.0.1"), host("10.98.0.2"), host("10.98.0.3")
+    # Out of port order on purpose; a repeated name, a port with no name, tcp
+    # and udp on one number, and a closed port that must not be counted.
+    port(busy, 8080, "tcp", "http")
+    port(busy, 53, "udp", "domain")
+    port(busy, 53, "tcp", "domain")
+    port(busy, 80, "tcp", "http")
+    port(busy, 9999, "tcp", None)
+    port(busy, 22, "tcp", "ssh")
+    port(busy, 23, "tcp", "telnet", state="closed")
+    port(shut, 443, "tcp", "https", state="filtered")
+    db_session.flush()
+
+    rows = [busy, empty, shut]  # the caller's order is kept
+    briefs, statements = _port_statements(db_session, lambda: targets._briefs_for_hosts(db_session, rows))
+
+    assert len(statements) == 1, statements
+    assert [b.model_dump() for b in briefs] == [
+        {
+            "host_id": busy.id, "ip_address": "10.98.0.2", "hostname": None,
+            "open_port_count": 6,
+            "services": ["domain", "http", "ssh"],  # distinct, non-null, sorted
+            "open_ports": [
+                {"port": number, "protocol": protocol, "state": "open", "service": service,
+                 "product": None, "version": None, "tunnel": None}
+                for number, protocol, service in [
+                    (22, "tcp", "ssh"), (53, "tcp", "domain"), (53, "udp", "domain"),
+                    (80, "tcp", "http"), (8080, "tcp", "http"), (9999, "tcp", None),
+                ]
+            ],
+        },
+        {"host_id": empty.id, "ip_address": "10.98.0.1", "hostname": None,
+         "open_port_count": 0, "services": [], "open_ports": []},
+        {"host_id": shut.id, "ip_address": "10.98.0.3", "hostname": None,
+         "open_port_count": 0, "services": [], "open_ports": []},
+    ]
+
+    none, statements = _port_statements(db_session, lambda: targets._briefs_for_hosts(db_session, []))
+    assert none == [] and statements == []
+
+
+def test_the_scope_file_reads_ports_once_per_chunk(db_session, test_project, scope):
+    from app.services import scope_targets_service as targets
+
+    _seed_hosts(db_session, test_project, scope, [f"10.99.1.{i}" for i in range(1, 6)])
+    briefs, statements = _port_statements(
+        db_session, lambda: list(targets.iter_scope_hosts(db_session, scope.id, chunk_size=2)))
+    assert len(briefs) == 5
+    assert all(b.open_port_count == 2 and b.services == ["http", "ssh"] for b in briefs)
+    assert len(statements) == 3, "five hosts in chunks of two: one port read per chunk"

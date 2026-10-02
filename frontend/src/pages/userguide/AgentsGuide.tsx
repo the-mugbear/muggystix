@@ -105,11 +105,11 @@ const sections: GuideSection[] = [
         </Para>
         <Alert variant="info" className="mt-sm">
           <AlertDescription>
-            Every <Mono>/agent/*</Mono> call is logged. <strong>Workflows → Agent Sessions</strong> shows
+            Every <Mono>/agent/*</Mono> call is logged. <strong>Agents → Agent Sessions</strong> shows
             what is live and each session with the tests it proposed and the evidence it recorded;
             a session's own page shows what it read and wrote — its API activity filters by host,
             target IP and status code — and has its Resume and End controls;{' '}
-            <strong>Workflows → Tool Activity</strong> answers "was this, at this time, part of
+            <strong>Agents → Tool Activity</strong> answers "was this, at this time, part of
             our testing?" — uploaded scans and the commands agents recorded, by time, tool and
             target IP, across your projects. Agents never reach user or admin surfaces.
           </AlertDescription>
@@ -162,7 +162,7 @@ const sections: GuideSection[] = [
         </Para>
         <UnorderedList>
           <li><strong>The agent ends it</strong> when you tell it the work is done — its contract makes <Mono>POST /agent/session/end</Mono> (MCP <Mono>end_session</Mono>) the last step. The tests it proposed and the evidence it recorded stay.</li>
-          <li><strong>You end it</strong> — <em>End</em> on the session under Workflows → Agent Sessions or on its own page, or from the sessions panel in the start dialog. The session's owner or a project admin can end it; peers cannot cut off each other's agents.</li>
+          <li><strong>You end it</strong> — <em>End</em> on the session under Agents → Agent Sessions or on its own page, or from the sessions panel in the start dialog. The session's owner or a project admin can end it; peers cannot cut off each other's agents.</li>
         </UnorderedList>
         <Subhead>Resuming after the agent process dies</Subhead>
         <Para>

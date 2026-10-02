@@ -32,7 +32,7 @@ BlueStick is a network visibility and review platform for aggregating host intel
 - **Client reports** — the **Reports** page (Findings hub) renders a findings-first report from a Quarto template in `report-templates/` (Penetration test report, Executive brief, Remediation worklist) to HTML, Word and the `.qmd` source. Drafts preview; issuing freezes and numbers a report; issued reports are revised or followed by addenda, never edited. There is no PDF output — Word exports it. See [report-templates/README.md](report-templates/README.md) to add a template.
 - **Export** scoped data and operational reports for downstream analysis — CSV and HTML stream synchronously; JSON, agent-package and markdown-bundle archives run as **async report jobs** on the report-worker container.
 
-The app opens on the **Operations** hub; everything else hangs off **Inventory**, **Findings**, **Posture**, **Workflows** and **Collaboration**, with **Settings**, **Administration** (global admins) and **Reference** at the foot of the sidebar.
+The app opens on the **Operations** hub; everything else hangs off **Inventory**, **Findings**, **Posture**, **Agents** and **Collaboration**, with **Settings**, **Administration** (global admins) and **Reference** at the foot of the sidebar.
 
 ## Repository Layout
 
@@ -222,7 +222,7 @@ docker compose exec backend python scripts/seed_eval_scenarios.py   # a small pr
 
 ## Agent audit trail
 
-Whatever an agent session is doing (assist, scanning, proposing or running tests), BlueStick records every inbound `/api/v1/agent/*` request — method, resolved path, status, duration, body summary (mutations only), and the host/entry/IP references parsed out of the call. The activity table is surfaced on each session's page under Workflows → Agent Sessions so users can verify their agent queried the right hosts.
+Whatever an agent session is doing (assist, scanning, proposing or running tests), BlueStick records every inbound `/api/v1/agent/*` request — method, resolved path, status, duration, body summary (mutations only), and the host/entry/IP references parsed out of the call. The activity table is surfaced on each session's page under Agents → Agent Sessions so users can verify their agent queried the right hosts.
 
 ## Documentation
 

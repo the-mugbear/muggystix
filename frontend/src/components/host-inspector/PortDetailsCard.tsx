@@ -18,7 +18,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { copyToClipboard } from '../../utils/clipboard';
 import {
-  ArrowDown, ArrowUp, ArrowUpDown, ChevronDown, ChevronRight, Copy, Lock, Network, ShieldCheck, Terminal,
+  ArrowDown, ArrowUp, ChevronDown, ChevronRight, Copy, Lock, Network, ShieldCheck, Terminal,
 } from 'lucide-react';
 
 import {
@@ -266,12 +266,25 @@ interface PortDetailsCardProps {
   webPathCount?: number;
 }
 
+/** Ports by number, then protocol (53/tcp before 53/udp); `desc` reverses both. */
+export const sortPortsBy = <T extends { port_number: number | null; protocol?: string | null }>(
+  ports: T[], dir: 'asc' | 'desc',
+): T[] => {
+  const sorted = [...ports].sort((a, b) =>
+    (a.port_number ?? 0) - (b.port_number ?? 0)
+    || (a.protocol ?? '').localeCompare(b.protocol ?? ''));
+  return dir === 'desc' ? sorted.reverse() : sorted;
+};
+
 const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   hostId, hostIp, hostname = null, hostLastSeen = null, openPorts, closedPorts, filteredPorts, connectionHelpersByPort,
   vulnerabilities = [], netexecCount = 0, webPathCount = 0,
 }) => {
   const toast = useToast();
-  const [portSortDir, setPortSortDir] = useState<'asc' | 'desc' | null>(null);
+  // Ascending port number by default (UX walkthrough 2026-10-02, U14): with
+  // no sort the rows came in the order the server returned them — arrival
+  // order, "80, 21, 53, 139, 23" — which is no order a reader can use.
+  const [portSortDir, setPortSortDir] = useState<'asc' | 'desc'>('asc');
   const [endpoints, setEndpoints] = useState<Map<number, PortEndpoint[]>>(new Map());
   const [webError, setWebError] = useState(false);
   // Which endpoint a port's commands address; absent = the default below.
@@ -343,11 +356,8 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
   });
 
   const sortPorts = useMemo(
-    () => <T extends { port_number: number | null }>(arr: T[]): T[] => {
-      if (!portSortDir) return arr;
-      const s = [...arr].sort((a, b) => (a.port_number ?? 0) - (b.port_number ?? 0));
-      return portSortDir === 'desc' ? s.reverse() : s;
-    },
+    () => <T extends { port_number: number | null; protocol?: string | null }>(arr: T[]): T[] =>
+      sortPortsBy(arr, portSortDir),
     [portSortDir],
   );
 
@@ -369,14 +379,12 @@ const PortDetailsCard: React.FC<PortDetailsCardProps> = ({
 
   const PortSortHead: React.FC<{ className?: string }> = ({ className }) => (
     <TableHead className={className}
-      aria-sort={portSortDir ? (portSortDir === 'asc' ? 'ascending' : 'descending') : 'none'}>
+      aria-sort={portSortDir === 'asc' ? 'ascending' : 'descending'}>
       <button type="button"
         onClick={() => setPortSortDir((d) => (d === 'asc' ? 'desc' : 'asc'))}
         className="inline-flex items-center gap-xxs rounded text-inherit hover:text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring">
         Port
-        {portSortDir
-          ? (portSortDir === 'asc' ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />)
-          : <ArrowUpDown className="size-3 opacity-40" aria-hidden />}
+        {portSortDir === 'asc' ? <ArrowUp className="size-3" aria-hidden /> : <ArrowDown className="size-3" aria-hidden />}
       </button>
     </TableHead>
   );

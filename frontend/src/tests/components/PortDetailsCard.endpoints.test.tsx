@@ -12,7 +12,7 @@ vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
-import PortDetailsCard from '../../components/host-inspector/PortDetailsCard';
+import PortDetailsCard, { sortPortsBy } from '../../components/host-inspector/PortDetailsCard';
 import { TooltipProvider } from '../../components/ui/tooltip';
 import { getConnectionHelpers } from '../../utils/connectionHelpers';
 import type { Port } from '../../services/api';
@@ -286,5 +286,32 @@ describe('PortDetailsCard — density', () => {
     api.getHostWebInterfaces.mockResolvedValue([]);
     renderWith([], [closed]);
     expect(screen.getByText('No open ports observed.')).toBeInTheDocument();
+  });
+});
+
+// UX walkthrough 2026-10-02 (U14): the services came in the order the server
+// returned them ("80, 21, 53, 139, 23").
+describe('PortDetailsCard — default order', () => {
+  const p = (port_number: number, protocol = 'tcp') =>
+    ({ id: port_number * 10 + (protocol === 'udp' ? 1 : 0), port_number, protocol, state: 'open', service_name: 'svc' }) as Port;
+
+  it('sorts by port number, then protocol', () => {
+    const sorted = sortPortsBy([p(80), p(21), p(53, 'udp'), p(139), p(53), p(23)], 'asc');
+    expect(sorted.map((x) => `${x.port_number}/${x.protocol}`))
+      .toEqual(['21/tcp', '23/tcp', '53/tcp', '53/udp', '80/tcp', '139/tcp']);
+    expect(sortPortsBy([p(80), p(21)], 'desc').map((x) => x.port_number)).toEqual([80, 21]);
+  });
+
+  it('lists services in ascending port order before anyone sorts, and says so', async () => {
+    api.getHostWebInterfaces.mockResolvedValue([]);
+    renderCard([p(80), p(21), p(139), p(23)]);
+    await waitFor(() => expect(api.getHostWebInterfaces).toHaveBeenCalled());
+    const head = screen.getAllByRole('columnheader', { name: /Port/ })[0];
+    expect(head).toHaveAttribute('aria-sort', 'ascending');
+    const table = head.closest('table') as HTMLTableElement;
+    const order = within(table)
+      .getAllByRole('button', { name: /what is known about port \d+$/ })
+      .map((b) => Number(/port (\d+)$/.exec(b.getAttribute('aria-label')!)![1]));
+    expect(order).toEqual([21, 23, 80, 139]);
   });
 });

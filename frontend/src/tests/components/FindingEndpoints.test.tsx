@@ -3,8 +3,11 @@
  *   S3 — what the bulk bar acts on is always among the rows the filter shows;
  *   S7 — a linked endpoint is scrolled to once;
  *   M3 — shift-click reads its anchor before it moves it;
- *   M4 / M5 — in-flight rows are locked, responses apply in the order sent,
- *             and a bulk request leaves a later selection alone.
+ *   M4 / M5 — in-flight rows are locked, and a bulk request leaves a later
+ *             selection alone.
+ * Review 2026-10-02 H2 — changes go to the server one at a time and every
+ * answer is applied ("responses apply in the order sent" dropped an answer
+ * whose request was sent first and committed last).
  */
 import React, { useState } from 'react';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
@@ -255,7 +258,7 @@ describe('FindingEndpoints — shift-click (M3)', () => {
 });
 
 describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
-  it('locks each changed row until its own request is back, and drops a response older than the last applied', async () => {
+  it('locks each changed row until its own request is back, and sends the changes one at a time', async () => {
     const start = finding([endpoint(1), endpoint(2), endpoint(3)]);
     const first = deferred<Finding>();
     const second = deferred<Finding>();
@@ -264,22 +267,129 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
 
     fireEvent.change(stateOf(1), { target: { value: 'retest' } });
     fireEvent.change(stateOf(2), { target: { value: 'remediated' } });
+    // Both rows are busy from the click — the queued one too.
     expect(stateOf(1)).toBeDisabled();
     expect(stateOf(2)).toBeDisabled();
     expect(box(1)).toBeDisabled();
     expect(screen.getByLabelText('Detach 10.0.0.1 from finding')).toBeDisabled();
     expect(stateOf(3)).not.toBeDisabled();
+    // The second change waits for the first one's answer.
+    await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
+    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(7, 1, 'retest');
 
-    // The later request answers first, with both changes.
-    await act(async () => { second.resolve(withState(start, { 1: 'retest', 2: 'remediated' })); });
-    expect(stateOf(2)).not.toBeDisabled();
-    expect(stateOf(1)).toBeDisabled();
-    // The earlier one answers last, from before the second change.
     await act(async () => { first.resolve(withState(start, { 1: 'retest' })); });
-    expect(onChanged).toHaveBeenCalledTimes(1);
-    expect(stateOf(2).value).toBe('remediated');
     expect(stateOf(1).value).toBe('retest');
     expect(stateOf(1)).not.toBeDisabled();
+    expect(stateOf(2)).toBeDisabled();
+    expect(setFindingEndpointStatus).toHaveBeenCalledTimes(2);
+    expect(setFindingEndpointStatus).toHaveBeenLastCalledWith(7, 2, 'remediated');
+
+    await act(async () => { second.resolve(withState(start, { 1: 'retest', 2: 'remediated' })); });
+    // Every answer is applied: none is "older news" when they come in turn.
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(stateOf(2).value).toBe('remediated');
+    expect(stateOf(1).value).toBe('retest');
+    expect(stateOf(2)).not.toBeDisabled();
+  });
+
+  // Review 2026-10-02 H2.  A stand-in for the server: each request changes
+  // the stored finding WHEN IT IS COMMITTED and answers with the finding as
+  // it then stands — which is why the order requests were sent in says
+  // nothing about which answer is the newest.
+  const server = (start: Finding) => {
+    let stored = start;
+    const waiting: Array<{ label: string; commit: () => void; refuse: (e: unknown) => void }> = [];
+    const receive = (label: string, changes: () => Record<number, FindingHostStatus>) => {
+      const d = deferred<Finding>();
+      waiting.push({
+        label,
+        commit: () => { stored = withState(stored, changes()); d.resolve(stored); },
+        refuse: d.reject,
+      });
+      return d.promise;
+    };
+    setFindingEndpointStatus.mockImplementation((_f: number, id: number, state: FindingHostStatus) =>
+      receive(`one:${id}`, () => ({ [id]: state })));
+    setFindingEndpointsStatus.mockImplementation(
+      (_f: number, body: { finding_host_ids: number[]; host_status: FindingHostStatus }) =>
+        receive(`bulk:${body.finding_host_ids.join(',')}`,
+          () => Object.fromEntries(body.finding_host_ids.map((id) => [id, body.host_status]))));
+    /** Settle the request the server received LAST among those waiting. */
+    const settleNewest = async (how: 'commit' | 'refuse' = 'commit') => {
+      await waitFor(() => expect(waiting.length).toBeGreaterThan(0));
+      const request = waiting.pop()!;
+      await act(async () => {
+        if (how === 'commit') request.commit();
+        else request.refuse(new Error('refused'));
+      });
+      return request.label;
+    };
+    return { settleNewest, waiting, stored: () => stored };
+  };
+
+  it('shows every saved state when the server commits the later change first', async () => {
+    const start = finding([endpoint(1), endpoint(2)]);
+    const api = server(start);
+    render(<Harness initial={start} />);
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });         // A
+    fireEvent.change(stateOf(2), { target: { value: 'remediated' } });     // B
+    // The server takes the newest request it holds first.  Sent together (the
+    // old code), B commits and answers with endpoint 1 still open, then A
+    // answers with both — and was dropped as "sent earlier", leaving the
+    // saved retest shown as open.  Sent one at a time, there is no such race.
+    await api.settleNewest();
+    await api.settleNewest();
+    expect(api.waiting).toHaveLength(0);
+    expect(api.stored().hosts.map((h) => h.host_status)).toEqual(['retest', 'remediated']);
+    expect(stateOf(1).value).toBe('retest');
+    expect(stateOf(2).value).toBe('remediated');
+    expect(stateOf(1)).not.toBeDisabled();
+    expect(stateOf(2)).not.toBeDisabled();
+  });
+
+  it('a refused change in the middle neither blocks nor loses the ones behind it', async () => {
+    const start = finding([endpoint(1), endpoint(2), endpoint(3)]);
+    const api = server(start);
+    render(<Harness initial={start} />);
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });
+    fireEvent.change(stateOf(2), { target: { value: 'remediated' } });
+    fireEvent.change(stateOf(3), { target: { value: 'false_positive' } });
+
+    expect(await api.settleNewest()).toBe('one:1');
+    expect(await api.settleNewest('refuse')).toBe('one:2');
+    // The refused row is said, unlocked and unchanged; the third is still on its way.
+    expect(toast.error).toHaveBeenCalledTimes(1);
+    expect(stateOf(2).value).toBe('open');
+    expect(stateOf(2)).not.toBeDisabled();
+    expect(stateOf(3)).toBeDisabled();
+    expect(await api.settleNewest()).toBe('one:3');
+
+    expect(stateOf(1).value).toBe('retest');
+    expect(stateOf(2).value).toBe('open');
+    expect(stateOf(3).value).toBe('false_positive');
+    expect(stateOf(3)).not.toBeDisabled();
+    expect(onChanged).toHaveBeenCalledTimes(2);
+    expect(setFindingEndpointStatus).toHaveBeenCalledTimes(3);
+  });
+
+  it('a bulk change waits its turn behind a single change still on its way', async () => {
+    const start = finding([endpoint(1), endpoint(2), endpoint(3)]);
+    const api = server(start);
+    render(<Harness initial={start} />);
+    fireEvent.click(box(2));
+    fireEvent.click(box(3));
+    fireEvent.change(stateOf(1), { target: { value: 'retest' } });
+    fireEvent.change(screen.getByLabelText('Set the selected endpoints to'), { target: { value: 'remediated' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Set 2 endpoints' }));
+    // Every row is locked while the bulk change is queued or in flight.
+    expect(stateOf(2)).toBeDisabled();
+
+    expect(await api.settleNewest()).toBe('one:1');
+    expect(await api.settleNewest()).toBe('bulk:2,3');
+    await waitFor(() => expect(bar()).toBeNull());
+    expect([1, 2, 3].map((id) => stateOf(id).value)).toEqual(['retest', 'remediated', 'remediated']);
+    expect(stateOf(2)).not.toBeDisabled();
+    expect(toast.success).toHaveBeenCalledWith('Set 2 endpoints to remediated here.');
   });
 
   it('locks the rows during a bulk request and unticks only what it changed', async () => {

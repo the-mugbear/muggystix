@@ -380,7 +380,7 @@ makes the agent's own words part of the audit trail.
 
 ## 7. Reviewing what happened
 
-* **Workflows → Agent Sessions** (`/agent-activity`) — what is live (with the
+* **Agents → Agent Sessions** (`/agent-activity`) — what is live (with the
   tests each session proposed and the evidence it recorded, and Resume / End)
   and every session in the project. A session is **live** (its key is valid
   now), **resumable** (the key ran out inside the session's lifetime — the

@@ -87,7 +87,9 @@ def _decide(
     review 2026-10-01 N8)."""
     # Locked until the commit below: a second decision on it waits, then
     # finds it decided (409) instead of applying it again.
-    proposal = proposals.get_proposal(db, project_id, proposal_id, for_update=True)
+    # One lock order for every decision — a report-text proposal's finding
+    # first, then the proposal (H1; `lock_for_decision` says why).
+    proposal = proposals.lock_for_decision(db, project_id, proposal_id)
     try:
         if action == "accept":
             proposals.accept_proposal(db, proposal, user, edited_value=body.edited_value, note=body.note)

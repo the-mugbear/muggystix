@@ -11,9 +11,37 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { computeAttention, scopeCoverageText } from '../components/hosts/useHostColumns';
+import { HOST_COLUMN_SHARES, computeAttention, scopeCoverageText } from '../components/hosts/useHostColumns';
+import { columnWidth } from '../components/ui/data-table';
 import type { Host } from '../services/api/hosts';
 import { exposureChips } from '../utils/portsOfInterest';
+
+// UX walkthrough 2026-10-02 (U2 + U9): on a wide window the spare width went
+// to Host alone while Exposure and Attention wrapped to three or four lines.
+describe('Hosts table width strategy', () => {
+  const pct = (s: string) => Number(/^(\d+)%$/.exec(s)![1]);
+
+  it('gives every sized column a share, Exposure and Attention the largest', () => {
+    const s = HOST_COLUMN_SHARES;
+    expect(pct(s.exposure)).toBeGreaterThan(pct(s.network));
+    expect(pct(s.attention)).toBeGreaterThan(pct(s.network));
+    expect(pct(s.exposure)).toBeGreaterThan(pct(s.review));
+    // What is left for Host (before the 40px checkbox): enough for an address
+    // and a status word at a narrow window, never most of a wide one.
+    const host = 100 - Object.values(s).reduce((sum, v) => sum + pct(v), 0);
+    expect(host).toBeGreaterThanOrEqual(25);
+    expect(host).toBeLessThanOrEqual(40);
+    // ~870px of table at a 1,126px window: no sized column under 110px.
+    for (const v of Object.values(s)) expect((pct(v) / 100) * 870).toBeGreaterThanOrEqual(110);
+  });
+
+  it('the shell reads a share before a pixel size, and 150 stays "unsized"', () => {
+    expect(columnWidth({ width: '21%' }, 165)).toBe('21%');
+    expect(columnWidth(undefined, 165)).toBe(165);
+    expect(columnWidth(undefined, 150)).toBeUndefined();
+    expect(columnWidth({}, 150)).toBeUndefined();
+  });
+});
 
 const host = (over: Partial<Host>): Host =>
   ({ id: 1, ip_address: '10.0.0.1', ...over }) as Host;

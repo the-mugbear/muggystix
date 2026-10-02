@@ -132,6 +132,13 @@ describe('Reports list', () => {
     expect(a).toHaveTextContent(/^Draft #12 · started .+ · template pentest$/);
     expect(b).toHaveTextContent(/^Draft #13 · started .+ · template brief$/);
     expect(a.textContent).not.toBe(b.textContent?.replace('#13', '#12'));
+    // U8: the number leads the row in its own cell, and the line under the
+    // title wraps with its whole text on hover instead of being cut.
+    expect(screen.getByTestId('draft-number-12')).toHaveTextContent(/^#12$/);
+    expect(screen.getByTestId('draft-number-12').closest('tr')!.firstElementChild)
+      .toBe(screen.getByTestId('draft-number-12'));
+    expect(a).not.toHaveClass('truncate');
+    expect(a).toHaveAttribute('title', a.textContent!);
     expect(mocked.getClientReport).not.toHaveBeenCalled();
   });
 

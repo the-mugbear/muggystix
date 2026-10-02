@@ -18,6 +18,9 @@ vi.mock('../../services/api', () => ({
   rejectProposal: (...a: unknown[]) => rejectProposal(...a),
   acceptProposal: (...a: unknown[]) => acceptProposal(...a),
   decideProposals: (...a: unknown[]) => decideProposals(...a),
+  // The real value (services/api/proposals.ts — the route's `max_length`);
+  // `proposalBulkLimit.test.ts` pins the two to each other.
+  PROPOSAL_BULK_MAX: 200,
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
@@ -225,6 +228,50 @@ describe('Proposals page — the bulk reject reason', () => {
     fireEvent.change(reason, { target: { value: 'No evidence cited.' } });
     fireEvent.click(within(reason.closest('[role="dialog"]') as HTMLElement).getByRole('button', { name: 'Reject all shown' }));
     await waitFor(() => expect(decideProposals).toHaveBeenCalledWith([1, 2], 'reject', 'No evidence cited.'));
+  });
+});
+
+// Review 2026-10-02 H4 — the route takes at most 200 ids and refuses a longer
+// list whole; the page sent every loaded pending proposal.
+describe('Proposals page — a bulk decision is at most 200, and says so', () => {
+  const ids = (n: number) => Array.from({ length: n }, (_, i) => i + 1);
+  const open = async (n: number) => {
+    listProposals.mockResolvedValue({ total: n, items: page(1, n), has_more: false });
+    decideProposals.mockImplementation(async (sent: number[]) => ({ decided: sent, failed: [] }));
+    render(<MemoryRouter initialEntries={['/proposals?scope=all']}><Proposals /></MemoryRouter>);
+    await screen.findByText(/j<\/kbd>|move,/);
+  };
+
+  it.each([
+    ['accept', 'Accept'] as const,
+    ['reject', 'Reject'] as const,
+  ])('%s: with 250 shown, sends the first 200 in list order in ONE request', async (action, verb) => {
+    await open(250);
+    expect(screen.queryByRole('button', { name: `${verb} all shown` })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: `${verb} the first 200 of 250 shown` }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText(`${verb} the first 200 of 250 proposals shown?`)).toBeInTheDocument();
+    expect(dialog).toHaveTextContent('these are the first 200 of the 250 shown');
+    expect(dialog).toHaveTextContent('The other 50 stay pending');
+    const before = listProposals.mock.calls.length;
+    fireEvent.click(within(dialog).getByRole('button', { name: `${verb} the first 200` }));
+    await waitFor(() => expect(decideProposals).toHaveBeenCalledTimes(1));
+    expect(decideProposals.mock.calls[0][0]).toEqual(ids(200));
+    expect(decideProposals.mock.calls[0][1]).toBe(action);
+    // The list is read again, so the rest can follow.
+    await waitFor(() => expect(listProposals.mock.calls.length).toBeGreaterThan(before));
+    expect(decideProposals).toHaveBeenCalledTimes(1);
+  });
+
+  it('with exactly 200 shown, nothing changes: "all shown", every id', async () => {
+    await open(200);
+    fireEvent.click(screen.getByRole('button', { name: 'Accept all shown' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByText('Accept 200 proposals?')).toBeInTheDocument();
+    expect(dialog).not.toHaveTextContent(/the first/);
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Accept all shown' }));
+    await waitFor(() => expect(decideProposals).toHaveBeenCalledTimes(1));
+    expect(decideProposals.mock.calls[0][0]).toEqual(ids(200));
   });
 });
 

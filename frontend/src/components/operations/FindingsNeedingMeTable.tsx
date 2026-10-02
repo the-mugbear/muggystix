@@ -76,7 +76,10 @@ export const FindingsNeedingMeTable: React.FC<{
                     <TableHead className="w-[6.5rem]">Severity</TableHead>
                     <TableHead className="w-[4.5rem]">#</TableHead>
                     <TableHead>Finding</TableHead>
-                    <TableHead className="w-[34%]">Needs</TableHead>
+                    {/* NEEDS is the point of the row: it has the larger share
+                        and wraps to two lines before it is cut (it was cut on
+                        every row at a 1,126px window). */}
+                    <TableHead className="w-[44%]">Needs</TableHead>
                     <TableHead className="w-[5.5rem] text-right"
                       title="How long since the finding last changed.">
                       Waiting
@@ -109,8 +112,10 @@ export const FindingsNeedingMeTable: React.FC<{
                           </Link>
                           <span className="text-caption text-muted-foreground"> · {hostCount}</span>
                         </TableCell>
-                        <TableCell className="truncate align-middle" title={owed || undefined}>
-                          {owed || '—'}
+                        <TableCell className="align-middle" data-testid="finding-needs">
+                          <span className="line-clamp-2 break-words" title={owed || undefined}>
+                            {owed || '—'}
+                          </span>
                         </TableCell>
                         <TableCell className="truncate text-right align-middle">
                           <WaitingCell

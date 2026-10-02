@@ -476,6 +476,38 @@ def get_proposal(db: Session, project_id: int, proposal_id: int, *, for_update: 
     return proposal
 
 
+def lock_for_decision(db: Session, project_id: int, proposal_id: int) -> AgentProposal:
+    """The proposal, locked for a decision — the ONE way a decide path (single
+    accept, reject, bulk) takes its locks.
+
+    A report-text proposal locks its FINDING first, then itself (review
+    2026-10-02 H1).  Accepting one writes the finding and then supersedes the
+    field's other pending drafts; with only the proposal row locked, two
+    reviewers accepting two drafts of one field each held their own proposal,
+    one wrote the finding, the other waited on it, and the first's supersede
+    then waited on the second's proposal — a deadlock Postgres broke with a
+    500.  With the finding as the common lock the second reviewer waits here,
+    and then reads their proposal as it now is (``populate_existing``):
+    superseded, a 409 from the pending check.
+
+    The kind and finding are read without a lock; neither changes after a
+    proposal is created.  ``FOR NO KEY UPDATE``: deciders exclude each other,
+    while a comment or history row referencing the finding is not held up.
+    Other kinds lock only the proposal, as before — a promote / dismiss takes
+    its own locks in its own order (evidence first, then the finding), and
+    nothing they write is superseded by another proposal's accept."""
+    head = (
+        db.query(AgentProposal.kind, AgentProposal.finding_id)
+        .filter(AgentProposal.id == proposal_id, AgentProposal.project_id == project_id)
+        .first()
+    )
+    if head is not None and head.kind == ProposalKind.FINDING_TEXT.value and head.finding_id:
+        db.query(Finding.id).filter(
+            Finding.id == head.finding_id, Finding.project_id == project_id,
+        ).with_for_update(key_share=True).first()
+    return get_proposal(db, project_id, proposal_id, for_update=True)
+
+
 def _require_pending(proposal: AgentProposal) -> None:
     if proposal.status != ProposalStatus.PENDING.value:
         raise HTTPException(status_code=409, detail=f"This proposal is already {proposal.status}.")

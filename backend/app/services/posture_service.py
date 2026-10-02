@@ -67,6 +67,17 @@ def _signal(tier: str, score: float, reason: str, *, kind: str, title: str,
     }
 
 
+def _within_band(value: float, half: float) -> float:
+    """``value`` squeezed into [0, 9.9), order kept (``half`` maps to ~5).
+
+    A signal kind owns a ten-point band (findings 90+, widespread weaknesses
+    80, sites 70).  ``systemic_score`` and a site's weighted score are
+    unbounded, and added raw they outranked the findings signal: the page's
+    headline named a pattern while critical findings were active."""
+    value = max(float(value or 0), 0.0)
+    return 9.9 * value / (value + half)
+
+
 def _gather_signals(
     db: Session, project_id: int, *, project_att: Dict[str, Any],
     site_att: Dict[str, Any], systemic: Dict[str, Any],
@@ -84,7 +95,7 @@ def _gather_signals(
         signals.append(_signal(
             "assess", 35, "No hosts discovered yet — estate not assessed",
             kind="onboard", title="No recon data yet",
-            blast_radius="Whole project unassessed", action="Upload a scan or start a recon run",
+            blast_radius="Whole project unassessed", action="Upload a scan",
             severity="medium", owner=None, link="/scans",
         ))
 
@@ -125,11 +136,13 @@ def _gather_signals(
         ))
 
     # B. Estate blind spots — one systemic weakness replicated estate-wide (action).
+    # The score stays inside its band (80–89.9, see `_within_band`), so active
+    # critical/high findings (A, 90 + n) lead the headline when there are any.
     for b in (systemic.get("blind_spots") or [])[:4]:
         pct = round((b.get("host_fraction") or 0) * 100)
         signals.append(_signal(
-            "action", 80 + (b.get("systemic_score") or 0) / 10,
-            f"{b['label']} across {pct}% of hosts (estate blind spot)",
+            "action", 80 + _within_band(b.get("systemic_score") or 0, 5000),
+            f"{b['label']} across {pct}% of hosts (widespread)",
             kind="systemic", title=b["label"],
             blast_radius=f"{b['affected_hosts']} hosts ({pct}%) · {b.get('subnet_spread', 0)} subnets · {b.get('site_spread', 0)} sites",
             action=b.get("recommended_action") or "Remediate estate-wide",
@@ -143,7 +156,7 @@ def _gather_signals(
             crit = s["exposure"]["by_severity"].get("critical", 0)
             if tier in _HOT_TIERS and crit > 0:
                 signals.append(_signal(
-                    "action", 70 + s["exposure"]["weighted_score"],
+                    "action", 70 + _within_band(s["exposure"]["weighted_score"], 50),
                     f"{s['site']}: {crit} critical finding{'' if crit == 1 else 's'} (tier {tier})",
                     kind="site", title=f"{s['site']} — {crit} critical",
                     blast_radius=f"Tier {tier} site · {s['host_count']} hosts · {s['exposure']['active_findings']} active findings",

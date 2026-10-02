@@ -94,6 +94,19 @@ const KIND_OPTIONS: Array<{ value: '' | AgentSessionKind; label: string }> = [
   { value: 'assist', label: 'Legacy assist' },
 ];
 
+/** The History table's column widths. SESSION has none on purpose — it takes
+ *  the spare width; the others are fixed and must leave it room (test-pinned:
+ *  their sum stays under the table's minimum width). */
+export const HISTORY_COLUMN_WIDTHS = {
+  id: 'w-14',
+  session: '',
+  status: 'w-36',
+  started: 'w-20',
+  operator: 'w-32',
+  work: 'w-44',
+  actions: 'w-20',
+} as const;
+
 type BadgeVariant = 'default' | 'secondary' | 'destructive' | 'success' | 'warning' | 'info' | 'outline' | 'muted';
 
 function statusBadgeVariant(status: string): BadgeVariant {
@@ -125,7 +138,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
   return (
     <PostureSection
       title="Activity by agent / model"
-      description="Sessions per agent identity — unified project sessions, plus the legacy plan-generation / execution / assist rows from before the consolidation. Compares models running against the same project."
+      description="How many sessions each model and client ran on this project, to compare models working on the same data. Older assist sessions, from before one session did all the work, are counted in their own column."
     >
       <div className="overflow-x-auto">
         <Table className="min-w-[600px]">
@@ -134,7 +147,7 @@ const ModelRollupSection: React.FC<{ rows: ModelToolSummaryRow[] | null }> = ({ 
               <TableHead>Model</TableHead>
               <TableHead>Client</TableHead>
               <TableHead className="w-20 text-right">Sessions</TableHead>
-              <TableHead className="w-16 text-right">Assist</TableHead>
+              <TableHead className="w-28 text-right">Older assist</TableHead>
               <TableHead className="w-16 text-right">Total</TableHead>
             </TableRow>
           </TableHeader>
@@ -574,9 +587,9 @@ const ProjectActivity: React.FC = () => {
             title="No agent session is live"
             action={canStartAgent ? { to: START_SESSION_PATH, label: 'Start agent session' } : undefined}
           >
-            A session lets an agent query this project, upload scans, and open plan or execution
-            work, with your permissions. It shows here while it runs, with its work and the controls
-            to resume or end it.
+            A session lets an agent query this project, upload scans, propose tests on hosts and
+            record what it ran as evidence, with your permissions. It shows here while it runs, with
+            its work and the controls to resume or end it.
           </PostureEmpty>
         )}
         {live != null && live.length > 0 && (
@@ -680,16 +693,24 @@ const ProjectActivity: React.FC = () => {
           </div>
         </ListFilterBar>
 
-        <Table data-testid="runs-table" style={{ tableLayout: 'fixed' }}>
+        {/* Width strategy (UX walkthrough U1): the fixed columns are sized to
+            their content and sum to 664px; SESSION — the purpose, the one
+            column whose text has no bound — takes everything left. The table's
+            minimum (832px) keeps SESSION at 168px or more: below that the table
+            scrolls inside its section instead of squeezing the column to
+            nothing (the fixed widths used to add up to the whole content
+            width at a 1,126px window). */}
+        <div className="overflow-x-auto">
+        <Table data-testid="runs-table" className="min-w-[52rem]" style={{ tableLayout: 'fixed' }}>
           <TableHeader>
             <TableRow>
-              <TableHead className="w-16">#</TableHead>
-              <TableHead>Session</TableHead>
-              <TableHead className="w-48">Status</TableHead>
-              <TableHead className="w-24">Started</TableHead>
-              <TableHead className="w-40">Operator · agent</TableHead>
-              <TableHead className="w-[30%]">Work</TableHead>
-              <TableHead className="w-20"><span className="sr-only">Actions</span></TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.id}>#</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.session}>Session</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.status}>Status</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.started}>Started</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.operator}>Operator · agent</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.work}>Work</TableHead>
+              <TableHead className={HISTORY_COLUMN_WIDTHS.actions}><span className="sr-only">Actions</span></TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -697,6 +718,7 @@ const ProjectActivity: React.FC = () => {
               const path = sessionRowPath(r);
               const stalled = isStalledRun(r);
               const operator = rowOperatorName(r);
+              const purpose = safeFallback(r.purpose, r.kind === 'project' ? 'No stated purpose' : 'Project-wide');
               const label = r.kind === 'project'
                 ? `Open agent session ${r.id}`
                 : `Open ${runKindLabel(r.kind)} ${r.id}`;
@@ -708,8 +730,8 @@ const ProjectActivity: React.FC = () => {
                   <NavigableTableCell to={path} ariaLabel={label}>
                     <div className="flex min-w-0 items-center gap-xs">
                       {r.kind !== 'project' && <RunKindBadge kind={r.kind} className="shrink-0" />}
-                      <span className="min-w-0 truncate" title={r.purpose ?? undefined}>
-                        {safeFallback(r.purpose, r.kind === 'project' ? 'No stated purpose' : 'Project-wide')}
+                      <span className="min-w-0 truncate" title={purpose}>
+                        {purpose}
                       </span>
                     </div>
                     {(r.generated_by_model || r.generated_by_tool) && (
@@ -733,7 +755,10 @@ const ProjectActivity: React.FC = () => {
                           {stalled ? 'Stalled' : r.status.replace(/_/g, ' ')}
                         </Badge>
                         {stalled && (
-                          <span className="block max-w-full truncate text-caption text-warning">
+                          <span
+                            className="block max-w-full truncate text-caption text-warning"
+                            title="its session can no longer act"
+                          >
                             its session can no longer act
                           </span>
                         )}
@@ -754,7 +779,9 @@ const ProjectActivity: React.FC = () => {
                   </TableCell>
                   <TableCell>
                     {r.kind === 'project' ? (
-                      <SessionWork row={r} />
+                      // The count line may wrap here: the column is narrow so
+                      // SESSION keeps its share.
+                      <SessionWork row={r} className="whitespace-normal break-words" />
                     ) : (
                       <span className="text-caption text-muted-foreground">—</span>
                     )}
@@ -787,6 +814,7 @@ const ProjectActivity: React.FC = () => {
             )}
           </TableBody>
         </Table>
+        </div>
       </PostureSection>
 
       <HygieneStrip hygiene={hygiene} />

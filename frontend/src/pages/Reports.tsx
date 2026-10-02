@@ -255,16 +255,24 @@ const Reports: React.FC = () => {
               <p className="text-caption text-muted-foreground">No drafts.</p>
             ) : (
               <Table className="table-fixed" aria-label="Draft reports">
-                <colgroup><col /><col style={{ width: '14rem' }} /><col style={{ width: '10rem' }} /><col style={{ width: '8rem' }} /></colgroup>
+                {/* The draft number leads the row in a column of its own (UX
+                    walkthrough U8): several drafts share one title, and the
+                    number is what tells them apart — it is never truncated. */}
+                <colgroup><col style={{ width: '4.5rem' }} /><col /><col style={{ width: '14rem' }} /><col style={{ width: '10rem' }} /><col style={{ width: '8rem' }} /></colgroup>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Title</TableHead><TableHead>Kind</TableHead>
+                    <TableHead>Draft</TableHead><TableHead>Title</TableHead><TableHead>Kind</TableHead>
                     <TableHead>Started by</TableHead><TableHead>Updated</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
                   {drafts.map((r) => (
                     <TableRow key={r.id}>
+                      <TableCell className="whitespace-nowrap align-top font-medium tabular-nums" data-testid={`draft-number-${r.id}`}>
+                        <Link to={`/reports/${r.id}`} className="text-foreground hover:underline" aria-label={`Open draft #${r.id}`}>
+                          #{r.id}
+                        </Link>
+                      </TableCell>
                       <TableCell className="min-w-0">
                         <DraftTitle report={r} duplicate={(titleCounts.get(r.title) ?? 0) > 1}
                           onRenamed={(updated) => setData((d) => (d
@@ -273,12 +281,16 @@ const Reports: React.FC = () => {
                         {/* Drafts often share the default title; this line
                             tells them apart from what the list already
                             carries (v5.288.0) — no per-draft request. */}
-                        <span className="block truncate text-caption text-muted-foreground" data-testid={`draft-meta-${r.id}`}>
+                        <span
+                          className="block break-words text-caption text-muted-foreground"
+                          data-testid={`draft-meta-${r.id}`}
+                          title={draftMeta(r)}
+                        >
                           {draftMeta(r)}
                         </span>
                       </TableCell>
-                      <TableCell className="truncate text-caption">{reportKindLabel(r)}</TableCell>
-                      <TableCell className="truncate text-caption">{safeFallback(r.created_by_name, '—')}</TableCell>
+                      <TableCell className="truncate text-caption" title={reportKindLabel(r)}>{reportKindLabel(r)}</TableCell>
+                      <TableCell className="truncate text-caption" title={r.created_by_name ?? undefined}>{safeFallback(r.created_by_name, '—')}</TableCell>
                       <TableCell className="text-caption">
                         <TimeAgo value={r.updated_at ?? r.created_at} absoluteAfterDays={30} />
                       </TableCell>

@@ -31,7 +31,7 @@ from __future__ import annotations
 
 import re
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Dict, Iterable, Iterator, List, Optional, Sequence, Tuple
 
 from fastapi import HTTPException
 from sqlalchemy import or_
@@ -206,11 +206,33 @@ def clean_caption(value: Optional[str]) -> Optional[str]:
     return text or None
 
 
+def iter_placements(text: Optional[str]) -> Iterator["re.Match[str]"]:
+    """Every REAL placement in a section's Markdown, in order: a ``REFERENCE``
+    match that is not inside a fenced code block or an inline code span.
+
+    Code is printed as typed — the renderer makes no figure of
+    ``![Example](evidence:57)`` written in backticks — so it places nothing
+    (review 2026-10-02 H5: such an example took the image out of the trailing
+    evidence block and blocked its deletion, while the report printed no
+    figure at all).  This is the ONE reader of ``REFERENCE`` for "placed":
+    ``referenced_ids`` and, through it, the dataset, ``refuse_if_placed`` and
+    ``check_references`` all come here.  The frontend's twin skips the same
+    ranges."""
+    if not text or "evidence:" not in text:
+        return
+    code = _code_spans(text) if ("`" in text or "~~~" in text) else []
+    for match in REFERENCE.finditer(text):
+        if any(a <= match.start() < b for a, b in code):
+            continue
+        yield match
+
+
 def referenced_ids(text: Optional[str]) -> List[int]:
-    """The attachment ids a section's Markdown references, in order of first
-    appearance (an id referenced twice is listed once)."""
+    """The attachment ids a section's Markdown PLACES, in order of first
+    appearance (an id referenced twice is listed once).  A reference written
+    inside code is not one (``iter_placements``)."""
     seen: List[int] = []
-    for match in REFERENCE.finditer(text or ""):
+    for match in iter_placements(text):
         att_id = int(match.group("id"))
         if att_id not in seen:
             seen.append(att_id)

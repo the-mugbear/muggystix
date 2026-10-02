@@ -59,7 +59,7 @@ const sections: GuideSection[] = [
           <li><strong>Inventory</strong> — the data itself: <strong>Hosts</strong>, <strong>Names</strong>, <strong>Scans</strong>, <strong>Ingestion Results</strong> (analysts and above) and <strong>Scope</strong>.</li>
           <li><strong>Findings</strong> — what the engagement produces: <strong>Findings</strong> (with its Scanner observations view) and <strong>Reports</strong>, the client report (auditors and above).</li>
           <li><strong>Posture</strong> — the analytical roll-up: the <strong>Posture</strong> overview, plus <strong>Segments</strong> (per-site and per-subnet exposure and hygiene), <strong>Patterns</strong> (estate-wide weaknesses) and <strong>Evidence</strong> (what has been assessed, and the gaps).</li>
-          <li><strong>Workflows</strong> — agent-driven work: <strong>Agent Sessions</strong> (what agents are doing now, the tests each session proposed, and the controls to resume or end one), <strong>Proposals</strong> and <strong>Tool Activity</strong>. Tests themselves are on each host's page.</li>
+          <li><strong>Agents</strong> — agent-driven work: <strong>Agent Sessions</strong> (what agents are doing now, the tests each session proposed, and the controls to resume or end one), <strong>Proposals</strong> and <strong>Tool Activity</strong>. Tests themselves are on each host's page.</li>
           <li><strong>Collaboration</strong> — one page: host discussions and finding comments across the project, latest first.</li>
         </UnorderedList>
         <Para>

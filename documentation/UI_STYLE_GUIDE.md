@@ -174,6 +174,10 @@ Charts with real axes are drawn with Observable Plot (§35, adopted 5.307.0; ref
   - min/max width via `min-w-[…]` / `max-w-[…]`
   - truncation via `<TableCell className="truncate">`
   - collapse behind a detail surface when a column is low-value
+  - in a `DataTableShell` table: a pixel `size`, a share of the table through `meta: { width: '21%' }` (`columnWidth`; the Hosts list — spare width goes to the columns that would otherwise wrap, not to one column without bound), or unsized (`size` 150)
+- Fixed widths must never be able to add up to the whole content width: the one unsized column would get 0 px (Agent Sessions' SESSION column did at a 1,126 px window). Give the table a minimum width inside an `overflow-x-auto` wrapper so that column keeps a floor.
+- A row's key column (a finding's title, Operations' NEEDS) wraps to two lines (`line-clamp-2 break-words`, title kept) rather than truncating; an address never wraps (`whitespace-nowrap`) — the tag beside it wraps instead.
+- A measure's caption wraps; a link inside it is `whitespace-nowrap` and is never cut off.
 - Action columns must stay visible regardless of neighboring content length.
 - Cells containing long content must not rely on default browser table sizing.
 - Bulk text should not be shown fully inline in dense tables.

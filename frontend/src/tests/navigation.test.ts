@@ -126,6 +126,11 @@ describe('navigation manifest', () => {
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/test-plans');
     expect(NAV_PAGES.map((p) => p.path)).not.toContain('/executions');
     expect(HUBS.find((h) => h.id === 'workflows')!.defaultChildPath).toBe('/agent-activity');
+    // U11 — the hub holds only agent surfaces, so it is labelled "Agents";
+    // its id and path are unchanged so `/workflows` links keep working.
+    expect(HUBS.find((h) => h.id === 'workflows')!.label).toBe('Agents');
+    expect(HUBS.find((h) => h.id === 'workflows')!.path).toBe('/workflows');
+    expect(HUBS.map((h) => h.label)).not.toContain('Workflows');
     expect(tabs('collaboration')).toEqual(['Collaboration']);
     expect(tabs('settings')).toEqual(['Project', 'Scanner Integrations']);
     expect(tabs('administration')).toEqual(['All projects', 'System', 'Agent Feedback']);

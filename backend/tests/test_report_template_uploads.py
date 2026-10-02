@@ -320,6 +320,140 @@ def test_a_half_written_upload_is_never_used(root):
     assert _asset("logo")["present"] is False
 
 
+# --- two workers, one asset (review 2026-10-02, H3) -------------------------------
+#
+# Several API worker processes share the uploads volume.  `save` wrote
+# `<file>.tmp` and `<meta>.tmp` under fixed names: two uploads of one asset
+# shared them, so one rename took the file away from the other
+# (FileNotFoundError), or one upload's metadata was published beside the
+# other's bytes.  Threads stand in for the processes: the lock is `flock` on a
+# descriptor each call opens for itself, which excludes threads the same way.
+
+def _published(asset_id="logo"):
+    """(sha256 of the published bytes, sha256 the published metadata states),
+    or None when nothing is published."""
+    import hashlib
+    meta = store.uploads("pentest").get(asset_id)
+    if meta is None:
+        return None
+    return hashlib.sha256(meta["file"].read_bytes()).hexdigest(), meta["sha256"]
+
+
+def _leftovers():
+    return sorted(p.name for p in (store.root() / "pentest").iterdir() if p.name.endswith(".tmp"))
+
+
+def test_two_uploads_of_one_asset_at_once_both_succeed_and_agree(root, monkeypatch):
+    import threading
+    from pathlib import Path
+
+    # Both uploads have written their temporary file before either publishes:
+    # each thread waits once, at the first point where that is true — after
+    # the temporary write in the old code, before taking the lock in the new.
+    both_written = threading.Barrier(2)
+    waited = threading.local()
+
+    def wait_once():
+        if not getattr(waited, "done", False):
+            waited.done = True
+            both_written.wait(timeout=10)
+
+    write_bytes = Path.write_bytes
+
+    def write_then_wait(path, data):
+        result = write_bytes(path, data)
+        if path.name.endswith(".tmp"):
+            wait_once()
+        return result
+
+    monkeypatch.setattr(Path, "write_bytes", write_then_wait)
+    real_lock = getattr(store, "_publication_lock", None)
+    if real_lock is not None:
+        def lock_after_both_wrote(*args, **kwargs):
+            wait_once()
+            return real_lock(*args, **kwargs)
+        monkeypatch.setattr(store, "_publication_lock", lock_after_both_wrote)
+
+    one, two = png(680, 200), png(700, 210)
+    outcomes = []
+
+    def upload(data):
+        try:
+            meta, _ = store.save("pentest", _asset("logo"), data, uploaded_by="admin")
+            outcomes.append(meta["sha256"])
+        except Exception as exc:  # the defect was a FileNotFoundError here
+            outcomes.append(exc)
+
+    threads = [threading.Thread(target=upload, args=(data,)) for data in (one, two)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(20)
+    assert not any(t.is_alive() for t in threads)
+    assert not [o for o in outcomes if isinstance(o, Exception)], outcomes
+    assert len(outcomes) == 2
+
+    file_sha, meta_sha = _published()
+    assert file_sha == meta_sha, "the metadata describes the bytes that are published"
+    assert file_sha in outcomes
+    assert _leftovers() == []
+    # The lock file is not an upload, and does not change what is listed.
+    assert set(store.uploads("pentest")) == {"logo"}
+    assert set(store.overrides("pentest")) == {"logo"}
+
+
+def test_an_upload_racing_a_removal_ends_whole_or_gone(root):
+    import threading
+
+    one, two = png(680, 200), png(700, 210)
+    for _ in range(25):
+        store.save("pentest", _asset("logo"), one, uploaded_by="admin")
+        start = threading.Barrier(2)
+        errors = []
+
+        def run(action):
+            try:
+                start.wait(timeout=10)
+                action()
+            except Exception as exc:
+                errors.append(exc)
+
+        threads = [
+            threading.Thread(target=run, args=(
+                lambda: store.save("pentest", _asset("logo"), two, uploaded_by="admin"),)),
+            threading.Thread(target=run, args=(lambda: store.remove("pentest", "logo"),)),
+        ]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(20)
+        assert not errors, errors
+        published = _published()
+        if published is not None:  # the upload came second
+            assert published[0] == published[1]
+        else:  # the removal came second: neither the file nor its metadata
+            folder = store.root() / "pentest"
+            assert not (folder / "logo.json").exists() and not (folder / "logo.png").exists()
+        assert _leftovers() == []
+
+
+def test_a_failed_publication_leaves_no_temporary_file_and_the_previous_upload(root, monkeypatch):
+    import os
+
+    store.save("pentest", _asset("logo"), png(680, 200), uploaded_by="admin")
+    before = _published()
+
+    def refuse(src, dst):
+        raise OSError("disk says no")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "replace", refuse)
+        with pytest.raises(OSError):
+            store.save("pentest", _asset("logo"), png(700, 210), uploaded_by="admin")
+    assert _leftovers() == []
+    assert _published() == before
+
+
 # --- a real render (report-worker image: Quarto installed, templates mounted) ------
 
 def _shipped_root():

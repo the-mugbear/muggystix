@@ -127,34 +127,24 @@ def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ScopeHostBrief]
         return []
 
     host_ids = [h.id for h in host_rows]
-    port_count_rows = dict(
-        db.query(models.Port.host_id, func.count(models.Port.id))
-        .filter(models.Port.host_id.in_(host_ids), models.Port.state == "open")
-        .group_by(models.Port.host_id)
-        .all()
-    )
-    service_rows = (
-        db.query(models.Port.host_id, models.Port.service_name)
-        .filter(
-            models.Port.host_id.in_(host_ids),
-            models.Port.state == "open",
-            models.Port.service_name.isnot(None),
-        )
-        .distinct()
-        .all()
-    )
-    services_by_host: Dict[int, List[str]] = {}
-    for host_id, svc in service_rows:
-        services_by_host.setdefault(host_id, []).append(svc)
-
+    # ONE read of the open ports: the count and the service names are derived
+    # from these rows (they were a count query and a DISTINCT query over the
+    # same rows, three reads a chunk).  Protocol and id break the tie between
+    # tcp and udp on one port number, so the file is the same on every read.
     port_rows = (
         db.query(models.Port)
         .filter(models.Port.host_id.in_(host_ids), models.Port.state == "open")
-        .order_by(models.Port.host_id, models.Port.port_number)
+        .order_by(
+            models.Port.host_id, models.Port.port_number,
+            models.Port.protocol, models.Port.id,
+        )
         .all()
     )
     ports_by_host: Dict[int, List[ScopePortBrief]] = {}
+    services_by_host: Dict[int, set] = {}
     for p in port_rows:
+        if p.service_name is not None:
+            services_by_host.setdefault(p.host_id, set()).add(p.service_name)
         ports_by_host.setdefault(p.host_id, []).append(
             ScopePortBrief(
                 port=p.port_number,
@@ -172,8 +162,8 @@ def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ScopeHostBrief]
             host_id=h.id,
             ip_address=h.ip_address,
             hostname=h.hostname,
-            open_port_count=port_count_rows.get(h.id, 0),
-            services=sorted(services_by_host.get(h.id, [])),
+            open_port_count=len(ports_by_host.get(h.id, ())),
+            services=sorted(services_by_host.get(h.id, ())),
             open_ports=ports_by_host.get(h.id, []),
         )
         for h in host_rows

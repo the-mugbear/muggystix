@@ -212,6 +212,15 @@ REFERENCE_CASES = [
     ("![shot]\n\n[shot]: evidence:57", []),
     ("![a](evidence:57 \"t\" extra)", []),
     ("![a](EVIDENCE:57)", []),
+    # Review 2026-10-02 H5 — code is shown as typed, so a reference written
+    # in an inline code span or a fenced code block places nothing; one
+    # beside the code still does.
+    ("`![Example](evidence:57)`", []),
+    ("Write ``![Example](evidence:57)`` to place it.", []),
+    ("```\n![Example](evidence:57)\n```", []),
+    ("~~~markdown\n![Example](evidence:57)\n~~~\n\n![real](evidence:58)", [58]),
+    ("```\n![Example](evidence:57)", []),
+    ("`code` ![real](evidence:57) `more`", [57]),
 ]
 
 
@@ -422,6 +431,59 @@ def test_thirty_images_on_one_finding_each_land_in_exactly_one_place(client, db_
     assert [i["attachment_id"] for i in f["evidence"]] == ids[17:]
     assert f["placed"]["description"][str(ids[0])]["caption"] == "c" * 2000
     assert (summary["images"], summary["images_placed"], summary["images_unplaced"]) == (30, 17, 13)
+
+
+def test_an_example_written_in_code_places_nothing_and_the_image_stays_under_evidence(
+    client, db_session, test_project,
+):
+    """Review 2026-10-02 H5: `![Example](evidence:N)` in a code span or a
+    fenced block is printed as typed — no figure — so the ticked image must
+    still print in the trailing block, and may be deleted or un-ticked."""
+    finding = _finding(db_session, test_project, description="d", impact="i", recommendation="r")
+    shown_as_code = _image(client, test_project, finding, name="example.png")
+    fenced = _image(client, test_project, finding, name="fenced.png")
+    placed = _image(client, test_project, finding, name="real.png")
+    _set_text(
+        client, test_project, finding,
+        description=f"Type `![Example](evidence:{shown_as_code})` to place an image.\n\n![real](evidence:{placed})",
+        impact=f"```\n![Example](evidence:{fenced})\n```",
+    )
+    _, dataset, summary = _dataset(db_session, client, test_project)
+    f = dataset["findings"][0]
+    assert {field: sorted(ids) for field, ids in f["placed"].items()} == {"description": [str(placed)]}
+    assert [(i["attachment_id"], i["placed_in"]) for i in f["images"]] == [
+        (shown_as_code, []), (fenced, []), (placed, ["description"]),
+    ]
+    assert [i["attachment_id"] for i in f["evidence"]] == [shown_as_code, fenced]
+    assert (summary["images"], summary["images_placed"], summary["images_unplaced"]) == (3, 1, 2)
+    # The finding page says the same.
+    listed = _images(client, test_project, finding)
+    assert listed[shown_as_code]["placed_in"] == [] and listed[fenced]["placed_in"] == []
+    assert listed[placed]["placed_in"] == ["description"]
+    # A code-only mention protects nothing; the real placement still does.
+    assert _patch(client, test_project, shown_as_code, include_in_report=False).status_code == 200
+    assert _delete(client, test_project, shown_as_code).status_code == 204
+    assert _delete(client, test_project, fenced).status_code == 204
+    assert _delete(client, test_project, placed).status_code == 409
+
+
+def test_the_reviewers_literal_example_is_not_a_placement():
+    """The reproduction as reported (no database)."""
+    from types import SimpleNamespace
+    from app.services.report_text import REPORT_TEXT_FIELDS
+
+    literal = "`![Example](evidence:57)`"
+    finding = SimpleNamespace(**{f: literal if f == "description" else None for f in REPORT_TEXT_FIELDS})
+    attachment = SimpleNamespace(id=57, content_type="image/png", caption="Actual evidence", filename="proof.png")
+    assert report_images.normalise_references(literal) == literal
+    assert report_images.references_by_field(finding) == {}
+    assert report_images.fields_referencing(finding, 57) == []
+    images, placed, trailing = report_images.report_placement(finding, [attachment])
+    assert placed == {} and images[0]["placed_in"] == []
+    assert [i["attachment_id"] for i in trailing] == [57]
+    # A proposal whose text only SHOWS the syntax is not checked as a placement
+    # (no finding, no database: a real reference here would be a 422).
+    report_images.check_references(None, None, {"description": literal}, require_marked=True)
 
 
 # ---------------------------------------------------------------------------

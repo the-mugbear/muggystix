@@ -123,7 +123,7 @@ describe('Findings tab', () => {
     const second = screen.getByRole('link', { name: 'Weak TLS 1' }).closest('tr') as HTMLElement;
     // What is owed is said, in the order to act on — which report parts, how many proposals.
     expect(within(second).getByText('report text missing: impact, recommendation · 2 proposals to decide'))
-      .toHaveClass('truncate');
+      .toHaveClass('line-clamp-2');
     expect(second).toHaveTextContent('· 1 host');
     // No time recorded: a dash that says so, never an empty cell.
     expect(within(second).getByText('—')).toHaveAttribute('aria-label', 'waiting time not recorded');
@@ -138,12 +138,15 @@ describe('Findings tab', () => {
     expect(screen.getByRole('table').innerHTML).not.toMatch(/destructive|bg-warning|text-warning/);
   });
 
-  it('a 200-character title and need stay on the row’s one line', () => {
+  it('a 200-character title stays on one line; the need wraps to two before it is cut', () => {
     renderIt([finding(1, { title: `Title ${LONG}`, needs: [{ kind: 'missing_text', text: `needs ${LONG}` }] })]);
     const title = screen.getByRole('link', { name: `Title ${LONG}` });
     expect(title.closest('td')).toHaveClass('truncate');
     expect(title.closest('td')).toHaveAttribute('title', expect.stringContaining(`Title ${LONG}`));
-    expect(screen.getByText(`needs ${LONG}`)).toHaveClass('truncate');
+    // NEEDS is the point of the row (UX walkthrough U5): two lines, never one.
+    expect(screen.getByText(`needs ${LONG}`)).toHaveClass('line-clamp-2', 'break-words');
+    expect(screen.getByText(`needs ${LONG}`)).not.toHaveClass('truncate');
+    expect(screen.getByText(`needs ${LONG}`).closest('td')).not.toHaveClass('truncate');
     expect(screen.getByText(`needs ${LONG}`)).toHaveAttribute('title', `needs ${LONG}`);
   });
 
