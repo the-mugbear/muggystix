@@ -528,9 +528,12 @@ const Operations: React.FC = () => {
         </Alert>
       )}
 
-      {coverage && coverage.total_hosts === 0 && coverage.total_scopes === 0 && (
+      {/* 5.332.2 — "declared" is a subnet entry, not the scope row: every
+          project has its one (empty) scope from creation, and a new project
+          was told "Scope is registered — scan your registered scope". */}
+      {coverage && coverage.total_hosts === 0 && !coverage.scopes.some((s) => s.subnet_count > 0) && (
         <SetupBlock title="Welcome — let's set up this project">
-          This project has no scopes or scans yet. Start by registering the network ranges
+          This project has no scope entries or scans yet. Start by registering the network ranges
           you're authorized to assess — everything else (coverage, triage, tests, agent
           scanning) lights up once a scope exists.
           <div className="mt-sm flex flex-wrap gap-sm">
@@ -542,7 +545,7 @@ const Operations: React.FC = () => {
         </SetupBlock>
       )}
 
-      {coverage && coverage.total_scopes > 0 && coverage.total_hosts === 0 && (
+      {coverage && coverage.scopes.some((s) => s.subnet_count > 0) && coverage.total_hosts === 0 && (
         <SetupBlock title="Scope is registered — time to discover hosts">
           No hosts have been discovered yet. The fastest way to get started is to have your
           agent <strong className="text-foreground">scan</strong> your registered scope and

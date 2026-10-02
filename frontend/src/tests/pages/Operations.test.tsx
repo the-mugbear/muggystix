@@ -790,6 +790,17 @@ describe('Operations page', () => {
       expect(listCalls()).toEqual({ findings: 0, hosts: 0, tests: 0, changed: 0, pickup: 0 });
     });
 
+    // 5.332.2 — every project has its one scope row from creation; with no
+    // subnet in it, nothing is "registered" yet.
+    it('a project whose scope has no entries gets the welcome block, not "Scope is registered"', async () => {
+      mockedApi.getProjectCoverage.mockResolvedValue({
+        ...noHosts, scopes: [{ ...noHosts.scopes[0], subnet_count: 0, total_scoped_ips: 0 }],
+      });
+      renderPage();
+      expect(await screen.findByText(/Welcome — let's set up this project/)).toBeInTheDocument();
+      expect(screen.queryByText(/Scope is registered/)).not.toBeInTheDocument();
+    });
+
     it('a brand-new project gets the welcome block and no refresh chrome', async () => {
       mockedApi.getProjectCoverage.mockResolvedValue({ ...noHosts, total_scopes: 0, scopes: [] });
       renderPage();

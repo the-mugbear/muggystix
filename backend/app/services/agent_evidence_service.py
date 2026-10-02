@@ -380,6 +380,10 @@ def create_finding_from_evidence(
         finding = svc.create_finding(
             project_id=project_id, title=title, severity=severity, actor_id=actor_id,
             status=status, source="execution", summary=f"Created from evidence #{record.id}",
+            # The person who confirmed it owns it, as a promoted observation's
+            # finding does (`promote_vulnerability`): unowned, a finding made
+            # from a test result was on nobody's Operations list.
+            owner_id=actor_id,
         )
         names = {record.host_id: test.name_id} if test is not None and test.name_id else None
         svc._attach_hosts(finding, [record.host_id], names_by_host=names)

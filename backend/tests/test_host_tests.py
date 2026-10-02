@@ -388,6 +388,25 @@ def test_a_test_is_linked_to_the_observation_it_confirms_by_issue(client, db_ses
     assert client.get(f"{base(test_project)}/{row['id']}").json()["issue_title"] == "SMB Signing not required"
 
 
+def test_a_finding_made_from_an_unlinked_result_is_owned_by_who_made_it(
+    client, db_session, test_project, test_user, host,
+):
+    """Walkthrough 2026-10-02: created unowned, a finding a person had just
+    confirmed from their own test — with no report text yet — was on nobody's
+    Operations list.  A promoted observation's finding already goes to the
+    promoter (``promote_vulnerability``)."""
+    from app.db.models_findings import Finding
+
+    row = create(client, test_project, item(host))
+    result, _ = _result(client, test_project, row, summary="anonymous login accepted")
+    evidence_id = result.json()["evidence"]["id"]
+    made = client.post(f"/api/v1/projects/{test_project.id}/evidence/{evidence_id}/finding",
+                       json={"title": "Anonymous FTP login allowed", "severity": "medium"})
+    assert made.status_code == 201, made.text
+    finding = db_session.get(Finding, made.json()["finding_id"])
+    assert finding.owner_id == test_user.id == finding.created_by_id
+
+
 def test_promoting_a_linked_result_joins_the_issues_finding_instead_of_making_a_second(
     client, db_session, test_project, host,
 ):
