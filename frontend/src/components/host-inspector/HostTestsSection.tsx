@@ -16,7 +16,7 @@
  * — the next step must not be hidden behind a collapsed row.
  */
 import React, { useEffect, useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useLocation } from 'react-router-dom';
 import { Bot, ChevronDown, ChevronRight, ClipboardList, Loader2, MoreHorizontal, Plus, RefreshCw } from 'lucide-react';
 
 import {
@@ -49,7 +49,7 @@ import { Label } from '../ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../ui/select';
 import { Textarea } from '../ui/textarea';
 import { EvidenceItem } from './HostEvidenceSection';
-import { InspectorSection } from './InspectorSection';
+import { InspectorSection, openInspectorSection } from './InspectorSection';
 import { openIssue } from './VulnerabilityGroup';
 import {
   CopyButton,
@@ -273,10 +273,16 @@ export const HostTestRow: React.FC<{
   test: HostTest;
   ctl: HostTestsController;
   defaultOpen?: boolean;
+  /** The test a link brought the reader to (`#host-test-<id>`): marked, so it
+   *  is plain which of the host's tests they came for. */
+  linked?: boolean;
   onDirty?: (id: number, dirty: boolean) => void;
-}> = ({ test, ctl, defaultOpen = false, onDirty }) => {
+}> = ({ test, ctl, defaultOpen = false, linked = false, onDirty }) => {
   const needsDecision = (test.unpromoted_findings ?? 0) > 0;
   const [open, setOpen] = useState(defaultOpen || needsDecision);
+  // A link can arrive while the row is already mounted (the inspector stays
+  // mounted across hosts and hash changes).
+  useEffect(() => { if (defaultOpen) setOpen(true); }, [defaultOpen]);
   const [dismissing, setDismissing] = useState(false);
   const [reason, setReason] = useState('');
   const [saving, setSaving] = useState(false);
@@ -330,9 +336,17 @@ export const HostTestRow: React.FC<{
   return (
     <li
       id={`host-test-${test.id}`}
-      className="min-w-0 scroll-mt-16 border-b border-border py-xxs last:border-b-0"
+      className={cn(
+        'min-w-0 scroll-mt-16 border-b border-border py-xxs last:border-b-0',
+        linked && 'rounded bg-primary/10 px-xs ring-2 ring-inset ring-ring',
+      )}
       data-testid={`host-test-${test.id}`}
+      data-linked={linked ? 'true' : undefined}
+      aria-current={linked ? 'true' : undefined}
     >
+      {linked && (
+        <p className="pt-xxs text-caption font-medium text-primary">The test you opened</p>
+      )}
       <div className="flex min-w-0 items-center gap-xs">
         <button
           type="button"
@@ -502,16 +516,27 @@ const SectionBody: React.FC<{ ctl: HostTestsController; onDirtyChange?: (dirty: 
   useEffect(() => () => onDirtyChange?.(false), [onDirtyChange]);
 
   // A test linked by the URL (`#host-test-12`) is shown whatever its status.
+  // Re-read on every navigation: the inspector stays mounted across hosts, so
+  // a hash read once at mount pointed at the previous link's test.
+  const location = useLocation();
   const linkedId = useMemo(() => {
     const match = typeof window !== 'undefined' ? window.location.hash.match(/^#host-test-(\d+)$/) : null;
     return match ? Number(match[1]) : null;
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [location.key, location.hash]);
   const [filter, setFilter] = useState<Filter>(linkedId != null ? 'all' : 'active');
   const tests = ctl.tests;
   const loaded = tests !== null;
   useEffect(() => {
     if (linkedId == null || !loaded) return;
-    document.getElementById(`host-test-${linkedId}`)?.scrollIntoView?.({ block: 'center' });
+    // The section may be collapsed (a per-viewer preference) — a link to a
+    // test inside it must open it, or the reader lands on a host page with
+    // nothing pointing at what they came for.
+    setFilter('all');
+    openInspectorSection('host-detail-proposed-tests');
+    requestAnimationFrame(() => {
+      document.getElementById(`host-test-${linkedId}`)?.scrollIntoView?.({ block: 'center' });
+    });
   }, [linkedId, loaded]);
 
   // The weakness row's "open this test" (5.322.0): show it whatever the filter.
@@ -625,6 +650,7 @@ const SectionBody: React.FC<{ ctl: HostTestsController; onDirtyChange?: (dirty: 
                 test={test}
                 ctl={ctl}
                 defaultOpen={test.id === linkedId || test.id === openId}
+                linked={test.id === linkedId}
                 onDirty={onDirty}
               />
             ))}

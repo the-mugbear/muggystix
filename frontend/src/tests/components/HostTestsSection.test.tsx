@@ -182,6 +182,27 @@ describe('HostTestsSection — the list', () => {
     expect(await screen.findByText('The portal is exposed.')).toBeInTheDocument();
   });
 
+  it('a linked test is shown and marked even when the reader keeps the section collapsed', async () => {
+    // Owner, 2026-10-02: a row opened from Operations landed on the host page
+    // with nothing saying which test it was for; with the Tests section
+    // collapsed (a per-viewer preference) the test was not on the page at all.
+    window.localStorage.setItem('bluestick.inspector.collapsed', JSON.stringify(['host-detail-proposed-tests']));
+    window.location.hash = '#host-test-3';
+    api.listHostTests.mockResolvedValue(page([
+      test({ id: 2, description: 'Another test' }),
+      test({ id: 3, description: 'The one I came for' }),
+    ]));
+    try {
+      renderSection();
+      expect(await screen.findByText('The one I came for')).toBeInTheDocument();
+      expect(rowOf(3)).toHaveAttribute('data-linked', 'true');
+      expect(within(rowOf(3)).getByText('The test you opened')).toBeInTheDocument();
+      expect(rowOf(2)).not.toHaveAttribute('data-linked');
+    } finally {
+      window.localStorage.removeItem('bluestick.inspector.collapsed');
+    }
+  });
+
   it('opens a test asked for from its weakness, whatever the filter shows', async () => {
     api.listHostTests.mockResolvedValue(page([test({ id: 3, status: 'done', description: 'Finished one' })]));
     renderSection();
