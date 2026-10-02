@@ -1189,29 +1189,6 @@ const Scopes: React.FC = () => {
           </PostureSection>
         )}
 
-        {coverage?.top_technologies && coverage.top_technologies.length > 0 && (
-          <PostureSection
-            title={<span>Technologies observed</span>}
-            description="From httpx / EyeWitness / Nikto imports. Each opens the hosts running it."
-          >
-            <p className="flex flex-wrap gap-x-sm gap-y-xxs text-metadata">
-              {coverage.top_technologies.map((t) => (
-                <Link
-                  key={t.name}
-                  to={`/hosts?tech=${encodeURIComponent(t.name)}`}
-                  className="text-info hover:underline"
-                >
-                  {/* v5.288.0 — "Nginx 1.24.0 · 1 host": a bare count read
-                      as part of the version. */}
-                  {t.name}{' '}
-                  <span className="tabular-nums text-muted-foreground">
-                    · {t.host_count.toLocaleString()} host{t.host_count === 1 ? '' : 's'}
-                  </span>
-                </Link>
-              ))}
-            </p>
-          </PostureSection>
-        )}
       </div>
 
       {exportScopeId !== null && (

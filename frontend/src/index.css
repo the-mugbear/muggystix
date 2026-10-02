@@ -169,6 +169,18 @@
 @keyframes brand-loader-scan { 0% { transform: translateY(-52%) scaleY(0.82); opacity: 0.5; } 50% { transform: translateY(52%) scaleY(1); opacity: 1; } 100% { transform: translateY(-52%) scaleY(0.82); opacity: 0.5; } }
 
 /*
+ * A notice the reader must not miss draws the eye ONCE when it appears
+ * (5.332.1 — the Hosts list's "Project default view applied" banner): two
+ * soft rings in the warning colour, then still.  Never looping; the
+ * reduced-motion rule below removes it.
+ */
+@keyframes nm-attention-once {
+  0%, 50% { box-shadow: 0 0 0 0 hsl(var(--warning) / 0.55); }
+  45%, 100% { box-shadow: 0 0 0 10px hsl(var(--warning) / 0); }
+}
+.attention-once { animation: nm-attention-once 1.8s ease-out 0.2s 1 both; }
+
+/*
  * Reduced-motion respect (beta.5 audit fix).  When the user has set
  * `prefers-reduced-motion: reduce` at the OS level, blanket-disable
  * the global animation + transition utilities.  Critical motion

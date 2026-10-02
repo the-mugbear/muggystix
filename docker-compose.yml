@@ -140,7 +140,7 @@ services:
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
       APP_VERSION: ${APP_VERSION:-2.452.1}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.332.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.332.1}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -316,7 +316,7 @@ services:
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.332.0}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.332.1}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

@@ -148,15 +148,18 @@ describe('Scopes page — screenshot review (v5.288.0)', () => {
     expect(screen.getByRole('button', { name: 'Edit labels for 10.77.2.0/24' })).toBeInTheDocument();
   });
 
-  it('separates a technology\'s host count from its version', async () => {
+  // 5.332.1 (owner, 2026-10-02) — the page is about what is authorised;
+  // "Technologies observed" was removed from it.
+  it('lists no technologies: the page is about scope', async () => {
     mocked.getScopeCoverage.mockResolvedValue({
       ...coverage,
       top_technologies: [{ name: 'Nginx 1.24.0', host_count: 1 }, { name: 'React', host_count: 3 }],
     });
     renderPage();
-    const link = await screen.findByRole('link', { name: /Nginx 1\.24\.0/ });
-    expect(link).toHaveTextContent('Nginx 1.24.0 · 1 host');
-    expect(screen.getByRole('link', { name: /React/ })).toHaveTextContent('React · 3 hosts');
+    await screen.findByText('Subnets and addresses');
+    await waitFor(() => expect(mocked.getScopeCoverage).toHaveBeenCalled());
+    expect(screen.queryByText('Technologies observed')).not.toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: /Nginx 1\.24\.0/ })).not.toBeInTheDocument();
   });
 
   // v5.289.0 — the edit inputs sat in the ~75px Description column and a

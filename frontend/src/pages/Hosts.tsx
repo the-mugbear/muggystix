@@ -1605,10 +1605,14 @@ export default function Hosts() {
             silently; the way out is one click. */}
         {/* UX review 2026-09-24 — a muted caption line was easy to miss while
             the list silently held 157 of 416 hosts: a banner now. */}
+        {/* 5.332.1 (owner, 2026-10-02) — the default view stays: it is how a
+            project admin steers the team. The banner draws the eye once as it
+            appears (`attention-once`) and carries a solid edge, so the reader
+            does not take the filtered count for the project's. */}
         {appliedProjectDefault && (
           <div
             role="status"
-            className="flex min-w-0 items-center gap-sm rounded-control border border-warning/40 bg-warning/10 px-sm py-xs text-metadata text-foreground"
+            className="attention-once flex min-w-0 items-center gap-sm rounded-control border border-l-4 border-warning/40 border-l-warning bg-warning/10 px-sm py-xs text-metadata text-foreground"
             data-testid="hosts-project-default-banner"
           >
             <Star className="size-4 shrink-0 fill-current text-warning" aria-hidden />

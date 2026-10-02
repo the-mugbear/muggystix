@@ -371,6 +371,7 @@ Example:
 - Use the existing animation utilities (`animate-in`, `fade-in-0`, `slide-in-from-right`, `zoom-in-95`) defined in `src/index.css` — they run 180ms (220ms in / 200ms out for the `SideSheet` edge slides) with the default easing. `cubic-bezier(0.2, 0, 0, 1)` is the transition token (`motion.standard` in `theme/tokens.ts`), for CSS transitions.
 - Avoid excessive animation, large movement, or repeated micro-animations in dense workflows.
 - Motion must not delay common actions or obscure data changes.
+- A notice that changes what the reader is looking at without their asking (the Hosts list's "Project default view applied" banner) may draw the eye ONCE as it appears: `attention-once` (`src/index.css`, two soft rings in the warning colour, 1.8 s, never looping, removed under reduced motion), with a solid coloured edge that stays. Do not use it for ordinary status or success messages.
 
 ### 24. Product Aesthetic
 - Prefer a restrained "operations console" visual language over generic consumer-app styling.
