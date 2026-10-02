@@ -16,7 +16,7 @@
  *
  * 5.331.0 — it is the content of Operations' "Changed since review" tab: the
  * tab is the heading and carries the count (pinned in `Operations.test.tsx`),
- * the list is one PAGE ("1–25 of N", previous / next — no "3 of 26"), and the
+ * the list is one PAGE ("1–10 of N", previous / next — no "3 of 26"), and the
  * panel has the three states every tab has: loading, could not be checked,
  * empty.
  */

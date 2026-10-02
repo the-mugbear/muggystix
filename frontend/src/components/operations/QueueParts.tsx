@@ -6,7 +6,7 @@
  * footer, the one set of states, the one bulk bar and the one selection rule
  * its tabs use:
  *
- *  - `PagedFooter` — "1–25 of N", previous / next, and — only where a page
+ *  - `PagedFooter` — "1–10 of N", previous / next, and — only where a page
  *    lists EXACTLY this list — one "Open … in Hosts" link.  No "Show more",
  *    no samples.
  *  - `ListBody` — the panel's states: loading (a skeleton; the tab bar stays),
@@ -40,7 +40,7 @@ export interface Pager {
   onPage: (page: number) => void;
 }
 
-/** "1–25 of 112" — the rows on screen, by position in the whole list. */
+/** "1–10 of 112" — the rows on screen, by position in the whole list. */
 export const pageRange = (pager: Pager, shown: number): string => {
   const first = pager.page * pager.pageSize + 1;
   const last = pager.page * pager.pageSize + shown;

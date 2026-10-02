@@ -716,8 +716,8 @@ project, and the same host could appear three times.  The shape is:
   second number separately ("Tests 40 + 15 to claim") and the panel says which
   number is which.
 - **One list on screen, complete, paged.**  No samples, no "Show N more".  One
-  footer on every tab (`QueueParts.PagedFooter`): "1–25 of N", previous / next,
-  25 rows a page.  It carries ONE link to another page, and only when that
+  footer on every tab (`QueueParts.PagedFooter`): "1–10 of N", previous / next,
+  10 rows a page (owner, 2026-10-02: 25 still read as overwhelming).  It carries ONE link to another page, and only when that
   page lists EXACTLY the tab's list ("Open all N in Hosts"); a link to a wider
   list says so in its label, and a tab with no exact list has no link.
 - **Counts and rows are separate requests.**  The counts come from one light

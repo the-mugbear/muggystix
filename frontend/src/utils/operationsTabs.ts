@@ -19,7 +19,7 @@ export const OPERATIONS_TAB_LABEL: Record<OperationsTab, string> = {
 };
 
 /** Rows per page, on every tab. */
-export const OPERATIONS_PAGE_SIZE = 25;
+export const OPERATIONS_PAGE_SIZE = 10;
 
 /** The three kinds of test the Tests tab lists — a test is under ONE, its
  *  strongest reason. */

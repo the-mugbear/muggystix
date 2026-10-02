@@ -10,7 +10,7 @@
  *   blocked           stopped imports, with the action that unblocks them
  *   tab bar           Findings · Hosts · Tests · Changed since review · Pick up,
  *                     each with its count
- *   the one list      the selected tab's full table, 25 rows a page
+ *   the one list      the selected tab's full table, 10 rows a page
  *   Your agent sessions       one line, the reader's own sessions
  *
  * It was six lists stacked at one weight — "My work" with five groups of

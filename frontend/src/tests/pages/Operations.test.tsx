@@ -506,7 +506,7 @@ describe('Operations page', () => {
       expect(router.state.location.search).toBe('?tab=tests&tier=2&kind=triage');
       expect(screen.getByRole('button', { name: /^Free to claim/ })).toHaveAttribute('aria-pressed', 'true');
       await waitFor(() => expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(
-        'triage', expect.objectContaining({ offset: 0, limit: 25 }),
+        'triage', expect.objectContaining({ offset: 0, limit: 10 }),
       ));
     });
 
@@ -572,24 +572,24 @@ describe('Operations page', () => {
   });
 
   describe('the list on screen', () => {
-    it('a tab pages through its whole list: next asks the server for the next 25', async () => {
+    it('a tab pages through its whole list: next asks the server for the next 10', async () => {
       withWork();
       renderPage('/operations?tab=tests');
       await screen.findByRole('table', { name: 'Tests to do' });
-      expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(null, expect.objectContaining({ offset: 0, limit: 25 }));
+      expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(null, expect.objectContaining({ offset: 0, limit: 10 }));
       expect(screen.getByText('1–2 of 55')).toBeInTheDocument();
-      fireEvent.click(screen.getByRole('button', { name: 'Next 25 tests' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Next 10 tests' }));
       await waitFor(() => expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(
-        null, expect.objectContaining({ offset: 25, limit: 25 }),
+        null, expect.objectContaining({ offset: 10, limit: 10 }),
       ));
-      expect(await screen.findByText('26–27 of 55')).toBeInTheDocument();
+      expect(await screen.findByText('11–12 of 55')).toBeInTheDocument();
     });
 
     it('the Pick up tier lives in the URL: read on arrival, written on a click, and the list follows', async () => {
       withWork();
       const router = renderRouted('/operations?tab=pickup&tier=2');
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenCalledWith(
-        2, expect.objectContaining({ offset: 0, limit: 25 }),
+        2, expect.objectContaining({ offset: 0, limit: 10 }),
       ));
       const chip = await screen.findByRole('button', { name: /Critical vulnerability/ });
       expect(chip).toHaveAttribute('aria-pressed', 'true');
@@ -597,7 +597,7 @@ describe('Operations page', () => {
       expect(await screen.findByText('1–1 of 30')).toBeInTheDocument();
       fireEvent.click(screen.getByRole('button', { name: /Exploit available/ }));
       await waitFor(() => expect(mockedApi.getInvestigationQueue).toHaveBeenLastCalledWith(
-        3, expect.objectContaining({ offset: 0, limit: 25 }),
+        3, expect.objectContaining({ offset: 0, limit: 10 }),
       ));
       expect(router.state.location.search).toBe('?tab=pickup&tier=3');
       await waitFor(() => expect(screen.getByRole('button', { name: /Exploit available/ })).toHaveAttribute('aria-pressed', 'true'));
