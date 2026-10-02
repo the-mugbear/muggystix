@@ -574,7 +574,13 @@ function App() {
                       <Route
                         path="/integrations"
                         element={
-                          <ProtectedRoute requiredRole="analyst">
+                          /* viewer — integrations are ACCOUNT-level and their
+                             list is open to every signed-in user; `analyst`
+                             here is the PROJECT role and refused a viewer of
+                             the selected project a page listing their own
+                             integrations.  Writes need the global admin: the
+                             page hides them for everyone else. */
+                          <ProtectedRoute requiredRole="viewer">
                             <IntegrationSettings />
                           </ProtectedRoute>
                         }
@@ -582,12 +588,12 @@ function App() {
                       <Route
                         path="/project-settings"
                         element={
-                          /* analyst — kept in sync with the Layout nav
-                             entry and the ProjectSelector "Manage" item so
-                             all three gate /project-settings identically
-                             and the route is never reachable from a path
-                             the IA says shouldn't expose it. */
-                          <ProtectedRoute requiredRole="analyst">
+                          /* viewer — a page follows the server's READ rule
+                             (style guide §40): every member reads the
+                             project's details, members and tags, and the page
+                             is read-only by `my_role`.  Kept in sync with the
+                             nav entry (tests/navigation.test.ts). */
+                          <ProtectedRoute requiredRole="viewer">
                             <ProjectSettings />
                           </ProtectedRoute>
                         }

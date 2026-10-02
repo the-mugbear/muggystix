@@ -9,7 +9,7 @@ import logging
 from typing import Iterable, List, Optional, Set, Tuple
 from datetime import datetime, timezone
 from sqlalchemy.orm import Session
-from sqlalchemy import func
+from sqlalchemy import func, select
 
 from app.db.models_project import (
     Notification, NoteMention, Project, ProjectMembership,
@@ -140,9 +140,12 @@ class NotificationService:
             .all()
         )
 
-    def _current_members(self, project_id: int, user_ids: Iterable[int]) -> Set[int]:
+    def current_members(self, project_id: int, user_ids: Iterable[int]) -> Set[int]:
         """Those of ``user_ids`` who are active and hold a membership of the
-        project NOW — the one recipient filter for note notifications."""
+        project NOW — the one recipient filter for notifications sent to
+        people because of something they did earlier (wrote in a thread,
+        follow a host, authored or own a finding).  A global admin with no
+        membership row is not a member here."""
         ids = set(user_ids)
         if not ids:
             return set()
@@ -296,7 +299,7 @@ class NotificationService:
             return []
         # Only current, active members of this project: someone removed from
         # the project must not keep receiving its note bodies.
-        recipients = self._current_members(project.id, recipients)
+        recipients = self.current_members(project.id, recipients)
 
         ctx = self._note_context(note)
         verb = "replied" if note.parent_id is not None else "commented"
@@ -353,7 +356,7 @@ class NotificationService:
         # A follow row outlives a membership, so someone removed from the
         # project kept receiving the body of every new note on hosts they had
         # reviewed.
-        follower_ids = self._current_members(project.id, follower_ids)
+        follower_ids = self.current_members(project.id, follower_ids)
         if not follower_ids:
             return []
 
@@ -565,7 +568,9 @@ class NotificationService:
         self.db.add(notification)
         return notification
 
-    def notify_host_tests_assigned(self, tests: Iterable, actor_id: Optional[int]) -> List[Notification]:
+    def notify_host_tests_assigned(
+        self, tests: Iterable, actor_id: Optional[int], agent_session_id: Optional[int] = None,
+    ) -> List[Notification]:
         """Tell each person the host tests just assigned to them (review
         2026-10-01 B9 — assigning a test told nobody).
 
@@ -575,8 +580,17 @@ class NotificationService:
         is ``host_test`` and ``source_id`` the first test; ``host_id`` is set
         when every test is on one host, so the notification opens that host's
         Tests section — with several hosts it is null and the page sends the
-        person to their work list.  The caller commits."""
+        person to their work list.  The caller commits.
+
+        ``agent_session_id`` — the tests were proposed by that agent session.
+        An agent may propose its 200 tests in 200 calls, so the unit is then
+        the SESSION, not the call: the assignee's unread notification for the
+        session is updated to cover everything it has given them since (as a
+        run's proposals are one notification per finding author), and a new
+        one starts only after they read it.  A person assigning by hand keeps
+        one notification per action."""
         from app.db.models import Host
+        from app.db.models_host_tests import HostTest
 
         per_user: dict = {}
         for test in tests:
@@ -587,6 +601,43 @@ class NotificationService:
         if not per_user:
             return []
         actor = self.db.get(User, actor_id) if actor_id else None
+        # The session's unread notification per assignee, and the tests it now
+        # covers: the session's tests for that person from the notification's
+        # first test on.  The notification has no session column — it is the
+        # session's because its ``source_id`` is one of the session's tests.
+        current: dict = {}
+        if agent_session_id is not None:
+            session_tests = select(HostTest.id).where(HostTest.agent_session_id == agent_session_id)
+            for uid in list(per_user):
+                existing = (
+                    self.db.query(Notification)
+                    .filter(
+                        Notification.user_id == uid, Notification.type == "assignment",
+                        Notification.source_type == "host_test",
+                        Notification.source_id.in_(session_tests),
+                        Notification.is_read.is_(False),
+                    )
+                    .order_by(Notification.id.desc())
+                    # Two calls of one run: the second waits, then counts the
+                    # first's tests (a new statement sees its commit).
+                    .with_for_update()
+                    .first()
+                )
+                if existing is None:
+                    continue
+                covered = (
+                    self.db.query(HostTest)
+                    .filter(
+                        HostTest.agent_session_id == agent_session_id,
+                        HostTest.assigned_to_id == uid,
+                        HostTest.id >= existing.source_id,
+                    )
+                    .order_by(HostTest.id)
+                    .all()
+                )
+                if covered:
+                    current[uid] = existing
+                    per_user[uid] = covered
         host_ids = {t.host_id for rows in per_user.values() for t in rows}
         addresses = dict(self.db.query(Host.id, Host.ip_address).filter(Host.id.in_(host_ids)).all())
         notifications = []
@@ -606,18 +657,17 @@ class NotificationService:
             if len(what) > 160:
                 what = what[:159] + "…"
             more = f" (and {len(rows) - 1} more)" if len(rows) > 1 else ""
-            notification = Notification(
-                user_id=uid,
-                project_id=first.project_id,
-                type="assignment",
-                title=title[:255],
-                body=f"{display_name(actor)} assigned you: {what}{more}",
-                source_type="host_test",
-                source_id=first.id,
-                host_id=one_host,
-                actor_id=actor_id,
-            )
-            self.db.add(notification)
+            notification = current.get(uid)
+            if notification is None:
+                notification = Notification(
+                    user_id=uid, project_id=first.project_id, type="assignment",
+                    source_type="host_test", actor_id=actor_id,
+                )
+                self.db.add(notification)
+            notification.title = title[:255]
+            notification.body = f"{display_name(actor)} assigned you: {what}{more}"
+            notification.source_id = first.id
+            notification.host_id = one_host
             notifications.append(notification)
         return notifications
 

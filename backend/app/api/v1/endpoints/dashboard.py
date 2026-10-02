@@ -3,7 +3,7 @@ from typing import Dict
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session, joinedload
 from sqlalchemy import func, desc, case
-from app.db.session import get_db
+from app.db.session import get_db, is_statement_timeout
 from app.db import models
 from app.schemas.schemas import (
     DashboardStats,
@@ -30,6 +30,20 @@ import logging
 logger = logging.getLogger(__name__)
 
 router = APIRouter(dependencies=[Depends(get_current_user)])
+
+
+def _recover_or_reraise(db: Session, exc: Exception) -> None:
+    """For a section that is allowed to fail without failing the page.
+
+    A statement the API timeout cancelled is not such a failure: re-raise it,
+    and ``get_db`` answers 503.  Anything else from the database has aborted
+    the transaction, so roll it back — otherwise the next section's first
+    query fails with "current transaction is aborted" and the page answers
+    500 for a section that was meant to be optional.
+    """
+    if is_statement_timeout(exc):
+        raise exc
+    db.rollback()
 
 @router.get(
     "/stats",
@@ -210,6 +224,7 @@ def get_dashboard_stats(
         subnet_stats.sort(key=lambda x: (x.utilization_percentage, x.host_count), reverse=True)
 
     except Exception as e:
+        _recover_or_reraise(db, e)
         logger.error(f"Error calculating subnet statistics: {e}")
         subnet_stats = []
 
@@ -229,6 +244,7 @@ def get_dashboard_stats(
             hosts_by_severity=vuln_data.get('hosts_by_severity', {}),
         )
     except Exception as e:
+        _recover_or_reraise(db, e)
         logger.error(f"Error getting vulnerability statistics: {e}")
 
     note_activity = None
@@ -256,6 +272,7 @@ def get_dashboard_stats(
             ],
         )
     except Exception as e:
+        _recover_or_reraise(db, e)
         logger.error(f"Error gathering note activity: {e}")
 
     return DashboardStats(

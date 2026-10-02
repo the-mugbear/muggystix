@@ -751,7 +751,7 @@ const Names: React.FC = () => {
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : rows.length,
     (i) => setSelectedId(rows[i].id),
-    { resetKey: `${page}|${state}|${debouncedSearch}` },
+    { resetKey: `${page}|${state}|${debouncedSearch}`, getId: (i) => rows[i]?.id },
   );
 
   return (

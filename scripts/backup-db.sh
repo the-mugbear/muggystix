@@ -39,10 +39,15 @@
 #                            lowered BACKUP_KEEP — is reported, not deleted.
 #
 # What "success" means (exit 0): the database artifact was written AND read
-# back (pg_restore --list for a dump, a gzip/tar listing for a snapshot), and
-# the uploads archive was written and read back.  Everything is written mode
-# 0600, owned by the user running the script: a dump holds password hashes,
-# TOTP ciphertext and client data.
+# back TO ITS END (pg_restore -f /dev/null for a dump — every data block is
+# decompressed and parsed; a gzip/tar listing for a snapshot), and the uploads
+# archive was written and read back.  The .meta beside each backup records the
+# size (bytes=) and SHA-256 (sha256=) of the artifact, and of the uploads
+# archive (uploads_bytes= / uploads_sha256=): restore-db.sh compares them
+# before it touches the database, so a file cut short or altered on the way
+# to another host is refused.  Everything is written mode 0600, owned by the
+# user running the script: a dump holds password hashes, TOTP ciphertext and
+# client data.
 #
 # A logical backup (.dump) is portable and supports cross-version
 # restore — the backend's boot-time `alembic upgrade head` migrates a
@@ -83,7 +88,7 @@ while [[ $# -gt 0 ]]; do
             shift
             ;;
         -h|--help)
-            sed -n '2,53p' "$0"
+            sed -n '2,58p' "$0"
             exit 0
             ;;
         *)
@@ -219,6 +224,14 @@ archive_is_readable() {
     tar tzf "$1" >/dev/null 2>&1
 }
 
+# Size and SHA-256 of a finished artifact, for the .meta.
+file_bytes() {
+    stat -c %s "$1" 2>/dev/null || wc -c < "$1" | tr -d ' '
+}
+file_sha256() {
+    _sha256_hex < "$1" 2>/dev/null || echo unknown
+}
+
 do_pgdump() {
     local out="$BACKUP_DIR/nm-pgdump-$TS.dump"
     local meta="$out.meta"
@@ -235,15 +248,30 @@ do_pgdump() {
         return 1
     fi
 
-    # Read it back.  A non-empty file is not a restorable one: a dump cut
-    # short by a full disk or a dropped connection has a header and no table
-    # of contents.  pg_restore --list parses the archive without touching any
-    # database (review 2026-10-01 B11).
+    # Read it back — all of it.  A non-empty file is not a restorable one.
+    #
+    # `pg_restore --list` alone proves little: it reads the table of contents,
+    # which pg_dump writes at the FRONT of a custom-format archive, before any
+    # table data.  A dump cut to half its size by a full disk still lists
+    # every entry (checked on a real dump: 1050 of 1050).  So after the list —
+    # kept for the entry count and the clearer message when the header itself
+    # is bad — the whole archive is converted to SQL and thrown away
+    # (`-f /dev/null`): pg_restore decompresses and parses every data block
+    # and fails with "could not read from input file: end of file" on a
+    # truncated one.  No database is touched (branch review S1).
     local entries
     if ! entries="$($DC exec -T db pg_restore --list < "$out" 2>/dev/null | grep -c '^[0-9]')" \
         || [[ "${entries:-0}" -eq 0 ]]; then
         print_error "The dump could not be read back (pg_restore --list) — it is NOT a usable backup."
         print_error "Check free disk space in $BACKUP_DIR and re-run."
+        rm -f "$out"
+        return 1
+    fi
+    print_info "Verifying the dump by reading it to its end..."
+    if ! $DC exec -T db pg_restore -f /dev/null < "$out" >/dev/null 2>&1; then
+        print_error "The dump is INCOMPLETE or corrupt: pg_restore could not read it to its end"
+        print_error "(its table of contents lists $entries entries, but the data behind them is not all there)."
+        print_error "It is NOT a usable backup and was removed. Check free disk space in $BACKUP_DIR and re-run."
         rm -f "$out"
         return 1
     fi
@@ -263,11 +291,13 @@ do_pgdump() {
         echo "alembic_revision=$rev"
         echo "app_version=$(env_val APP_VERSION)"
         echo "key_fingerprint=$(key_fingerprint || echo unknown)"
-        echo "verified=pg_restore --list ($entries entries)"
+        echo "verified=pg_restore full read ($entries entries)"
+        echo "bytes=$(file_bytes "$out")"
+        echo "sha256=$(file_sha256 "$out")"
     } > "$meta"
 
     print_success "Backup written: $out ($(du -h "$out" | cut -f1))"
-    print_success "Verified: pg_restore reads its table of contents ($entries entries)."
+    print_success "Verified: pg_restore read all $entries entries and their data to the end of the file."
     print_info    "Schema revision: $rev"
     META_FILE="$meta"
     DB_ARTIFACT="$out"
@@ -312,7 +342,11 @@ backup_uploads() {
         return 1
     fi
     chmod 600 "$BACKUP_DIR/$out"
-    echo "uploads_archive=$out" >> "$meta"
+    {
+        echo "uploads_archive=$out"
+        echo "uploads_bytes=$(file_bytes "$BACKUP_DIR/$out")"
+        echo "uploads_sha256=$(file_sha256 "$BACKUP_DIR/$out")"
+    } >> "$meta"
     print_success "Uploads archived: $BACKUP_DIR/$out ($(du -h "$BACKUP_DIR/$out" | cut -f1))"
 }
 
@@ -346,6 +380,8 @@ do_volume_tar() {
         echo "volume=$vol"
         echo "key_fingerprint=$(key_fingerprint || echo unknown)"
         echo "verified=tar listing"
+        echo "bytes=$(file_bytes "$BACKUP_DIR/$out")"
+        echo "sha256=$(file_sha256 "$BACKUP_DIR/$out")"
     } > "$BACKUP_DIR/$out.meta"
     META_FILE="$BACKUP_DIR/$out.meta"
     DB_ARTIFACT="$BACKUP_DIR/$out"

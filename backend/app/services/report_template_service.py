@@ -9,6 +9,7 @@ A folder is a template when it holds ``template.json``:
       "description": "…",
       "entry": "report.qmd",
       "formats": ["html", "docx", "qmd"],
+      "images": {"fields": "all", "trailing": true},
       "postprocess": {"docx": "scripts/fix-docx-report.py"},
       "assets": [{"id": "logo", "path": "img/logo.png", "label": "Company logo",
                   "description": "…where it appears…", "required": false,
@@ -20,6 +21,12 @@ Each is reported with ``present`` so the Reports page can say which are
 installed before a report is generated; a REQUIRED one that is missing blocks
 preview, issue and render.  Validation lives in ``quarto_render`` (the renderer
 stays standalone for template authors).
+
+``images`` says which evidence images the template prints — the written
+fields whose placed images it prints, and whether it prints the rest in a
+trailing block (``_image_declaration``).  It is what the report page quotes;
+what a given report prints is measured from a fill (``printed_parts``), and
+``image_declaration_problem`` says when the two disagree.
 
 Templates come from the repository, never from users: nothing here accepts an
 uploaded template, and a name is only ever resolved to a folder directly under
@@ -44,6 +51,7 @@ from typing import Dict, List, Optional
 from app.core.config import settings
 from app.services import quarto_render, report_scope
 from app.services import template_asset_store as asset_store
+from app.services.report_text import REPORT_TEXT_FIELDS
 
 _NAME = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 # A template that still lists "pdf" (removed v2.407.0) simply loses it.
@@ -76,6 +84,17 @@ class ReportTemplate:
     # Whether the template prints how each finding was confirmed (its
     # evidence records).  Opt-in: only a literal ``true`` in template.json.
     evidence_records: bool = False
+    # Which evidence images the template prints (review 2026-10-01 S2), from
+    # template.json → "images": the written fields whose placed images it
+    # prints, and whether it prints the rest in a trailing evidence block.
+    # What the report page tells an author; what a given report prints is
+    # measured from a fill (``printed_parts``).
+    image_fields: tuple = REPORT_TEXT_FIELDS
+    image_trailing: bool = True
+
+    @property
+    def images(self) -> dict:
+        return {"fields": list(self.image_fields), "trailing": self.image_trailing}
 
     def as_dict(self) -> dict:
         return {
@@ -84,6 +103,7 @@ class ReportTemplate:
             "scope_inline_max": self.scope_inline_max,
             "scope_domains_inline_max": self.scope_domains_inline_max,
             "evidence_records": self.evidence_records,
+            "images": self.images,
         }
 
     def missing_required_assets(self) -> List[dict]:
@@ -140,12 +160,112 @@ def _load(folder: Path) -> ReportTemplate:
                 "or null for a template that does not print the scope."
             )
         cutoffs[key] = value
+    image_fields, image_trailing = _image_declaration(folder.name, data.get("images"))
     return ReportTemplate(
         name=folder.name, path=folder, title=str(data.get("title") or folder.name),
         description=str(data.get("description") or ""), entry=entry, formats=formats,
         postprocess=post, assets=assets,
-        evidence_records=data.get("evidence_records") is True, **cutoffs,
+        evidence_records=data.get("evidence_records") is True,
+        image_fields=image_fields, image_trailing=image_trailing, **cutoffs,
     )
+
+
+def _image_declaration(name: str, declared) -> tuple:
+    """``template.json`` → ``"images": {"fields": …, "trailing": …}`` as
+    ``(fields, trailing)``.
+
+    ``fields``: ``"all"``, or a list of the written fields whose placed images
+    the template prints (``[]``: none).  ``trailing``: whether it prints the
+    images no field places (a loop over ``f.evidence`` with ``image(e)``).
+    Left out entirely, a template is taken to print every image — placed ones
+    in every field and the rest in a trailing block — which is what a
+    template written before the key existed was assumed to do."""
+    if declared is None:
+        return tuple(REPORT_TEXT_FIELDS), True
+    problem = (
+        f"{name}: template.json: images must be {{\"fields\": \"all\" or a list of "
+        f"{', '.join(REPORT_TEXT_FIELDS)}, \"trailing\": true or false}}"
+    )
+    if not isinstance(declared, dict) or set(declared) - {"fields", "trailing"}:
+        raise TemplateError(problem + ".")
+    if "fields" not in declared or "trailing" not in declared:
+        raise TemplateError(problem + " — both keys, so nothing is assumed.")
+    fields, trailing = declared["fields"], declared["trailing"]
+    if fields == "all":
+        fields = list(REPORT_TEXT_FIELDS)
+    if (
+        not isinstance(fields, list) or not isinstance(trailing, bool)
+        or any(not isinstance(f, str) or f not in REPORT_TEXT_FIELDS for f in fields)
+        or len(set(fields)) != len(fields)
+    ):
+        raise TemplateError(problem + ".")
+    # In the one order of the fields, whatever order they were written in.
+    return tuple(f for f in REPORT_TEXT_FIELDS if f in fields), trailing
+
+
+def printed_parts(template: ReportTemplate, dataset: dict) -> dict:
+    """What ``template`` prints of ``dataset``'s findings
+    (``quarto_render.printed_parts``, with the template's uploaded files in
+    place).  Raises ``quarto_render.RenderError`` when it cannot be filled."""
+    return quarto_render.printed_parts(template.path, template.entry, dataset, asset_files(template))
+
+
+def image_probe_dataset(dataset: dict, index: int = 0) -> dict:
+    """A copy of ``dataset`` (a template's ``sample-data.json``) in which
+    finding ``index`` has one image placed in EVERY written field — captioned
+    ``in <field>`` — and one placed nowhere (``unplaced``), and no other
+    finding has any: what ``image_declaration_problem`` and the shipped
+    templates' render test check a declaration with.  Attachment ids 1…6;
+    files ``evidence/<id>.png``."""
+    import copy
+
+    probe = copy.deepcopy(dataset)
+    for finding in probe.get("findings") or []:
+        finding["images"], finding["placed"], finding["evidence"] = [], {}, []
+    finding = probe["findings"][index]
+    for att_id, name in enumerate(REPORT_TEXT_FIELDS, start=1):
+        entry = {"attachment_id": att_id, "file": f"evidence/{att_id}.png", "caption": f"in {name}"}
+        finding[name] = f"Text for {name}.\n\n![](evidence:{att_id})\n"
+        finding["placed"][name] = {str(att_id): dict(entry)}
+        finding["images"].append({**entry, "placed_in": [name]})
+    last = len(REPORT_TEXT_FIELDS) + 1
+    loose = {"attachment_id": last, "file": f"evidence/{last}.png", "caption": "unplaced", "placed_in": []}
+    finding["images"].append(loose)
+    finding["evidence"] = [dict(loose)]
+    return probe
+
+
+def image_declaration_problem(template: ReportTemplate, dataset: dict) -> Optional[str]:
+    """None when what ``template.json`` declares under ``images`` is what the
+    template's ``.qmd`` does with ``dataset``; else the sentence saying how
+    they differ.
+
+    For a dataset in which a finding the template shows in detail has an
+    image placed in EVERY written field and one placed nowhere (the shipped
+    templates are tested with exactly that): the fields the template printed
+    with images must be the declared ones, and it printed the unplaced image
+    exactly when ``trailing`` is declared."""
+    parts = printed_parts(template, dataset)
+    printed = {
+        name for fields in parts["fields"].values() for name, images in fields.items() if images
+    }
+    trailing = bool(parts["figures"])
+    differences = []
+    declared = set(template.image_fields)
+    if printed != declared:
+        extra, absent = sorted(printed - declared), sorted(declared - printed)
+        if extra:
+            differences.append(f"it prints the images placed in {', '.join(extra)}, which are not declared")
+        if absent:
+            differences.append(f"it declares {', '.join(absent)} but prints no image placed there")
+    if trailing != template.image_trailing:
+        differences.append(
+            "it prints a trailing evidence block but declares \"trailing\": false" if trailing
+            else "it declares \"trailing\": true but prints no trailing evidence block"
+        )
+    if not differences:
+        return None
+    return f"{template.name}: template.json: images does not match {template.entry}: {'; '.join(differences)}."
 
 
 def list_templates() -> List[ReportTemplate]:

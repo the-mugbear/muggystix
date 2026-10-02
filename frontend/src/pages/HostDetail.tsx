@@ -16,6 +16,7 @@ import HostInspector from '../components/HostInspector';
 import { useToast } from '../contexts/ToastContext';
 import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { formatApiError } from '../utils/apiErrors';
+import { isPageShortcutEvent } from '../utils/keyboard';
 
 export default function HostDetail() {
   const { hostId } = useParams<{ hostId: string }>();
@@ -150,17 +151,10 @@ export default function HostDetail() {
   useEffect(() => {
     if (!navState?.fromHosts && !opsQueue) return;
     const handleKeyDown = (e: KeyboardEvent) => {
-      const el = e.target as HTMLElement;
-      if (
-        el instanceof HTMLInputElement ||
-        el instanceof HTMLTextAreaElement ||
-        el instanceof HTMLSelectElement ||
-        el.isContentEditable ||
-        el.closest('[role="dialog"]') ||
-        el.closest('[role="listbox"]') ||
-        el.closest('[role="menu"]')
-      )
-        return;
+      // One test for every page shortcut (utils/keyboard): not while typing,
+      // not with a modifier, not while a Select, a menu or a dialog has the
+      // key, and not on auto-repeat (holding `j` must not run through hosts).
+      if (!isPageShortcutEvent(e)) return;
 
       if (e.key === 'ArrowLeft' || e.key === 'k') {
         if (hasPrev) navigateToHost(absoluteIndex - 1);

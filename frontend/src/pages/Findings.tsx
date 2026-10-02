@@ -481,7 +481,9 @@ const FindingsList: React.FC = () => {
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : findings.length,
     (i) => navigate(findingDetailHref(findings[i].id, searchParams.toString())),
-    { resetKey: searchParams.toString() },
+    // Anchored to the finding: a status change re-reads the list, and the
+    // cursor stays on its row instead of on whatever took its index.
+    { resetKey: searchParams.toString(), getId: (i) => findings[i]?.id },
   );
 
   return (

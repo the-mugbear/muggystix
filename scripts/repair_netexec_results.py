@@ -31,6 +31,8 @@ from app.services.netexec_repair import repair_netexec_results, repair_nfs_mount
 
 _REPAIR = "netexec_results_repair"
 _BY = "scripts/repair_netexec_results.py"
+# Counts that describe rows the repair leaves as they are.
+_INFORMATIONAL_COUNTS = frozenset({"nfs_ports_kept_other_tool"})
 
 
 def main() -> int:
@@ -42,7 +44,15 @@ def main() -> int:
     try:
         counts = repair_netexec_results(db, project_id=args.project, apply=args.apply)
         counts.update(repair_nfs_mount_ports(db, project_id=args.project, apply=args.apply))
-        total = sum(n for n in counts.values() if isinstance(n, int))
+        # What there is to CORRECT.  ``nfs_ports_kept_other_tool`` counts ports
+        # deliberately left alone (another tool named them): it is a report,
+        # not work owed.  Summed with the rest, an instance whose only non-zero
+        # count was that one could never record "nothing to repair" — and
+        # deploy.sh / status.sh listed the repair as pending for ever.
+        total = sum(
+            n for key, n in counts.items()
+            if isinstance(n, int) and key not in _INFORMATIONAL_COUNTS
+        )
         recorded = None
         if args.project is None:
             if args.apply:

@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, desc, case, cast, distinct, and_, text, or_, exists, literal, String
 from pydantic import BaseModel, Field
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db import models
 from app.db.models_confidence import ConflictHistory, NetexecResult
 from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
@@ -1613,6 +1613,9 @@ def delete_scan(
     project: Project = Depends(get_current_project),
 ):
     """Delete a scan and all dependent records atomically. Requires admin role."""
+    # The re-pointing UPDATEs and the cascading DELETEs below are each one
+    # large statement by design; the API statement timeout is for reads.
+    disable_statement_timeout(db)
     scan = db.query(models.Scan).filter(
         models.Scan.id == scan_id,
         models.Scan.project_id == project.id,

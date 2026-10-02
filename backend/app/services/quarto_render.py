@@ -19,7 +19,9 @@ with delimiters that cannot collide with Quarto: ``<% … %>`` statements,
   enters the ``.qmd`` at all.  ``<< md(f, "description") >>`` emits an empty
   placeholder div; the Lua filter ``_bluestick/fields.lua`` (added to every
   render, listed AFTER ``quarto`` in the template's ``filters``) reads the text
-  from ``data.json`` and parses it as GitHub Markdown with raw HTML off, then
+  from ``data.json`` and parses it as GitHub Markdown with raw HTML and MATH
+  off (``$HOME/bin:$PATH`` is text, never a formula — and no HTML render
+  loads a math library, ``_FORMAT_ARGS``), then
   drops raw blocks, images, non-web links, headings and attributes.  One
   image form is kept: ``![alt](evidence:57)``, when the dataset's ``placed``
   map lists attachment 57 for that field of that finding (the builder
@@ -77,6 +79,17 @@ FORMATS: Dict[str, tuple] = {
     # re-rendered or reworked locally.  No Quarto run.
     "qmd": (None, "-source.zip", "application/zip"),
 }
+
+# Arguments every render of a format gets, whatever the template's front
+# matter says (review 2026-10-01 S1).  HTML never typesets a formula, so
+# Quarto never adds a math library to the page: by default that is MathJax
+# from a CDN — a request from the client's browser and a script the report
+# did not have before — and MathJax makes ``\href{javascript:…}{x}`` a link.
+# Written text is read without math (quarto_fields.lua); this holds for a
+# template's own text and for a template that leaves the option out.  The
+# shipped templates set it in their front matter too, so the Quarto source
+# bundle renders the same way on its own.
+_FORMAT_ARGS: Dict[str, tuple] = {"html": ("-M", "html-math-method:plain")}
 
 # Template-author files that are not part of a filled report's source: the
 # Jinja partials are already included in report.qmd (and are Jinja, not
@@ -426,7 +439,13 @@ def _lookup(dataset: dict, key: str) -> Any:
     return node
 
 
-def _md_factory(dataset: dict):
+#: What ``printed_parts`` hands the helpers: called with ``("md", key,
+#: images)``, ``("figure", file)`` or ``("code", key)`` each time a template
+#: asks for one.  None for an ordinary fill.
+Recorder = Optional[Callable[..., None]]
+
+
+def _md_factory(dataset: dict, record: Recorder = None):
     def md(obj: Any, field: Optional[str] = None, todo_text: Optional[str] = None, **kwargs) -> Markup:
         """A placeholder the Lua filter fills with the written Markdown at
         ``obj._path + "." + field`` (or the dotted path ``obj``) in data.json.
@@ -454,6 +473,8 @@ def _md_factory(dataset: dict):
             raise RenderError(f"md(): '{key}' is not a data path.")
         if image_width is not None and not _WIDTH.match(str(image_width)):
             raise RenderError(f"md(): '{image_width}' is not a width.")
+        if record is not None:
+            record("md", key, bool(images))
         value = _lookup(dataset, key)
         if not (isinstance(value, str) and value.strip()):
             return todo(todo_text, block=True) if todo_text else Markup("")
@@ -466,7 +487,7 @@ def _md_factory(dataset: dict):
     return md
 
 
-def _code_factory(dataset: dict):
+def _code_factory(dataset: dict, record: Recorder = None):
     def code(obj: Any, field: Optional[str] = None) -> Markup:
         """A placeholder the Lua filter fills with the value at
         ``obj._path + "." + field`` as a VERBATIM block (review 2026-10-01
@@ -483,6 +504,8 @@ def _code_factory(dataset: dict):
             key = str(obj)
         if not _KEY.match(key):
             raise RenderError(f"code(): '{key}' is not a data path.")
+        if record is not None:
+            record("code", key)
         value = _lookup(dataset, key)
         if not (isinstance(value, str) and value.strip()):
             return Markup("")
@@ -534,8 +557,20 @@ def plain(value: Any) -> Markup:
     return Markup(text)
 
 
+def _image_factory(record: Recorder = None):
+    if record is None:
+        return image
+
+    def recorded(item: Any, width: str = "6in", number: Optional[int] = None) -> Markup:
+        out = image(item, width, number)
+        record("figure", item["file"])
+        return out
+    return recorded
+
+
 def jinja_environment(
     template_dir: Path, dataset: Optional[dict] = None, overrides: Optional[Dict[str, Path]] = None,
+    record: Recorder = None,
 ) -> SandboxedEnvironment:
     """Includes resolve inside the template folder only (FileSystemLoader
     refuses ``..``).  Use includes, not macros, for reusable parts: a macro's
@@ -553,11 +588,104 @@ def jinja_environment(
     except (TemplateAssetError, ValueError, OSError) as exc:
         raise RenderError(f"The template '{template_dir.name}' declares unusable assets: {exc}") from exc
     env.globals.update(
-        md=_md_factory(dataset) if dataset is not None else md,
-        code=_code_factory(dataset or {}),
-        image=image, plain=plain, todo=todo, asset=asset,
+        md=_md_factory(dataset, record) if dataset is not None else md,
+        code=_code_factory(dataset or {}, record),
+        image=_image_factory(record), plain=plain, todo=todo, asset=asset,
     )
     return env
+
+
+class _Watched(list):
+    """A list that says when a template reads its ITEMS (a loop, an index, a
+    filter) — not when it only asks whether there are any, or how many."""
+
+    def __init__(self, items, on_use: Callable[[], None]):
+        super().__init__(items)
+        self._on_use = on_use
+
+    def __iter__(self):
+        self._on_use()
+        return super().__iter__()
+
+    def __getitem__(self, index):
+        self._on_use()
+        return super().__getitem__(index)
+
+
+_FINDING_KEY = re.compile(r"\Afindings\.(\d+)\.([a-z_]+)\Z")
+_CONFIRMATION_KEY = re.compile(r"\Afindings\.(\d+)\.confirmations\.")
+
+
+def printed_parts(
+    template_dir: Path, entry: str, dataset: dict, overrides: Optional[Dict[str, Path]] = None,
+) -> Dict[str, Any]:
+    """What THIS template prints of THIS dataset's findings — measured, by
+    filling the template (Jinja only; no Quarto run) and noting what it asks
+    the helpers for (review 2026-10-01 S2):
+
+    * ``fields``: ``{finding index: {field: images}}`` for every ``md(f,
+      field)`` the template printed; ``images`` is False for
+      ``images=False``.  The filter prints a field's placed images exactly
+      when the template printed that field with images.
+    * ``figures``: the files the template printed with ``image(e)`` — the
+      trailing evidence block.
+    * ``confirmations``: the indexes of the findings whose ``confirmations``
+      the template read (looped over), or printed a ``code()`` block from.
+    * ``findings``: the indexes with any of the above — the findings the
+      report shows in detail, not just as a table row.
+
+    A template decides these with its own logic (a brief that prints no
+    evidence, a worklist that prints only the recommendation of findings
+    still to fix, an addendum that lists a known finding in one line), so
+    only a fill can say.  Raises ``RenderError`` when the template cannot be
+    filled."""
+    fields: Dict[int, Dict[str, bool]] = {}
+    figures: set = set()
+    confirmations: set = set()
+
+    def record(kind: str, value: str, images: bool = False) -> None:
+        if kind == "md":
+            m = _FINDING_KEY.match(value)
+            if m:
+                seen = fields.setdefault(int(m.group(1)), {})
+                seen[m.group(2)] = seen.get(m.group(2), False) or images
+        elif kind == "figure":
+            figures.add(value)
+        elif kind == "code":
+            m = _CONFIRMATION_KEY.match(value)
+            if m:
+                confirmations.add(int(m.group(1)))
+
+    probe = dict(dataset)
+    findings = []
+    for index, finding in enumerate(dataset.get("findings") or []):
+        if isinstance(finding, dict) and isinstance(finding.get("confirmations"), list):
+            finding = {**finding, "confirmations": _Watched(
+                finding["confirmations"], lambda index=index: confirmations.add(index),
+            )}
+        findings.append(finding)
+    probe["findings"] = findings
+    env = jinja_environment(template_dir, probe, overrides, record)
+    try:
+        env.get_template(entry).render(**probe)
+    except RenderError:
+        raise
+    except Exception as exc:
+        raise RenderError(f"The template '{template_dir.name}' could not be filled: {exc}") from exc
+
+    file_owner: Dict[str, set] = {}
+    for index, finding in enumerate(findings):
+        if isinstance(finding, dict):
+            for item in finding.get("evidence") or []:
+                if isinstance(item, dict):
+                    file_owner.setdefault(str(item.get("file")), set()).add(index)
+    shown = set(fields) | confirmations
+    for file in figures:
+        shown |= file_owner.get(file, set())
+    return {
+        "fields": fields, "figures": sorted(figures),
+        "confirmations": sorted(confirmations), "findings": sorted(shown),
+    }
 
 
 def render_source(
@@ -601,16 +729,32 @@ def _place_evidence(dataset: dict, work: Path, resolve: Callable[[dict], Optiona
     trailing block) and ``placed`` the part a section does
     (``{field: {attachment id: {file, caption}}}``).  A dataset frozen before
     images could be placed has ``evidence`` alone.  A missing file leaves all
-    three, so a reference to it in the text prints as its alt text."""
+    three, so a reference to it in the text prints as its alt text.
+
+    An image the dataset marks ``"printed": false`` (review 2026-10-01 S2 —
+    this report's template prints it nowhere: ``client_report_service``
+    measures that with ``printed_parts``) is not needed: its file is neither
+    looked for nor copied, it is never "missing", and its entries stay as
+    they are.  An issued report keeps no copy of such an image.  A dataset
+    without the key (frozen before it existed) needs every image, as before."""
     missing = []
     (work / "evidence").mkdir(exist_ok=True)
     for finding in dataset.get("findings") or []:
         present: Dict[str, bool] = {}
+        marks: Dict[str, bool] = {}
+        for item in finding.get("images") or []:
+            if isinstance(item, dict) and isinstance(item.get("printed"), bool):
+                file = str(item.get("file", ""))
+                # Listed twice with different marks: needed.
+                marks[file] = marks.get(file, False) or item["printed"]
+        unprinted = {file for file, printed in marks.items() if not printed}
 
         def have(item: Any) -> bool:
             file = str(item.get("file", "")) if isinstance(item, dict) else ""
             if not _EVIDENCE.match(file):
                 return False
+            if file in unprinted:
+                return True
             if file not in present:
                 source = resolve(item)
                 present[file] = bool(source is not None and source.is_file())
@@ -659,16 +803,20 @@ def _clean_env(work: Path) -> Dict[str, str]:
     }
 
 
-def quarto_version(quarto: str = "quarto") -> Optional[str]:
+def quarto_version(quarto: str = "quarto", timeout: float = 60) -> Optional[str]:
+    """Quarto's version, or None when it cannot be asked.  Run like a render
+    (``_run_group``, defined below): ``quarto`` is a bash launcher that starts
+    deno without ``exec``, so ``subprocess.run(timeout=…)`` killed bash and
+    left deno running — and then waited on the pipes deno still held."""
     with tempfile.TemporaryDirectory(prefix="bs-qv-") as tmp:
+        work = Path(tmp)
         try:
-            out = subprocess.run(
-                [quarto, "--version"], capture_output=True, text=True, timeout=60,
-                env=_clean_env(Path(tmp)),
+            _code, stdout, _stderr = _run_group(
+                [quarto, "--version"], cwd=work, env=_clean_env(work), timeout=timeout,
             )
         except (OSError, subprocess.SubprocessError):
             return None
-    return out.stdout.strip()[:40] or None
+    return stdout.strip()[:40] or None
 
 
 def _tail(text: str, lines: int = 25) -> str:
@@ -805,7 +953,8 @@ def render(
                 continue
             try:
                 code, stdout, stderr = _run_group(
-                    [quarto, "render", source_name, "--to", to], cwd=work, env=env, timeout=timeout,
+                    [quarto, "render", source_name, "--to", to, *_FORMAT_ARGS.get(to, ())],
+                    cwd=work, env=env, timeout=timeout,
                 )
             except subprocess.TimeoutExpired:
                 raise RenderError(f"Quarto took longer than {timeout}s to render {fmt}.")

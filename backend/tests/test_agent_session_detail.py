@@ -348,10 +348,9 @@ def test_an_old_assist_session_id_finds_its_session(client, db_session, test_pro
         assert body.status_code == 200, body.text
         assert body.json()["id"] == sid and body.json()["purpose"] == "map the DMZ"
     assert client.get(f"{base}/assist-sessions/52/api-activity").json()["total"] == 1
-    # An id nothing had, and the session's own id used as an old one: not found.
-    assert client.get(f"{base}/assist-sessions/53").status_code == 404
-    if sid != 52:
-        assert client.get(f"{base}/assist-sessions/{sid}").status_code == 404
+    # An id nothing had: not found.  (The session's own id on these paths is
+    # covered in test_review_2026_10_01_branch_findings.py.)
+    assert client.get(f"{base}/assist-sessions/999953").status_code == 404
 
 
 def test_the_old_paths_are_marked_deprecated_and_the_old_list_is_gone(client, test_project):

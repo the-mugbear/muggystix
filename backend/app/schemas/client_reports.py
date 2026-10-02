@@ -105,6 +105,9 @@ class ReportTemplateOut(BaseModel):
     assets: List[ReportTemplateAssetOut] = []
     # Whether this template prints how each finding was confirmed.
     evidence_records: bool = False
+    # What the template declares it prints of a finding's images
+    # (`template.json` → `images`): `{"fields": [...], "trailing": bool}`.
+    images: Optional[Dict[str, Any]] = None
 
 
 ReportTemplateAssetOut.model_rebuild()

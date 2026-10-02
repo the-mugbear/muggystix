@@ -5,5 +5,6 @@
   "formats": ["html", "docx", "qmd"],
   "scope_inline_max": null,
   "scope_domains_inline_max": null,
-  "evidence_records": false
+  "evidence_records": false,
+  "images": {"fields": ["recommendation"], "trailing": false}
 }

@@ -52,10 +52,14 @@ includes your changes.
   disagree), rebuild, run `scripts/check.sh`, then replace the list in `constraints.txt` with
   `docker compose exec -T backend pip freeze` from the new image.
 - **Base images** are pinned to exact release tags (not digests): `postgres:16.13` in
-  `docker-compose.yml`; `python:3.11.16-slim-trixie` in `backend/Dockerfile`;
-  `node:22.23.2-alpine` and `nginx:1.31.3-alpine` in `frontend/Dockerfile`. Moving one is a
-  deliberate commit: change the tag, rebuild, run the gate. `.env` can override each
-  (`POSTGRES_IMAGE`, `PYTHON_IMAGE`, `NODE_IMAGE`, `NGINX_IMAGE`) for a host that cannot pull.
+  `docker-compose.yml`; `python:3.11.16-slim-trixie` and `debian:12.15-slim` (the stage that
+  downloads Quarto) in `backend/Dockerfile`; `node:22.23.2-alpine` and `nginx:1.31.3-alpine` in
+  `frontend/Dockerfile`. Moving one is a deliberate commit: change the tag, rebuild, run the
+  gate. `.env` can override each (`POSTGRES_IMAGE`, `PYTHON_IMAGE`, `DEBIAN_IMAGE`, `NODE_IMAGE`,
+  `NGINX_IMAGE`) for a host that cannot pull. A build still downloads packages (PyPI, npm,
+  Debian/Alpine, Quarto from GitHub) for every layer not in Docker's build cache — pinned bases
+  do not make a host able to build offline; `deploy.sh` option 1 lists the bases a host lacks
+  before it builds.
 - **Lint: ruff, pyflakes (`F`) rules only** — `backend/ruff.toml`. Unused imports and
   variables, undefined names, redefinitions: defects, not style. No formatter, no import
   sorting, no pycodestyle; adding a rule family is a separate decision. The migration chain is

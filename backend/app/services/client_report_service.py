@@ -64,7 +64,9 @@ from app.db.models_reports import (
     RenderStatus, Report, ReportImage, ReportKind, ReportProfile, ReportStatus,
 )
 from app.db.models_vulnerability import Vulnerability
-from app.services import proposal_service, report_images, report_scope, report_template_service
+from app.services import (
+    proposal_service, quarto_render, report_images, report_scope, report_template_service,
+)
 
 SCHEMA_VERSION = 1
 
@@ -186,13 +188,34 @@ def report_image_dir(project_id: int, report_id: int) -> Path:
     """Where an issued report keeps its own copies of its evidence images:
     beside its rendered files, under ``REPORT_FILES_DIR`` (so the uploads
     backup takes them with the report)."""
-    return Path(settings.REPORT_FILES_DIR) / str(project_id) / str(report_id) / "evidence"
+    return Path(settings.REPORT_FILES_DIR) / str(int(project_id)) / str(int(report_id)) / "evidence"
 
 
 def discard_report_images(project_id: int, report_id: int) -> None:
     """Remove the copies ``freeze_report_images`` made — for an issue that did
-    not commit.  Never called for a report that was issued."""
-    shutil.rmtree(report_image_dir(project_id, report_id), ignore_errors=True)
+    not commit, at the start of the next attempt, and when the DRAFT is
+    discarded (review 2026-10-01 M2: a crash between the copy and the commit
+    left the folder, and nothing ever removed it).  Never called for a report
+    that was issued: the callers hold a draft.
+
+    Only ever this report's ``evidence`` folder: the path is built from the
+    two numbers, resolved, and must be exactly
+    ``<REPORT_FILES_DIR>/<project>/<report>/evidence`` — a symlink that leads
+    anywhere else is left alone.  The report's own folder goes too when that
+    leaves it empty (a draft has no rendered files)."""
+    root = Path(settings.REPORT_FILES_DIR).resolve()
+    try:
+        expected = (str(int(project_id)), str(int(report_id)), "evidence")
+        folder = root.joinpath(*expected)
+        if folder.is_symlink() or folder.resolve().relative_to(root).parts != expected:
+            return
+    except (TypeError, ValueError, OSError):
+        return
+    shutil.rmtree(folder, ignore_errors=True)
+    try:
+        folder.parent.rmdir()          # only when empty
+    except OSError:
+        pass
 
 
 def discard_project_report_files(project_id: int) -> None:
@@ -209,20 +232,33 @@ def discard_project_report_files(project_id: int) -> None:
 
 
 def freeze_report_images(db: Session, report: Report, dataset: dict) -> int:
-    """Copy the bytes of every image the dataset names into the report's own
+    """Copy the bytes of every image the report PRINTS into the report's own
     storage and record each (``report_images``).  Called while issuing, in
     the issue's transaction: from then on the report renders from these
     copies, whatever happens to the attachments (before this, an image
     deleted between the issue and a successful render failed that render for
     good).  Returns the number copied.
 
-    Raises ``ReportStateError`` — nothing copied, nothing issued — when an
-    image's file is not in storage: a report must not be signed off with a
-    figure it cannot print."""
+    Which images the report prints is the dataset's ``printed`` mark
+    (``_mark_printed``, review 2026-10-01 S2): an image this template prints
+    nowhere is not copied, and its file is not required — a brief that shows
+    no evidence must not be refused over a screenshot it would never show.
+    An image without the mark (what is printed could not be measured) is
+    copied, as every image was before.
+
+    Raises ``ReportStateError`` — nothing copied, nothing issued — when a
+    PRINTED image's file is not in storage: a report must not be signed off
+    with a figure it cannot print.
+
+    The report's folder is emptied first (M2): this is a draft being issued,
+    so whatever is there is left over from an attempt that did not commit —
+    never this report's copies."""
+    discard_report_images(report.project_id, report.id)
     wanted: Dict[int, Tuple[dict, dict]] = {}
     for finding in dataset.get("findings") or []:
         for img in finding.get("images") or []:
-            wanted.setdefault(img["attachment_id"], (img, finding))
+            if img.get("printed") is not False:
+                wanted.setdefault(img["attachment_id"], (img, finding))
     if not wanted:
         return 0
     attachments = {
@@ -969,6 +1005,12 @@ class ClientReportService:
             "delta": delta,
         }
 
+        # What THIS report prints of that (S2): marks each image, and takes
+        # out the test results of findings the report does not show in detail.
+        printing = self._mark_printed(report.template, dataset)
+        if printing is not None:
+            agent_records = sum(1 for i in items for c in i["confirmations"] if c.get("by_agent"))
+
         pending = self._pending_proposals([item["id"] for item in items])
         summary = {
             "counts": counts,
@@ -992,12 +1034,29 @@ class ClientReportService:
             # left for the trailing evidence block.
             "images_placed": sum(1 for i in items for img in i["images"] if img["placed_in"]),
             "images_unplaced": sum(len(i["evidence"]) for i in items),
+            # Where THIS report prints them (S2) — `images_placed` /
+            # `images_unplaced` above say what the authors did, these what
+            # the template does with it: inside a written section, in the
+            # trailing evidence block, or nowhere (with the reasons, and what
+            # the template declares it prints).  The three add up to
+            # `images`.  None when it could not be measured (the template is
+            # gone or cannot be filled) — and absent from a report issued
+            # before this.
+            "images_printed": printing["in_text"] if printing else None,
+            "images_trailing": printing["trailing"] if printing else None,
+            "images_not_printed": printing["not_printed"] if printing else None,
+            "images_not_printed_reasons": printing["reasons"] if printing else None,
+            "template_images": printing["template_images"] if printing else None,
             "images_skipped": skipped_images,
             # v2.437.0 — warnings before issuing, never blocks.
             "agent_images": agent_images,
-            # B8 — test results printed as "how it was confirmed", and how
+            # B8 — test results PRINTED as "how it was confirmed", and how
             # many of them an agent recorded (a warning, never a block).
+            # `evidence_records_not_printed`: results of findings this report
+            # lists without their details (an addendum's known findings) —
+            # they are not in the data either.
             "evidence_records": sum(len(i["confirmations"]) for i in items),
+            "evidence_records_not_printed": printing["records_not_printed"] if printing else None,
             "agent_evidence_records": agent_records,
             "pending_proposals": [
                 {"id": item["id"], "ref": item["ref"], "title": item["title"], "count": pending[item["id"]]}
@@ -1020,6 +1079,70 @@ class ClientReportService:
             } if delta else None,
         }
         return dataset, reported, summary
+
+    @staticmethod
+    def _mark_printed(template_name: Optional[str], dataset: dict) -> Optional[dict]:
+        """Say, in the dataset, what this report's template PRINTS of each
+        finding's evidence (review 2026-10-01 S2) → the counts for the
+        summary, or None when it cannot be measured (no such template, or it
+        cannot be filled: everything then stays as built, and counts as
+        printed for the issue's copies).
+
+        A template prints what its ``.qmd`` asks for, and the shipped ones
+        differ: the brief prints no image, the worklist only those placed in
+        the recommendation of a finding still to fix, and an addendum lists a
+        finding the client already has in one line.  So the template is
+        filled once (Jinja only) and what it asked the helpers for is noted
+        (``quarto_render.printed_parts``).  Then, per finding:
+
+        * every image gets ``printed`` and ``printed_in`` (the sections that
+          print it).  A placed image prints where a section that places it is
+          printed with images; an unplaced one when the template prints the
+          trailing block for that finding.  The issue copies — and requires
+          the file of — printed images only.
+        * ``confirmations`` are emptied when the template did not read them
+          for that finding: the report's data holds the test results it
+          prints, not those of a finding it shows as a table row.
+        """
+        try:
+            template = report_template_service.get_template(template_name)
+            parts = report_template_service.printed_parts(template, dataset)
+        except (report_template_service.TemplateError, quarto_render.RenderError):
+            return None
+        figures = set(parts["figures"])
+        shown = set(parts["findings"])
+        read = set(parts["confirmations"])
+        out = {
+            "in_text": 0, "trailing": 0, "not_printed": 0, "records_not_printed": 0,
+            # Why an image prints nowhere: its finding is listed without its
+            # details; it is placed in a section this template prints without
+            # images (or not at all); it is placed nowhere and this template
+            # has no trailing evidence block.
+            "reasons": {"finding_not_detailed": 0, "section_not_printed": 0, "no_evidence_block": 0},
+            "template_images": template.images,
+        }
+        for index, item in enumerate(dataset.get("findings") or []):
+            fields = parts["fields"].get(index, {})
+            for img in item.get("images") or []:
+                placed_in = img.get("placed_in") or []
+                printed_in = [field for field in placed_in if fields.get(field)]
+                at_end = not placed_in and img.get("file") in figures
+                img["printed_in"] = printed_in
+                img["printed"] = bool(printed_in) or at_end
+                if printed_in:
+                    out["in_text"] += 1
+                elif at_end:
+                    out["trailing"] += 1
+                else:
+                    out["not_printed"] += 1
+                    reason = ("finding_not_detailed" if index not in shown
+                              else "section_not_printed" if placed_in else "no_evidence_block")
+                    out["reasons"][reason] += 1
+            if item.get("confirmations") and index not in read:
+                out["records_not_printed"] += len(item["confirmations"])
+                item["confirmations"] = []
+                item["confirmations_omitted"] = 0
+        return out
 
     @staticmethod
     def _missing_details(dataset: dict) -> List[str]:

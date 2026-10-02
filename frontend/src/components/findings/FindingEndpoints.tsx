@@ -71,7 +71,20 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
   const [limit, setLimit] = useState(ENDPOINT_CAP);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const anchor = useRef<number | null>(null);
-  const [saving, setSaving] = useState<number | null>(null);
+  // Rows whose own change is in flight — a set: two rows changed in quick
+  // succession are both busy, and each stays locked until ITS request is back.
+  const [saving, setSaving] = useState<Set<number>>(new Set());
+  // Every change answers with the whole finding.  Responses are applied in
+  // the order the requests were SENT: one that comes back after a later
+  // request's answer was applied is older news and would repaint its rows
+  // stale, so it is dropped (M4).
+  const sent = useRef(0);
+  const applied = useRef(0);
+  const applyResponse = (seq: number, updated: Finding) => {
+    if (seq < applied.current) return;
+    applied.current = seq;
+    onChanged(updated);
+  };
   const [bulkState, setBulkState] = useState<FindingHostStatus | ''>('');
   const [bulkSummary, setBulkSummary] = useState('');
   const [bulkBusy, setBulkBusy] = useState(false);
@@ -97,29 +110,40 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
     anchor.current = null;
   };
 
-  // Selected ids that are still endpoints of the finding (one may have been
-  // detached, or changed by someone else, since it was ticked).
-  const liveIds = useMemo(() => new Set(finding.hosts.map((h) => h.id)), [finding.hosts]);
-  const selectedIds = useMemo(() => [...selected].filter((id) => liveIds.has(id)), [selected, liveIds]);
+  // What the bulk bar acts on is always among the rows the current filter
+  // matches (S3): a ticked row that has since left the filter — its own state
+  // was changed, someone else changed it, it was detached — is not acted on
+  // out of sight.
+  const matchingIds = useMemo(() => new Set(matching.map((h) => h.id)), [matching]);
+  const selectedIds = useMemo(() => [...selected].filter((id) => matchingIds.has(id)), [selected, matchingIds]);
+  const isSelected = (id: number) => selected.has(id) && matchingIds.has(id);
 
-  // A linked endpoint (`?endpoint=`): make sure it is rendered, then show it.
+  // A linked endpoint (`?endpoint=`): make sure it is rendered, then show it
+  // — ONCE per link (S7).  It used to scroll back to the row on every "Show
+  // more" and every keystroke in the filter.
   const focusIndex = focusEndpointId == null ? -1 : matching.findIndex((h) => h.id === focusEndpointId);
+  const scrolledTo = useRef<number | null>(null);
   useEffect(() => {
+    if (focusEndpointId == null || scrolledTo.current === focusEndpointId) return;
     if (focusIndex >= limit) setLimit(focusIndex + 1);
-  }, [focusIndex, limit]);
+  }, [focusEndpointId, focusIndex, limit]);
   useEffect(() => {
-    if (focusEndpointId == null || focusIndex < 0 || focusIndex >= limit) return;
+    if (focusEndpointId == null || scrolledTo.current === focusEndpointId) return;
+    if (focusIndex < 0 || focusIndex >= limit) return;
+    scrolledTo.current = focusEndpointId;
     document.querySelector(`[data-endpoint-row="${focusEndpointId}"]`)?.scrollIntoView?.({ block: 'center' });
   }, [focusEndpointId, focusIndex, limit]);
 
   const toggle = (id: number, on: boolean, range: boolean) => {
+    // The anchor is read NOW: an updater runs later, after the line below
+    // has already moved the anchor to this row (M3).
+    const ids = range ? idRange(shownIds, anchor.current, id) : [id];
+    anchor.current = id;
     setSelected((prev) => {
       const next = new Set(prev);
-      const ids = range ? idRange(shownIds, anchor.current, id) : [id];
       ids.forEach((x) => { if (on) next.add(x); else next.delete(x); });
       return next;
     });
-    anchor.current = id;
   };
 
   const allShownSelected = shownIds.length > 0 && shownIds.every((id) => selected.has(id));
@@ -133,16 +157,29 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
   };
 
   const setOne = async (row: FindingHostInfo, hostStatus: FindingHostStatus) => {
-    if (row.host_status === hostStatus) return;
-    setSaving(row.id);
+    if (row.host_status === hostStatus || saving.has(row.id)) return;
+    sent.current += 1;
+    const seq = sent.current;
+    setSaving((prev) => new Set(prev).add(row.id));
     try {
       // The route answers with the finding: the row is updated from it, not
       // from a second read of thousands of endpoints.
-      onChanged(await setFindingEndpointStatus(finding.id, row.id, hostStatus));
+      applyResponse(seq, await setFindingEndpointStatus(finding.id, row.id, hostStatus));
+      // A row given its own state is no longer part of "these, together".
+      setSelected((prev) => {
+        if (!prev.has(row.id)) return prev;
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update the endpoint state.'));
     } finally {
-      setSaving(null);
+      setSaving((prev) => {
+        const next = new Set(prev);
+        next.delete(row.id);
+        return next;
+      });
     }
   };
 
@@ -153,42 +190,56 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
     // The route takes 500 ids, all-or-nothing PER CALL.  A larger selection
     // goes in order, one call at a time; what a refused call left unchanged
     // is said and stays selected.
-    const chunks = chunked(selectedIds, ENDPOINT_BULK_MAX);
+    const submitted = selectedIds;
+    const chunks = chunked(submitted, ENDPOINT_BULK_MAX);
+    sent.current += 1;
+    const seq = sent.current;
     setBulkBusy(true);
     const results = await runLimited(chunks, 1, (ids) =>
       setFindingEndpointsStatus(finding.id, { finding_host_ids: ids, host_status: hostStatus, summary }));
     setBulkBusy(false);
-    let done = 0;
     let latest: Finding | null = null;
+    const doneIds: number[] = [];
     const notDone: number[] = [];
     let firstError: unknown = null;
     results.forEach((r, i) => {
       if (r.status === 'fulfilled') {
-        done += chunks[i].length;
+        doneIds.push(...chunks[i]);
         latest = r.value;
       } else {
         notDone.push(...chunks[i]);
         firstError ??= r.reason;
       }
     });
-    if (latest) onChanged(latest);
+    const done = doneIds.length;
+    if (latest) applyResponse(seq, latest);
+    // Only what this request changed leaves the selection: what it could not
+    // change stays ticked, and so does anything ticked since it started (M5).
+    if (done > 0) {
+      setSelected((prev) => {
+        const next = new Set(prev);
+        doneIds.forEach((id) => next.delete(id));
+        return next;
+      });
+    }
     const label = ENDPOINT_STATUS_LABEL[hostStatus].toLowerCase();
     if (notDone.length === 0) {
       toast.success(`Set ${done.toLocaleString()} endpoint${done === 1 ? '' : 's'} to ${label}.`);
-      setSelected(new Set());
       setBulkState('');
       setBulkSummary('');
     } else if (done === 0) {
       toast.error(formatApiError(firstError, 'No endpoint was changed.'));
     } else {
       toast.warning(
-        `Set ${done.toLocaleString()} of ${selectedIds.length.toLocaleString()} endpoints to ${label}; `
+        `Set ${done.toLocaleString()} of ${submitted.length.toLocaleString()} endpoints to ${label}; `
         + `${notDone.length.toLocaleString()} were not changed and are still selected `
         + `(${formatApiError(firstError, 'the server refused them')}).`,
       );
-      setSelected(new Set(notDone));
     }
   };
+
+  /** This row's controls wait: its own change, or the bulk one, is in flight. */
+  const rowBusy = (id: number) => bulkBusy || saving.has(id);
 
   const columns = canManage ? 4 : 2;
 
@@ -273,7 +324,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
       {canManage && allShownSelected && matching.length > shown.length && selectedIds.length < matching.length && (
         <p className="mb-xs text-caption text-muted-foreground">
           The {shown.length.toLocaleString()} shown are selected.{' '}
-          <Button variant="link" size="sm" className="h-auto p-0"
+          <Button variant="link" size="sm" className="h-auto p-0" disabled={bulkBusy}
             onClick={() => setSelected(new Set(matching.map((h) => h.id)))}>
             Select all {matching.length.toLocaleString()}{filtered ? ' matching' : ''}
           </Button>
@@ -289,7 +340,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                   <Checkbox
                     checked={allShownSelected ? true : someShownSelected ? 'indeterminate' : false}
                     onCheckedChange={(v) => toggleAllShown(v === true)}
-                    disabled={shownIds.length === 0}
+                    disabled={shownIds.length === 0 || bulkBusy}
                     aria-label="Select every endpoint shown"
                   />
                 </TableHead>
@@ -311,17 +362,18 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                 <TableRow
                   key={h.id}
                   data-endpoint-row={h.id}
-                  data-state={selected.has(h.id) ? 'selected' : undefined}
+                  data-state={isSelected(h.id) ? 'selected' : undefined}
                   className={h.id === focusEndpointId ? LIST_CURSOR_CLASS : undefined}
                 >
                   {canManage && (
                     <TableCell>
                       <Checkbox
-                        checked={selected.has(h.id)}
+                        checked={isSelected(h.id)}
+                        disabled={rowBusy(h.id)}
                         // Shift-click selects the range from the last row ticked.
                         onClick={(e) => {
                           e.preventDefault();
-                          toggle(h.id, !selected.has(h.id), e.shiftKey);
+                          toggle(h.id, !isSelected(h.id), e.shiftKey);
                         }}
                         aria-label={`Select ${endpointName(h)}`}
                       />
@@ -347,7 +399,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                       <Select
                         value={h.host_status}
                         onValueChange={(v) => void setOne(h, v as FindingHostStatus)}
-                        disabled={saving === h.id || bulkBusy}
+                        disabled={rowBusy(h.id)}
                       >
                         <SelectTrigger className="h-7 w-[10rem] text-caption" aria-label={`State of ${endpointName(h)}`}>
                           <SelectValue />
@@ -369,6 +421,7 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                       <Button
                         variant="ghost" size="icon"
                         onClick={() => onRemove(h)}
+                        disabled={rowBusy(h.id)}
                         aria-label={`Detach ${endpointName(h)} from finding`}
                       >
                         <Trash2 className="size-4" aria-hidden />

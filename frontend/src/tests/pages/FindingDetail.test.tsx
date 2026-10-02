@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -518,6 +518,53 @@ describe('FindingDetail — report text (v5.260.0)', () => {
     // Edit button of its own).
     fireEvent.click(screen.getAllByRole('button', { name: 'Not written yet. Write it' })[0]);
     expect(screen.getAllByRole('button', { name: 'Insert image' })[0]).toBeEnabled();
+  });
+
+  // Review 2026-10-01 S4 — "not one of this finding's images" may only be
+  // said once the finding's image list has been read.
+  it('a placed image is a neutral placeholder while the list is being read, then the image — fetched once for the page', async () => {
+    URL.revokeObjectURL = vi.fn();
+    let release!: (v: unknown) => void;
+    mocked.getFindingImages.mockReturnValue(new Promise((resolve) => { release = resolve; }));
+    mocked.getFindingNotes.mockResolvedValue([comment]);
+    mocked.getFinding.mockResolvedValue(finding({
+      can_modify: true, report_text: reportText({ description: 'Relayed.\n\n![](evidence:57)' }),
+    }));
+    renderAt('/findings/7');
+    expect(await screen.findByTestId('evidence-pending-57')).toHaveTextContent('Loading image…');
+    expect(screen.queryByText(/Image not available/)).toBeNull();
+    expect(screen.queryByTestId('finding-images-error')).toBeNull();
+    // Nothing is fetched for the thread's thumbnail either while the list is
+    // on its way: it comes from the same cache.
+    await screen.findByRole('button', { name: 'View relay.png' });
+    expect(mocked.getNoteAttachmentObjectUrl).not.toHaveBeenCalled();
+
+    await act(async () => { release({ items: [image57], caption_max: 2000 }); });
+    const placed = await screen.findByTestId('evidence-image-57');
+    await waitFor(() => expect(placed.querySelector('img')?.getAttribute('src')).toBe('blob:img'));
+    await waitFor(() => expect(screen.getByRole('button', { name: 'View relay.png' }).querySelector('img')).not.toBeNull());
+    // M6 — the placed image and the comment's thumbnail are one fetch.
+    expect(mocked.getNoteAttachmentObjectUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('says the images could not be loaded when the list fails — on the page and in the text — and retries', async () => {
+    URL.revokeObjectURL = vi.fn();
+    mocked.getFindingImages.mockRejectedValueOnce(new Error('boom'));
+    mocked.getFindingNotes.mockResolvedValue([]);
+    mocked.getFinding.mockResolvedValue(finding({
+      can_modify: true, report_text: reportText({ description: '![](evidence:57)' }),
+    }));
+    renderAt('/findings/7');
+    const note = await screen.findByTestId('evidence-list-failed-57');
+    expect(note).toHaveTextContent('This finding’s images could not be loaded');
+    expect(screen.queryByText(/Image not available/)).toBeNull();
+    const alert = screen.getByTestId('finding-images-error');
+    expect(alert).toHaveTextContent('Images placed in the report text cannot be shown');
+
+    mocked.getFindingImages.mockResolvedValue({ items: [image57], caption_max: 2000 });
+    fireEvent.click(within(alert).getByRole('button', { name: 'Retry' }));
+    expect(await screen.findByTestId('evidence-image-57')).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByTestId('finding-images-error')).toBeNull());
   });
 
   it('a reader sees the placed image and its caption, and no way to change either', async () => {

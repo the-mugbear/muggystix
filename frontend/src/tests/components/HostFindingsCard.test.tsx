@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -90,6 +90,58 @@ describe('HostFindingsCard', () => {
     await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
     await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalledWith(7, 'confirmed'));
     expect(api.setFindingEndpointStatus).not.toHaveBeenCalled();
+  });
+
+  // Branch review 2026-10-01 M13 — the inspector stays mounted across hosts.
+  describe('stepping to another host', () => {
+    const other = 6;
+    const titled = (title: string, hostId: number) => finding({ title, hosts: [row(31, hostId, 'open')] });
+    const Card = ({ hostId }: { hostId: number }) => <MemoryRouter><HostFindingsCard hostId={hostId} /></MemoryRouter>;
+
+    it('a slow list for the host just left never replaces the new host’s findings', async () => {
+      let releaseFirst!: (v: unknown) => void;
+      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => (host_id === HOST
+        ? new Promise((resolve) => { releaseFirst = resolve; })
+        : Promise.resolve({ items: [titled('Second host finding', other)] })));
+      const { rerender } = render(<Card hostId={HOST} />);
+      rerender(<Card hostId={other} />);
+      expect(await screen.findByText('Second host finding')).toBeInTheDocument();
+      await act(async () => { releaseFirst({ items: [titled('First host finding', HOST)] }); });
+      expect(screen.getByText('Second host finding')).toBeInTheDocument();
+      expect(screen.queryByText('First host finding')).toBeNull();
+    });
+
+    it('does not show the previous host’s findings while the new host’s load', async () => {
+      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => (host_id === HOST
+        ? Promise.resolve({ items: [titled('First host finding', HOST)] })
+        : new Promise(() => undefined)));
+      const { rerender } = render(<Card hostId={HOST} />);
+      expect(await screen.findByText('First host finding')).toBeInTheDocument();
+      rerender(<Card hostId={other} />);
+      expect(screen.queryByText('First host finding')).toBeNull();
+    });
+
+    it('a save that returns after the step changes nothing in the new host’s list', async () => {
+      const user = userEvent.setup();
+      const own = titled('First host finding', HOST);
+      let releaseSave!: (v: unknown) => void;
+      api.listFindings.mockImplementation(({ host_id }: { host_id: number }) => Promise.resolve({
+        // The same finding id is on both hosts' lists (a shared issue).
+        items: [host_id === HOST ? { ...own, status: 'open' } : { ...own, title: 'As listed for the second host', hosts: [row(32, other, 'open')], status: 'open' }],
+      }));
+      api.setFindingStatus.mockReturnValue(new Promise((resolve) => { releaseSave = resolve; }));
+      const { rerender } = render(<Card hostId={HOST} />);
+      await user.click(await screen.findByLabelText('Status for First host finding'));
+      await user.click(await screen.findByRole('option', { name: 'Confirmed' }));
+      await waitFor(() => expect(api.setFindingStatus).toHaveBeenCalled());
+
+      rerender(<Card hostId={other} />);
+      expect(await screen.findByText('As listed for the second host')).toBeInTheDocument();
+      await act(async () => { releaseSave({ ...own, status: 'confirmed' }); });
+      // The first host's copy of the finding did not replace this host's row.
+      expect(screen.getByText('As listed for the second host')).toBeInTheDocument();
+      expect(screen.queryByText('First host finding')).toBeNull();
+    });
   });
 
   // Review 2026-10-01 C2 — a list row carries at most five endpoints.  With

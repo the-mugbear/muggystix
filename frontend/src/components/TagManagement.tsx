@@ -21,6 +21,7 @@ import { useProject } from '../contexts/ProjectContext';
 import { useToast } from '../contexts/ToastContext';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
+import { projectRoleAtLeast } from '../utils/projectRole';
 import { safeFallback } from '../utils/uiStyles';
 import { Badge } from './ui/badge';
 import { Button } from './ui/button';
@@ -30,6 +31,10 @@ import { Input } from './ui/input';
 
 const TagManagement: React.FC = () => {
   const { currentProject } = useProject();
+  // Renaming and deleting a tag need the project analyst (the list is every
+  // member's).  `my_role` is 'admin' for a global admin; a role that has not
+  // loaded leaves the decision to the server (style guide §40).
+  const canEdit = currentProject?.my_role === undefined || projectRoleAtLeast(currentProject.my_role, 'analyst');
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const [tags, setTags] = useState<HostTagWithCount[]>([]);
@@ -131,8 +136,9 @@ const TagManagement: React.FC = () => {
       {confirmEl}
       <div>
         <p className="mb-sm text-caption text-muted-foreground">
-          Tags are created by applying them to hosts (Hosts → select → Tag). Rename or delete
-          them here.
+          {canEdit
+            ? 'Tags are created by applying them to hosts (Hosts → select → Tag). Rename or delete them here.'
+            : 'The tags applied to this project’s hosts.'}
         </p>
 
         {error && <p className="mb-sm text-metadata text-destructive" role="alert">{error}</p>}
@@ -147,7 +153,7 @@ const TagManagement: React.FC = () => {
         {/* v5.288.0 — empty states left-aligned, like every other section. */}
         {!loading && !error && tags.length === 0 && (
           <p className="text-metadata text-muted-foreground">
-            No tags yet. Select hosts on the Hosts page and use Tag to create one.
+            {canEdit ? 'No tags yet. Select hosts on the Hosts page and use Tag to create one.' : 'No tags yet.'}
           </p>
         )}
 
@@ -200,7 +206,7 @@ const TagManagement: React.FC = () => {
                     <td className="py-xs pr-xs text-muted-foreground">{tag.host_count ?? 0}</td>
                     <td className="py-xs">
                       <div className="flex justify-end gap-xs">
-                        {editingId === tag.id ? (
+                        {!canEdit ? null : editingId === tag.id ? (
                           <>
                             <Button
                               size="sm" variant="outline"

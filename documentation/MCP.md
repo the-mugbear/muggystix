@@ -93,7 +93,7 @@ What that takes, beyond "which hosts match X":
 | "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
-| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) — each finding with its `confirmations` (the test results the report prints; `confirmations_omitted` for the rest) and, in an addendum, its `change` (`new` · `new_hosts` · `severity_changed`, with `previous_severity`); `delta.findings_with_changed_severity`, `summary.evidence_records` / `agent_evidence_records` |
+| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) — each finding with its `confirmations` (the test results the report prints; `confirmations_omitted` for the rest) and, in an addendum, its `change` (`new` · `new_hosts` · `severity_changed`, with `previous_severity`); `delta.findings_with_changed_severity`, `summary.evidence_records` / `agent_evidence_records`. `confirmations` and `evidence_records` are only what the report prints (`summary.evidence_records_not_printed` counts the rest). Each finding's `images[]` (every ticked image) carries `placed_in`, `printed` and `printed_in`; `summary.images_printed` + `images_trailing` + `images_not_printed` = `summary.images`, with `images_not_printed_reasons` and `template_images` — all `null` when printing could not be measured |
 
 Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
@@ -143,9 +143,11 @@ Two things an assist agent is routinely asked for, and how each is served:
   A placeholder the agent could not source is left visibly unfilled rather than
   invented — a number nobody can trace is worse than a gap somebody can see.
 
-Every session sees the WHOLE catalogue (58 tools at v2.448.0, as `tools/list`
-returns it) — nothing is filtered by workflow since
-v2.337.0. Eight of those belong to the session rather than to any kind of work:
+Every session sees the WHOLE catalogue, as `tools/list` returns it — nothing is
+filtered by workflow since v2.337.0. (How many tools that is changes with most
+releases, so no number is kept here: `GET /api/v1/references/mcp-tools`, which
+the **Reference → MCP** page shows, is read off the server's registry and is
+the count.) Eight of the tools belong to the session rather than to any kind of work:
 **`agent_identity`** (what am I, what may I write, when does my key expire),
 **`session_renew`** (same key, later deadline), **`end_session`** (only when
 the operator says they are finished — it revokes the key; takes an optional

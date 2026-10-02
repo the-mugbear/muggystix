@@ -6,13 +6,20 @@
 # another 3.11 tag loaded.  Declared before the first FROM so every stage can
 # use it.
 ARG PYTHON_IMAGE=python:3.11.16-slim-trixie
+# The stage that downloads Quarto.  It was `debian:bookworm-slim`, the one
+# base still floating after the others were pinned (branch review B2): pinned
+# to the point release, overridable the same way (DEBIAN_IMAGE in .env).
+# Nothing from this stage reaches an image except /opt/quarto, whose tarball
+# is checksum-verified below, so any Debian with curl serves on a host that
+# holds a different tag.
+ARG DEBIAN_IMAGE=debian:12.15-slim
 
 # Quarto (v2.381.0) — the client-report renderer, used ONLY by the
 # report-worker target below.  Pinned version, checksum-verified tarball; it
 # bundles Pandoc; reports are HTML and Word (no PDF since v2.407.0 — Word
 # exports it), so no TeX is installed.  Its own stage so the
 # download is cached apart from the application code.
-FROM debian:bookworm-slim AS quarto
+FROM ${DEBIAN_IMAGE} AS quarto
 ARG QUARTO_VERSION=1.10.18
 ARG QUARTO_SHA256_AMD64=afad071b5bd22c02f2d300695743189d3650e0537a53073e654b630cff2b0c73
 ARG QUARTO_SHA256_ARM64=f6a07df68e25330b5df34f65d3df66bca605acce3b830c593a58e91884d4cf6c

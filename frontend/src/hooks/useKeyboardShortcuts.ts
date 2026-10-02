@@ -21,19 +21,12 @@
  */
 import { useEffect, useRef } from 'react';
 
+import { isPageShortcutEvent } from '../utils/keyboard';
+
 const PREFIX_TIMEOUT_MS = 1500;
 
 export type ShortcutHandler = (event: KeyboardEvent) => void;
 export type ShortcutMap = Record<string, ShortcutHandler>;
-
-const isEditableTarget = (target: EventTarget | null): boolean => {
-  if (!(target instanceof HTMLElement)) return false;
-  // closest() also matches the element itself, so this covers both
-  // <input> directly and elements nested inside a contenteditable host.
-  return !!target.closest(
-    'input, textarea, select, [contenteditable=""], [contenteditable="true"]',
-  );
-};
 
 export function useKeyboardShortcuts(shortcuts: ShortcutMap, enabled: boolean = true): void {
   // Ref so the handler effect doesn't re-bind on every keystroke;
@@ -58,8 +51,11 @@ export function useKeyboardShortcuts(shortcuts: ShortcutMap, enabled: boolean = 
     const handler = (event: KeyboardEvent) => {
       // Ignore modifier-combos — we don't own those (Cmd+K palette
       // lives in Layout, browser shortcuts everywhere else).
-      if (event.metaKey || event.ctrlKey || event.altKey) return;
-      if (isEditableTarget(event.target)) return;
+      // …nor a key a field, a Select or a menu is using (their typeahead does
+      // not stop it: `g` then `h` typed at an open list navigated away), nor
+      // an auto-repeat.  One test for every page shortcut: utils/keyboard.
+      // (A dialog does not block these: the Hosts inspector is one.)
+      if (!isPageShortcutEvent(event, { allowDialog: true })) return;
 
       // Normalise to lowercase for matching; `?` is `shift+/` on most
       // layouts, so we read `event.key` directly which gives us the

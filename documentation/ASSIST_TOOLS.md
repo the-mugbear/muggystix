@@ -262,8 +262,15 @@ keeps the references that section holds (a dropped one moves the image back
 under Evidence) and may reference only ids from that list: any other id is a
 422 naming it, and a reference to an image nobody ticked "In report" is refused
 at accept until a person ticks it. The agent's report read
-(`assist_get_client_report`) lists each finding's `images` (with `placed_in`)
-beside `evidence`, which is now only the images no section places. There is no
+(`assist_get_client_report`) lists each finding's `images` — every image
+ticked for the report, with `placed_in`, and with `printed` / `printed_in`:
+whether THIS report's template prints it and in which sections (printed with
+`printed_in: []` = the trailing evidence block; both `null` when it could not
+be measured or the report was issued before it was) — beside `evidence`, which
+is now only the images no section places. Its `summary` says the same in
+counts: `images_printed`, `images_trailing` and `images_not_printed` add up to
+`images`, with `images_not_printed_reasons` and `template_images` (what the
+template declares it prints). There is no
 agent write for a caption or the tick: both are decisions of the person who
 attached the image.
 
@@ -351,7 +358,10 @@ output excerpt, date, who; at most 10) with `confirmations_omitted`, and in an
 addendum `previous_severity` / `previous_severity_label` beside the new
 `change` kind `severity_changed`; `delta` carries
 `findings_with_changed_severity`, and `summary` carries `evidence_records` /
-`agent_evidence_records`. `assist_get_finding` lists at most 100
+`agent_evidence_records`. `confirmations` and `evidence_records` are only what
+the report PRINTS: a finding the template lists without its details (an
+addendum's already-reported finding) has an empty list, and
+`summary.evidence_records_not_printed` counts the results held back. `assist_get_finding` lists at most 100
 `scanner_evidence` rows and says so with `scanner_evidence_total` /
 `scanner_evidence_truncated`.
 

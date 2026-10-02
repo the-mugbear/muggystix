@@ -19,6 +19,7 @@ import {
   EngagementSettings,
   ProjectMember,
   ReportJob,
+  ReportSummary,
   ReportTemplate,
   deleteClientReport,
   downloadClientReportScope,
@@ -40,6 +41,7 @@ import { useDiscardGuard } from '../hooks/useDiscardGuard';
 import { useVisibilityPoll } from '../hooks/useVisibilityPoll';
 import { formatApiError } from '../utils/apiErrors';
 import { formatTimestamp } from '../utils/relativeTime';
+import { REPORT_FIELD_LABELS } from '../utils/reportImages';
 import { safeFallback } from '../utils/uiStyles';
 import PostureSection from '../components/posture/PostureSection';
 import PostureMeasure from '../components/posture/PostureMeasure';
@@ -73,6 +75,72 @@ export const evidenceRecordsNotice = (total: number, byAgent?: number | null): s
   return agent > 0
     ? `${first}; ${agent.toLocaleString()} ${agent === 1 ? 'was' : 'were'} recorded by an agent.`
     : `${first}.`;
+};
+
+/** "N further test results belong to findings this report lists without their
+ *  details; they are not printed." — an addendum's already-reported findings. */
+export const evidenceRecordsNotPrintedNotice = (count: number): string =>
+  `${count.toLocaleString()} further test result${count === 1 ? ' belongs' : 's belong'} to findings this report lists without their details; ${count === 1 ? 'it is' : 'they are'} not printed.`;
+
+const joinWords = (words: string[]): string =>
+  words.length <= 1 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words[words.length - 1]}`;
+
+/** Why ticked images print nowhere in this report, as the end of a sentence
+ *  ("… are not printed" + this). */
+const notPrintedWhy = (s: ReportSummary): string => {
+  const reasons = s.images_not_printed_reasons;
+  const template = s.template_images;
+  const byTemplate = (reasons?.section_not_printed ?? 0) + (reasons?.no_evidence_block ?? 0);
+  if (reasons && reasons.finding_not_detailed > 0 && byTemplate === 0) {
+    return reasons.finding_not_detailed === 1
+      ? ': its finding is listed in this report without its details'
+      : ': their findings are listed in this report without their details';
+  }
+  if (!template) return ' by this template';
+  const fields = template.fields.map((f) => (REPORT_FIELD_LABELS[f] ?? f).toLowerCase());
+  if (!fields.length) {
+    return template.trailing
+      ? ' where they are placed: this template prints images only under Evidence'
+      : ' by this template';
+  }
+  const also = reasons?.finding_not_detailed
+    ? ', and it lists some findings without their details' : '';
+  return template.trailing
+    ? ` by this template: in the text it prints only images placed in the ${joinWords(fields)}${also}`
+    : ` by this template: it prints only images placed in the ${joinWords(fields)}${also}`;
+};
+
+/**
+ * Where the report's ticked images print — in THIS report, with ITS template
+ * (review 2026-10-01 S2).  The line used to read "N placed in text, M under
+ * Evidence" whatever the template: the Executive brief prints no image, the
+ * Remediation worklist only those placed in a recommendation, and an addendum
+ * lists a finding the client already has in one line.  The server measures
+ * it; with no measurement (a report issued before this, or a template that
+ * cannot be read) the line claims nothing.
+ */
+export const evidenceImagesLine = (s: ReportSummary): string => {
+  const total = s.images ?? 0;
+  const inText = s.images_printed;
+  const trailing = s.images_trailing;
+  const unprinted = s.images_not_printed;
+  if (!total) return '';
+  if (inText == null || trailing == null || unprinted == null) return 'Ticked “In report” on the findings';
+  const template = s.template_images;
+  if (inText + trailing === 0 && template && !template.fields.length && !template.trailing) {
+    return `This template prints no evidence images (${total.toLocaleString()} ticked)`;
+  }
+  const parts: string[] = [];
+  if (inText + trailing > 0) {
+    // "under Evidence" is left out for a template with no such block.
+    parts.push(template && !template.trailing && trailing === 0
+      ? `${inText.toLocaleString()} in the text`
+      : `${inText.toLocaleString()} in the text, ${trailing.toLocaleString()} under Evidence`);
+  }
+  if (unprinted > 0) {
+    parts.push(`${unprinted.toLocaleString()} ticked image${unprinted === 1 ? ' is' : 's are'} not printed${notPrintedWhy(s)}`);
+  }
+  return parts.join(' · ');
 };
 
 interface Form {
@@ -238,8 +306,15 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
           {!!s?.agent_images && (
             <p className="mt-xs">{s.agent_images} image{s.agent_images === 1 ? ' comes' : 's come'} from notes an agent wrote.</p>
           )}
+          {!!s?.images_not_printed && (
+            // Said before the sign-off: a ticked image this report will not show.
+            <p className="mt-xs break-words">Evidence images: {evidenceImagesLine(s)}.</p>
+          )}
           {!!s?.evidence_records && (
             <p className="mt-xs">{evidenceRecordsNotice(s.evidence_records, s.agent_evidence_records)}</p>
+          )}
+          {!!s?.evidence_records_not_printed && (
+            <p className="mt-xs">{evidenceRecordsNotPrintedNotice(s.evidence_records_not_printed)}</p>
           )}
           {!!s?.scope_external?.file && (
             <p className="mt-xs">Its scope ({s.scope_external.networks.toLocaleString()} networks) is over the template&apos;s limit: the report names <span className="font-medium">{s.scope_external.file.name}</span> instead of listing it — send that file with the report.</p>
@@ -431,15 +506,14 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
             {s.missing_text?.length ? 'Listed below' : 'Every finding has its text'}
           </PostureMeasure>
           <PostureMeasure label="Evidence images" value={s.images ?? 0}
-            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. An image its author placed in a written section (Insert image, in the report text editor) prints there; the rest print under the finding's Evidence. WebP images cannot be placed in every format and are skipped.">
+            info="Images are opt-in: tick “In report” on an image attached to a finding's evidence or comments. Where one prints depends on the report's template: the Penetration test report prints an image its author placed in a written section (Insert image, in the report text editor) there and the rest under the finding's Evidence; the Remediation worklist prints only images placed in a recommendation; the Executive brief prints none. The line below says what this report does. WebP images cannot be placed in every format and are skipped.">
             {s.images ? (
-              // A report issued before images could be placed has no split.
-              <>
-                {s.images_placed != null && s.images_unplaced != null
-                  ? `${s.images_placed} placed in text, ${s.images_unplaced} under Evidence`
-                  : 'Ticked “In report” on the findings'}
+              // What THIS report's template prints (`evidenceImagesLine`); a
+              // report issued before that was measured claims nothing.
+              <span className="break-words" data-testid="report-images-line">
+                {evidenceImagesLine(s)}
                 {s.images_skipped ? ` · ${s.images_skipped} skipped (WebP)` : ''}
-              </>
+              </span>
             ) : s.images_skipped ? `${s.images_skipped} skipped (WebP)`
               : 'Tick “In report” on a finding’s image to include it'}
           </PostureMeasure>
@@ -503,6 +577,11 @@ const ReportDetailView: React.FC<{ id: number }> = ({ id }) => {
         // how much of it a person did not run.
         <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-notice">
           {evidenceRecordsNotice(s.evidence_records, s.agent_evidence_records)}
+        </p>
+      )}
+      {!!s.evidence_records_not_printed && (
+        <p className="break-words text-caption text-muted-foreground" data-testid="report-evidence-not-printed">
+          {evidenceRecordsNotPrintedNotice(s.evidence_records_not_printed)}
         </p>
       )}
 

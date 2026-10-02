@@ -35,7 +35,11 @@ vi.mock('react-router-dom', async () => {
   const actual = await vi.importActual<typeof import('react-router-dom')>('react-router-dom');
   return { ...actual, useNavigate: () => navigate };
 });
-vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: () => undefined }));
+// The 60 s tick, run by hand.
+const pollTick = vi.hoisted(() => ({ current: null as null | (() => Promise<void>) }));
+vi.mock('../../hooks/useVisibilityPoll', () => ({
+  useVisibilityPoll: (fn: () => Promise<void>) => { pollTick.current = fn; },
+}));
 
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import Proposals from '../../pages/Proposals';
@@ -286,5 +290,126 @@ describe('Proposals page — keyboard review', () => {
     fireEvent.keyDown(reason, { key: 'j' });
     expect(acceptProposal).not.toHaveBeenCalled();
     expect(cursorRow()).toBe('1');
+  });
+
+  // Review 2026-10-01 S1 — Radix typeahead does not stop the key: with the
+  // Status select focused (or its list, or a menu, open) `a` moved the
+  // widget's highlight AND accepted the proposal under the cursor.
+  it.each([
+    ['a Select trigger', () => screen.getByRole('combobox', { name: /Status/ })],
+    ['an open list', () => {
+      const list = document.createElement('div');
+      list.setAttribute('role', 'listbox');
+      const option = document.createElement('div');
+      list.appendChild(option);
+      document.body.appendChild(list);
+      return option;
+    }],
+    ['a menu', () => {
+      const menu = document.createElement('div');
+      menu.setAttribute('role', 'menu');
+      document.body.appendChild(menu);
+      return menu;
+    }],
+    ['popper content', () => {
+      const popper = document.createElement('div');
+      popper.setAttribute('data-radix-popper-content-wrapper', '');
+      document.body.appendChild(popper);
+      return popper;
+    }],
+  ])('`a`, `r` and `j` do nothing while %s has the key', async (_name, target) => {
+    await load();
+    fireEvent.keyDown(window, { key: 'j' });
+    const el = target();
+    fireEvent.keyDown(el, { key: 'a' });
+    fireEvent.keyDown(el, { key: 'r' });
+    fireEvent.keyDown(el, { key: 'j' });
+    expect(acceptProposal).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/Why reject it/)).toBeNull();
+    // (On the real trigger the Select's own typeahead answers the letter by
+    // changing the filter, which clears the cursor — that is the widget's.)
+    if (el.getAttribute('role') !== 'combobox') expect(cursorRow()).toBe('1');
+    if (el.parentElement === document.body) el.remove(); else el.closest('[role="listbox"]')?.remove();
+  });
+
+  it('a held key (auto-repeat) accepts nothing', async () => {
+    await load();
+    acceptProposal.mockResolvedValue({ ...row(1), status: 'accepted' });
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'a', repeat: true });
+    fireEvent.keyDown(window, { key: 'r', repeat: true });
+    expect(acceptProposal).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText(/Why reject it/)).toBeNull();
+    // The press itself still counts.
+    fireEvent.keyDown(window, { key: 'a' });
+    await waitFor(() => expect(acceptProposal).toHaveBeenCalledTimes(1));
+  });
+
+  it('a second `a` while the first decision is in flight does nothing', async () => {
+    await load();
+    let settle: (p: Proposal) => void = () => undefined;
+    acceptProposal.mockReturnValue(new Promise<Proposal>((resolve) => { settle = resolve; }));
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'a' });
+    await waitFor(() => expect(acceptProposal).toHaveBeenCalledTimes(1));
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'a' });
+    expect(acceptProposal).toHaveBeenCalledTimes(1);
+    await act(async () => { settle({ ...row(1), status: 'accepted' }); });
+  });
+
+  // S2 — the list is newest first and re-reads itself: the cursor stays on
+  // its PROPOSAL when one arrives above it.
+  it('keeps the cursor on its proposal when a re-read puts a new one above it', async () => {
+    await load();
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'j' });
+    expect(cursorRow()).toBe('2');
+    listProposals.mockResolvedValue({ total: 4, items: [row(99), ...page(1, 3)], has_more: false });
+    await act(async () => { await pollTick.current?.(); });
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(4));
+    expect(cursorRow()).toBe('2');
+    acceptProposal.mockResolvedValue({ ...row(2), status: 'accepted' });
+    fireEvent.keyDown(window, { key: 'a' });
+    await waitFor(() => expect(acceptProposal).toHaveBeenCalledWith(2, {}));
+  });
+
+  it('moves to the row that took its place when the cursor’s proposal is gone', async () => {
+    await load();
+    fireEvent.keyDown(window, { key: 'j' });
+    fireEvent.keyDown(window, { key: 'j' });
+    listProposals.mockResolvedValue({ total: 2, items: [row(1), row(3)], has_more: false });
+    await act(async () => { await pollTick.current?.(); });
+    await waitFor(() => expect(document.querySelectorAll('[data-proposal]')).toHaveLength(2));
+    expect(cursorRow()).toBe('3');
+  });
+});
+
+// M9 — `?agent_session_id=abc` was sent as NaN and shown as "session #NaN".
+describe('Proposals page — a session id that is not a number', () => {
+  const Address = () => {
+    const [params] = useSearchParams();
+    return <output data-testid="address">{params.toString()}</output>;
+  };
+
+  it('is ignored and taken out of the address', async () => {
+    listProposals.mockResolvedValue({ total: 2, items: page(1, 2), has_more: false });
+    render(
+      <MemoryRouter initialEntries={['/proposals?agent_session_id=abc&scope=all']}><Proposals /><Address /></MemoryRouter>,
+    );
+    await waitFor(() => expect(listProposals).toHaveBeenCalled());
+    expect(listProposals.mock.calls.every(([q]) => q.agent_session_id === undefined)).toBe(true);
+    expect(screen.queryByText(/NaN/)).toBeNull();
+    await waitFor(() => expect(screen.getByTestId('address')).toHaveTextContent(/^scope=all$/));
+  });
+
+  it('keeps a real one', async () => {
+    listProposals.mockResolvedValue({ total: 2, items: page(1, 2), has_more: false });
+    render(
+      <MemoryRouter initialEntries={['/proposals?agent_session_id=5&scope=all']}><Proposals /><Address /></MemoryRouter>,
+    );
+    await waitFor(() => expect(listProposals).toHaveBeenCalledWith(expect.objectContaining({ agent_session_id: 5 })));
+    expect(screen.getByText(/From agent session #5/)).toBeInTheDocument();
+    expect(screen.getByTestId('address')).toHaveTextContent('agent_session_id=5&scope=all');
   });
 });

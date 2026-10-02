@@ -409,4 +409,33 @@ describe('Scopes page — subnet search', () => {
     expect(screen.getByText('172.16.9.0/24')).toBeInTheDocument();
     expect(screen.queryByText('10.77.1.0/24')).toBeNull();
   });
+
+  // Review 2026-10-01 M2 — the coverage does not depend on the search: the
+  // superseded reload's subnets are dropped, its coverage is not.
+  it('a search that supersedes a reload keeps the reload’s coverage', async () => {
+    const found = { ...scope, subnets: [{ ...scope.subnets[0], id: 99, cidr: '172.16.9.0/24' }] };
+    renderAt('/scopes');
+    await screen.findByText('10.77.1.0/24');
+
+    let releaseReload!: (v: unknown) => void;
+    const slowReload = new Promise((resolve) => { releaseReload = resolve; });
+    let releaseCoverage!: (v: unknown) => void;
+    mocked.getDefaultScope.mockImplementation(({ subnetsSearch }: { subnetsSearch: string }) =>
+      (subnetsSearch ? Promise.resolve(found) : slowReload));
+    mocked.getScopeCoverage.mockReturnValue(new Promise((resolve) => { releaseCoverage = resolve; }));
+    mocked.addScopeSubnets.mockResolvedValue({});
+    fireEvent.change(screen.getByLabelText('CIDR or IP'), { target: { value: '10.9.9.0/24' } });
+    fireEvent.click(screen.getAllByRole('button', { name: /^Add$/ })[0]);
+    await waitFor(() => expect(mocked.getScopeCoverage).toHaveBeenCalledTimes(2));
+
+    fireEvent.change(screen.getByLabelText('Search subnets by CIDR or description'), { target: { value: '172' } });
+    await screen.findByText('172.16.9.0/24');
+    await act(async () => {
+      releaseCoverage({ ...coverage, scoped_hosts: 12345, total_hosts: 12347 });
+      releaseReload(scope);
+      await Promise.resolve();
+    });
+    expect(await screen.findByText('12,345')).toBeInTheDocument();
+    expect(screen.getByText('172.16.9.0/24')).toBeInTheDocument();
+  });
 });

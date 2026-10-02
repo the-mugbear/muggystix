@@ -2,15 +2,25 @@
  * Row cursor for a list page — the Hosts keyboard model (j/k or ↓/↑ move,
  * Enter opens) for the other lists (review 2026-09-23 B-UI-6).
  *
- * A window listener with the same guards as Hosts: never while typing in a
- * field, never with a modifier, never while a dialog is open, and Enter on
- * a focused button or link is left to that element.  The cursor row is the
- * one whose index equals `cursor`; mark it with `cursorRowProps(i)` so it
- * is highlighted and scrolled into view.  `resetKey` (a page, a filter)
- * clears the cursor when the rows it indexed are replaced.
+ * A window listener guarded by `utils/keyboard.isPageShortcutEvent`: never
+ * while typing in a field, never with a modifier, never while a dialog, a
+ * Select or a menu is open, and Enter on a focused button or link is left to
+ * that element.  Mark the cursor row with `cursorRowProps(i)` so it is
+ * highlighted and scrolled into view.  `resetKey` (a page, a filter) clears
+ * the cursor when the rows it indexed are replaced.
+ *
+ * **Anchor by id when the list can change under the reader** (review
+ * 2026-10-01 S2).  A bare index is only right while the rows stay put: on a
+ * newest-first list that re-reads itself, one arriving row shifts every
+ * other, and the highlight — with whatever the page's keys act on — lands on
+ * a different row.  Pass `getId` (the id of row `index`) and the cursor
+ * follows its ROW: after a reload it is wherever that id now is; if the row
+ * is gone, it is the row that took its place.  The index is derived during
+ * render, so there is no frame in which the cursor names the wrong row.
  */
 import { useEffect, useRef, useState } from 'react';
 import { cn } from '../utils/cn';
+import { isPageShortcutEvent } from '../utils/keyboard';
 
 /**
  * The cursor row's look, on every list (Hosts included): a primary tint and a
@@ -25,23 +35,75 @@ import { cn } from '../utils/cn';
  */
 export const LIST_CURSOR_CLASS = 'bg-primary/10 ring-2 ring-inset ring-ring';
 
-const isTyping = (t: HTMLElement | null) =>
-  !!t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable);
+export type ListCursorId = string | number;
+
+interface CursorState {
+  index: number;
+  /** The id of the row the cursor was put on (only with `getId`). */
+  id: ListCursorId | null;
+}
+
+const NONE: CursorState = { index: -1, id: null };
+
+export interface UseListCursorOptions {
+  enabled?: boolean;
+  resetKey?: unknown;
+  /** The id of row `index`: anchors the cursor to its row across reloads. */
+  getId?: (index: number) => ListCursorId | null | undefined;
+}
 
 export function useListCursor(
   count: number,
   onOpen: (index: number) => void,
-  { enabled = true, resetKey }: { enabled?: boolean; resetKey?: unknown } = {},
+  { enabled = true, resetKey, getId }: UseListCursorOptions = {},
 ) {
-  const [cursor, setCursor] = useState(-1);
+  const [state, setState] = useState<CursorState>(NONE);
   const onOpenRef = useRef(onOpen);
   onOpenRef.current = onOpen;
+  const getIdRef = useRef(getId);
+  getIdRef.current = getId;
+
+  // Where the cursor IS, given the rows as they are now.
+  let cursor = state.index;
+  if (cursor >= 0) {
+    if (getId && state.id != null && !(cursor < count && getId(cursor) === state.id)) {
+      let found = -1;
+      for (let i = 0; i < count; i += 1) {
+        if (getId(i) === state.id) { found = i; break; }
+      }
+      // Gone: the row that took its place.
+      cursor = found >= 0 ? found : Math.min(cursor, count - 1);
+    } else if (cursor >= count) {
+      // A shorter list (a filter, a removal) must not leave the cursor past
+      // its end.
+      cursor = count - 1;
+    }
+  }
   const cursorRef = useRef(cursor);
   cursorRef.current = cursor;
+  const cursorId = cursor >= 0 && getId ? getId(cursor) ?? null : null;
 
-  useEffect(() => { setCursor(-1); }, [resetKey]);
-  // A shorter list (a filter, a removal) must not leave the cursor past its end.
-  useEffect(() => { setCursor((c) => (c >= count ? count - 1 : c)); }, [count]);
+  const place = (index: number) => {
+    setState(index < 0 ? NONE : { index, id: getIdRef.current?.(index) ?? null });
+  };
+  const placeRef = useRef(place);
+  placeRef.current = place;
+
+  useEffect(() => { setState(NONE); }, [resetKey]);
+
+  // Keep the stored cursor in step with the derived one, so "the row that
+  // took its place" becomes the anchor.  An anchored cursor waits out an
+  // empty list (a reload that shows no rows while it loads): its row is
+  // looked for again when the rows are back.
+  useEffect(() => {
+    const anchored = getIdRef.current != null;
+    if (anchored && count === 0) return;
+    setState((prev) => {
+      if (prev.index < 0) return prev;
+      const id = anchored ? cursorId : null;
+      return prev.index === cursor && prev.id === id ? prev : { index: cursor, id };
+    });
+  }, [cursor, cursorId, count]);
 
   useEffect(() => {
     if (cursor < 0 || typeof document === 'undefined') return;
@@ -51,20 +113,19 @@ export function useListCursor(
   useEffect(() => {
     if (!enabled) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // Holding j/k walks the list; Enter opens once per press.
+      if (!isPageShortcutEvent(e, { allowRepeat: e.key !== 'Enter' })) return;
       const t = e.target as HTMLElement | null;
-      if (isTyping(t)) return;
       if ((t?.tagName === 'BUTTON' || t?.tagName === 'A') && (e.key === 'Enter' || e.key === ' ')) return;
-      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
       if (count === 0) return;
+      const c = cursorRef.current;
       if (e.key === 'j' || e.key === 'ArrowDown') {
         e.preventDefault();
-        setCursor((c) => Math.min(c + 1, count - 1));
+        placeRef.current(Math.min(c + 1, count - 1));
       } else if (e.key === 'k' || e.key === 'ArrowUp') {
         e.preventDefault();
-        setCursor((c) => (c <= 0 ? 0 : c - 1));
+        placeRef.current(c <= 0 ? 0 : c - 1);
       } else if (e.key === 'Enter') {
-        const c = cursorRef.current;
         if (c >= 0 && c < count) {
           e.preventDefault();
           onOpenRef.current(c);
@@ -82,5 +143,5 @@ export function useListCursor(
       ? { 'data-list-cursor': 'true' as const, className: cn(className, LIST_CURSOR_CLASS) }
       : { className };
 
-  return { cursor, setCursor, cursorRowProps };
+  return { cursor, cursorId, setCursor: place, cursorRowProps };
 }

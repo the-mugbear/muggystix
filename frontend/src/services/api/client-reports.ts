@@ -98,12 +98,21 @@ export interface ReportTemplateAssetChange {
   warnings: string[];
 }
 
+/** Which evidence images a template prints (template.json → `images`): the
+ *  written fields whose placed images it prints, and whether it prints the
+ *  rest in a trailing Evidence block. */
+export interface ReportTemplateImages {
+  fields: string[];
+  trailing: boolean;
+}
+
 export interface ReportTemplate {
   name: string;
   title: string;
   description: string;
   formats: ClientReportFormat[];
   assets?: ReportTemplateAsset[];
+  images?: ReportTemplateImages;
 }
 
 export interface ReportFile {
@@ -133,9 +142,30 @@ export interface ReportSummary {
   images?: number;
   /** Of `images`: placed inside a finding's written section by its author,
    *  and left for the trailing evidence block. Absent on a report issued
-   *  before images could be placed. */
+   *  before images could be placed.  What the AUTHORS did — where the report
+   *  prints them is the three counts below. */
   images_placed?: number;
   images_unplaced?: number;
+  /** Where THIS report's template prints the ticked images: inside a written
+   *  section, in the trailing Evidence block, or nowhere (the brief prints no
+   *  image; the worklist only those placed in the recommendation; an addendum
+   *  lists a finding the client already has in one line).  The three add up
+   *  to `images`.  Null when it could not be measured (the template is gone
+   *  or broken), absent on a report issued before this — say nothing then. */
+  images_printed?: number | null;
+  images_trailing?: number | null;
+  images_not_printed?: number | null;
+  /** Why the unprinted ones print nowhere. */
+  images_not_printed_reasons?: {
+    /** On a finding the report lists without its details. */
+    finding_not_detailed: number;
+    /** Placed in a section this template does not print with images. */
+    section_not_printed: number;
+    /** Placed nowhere, and this template has no trailing Evidence block. */
+    no_evidence_block: number;
+  } | null;
+  /** What the template declares it prints (template.json → `images`). */
+  template_images?: ReportTemplateImages | null;
   images_skipped?: number;
   /** v5.316.0 — images in the report attached to an agent-written note. A warning, never a block. */
   agent_images?: number;
@@ -160,6 +190,9 @@ export interface ReportSummary {
   } | null;
   /** Test results the report prints as "how it was confirmed"… */
   evidence_records?: number;
+  /** …those of findings the report lists without their details: not printed,
+   *  and not in the report's data.  Null / absent: not measured. */
+  evidence_records_not_printed?: number | null;
   /** …and how many of those an agent recorded.  A notice, never a block. */
   agent_evidence_records?: number;
   /** Set when the summary could not be built (e.g. an addendum lost its baseline). */

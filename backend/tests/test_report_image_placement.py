@@ -45,6 +45,14 @@ PNG = bytes.fromhex(
     "1f15c4890000000d49444154789c6360000002000154a24f5d0000000049454e44ae426082"
 )
 WEBP = b"RIFF\x24\x00\x00\x00WEBPVP8 " + b"\x00" * 24
+PRINTS_EVERYTHING = (
+    "---\ntitle: x\n---\n"
+    "<% for f in findings %>\n"
+    '<% for field in ("description", "impact", "steps_to_reproduce", "recommendation", "references") %>'
+    "<< md(f, field) >><% endfor %>\n"
+    "<% for e in f.evidence %><< image(e) >><% endfor %>\n"
+    "<% endfor %>\n"
+)
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +63,23 @@ def storage(tmp_path, monkeypatch):
     (folder / "template.json").write_text(json.dumps({
         "title": "Test template", "entry": "report.qmd", "formats": ["html", "docx"],
     }))
-    (folder / "report.qmd").write_text("---\ntitle: x\n---\n")
+    # Prints every finding's written sections (with the images placed in
+    # them) and the trailing evidence block, as the shipped pentest does.
+    (folder / "report.qmd").write_text(PRINTS_EVERYTHING)
+    # Two more, to pin that a report's images are what ITS template prints
+    # (review 2026-10-01 S2): a brief that prints no image, and a worklist
+    # that prints only those placed in the recommendation.
+    for name, declared, body in (
+        ("brief", {"fields": [], "trailing": False},
+         '<% for f in findings %><< md(f, "recommendation", images=False) >><% endfor %>'),
+        ("worklist", {"fields": ["recommendation"], "trailing": False},
+         '<% for f in findings %><< md(f, "recommendation") >><% endfor %>'),
+    ):
+        (root / name).mkdir()
+        (root / name / "template.json").write_text(json.dumps({
+            "title": name, "entry": "report.qmd", "formats": ["html"], "images": declared,
+        }))
+        (root / name / "report.qmd").write_text("---\ntitle: x\n---\n" + body + "\n")
     monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
     monkeypatch.setattr(settings, "UPLOAD_DIR", str(tmp_path / "uploads"))
     monkeypatch.setattr(settings, "REPORT_FILES_DIR", str(tmp_path / "uploads" / "client_reports"))
@@ -165,6 +189,86 @@ def test_a_reference_is_a_markdown_image_whose_target_is_evidence_and_an_id():
     # Markdown the report's reader has no attribute syntax for: the braces
     # are text after the image, and the image is a reference.
     assert ids("![x](evidence:1){.c onerror=alert(1)}") == [1]
+
+
+# Review 2026-10-01 M1 — ONE grammar on every side.  The same table, row for
+# row, is frontend/src/tests/utils/reportImageCases.ts (REFERENCE_CASES):
+# change both together.  The second half are spellings pandoc reads as an
+# image; they are not placements (the Preview shows none, the report prints
+# none there) until `normalise_references` has rewritten them on save.
+REFERENCE_CASES = [
+    ("Before ![The relayed session](evidence:57) after", [57]),
+    ('![t](evidence:57 "a title")', [57]),
+    (r"![a \] bracket](evidence:57)", [57]),
+    ("![x](evidence:57){.c onerror=alert(1)}", [57]),
+    ("![]( evidence:57 )", [57]),
+    ("![a](<evidence:57>)", []),
+    ("![a](evidence:57 'single quotes')", []),
+    ("![a](evidence:57 (parentheses))", []),
+    ("![two\nlines](evidence:57)", []),
+    ("![a [nested] b](evidence:57)", []),
+    ("![a][shot]\n\n[shot]: evidence:57", []),
+    ("![shot][]\n\n[shot]: evidence:57", []),
+    ("![shot]\n\n[shot]: evidence:57", []),
+    ("![a](evidence:57 \"t\" extra)", []),
+    ("![a](EVIDENCE:57)", []),
+]
+
+
+@pytest.mark.parametrize("text,ids", REFERENCE_CASES)
+def test_one_grammar_decides_what_places_an_image(text, ids):
+    assert report_images.referenced_ids(text) == ids
+
+
+NORMALISED = [
+    ("![a](<evidence:57>)", "![a](evidence:57)"),
+    ("![a](< evidence:57 >)", "![a](evidence:57)"),
+    ("![a](evidence:57 'single quotes')", '![a](evidence:57 "single quotes")'),
+    ("![a](evidence:57 (parentheses))", '![a](evidence:57 "parentheses")'),
+    ("![a](evidence:57 'say \"hi\"')", "![a](evidence:57)"),                 # a title that cannot be requoted goes
+    ("![two\nlines](evidence:57)", "![two lines](evidence:57)"),
+    ("![a [nested] b](evidence:57)", r"![a \[nested\] b](evidence:57)"),
+    ("![a][shot]\n\n[shot]: evidence:57", "![a](evidence:57)\n\n[shot]: evidence:57"),
+    ("![shot][]\n\n[Shot]: <evidence:57> 'the title'", "![shot](evidence:57)\n\n[Shot]: <evidence:57> 'the title'"),
+    ("![shot]\n\n[shot]: evidence:57", "![shot](evidence:57)\n\n[shot]: evidence:57"),
+]
+
+
+@pytest.mark.parametrize("typed,saved", NORMALISED)
+def test_a_tolerated_spelling_is_rewritten_to_the_one_form(typed, saved):
+    out = report_images.normalise_references(f"Before {typed}")
+    assert out == f"Before {saved}"
+    assert report_images.referenced_ids(out) == [57]
+    assert report_images.referenced_ids(f"Before {typed}") == []          # it was not a placement before
+    assert report_images.normalise_references(out) == out                 # idempotent
+
+
+def test_normalising_leaves_everything_else_as_typed():
+    same = report_images.normalise_references
+    for text in (
+        None, "", "No images here.",
+        "Before ![The relayed session](evidence:57) after",
+        '![t](evidence:57 "a title") ![]( evidence:57 ) ![x](evidence:057)',
+        r"![a \] bracket](evidence:57) ![a [b](evidence:57)",
+        "![x](evidence:57){.c onerror=alert(1)}",
+        # Not ours to touch: other images and links, an undefined label, a
+        # label that names something else, a link to an image id.
+        "![a](<https://example.com/x.png>) [l](<evidence:57>) ![shot] ![a][web]\n\n[web]: https://example.com",
+        "![a](evidence:57 \"t\" extra) ![a](EVIDENCE:57) ![a](evidence:abc)",
+        # An alt text never runs over a blank line.
+        "![a\n\nb](<evidence:57>)",
+        # Code is shown as typed: a fenced block, an unclosed one, a span.
+        "```\n![a](<evidence:57>)\n```\n",
+        "~~~md\n![a][shot]\n~~~\n\n[shot]: evidence:57",
+        "Text\n\n```\n![a](<evidence:57>)\n",
+        "Write `![a](<evidence:57>)` or ``![b](evidence:57 'x')`` to place it.",
+    ):
+        assert same(text) == text, text
+    # Prose around code is still rewritten; the code is not.
+    mixed = "`![a](<evidence:1>)` then ![b](<evidence:2>)\n\n```\n![c](<evidence:3>)\n```\n![d](evidence:4 'x')"
+    assert same(mixed) == (
+        "`![a](<evidence:1>)` then ![b](evidence:2)\n\n```\n![c](<evidence:3>)\n```\n![d](evidence:4 \"x\")"
+    )
 
 
 def test_a_caption_is_one_line_of_plain_text_and_bounded():
@@ -363,6 +467,37 @@ def test_a_placed_image_cannot_be_deleted_or_unticked_until_the_reference_is_rem
     assert db_session.get(NoteAttachment, att) is None
 
 
+def test_a_saved_section_stores_the_one_form_and_its_image_counts_as_placed(client, db_session, test_project):
+    """A tolerated spelling is rewritten WHEN THE SECTION IS SAVED: what is
+    stored is the one grammar, so the image is placed for the finding's page,
+    for the report and for the guard that refuses to delete it."""
+    finding = _finding(db_session, test_project)
+    att = _image(client, test_project, finding)
+    body = _set_text(
+        client, test_project, finding,
+        description=f"See ![a](<evidence:{att}>) here.",
+        impact="No picture, **as typed**  with two spaces.",
+    )["report_text"]
+    assert body["description"] == f"See ![a](evidence:{att}) here."
+    assert body["impact"] == "No picture, **as typed**  with two spaces."      # no reference: byte-identical
+    db_session.expire_all()
+    assert db_session.get(Finding, finding.id).description == f"See ![a](evidence:{att}) here."
+    assert _images(client, test_project, finding)[att]["placed_in"] == ["description"]
+
+    r = _delete(client, test_project, att)
+    assert r.status_code == 409 and "placed in the Description" in r.json()["detail"]
+    assert _patch(client, test_project, att, include_in_report=False).status_code == 409
+
+    # Saving the stored text again changes nothing (idempotent).
+    again = _set_text(client, test_project, finding, description=body["description"])["report_text"]
+    assert again["description"] == body["description"]
+
+    # The report places it in the section, not in the trailing block.
+    _, dataset, _ = _dataset(db_session, client, test_project)
+    item = dataset["findings"][0]
+    assert list(item["placed"]["description"]) == [str(att)] and item["evidence"] == []
+
+
 def test_an_image_on_the_source_note_is_protected_like_one_on_a_comment(client, db_session, test_project, test_user, storage):
     host = models.Host(project_id=test_project.id, ip_address="10.77.9.1", state="up")
     db_session.add(host)
@@ -476,6 +611,229 @@ def test_issuing_is_refused_when_an_images_file_is_missing_and_leaves_nothing(cl
     assert [r.attachment_id for r in db_session.query(ReportImage)] == [kept]
 
 
+# ---------------------------------------------------------------------------
+# Review 2026-10-01 S2 — a report's images are what ITS template prints
+# ---------------------------------------------------------------------------
+
+def _three_images(client, db, project):
+    """One finding: an image placed in the description, one in the
+    recommendation, one placed nowhere."""
+    finding = _finding(db, project, description="d", impact="i", recommendation="r")
+    in_description = _image(client, project, finding, name="desc.png")
+    in_recommendation = _image(client, project, finding, name="fix.png")
+    unplaced = _image(client, project, finding, name="loose.png")
+    _set_text(client, project, finding, description=f"![](evidence:{in_description})",
+              recommendation=f"![](evidence:{in_recommendation})")
+    return finding, in_description, in_recommendation, unplaced
+
+
+def _draft(db, client, project, template):
+    r = client.post(f"{_base(project)}/client-reports", json={"kind": "full", "template": template})
+    assert r.status_code == 201, r.text
+    db.expire_all()
+    dataset, _, summary = ClientReportService(db).build(db.get(Report, r.json()["id"]))
+    return r.json(), dataset, summary
+
+
+PRINTED_KEYS = ("images", "images_printed", "images_trailing", "images_not_printed")
+
+
+def test_the_summary_counts_what_this_reports_template_prints(client, db_session, test_project):
+    _, a, b, c = _three_images(client, db_session, test_project)
+
+    # The full report: both placed images in their sections, the third under Evidence.
+    report, dataset, summary = _draft(db_session, client, test_project, "pentest")
+    assert [summary[k] for k in PRINTED_KEYS] == [3, 2, 1, 0]
+    assert summary["images_not_printed_reasons"] == {
+        "finding_not_detailed": 0, "section_not_printed": 0, "no_evidence_block": 0,
+    }
+    assert summary["template_images"] == {
+        "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"], "trailing": True,
+    }
+    images = {i["attachment_id"]: i for i in dataset["findings"][0]["images"]}
+    assert (images[a]["printed"], images[a]["printed_in"]) == (True, ["description"])
+    assert (images[b]["printed"], images[b]["printed_in"]) == (True, ["recommendation"])
+    assert (images[c]["printed"], images[c]["printed_in"]) == (True, [])
+    # What the authors did is still said, beside what the template does with it.
+    assert (summary["images_placed"], summary["images_unplaced"]) == (2, 1)
+    # The page's summary is this one.
+    assert client.get(f"{_base(test_project)}/client-reports/{report['id']}").json()["summary"] == summary
+
+    # A brief that prints no evidence: three ticked, none printed — it prints
+    # the recommendation, but without its image, and has no trailing block.
+    _, dataset, summary = _draft(db_session, client, test_project, "brief")
+    assert [summary[k] for k in PRINTED_KEYS] == [3, 0, 0, 3]
+    assert summary["images_not_printed_reasons"] == {
+        "finding_not_detailed": 0, "section_not_printed": 2, "no_evidence_block": 1,
+    }
+    assert summary["template_images"] == {"fields": [], "trailing": False}
+    assert all(i["printed"] is False and i["printed_in"] == [] for i in dataset["findings"][0]["images"])
+    assert (summary["images_placed"], summary["images_unplaced"]) == (2, 1)
+
+    # A worklist that prints only the recommendation: the image placed there.
+    _, dataset, summary = _draft(db_session, client, test_project, "worklist")
+    assert [summary[k] for k in PRINTED_KEYS] == [3, 1, 0, 2]
+    assert summary["images_not_printed_reasons"] == {
+        "finding_not_detailed": 0, "section_not_printed": 1, "no_evidence_block": 1,
+    }
+    assert summary["template_images"] == {"fields": ["recommendation"], "trailing": False}
+    assert {i["attachment_id"]: i["printed"] for i in dataset["findings"][0]["images"]} == {a: False, b: True, c: False}
+
+
+def test_a_finding_the_template_does_not_show_in_detail_prints_no_image(client, db_session, test_project, storage):
+    """An addendum lists a finding the client already has in one line: the
+    template asks for none of its sections, so its images print nowhere."""
+    (storage.parent / "report-templates" / "worklist" / "report.qmd").write_text(
+        "---\ntitle: x\n---\n<% for f in findings if f.title != 'Row only' %>"
+        '<< md(f, "recommendation") >><% endfor %>\n| << findings[-1].title >> |\n'
+    )
+    shown = _finding(db_session, test_project, "Shown", recommendation="r")
+    row = _finding(db_session, test_project, "Row only", recommendation="r")
+    kept = _image(client, test_project, shown)
+    for finding, att in ((shown, kept), (row, _image(client, test_project, row))):
+        _set_text(client, test_project, finding, recommendation=f"![](evidence:{att})")
+    _, dataset, summary = _draft(db_session, client, test_project, "worklist")
+    assert [summary[k] for k in PRINTED_KEYS] == [2, 1, 0, 1]
+    assert summary["images_not_printed_reasons"]["finding_not_detailed"] == 1
+    by_title = {f["title"]: f for f in dataset["findings"]}
+    assert by_title["Row only"]["images"][0]["printed"] is False
+    assert by_title["Shown"]["images"][0]["printed"] is True
+
+
+def test_what_cannot_be_measured_is_not_claimed_and_every_image_is_kept(client, db_session, test_project, storage):
+    """The template's file is broken (or the template is gone): the summary
+    makes no claim about where images print, nothing is marked unprinted, and
+    an issue would copy every image, as before."""
+    _three_images(client, db_session, test_project)
+    report, _, _ = _draft(db_session, client, test_project, "worklist")
+    (storage.parent / "report-templates" / "worklist" / "report.qmd").write_text("<% for f in %>")
+    db_session.expire_all()
+    dataset, _, summary = ClientReportService(db_session).build(db_session.get(Report, report["id"]))
+    assert summary["images"] == 3
+    for key in ("images_printed", "images_trailing", "images_not_printed", "images_not_printed_reasons",
+                "template_images", "evidence_records_not_printed"):
+        assert summary[key] is None, key
+    assert all("printed" not in i for i in dataset["findings"][0]["images"])
+
+
+def test_issuing_copies_only_the_images_the_report_prints(client, db_session, test_project, storage):
+    """The worklist prints one of the three.  The other two files are GONE
+    from storage — that no longer refuses the issue (it used to: a report
+    that would never show them could not be signed off) — and only the
+    printed image is copied.  A printed image's missing file still refuses."""
+    _, a, b, c = _three_images(client, db_session, test_project)
+    paths = {
+        att: storage / "note_attachments" / db_session.get(NoteAttachment, att).storage_path for att in (a, b, c)
+    }
+    for att in (a, c):
+        paths[att].unlink()
+    report, _, _ = _draft(db_session, client, test_project, "worklist")
+    kept = paths[b].read_bytes()
+    paths[b].unlink()
+    refused = _issue(client, test_project, report["id"])
+    assert refused.status_code == 409 and f"image {b}" in refused.json()["detail"]
+    assert f"image {a}" not in refused.json()["detail"] and f"image {c}" not in refused.json()["detail"]
+    paths[b].write_bytes(kept)
+
+    issued = _issue(client, test_project, report["id"])
+    assert issued.status_code == 200, issued.text
+    db_session.expire_all()
+    assert [r.attachment_id for r in db_session.query(ReportImage).filter_by(report_id=report["id"])] == [b]
+    folder = storage / "client_reports" / str(test_project.id) / str(report["id"]) / "evidence"
+    assert [p.name for p in folder.iterdir()] == [f"{b}.png"]
+    summary = issued.json()["summary"]
+    assert [summary[k] for k in PRINTED_KEYS] == [3, 1, 0, 2]
+
+    # The issued render needs — and finds — only the printed image: the two
+    # the template never shows are not "missing" (strict_evidence would
+    # refuse the render over them).
+    from app.services import quarto_render
+    from app.services.client_report_render import _issued_evidence_resolver
+
+    snapshot = db_session.get(Report, report["id"]).snapshot["dataset"]
+    asked = []
+    resolve = _issued_evidence_resolver(db_session, db_session.get(Report, report["id"]))
+
+    def resolver(item):
+        asked.append(item.get("attachment_id"))
+        return resolve(item)
+
+    work = storage / "work"
+    work.mkdir()
+    data = json.loads(json.dumps(snapshot))
+    assert quarto_render._place_evidence(data, work, resolver) == []
+    assert set(asked) == {b} and [p.name for p in (work / "evidence").iterdir()] == [f"{b}.png"]
+    # Nothing was dropped from the data: an unprinted image's entries stay.
+    assert data["findings"][0] == snapshot["findings"][0]
+
+
+def test_a_dataset_frozen_before_the_mark_needs_every_image(tmp_path):
+    """No ``printed`` key (a report issued before this): every image is
+    looked for, and a missing one is reported — as it always was."""
+    from app.services import quarto_render
+
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG)
+    one = {"attachment_id": 1, "file": "evidence/1.png", "caption": "one", "placed_in": ["description"]}
+    two = {"attachment_id": 2, "file": "evidence/2.png", "caption": "two", "placed_in": []}
+    old = {"findings": [{"images": [dict(one), dict(two)], "evidence": [dict(two)],
+                         "placed": {"description": {"1": dict(one)}}},
+                        {"evidence": [{"attachment_id": 3, "file": "evidence/3.png", "caption": "three"}]}]}
+    work = tmp_path / "work"
+    work.mkdir()
+    missing = quarto_render._place_evidence(old, work, lambda item: shot if item.get("attachment_id") == 1 else None)
+    assert missing == ["two", "three"]
+    assert [i["attachment_id"] for i in old["findings"][0]["images"]] == [1]
+    assert old["findings"][0]["evidence"] == [] and old["findings"][1]["evidence"] == []
+    assert list(old["findings"][0]["placed"]["description"]) == ["1"]
+
+
+# ---------------------------------------------------------------------------
+# Review 2026-10-01 M2 — a failed issue's copies do not outlive the draft
+# ---------------------------------------------------------------------------
+
+def test_a_draft_leaves_no_image_copies_behind_and_never_touches_another_reports(
+    client, db_session, test_project, storage,
+):
+    from app.services.client_report_service import discard_report_images
+
+    finding = _finding(db_session, test_project, description="d", impact="i", recommendation="r")
+    att = _image(client, test_project, finding)
+    report, _, _ = _dataset(db_session, client, test_project)
+    other = client.post(f"{_base(test_project)}/client-reports", json={"kind": "full"}).json()
+    root = storage / "client_reports"
+
+    def leftovers(report_id, name="999.png"):
+        folder = root / str(test_project.id) / str(report_id) / "evidence"
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / name).write_bytes(b"left by an issue that died before its commit")
+        return folder
+
+    # Discarding the draft removes what a dead attempt left for it — its
+    # whole folder — and not the other report's.
+    doomed, kept = leftovers(other["id"]), leftovers(report["id"])
+    assert client.delete(f"{_base(test_project)}/client-reports/{other['id']}").status_code == 204
+    assert not doomed.parent.exists() and (kept / "999.png").is_file()
+
+    # A new attempt starts from an empty folder: the stale file is not one of
+    # the report's copies afterwards.
+    assert _issue(client, test_project, report["id"]).status_code == 200
+    assert [p.name for p in kept.iterdir()] == [f"{att}.png"]
+
+    # Only ever `<root>/<project>/<report>/evidence`: a folder that is a
+    # symlink is left alone, with what it points at; ids are numbers.
+    outside = storage / "elsewhere"
+    outside.mkdir()
+    (outside / "keep.txt").write_text("not a report's")
+    link = root / str(test_project.id) / "4242"
+    link.mkdir(parents=True)
+    (link / "evidence").symlink_to(outside, target_is_directory=True)
+    discard_report_images(test_project.id, 4242)
+    assert (outside / "keep.txt").is_file() and (link / "evidence").is_symlink()
+    discard_report_images("../..", "..")                       # not numbers: nothing happens
+    assert (kept / f"{att}.png").is_file() and outside.is_dir()
+
+
 def test_a_report_issued_before_the_copies_reads_the_live_attachment(client, db_session, test_project, storage):
     """No ``report_images`` rows (issued before this, or a report with no
     images): the resolver is the draft's, as it always was."""
@@ -586,6 +944,87 @@ def test_accepting_never_ticks_an_image_and_a_rewrite_may_drop_a_reference(clien
     assert _delete(client, test_project, unticked).status_code == 204
     acc = client.post(f"{_base(test_project)}/proposals/{pid}/accept", json={})
     assert acc.status_code == 422 and f"evidence:{unticked}" in acc.json()["detail"]
+
+
+def test_a_proposal_is_checked_and_stored_in_the_one_form(client, db_session, test_project):
+    """A tolerated spelling in an agent's text (or in the reviewer's edit on
+    accept) is rewritten BEFORE the image check — so it cannot slip an image
+    past the check, and what is stored is the one grammar."""
+    from app.db.models_proposals import AgentProposal
+
+    key = _start(client, test_project)
+    finding = _finding(db_session, test_project, created_by_id=None)
+    other = _finding(db_session, test_project, "Another finding")
+    mine = _image(client, test_project, finding)
+    unticked = _image(client, test_project, finding, ticked=False)
+    theirs = _image(client, test_project, other)
+
+    # Another finding's image, spelled loosely, is refused like the plain form.
+    r = _propose(client, key, finding, description=f"![no](<evidence:{theirs}>)")
+    assert r.status_code == 422 and f"evidence:{theirs}" in r.json()["detail"]
+    assert db_session.query(AgentProposal).count() == 0
+
+    r = _propose(client, key, finding, description=f"New text ![kept](<evidence:{mine}>)")
+    assert r.status_code == 201, r.text
+    pid = r.json()["proposals"][0]["id"]
+    db_session.expire_all()
+    assert db_session.get(AgentProposal, pid).payload["value"] == f"New text ![kept](evidence:{mine})"
+
+    # The reviewer's edit names an un-ticked image loosely: still refused…
+    acc = client.post(f"{_base(test_project)}/proposals/{pid}/accept",
+                      json={"edited_value": f"Edited ![x](evidence:{unticked} 'loose')"})
+    assert acc.status_code == 409 and f"image {unticked}" in acc.json()["detail"]
+    # …and a loose spelling of the ticked one is accepted and stored canonical.
+    acc = client.post(f"{_base(test_project)}/proposals/{pid}/accept",
+                      json={"edited_value": f"Edited ![two\nlines](<evidence:{mine}>)"})
+    assert acc.status_code == 200, acc.text
+    db_session.expire_all()
+    assert db_session.get(Finding, finding.id).description == f"Edited ![two lines](evidence:{mine})"
+    assert _images(client, test_project, finding)[mine]["placed_in"] == ["description"]
+    assert _delete(client, test_project, mine).status_code == 409
+
+    # A new finding's text is stored canonical too — and still has no images.
+    host = db_session.query(models.Host).first()
+    r = client.post("/api/v1/agent/proposals/finding", headers=key, json={
+        "title": "New", "severity": "low", "host_ids": [host.id],
+        "report_text": {"description": f"![x](<evidence:{mine}>)"},
+    })
+    assert r.status_code == 422 and "a new finding has none yet" in r.json()["detail"]
+
+
+def test_the_agents_report_read_says_what_the_report_prints_as_the_page_does(client, db_session, test_project):
+    """Agent parity: per image `printed` / `printed_in` are the dataset's, and
+    the summary (the measured counts among it) is the page's."""
+    key = _start(client, test_project)
+    _, a, b, c = _three_images(client, db_session, test_project)
+    for template, printed in (
+        ("pentest", {a: (True, ["description"]), b: (True, ["recommendation"]), c: (True, [])}),
+        ("worklist", {a: (False, []), b: (True, ["recommendation"]), c: (False, [])}),
+    ):
+        report, dataset, summary = _draft(db_session, client, test_project, template)
+        body = client.get(f"/api/v1/agent/assist/client-reports/{report['id']}", headers=key)
+        assert body.status_code == 200, body.text
+        images = {i["attachment_id"]: i for i in body.json()["findings"][0]["images"]}
+        assert {k: (v["printed"], v["printed_in"]) for k, v in images.items()} == printed
+        for img in dataset["findings"][0]["images"]:
+            mine = images[img["attachment_id"]]
+            assert (mine["printed"], mine["printed_in"], mine["placed_in"]) == (
+                img["printed"], img["printed_in"], img["placed_in"])
+        page = client.get(f"{_base(test_project)}/client-reports/{report['id']}").json()["summary"]
+        agent = body.json()["summary"]
+        for name in ("images", "images_printed", "images_trailing", "images_not_printed",
+                     "images_not_printed_reasons", "template_images",
+                     "evidence_records", "evidence_records_not_printed"):
+            assert name in page and agent[name] == page[name] == summary[name], name
+
+
+def test_the_template_list_says_which_images_each_template_prints(client, test_project):
+    listed = {t["name"]: t for t in client.get(f"{_base(test_project)}/client-reports/templates").json()}
+    assert listed["brief"]["images"] == {"fields": [], "trailing": False}
+    assert listed["worklist"]["images"] == {"fields": ["recommendation"], "trailing": False}
+    assert listed["pentest"]["images"] == {
+        "fields": ["description", "impact", "recommendation", "references", "steps_to_reproduce"], "trailing": True,
+    }
 
 
 def test_the_agents_finding_read_lists_the_images_the_page_lists(client, db_session, test_project):

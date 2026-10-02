@@ -12,7 +12,9 @@ A ticked image no section places prints in the trailing evidence block.
 This module decides, for every caller:
 
 * what counts as a reference (``REFERENCE`` — the frontend's twin is
-  ``utils/reportImages.ts``; change both together);
+  ``utils/reportImages.ts``; change both together).  ONE grammar: other
+  Markdown spellings of the same image place nothing, and
+  ``normalise_references`` rewrites them to it where a section is saved;
 * which of a finding's images a section may show (``placements``) — the
   finding's OWN attachments, ticked, in a format the report can print.  The
   report's dataset builder passes that map to the renderer, whose Lua filter
@@ -45,9 +47,147 @@ CAPTION_MAX = 2000
 #: Formats every renderer can place (Word and HTML alike).
 REPORT_IMAGE_TYPES = {"image/png": "png", "image/jpeg": "jpg", "image/gif": "gif"}
 
-#: A placement: a Markdown image whose target is ``evidence:<attachment id>``,
-#: with an optional (ignored) title.  The alt text may hold escaped brackets.
+#: A placement — THE grammar, on every side (review 2026-10-01 M1): a Markdown
+#: image on one line whose target is ``evidence:<attachment id>``, with an
+#: optional (ignored) title in double quotes.  The alt text may hold escaped
+#: brackets.  This pattern, and nothing wider, decides "placed" for the
+#: dataset, for ``refuse_if_placed``, for an agent's proposal and — through
+#: its twin ``EVIDENCE_REFERENCE`` in the frontend's ``utils/reportImages.ts``
+#: — for the Preview.  The report's Lua filter shows an image only where the
+#: dataset's ``placed`` map lists it, so what this does not match never prints
+#: as a figure, whatever pandoc would make of it.
+#:
+#: Markdown has other spellings of the same image (``(<evidence:57>)``, a
+#: title in single quotes or parentheses, an alt text over two lines or with
+#: brackets in it, a reference-style image).  They are NOT placements; they
+#: are rewritten to this form when a section is saved
+#: (``normalise_references``), so an author who typed one gets what they
+#: meant instead of an image that silently prints elsewhere.
 REFERENCE = re.compile(r'!\[(?P<alt>(?:[^\]\\\n]|\\.)*)\]\(\s*evidence:(?P<id>\d{1,12})(?:\s+"[^"\n]*")?\s*\)')
+
+# --- the tolerated spellings, for normalise_references only -----------------
+# Alt text over several lines and with one level of balanced brackets.
+_LOOSE_ALT = r'(?P<alt>(?:[^\[\]\\]|\\.|\[(?:[^\[\]\\]|\\.)*\])*)'
+_LOOSE_TITLE = r'''(?:\s+(?P<title>"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?'''
+_LOOSE = re.compile(
+    r'!\[' + _LOOSE_ALT + r'\]\(\s*(?:<\s*evidence:(?P<angled>\d{1,12})\s*>|evidence:(?P<bare>\d{1,12}))'
+    + _LOOSE_TITLE + r'\s*\)'
+)
+# `[label]: evidence:57` — a reference definition whose target is an image id.
+_DEFINITION = re.compile(
+    r'''^ {0,3}\[(?P<label>(?:[^\[\]\\\n]|\\.)+)\]:[ \t]*<?evidence:(?P<id>\d{1,12})>?'''
+    r'''(?:[ \t]+(?:"[^"\n]*"|'[^'\n]*'|\([^()\n]*\)))?[ \t]*$''',
+    re.M,
+)
+# `![alt][label]`, `![label][]` and `![label]` (not followed by a target).
+_BY_LABEL = re.compile(
+    r'!\[' + _LOOSE_ALT + r'\](?:\[(?P<label>(?:[^\[\]\\\n]|\\.)*)\]|(?![\[(]))'
+)
+_FENCE = re.compile(r'^ {0,3}(`{3,}|~{3,})')
+_TICKS = re.compile(r'`+')
+_BLANK_LINE = re.compile(r'\n[ \t]*\n')
+_UNESCAPED_BRACKET = re.compile(r'(\\.)|([\[\]])', re.S)
+
+
+def _code_spans(text: str) -> List[Tuple[int, int]]:
+    """``(start, end)`` of every fenced code block and inline code span:
+    what is written there is shown as typed, so it is never rewritten."""
+    spans: List[Tuple[int, int]] = []
+    prose: List[Tuple[int, int]] = []
+    offset = 0
+    fence: Optional[str] = None
+    start = 0
+    for line in text.splitlines(keepends=True):
+        opened = _FENCE.match(line)
+        if fence is None:
+            if opened:
+                fence, start = opened.group(1), offset
+            else:
+                prose.append((offset, offset + len(line)))
+        elif opened and opened.group(1)[0] == fence[0] and len(opened.group(1)) >= len(fence) \
+                and not line[opened.end():].strip():
+            spans.append((start, offset + len(line)))
+            fence = None
+        offset += len(line)
+    if fence is not None:                     # an unclosed fence runs to the end
+        spans.append((start, len(text)))
+    # Inline code: a run of backticks up to the next run of the same length.
+    # Runs of prose lines are joined first (a span may cross a line break).
+    merged: List[Tuple[int, int]] = []
+    for a, b in prose:
+        if merged and merged[-1][1] == a:
+            merged[-1] = (merged[-1][0], b)
+        else:
+            merged.append((a, b))
+    for a, b in merged:
+        runs = [m for m in _TICKS.finditer(text, a, b)]
+        i = 0
+        while i < len(runs):
+            width = runs[i].end() - runs[i].start()
+            close = next((j for j in range(i + 1, len(runs))
+                          if runs[j].end() - runs[j].start() == width), None)
+            if close is None:
+                i += 1
+                continue
+            spans.append((runs[i].start(), runs[close].end()))
+            i = close + 1
+    return sorted(spans)
+
+
+def _canonical(alt: str, att_id: str, title: Optional[str] = None) -> str:
+    """``![alt](evidence:id "title")`` — the alt text on one line with its
+    brackets escaped, the title in double quotes (dropped when it holds one)."""
+    alt = " ".join(alt.split()) if "\n" in alt else alt
+    alt = _UNESCAPED_BRACKET.sub(lambda m: m.group(1) or "\\" + m.group(2), alt)
+    inner = (title or "")[1:-1]
+    suffix = f' "{inner}"' if title and '"' not in inner else ""
+    return f"![{alt}](evidence:{att_id}{suffix})"
+
+
+def normalise_references(text: Optional[str]) -> Optional[str]:
+    """``text`` with every tolerated spelling of an image placement rewritten
+    to the one form ``REFERENCE`` reads — call it where a report-text section
+    is SAVED, before anything else looks at the text.
+
+    Rewritten: a target in angle brackets (``(<evidence:57>)``), a title in
+    single quotes or parentheses, an alt text that runs over a line break or
+    holds brackets (they are escaped), and a reference-style image
+    (``![alt][shot]`` / ``![shot][]`` / ``![shot]`` with
+    ``[shot]: evidence:57`` — the definition line stays, it prints nothing).
+    Nothing else changes: other images and links, text in a code block or a
+    code span, and a reference already in the one form are returned as they
+    are, so the function is idempotent.  ``None`` and ``""`` come back as
+    given."""
+    if not text or "evidence:" not in text:
+        return text
+    code = _code_spans(text)
+
+    def in_code(pos: int) -> bool:
+        return any(a <= pos < b for a, b in code)
+
+    labels = {
+        " ".join(m.group("label").split()).casefold(): m.group("id")
+        for m in reversed(list(_DEFINITION.finditer(text))) if not in_code(m.start())
+    }   # reversed: the FIRST definition of a label wins, as in Markdown
+
+    def inline(match: "re.Match[str]") -> str:
+        if in_code(match.start()) or _BLANK_LINE.search(match.group("alt")) or REFERENCE.fullmatch(match.group(0)):
+            return match.group(0)
+        return _canonical(match.group("alt"), match.group("angled") or match.group("bare"), match.group("title"))
+
+    def by_label(match: "re.Match[str]") -> str:
+        alt = match.group("alt")
+        if in_code(match.start()) or _BLANK_LINE.search(alt):
+            return match.group(0)
+        label = match.group("label") or alt
+        att_id = labels.get(" ".join(label.split()).casefold())
+        return _canonical(alt, att_id) if att_id else match.group(0)
+
+    out = _LOOSE.sub(inline, text)
+    if labels:
+        code = _code_spans(out)           # offsets moved with the rewrite above
+        out = _BY_LABEL.sub(by_label, out)
+    return out
 
 FIELD_LABELS = {
     "description": "Description", "impact": "Impact", "recommendation": "Recommendation",

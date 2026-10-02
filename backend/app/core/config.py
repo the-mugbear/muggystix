@@ -231,6 +231,13 @@ class Settings:
     # database hot paths the second code review flagged (NEW C
     # dedup eager-load suppression — already shipped — and a
     # forthcoming pass on per-host vuln/scan correlation).
+    # Two workers importing into ONE project do not wait on each
+    # other: every transaction of an import takes the project's
+    # advisory lock SHARED (``ingestion_service.project_import_lock``),
+    # and only the cleanup of a failed / cancelled import takes it
+    # EXCLUSIVE (``lock_project_for_cleanup``) — it starts when no
+    # import of that project has a batch open and holds new batches
+    # back for the few statements it runs.
 
     # Ingestion job timeout (seconds). Jobs exceeding this are marked failed.
     INGESTION_JOB_TIMEOUT: int = int(os.getenv("INGESTION_JOB_TIMEOUT", "1800"))  # 30 minutes

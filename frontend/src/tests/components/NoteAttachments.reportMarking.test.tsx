@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { act, render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 vi.mock('../../services/api', () => ({
@@ -151,6 +151,92 @@ describe('NoteAttachments — captions and placement on a finding', () => {
     await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('Cannot take this image out of the report'));
     expect(box).toHaveAttribute('data-state', 'checked');     // the mark went back
     expect(screen.getByTestId('placement-1')).toHaveTextContent('In: Description');
+  });
+
+  // Review 2026-10-01 S6 — a caption's save belongs to its image.
+  describe('saving one caption while editing another', () => {
+    const open = (name: string) => fireEvent.click(screen.getByRole('button', { name }));
+    const setup = () => render(
+      <NoteAttachments noteId={5} canManage onChanged={vi.fn()}
+        attachments={[att(1, { caption: 'First' }), att(2, { caption: 'Second' })]}
+        reportMarking={{ canMark: () => true }} />,
+    );
+
+    it('a save that succeeds leaves the other image’s editor, and its text, alone', async () => {
+      let done!: (v: unknown) => void;
+      mocked.setNoteAttachmentCaption = vi.fn().mockReturnValue(new Promise((resolve) => { done = resolve; }));
+      setup();
+      open('Edit caption for shot-1.png');
+      fireEvent.change(screen.getByRole('textbox', { name: 'Caption for shot-1.png' }), { target: { value: 'First, better' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save caption' }));
+      // The first is still saving; the author moves on to the second.
+      open('Edit caption for shot-2.png');
+      const second = screen.getByRole('textbox', { name: 'Caption for shot-2.png' });
+      fireEvent.change(second, { target: { value: 'Second, half typed' } });
+      expect(second).not.toBeDisabled();
+      expect(screen.getByText('Saving caption…')).toBeInTheDocument();
+
+      await act(async () => { done(att(1, { caption: 'First, better' })); });
+      expect(screen.getByRole('textbox', { name: 'Caption for shot-2.png' })).toHaveValue('Second, half typed');
+      expect(screen.queryByText('Saving caption…')).toBeNull();
+    });
+
+    it('a save that fails says so beside ITS image, keeps the other editor, and offers the unsaved words again', async () => {
+      let fail!: (e: unknown) => void;
+      mocked.setNoteAttachmentCaption = vi.fn().mockReturnValue(new Promise((_, reject) => { fail = reject; }));
+      setup();
+      open('Edit caption for shot-1.png');
+      fireEvent.change(screen.getByRole('textbox', { name: 'Caption for shot-1.png' }), { target: { value: 'First, refused' } });
+      fireEvent.click(screen.getByRole('button', { name: 'Save caption' }));
+      open('Edit caption for shot-2.png');
+      fireEvent.change(screen.getByRole('textbox', { name: 'Caption for shot-2.png' }), { target: { value: 'Second, half typed' } });
+
+      await act(async () => { fail({ response: { status: 422, data: { detail: 'Too long.' } } }); });
+      expect(screen.getByRole('alert')).toHaveTextContent('Too long.');
+      expect(screen.getByRole('textbox', { name: 'Caption for shot-2.png' })).toHaveValue('Second, half typed');
+      expect(screen.queryByRole('textbox', { name: 'Caption for shot-1.png' })).toBeNull();
+      // Back on the first image: what could not be saved is still there.
+      open('Edit caption for shot-1.png');
+      expect(screen.getByRole('textbox', { name: 'Caption for shot-1.png' })).toHaveValue('First, refused');
+    });
+  });
+
+  // M6 — thumbnails: one cache for the page, and a failure that is said.
+  describe('thumbnails', () => {
+    const cache = (over: Record<string, unknown> = {}) => ({
+      listStatus: 'ready' as const, has: (id: number) => id === 1, urls: { 1: 'blob:shared' },
+      ensure: vi.fn(), failed: () => false, retry: vi.fn(), ...over,
+    });
+
+    it('shows an image on the finding’s list from the page’s cache, and fetches only what the list lacks', async () => {
+      const thumbnails = cache();
+      render(
+        <NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1), att(2)]}
+          reportMarking={{ canMark: () => false, thumbnails }} />,
+      );
+      expect(screen.getByRole('button', { name: 'View shot-1.png' }).querySelector('img')).toHaveAttribute('src', 'blob:shared');
+      expect(thumbnails.ensure).toHaveBeenCalledWith(1);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'View shot-2.png' }).querySelector('img')).toHaveAttribute('src', 'blob:x'));
+      expect(mocked.getNoteAttachmentObjectUrl.mock.calls.map((c) => c[0])).toEqual([2]);
+    });
+
+    it('fetches nothing of its own while the finding’s list is still being read', async () => {
+      render(
+        <NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1)]}
+          reportMarking={{ canMark: () => false, thumbnails: cache({ listStatus: 'loading', has: () => false, urls: {} }) }} />,
+      );
+      await new Promise((r) => setTimeout(r, 10));
+      expect(mocked.getNoteAttachmentObjectUrl).not.toHaveBeenCalled();
+    });
+
+    it('says when a thumbnail could not be loaded, and a click tries again', async () => {
+      mocked.getNoteAttachmentObjectUrl.mockRejectedValueOnce(new Error('503'));
+      render(<NoteAttachments noteId={5} canManage={false} onChanged={vi.fn()} attachments={[att(1)]} />);
+      const failed = await screen.findByRole('button', { name: 'shot-1.png could not be loaded — try again' });
+      expect(screen.getByTestId('thumbnail-failed-1')).toHaveTextContent('Retry');
+      fireEvent.click(failed);
+      await waitFor(() => expect(screen.getByRole('button', { name: 'View shot-1.png' }).querySelector('img')).toHaveAttribute('src', 'blob:x'));
+    });
   });
 
   it('gives a reader the caption and the mark, and no control', () => {

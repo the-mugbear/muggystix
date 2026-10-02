@@ -17,7 +17,10 @@ export interface StateLine { text: string; tone: StateTone }
  *  lapsed-but-renewable, or gone.  "active" alone cannot tell a live agent from
  *  one that died a day ago; the key's state can.  Null for anything else, or a
  *  legacy row that carries neither date.  (Moved here from Agent Runs in
- *  5.312.0 so the session page says exactly what the list says.) */
+ *  5.312.0 so the session page says exactly what the list says.)
+ *  `now` is the BROWSER's clock, compared with the server's dates: a skewed
+ *  clock can call a key live or lapsed a little early or late here, but the
+ *  server remains the authority — a call it refuses is what the user sees. */
 export const keyState = (row: AgentSessionRow, now: number = Date.now()): StateLine | null => {
   if (row.kind !== 'project' || row.status !== 'active') return null;
   const exp = row.key_expires_at ? new Date(row.key_expires_at).getTime() : null;

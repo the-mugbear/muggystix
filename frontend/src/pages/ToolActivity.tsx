@@ -82,10 +82,17 @@ const WEEK_SECONDS = 7 * 24 * 3600;
 const pad2 = (n: number) => String(n).padStart(2, '0');
 
 function toLocalInput(d: Date): string {
-  // <input type="datetime-local"> wants `YYYY-MM-DDTHH:MM` in local time.
+  // <input type="datetime-local"> wants `YYYY-MM-DDTHH:MM` in local time —
+  // and takes `:SS` and `.mmm` after it.  They are kept when the instant has
+  // them (M10): a linked `at=…T14:32:17Z` used to become 14:32, and the query
+  // and the rewritten URL were then for another moment than the one linked.
+  const seconds = d.getSeconds();
+  const millis = d.getMilliseconds();
   return (
     `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T` +
-    `${pad2(d.getHours())}:${pad2(d.getMinutes())}`
+    `${pad2(d.getHours())}:${pad2(d.getMinutes())}` +
+    (seconds || millis ? `:${pad2(seconds)}` : '') +
+    (millis ? `.${String(millis).padStart(3, '0')}` : '')
   );
 }
 
@@ -170,24 +177,42 @@ function durationSeconds(start: string, end: string | null): string {
   return `${Math.round(secs / 3600)}h`;
 }
 
+/** The form's own limits (the inputs' `maxLength`). */
+const TOOL_MAX = 100;
+const TARGET_MAX = 45;
+
+// An instant as a link writes it: a date, `T`, a time.  `new Date()` alone
+// also reads "1", "2026" or "Sept 30" as some instant — a guess.
+const URL_INSTANT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/;
+
 const urlDate = (raw: string | null): Date | null => {
-  if (!raw) return null;
-  const d = new Date(raw);
+  if (!raw || !URL_INSTANT.test(raw.trim())) return null;
+  const d = new Date(raw.trim());
   return Number.isNaN(d.getTime()) ? null : d;
 };
 
+const urlText = (raw: string | null, max: number): string => (raw ?? '').trim().slice(0, max);
+
 /** The query a URL names; anything unreadable is ignored, not guessed. */
-function readActivityQuery(params: URLSearchParams) {
-  const tolerance = Number(params.get('tolerance'));
+export function readActivityQuery(params: URLSearchParams) {
+  const toleranceRaw = params.get('tolerance') ?? '';
+  const tolerance = /^\d+$/.test(toleranceRaw) ? Number(toleranceRaw) : NaN;
+  const from = urlDate(params.get('from'));
+  const to = urlDate(params.get('to'));
+  // A range is both ends, in order; half of one, or one backwards, is none.
+  const range = from && to && to.getTime() > from.getTime();
   return {
     at: urlDate(params.get('at')),
-    from: urlDate(params.get('from')),
-    to: urlDate(params.get('to')),
+    from: range ? from : null,
+    to: range ? to : null,
     tolerance: TOLERANCE_OPTIONS.some((o) => o.value === tolerance) ? tolerance : null,
-    tool: params.get('tool') ?? '',
-    target: params.get('target') ?? '',
+    tool: urlText(params.get('tool'), TOOL_MAX),
+    target: urlText(params.get('target'), TARGET_MAX),
   };
 }
+
+/** The window a query ran for — what the URL names. */
+type AskedWindow = { at: string; tolerance: number } | { from: string; to: string };
 
 export const ToolActivity: React.FC = () => {
   const navigate = useNavigate();
@@ -237,27 +262,41 @@ export const ToolActivity: React.FC = () => {
   const [target, setTarget] = useState(fromUrl.target);
   // The window last asked for — what the URL names.  The form's default
   // "now" is not a query, so it is not written until one is run.
-  const [asked, setAsked] = useState<{ at: string } | { from: string; to: string } | null>(
+  //
+  // The URL names what a query RAN with, never what is being typed (M10):
+  // the tolerance, the tool and the target used to be written on every
+  // change, so the address described a query nobody had asked — and a copied
+  // link ran one.  `asked` is the window (with ITS tolerance); `attribution`
+  // is the tool / target the last query — the focused one or the week
+  // snapshot — was filtered by.
+  const [asked, setAsked] = useState<AskedWindow | null>(
     fromUrl.from && fromUrl.to
       ? { from: fromUrl.from.toISOString(), to: fromUrl.to.toISOString() }
-      : fromUrl.at ? { at: fromUrl.at.toISOString() } : null,
+      : fromUrl.at ? { at: fromUrl.at.toISOString(), tolerance: fromUrl.tolerance ?? 300 } : null,
   );
+  // On arrival the snapshot is filtered by the link's tool and target.
+  const [attribution, setAttribution] = useState({ tool: fromUrl.tool, target: fromUrl.target });
+  const noteAttribution = useCallback((usedTool: string, usedTarget: string) => {
+    setAttribution((prev) => (
+      prev.tool === usedTool && prev.target === usedTarget ? prev : { tool: usedTool, target: usedTarget }
+    ));
+  }, []);
   useEffect(() => {
     setSearchParams((prev) => {
       const next = new URLSearchParams(prev);
       ['at', 'from', 'to', 'tolerance', 'tool', 'target'].forEach((k) => next.delete(k));
       if (asked && 'at' in asked) {
         next.set('at', asked.at);
-        next.set('tolerance', String(tolerance));
+        next.set('tolerance', String(asked.tolerance));
       } else if (asked) {
         next.set('from', asked.from);
         next.set('to', asked.to);
       }
-      if (tool.trim()) next.set('tool', tool.trim());
-      if (target.trim()) next.set('target', target.trim());
+      if (attribution.tool) next.set('tool', attribution.tool);
+      if (attribution.target) next.set('target', attribution.target);
       return next.toString() === prev.toString() ? prev : next;
     }, { replace: true });
-  }, [asked, tolerance, tool, target, setSearchParams]);
+  }, [asked, attribution, setSearchParams]);
   const [response, setResponse] = useState<ActivityResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -291,23 +330,26 @@ export const ToolActivity: React.FC = () => {
   const search = useCallback(async (range?: { from: string; to: string }) => {
     setLoading(true);
     setError(null);
-    const attribution = { tool: tool || undefined, target: target || undefined };
+    const usedTool = tool.trim();
+    const usedTarget = target.trim();
+    const filters = { tool: usedTool || undefined, target: usedTarget || undefined };
+    noteAttribution(usedTool, usedTarget);
     setAsked(range
       ?? (mode === 'at'
-        ? { at: localInputToUtcIso(tsLocal) }
+        ? { at: localInputToUtcIso(tsLocal), tolerance }
         : { from: localInputToUtcIso(fromLocal), to: localInputToUtcIso(toLocal) }));
     const result = await runLatestSearch(() => (range
-      ? getScansBetween({ from: range.from, to: range.to, ...attribution })
+      ? getScansBetween({ from: range.from, to: range.to, ...filters })
       : mode === 'at'
         ? getScansAt({
             ts: localInputToUtcIso(tsLocal),
             toleranceSeconds: tolerance,
-            ...attribution,
+            ...filters,
           })
         : getScansBetween({
             from: localInputToUtcIso(fromLocal),
             to: localInputToUtcIso(toLocal),
-            ...attribution,
+            ...filters,
           })));
     if (result.stale) return; // the newer query owns the result and `loading`
     if (result.ok) {
@@ -318,7 +360,7 @@ export const ToolActivity: React.FC = () => {
       setResponse(null);
     }
     setLoading(false);
-  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target, runLatestSearch]);
+  }, [mode, tsLocal, tolerance, fromLocal, toLocal, tool, target, runLatestSearch, noteAttribution]);
 
   const loadWeek = useCallback(async () => {
     setWeekLoading(true);
@@ -328,11 +370,14 @@ export const ToolActivity: React.FC = () => {
       const weekAgo = new Date(now.getTime() - WEEK_SECONDS * 1000);
       const range = { start: weekAgo.toISOString(), end: now.toISOString() };
       setWeekRange(range);
+      const usedTool = tool.trim();
+      const usedTarget = target.trim();
+      noteAttribution(usedTool, usedTarget);
       const data = await getScansBetween({
         from: range.start,
         to: range.end,
-        tool: tool || undefined,
-        target: target || undefined,
+        tool: usedTool || undefined,
+        target: usedTarget || undefined,
       });
       setWeekResponse(data);
     } catch (err) {

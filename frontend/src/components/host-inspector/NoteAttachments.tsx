@@ -1,5 +1,5 @@
 import React, { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
-import { Loader2, ImagePlus, Pencil, Trash2 } from 'lucide-react';
+import { Loader2, ImageOff, ImagePlus, Pencil, Trash2 } from 'lucide-react';
 import {
   NoteAttachment,
   uploadNoteAttachment,
@@ -8,6 +8,7 @@ import {
   setNoteAttachmentCaption,
   setNoteAttachmentInReport,
 } from '../../services/api';
+import type { ImageThumbnails } from '../../utils/evidenceImages';
 import { ImagePlacement, placementLine } from '../../utils/reportImages';
 import { safeFallback } from '../../utils/uiStyles';
 import { Button } from '../ui/button';
@@ -65,6 +66,14 @@ export interface ReportMarking {
   /** A caption, a mark or an image changed: the page re-reads the finding's
    *  images (the editor's picker and the placed images follow). */
   onImagesChanged?: () => void;
+  /**
+   * The page's one cache of image bytes (`useFindingImages().thumbnails`).
+   * With it, an image on the finding's list is shown from that cache — the
+   * same object URL the placed images and the editor's picker use — instead
+   * of being fetched here a second time.  An image the list does not carry
+   * (or every image, when the list could not be read) is still fetched here.
+   */
+  thumbnails?: ImageThumbnails;
 }
 
 export interface NoteAttachmentsHandle {
@@ -102,13 +111,33 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
   const [uploading, setUploading] = useState(false);
   const [lightbox, setLightbox] = useState<{ src: string; caption: string } | null>(null);
 
+  // A fetch that failed: the thumbnail says so (and a click tries again)
+  // instead of spinning for ever.
+  const [ownFailed, setOwnFailed] = useState<ReadonlySet<number>>(new Set());
+  const [retryKey, setRetryKey] = useState(0);
+
   const idsKey = attachments.map((a) => a.id).join(',');
 
+  // Which images the page's shared cache serves.  While the finding's list is
+  // still being read nothing is fetched here: it would be fetched again from
+  // the cache a moment later.
+  const shared = reportMarking?.thumbnails;
+  const sharedWaiting = shared?.listStatus === 'loading';
+  const fromShared = (id: number) => !!shared && shared.has(id);
+  const sharedKey = shared ? attachments.map((a) => (shared.has(a.id) ? '1' : '0')).join('') : '';
+  const ensureShared = shared?.ensure;
   useEffect(() => {
+    if (!ensureShared) return;
+    attachments.forEach((att) => ensureShared(att.id));  // a no-op for an id off the list
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idsKey, ensureShared]);
+
+  useEffect(() => {
+    if (sharedWaiting) return undefined;
     let cancelled = false;
     (async () => {
       for (const att of attachments) {
-        if (urls[att.id]) continue;
+        if (urls[att.id] || fromShared(att.id)) continue;
         try {
           const url = await getNoteAttachmentObjectUrl(att.id);
           if (cancelled) {
@@ -116,9 +145,16 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
           } else {
             createdUrls.current.push(url);
             setUrls((m) => ({ ...m, [att.id]: url }));
+            setOwnFailed((prev) => {
+              if (!prev.has(att.id)) return prev;
+              const next = new Set(prev);
+              next.delete(att.id);
+              return next;
+            });
           }
         } catch {
-          /* leave as a spinner — a transient fetch failure shouldn't break the note */
+          // A failed fetch does not break the note; the thumbnail says so.
+          if (!cancelled) setOwnFailed((prev) => new Set(prev).add(att.id));
         }
       }
     })();
@@ -126,10 +162,17 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
       cancelled = true;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [idsKey]);
+  }, [idsKey, sharedKey, sharedWaiting, retryKey]);
 
   // Revoke every object URL we created when the component unmounts.
   useEffect(() => () => createdUrls.current.forEach(URL.revokeObjectURL), []);
+
+  const thumbnailUrl = (id: number): string | undefined => (fromShared(id) ? shared?.urls[id] : urls[id]);
+  const thumbnailFailed = (id: number): boolean => (fromShared(id) ? !!shared?.failed(id) : ownFailed.has(id));
+  const retryThumbnail = (id: number) => {
+    if (fromShared(id)) shared?.retry(id);
+    else setRetryKey((k) => k + 1);
+  };
 
   const onPick = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -206,21 +249,43 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
     }
   };
 
-  // One caption is edited at a time.
-  const [captionEdit, setCaptionEdit] = useState<{ id: number; text: string; saving: boolean } | null>(null);
+  // One caption is edited at a time — but a save belongs to ITS image (S6).
+  // Saving A and then opening the editor on B used to close B's editor (its
+  // text lost) when A's request returned, or replace it with A's on failure.
+  // The editor says which image it is on; whether an image's save is in
+  // flight, and the text of one that failed, are kept per image.
+  const [captionEdit, setCaptionEdit] = useState<{ id: number; text: string } | null>(null);
+  const [captionSaving, setCaptionSaving] = useState<ReadonlySet<number>>(new Set());
+  const [captionUnsaved, setCaptionUnsaved] = useState<Record<number, string>>({});
   const captionMax = reportMarking?.captionMax ?? 2000;
+  const forgetUnsaved = (id: number) => setCaptionUnsaved((m) => {
+    if (!(id in m)) return m;
+    const next = { ...m };
+    delete next[id];
+    return next;
+  });
   const saveCaption = async () => {
-    if (!captionEdit || captionEdit.saving) return;
+    if (!captionEdit || captionSaving.has(captionEdit.id)) return;
     const { id, text } = captionEdit;
-    setCaptionEdit({ id, text, saving: true });
+    setCaptionSaving((prev) => new Set(prev).add(id));
     try {
       await setNoteAttachmentCaption(id, text.trim());
       refuse(id, null);
-      setCaptionEdit(null);
+      forgetUnsaved(id);
+      // Only the editor that is still this image's closes.
+      setCaptionEdit((current) => (current?.id === id ? null : current));
       changed();
     } catch (err) {
       refuse(id, formatApiError(err, 'Could not save the caption.'));
-      setCaptionEdit({ id, text, saving: false });
+      // The words are kept for when this image's editor is opened again; an
+      // editor that has moved to another image is left as it is.
+      setCaptionUnsaved((m) => ({ ...m, [id]: text }));
+    } finally {
+      setCaptionSaving((prev) => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
+      });
     }
   };
 
@@ -234,18 +299,29 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
       {attachments.length > 0 && (
         <div className={reportMarking ? 'space-y-xs' : 'flex flex-wrap gap-xs'}>
           {attachments.map((att) => {
-            const url = urls[att.id];
+            const url = thumbnailUrl(att.id);
+            const loadFailed = !url && thumbnailFailed(att.id);
             const caption = att.caption?.trim() || '';
             const thumbnail = (
               <div className="group relative shrink-0">
                 <button
                   type="button"
-                  onClick={() => url && setLightbox({ src: url, caption: caption || att.filename })}
+                  onClick={() => {
+                    if (url) setLightbox({ src: url, caption: caption || att.filename });
+                    else if (loadFailed) retryThumbnail(att.id);
+                  }}
                   className="block size-20 overflow-hidden rounded-control border border-border bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  aria-label={`View ${att.filename}`}
+                  aria-label={loadFailed ? `${att.filename} could not be loaded — try again` : `View ${att.filename}`}
+                  title={loadFailed ? 'Could not load the image — click to try again' : undefined}
                 >
                   {url ? (
                     <img src={url} alt={caption || att.filename} className="size-full object-cover" />
+                  ) : loadFailed ? (
+                    <span className="flex size-full flex-col items-center justify-center gap-xxs text-caption text-warning"
+                      data-testid={`thumbnail-failed-${att.id}`}>
+                      <ImageOff className="size-4" aria-hidden />
+                      Retry
+                    </span>
                   ) : (
                     <span className="flex size-full items-center justify-center">
                       <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />
@@ -271,6 +347,7 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
             const placement = reportMarking.placement?.(att);
             const line = placement ? placementLine({ ...placement, in_report: inReport }) : null;
             const editing = captionEdit?.id === att.id ? captionEdit : null;
+            const saving = captionSaving.has(att.id);
             return (
               <div key={att.id} className="flex min-w-0 items-start gap-sm">
                 {thumbnail}
@@ -281,17 +358,17 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                         rows={2}
                         maxLength={captionMax}
                         value={editing.text}
-                        disabled={editing.saving}
+                        disabled={saving}
                         aria-label={`Caption for ${att.filename}`}
                         placeholder="What the image shows — printed under it in the report"
-                        onChange={(e) => setCaptionEdit({ ...editing, text: e.target.value })}
+                        onChange={(e) => setCaptionEdit({ id: att.id, text: e.target.value })}
                       />
                       <div className="flex flex-wrap items-center gap-xs">
-                        <Button type="button" size="sm" disabled={editing.saving} onClick={() => void saveCaption()}>
-                          {editing.saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save caption
+                        <Button type="button" size="sm" disabled={saving} onClick={() => void saveCaption()}>
+                          {saving && <Loader2 className="size-4 animate-spin" aria-hidden />} Save caption
                         </Button>
-                        <Button type="button" variant="ghost" size="sm" disabled={editing.saving}
-                          onClick={() => setCaptionEdit(null)}>
+                        <Button type="button" variant="ghost" size="sm" disabled={saving}
+                          onClick={() => { forgetUnsaved(att.id); setCaptionEdit(null); }}>
                           Cancel
                         </Button>
                         <span className="text-caption text-muted-foreground">{editing.text.length} / {captionMax}</span>
@@ -307,13 +384,19 @@ const NoteAttachments = forwardRef<NoteAttachmentsHandle, NoteAttachmentsProps>(
                           </span>
                         )}
                       </p>
-                      {canMark && (
+                      {canMark && saving ? (
+                        <span className="flex shrink-0 items-center gap-xxs text-caption text-muted-foreground">
+                          <Loader2 className="size-3.5 animate-spin" aria-hidden /> Saving caption…
+                        </span>
+                      ) : canMark ? (
                         <Button type="button" variant="ghost" size="sm" className="h-6 shrink-0 px-xs text-caption"
                           aria-label={`${caption ? 'Edit' : 'Add'} caption for ${att.filename}`}
-                          onClick={() => setCaptionEdit({ id: att.id, text: caption, saving: false })}>
+                          // A caption this image's last save could not store is
+                          // offered again, not the stored one.
+                          onClick={() => setCaptionEdit({ id: att.id, text: captionUnsaved[att.id] ?? caption })}>
                           <Pencil className="size-3.5" aria-hidden /> {caption ? 'Edit caption' : 'Add caption'}
                         </Button>
-                      )}
+                      ) : null}
                     </div>
                   )}
                   <div className="flex min-w-0 flex-wrap items-center gap-x-sm gap-y-xxs text-caption text-muted-foreground">

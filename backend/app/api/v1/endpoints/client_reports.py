@@ -507,6 +507,11 @@ def delete_report(
         raise HTTPException(status_code=403, detail="Only the person who started this draft or a project admin can discard it.")
     db.delete(report)
     db.commit()
+    # An issue attempt that died between copying the images and its commit
+    # left this draft a folder of copies (review 2026-10-01 M2); with the
+    # draft gone nothing would ever remove it.  After the commit: the row is
+    # the record that the folder is nobody's.
+    discard_report_images(project.id, report_id)
     return Response(status_code=204)
 
 

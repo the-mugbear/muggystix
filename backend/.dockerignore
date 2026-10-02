@@ -1,16 +1,21 @@
 # Build context for ./backend (compose builds from this directory, so the
 # repo-root .dockerignore is NOT consulted — Docker reads the one at the
 # context root). Before v2.368.1 there was none and `COPY . .` took everything.
+#
+# A pattern without `**/` matches at the context ROOT only (Docker's rule,
+# unlike .gitignore's).  `__pycache__/` and `*.py[cod]` therefore excluded
+# nothing below the top level: every app/**/__pycache__ — root-owned, written
+# by containers that bind-mount this folder — went into the image.
 
 # Python leftovers from running on the host or in a bind-mounted container
-__pycache__/
-*.py[cod]
-.pytest_cache/
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
 .coverage
 .coverage.*
 htmlcov/
-.mypy_cache/
-.ruff_cache/
 
 # Bind-mounted at runtime by docker-compose (./backend/tests, pytest.ini); the
 # test recipe mounts all of ./backend over /app. Nothing in the image reads them.
@@ -22,6 +27,19 @@ test_*.py
 uploads/
 artifacts/
 backend/
+
+# Mount-point stubs.  When this folder is bind-mounted over /app (the test
+# recipe), Docker creates an EMPTY, root-owned file or folder here for each
+# path compose mounts inside /app.  None is real content — compose mounts the
+# real one at run time from the repository root — and an empty
+# platform_version.json or AGENT_GUIDE.md baked into the image is worse than
+# none (a clean checkout has none of these, so its image has none either).
+AGENT_GUIDE.md
+AGENTS.md
+platform_version.json
+frontend-package-lock.json
+report-templates/
+scripts/
 
 # Local environment
 .env

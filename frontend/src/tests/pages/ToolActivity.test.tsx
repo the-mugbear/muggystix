@@ -237,20 +237,46 @@ describe('ToolActivity', () => {
       expect(getScansAt).not.toHaveBeenCalled();
     });
 
-    it('writes the tool and the window asked for; an untouched form writes nothing', async () => {
+    // Branch review 2026-10-01 M10 — the URL names what a query RAN with,
+    // not what is being typed.
+    it('writes the tool and the window once a query runs with them; typing writes nothing', async () => {
       getScansAt.mockResolvedValue({ ...week([]), total: 0 });
       renderAt('/tool-activity');
       await screen.findByTestId('activity-histogram');
       expect(screen.getByTestId('where').textContent).toBe('');
 
-      fireEvent.change(screen.getByLabelText('Tool'), { target: { value: 'nuclei' } });
-      await waitFor(() => expect(params().get('tool')).toBe('nuclei'));
-      expect(params().get('at')).toBeNull();  // no window was asked for yet
+      fireEvent.change(screen.getByLabelText('Tool'), { target: { value: '  nuclei ' } });
+      fireEvent.change(screen.getByLabelText(/Target/), { target: { value: '10.0.0.5' } });
+      await new Promise((r) => setTimeout(r, 20));
+      expect(screen.getByTestId('where').textContent).toBe('');  // nothing was asked yet
 
       fireEvent.submit(screen.getByLabelText('Tool').closest('form')!);
       await waitFor(() => expect(getScansAt).toHaveBeenCalledTimes(1));
+      // Normalised: the query and the URL carry the trimmed tool.
+      expect(getScansAt.mock.calls[0][0]).toMatchObject({ tool: 'nuclei', target: '10.0.0.5' });
       await waitFor(() => expect(params().get('at')).toBe(getScansAt.mock.calls[0][0].ts));
       expect(params().get('tolerance')).toBe('300');
+      expect(params().get('tool')).toBe('nuclei');
+      expect(params().get('target')).toBe('10.0.0.5');
+    });
+
+    it('keeps a linked timestamp to the second: the query and the URL are for the moment linked', async () => {
+      getScansAt.mockResolvedValue({ ...week([]), total: 0 });
+      renderAt('/tool-activity?at=2026-09-30T14:32:17Z&tolerance=10');
+      await waitFor(() => expect(getScansAt).toHaveBeenCalled());
+      expect(getScansAt.mock.calls[0][0]).toMatchObject({ ts: '2026-09-30T14:32:17.000Z', toleranceSeconds: 10 });
+      await waitFor(() => expect(params().get('at')).toBe('2026-09-30T14:32:17.000Z'));
+      expect((screen.getByLabelText('Timestamp (local)') as HTMLInputElement).value).toMatch(/:\d\d:17(\.000)?$/);
+    });
+
+    it('drops what it cannot read from the address, and keeps what it can', async () => {
+      renderAt('/tool-activity?from=2026-09-30T00:00:00Z&to=2026-09-29T00:00:00Z&tolerance=60abc&tool=%20nmap%20&at=2026');
+      await screen.findByTestId('activity-histogram');
+      // A backwards range and a bare year are not a window: no focused query.
+      expect(getScansAt).not.toHaveBeenCalled();
+      expect(getScansBetween).toHaveBeenCalledTimes(1);  // the week snapshot only
+      expect(getScansBetween).toHaveBeenCalledWith(expect.objectContaining({ tool: 'nmap' }));
+      await waitFor(() => expect(screen.getByTestId('where').textContent).toBe('tool=nmap'));
     });
 
     it('ignores an unreadable timestamp or a tolerance the form does not offer', async () => {

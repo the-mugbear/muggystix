@@ -541,8 +541,9 @@ def get_agent_session_notes(
 ):
     """What the agent wrote under its operator's name.  The session's reads
     are the separate ``/agent-sessions/{id}/api-activity`` feed; its tests and
-    evidence are on the hosts.  (Served by ``/assist/sessions/{id}``, keyed by
-    the pointer row's id, until v2.449.0.)"""
+    evidence are on the hosts.  Served here, at
+    ``/agent-sessions/{session_id}/notes``; the deprecated
+    ``/assist/sessions/{id}`` answers with the session's row, without them."""
     session = _listed_session_or_404(db, project.id, session_id)
     q = (
         db.query(Annotation, Host.ip_address, Host.hostname)
@@ -570,9 +571,11 @@ def get_agent_session_notes(
 # page, End and API-call feed were addressed by THAT row's id.  Notes, feedback
 # rows and bookmarks from then still carry such an id.  These routes answer for
 # it by finding the session (``agent_sessions.legacy_assist_session_id``) and
-# calling the handler above — they hold no logic of their own, and a session
-# started since has no such id.  The fourth one, the API-call feed, is beside
-# its handler in ``agent_activity.py``.
+# calling the handler above — they hold no logic of their own.  A session
+# started since has no such id; these routes then take the session's own id,
+# which is what the start response's deprecated ``assist_session_id`` carries
+# (see ``agent_session_for_legacy_assist_id``, the one resolver).  The fourth
+# one, the API-call feed, is beside its handler in ``agent_activity.py``.
 
 def session_id_for_legacy_assist_id(db: Session, project_id: int, legacy_id: int) -> int:
     session = agent_session_for_legacy_assist_id(db, project_id, legacy_id)

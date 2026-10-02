@@ -90,7 +90,14 @@ confirm() {
     # confirm "<question>" — returns 0 on yes.  --yes answers yes to all.
     if [[ $YES -eq 1 ]]; then return 0; fi
     echo -n "$1 [y/N]: "
-    local answer; read -r answer
+    # `read` fails at end of input, and under `set -e` that ended the script
+    # here without a word (a piped or scheduled run).
+    local answer=""
+    if ! read -r answer && [[ -z "$answer" ]]; then
+        echo ""
+        fail "No answer on standard input for: $1
+   Run it from a terminal, or pass --yes to answer yes to every confirmation."
+    fi
     [[ "$answer" =~ ^[Yy] ]]
 }
 

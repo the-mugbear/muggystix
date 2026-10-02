@@ -214,6 +214,18 @@ describe('navigation manifest', () => {
     expect(appRoles['/ingestion-results']).toBe('analyst');
   });
 
+  // Branch review 2026-10-01 S5 — `analyst` on a route is the PROJECT role, so
+  // it refused a project viewer / auditor two pages whose reads the server
+  // gives every member (integrations are account-level).
+  it('Project settings and Scanner Integrations are every member\'s pages', () => {
+    const manifest = Object.fromEntries(NAV_PAGES.map((p) => [p.path, p.requiredRole]));
+    const appRoles = appRouteRoles();
+    for (const path of ['/project-settings', '/integrations']) {
+      expect(manifest[path], `${path} in the manifest`).toBe('viewer');
+      expect(appRoles[path], `${path} in App.tsx`).toBe('viewer');
+    }
+  });
+
   it('every hub landing has a route gated at the hub role (HUB_DEFS coverage)', () => {
     const appRoles = appRouteRoles();
     for (const hub of HUB_DEFS) {

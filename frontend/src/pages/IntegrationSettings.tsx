@@ -21,6 +21,7 @@ import {
   IntegrationCreatePayload,
   IntegrationTestResult,
 } from '../services/api';
+import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
 import { useConfirm } from '../hooks/useConfirm';
@@ -103,6 +104,12 @@ const emptyForm: IntegrationCreatePayload = {
 };
 
 const IntegrationSettings: React.FC = () => {
+  // Every signed-in user may READ the integrations (they are account-level);
+  // adding, editing and deleting one need the GLOBAL administrator — the
+  // server's rule.  The controls are not rendered for anyone else (style
+  // guide §40: hidden, not disabled; no copy pointing at a control the
+  // reader does not have).
+  const canManage = useAuth().user?.role === 'admin';
   const toast = useToast();
   const [confirmEl, confirm] = useConfirm();
   const [integrations, setIntegrations] = useState<IntegrationEntry[]>([]);
@@ -296,11 +303,14 @@ const IntegrationSettings: React.FC = () => {
           <p className="mt-xxs text-metadata text-muted-foreground">
             Credentials for external scanning tools (Nessus, OpenVAS, Nuclei, Burp, etc). Secrets
             are encrypted at rest and surfaced to agents via the session prompt when relevant.
+            {!canManage && ' A global administrator adds and changes them.'}
           </p>
         </div>
-        <Button onClick={openNew}>
-          <Plus className="size-4" aria-hidden /> Add Integration
-        </Button>
+        {canManage && (
+          <Button onClick={openNew}>
+            <Plus className="size-4" aria-hidden /> Add Integration
+          </Button>
+        )}
       </div>
 
       {error && (
@@ -316,12 +326,16 @@ const IntegrationSettings: React.FC = () => {
           <CardContent className="flex flex-col items-center gap-sm p-xxl text-center">
             <KeyRound className="size-12 text-muted-foreground" aria-hidden />
             <p className="text-metadata text-muted-foreground">No integrations configured yet.</p>
-            <p className="text-caption text-muted-foreground">
-              Add one to make its credentials available to your agent when it scans.
-            </p>
-            <Button onClick={openNew}>
-              <Plus className="size-4" aria-hidden /> Add Your First Integration
-            </Button>
+            {canManage && (
+              <>
+                <p className="text-caption text-muted-foreground">
+                  Add one to make its credentials available to your agent when it scans.
+                </p>
+                <Button onClick={openNew}>
+                  <Plus className="size-4" aria-hidden /> Add Your First Integration
+                </Button>
+              </>
+            )}
           </CardContent>
         </Card>
       ) : (
@@ -348,6 +362,7 @@ const IntegrationSettings: React.FC = () => {
                   {r.has_secret2 && <Badge variant="success">Secondary secret</Badge>}
                   {r.project_id == null && <Badge variant="outline">all projects</Badge>}
                 </div>
+                {canManage && (<>
                 <Separator className="my-sm" />
                 <div className="flex gap-xxs">
                   <Tooltip>
@@ -378,6 +393,7 @@ const IntegrationSettings: React.FC = () => {
                     <TooltipContent>Delete</TooltipContent>
                   </Tooltip>
                 </div>
+                </>)}
               </CardContent>
             </Card>
           ))}

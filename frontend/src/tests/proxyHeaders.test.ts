@@ -94,3 +94,94 @@ describe('nginx API locations', () => {
     }
   });
 });
+
+/**
+ * Branch review 2026-10-01 — a location that declares ANY add_header drops
+ * every add_header it would have inherited (nginx's rule, for nested
+ * locations too).  The static-asset location sent scripts and stylesheets
+ * with `nosniff` and nothing else, its nested font location sent only the
+ * CORS header, and `/live` — whose one add_header was a Content-Type — sent no
+ * security header at all.
+ *
+ * So: every location that has an add_header of its OWN repeats the set.  The
+ * directives are read per location, without those of the locations nested in
+ * it, because that is how nginx applies them.
+ */
+describe('nginx security headers', () => {
+  interface Block {
+    name: string;
+    own: string[];
+  }
+
+  const blocks: Block[] = [];
+  const stack: (Block | null)[] = [];
+  for (const raw of active.split('\n')) {
+    const line = raw.trim();
+    const open = /^location\s+([^{]+?)\s*\{$/.exec(line);
+    if (open) {
+      stack.push({ name: open[1].trim(), own: [] });
+    } else if (line.endsWith('{')) {
+      stack.push(null); // server { … }
+    } else if (line === '}') {
+      const closed = stack.pop();
+      if (closed) blocks.push(closed);
+    } else {
+      const top = stack[stack.length - 1];
+      if (top) top.own.push(line);
+    }
+  }
+  const withOwnHeaders = blocks.filter((b) => b.own.some((l) => l.startsWith('add_header ')));
+
+  // X-XSS-Protection is left out of the API-docs locations on purpose (their
+  // CSP is relaxed for Swagger / ReDoc and the header is legacy); the other
+  // five are what every response must carry.
+  const required = [
+    'Strict-Transport-Security',
+    'X-Frame-Options',
+    'X-Content-Type-Options',
+    'Referrer-Policy',
+    'Content-Security-Policy',
+  ];
+
+  it('finds the locations it is meant to check', () => {
+    expect(stack).toEqual([]); // every brace closed: the reader did not lose its place
+    const names = withOwnHeaders.map((b) => b.name);
+    expect(names).toContain('/');
+    expect(names).toContain('^~ /api/');
+    expect(names.filter((n) => n.startsWith('~*') && n.includes('woff')).length).toBe(2);
+  });
+
+  it('repeats the security set in every location that declares an add_header', () => {
+    for (const block of withOwnHeaders) {
+      for (const header of required) {
+        const lines = block.own.filter((l) => l.startsWith(`add_header ${header} `));
+        expect(lines.length, `location ${block.name}: ${header}`).toBe(1);
+        expect(lines[0].endsWith(' always;'), `location ${block.name}: ${header} needs "always"`).toBe(true);
+      }
+    }
+  });
+
+  it('serves static assets and fonts with the complete set, and fonts keep their cache header', () => {
+    const assets = withOwnHeaders.filter((b) => b.name.startsWith('~*') && b.name.includes('woff'));
+    for (const block of assets) {
+      expect(block.own.some((l) => l.startsWith('add_header X-XSS-Protection '))).toBe(true);
+      expect(block.own).toContain('add_header Cache-Control "public, immutable";');
+    }
+    const fonts = assets.find((b) => !b.name.includes('png'));
+    expect(fonts?.own).toContain('add_header Access-Control-Allow-Origin "*";');
+  });
+
+  it('gives /live no add_header of its own, so it inherits the server-level set', () => {
+    const live = blocks.find((b) => b.name === '= /live');
+    expect(live).toBeDefined();
+    expect(live?.own.some((l) => l.startsWith('add_header '))).toBe(false);
+    expect(live?.own).toContain('default_type text/plain;');
+  });
+
+  it('declares the complete set at server level, for the locations that inherit it', () => {
+    const server = active.slice(0, active.search(/^\s*location\s/m));
+    for (const header of [...required, 'X-XSS-Protection']) {
+      expect(server).toContain(`add_header ${header} `);
+    }
+  });
+});

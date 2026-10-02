@@ -357,7 +357,8 @@ const Activity: React.FC = () => {
   const { cursorRowProps } = useListCursor(
     loading ? 0 : feed.length,
     (i) => navigate(feedHref(feed[i])),
-    { resetKey: `${authorFilter}|${debouncedSearch}` },
+    // Latest first: a new thread arriving on a re-read shifts every row.
+    { resetKey: `${authorFilter}|${debouncedSearch}`, getId: (i) => feed[i]?.key },
   );
 
   return (

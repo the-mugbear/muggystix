@@ -248,7 +248,8 @@ const ScannerObservations: React.FC<Props> = ({ canManage }) => {
   const { cursorRowProps } = useListCursor(
     loading || error ? 0 : issues.length,
     (i) => void toggleExpanded(issues[i]),
-    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}` },
+    // A promotion re-reads the list (the judged issue may leave it).
+    { resetKey: `${search}|${severity}|${minHosts}|${includeJudged}|${kind}`, getId: (i) => issues[i]?.issue_key },
   );
 
   return (

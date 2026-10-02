@@ -21,7 +21,7 @@ Run it: ``docker compose exec backend python scripts/backfill_misconfigs.py``.
 from __future__ import annotations
 
 from collections import Counter
-from typing import Dict, Optional
+from typing import Dict, List, Optional
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -32,7 +32,7 @@ from app.db.models_vulnerability import VulnerabilitySource
 from app.parsers.netexec_parser import netexec_check_evidence, netexec_line_checks, nfs_finding_port
 from app.parsers.nse_vulns import script_text_check
 from app.services import smb_signing as smb_signing_states
-from app.db.models_findings import Finding
+from app.db.models_findings import Finding, FindingSource
 from app.db.models_vulnerability import Vulnerability
 from app.services.misconfig_checks import (
     CHECKS, NESSUS_PLUGIN_CHECKS, NUCLEI_TEMPLATE_CHECKS, nikto_header_check, nuclei_header_check,
@@ -40,9 +40,22 @@ from app.services.misconfig_checks import (
 )
 
 
-def backfill_misconfigs(db: Session, project_id: Optional[int] = None) -> Dict[str, int]:
+#: The count key under which a run reports findings it did not re-key (see
+#: ``_adopt_tool_titled_rows``); the pairs themselves go to ``unmerged``.
+UNMERGED_KEY = "findings left on their own key (another finding is this check's)"
+
+
+def backfill_misconfigs(
+    db: Session, project_id: Optional[int] = None, unmerged: Optional[List[dict]] = None,
+) -> Dict[str, int]:
     """Record catalog observations from stored evidence; returns counts per
-    check.  Flushes; the caller commits."""
+    check.  Flushes; the caller commits.
+
+    ``unmerged`` — a list the caller passes to learn which findings were NOT
+    moved onto their catalog check's key because the project already has a
+    scanner finding there.  One dict per pair: ``project_id``, ``check_id``,
+    ``finding_id`` (left alone) and ``kept_finding_id`` (the check's).  They
+    are two findings for one weakness; a person merges them, never this."""
     counts: Counter = Counter()
 
     def _hosts(query, host_column):
@@ -120,7 +133,7 @@ def backfill_misconfigs(db: Session, project_id: Optional[int] = None) -> Dict[s
             )
             counts[check_id] += 1
 
-    counts.update(_adopt_tool_titled_rows(db, project_id))
+    counts.update(_adopt_tool_titled_rows(db, project_id, unmerged))
     db.flush()
     return dict(counts)
 
@@ -148,17 +161,30 @@ def _check_for_row(v: Vulnerability) -> Optional[str]:
     return None
 
 
-def _adopt_tool_titled_rows(db: Session, project_id: Optional[int]) -> Counter:
+#: The tools whose stored rows are given their catalog check.
+_ADOPTED_SOURCES = ("NIKTO", "NUCLEI", "TESTSSL", "NESSUS")
+
+
+def _adopt_tool_titled_rows(
+    db: Session, project_id: Optional[int], unmerged: Optional[List[dict]] = None,
+) -> Counter:
     """Rows imported before a tool's results were mapped onto the catalog
     keep the tool's title and group apart ("Strict-Transport-Security header
     missing" from Nikto beside "HSTS not set" from testssl).  Give them the
     check and the catalog title — the scanner's severity and write-up stay —
     and move a finding promoted from one onto the check's key, so the next
-    promotion of the weakness joins it."""
+    promotion of the weakness joins it.
+
+    A project has ONE scanner finding per issue key (``uq_finding_scanner_issue``).
+    When the check already has one — two tools' findings map to it, or one was
+    promoted after the catalog existed — the second finding keeps the key it
+    has and the pair is reported (``unmerged``): re-keying it would be refused
+    by the index and fail the whole run, and which of two findings' text,
+    status and history survives is a person's decision."""
     counts: Counter = Counter()
     query = db.query(Vulnerability).filter(
         Vulnerability.check_id.is_(None),
-        Vulnerability.source.in_(("NIKTO", "NUCLEI", "TESTSSL", "NESSUS")),
+        Vulnerability.source.in_(_ADOPTED_SOURCES),
     )
     if project_id:
         query = query.join(models.Host, Vulnerability.host_id == models.Host.id).filter(
@@ -174,6 +200,47 @@ def _adopt_tool_titled_rows(db: Session, project_id: Optional[int]) -> Counter:
         counts[f"{check_id} (retitled)"] += 1
     if adopted:
         db.flush()
-        for finding in db.query(Finding).filter(Finding.vuln_id.in_(list(adopted))):
-            finding.dedup_key = f"check:{adopted[finding.vuln_id]}"
+    # Every finding promoted from one of these tools' catalog rows that is not
+    # on its check's key — those adopted now, and those an earlier run left
+    # alone, so a pair is reported by EVERY run until someone merges it.
+    scanner = FindingSource.SCANNER.value
+    promoted_query = (
+        db.query(Finding, Vulnerability.check_id)
+        .join(Vulnerability, Vulnerability.id == Finding.vuln_id)
+        .filter(Vulnerability.check_id.isnot(None), Vulnerability.source.in_(_ADOPTED_SOURCES))
+    )
+    if project_id:
+        promoted_query = promoted_query.filter(Finding.project_id == project_id)
+    promoted = [
+        (finding, check_id) for finding, check_id in promoted_query.order_by(Finding.id)
+        if finding.dedup_key != f"check:{check_id}"
+    ]
+    if not promoted:
+        return counts
+    # (project, key) -> the scanner finding that holds the key: those stored,
+    # then those this run moves (the session does not autoflush).
+    holder: Dict[tuple, int] = {
+        (pid, key): fid
+        for pid, key, fid in db.query(Finding.project_id, Finding.dedup_key, Finding.id)
+        .filter(Finding.project_id.in_({f.project_id for f, _ in promoted}),
+                Finding.source == scanner,
+                Finding.dedup_key.in_({f"check:{c}" for _, c in promoted}))
+        .order_by(Finding.id.desc())
+    }
+    for finding, check_id in promoted:
+        key = f"check:{check_id}"
+        if finding.source != scanner:
+            finding.dedup_key = key  # outside the index: any number may share a key
+            continue
+        kept = holder.get((finding.project_id, key))
+        if kept is not None and kept != finding.id:
+            counts[UNMERGED_KEY] += 1
+            if unmerged is not None:
+                unmerged.append({
+                    "project_id": finding.project_id, "check_id": check_id,
+                    "finding_id": finding.id, "kept_finding_id": kept,
+                })
+            continue
+        finding.dedup_key = key
+        holder[(finding.project_id, key)] = finding.id
     return counts

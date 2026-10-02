@@ -7,8 +7,27 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  captionAsAlt, evidenceIdOf, imageReference, placementLine, referencedImageIds,
+  captionAsAlt, evidenceIdOf, evidenceReferenceAt, imageReference, placementLine, referencedImageIds,
 } from '../../utils/reportImages';
+
+import { REFERENCE_CASES } from './reportImageCases';
+
+describe('one grammar decides what places an image', () => {
+  it.each(REFERENCE_CASES)('%j → %j', (text, ids) => {
+    expect(referencedImageIds(text)).toEqual(ids);
+  });
+
+  it('finds the reference that starts at a position, and only there', () => {
+    const text = 'Before ![The \\] session](evidence:57 "t") after';
+    expect(evidenceReferenceAt(text, 7)).toEqual({ id: 57, alt: 'The \\] session', end: 41 });
+    expect(text.slice(41)).toBe(' after');
+    expect(evidenceReferenceAt(text, 0)).toBeNull();
+    expect(evidenceReferenceAt(text, 8)).toBeNull();
+    // Asked twice, the same answer (the pattern keeps no position between calls).
+    expect(evidenceReferenceAt(text, 7)?.id).toBe(57);
+    expect(evidenceReferenceAt('![a](<evidence:57>)', 0)).toBeNull();
+  });
+});
 
 describe('referencedImageIds — what places an image', () => {
   it('reads a Markdown image whose target is evidence:<id>, once each, in order', () => {

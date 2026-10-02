@@ -45,9 +45,23 @@ def template_dir(tmp_path, monkeypatch):
         (folder / "template.json").write_text(json.dumps({
             "title": name, "entry": "report.qmd", "formats": ["html", "docx"], **extra,
         }))
-        (folder / "report.qmd").write_text("---\ntitle: x\n---\n")
+        (folder / "report.qmd").write_text(PRINTS_EVERYTHING)
     monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
     return root
+
+
+# A report's data holds what its template PRINTS (S2): a template that asks
+# for nothing gets no test results and prints no image.  This one asks for
+# every finding's written text, test results and trailing images.
+PRINTS_EVERYTHING = (
+    "---\ntitle: x\n---\n"
+    "<% for f in findings %>\n"
+    '<% for field in ("description", "impact", "steps_to_reproduce", "recommendation", "references") %>'
+    "<< md(f, field) >><% endfor %>\n"
+    '<% for c in f.get("confirmations") or [] %><< code(c, "command") >><< code(c, "output") >><% endfor %>\n'
+    "<% for e in f.evidence %><< image(e) >><% endfor %>\n"
+    "<% endfor %>\n"
+)
 
 
 def _member(db_session, project, user_id, username, role):
@@ -586,6 +600,53 @@ def test_issuing_freezes_the_test_results(client, db_session, test_project, test
     assert issued["summary"]["evidence_records"] == 1
     # A new draft reads the live state.
     assert _build(db_session, _create(client, test_project)["id"])[0]["findings"][0]["confirmations"] == []
+
+
+def test_test_results_are_counted_and_kept_only_where_the_report_prints_them(
+    client, db_session, test_project, template_dir,
+):
+    """Branch review S2 — an addendum lists a finding the client already has
+    in one line (here: every finding that is not ``new``), so the template
+    never reads its test results.  They used to be counted as printed
+    (``evidence_records``) and frozen into the report's data all the same."""
+    (template_dir / "pentest" / "report.qmd").write_text(
+        "---\ntitle: x\n---\n"
+        '<% for f in findings if f.change in (none, "new") %>\n'
+        '<< md(f, "description") >>\n'
+        '<% for c in f.get("confirmations") or [] %><< code(c, "command") >><% endfor %>\n'
+        "<% endfor %>\n"
+        "<% for f in findings %>| << f.ref >> | << f.confirmations|length >> |\n<% endfor %>\n"
+    )
+    a, b = (_host(db_session, test_project, ip) for ip in ("10.68.0.1", "10.68.0.2"))
+    known = _finding(db_session, test_project, "Known", "high", hosts=[a], description="d")
+    _record(db_session, test_project, known, a)
+    full = _create(client, test_project)
+    assert _build(db_session, full["id"])[2]["evidence_records"] == 1          # a full report prints it
+    assert _build(db_session, full["id"])[2]["evidence_records_not_printed"] == 0
+    _issue(client, test_project, full["id"])
+
+    # Since the baseline: the known finding is on a further system (with two
+    # more results there), and a new finding has one.
+    db_session.add(FindingHost(finding_id=known.id, host_id=b.id, host_status="open"))
+    db_session.commit()
+    _record(db_session, test_project, known, b)
+    _record(db_session, test_project, known, b, agent_session_id=None, summary="again")
+    new = _finding(db_session, test_project, "New", "low", hosts=[b], description="d")
+    _record(db_session, test_project, new, b)
+
+    add = _create(client, test_project, kind="addendum")
+    dataset, _, summary = _build(db_session, add["id"])
+    by_title = {f["title"]: f for f in dataset["findings"]}
+    assert by_title["Known"]["change"] == "new_hosts" and by_title["New"]["change"] == "new"
+    assert len(by_title["New"]["confirmations"]) == 1
+    # Asking how many there are is not printing them.
+    assert by_title["Known"]["confirmations"] == [] and by_title["Known"]["confirmations_omitted"] == 0
+    assert summary["evidence_records"] == 1 and summary["evidence_records_not_printed"] == 3
+    # Issued, the report's data holds what it printed.
+    issued = _issue(client, test_project, add["id"])
+    assert issued["summary"]["evidence_records"] == 1
+    frozen = db_session.get(Report, add["id"]).snapshot["dataset"]["findings"]
+    assert sorted(len(f["confirmations"]) for f in frozen) == [0, 1]
 
 
 def test_report_excerpt_cleans_and_cuts():

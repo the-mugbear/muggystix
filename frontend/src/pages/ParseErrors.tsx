@@ -226,7 +226,10 @@ const ParseErrors: React.FC = () => {
   // discard the `total` the endpoint already returns, so anything past the
   // 100th upload was unreachable by browsing and the truncation was invisible.
   // 1-based in the URL (`?page=2`), 0-based here.
-  const page = Math.max(0, (Number(searchParams.get('page')) || 1) - 1);
+  // Only a positive whole number is a page: `?page=1.5` used to send
+  // `skip=12.5`, and `-2`, `abc` or `1e3` are page 1 as well.
+  const pageParam = searchParams.get('page') ?? '';
+  const page = /^[1-9]\d{0,6}$/.test(pageParam) ? Number(pageParam) - 1 : 0;
   const setPage = (next: number) => setParams({ page: next > 0 ? String(next + 1) : null }, true);
   // Fixed: no control has ever changed it (it was state with an unused setter).
   // v5.288.0 — 25, like the other lists (was 50).

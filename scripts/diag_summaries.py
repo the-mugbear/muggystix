@@ -36,14 +36,28 @@ from collections import defaultdict
 
 # The method, then the path (never kept), status, time, and the appended
 # fields.  A SLOW line puts the time BEFORE the arrow, so it cannot match.
+#
+# Both the method and the path are whatever the CLIENT sent, and the path is
+# logged percent-decoded — it can hold spaces.  Three things keep a word of
+# it out of the report (branch review 2026-10-01):
+#   * the method is one of the real HTTP methods ("?" is the middleware's own
+#     placeholder), never "any capitals": ``GET /x SECRET y -> 200 …`` used to
+#     match again at ``SECRET y`` and print SECRET as the method;
+#   * the line is anchored where the message STARTS — the start of the line
+#     (the bare message) or the formatter's ``app.access - LEVEL - `` prefix;
+#   * the fields are anchored at the END of the line, so text shaped like the
+#     fields inside the path (``… route=x``) is path, and the route read is
+#     the one the middleware appended.
+_METHOD = r"(GET|POST|PUT|PATCH|DELETE|HEAD|OPTIONS|TRACE|CONNECT|\?)"
+_START = r"(?:^|app\.access - [A-Z]+ - )"
 ACCESS = re.compile(
-    r"(?:^|\s)([A-Z?]{1,10}) \S+ -> \S+ (\d+)ms req=\S+ db_ms=(\d+) db_n=(\d+) route=(\S+)"
+    _START + _METHOD + r" .*? -> \S+ (\d+)ms req=\S+ db_ms=(\d+) db_n=(\d+) route=(\S+)\s*$"
 )
 SLOW = re.compile(
-    r"SLOW request ([A-Z?]{1,10}) \S+ \d+ms -> \S+ req=\S+ db_ms=\d+ db_n=\d+ route=(\S+)"
+    _START + r"SLOW request " + _METHOD + r" .*? \d+ms -> \S+ req=\S+ db_ms=\d+ db_n=\d+ route=(\S+)\s*$"
 )
 # The line as builds before the timing fields wrote it: nothing after req=.
-OLD_ACCESS = re.compile(r"(?:^|\s)[A-Z?]{1,10} \S+ -> \S+ \d+ms req=\S+\s*$")
+OLD_ACCESS = re.compile(_START + _METHOD + r" .*? -> \S+ \d+ms req=\S+\s*$")
 
 UNMATCHED = "(unmatched route)"
 ROUTE_UNSAFE = re.compile(r"[^A-Za-z0-9_/{}.:\-]")
@@ -51,9 +65,44 @@ MAX_ROUTE_CHARS = 120
 MAX_ROUTES = 60
 
 MAX_QUERY_CHARS = 400
-DML = re.compile(r"^\s*(?:/\*.*?\*/\s*)*(select|insert|update|delete|with|merge)\b", re.IGNORECASE | re.DOTALL)
-QUOTED_LITERAL = re.compile(r"'(?:[^']|'')*'")
+DML = re.compile(r"^\s*(select|insert|update|delete|with|merge)\b", re.IGNORECASE)
+# Everything in a statement that can carry a value, replaced in ONE pass so a
+# quote inside a comment (or a comment marker inside a string) cannot change
+# what the next alternative sees.  In order:
+#   /* … */ and -- comments   free text (an ORM or a person can tag a query
+#                             with a host name); pg_stat_statements keeps them
+#   $tag$ … $tag$, $$ … $$    dollar-quoted strings
+#   E'…' / e'…'               escape strings — ``\'`` does not end one, which
+#                             the plain rule below would get wrong
+#   '…'                       standard strings ('' is an escaped quote); also
+#                             covers the body of B'…', X'…', N'…', U&'…'
+# An unterminated one runs to the end of the statement: over-removal is the
+# safe direction.
+VALUE_BEARING = re.compile(
+    r"""
+      (?P<comment>   /\*.*?(?:\*/|\Z) | --[^\n]*                          )
+    | (?P<dollar>    \$\$ .*? (?:\$\$|\Z)
+                   | \$(?P<tag>[A-Za-z_][A-Za-z_0-9]*)\$ .*? (?:\$(?P=tag)\$|\Z) )
+    | (?P<escape>    \b[eE]'(?:[^'\\]|\\.|'')*(?:'|\Z)                    )
+    | (?P<plain>     '(?:[^']|'')*(?:'|\Z)                                )
+    """,
+    re.VERBOSE | re.DOTALL,
+)
 WHITESPACE = re.compile(r"\s+")
+
+
+def _blank_value(match: re.Match) -> str:
+    if match.group("comment") is not None:
+        return " "
+    if match.group("dollar") is not None:
+        return "$$?$$"
+    return "'?'"
+
+
+def strip_values(query: str) -> str:
+    """The statement with every comment removed and every string literal
+    replaced by ``'?'`` (``$$?$$`` for a dollar-quoted one)."""
+    return VALUE_BEARING.sub(_blank_value, query)
 
 
 def _route_label(route: str) -> str:
@@ -141,9 +190,12 @@ def request_timing(lines, max_routes: int = MAX_ROUTES) -> str:
 def clean_query(query: str, max_chars: int = MAX_QUERY_CHARS) -> str | None:
     """One line, bounded, no literal — or ``None`` for a statement that is
     left out (anything that is not plain DML)."""
-    if not DML.match(query):
+    # Values and comments go first, so the DML test sees the statement itself
+    # (a leading comment is gone) and nothing after it can bring one back.
+    stripped = strip_values(query)
+    if not DML.match(stripped):
         return None
-    text = WHITESPACE.sub(" ", QUOTED_LITERAL.sub("'?'", query)).strip()
+    text = WHITESPACE.sub(" ", stripped).strip()
     if len(text) > max_chars:
         text = text[:max_chars].rstrip() + " …"
     return text

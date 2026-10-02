@@ -77,6 +77,66 @@ export GIT_COMMIT
 ROLLBACK_STATE_FILE="$PROJECT_ROOT/.deploy-rollback-state"
 ROLLBACK_SERVICES="backend worker report-worker frontend"
 
+# Shared with restore-db.sh: `ask`, the staged start, the backend wait.
+if [[ ! -f "$SCRIPT_DIR/stack-lib.sh" ]]; then
+    print_error "scripts/stack-lib.sh is missing — this copy of the scripts folder is incomplete."
+    exit 1
+fi
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
+
+# ------------------------------------------------------------------
+# The rollback state file: one `KEY|value` line per fact.
+#   <service>|<image ref>            the image a :previous tag goes back to
+#   PREDEPLOY_DB_DUMP|<path>         the dump option 7 restores
+#   PREDEPLOY_ALEMBIC_REVISION|<rev> the schema revision that dump holds —
+#                                    what the previous build expects
+#   DEPLOY_IN_PROGRESS|<when>|<id>   a deploy started and has not finished
+#                                    healthy; <id> is the backend image it built
+# ------------------------------------------------------------------
+state_get() {
+    [[ -f "$ROLLBACK_STATE_FILE" ]] || return 0
+    grep "^$1|" "$ROLLBACK_STATE_FILE" 2>/dev/null | tail -1 | cut -d'|' -f2- || true
+}
+state_del() {
+    [[ -f "$ROLLBACK_STATE_FILE" ]] || return 0
+    local tmp="${ROLLBACK_STATE_FILE}.edit"
+    grep -v "^$1|" "$ROLLBACK_STATE_FILE" > "$tmp" 2>/dev/null || true
+    mv "$tmp" "$ROLLBACK_STATE_FILE"
+}
+state_set() {
+    state_del "$1"
+    echo "$1|$2" >> "$ROLLBACK_STATE_FILE"
+}
+
+# The image compose builds or names for a service.  `config --images SERVICE`
+# also lists the images of every service it depends on, in no fixed order
+# (asking for the frontend's answered with the backend's one time in two), so
+# the one NAMED for the service is picked: <project>-<service>, else a name
+# ending in the service's, else — the database has no dependencies — the
+# first line.
+service_image_ref() {
+    local service="$1" listed project ref=""
+    listed="$($DC config --images "$service" 2>/dev/null || true)"
+    [[ -n "$listed" ]] || return 0
+    if [[ "$service" == "db" ]]; then
+        printf '%s\n' "$listed" | head -1
+        return 0
+    fi
+    project="$(compose_project_name)"
+    ref="$(printf '%s\n' "$listed" | grep -xE "${project:-[^/]+}[-_]${service}(:[^/]+)?" | head -1 || true)"
+    [[ -n "$ref" ]] || ref="$(printf '%s\n' "$listed" | grep -E "(^|[-_/])${service}(:[^/]+)?\$" | head -1 || true)"
+    printf '%s\n' "$ref"
+}
+
+# A .env that option 4 wrote only so Compose could parse the file during a
+# teardown.  It must never become a deployment's configuration.
+TEARDOWN_ENV_MARKER="# BLUESTICK-TEARDOWN-TEMPORARY-ENV"
+env_is_teardown_leftover() {
+    [[ -f .env ]] || return 1
+    grep -qxF "$TEARDOWN_ENV_MARKER" .env 2>/dev/null || grep -qx 'SECRET_KEY=teardown' .env 2>/dev/null
+}
+
 # ------------------------------------------------------------------
 # Preflight: required external commands.
 #
@@ -145,8 +205,8 @@ select_ip() {
     done
     echo "  $((${#ips[@]} + 1))) Enter a custom IP/hostname"
     echo ""
-    echo -n "Enter choice [1]: "
-    read -r choice
+    local choice
+    ask choice "Enter choice [1]: "
 
     # Default to first option
     if [[ -z "$choice" ]]; then
@@ -154,8 +214,7 @@ select_ip() {
     fi
 
     if [[ "$choice" -eq $(( ${#ips[@]} + 1 )) ]] 2>/dev/null; then
-        echo -n "Enter IP address or hostname: "
-        read -r SELECTED_IP
+        ask SELECTED_IP "Enter IP address or hostname: "
         if [[ -z "$SELECTED_IP" ]]; then
             print_error "No IP address provided"
             exit 1
@@ -230,14 +289,16 @@ adopt_local_base_image() {
     docker image inspect "$pinned" >/dev/null 2>&1 && return 0
     docker image inspect "$floating" >/dev/null 2>&1 || return 0
     have="$(image_declared_version "$floating" "$var")"
-    if [[ -n "$have" && "$have" == "$want"* ]]; then
+    # Exact, or the release followed by a packaging suffix (PG_VERSION is
+    # "16.13-1.pgdg13+1").  A bare prefix match took 16.1 for 16.13.
+    if [[ -n "$have" && ( "$have" == "$want" || "$have" == "$want"-* ) ]]; then
         if docker tag "$floating" "$pinned" 2>/dev/null; then
             print_info "Base image: local $floating is $have — tagged as $pinned (no pull needed)."
         fi
     else
         print_warning "Base image $pinned is not on this host (local $floating is ${have:-unknown})."
         print_warning "Docker will pull it; on an isolated host, load it or set the override in .env"
-        print_warning "(POSTGRES_IMAGE / PYTHON_IMAGE / NODE_IMAGE / NGINX_IMAGE)."
+        print_warning "(POSTGRES_IMAGE / PYTHON_IMAGE / DEBIAN_IMAGE / NODE_IMAGE / NGINX_IMAGE)."
     fi
 }
 
@@ -248,7 +309,7 @@ ensure_pinned_base_images() {
     db_image="$($DC config --images db 2>/dev/null | head -1)"
     if [[ "$db_image" =~ ^postgres:([0-9]+)\.([0-9]+)$ ]]; then
         adopt_local_base_image "$db_image" "postgres:${BASH_REMATCH[1]}" PG_VERSION \
-            "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}-"
+            "${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
     fi
     # Build bases: the Dockerfile's default unless .env overrides it.
     local spec arg dockerfile floating var pinned version
@@ -265,6 +326,90 @@ ensure_pinned_base_images() {
         version="${pinned#*:}"; version="${version%%-*}"
         adopt_local_base_image "$pinned" "$floating" "$var" "$version"
     done
+}
+
+# The base image a build stage will use: the environment, else .env, else the
+# Dockerfile's own default.
+resolved_base_image() {
+    # $1 build arg, $2 Dockerfile
+    local value
+    value="${!1:-}"
+    [[ -z "$value" ]] && value="$(grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d= -f2-)"
+    [[ -z "$value" ]] && value="$(sed -n "s/^ARG $1=//p" "$2" 2>/dev/null | head -1)"
+    printf '%s\n' "$value"
+}
+
+# Say, BEFORE the build, which pinned base images this host does not hold
+# (branch review B2, the cheap half).  The build pulls them — and fails on a
+# host with no route to the registry, a long way into its output.  A failed
+# build restarts nothing, so this is a warning, not a stop.
+warn_missing_base_images() {
+    local spec arg dockerfile image
+    local -a missing=()
+    for spec in \
+        "PYTHON_IMAGE|backend/Dockerfile" \
+        "DEBIAN_IMAGE|backend/Dockerfile" \
+        "NODE_IMAGE|frontend/Dockerfile" \
+        "NGINX_IMAGE|frontend/Dockerfile"; do
+        IFS='|' read -r arg dockerfile <<< "$spec"
+        image="$(resolved_base_image "$arg" "$dockerfile")"
+        [[ -z "$image" ]] && continue
+        docker image inspect "$image" >/dev/null 2>&1 || missing+=("$arg=$image")
+    done
+    [[ "${#missing[@]}" -eq 0 ]] && return 0
+
+    echo ""
+    print_warning "Base image(s) NOT in this host's image store — the build will pull them:"
+    local entry
+    for entry in "${missing[@]}"; do
+        print_warning "    ${entry#*=}   (override: ${entry%%=*} in .env)"
+    done
+    # One question to the registry about the first missing image: "can this
+    # host pull at all?", before the build spends minutes finding out.  A
+    # manifest lookup of a multi-platform image takes 10–15 s on a good
+    # connection, hence the generous limit (BASE_IMAGE_PROBE_TIMEOUT).
+    local first="${missing[0]#*=}" reach_rc=0 limit="${BASE_IMAGE_PROBE_TIMEOUT:-45}"
+    print_info "Asking the registry for $first (up to ${limit}s)..."
+    if command -v timeout >/dev/null 2>&1; then
+        timeout "$limit" docker manifest inspect "$first" >/dev/null 2>&1 || reach_rc=$?
+    else
+        docker manifest inspect "$first" >/dev/null 2>&1 || reach_rc=$?
+    fi
+    if [[ "$reach_rc" -ne 0 ]]; then
+        print_warning "The registry did not answer for $first within ${limit}s: this host may be OFFLINE"
+        print_warning "(or the tag does not exist). If it is, the build fails at its first FROM line."
+        print_warning "Nothing is restarted when a build fails — the running containers keep the current"
+        print_warning "build. To deploy on a host that cannot pull: load the image (docker load) or point"
+        print_warning "the override at a tag this host holds."
+    else
+        print_info "The registry answered for $first, so the pull should succeed."
+    fi
+    print_info "The build also downloads packages (PyPI, npm, Debian/Alpine, and Quarto from GitHub)"
+    print_info "for every layer that is not already in Docker's build cache."
+    echo ""
+}
+
+# The database is not built — `up` pulls its image when the host lacks it, and
+# a host that cannot pull finds out after the build, with `up` failing before
+# it recreates anything (branch review S2).  Checked, and pulled if need be,
+# BEFORE the build.  Returns 1 when the image cannot be had.
+ensure_db_image_local() {
+    local db_image
+    db_image="$(service_image_ref db)"
+    if [[ -z "$db_image" ]]; then
+        return 0   # compose v1 prints no image list; `up` decides
+    fi
+    if docker image inspect "$db_image" >/dev/null 2>&1; then
+        return 0
+    fi
+    print_warning "The database image $db_image is not on this host — pulling it now..."
+    if $DC pull db; then
+        return 0
+    fi
+    print_error "The database image $db_image is not on this host and could not be pulled."
+    print_error "Nothing was built or restarted. Load it (docker load -i postgres.tar), or set"
+    print_error "POSTGRES_IMAGE in .env to a PostgreSQL 16 image this host holds, then deploy again."
+    return 1
 }
 
 # Point an EXISTING .env at a new address: only HOST_IP, REACT_APP_API_URL
@@ -373,8 +518,8 @@ ensure_env() {
 
     print_warning ".env not found"
     echo ""
-    echo "Would you like to generate one now? (Y/n): "
-    read -r answer
+    local answer
+    ask answer "Would you like to generate one now? (Y/n): "
     if [[ "$answer" =~ ^[Nn] ]]; then
         print_error "Cannot proceed without .env"
         exit 1
@@ -512,10 +657,19 @@ backup_config() {
     dest="$parent/$(basename "$PROJECT_ROOT")-config-backup-$stamp"
     found=0
 
-    mkdir -p "$dest"
+    if ! mkdir -p "$dest"; then
+        print_error "Could not create $dest — nothing was backed up."
+        return 1
+    fi
 
+    # "Backed up" is printed only after the copy succeeded, and a failed copy
+    # is this function's failure: option 4 deletes .env next, and it used to
+    # read the success line of a copy that had not happened (branch review S6).
     if [[ -f ".env" ]]; then
-        cp -p .env "$dest/.env"
+        if ! cp -p .env "$dest/.env"; then
+            print_error "Copying .env to $dest FAILED — it is NOT backed up."
+            return 1
+        fi
         print_success "Backed up .env"
         found=1
     else
@@ -523,7 +677,10 @@ backup_config() {
     fi
 
     if [[ -d "ssl" ]]; then
-        cp -a ssl "$dest/ssl"
+        if ! cp -a ssl "$dest/ssl"; then
+            print_error "Copying ssl/ to $dest FAILED — the TLS certificate and key are NOT backed up."
+            return 1
+        fi
         print_success "Backed up ssl/ (TLS cert + key)"
         found=1
     else
@@ -546,8 +703,11 @@ backup_config() {
     echo ""
     print_info "To restore into a freshly-copied project directory, run from"
     print_info "the project root:"
-    [[ -f "$dest/.env" ]] && echo "    cp -p \"$dest/.env\" ./.env"
-    [[ -d "$dest/ssl" ]] && echo "    cp -a \"$dest/ssl/.\" ./ssl/"
+    if [[ -f "$dest/.env" ]]; then echo "    cp -p \"$dest/.env\" ./.env"; fi
+    if [[ -d "$dest/ssl" ]]; then echo "    cp -a \"$dest/ssl/.\" ./ssl/"; fi
+    # Explicit: the function used to return the status of the last `[[ -d ]]`
+    # test, i.e. failure whenever ssl/ was absent.
+    return 0
 }
 
 # ------------------------------------------------------------------
@@ -581,20 +741,37 @@ check_free_disk() {
         print_warning "Only $(( avail_kb / 1024 / 1024 )) GB free (below ${MIN_FREE_GB} GB). A full disk stops Postgres."
         print_warning "Reclaim space first:  docker builder prune -f   and   docker image prune -f"
         print_warning "(Neither touches running containers, volumes or the rollback images.)"
-        echo "Continue anyway? [y/N]: "
-        read -r answer
-        [[ "$answer" =~ ^[Yy]$ ]] || { print_error "Deploy cancelled — free some disk space and re-run."; exit 1; }
+        # At end of input (a piped run: upgrade-instance.sh) the answer is the
+        # safe one, and it is said — the deploy used to end here in silence.
+        local answer
+        ask answer "Continue anyway? [y/N]: " "n"
+        [[ "$answer" =~ ^[Yy]$ ]] || { print_error "Deploy cancelled — free some disk space and re-run (MIN_FREE_GB=0 skips this check)."; exit 1; }
     fi
 }
 
-# After a healthy deploy: remove what this deploy made obsolete.  Untagged
-# (dangling) images only — the :previous rollback tags are kept, so option 7
-# still works — and build cache older than a week (recent layers keep the
-# next rebuild fast).
+# After a healthy deploy: remove what this deploy made obsolete.
+#
+#   * Untagged (dangling) images OF THIS COMPOSE PROJECT only — selected by
+#     the com.docker.compose.project label every image compose builds carries.
+#     It was a host-wide `docker image prune -f`, which also removed another
+#     project's untagged images (branch review).  The :previous rollback tags
+#     are tags, so their images are not dangling and are kept.
+#   * Build cache older than a week.  The cache has no project label — it is
+#     host-wide by nature — but it holds nothing that cannot be rebuilt, and
+#     every deploy adds to it (CACHE_BUST): this is what filled the production
+#     disk on 2026-09-24.  DEPLOY_PRUNE_BUILD_CACHE=0 leaves it alone on a
+#     host that shares Docker with other builds.
 prune_after_deploy() {
-    print_info "Reclaiming disk: dangling images and build cache older than 7 days..."
-    docker image prune -f >/dev/null 2>&1 || true
-    docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    local project
+    project="$(compose_project_name)"
+    if [[ -n "$project" ]]; then
+        print_info "Reclaiming disk: this project's untagged images..."
+        docker image prune -f --filter "label=com.docker.compose.project=${project}" >/dev/null 2>&1 || true
+    fi
+    if [[ "${DEPLOY_PRUNE_BUILD_CACHE:-1}" != "0" ]]; then
+        print_info "Reclaiming disk: Docker build cache older than 7 days (DEPLOY_PRUNE_BUILD_CACHE=0 skips this)..."
+        docker builder prune -f --filter until=168h >/dev/null 2>&1 || true
+    fi
     local avail_kb
     avail_kb=$(df -Pk . 2>/dev/null | awk 'NR==2 {print $4}')
     if [[ -n "$avail_kb" ]]; then
@@ -631,6 +808,18 @@ snapshot_images_for_rollback() {
     fi
 }
 
+# Record the dump a rollback restores, with the schema revision it holds
+# (backup-db.sh writes alembic_revision to the dump's .meta).  The revision is
+# how option 7 tells "the failed deploy migrated the schema" from "it did not".
+record_predeploy_dump() {
+    local dump="$1" rev=""
+    state_set PREDEPLOY_DB_DUMP "$dump"
+    if [[ -f "${dump}.meta" ]]; then
+        rev="$(grep -E '^alembic_revision=' "${dump}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    fi
+    state_set PREDEPLOY_ALEMBIC_REVISION "${rev:-unknown}"
+}
+
 # Take a pre-deploy DB backup and record its path in the state file so a
 # rollback can offer to restore the exact schema the old image expects.
 predeploy_db_backup() {
@@ -664,11 +853,11 @@ predeploy_db_backup() {
             print_info  "Override for a disposable environment: DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
             [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]] || return 1
             print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO restorable database backup."
-            echo "PREDEPLOY_DB_DUMP|NONE (forced)" >> "$ROLLBACK_STATE_FILE"
+            record_predeploy_dump "NONE (forced)"
             return 0
         fi
-        echo "PREDEPLOY_DB_DUMP|${dump}" >> "$ROLLBACK_STATE_FILE"
-        print_info "Pre-deploy DB backup: $dump"
+        record_predeploy_dump "$dump"
+        print_info "Pre-deploy DB backup: $dump (schema revision $(state_get PREDEPLOY_ALEMBIC_REVISION))"
         return 0
     fi
     rm -f "$marker"
@@ -685,7 +874,7 @@ predeploy_db_backup() {
         print_warning "DEPLOY_WITHOUT_BACKUP=1 — proceeding with NO restorable database backup."
         # Recorded so a later rollback tells the operator the DB cannot be
         # restored, instead of silently offering a restore that can't happen.
-        echo "PREDEPLOY_DB_DUMP|NONE (forced)" >> "$ROLLBACK_STATE_FILE"
+        record_predeploy_dump "NONE (forced)"
         return 0
     fi
     return 1
@@ -707,73 +896,35 @@ predeploy_db_backup() {
 # have failed … roll back"), and `up --build -d` under `set -e` could end the
 # script before even that.
 #
-# Returns 0 healthy, 2 crashed / crash-looping, 1 still starting at timeout.
+# wait_for_backend_healthy (scripts/stack-lib.sh, shared with restore-db.sh)
+# returns 0 healthy, 2 crashed / crash-looping, 1 still starting at timeout.
 # DEPLOY_HEALTH_TIMEOUT (seconds, default 1800) bounds the wait.
 # ------------------------------------------------------------------
 DEPLOY_HEALTH_TIMEOUT="${DEPLOY_HEALTH_TIMEOUT:-1800}"
-# backend/app/db/init.py _MIGRATION_LOCK_KEY — the session-level advisory lock
-# held for the whole of `alembic upgrade head`.
-MIGRATION_LOCK_KEY=738582901
-# Restarts of ONE container before it counts as crash-looping (a single
-# restart can be a database that was not accepting connections yet).
-BACKEND_RESTART_LIMIT=3
 
-backend_probe() {
-    $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1
-}
-
-# "<status> <restart count>" of the backend container, e.g. "running 0".
-backend_container_state() {
-    local cid
+# Is the backend CONTAINER running the image that was just built?
+# (branch review S2).  `up` can fail before it recreates anything — the
+# database image could not be pulled, a port is taken — and the container
+# that then answers /health is the OLD build: the script used to print
+# "Backend is healthy (boot + migrations succeeded)" for it.
+# Returns 0 yes, 1 no (a different image), 2 cannot tell.
+backend_runs_built_image() {
+    local ref built cid running
+    ref="$(service_image_ref backend)"
+    [[ -n "$ref" ]] || return 2
+    built="$(docker image inspect "$ref" --format '{{.Id}}' 2>/dev/null || true)"
     cid="$($DC ps -aq backend 2>/dev/null | head -1)"
-    if [[ -z "$cid" ]]; then
-        echo "missing 0"
-        return 0
-    fi
-    docker inspect "$cid" --format '{{.State.Status}} {{.RestartCount}}' 2>/dev/null || echo "unknown 0"
+    [[ -n "$built" && -n "$cid" ]] || return 2
+    running="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null || true)"
+    [[ -n "$running" ]] || return 2
+    [[ "$built" == "$running" ]]
 }
 
-migration_lock_held() {
-    local pg_user pg_db held
-    pg_user="$(grep -E '^POSTGRES_USER=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
-    pg_db="$(grep -E '^POSTGRES_DB=' .env 2>/dev/null | tail -1 | cut -d= -f2-)"
-    held="$($DC exec -T db psql -U "${pg_user:-nmapuser}" -d "${pg_db:-networkMapper}" -tAc \
-        "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' AND granted AND classid = 0 AND objid = ${MIGRATION_LOCK_KEY}" \
-        2>/dev/null | tr -dc '0-9')"
-    [[ -n "$held" && "$held" -gt 0 ]]
-}
-
-wait_for_backend_healthy() {
-    local timeout="${1:-$DEPLOY_HEALTH_TIMEOUT}" elapsed=0 status restarts last_note=0
-    print_info "Waiting for the backend (schema migrations run before it serves; up to ${timeout}s)..."
-    while [[ "$elapsed" -lt "$timeout" ]]; do
-        if backend_probe; then
-            print_success "Backend is healthy (boot + migrations succeeded)."
-            return 0
-        fi
-        read -r status restarts <<< "$(backend_container_state)"
-        case "$status" in
-            exited|dead)
-                print_error "The backend container has stopped (state: $status)."
-                return 2
-                ;;
-        esac
-        if [[ "${restarts:-0}" =~ ^[0-9]+$ && "${restarts:-0}" -ge "$BACKEND_RESTART_LIMIT" ]]; then
-            print_error "The backend container has restarted ${restarts} times — it is crash-looping."
-            return 2
-        fi
-        if (( elapsed - last_note >= 30 )); then
-            last_note=$elapsed
-            if migration_lock_held; then
-                print_info "  ${elapsed}s — a schema migration is running (migration lock held). Waiting; do not interrupt."
-            else
-                print_info "  ${elapsed}s — backend is ${status:-starting}, restarts: ${restarts:-0}."
-            fi
-        fi
-        sleep 5
-        elapsed=$((elapsed + 5))
-    done
-    return 1
+built_backend_image_id() {
+    local ref
+    ref="$(service_image_ref backend)"
+    [[ -n "$ref" ]] || return 0
+    docker image inspect "$ref" --format '{{.Id}}' 2>/dev/null || true
 }
 
 # After a healthy start: one-off data corrections this instance has no
@@ -782,7 +933,14 @@ wait_for_backend_healthy() {
 # rows, and the other must not run beside a live import.
 print_pending_data_repairs() {
     local pending
-    pending="$($DC exec -T backend python scripts/data_repairs.py --pending 2>/dev/null || true)"
+    # A failed read is "could not check", never "nothing pending": the error
+    # used to be swallowed and the reminder silently skipped.
+    if ! pending="$($DC exec -T backend python scripts/data_repairs.py --pending 2>/dev/null)"; then
+        echo ""
+        print_warning "Could not check the data-repair ledger (the read failed). See what this"
+        print_warning "instance still owes with:  ./scripts/status.sh"
+        return 0
+    fi
     if [[ -n "$pending" ]]; then
         echo ""
         print_warning "Data repairs not yet applied on this instance:"
@@ -792,8 +950,102 @@ print_pending_data_repairs() {
     fi
 }
 
-# Re-point the :rollback image tags and (prompted) restore the pre-deploy DB
-# backup, then bring the stack back up WITHOUT rebuilding.
+# ------------------------------------------------------------------
+# A deploy that did not finish (branch review S5).
+#
+# Option 1 snapshots the running images and takes a database dump BEFORE it
+# builds.  Run again after a FAILED deploy, it used to do both again — and
+# the snapshot then held the failed build, the dump the half-migrated
+# database: the good rollback point was overwritten by the thing to roll
+# back from.  DEPLOY_IN_PROGRESS is written before the build and removed only
+# when the deploy ends healthy (or a rollback does).
+# ------------------------------------------------------------------
+deploy_marker_started() { local v; v="$(state_get DEPLOY_IN_PROGRESS)"; printf '%s\n' "${v%%|*}"; }
+deploy_marker_image()   { local v; v="$(state_get DEPLOY_IN_PROGRESS)"; [[ "$v" == *"|"* ]] && printf '%s\n' "${v#*|}" || true; }
+
+# The marked deploy DID finish — by hand (`up -d` after the wait timed out):
+# the backend answers and runs the image that deploy built.
+marked_deploy_completed() {
+    local marked cid running
+    marked="$(deploy_marker_image)"
+    [[ -n "$marked" ]] || return 1
+    cid="$($DC ps -q backend 2>/dev/null | head -1)"
+    [[ -n "$cid" ]] || return 1
+    running="$(docker inspect "$cid" --format '{{.Image}}' 2>/dev/null || true)"
+    [[ "$running" == "$marked" ]] || return 1
+    backend_probe
+}
+
+# Decide what option 1 does about the rollback point.  Returns 1 to abort.
+prepare_rollback_point() {
+    if [[ -n "$(state_get DEPLOY_IN_PROGRESS)" ]]; then
+        if [[ "${DEPLOY_NEW_SNAPSHOT:-0}" == "1" ]]; then
+            print_warning "DEPLOY_NEW_SNAPSHOT=1 — discarding the unfinished deploy's rollback point and"
+            print_warning "taking a new one from what is running now."
+            state_del DEPLOY_IN_PROGRESS
+        elif marked_deploy_completed; then
+            print_info "The previous deploy was finished by hand and is healthy — taking a new rollback point."
+            state_del DEPLOY_IN_PROGRESS
+        fi
+    fi
+
+    if [[ -z "$(state_get DEPLOY_IN_PROGRESS)" ]]; then
+        snapshot_images_for_rollback
+        predeploy_db_backup || return 1
+        return 0
+    fi
+
+    # ---- an unfinished deploy: keep its rollback point --------------------
+    local dump recorded_rev current_rev
+    dump="$(state_get PREDEPLOY_DB_DUMP)"
+    recorded_rev="$(state_get PREDEPLOY_ALEMBIC_REVISION)"
+    echo ""
+    print_warning "The previous deploy (started $(deploy_marker_started)) did not finish healthy."
+    print_warning "KEEPING its rollback images (bluestick-rollback-*:previous): they are the last build"
+    print_warning "that worked. A new snapshot now would capture the failed build instead."
+
+    current_rev="$(database_alembic_revision || true)"
+    if [[ -n "$dump" && -f "$dump" && -n "$current_rev" && -n "$recorded_rev" \
+          && "$recorded_rev" != "unknown" && "$current_rev" == "$recorded_rev" ]]; then
+        # The failed deploy never migrated: the database is still the previous
+        # build's, and may hold work done since.  A fresh dump of it is a
+        # better rollback point than the older one, for the same build.
+        print_info "The database is still at the pre-deploy schema ($current_rev): the failed deploy did"
+        print_info "not migrate it. Taking a fresh pre-deploy backup (the previous one is kept too)."
+        predeploy_db_backup || return 1
+        return 0
+    fi
+
+    if [[ -n "$dump" && -f "$dump" ]]; then
+        print_warning "KEEPING the recorded pre-deploy database backup — no new one is taken, because the"
+        print_warning "database may already be migrated (schema now: ${current_rev:-unreadable}; at the backup: ${recorded_rev:-unknown}):"
+        echo "    $dump"
+        print_info "It is protected from backup retention while it is recorded here."
+        print_info "(If that deploy was in fact completed and you want a new rollback point:"
+        print_info " DEPLOY_NEW_SNAPSHOT=1 ./scripts/deploy.sh)"
+        return 0
+    fi
+
+    print_warning "No restorable pre-deploy database backup is recorded for that deploy"
+    print_warning "(recorded: ${dump:-nothing}). Taking a safety backup of the database AS IT IS NOW; it is"
+    print_warning "not recorded as the rollback dump, because it may hold a migrated schema."
+    if [[ -x "scripts/backup-db.sh" ]] && ./scripts/backup-db.sh; then
+        return 0
+    fi
+    print_error "The safety backup failed."
+    if [[ "${DEPLOY_WITHOUT_BACKUP:-0}" == "1" ]]; then
+        print_warning "DEPLOY_WITHOUT_BACKUP=1 — continuing with NO backup."
+        return 0
+    fi
+    print_info "Override for a disposable environment: DEPLOY_WITHOUT_BACKUP=1 ./scripts/deploy.sh"
+    return 1
+}
+
+# Option 7.  In this order: re-point the :previous image tags; stop the app;
+# compare the database's schema revision with the one recorded at the
+# pre-deploy backup and, when it moved, restore that backup (restore-db.sh);
+# only then start the previous build — backend first, WITHOUT rebuilding —
+# and say what state the instance ended in.
 rollback_to_previous() {
     print_header "Roll Back to Previous Build"
     if [[ ! -s "$ROLLBACK_STATE_FILE" ]]; then
@@ -802,15 +1054,21 @@ rollback_to_previous() {
         return 1
     fi
 
-    local predeploy_dump="" reverted=0 line svc ref
+    # ---- 1. Point the image names back at the previous build --------------
+    local predeploy_dump recorded_rev reverted=0 svc ref
+    predeploy_dump="$(state_get PREDEPLOY_DB_DUMP)"
+    recorded_rev="$(state_get PREDEPLOY_ALEMBIC_REVISION)"
+    if [[ ( -z "$recorded_rev" || "$recorded_rev" == "unknown" ) && -f "${predeploy_dump}.meta" ]]; then
+        # A state file written before the revision was recorded: the dump's
+        # own .meta has it.
+        recorded_rev="$(grep -E '^alembic_revision=' "${predeploy_dump}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
+    fi
+    [[ "$recorded_rev" == "unknown" ]] && recorded_rev=""
+
     while IFS='|' read -r svc ref; do
-        if [[ -z "$svc" ]]; then
-            continue
-        fi
-        if [[ "$svc" == "PREDEPLOY_DB_DUMP" ]]; then
-            predeploy_dump="$ref"
-            continue
-        fi
+        case "$svc" in
+            ""|PREDEPLOY_DB_DUMP|PREDEPLOY_ALEMBIC_REVISION|DEPLOY_IN_PROGRESS) continue ;;
+        esac
         if docker image inspect "bluestick-rollback-${svc}:previous" >/dev/null 2>&1 && [[ -n "$ref" ]]; then
             if docker tag "bluestick-rollback-${svc}:previous" "$ref" 2>/dev/null; then
                 print_info "Reverted ${svc} → ${ref}"
@@ -822,40 +1080,147 @@ rollback_to_previous() {
     done < "$ROLLBACK_STATE_FILE"
 
     if [[ "$reverted" -eq 0 ]]; then
-        print_error "No snapshot images could be reverted."
+        print_error "No snapshot images could be reverted. Nothing was stopped or changed."
         return 1
     fi
 
-    print_info "Restarting the stack on the previous images (no rebuild)..."
-    $DC up -d --no-build
-
-    # The previous image expects the previous schema; a migration that partially
-    # applied leaves the DB ahead of it. Offer to restore the pre-deploy backup.
-    if [[ -n "$predeploy_dump" && -f "$predeploy_dump" ]]; then
-        echo ""
-        print_warning "The previous build expects the PRE-deploy database schema."
-        print_warning "If the failed deploy applied a migration, restore the pre-deploy backup:"
-        echo "    $predeploy_dump"
-        echo -n "Restore the pre-deploy database backup now? [y/N] "
-        read -r restore_confirm
-        if [[ "$restore_confirm" == "y" || "$restore_confirm" == "Y" ]]; then
-            if [[ -x "scripts/restore-db.sh" ]]; then
-                ./scripts/restore-db.sh "$predeploy_dump"
-            else
-                print_error "scripts/restore-db.sh not found — restore manually:"
-                echo "    ./scripts/restore-db.sh \"$predeploy_dump\""
-            fi
-        else
-            print_info "Skipped DB restore. If the old build misbehaves, restore manually:"
-            echo "    ./scripts/restore-db.sh \"$predeploy_dump\""
-        fi
-    else
-        print_warning "No pre-deploy DB backup was recorded — if the failed deploy migrated the"
-        print_warning "schema, the previous build may error against it. Restore a backup manually."
+    # ---- 2. Stop the app; the database stays up ---------------------------
+    # The old order started the previous images FIRST and offered the database
+    # restore afterwards.  After a deploy that migrated the schema the previous
+    # backend cannot find the database's revision and crash-loops; `up -d`
+    # then failed (ending the script under `set -e`) or waited on the
+    # frontend's health dependency — and the restore was never offered
+    # (branch review B1).  Nothing is started here until the schema question
+    # is settled.
+    print_info "Stopping the application containers (the database stays up)..."
+    $DC stop backend worker report-worker frontend >/dev/null 2>&1 || true
+    local db_rc=0
+    $DC up -d --no-build db || db_rc=$?
+    if [[ "$db_rc" -ne 0 ]] || ! wait_for_database 60; then
+        print_error "The database container did not come up ('$DC up -d db' returned $db_rc)."
+        rollback_summary "STOPPED" \
+            "The image names point at the previous build; the application containers are stopped." \
+            "Look at:  $DC logs db | tail -n 50      then run option 7 again."
+        return 1
     fi
 
+    # ---- 3. Is the database still at the schema the previous build expects? -
+    local current_rev schema_moved=1 restored=0 answer
+    current_rev="$(database_alembic_revision || true)"
+    if [[ -n "$current_rev" && -n "$recorded_rev" && "$current_rev" == "$recorded_rev" ]]; then
+        schema_moved=0
+    fi
+
+    local have_dump=0
+    [[ -n "$predeploy_dump" && -f "$predeploy_dump" ]] && have_dump=1
+
     echo ""
-    print_success "Rollback complete. Verify with option 5 / your health checks."
+    if [[ "$schema_moved" -eq 0 ]]; then
+        print_success "The database is at the schema the previous build expects ($current_rev):"
+        print_success "the failed deploy did not migrate it. No database restore is needed."
+        if [[ "$have_dump" -eq 1 ]]; then
+            print_info "(To also discard what was written since the deploy began, restore by hand later:"
+            print_info "  ./scripts/restore-db.sh \"$predeploy_dump\")"
+        fi
+    else
+        if [[ -n "$current_rev" && -n "$recorded_rev" ]]; then
+            print_warning "The failed deploy MIGRATED the database: it is at schema revision $current_rev,"
+            print_warning "and the previous build expects $recorded_rev. The previous build cannot start on it."
+        else
+            print_warning "Cannot confirm the database is at the schema the previous build expects"
+            print_warning "(now: ${current_rev:-unreadable}; at the pre-deploy backup: ${recorded_rev:-not recorded})."
+            print_warning "If the failed deploy applied a migration, the previous build cannot start on it."
+        fi
+
+        if [[ "$have_dump" -eq 1 && -x "scripts/restore-db.sh" ]]; then
+            print_info "The pre-deploy backup, taken just before that deploy:"
+            echo "    $predeploy_dump"
+            print_info "Restoring it returns the database to that moment (a safety backup of the current"
+            print_info "database is taken first). Anything written since the deploy began is lost."
+            ask answer "Restore the pre-deploy database backup now? [Y/n] " "y"
+            if [[ ! "$answer" =~ ^[Nn] ]]; then
+                # The same restore an operator runs by hand — restore-db.sh —
+                # told that the confirmation was given here and that this
+                # script starts the stack afterwards.
+                local restore_rc=0
+                ./scripts/restore-db.sh --yes --no-start "$predeploy_dump" || restore_rc=$?
+                if [[ "$restore_rc" -ne 0 ]]; then
+                    rollback_summary "STOPPED" \
+                        "The database restore FAILED (exit $restore_rc; its own message is above). The application containers are stopped; the image names point at the previous build." \
+                        "Fix what it reported, then:  ./scripts/restore-db.sh \"$predeploy_dump\"   (it starts the stack when it succeeds)."
+                    return 1
+                fi
+                restored=1
+            fi
+        else
+            if [[ "$have_dump" -eq 0 ]]; then
+                print_error "No restorable pre-deploy database backup is recorded (recorded: ${predeploy_dump:-nothing})."
+                print_info  "Choose one yourself from the backup folder:  ./scripts/restore-db.sh"
+            else
+                print_error "scripts/restore-db.sh is missing or not executable — cannot restore from here."
+            fi
+        fi
+
+        if [[ "$restored" -eq 0 ]]; then
+            echo ""
+            print_warning "Without the restore, the previous build starts on a schema it may not know."
+            print_warning "If it does not, its backend will not start (alembic: \"Can't locate revision\")."
+            ask answer "Type 'START ANYWAY' to start the previous build on the database as it is: " ""
+            if [[ "$answer" != "START ANYWAY" ]]; then
+                rollback_summary "STOPPED" \
+                    "The image names point at the previous build. The database was NOT changed. The application containers are stopped." \
+                    "Restore, which also starts the stack:  ./scripts/restore-db.sh${predeploy_dump:+ \"$predeploy_dump\"}    Or go forward again: option 1."
+                return 1
+            fi
+        fi
+    fi
+
+    # ---- 4. Start the previous build: backend alone, wait, then the rest ---
+    echo ""
+    print_info "Starting the previous build (no rebuild)..."
+    local start_rc=0
+    stack_start_staged "$DEPLOY_HEALTH_TIMEOUT" --no-build || start_rc=$?
+    case "$start_rc" in
+        0)
+            # The instance is on the previous build again: the unfinished
+            # deploy is over, and the next option 1 takes a new rollback point.
+            state_del DEPLOY_IN_PROGRESS
+            rollback_summary "RUNNING" \
+                "The previous build is running and its backend is healthy.$([[ "$restored" -eq 1 ]] && echo ' The database is the pre-deploy backup.')" \
+                "Check the version under About BlueStick. To try the upgrade again: option 1."
+            return 0
+            ;;
+        3)
+            rollback_summary "PARTLY UP" \
+                "The previous build's backend is healthy, but starting the workers or the frontend failed ('$DC up' output above)." \
+                "Retry:  $DC up -d --no-build      and look at:  $DC ps"
+            return 1
+            ;;
+        2)
+            rollback_summary "NOT RUNNING" \
+                "The previous build's backend does not stay up$([[ "$restored" -eq 0 ]] && echo ' — most likely the schema is newer than it knows')." \
+                "Look at:  $DC logs backend | tail -n 50$([[ "$restored" -eq 0 && "$have_dump" -eq 1 ]] && echo "      Restore, which also starts the stack:  ./scripts/restore-db.sh \"$predeploy_dump\"")"
+            return 1
+            ;;
+        *)
+            rollback_summary "STILL STARTING" \
+                "The previous build's backend is running but not healthy after ${DEPLOY_HEALTH_TIMEOUT}s (after a restore it migrates nothing, so this is unusual)." \
+                "Watch:  $DC logs -f backend      When it is healthy:  $DC up -d --no-build"
+            return 1
+            ;;
+    esac
+}
+
+# The last thing option 7 prints: the state the instance is in, and the next
+# step.  $1 state word, $2 what is true now, $3 what to do.
+rollback_summary() {
+    echo ""
+    echo "=============================================="
+    echo "   Rollback — instance state: $1"
+    echo "=============================================="
+    echo "  $2"
+    echo "  Next: $3"
+    echo ""
 }
 
 # ------------------------------------------------------------------
@@ -865,11 +1230,12 @@ echo "=============================================="
 echo "   BlueStick Deployment"
 echo "=============================================="
 echo ""
-echo "1) Start / Rebuild"
-echo "   $DC up --build -d"
+echo "1) Start / Rebuild  (upgrade an existing instance — keep the stack running)"
+echo "   Backs up the database, builds, starts the backend and waits for its"
+echo "   migrations, then starts the workers and the frontend"
 echo ""
 echo "2) First-time setup (generate .env + SSL certs + start)"
-echo "   For new installations"
+echo "   For new installations — a new host starts here, not with option 1"
 echo ""
 echo "3) Reconfigure IP address"
 echo "   Regenerate .env and SSL certs for a new IP"
@@ -883,14 +1249,24 @@ echo "   Stash environment config outside the project dir before a re-copy deplo
 echo ""
 echo "7) Roll back to previous build"
 echo "   Revert to the images snapshotted before the last option-1 deploy"
-echo "   (e.g. after a failed boot migration), with optional DB restore"
+echo "   (e.g. after a failed boot migration); restores the pre-deploy database"
+echo "   backup first when that deploy migrated the schema"
 echo ""
-echo "Enter your choice (1-7): "
-read -r DEPLOY_CHOICE
+ask DEPLOY_CHOICE "Enter your choice (1-7): "
 
 case $DEPLOY_CHOICE in
     1)
         print_header "Starting BlueStick..."
+        # An aborted Nuclear clean used to leave its throwaway .env behind
+        # (SECRET_KEY=teardown); deploying with it signed every token with a
+        # published constant.
+        if env_is_teardown_leftover; then
+            print_error ".env is the temporary file an interrupted Nuclear clean (option 4) wrote —"
+            print_error "it is not a configuration (its SECRET_KEY is a fixed placeholder)."
+            print_error "Restore your real .env from the config backup (<project>-config-backup-<time>"
+            print_error "next to this folder), or delete it and run option 2 for a new installation."
+            exit 1
+        fi
         ensure_env
         CONFIGURED_IP=$(get_configured_ip)
         ensure_ssl_certs "$CONFIGURED_IP"
@@ -898,10 +1274,11 @@ case $DEPLOY_CHOICE in
 
         # B2-1 — before rebuilding in place, snapshot the current images and
         # take a DB backup so a deploy whose boot migration fails (crash-loop,
-        # no prior image) can be rolled back via option 7.
+        # no prior image) can be rolled back via option 7.  After a deploy
+        # that did not finish, the EXISTING rollback point is kept instead
+        # (prepare_rollback_point).
         check_free_disk
-        snapshot_images_for_rollback
-        if ! predeploy_db_backup; then
+        if ! prepare_rollback_point; then
             # `exit`, not `return`: this is the script's top level, where
             # bash refuses `return` (it only stopped the deploy because
             # set -e caught that error).
@@ -926,30 +1303,89 @@ case $DEPLOY_CHOICE in
         #      frontend's `depends_on: service_healthy` and returns non-zero
         #      if the backend is not healthy in time — which, under `set -e`,
         #      ended this script in the middle of a healthy migration;
-        #   3. `up -d` for everything, which starts the frontend (nginx) on
-        #      the now-healthy backend.
+        #   3. the workers, then `up -d` for everything, which starts the
+        #      frontend (nginx) on the now-healthy backend.
+        # The backend starts ALONE (branch review S4 — see scripts/stack-lib.sh).
         ensure_pinned_base_images
+        # Before the build, so a host that cannot get the image stops with
+        # nothing built and nothing restarted.
+        if ! ensure_db_image_local; then
+            exit 1
+        fi
+        warn_missing_base_images
+
+        # From here until a healthy finish the deploy is "in progress": a
+        # re-run keeps the rollback point taken above.
+        state_set DEPLOY_IN_PROGRESS "$(date +%Y-%m-%dT%H:%M:%S)|"
+
         print_info "Building images..."
         if ! CACHE_BUST=$(date +%s) $DC build; then
             echo ""
             print_error "The image build failed. Nothing was restarted: the previous containers are"
-            print_error "still running the previous build. Fix the error above and deploy again."
+            print_error "still running the previous build. Fix the error above and deploy again"
+            print_error "(the rollback snapshot taken above is kept for that run)."
             exit 1
         fi
+        state_set DEPLOY_IN_PROGRESS "$(deploy_marker_started)|$(built_backend_image_id)"
 
-        print_info "Starting the database, backend and workers..."
+        print_info "Starting the database and the backend (the workers are stopped until it is healthy)..."
         up_rc=0
-        $DC up -d db backend worker report-worker || up_rc=$?
-        if [[ "$up_rc" -ne 0 ]]; then
+        stack_start_backend || up_rc=$?
+
+        # Is the container that will answer /health the build just made?
+        built_rc=0
+        backend_runs_built_image || built_rc=$?
+        if [[ "$built_rc" -eq 1 ]]; then
+            echo ""
+            print_error "The backend container was NOT recreated: it is still running the PREVIOUS build"
+            print_error "('$DC up' returned $up_rc; its message is above). The new images are built but not running."
+            # The workers were stopped for the staged start; their containers
+            # are still the previous build's, so put them back.
+            if $DC start worker report-worker >/dev/null 2>&1; then
+                print_info "The previous build's workers were started again: the instance is as it was."
+            else
+                print_warning "The ingestion and report workers are STOPPED (they could not be started again):"
+                print_warning "    $DC start worker report-worker"
+            fi
+            print_info "Fix what '$DC up' reported, then run option 1 again (the rollback point is kept)."
+            exit 1
+        fi
+        if [[ "$up_rc" -ne 0 && -z "$($DC ps -aq backend 2>/dev/null | head -1)" ]]; then
+            echo ""
+            print_error "'$DC up' returned $up_rc and created no backend container (its message is above)."
+            print_error "Nothing is running that was not running before. Fix it and run option 1 again"
+            print_error "(the rollback point is kept)."
+            exit 1
+        fi
+        if [[ "$up_rc" -ne 0 && "$built_rc" -eq 0 ]]; then
+            print_warning "'$DC up' returned $up_rc — the backend container is the new build; checking whether it comes up."
+        elif [[ "$up_rc" -ne 0 ]]; then
             print_warning "'$DC up' returned $up_rc — checking the backend before deciding what that means."
+        fi
+        if [[ "$built_rc" -eq 2 ]]; then
+            print_warning "Could not confirm which image the backend container runs — compare the version"
+            print_warning "under About BlueStick with platform_version.json once it is up."
         fi
 
         # Verify the backend actually came up (migrations ran, uvicorn bound).
         wait_rc=0
-        wait_for_backend_healthy || wait_rc=$?
+        wait_for_backend_healthy "$DEPLOY_HEALTH_TIMEOUT" || wait_rc=$?
         if [[ "$wait_rc" -eq 0 ]]; then
-            # The frontend waits on a healthy backend; it is healthy now.
-            $DC up -d
+            # The workers and the frontend wait on a healthy backend; it is
+            # healthy now.  Captured: a failure here used to end the script
+            # under `set -e` with no message.
+            rest_rc=0
+            stack_start_rest || rest_rc=$?
+            if [[ "$rest_rc" -ne 0 ]]; then
+                echo ""
+                print_error "The backend is healthy on the new build, but starting the workers or the frontend"
+                print_error "failed ('$DC up' returned $rest_rc; its message is above). The deploy is NOT complete."
+                print_info "See what is up:   $DC ps"
+                print_info "Retry:            $DC up -d      (or run option 1 again — the rollback point is kept)"
+                print_info "Do NOT roll back for this alone: the schema is already migrated."
+                exit 1
+            fi
+            state_del DEPLOY_IN_PROGRESS
             print_success "Deployment complete!"
             prune_after_deploy
             print_pending_data_repairs
@@ -957,7 +1393,10 @@ case $DEPLOY_CHOICE in
             echo ""
             print_error "The backend is not staying up — the boot migration (or startup) failed."
             print_warning "Check logs:   $DC logs backend | tail -n 50   (look for 'DATABASE MIGRATION FAILED')"
-            print_warning "Roll back:    re-run this script and choose option 7 (Roll back to previous build)"
+            print_warning "Roll back:    re-run this script and choose option 7 (Roll back to previous build)."
+            print_warning "              It restores the pre-deploy database backup first when the schema moved."
+            print_info    "The rollback point (previous images + pre-deploy backup) is kept until a deploy or a"
+            print_info    "rollback ends healthy — running option 1 again will not overwrite it."
             echo ""
             exit 1
         else
@@ -970,9 +1409,10 @@ case $DEPLOY_CHOICE in
                 print_warning "No migration lock is held, and the container is running without restarts."
             fi
             print_info "Watch it:      $DC logs -f backend"
-            print_info "When it is healthy, finish the deploy (starts the frontend):"
+            print_info "When it is healthy, finish the deploy (starts the workers and the frontend):"
             print_info "               $DC up -d"
             print_info "Wait longer next time:  DEPLOY_HEALTH_TIMEOUT=7200 ./scripts/deploy.sh"
+            print_migration_stall_help
             print_info "Roll back (option 7) ONLY if the logs show 'DATABASE MIGRATION FAILED' or the"
             print_info "container starts restarting."
             echo ""
@@ -1000,13 +1440,46 @@ case $DEPLOY_CHOICE in
 
         ensure_ssl_certs "$SELECTED_IP"
 
-        print_info "Building and starting containers..."
         ensure_uploads_dir
         ensure_pinned_base_images
-        CACHE_BUST=$(date +%s) $DC up --build -d
 
-        print_info "Waiting for services to start..."
-        sleep 10
+        # The same three steps as option 1, and for the same reasons: one
+        # `up --build -d` under `set -e` ended this script without a word
+        # when the build failed or when `up` gave up waiting for a backend
+        # that was still creating the schema — and "setup complete" was
+        # printed ten seconds later whatever state the backend was in.
+        print_info "Building images..."
+        if ! CACHE_BUST=$(date +%s) $DC build; then
+            echo ""
+            print_error "The image build failed. Nothing was started. Fix the error above and run"
+            print_error "option 2 again (.env and the certificates are kept)."
+            exit 1
+        fi
+
+        setup_rc=0
+        stack_start_staged "$DEPLOY_HEALTH_TIMEOUT" || setup_rc=$?
+        if [[ "$setup_rc" -eq 2 ]]; then
+            echo ""
+            print_error "The backend is not staying up — first-time setup is NOT complete."
+            print_warning "Check logs:   $DC logs backend | tail -n 50   (look for 'DATABASE MIGRATION FAILED')"
+            print_info "Fix what the log reports, then run option 1 (Start / Rebuild)."
+            exit 1
+        elif [[ "$setup_rc" -eq 1 ]]; then
+            echo ""
+            print_warning "The backend is still starting after ${DEPLOY_HEALTH_TIMEOUT}s — it has NOT crashed."
+            print_info "Watch it:      $DC logs -f backend"
+            print_info "When it is healthy, finish the setup (starts the workers and the frontend):"
+            print_info "               $DC up -d"
+            print_migration_stall_help
+            exit 1
+        elif [[ "$setup_rc" -ne 0 ]]; then
+            echo ""
+            print_error "The backend is healthy, but starting the workers or the frontend failed"
+            print_error "(the message from '$DC up' is above). First-time setup is NOT complete."
+            print_info "See what is up:   $DC ps"
+            print_info "Retry:            $DC up -d"
+            exit 1
+        fi
 
         # Configure PostgreSQL SSL if script exists
         if [[ -x "scripts/postgres/ensure-ssl.sh" ]]; then
@@ -1020,8 +1493,19 @@ case $DEPLOY_CHOICE in
                 $DC exec -T db bash /tmp/ensure-ssl.sh 2>&1 | grep -E "\[ensure-ssl\]" || true
             fi
             sleep 2
-            $DC restart backend > /dev/null 2>&1
-            sleep 5
+            # Captured and checked: under `set -e` a failed restart ended the
+            # script here, and a fixed sleep said nothing about the backend.
+            restart_rc=0
+            $DC restart backend > /dev/null 2>&1 || restart_rc=$?
+            ssl_wait_rc=0
+            wait_for_backend_healthy "$DEPLOY_HEALTH_TIMEOUT" || ssl_wait_rc=$?
+            if [[ "$restart_rc" -ne 0 || "$ssl_wait_rc" -ne 0 ]]; then
+                echo ""
+                print_error "The backend did not come back after the database SSL step"
+                print_error "('$DC restart backend' returned $restart_rc). First-time setup is NOT complete."
+                print_info "Check:   $DC ps      and      $DC logs backend | tail -n 50"
+                exit 1
+            fi
         fi
 
         print_success "First-time setup complete!"
@@ -1123,8 +1607,7 @@ case $DEPLOY_CHOICE in
         print_warning "volume, networks and built images — and this folder's .env. Other Compose projects"
         print_warning "on this host are not touched. A backup of the database, uploads, .env and SSL is"
         print_warning "taken first, outside this folder."
-        echo "Type 'DELETE EVERYTHING' to confirm: "
-        read -r CONFIRM
+        ask CONFIRM "Type 'DELETE EVERYTHING' to confirm: " ""
 
         if [[ "$CONFIRM" != "DELETE EVERYTHING" ]]; then
             print_info "Operation cancelled"
@@ -1150,13 +1633,25 @@ case $DEPLOY_CHOICE in
             print_info "No .env or ssl/ here — no configuration to save."
         fi
 
-        # Create a minimal .env if missing so Compose can parse the config
+        # Create a minimal .env if missing so Compose can parse the config.
+        # It is removed on EVERY way out of this option — a cancelled second
+        # confirmation, a failed step, Ctrl-C — not only at the end of a
+        # completed teardown: left behind, it looked like a configuration and
+        # the next deploy ran with SECRET_KEY=teardown.  Option 1 refuses a
+        # .env carrying the marker line, should one survive anyway.
+        nuke_temp_env=0
         if [[ ! -f ".env" ]]; then
             print_info "Creating temporary .env for teardown..."
-            echo "HOST_IP=127.0.0.1" > .env
-            echo "REACT_APP_API_URL=https://127.0.0.1" >> .env
-            echo "CORS_ORIGINS=https://127.0.0.1" >> .env
-            echo "SECRET_KEY=teardown" >> .env
+            nuke_temp_env=1
+            trap 'if [[ "${nuke_temp_env:-0}" == "1" ]]; then rm -f "$PROJECT_ROOT/.env"; fi' EXIT
+            trap 'exit 130' INT TERM
+            {
+                echo "$TEARDOWN_ENV_MARKER"
+                echo "HOST_IP=127.0.0.1"
+                echo "REACT_APP_API_URL=https://127.0.0.1"
+                echo "CORS_ORIGINS=https://127.0.0.1"
+                echo "SECRET_KEY=teardown"
+            } > .env
         fi
 
         # backup-db.sh auto-selects: a logical pg_dump if the db container is
@@ -1184,8 +1679,7 @@ case $DEPLOY_CHOICE in
             echo ""
             print_error "The pre-teardown backup is INCOMPLETE (see above). Continuing destroys the"
             print_error "database, its volume and .env with no complete backup to restore from."
-            echo "Type 'DELETE WITHOUT BACKUP' to continue anyway, anything else to stop: "
-            read -r CONFIRM_NO_BACKUP || CONFIRM_NO_BACKUP=""
+            ask CONFIRM_NO_BACKUP "Type 'DELETE WITHOUT BACKUP' to continue anyway, anything else to stop: " ""
             if [[ "$CONFIRM_NO_BACKUP" != "DELETE WITHOUT BACKUP" ]]; then
                 print_info "Stopped. Nothing was removed."
                 exit 1
@@ -1272,7 +1766,9 @@ case $DEPLOY_CHOICE in
         ;;
 
     7)
-        rollback_to_previous
+        # The function prints the state the instance ended in; a rollback
+        # that did not end healthy is this script's failure.
+        rollback_to_previous || exit 1
         ;;
 
     *)

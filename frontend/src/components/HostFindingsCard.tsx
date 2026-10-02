@@ -6,7 +6,7 @@
  * triage rather than only on a separate page.  Refetches when refreshKey
  * changes (the inspector bumps it after a promote).
  */
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { SEVERITY_BADGE_VARIANT } from '../utils/severity';
 import { useNavigate } from 'react-router-dom';
 import { AlertHexIcon } from './AppIcons';
@@ -52,9 +52,30 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
   const [findings, setFindings] = useState<Finding[]>([]);
   const [loaded, setLoaded] = useState(false);
 
+  // The inspector stays mounted while the reader steps from host to host, so
+  // every async completion here checks it is still for THIS host (M13 — the
+  // rule `hostTestsController` follows): reads by request generation, saves
+  // by `isCurrentHost(submittedFor)`.  A slow list for the host just left
+  // used to replace the new host's findings, and a save's answer landed in
+  // whichever host's list was on screen.
+  const hostRef = useRef(hostId);
+  hostRef.current = hostId;
+  const isCurrentHost = (submittedFor: number) => hostRef.current === submittedFor;
+  const generation = useRef(0);
+
+  // Another host: the previous host's findings are not this one's.
+  useEffect(() => {
+    setFindings([]);
+    setLoaded(false);
+  }, [hostId]);
+
   const fetchFindings = useCallback(async () => {
+    generation.current += 1;
+    const mine = generation.current;
+    const current = () => generation.current === mine;
     try {
       const res = await listFindings({ host_id: hostId, limit: 100 });
+      if (!current()) return;
       // A list row's `hosts` is a preview of at most five endpoints (C2), and
       // with `host_id` the server puts THIS host's endpoint rows first
       // (`endpoint_summaries(first_host_id=)`), so the preview is enough: no
@@ -70,11 +91,12 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
       const whole = await runLimited<Finding, Finding>(cut, 4, (f) => getFinding(f.id));
       const byId = new Map<number, Finding>();
       whole.forEach((r) => { if (r.status === 'fulfilled') byId.set(r.value.id, r.value); });
+      if (!current()) return;
       setFindings(res.items.map((f) => byId.get(f.id) ?? f));
     } catch {
       // Non-blocking surface — leave empty on error.
     } finally {
-      setLoaded(true);
+      if (current()) setLoaded(true);
     }
   }, [hostId]);
 
@@ -89,8 +111,10 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
       navigate(`/findings/${id}`);
       return;
     }
+    const submittedFor = hostId;
     try {
       const updated = await setFindingStatus(id, status);
+      if (!isCurrentHost(submittedFor)) return;
       setFindings((prev) => prev.map((f) => (f.id === id ? updated : f)));
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update finding status.'));
@@ -105,15 +129,21 @@ const HostFindingsCard: React.FC<HostFindingsCardProps> = ({ hostId, refreshKey 
   const handleEndpointStatus = async (f: Finding, hostStatus: FindingHostStatus) => {
     const rows = (f.hosts ?? []).filter((h) => h.host_id === hostId && h.host_status !== hostStatus);
     if (rows.length === 0) return;
+    const submittedFor = hostId;
     try {
       let updated: Finding = f;
       for (const row of rows) {
         updated = await setFindingEndpointStatus(f.id, row.id, hostStatus);
       }
+      // The reader stepped to another host meanwhile: the change was made on
+      // the host it was submitted for, and this list is no longer that host's.
+      if (!isCurrentHost(submittedFor)) return;
       setFindings((prev) => prev.map((x) => (x.id === f.id ? updated : x)));
     } catch (err) {
       toast.error(formatApiError(err, 'Failed to update this host’s state on the finding.'));
-      void fetchFindings(); // a partial multi-row update must not be left looking whole
+      // A partial multi-row update must not be left looking whole — on the
+      // host it was for; another host's list is its own.
+      if (isCurrentHost(submittedFor)) void fetchFindings();
     }
   };
 

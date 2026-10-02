@@ -277,14 +277,18 @@ export const NAV_PAGES: NavPage[] = [
   },
 
   // Settings hub — what configures THIS project and its scanners.
+  // Both are `viewer`: a page follows the server's READ rule (style guide §40).
+  // Every member reads the project's details, members and tags; integrations
+  // are account-level and listed for every signed-in user.  The pages hide
+  // what the caller's role cannot change.
   {
-    id: 'project-settings', path: '/project-settings', label: 'Project', requiredRole: 'analyst', hub: 'settings',
+    id: 'project-settings', path: '/project-settings', label: 'Project', requiredRole: 'viewer', hub: 'settings',
     palette: { label: 'Project Settings', Icon: SettingsIcon, keywords: ['members', 'webhooks', 'tags', 'dates'], order: 14 },
   },
   {
     // Scanner credentials: a row is for one project or for every project, so
     // they sit with the project's settings (writes are admin-only server-side).
-    id: 'integrations', path: '/integrations', label: 'Scanner Integrations', requiredRole: 'analyst', hub: 'settings',
+    id: 'integrations', path: '/integrations', label: 'Scanner Integrations', requiredRole: 'viewer', hub: 'settings',
     palette: { Icon: KeyRound, keywords: ['nessus', 'shodan', 'api'], order: 13 },
   },
 

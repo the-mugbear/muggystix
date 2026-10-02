@@ -94,6 +94,8 @@ const ProjectSettings: React.FC = () => {
 
   const isGlobalAdmin = user?.role === 'admin';
   const canAdmin = currentProject?.my_role === 'admin' || isGlobalAdmin;
+  // A role that has not loaded leaves the decision to the server (§40).
+  const canSeeWebhooks = canAdmin || currentProject?.my_role == null;
 
   // --- Details -----------------------------------------------------------
   // Keyed on the values, not the object's identity: a refresh that hands
@@ -420,8 +422,15 @@ const ProjectSettings: React.FC = () => {
       />
 
       <TagManagement />
-      <WebhookSettings />
-      <WebhookDeliveries />
+      {/* Webhooks are a project admin's, reads included (the server refuses
+          the list to everyone else): below that role the sections are not
+          offered — they used to answer "Failed to load webhooks". */}
+      {canSeeWebhooks && (
+        <>
+          <WebhookSettings />
+          <WebhookDeliveries />
+        </>
+      )}
 
       {isGlobalAdmin && (
         <PostureSection title="Delete this project"

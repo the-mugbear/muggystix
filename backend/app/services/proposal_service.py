@@ -147,6 +147,14 @@ def _notify_finding_people(db: Session, finding_id: Optional[int], who: Attribut
     if finding is None:
         return
     recipients = {uid for uid in (finding.created_by_id, finding.owner_id) if uid and uid != who.user_id}
+    # An author or owner who has since left the project or been deactivated is
+    # not told: the notification carries the finding's title and the run's
+    # proposals.  The same filter as a note's followers and a discussion's
+    # participants — which also means a global admin with no membership row is
+    # not told (they read the project, they are not on its notification lists).
+    from app.services.notification_service import NotificationService
+
+    recipients = NotificationService(db).current_members(finding.project_id, recipients)
     if not recipients:
         return
     if who.session is not None:
@@ -243,10 +251,19 @@ def _notify_project_admins(db: Session, project_id: int, who: Attribution) -> No
     else:
         source_type, source_id = "project", project_id
         scope = AgentProposal.agent_session_id.is_(None) & (AgentProposal.proposed_by_user_id == who.user_id)
+    # "On no finding" as ``_about_findings`` derives it: the proposal names no
+    # finding AND is not a promote / dismiss of an observation that evidences
+    # one — that finding's author and owner are told by
+    # ``_notify_finding_people``, and counting it here told the admins about
+    # more unowned changes than the page they open lists.
+    on_a_finding_by_observation = AgentProposal.kind.in_(_OBSERVATION_KINDS) & AgentProposal.vulnerability_id.in_(
+        select(FindingVulnerability.vuln_id)
+    )
     count = db.query(func.count(AgentProposal.id)).filter(
         AgentProposal.project_id == project_id, scope,
         AgentProposal.status == ProposalStatus.PENDING.value,
         AgentProposal.finding_id.is_(None),
+        ~on_a_finding_by_observation,
     ).scalar() or 0
     proposer = db.get(User, who.user_id) if who.user_id else None
     name = (proposer.full_name or proposer.username) if proposer is not None else "Someone"
@@ -303,6 +320,12 @@ def propose_finding_text(
     # places (a dropped one prints under Evidence again); it may not reference
     # anything that is not an image of this finding.  Whether each is ticked
     # "In report" is checked when the proposal is accepted.
+    # A tolerated spelling of a placement is rewritten to the one grammar
+    # FIRST, so the check reads — and the proposal stores — what will be saved.
+    fields = {
+        f: report_images.normalise_references((v or "").strip()) if f in REPORT_TEXT_FIELDS else v
+        for f, v in fields.items()
+    }
     report_images.check_references(
         db, finding, {f: v for f, v in fields.items() if f in REPORT_TEXT_FIELDS}, require_marked=False,
     )
@@ -349,7 +372,11 @@ def propose_finding(
     }
     if len(found) != len(ids):
         raise HTTPException(status_code=404, detail=f"Hosts not in this project: {sorted(set(ids) - found)}")
-    text = {k: v.strip() for k, v in (report_text or {}).items() if v and v.strip()}
+    # Stored in the one placement grammar (see ``propose_finding_text``).
+    text = {
+        k: report_images.normalise_references(v.strip())
+        for k, v in (report_text or {}).items() if v and v.strip()
+    }
     unknown = sorted(set(text) - set(REPORT_TEXT_FIELDS))
     if unknown:
         raise HTTPException(status_code=422, detail=f"Unknown report fields {unknown}")
@@ -487,6 +514,11 @@ def _apply(db: Session, proposal: AgentProposal, user: User, edited_value: Optio
     if kind == ProposalKind.FINDING_TEXT.value:
         finding = _finding(db, project_id, proposal.finding_id)
         value = edited_value if edited_value is not None else payload.get("value")
+        if proposal.field in REPORT_TEXT_FIELDS and isinstance(value, str):
+            # The reviewer's edit (or a proposal stored before placements were
+            # normalised) may use a tolerated spelling: check what will be
+            # STORED, or an image the text places would pass unexamined.
+            value = report_images.normalise_references(value.strip())
         sent = {proposal.field: value}
         if proposal.field in REPORT_TEXT_FIELDS:
             # Checked again now: an image may have been deleted since the

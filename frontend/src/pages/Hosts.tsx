@@ -59,6 +59,7 @@ import { ListPageSkeleton } from '../components/PageSkeleton';
 import { InlineLoader } from '../components/ui/inline-loader';
 import { projectScopedKey } from '../utils/scopedStorage';
 import { cn } from '../utils/cn';
+import { isPageShortcutEvent } from '../utils/keyboard';
 import { copyToClipboard } from '../utils/clipboard';
 import { stickyBelowChrome } from '../utils/uiStyles';
 import { exposureChips } from '../utils/portsOfInterest';
@@ -1146,10 +1147,13 @@ export default function Hosts() {
   // an Enter guard so it doesn't double-fire on a focused button/link.
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey) return;
-      const t = e.target as HTMLElement | null;
-      const tag = t?.tagName;
-      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || t?.isContentEditable) return;
+      // One test for every page shortcut (utils/keyboard): not while typing,
+      // not with a modifier, not while a Select or a menu has the key (their
+      // typeahead does not stop it).  The inspector is a dialog these keys
+      // step through, so a dialog does not block them; holding j/k walks,
+      // Enter and `n` act once per press.
+      if (!isPageShortcutEvent(e, { allowDialog: true, allowRepeat: e.key !== 'Enter' && e.key !== 'n' })) return;
+      const tag = (e.target as HTMLElement | null)?.tagName;
       if ((tag === 'BUTTON' || tag === 'A') && (e.key === 'Enter' || e.key === ' ')) return;
       if (loading || hosts.length === 0) return;
 

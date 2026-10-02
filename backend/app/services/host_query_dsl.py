@@ -900,7 +900,7 @@ def evaluate(node: Node, ctx: BuildCtx) -> ColumnElement:
         # Free-text term — reuse the legacy search semantics so the bare-word
         # power-search behaves exactly like the panel's quick-search box.
         from app.services.host_query import build_search_predicate
-        return build_search_predicate(ctx.db, node.text)
+        return build_search_predicate(ctx.db, node.text, project_id=ctx.project_id)
     raise DSLError("Unevaluatable query node")  # pragma: no cover
 
 

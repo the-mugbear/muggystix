@@ -217,6 +217,7 @@ class FindingService:
         only_this_host: bool = False,
         host_ids: Optional[Sequence[int]] = None,
         confirm_only_on_join: bool = False,
+        keep_status_on_join: bool = False,
     ) -> Finding:
         """Promote a scanner vulnerability into a Finding (references, never
         copies — Finding.vuln_id).  Severity defaults to the vuln's own
@@ -244,7 +245,18 @@ class FindingService:
         back to open.  For callers that record a result on ONE host — a test's
         evidence — and are not re-judging the issue.  The explicit promote /
         dismiss click leaves it off: there the person chose the status.
+
+        ``keep_status_on_join``: an existing finding is joined exactly as it
+        stands — no status change at all.  The bulk promotion, which says an
+        issue's finding is never re-statused by it; the caller cannot make
+        that true by passing the status it read earlier, because the finding
+        may have been created since.
+
+        ``self.last_promotion_created`` says, after the call, whether THIS
+        call made the finding (False: it joined one — found by the lookup, or
+        the winner of a concurrent insert).
         """
+        self.last_promotion_created = False
         def _hosts_for(v, k):
             if host_ids is not None:
                 return list(host_ids)
@@ -275,10 +287,10 @@ class FindingService:
             # honour the new status rather than silently returning stale.
             # R9: a one-host result may only confirm a finding still under
             # investigation; it never reopens, un-concludes or downgrades.
-            may_move = not confirm_only_on_join or (
+            may_move = not keep_status_on_join and (not confirm_only_on_join or (
                 status == FindingStatus.CONFIRMED.value
                 and existing.status in (FindingStatus.OPEN.value, FindingStatus.RETEST.value)
-            )
+            ))
             if status != existing.status and may_move:
                 self.set_status(finding=existing, status=status, actor_id=actor_id,
                                 summary=summary or "Re-dispositioned scanner finding")
@@ -320,6 +332,7 @@ class FindingService:
             summary=summary or "Promoted from scanner vulnerability",
         )
         self.db.flush()
+        self.last_promotion_created = True
         return finding
 
     def dismiss_vulnerability_on_host(

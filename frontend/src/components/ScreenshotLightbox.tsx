@@ -1,4 +1,4 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, useState } from 'react';
 import * as DialogPrimitive from '@radix-ui/react-dialog';
 import { Loader2, X } from 'lucide-react';
 import { Alert, AlertDescription } from './ui/alert';
@@ -17,6 +17,16 @@ interface ScreenshotLightboxProps {
   caption?: string;
 }
 
+/** A caption longer than this cannot fit the three folded lines: offer the rest. */
+const CAPTION_FOLD = 240;
+
+/** The dialog's name: the caption, cut — a name is announced whole. */
+const dialogName = (caption: string | undefined): string => {
+  const text = (caption ?? '').replace(/\s+/g, ' ').trim();
+  if (!text) return 'Screenshot';
+  return text.length > 120 ? `${text.slice(0, 119).trimEnd()}…` : text;
+};
+
 /**
  * Full-size screenshot overlay for the HostDetail "Web Interfaces"
  * card.  Dismissed by click-outside, ESC, or the close button.
@@ -34,6 +44,10 @@ const ScreenshotLightbox: React.FC<ScreenshotLightboxProps> = ({
   error = null,
   caption,
 }) => {
+  // The caption opens folded for each image.
+  const [captionOpen, setCaptionOpen] = useState(false);
+  useEffect(() => { setCaptionOpen(false); }, [src, open]);
+
   // ESC to close.  Radix Dialog handles this too, but wire an explicit
   // listener in case an outer click-capture swallows the key event
   // before the dialog sees it.
@@ -57,7 +71,7 @@ const ScreenshotLightbox: React.FC<ScreenshotLightboxProps> = ({
           )}
         />
         <DialogPrimitive.Content
-          aria-label={caption ?? 'Screenshot'}
+          aria-label={dialogName(caption)}
           className={cn(
             'fixed left-1/2 top-1/2 z-50 max-h-[95vh] max-w-[95vw] -translate-x-1/2 -translate-y-1/2',
             'flex flex-col items-center justify-center gap-sm p-md',
@@ -71,9 +85,32 @@ const ScreenshotLightbox: React.FC<ScreenshotLightboxProps> = ({
             <X className="size-4" aria-hidden />
           </DialogPrimitive.Close>
           {caption && (
-            <p className="max-w-full break-all text-center font-mono text-metadata text-white">
-              {caption}
-            </p>
+            // An image's caption is prose of up to 2,000 characters (it was
+            // a URL when this was written, `font-mono break-all`, unclamped —
+            // a long caption pushed the picture out of the viewport).  It
+            // wraps at words, shows three lines, and opens on request inside
+            // a box that scrolls, so the picture keeps its room.
+            <div className="flex w-full max-w-3xl min-w-0 flex-col items-center gap-xxs">
+              <p
+                data-testid="lightbox-caption"
+                className={cn(
+                  'max-w-full text-center text-metadata text-white [overflow-wrap:anywhere]',
+                  captionOpen ? 'max-h-[30vh] overflow-y-auto' : 'line-clamp-3',
+                )}
+              >
+                {caption}
+              </p>
+              {caption.length > CAPTION_FOLD && (
+                <button
+                  type="button"
+                  aria-expanded={captionOpen}
+                  onClick={() => setCaptionOpen((v) => !v)}
+                  className="rounded-sm text-caption text-white/80 underline underline-offset-2 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-white"
+                >
+                  {captionOpen ? 'Show less' : 'Show the whole caption'}
+                </button>
+              )}
+            </div>
           )}
           {loading && (
             <div className="flex items-center gap-xs text-white">

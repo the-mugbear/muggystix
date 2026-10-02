@@ -16,9 +16,10 @@
  */
 import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
-  Bold, CircleHelp, Code, ImagePlus, Italic, Link2, List, ListOrdered, Loader2, SquareCode, Table,
+  Bold, CircleHelp, Code, ImageOff, ImagePlus, Italic, Link2, List, ListOrdered, Loader2, SquareCode, Table,
 } from 'lucide-react';
 
+import type { EvidenceImages } from '../utils/evidenceImages';
 import {
   CODE_TEMPLATE,
   Edit,
@@ -73,9 +74,21 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
   // image goes where the author was writing.
   const caret = useRef<{ start: number; end: number } | null>(null);
   const placeable = images?.placeable ?? [];
-  const ensureImage = images?.resolver.ensure;
+  // Thumbnails are asked for when the picker OPENS, never before; the
+  // resolver's cache fetches them a few at a time and shares each with the
+  // preview and the comment thread.  One that could not be fetched says so,
+  // and is tried again the next time the picker opens.
+  const source: EvidenceImages | undefined = images?.resolver;
+  const ensureImage = source?.ensure;
+  const sourceRef = useRef(source);
+  sourceRef.current = source;
   useEffect(() => {
-    if (pickerOpen && ensureImage) placeable.forEach((img) => ensureImage(img.id));
+    if (!pickerOpen || !ensureImage) return;
+    placeable.forEach((img) => {
+      const current = sourceRef.current;
+      if (current?.failed?.(img.id) && current.retry) current.retry(img.id);
+      else ensureImage(img.id);
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pickerOpen, ensureImage, placeable.map((i) => i.id).join(',')]);
   // The selection to restore once React has written the edited value.
@@ -190,6 +203,7 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
               <ul className="max-h-72 space-y-xxs overflow-y-auto" aria-label="Images to insert">
                 {placeable.map((img) => {
                   const src = images.urls[img.id];
+                  const loadFailed = !src && (source?.failed?.(img.id) ?? false);
                   const caption = img.caption?.trim() || '';
                   return (
                     <li key={img.id}>
@@ -203,13 +217,18 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
                         <span className="flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-control border border-border bg-muted">
                           {src
                             ? <img src={src} alt="" className="size-full object-cover" />
-                            : <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
+                            : loadFailed
+                              ? <ImageOff className="size-4 text-warning" aria-hidden />
+                              : <Loader2 className="size-4 animate-spin text-muted-foreground" aria-hidden />}
                         </span>
                         <span className="min-w-0 flex-1">
                           <span className="line-clamp-2 block [overflow-wrap:anywhere]">
                             {caption || <span className="italic text-muted-foreground">No caption — {img.filename}</span>}
                           </span>
-                          <span className="block truncate text-muted-foreground">Image {img.id}</span>
+                          <span className="block truncate text-muted-foreground">
+                            Image {img.id}
+                            {loadFailed && <span className="text-warning"> — the picture could not be loaded; it can still be placed</span>}
+                          </span>
                         </span>
                       </button>
                     </li>

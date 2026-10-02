@@ -185,6 +185,28 @@ def test_a_netexec_dry_run_that_finds_rows_is_not_recorded(monkeypatch, db_sessi
     assert "dry run that found rows" in capsys.readouterr().out
 
 
+def test_a_dry_run_that_only_found_ports_to_leave_alone_settles_the_repair(monkeypatch, db_session, capsys):
+    """``nfs_ports_kept_other_tool`` counts ports the repair deliberately does
+    NOT touch (another tool named them).  It was summed with the corrections,
+    so an instance with such a port could never record "nothing to repair" and
+    was reminded of the repair after every deploy, for ever."""
+    from app.services import netexec_repair
+
+    monkeypatch.setattr(
+        netexec_repair, "repair_nfs_mount_ports",
+        lambda db, project_id=None, apply=False: {
+            "nfs_ports_renamed_mountd": 0, "nfs_port_records_renamed": 0, "nfs_ports_kept_other_tool": 3,
+        },
+    )
+
+    _run_script(monkeypatch, db_session, "repair_netexec_results.py", [])
+
+    row = db_session.query(DataRepairRun).one()
+    assert row.mode == svc.MODE_NOTHING_TO_REPAIR
+    assert row.rows_affected["nfs_ports_kept_other_tool"] == 3
+    assert "nothing to repair" in capsys.readouterr().out
+
+
 def test_applying_the_netexec_repair_records_it_with_its_counts(monkeypatch, db_session, test_project):
     from app.db import models
 

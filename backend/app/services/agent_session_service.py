@@ -333,18 +333,26 @@ def operator_role(global_role, membership_role: Optional[str]) -> Optional[str]:
 def agent_session_for_legacy_assist_id(
     db: Session, project_id: int, legacy_id: int,
 ) -> Optional[AgentSession]:
-    """The session an old ``/assist-sessions/{id}`` link meant, or None.
+    """The session an id sent to a deprecated ``/assist-sessions/{id}`` or
+    ``/assist/sessions/{id}`` route means, or None.
 
-    Only sessions started before v2.449.0 have such an id.  Scoped to the
-    path's project: another project's id must read as not found.
+    Two kinds of id arrive there.  An OLD id — the ``assist_sessions`` row a
+    session started before v2.449.0 had — finds that session.  Otherwise the
+    id is taken as the session's own: the start response still returns
+    ``assist_session_id`` (equal to the session id) for clients written
+    against the old shape, and a browser tab loaded before the upgrade sends
+    exactly that to these routes — it could start a session and then not end
+    it (404, the key still live).
+
+    The old id wins when both could match (old ids were issued before any
+    session that lacks one, so a new session's id is not one of them).  Both
+    lookups are scoped to the path's project: another project's id must read
+    as not found.
     """
+    in_project = db.query(AgentSession).filter(AgentSession.project_id == project_id)
     return (
-        db.query(AgentSession)
-        .filter(
-            AgentSession.legacy_assist_session_id == legacy_id,
-            AgentSession.project_id == project_id,
-        )
-        .first()
+        in_project.filter(AgentSession.legacy_assist_session_id == legacy_id).first()
+        or in_project.filter(AgentSession.id == legacy_id).first()
     )
 
 

@@ -73,6 +73,28 @@ describe('MarkdownField — Insert image', () => {
     expect(screen.queryByRole('list', { name: 'Images to insert' })).not.toBeInTheDocument();
   });
 
+  // Review 2026-10-01 M6 — nothing is fetched until the picker opens; an image
+  // whose bytes could not be fetched says so and is tried again on opening.
+  it('asks for no image before the picker opens, and says when a picture could not be loaded', () => {
+    const retry = vi.fn();
+    const ensure = vi.fn();
+    const imgs = images({
+      resolver: {
+        lookup: () => null, ensure, failed: (id: number) => id === 58, retry,
+      } as MarkdownImages['resolver'],
+    });
+    render(<Field images={imgs} />);
+    expect(ensure).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Insert image' }));
+    expect(ensure.mock.calls.map((c) => c[0])).toEqual([57, 59]);
+    expect(retry).toHaveBeenCalledWith(58);
+    const failedTile = screen.getByRole('button', { name: 'Insert image 58: banner.png' });
+    expect(failedTile).toHaveTextContent('the picture could not be loaded; it can still be placed');
+    expect(failedTile.querySelector('.animate-spin')).toBeNull();
+    // One still on its way keeps its spinner.
+    expect(screen.getByRole('button', { name: /^Insert image 59:/ }).querySelector('.animate-spin')).not.toBeNull();
+  });
+
   it('inserts an uncaptioned image with an empty caption, and a long one cut for the source', () => {
     const onValue = vi.fn();
     render(<Field images={images()} onValue={onValue} />);

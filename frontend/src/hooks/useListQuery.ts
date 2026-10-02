@@ -19,10 +19,15 @@ import { useVisibilityPoll } from './useVisibilityPoll';
  *
  * What it guarantees, so a page does not re-derive it:
  *   - **Latest request wins.**  Every fetch goes through one
- *     `useLatestRequest` lane: a new `deps` set, a reload, the poll tick and
- *     "load more" all supersede whatever is in flight, and a superseded
- *     response writes nothing.  (Proposals showed a slow "pending" response
- *     under the "Accepted" filter, with Accept buttons on it.)
+ *     `useLatestRequest` lane: a new `deps` set and a reload supersede
+ *     whatever is in flight, and a superseded response writes nothing.
+ *     (Proposals showed a slow "pending" response under the "Accepted"
+ *     filter, with Accept buttons on it.)
+ *   - **The background never takes what the reader asked for.**  The poll
+ *     tick skips its turn while anything is in flight (it used to discard a
+ *     "Show more" silently), and a "load more" asked for during a re-read
+ *     waits for it and appends after the FRESH rows.  Every request clears
+ *     its own `loading` / `loadingMore` however it ends.
  *   - **Failed is not empty.**  `error` is a message; `rows` stays `null`
  *     until a first page has loaded, and a failed RELOAD keeps the rows that
  *     were shown (with `error` set) instead of presenting an empty list.
@@ -118,25 +123,56 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   // state so `reload` and `loadMore` never act on a stale closure's count.
   const loadedRef = useRef(0);
 
-  const fetchFirst = useCallback(async (limit: number): Promise<'ok' | 'failed' | 'stale'> => {
-    setLoading(true);
-    const askedFor = depsRef.current;
-    const result = await run((signal) => fetcherRef.current({ offset: 0, limit, signal }));
-    if (result.stale) return 'stale';
-    setLoading(false);
-    setLoadingMore(false);  // a "load more" this superseded will not report
-    if (result.ok) {
-      loadedRef.current = result.value.items.length;
-      setRowsState(result.value.items);
-      setRowsDeps(askedFor);
-      setTotal(result.value.total);
-      setResponse(result.value);
-      setLoadedAt(new Date());
-      setError(null);
-      return 'ok';
-    }
-    setError(formatApiError(result.error, messageRef.current));
-    return 'failed';
+  // Who owns each flag (M1).  `loading` belongs to the NEWEST first-page
+  // fetch and `loadingMore` to the newest "load more": the owner clears its
+  // flag however it ends, and a request that is superseded hands the flag
+  // over instead of leaving it on.  (`loading` stuck on when a "load more"
+  // superseded a first-page fetch, which then returned without touching it.)
+  // A superseded request may still be on the wire — a fetcher need not honour
+  // the abort signal — so "in flight" is "the newest has not settled", not a
+  // count of promises.
+  const firstGen = useRef(0);
+  const firstSettled = useRef(0);
+  const moreGen = useRef(0);
+  const moreSettled = useRef(0);
+  /** "Load more" calls waiting for a re-read to land before they ask. */
+  const moreWaiting = useRef(0);
+  const latestFirst = useRef<Promise<unknown> | null>(null);
+  const firstBusy = () => firstGen.current !== firstSettled.current;
+  const moreBusy = () => moreGen.current !== moreSettled.current || moreWaiting.current > 0;
+
+  const fetchFirst = useCallback((limit: number): Promise<'ok' | 'failed' | 'stale'> => {
+    const attempt = (async (): Promise<'ok' | 'failed' | 'stale'> => {
+      firstGen.current += 1;
+      const gen = firstGen.current;
+      setLoading(true);
+      // This supersedes a "load more" already on the wire: it will not report.
+      if (moreGen.current !== moreSettled.current) {
+        moreSettled.current = moreGen.current;
+        if (moreWaiting.current === 0) setLoadingMore(false);
+      }
+      const askedFor = depsRef.current;
+      const result = await run((signal) => fetcherRef.current({ offset: 0, limit, signal }));
+      if (gen === firstGen.current) {
+        firstSettled.current = gen;
+        setLoading(false);
+      }
+      if (result.stale) return 'stale';
+      if (result.ok) {
+        loadedRef.current = result.value.items.length;
+        setRowsState(result.value.items);
+        setRowsDeps(askedFor);
+        setTotal(result.value.total);
+        setResponse(result.value);
+        setLoadedAt(new Date());
+        setError(null);
+        return 'ok';
+      }
+      setError(formatApiError(result.error, messageRef.current));
+      return 'failed';
+    })();
+    latestFirst.current = attempt;
+    return attempt;
   }, [run]);
 
   // New deps: back to the first page, and the old rows are not this list's.
@@ -163,21 +199,48 @@ export function useListQuery<T, P extends ListPage<T> = ListPage<T>>(
   const loadMore = useCallback(async () => {
     if (!enabled) return;
     setLoadingMore(true);
+    // A re-read in flight (a reload after a change, the tick): let it land
+    // and append after the rows it brings, instead of cancelling it — or
+    // being cancelled by it — and adding a page at an offset that no longer
+    // matches the list.
+    const askedFor = depsRef.current;
+    moreWaiting.current += 1;
+    try {
+      while (firstBusy() && latestFirst.current) {
+        // eslint-disable-next-line no-await-in-loop
+        await latestFirst.current;
+      }
+    } finally {
+      moreWaiting.current -= 1;
+    }
+    // The filter changed meanwhile: "more" was asked of another list.
+    if (!sameDeps(askedFor, depsRef.current)) {
+      if (!moreBusy()) setLoadingMore(false);
+      return;
+    }
+    moreGen.current += 1;
+    const gen = moreGen.current;
     const offset = loadedRef.current;
     const result = await run((signal) => fetcherRef.current({ offset, limit: pageSize, signal }));
+    if (gen === moreGen.current && moreSettled.current !== gen) {
+      moreSettled.current = gen;
+      if (moreWaiting.current === 0) setLoadingMore(false);
+    }
     // Superseded by a reload or a new filter: those rows belong to a list
     // that is no longer shown.
     if (result.stale) return;
-    setLoadingMore(false);
     if (!result.ok) throw result.error;
     loadedRef.current = offset + result.value.items.length;
     setRowsState((prev) => [...(prev ?? []), ...result.value.items]);
     setTotal(result.value.total);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, pageSize, run]);
 
   // The tick goes through the same lane as everything else.  It rejects on a
   // failure so the poll backs off instead of hammering a server that is down.
+  // It never supersedes: with a request in flight it skips its turn.
   const tick = useCallback(async () => {
+    if (firstBusy() || moreBusy()) return;
     const outcome = await fetchFirst(Math.min(maxReload, Math.max(pageSize, loadedRef.current)));
     if (outcome === 'failed') throw new Error('list poll failed');
   }, [fetchFirst, maxReload, pageSize]);

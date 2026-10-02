@@ -22,8 +22,8 @@ vi.mock('../../services/api', () => ({
   deleteProject: (pid: number) => apiMock.delete(`/projects/${pid}`),
 }));
 vi.mock('../../components/TagManagement', () => ({ default: () => null }));
-vi.mock('../../components/WebhookSettings', () => ({ default: () => null }));
-vi.mock('../../components/WebhookDeliveries', () => ({ default: () => null }));
+vi.mock('../../components/WebhookSettings', () => ({ default: () => <div data-testid="webhooks-section" /> }));
+vi.mock('../../components/WebhookDeliveries', () => ({ default: () => <div data-testid="deliveries-section" /> }));
 // Tested on its own (ProjectIngestSettings.test.tsx); its switch thumb is a
 // `.bg-card.shadow-raised` the no-card check below would catch.
 vi.mock('../../components/scans/ProjectIngestSettings', () => ({
@@ -128,6 +128,42 @@ describe('Project settings', () => {
     expect(screen.queryByRole('button', { name: /Add member/ })).not.toBeInTheDocument();
     expect(screen.queryByRole('combobox', { name: 'Role of Ana' })).not.toBeInTheDocument();
     expect(screen.getByText(/Only a project admin can change these settings/)).toBeInTheDocument();
+  });
+
+  // Branch review 2026-10-01 S5 — the route is every member's now (the server
+  // lets every member read the project and its members): the page is
+  // read-only below project admin, and offers nothing the role cannot read.
+  it.each(['viewer', 'auditor'])('a project %s reads the settings and can change nothing', async (role) => {
+    myRole = role;
+    renderPage();
+    expect(await screen.findByText('Ana')).toBeInTheDocument();
+    expect(screen.getByLabelText('Name')).toBeDisabled();
+    expect(screen.getByLabelText('Start date')).toBeDisabled();
+    expect(screen.queryByRole('button', { name: 'Save details' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Add member/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: /Role of/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Remove/ })).not.toBeInTheDocument();
+    expect(screen.queryByText('Delete this project')).not.toBeInTheDocument();
+    expect(screen.getByTestId('imports-section')).toHaveAttribute('data-can-edit', 'false');
+    // Webhooks are a project admin's, reads included: not offered at all.
+    expect(screen.queryByTestId('webhooks-section')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('deliveries-section')).not.toBeInTheDocument();
+    expect(apiMock.put).not.toHaveBeenCalled();
+    expect(apiMock.post).not.toHaveBeenCalled();
+  });
+
+  it('shows the webhook sections to a project admin, not to an analyst', async () => {
+    renderPage();
+    await screen.findByText('Ana');
+    expect(screen.getByTestId('webhooks-section')).toBeInTheDocument();
+    expect(screen.getByTestId('deliveries-section')).toBeInTheDocument();
+  });
+
+  it('an analyst gets no webhook sections (the server refuses them the list)', async () => {
+    myRole = 'analyst';
+    renderPage();
+    await screen.findByText('Ana');
+    expect(screen.queryByTestId('webhooks-section')).not.toBeInTheDocument();
   });
 
   describe('for a global administrator (v5.288.0)', () => {

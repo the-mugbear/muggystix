@@ -138,6 +138,36 @@ def test_an_unmatched_request_never_shows_what_was_asked_for(diag):
     assert "acme" not in report and "10.20.30.40" not in report
 
 
+def test_a_path_with_spaces_cannot_put_a_word_in_the_method_column(diag):
+    """The path is logged percent-decoded.  ``GET /x SECRETWORD y -> 200 …``
+    used to match a second time at ``SECRETWORD y`` and print SECRETWORD as
+    the request's method."""
+    lines = [
+        _access("GET", "/api/v1/agent/x ACMECORP y", 404, 3, 0, 0, "-"),
+        _slow("GET", "/api/v1/agent/x ACMECORP y", 404, 3000, 0, 0, "-"),
+    ]
+    report = diag.request_timing(lines)
+    assert "ACMECORP" not in report
+    assert f"GET {diag.UNMATCHED}" in report
+    assert "Requests summarised: 1 over 1 route(s); SLOW request lines: 1" in report
+
+
+def test_a_method_the_client_invented_is_not_printed(diag):
+    lines = [_access("ACMEVERB", "/api/v1/x", 405, 3, 0, 0, "-")]
+    report = diag.request_timing(lines)
+    assert "ACMEVERB" not in report
+
+
+def test_fields_spelled_inside_the_path_are_not_read_as_the_fields(diag):
+    forged = "/x -> 200 1ms req=a db_ms=0 db_n=0 route=/acme-secret"
+    lines = [_access("GET", forged, 404, 7, 2, 1, "-")]
+    report = diag.request_timing(lines)
+    assert "acme" not in report
+    assert f"GET {diag.UNMATCHED}" in report
+    rows = [l.split() for l in report.splitlines() if l.rstrip().endswith(diag.UNMATCHED)]
+    assert rows[0][:3] == ["1", "7", "7"]          # the REAL request's time, not the forged 1ms
+
+
 def test_logs_from_an_older_build_get_one_line_not_an_empty_table(diag):
     old = (
         "backend-1  | 2026-09-20T10:00:00.000000000Z 2026-09-20 10:00:00,000 - app.access - INFO - "
@@ -190,6 +220,39 @@ def test_no_literal_and_no_utility_statement_reaches_the_file(diag):
     assert "SELECT id FROM hosts_v2 WHERE hostname = '?' AND note = '?'" in report
     assert "Left out: 2 statement(s)" in report
     assert "Left out: 1 row(s) that could not be read" in report
+
+
+@pytest.mark.parametrize("query, expected", [
+    # An escape string: \' does not end it, so the plain-string rule alone
+    # stopped early and printed the rest.
+    (r"SELECT id FROM hosts_v2 WHERE note = E'it\'s acme-dc01' AND id = $1",
+     "SELECT id FROM hosts_v2 WHERE note = '?' AND id = $1"),
+    ("SELECT id FROM hosts_v2 WHERE note = $$acme's dc01$$ AND id = $1",
+     "SELECT id FROM hosts_v2 WHERE note = $$?$$ AND id = $1"),
+    ("SELECT id FROM hosts_v2 WHERE note = $tag$acme $$ dc01$tag$ AND id = $1",
+     "SELECT id FROM hosts_v2 WHERE note = $$?$$ AND id = $1"),
+    ("SELECT /* asked by acme-laptop */ id FROM hosts_v2 WHERE id = $1",
+     "SELECT id FROM hosts_v2 WHERE id = $1"),
+    ("/* acme's report */ SELECT id FROM hosts_v2 WHERE hostname = 'dc01.acme.corp'",
+     "SELECT id FROM hosts_v2 WHERE hostname = '?'"),
+    ("SELECT id FROM hosts_v2 WHERE note = 'a /* not a comment */ acme' AND id = $1",
+     "SELECT id FROM hosts_v2 WHERE note = '?' AND id = $1"),
+    # Parameters ($1, $2) are not dollar quotes.
+    ("SELECT id FROM hosts_v2 WHERE a = $1 AND b = $2", "SELECT id FROM hosts_v2 WHERE a = $1 AND b = $2"),
+])
+def test_every_kind_of_literal_and_comment_is_removed(diag, query, expected):
+    assert diag.clean_query(query) == expected
+    assert "acme" not in diag.clean_query(query)
+
+
+def test_an_unterminated_literal_or_comment_takes_the_rest_of_the_statement(diag):
+    assert "acme" not in diag.clean_query("SELECT id FROM t WHERE a = 'acme and more")
+    assert "acme" not in diag.clean_query("SELECT id FROM t /* acme and more")
+    assert "acme" not in diag.clean_query("SELECT id FROM t WHERE a = $q$acme and more")
+
+
+def test_a_utility_statement_behind_a_comment_is_still_left_out(diag):
+    assert diag.clean_query("/* x */ ALTER ROLE nmapuser PASSWORD 'hunter2'") is None
 
 
 def test_an_empty_view_says_so(diag):

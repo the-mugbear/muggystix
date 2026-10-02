@@ -27,14 +27,45 @@ of the new composite, and the duplicate primary-key / ``ip_address`` indexes on
 ``hosts_v2`` / ``ports_v2`` the review lists are still there: removing an index
 is a separate, measured decision.
 
-Postgres: ``CREATE INDEX CONCURRENTLY`` in an autocommit block, as the earlier
-index revisions do, so the boot-time ``alembic upgrade head`` takes no lock
-that blocks writes while a large table is indexed; ``IF NOT EXISTS`` makes a
-re-run after an interrupted build safe (drop an INVALID index by name first).
+**Revised before release (review 2026-10-01 B1) — the indexes are built
+INSIDE the migration transaction, not ``CONCURRENTLY``.**  As first written
+this revision used ``CREATE INDEX CONCURRENTLY`` in an autocommit block, like
+the older index revisions.  At boot that is the wrong trade:
+
+* A concurrent build waits for every older snapshot in the database to end.
+  The other starting processes, waiting for the migration lock, each held one
+  (fixed in ``app/db/init.py``) — and an analyst's open ``psql`` transaction
+  or one stuck session would stall the boot the same way, for as long as it
+  lives.  A plain build waits only for writers of the table it is indexing.
+* The autocommit block COMMITS everything before it.  ``alembic/env.py`` runs
+  the whole upgrade as one transaction, so without that commit a failure
+  anywhere rolls the database back to the revision it started at — one the
+  previous build runs.  With it, an interrupted upgrade was left committed at
+  ``b2e5a8c1d4f6``, past what the previous build can run.
+* An interrupted concurrent build leaves an INVALID index that ``IF NOT
+  EXISTS`` then skips for ever, while alembic records the revision as done.
+* What ``CONCURRENTLY`` buys — writes continuing during the build — is worth
+  nothing here: this runs while the application is starting, before it serves.
+
+Cost, measured on Postgres 16 with 70,000 hosts, 1,000,000 ports, 500,000
+vulnerabilities and 2,000,000 port-history rows: about 15 s for all ten
+(12 s of it the product-version trigram index over unusually varied text);
+the same indexes built concurrently took about 24 s.  Under a second on a
+database of a few thousand hosts.
+
+Safe on every database this can meet:
+
+* never run — builds the ten indexes;
+* already run, in either form (a development database) — alembic does not
+  run it again; if it is run again by hand, every valid index is kept as is;
+* run in its first form and interrupted — an index of one of these names
+  that is INVALID is dropped and rebuilt (``_drop_if_invalid``).
+
 SQLite (tests / round-trip): the plain b-trees only — no pg_trgm there.
 """
 from typing import Sequence, Union
 
+import sqlalchemy as sa
 from alembic import op
 
 
@@ -67,6 +98,23 @@ _PRODUCT_VERSION_INDEX = "ix_trgm_port_product_version"
 _PRODUCT_VERSION_EXPR = "(coalesce(service_product, '') || ' ' || coalesce(service_version, ''))"
 
 
+def _drop_if_invalid(bind, name: str) -> None:
+    """Drop index ``name`` when it exists and is INVALID — what an interrupted
+    ``CREATE INDEX CONCURRENTLY`` leaves.  ``IF NOT EXISTS`` goes by name
+    alone, so without this the half-built index would be kept and never used.
+    The names are this module's own constants."""
+    invalid = bind.execute(
+        sa.text(
+            "SELECT 1 FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid "
+            "JOIN pg_namespace n ON n.oid = c.relnamespace "
+            "WHERE c.relname = :name AND n.nspname = current_schema() AND NOT i.indisvalid"
+        ),
+        {"name": name},
+    ).scalar()
+    if invalid:
+        op.execute(f'DROP INDEX "{name}"')
+
+
 def upgrade() -> None:
     bind = op.get_bind()
     if bind.dialect.name != "postgresql":
@@ -75,25 +123,22 @@ def upgrade() -> None:
         return
 
     op.execute("CREATE EXTENSION IF NOT EXISTS pg_trgm")
-    with op.get_context().autocommit_block():
-        for name, table, cols in _BTREE_INDEXES:
-            op.create_index(
-                name, table, cols,
-                postgresql_concurrently=True,
-                if_not_exists=True,
-            )
-        for name, table, column in _TRGM_INDEXES:
-            op.create_index(
-                name, table, [column],
-                postgresql_using="gin",
-                postgresql_ops={column: "gin_trgm_ops"},
-                postgresql_concurrently=True,
-                if_not_exists=True,
-            )
-        op.execute(
-            f"CREATE INDEX CONCURRENTLY IF NOT EXISTS {_PRODUCT_VERSION_INDEX} "
-            f"ON ports_v2 USING gin ({_PRODUCT_VERSION_EXPR} gin_trgm_ops)"
+    for name, table, cols in _BTREE_INDEXES:
+        _drop_if_invalid(bind, name)
+        op.create_index(name, table, cols, if_not_exists=True)
+    for name, table, column in _TRGM_INDEXES:
+        _drop_if_invalid(bind, name)
+        op.create_index(
+            name, table, [column],
+            postgresql_using="gin",
+            postgresql_ops={column: "gin_trgm_ops"},
+            if_not_exists=True,
         )
+    _drop_if_invalid(bind, _PRODUCT_VERSION_INDEX)
+    op.execute(
+        f"CREATE INDEX IF NOT EXISTS {_PRODUCT_VERSION_INDEX} "
+        f"ON ports_v2 USING gin ({_PRODUCT_VERSION_EXPR} gin_trgm_ops)"
+    )
 
 
 def downgrade() -> None:
@@ -103,18 +148,10 @@ def downgrade() -> None:
             op.drop_index(name, table_name=table, if_exists=True)
         return
 
-    with op.get_context().autocommit_block():
-        op.execute(f"DROP INDEX CONCURRENTLY IF EXISTS {_PRODUCT_VERSION_INDEX}")
-        for name, table, _column in reversed(_TRGM_INDEXES):
-            op.drop_index(
-                name, table_name=table,
-                postgresql_concurrently=True,
-                if_exists=True,
-            )
-        for name, table, _cols in reversed(_BTREE_INDEXES):
-            op.drop_index(
-                name, table_name=table,
-                postgresql_concurrently=True,
-                if_exists=True,
-            )
+    # In the transaction too, for the same reason: no commit mid-chain.
+    op.execute(f"DROP INDEX IF EXISTS {_PRODUCT_VERSION_INDEX}")
+    for name, table, _column in reversed(_TRGM_INDEXES):
+        op.drop_index(name, table_name=table, if_exists=True)
+    for name, table, _cols in reversed(_BTREE_INDEXES):
+        op.drop_index(name, table_name=table, if_exists=True)
     # pg_trgm stays installed (f1d2c3b4a5e6 created it and other indexes use it).

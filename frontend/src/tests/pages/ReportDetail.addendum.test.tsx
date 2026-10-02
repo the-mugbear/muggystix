@@ -31,7 +31,7 @@ vi.mock('../../contexts/AuthContext', () => ({
 }));
 vi.mock('../../hooks/useVisibilityPoll', () => ({ useVisibilityPoll: () => undefined }));
 
-import ReportDetail, { evidenceRecordsNotice } from '../../pages/ReportDetail';
+import ReportDetail, { evidenceRecordsNotPrintedNotice, evidenceRecordsNotice } from '../../pages/ReportDetail';
 
 const addendum = (summary: Record<string, unknown>) => ({
   id: 12, project_id: 1, kind: 'addendum', status: 'issued', title: 'Addendum', number: 4, template: 'pentest',
@@ -92,5 +92,20 @@ describe('ReportDetail — test results printed as proof', () => {
     expect(evidenceRecordsNotice(3, 1)).toBe('3 test results are printed as how findings were confirmed; 1 was recorded by an agent.');
     await show({ delta: { new_findings: 0, findings_with_new_endpoints: 0, withdrawn: 0 } });
     expect(screen.queryByTestId('report-evidence-notice')).toBeNull();
+    expect(screen.queryByTestId('report-evidence-not-printed')).toBeNull();
+  });
+
+  it('says how many are not printed because their finding is listed without its details', async () => {
+    // Review 2026-10-01 S2: an addendum's already-reported findings.
+    await show({
+      delta: { new_findings: 1, findings_with_new_endpoints: 1, withdrawn: 0 },
+      evidence_records: 1, agent_evidence_records: 0, evidence_records_not_printed: 3,
+    });
+    expect(screen.getByTestId('report-evidence-notice').textContent)
+      .toBe('1 test result is printed as how findings were confirmed.');
+    expect(screen.getByTestId('report-evidence-not-printed').textContent)
+      .toBe('3 further test results belong to findings this report lists without their details; they are not printed.');
+    expect(evidenceRecordsNotPrintedNotice(1))
+      .toBe('1 further test result belongs to findings this report lists without their details; it is not printed.');
   });
 });

@@ -11,7 +11,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db.models_auth import User, UserRole
 from app.db.models_project import Project, ProjectMembership
 from app.core.security import (
@@ -608,6 +608,10 @@ def delete_user(
     db: Session = Depends(get_db)
 ):
     """Delete a user account. Requires admin role. Cannot delete your own account."""
+    # One DELETE whose foreign keys cascade or clear the account's id across
+    # every table that names a user (audit log, agent calls, scans, notes…):
+    # a bulk statement by design (review 2026-10-01 S2).
+    disable_statement_timeout(db)
     client_info = get_client_info(request)
 
     if user_id == current_user.id:

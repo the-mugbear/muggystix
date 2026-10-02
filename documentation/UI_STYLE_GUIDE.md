@@ -588,13 +588,30 @@ const list = useListQuery(
 // list.reload() after a change · list.loadMore() for "Show more"
 ```
 
-The hook guarantees three things, the same on every list:
+The hook guarantees four things, the same on every list:
 
 - **The latest request wins.**  A slow response for an earlier filter never
-  replaces the current rows.  The filter, a reload, the poll tick and "load
-  more" share one lane.
-- **A failed load is an `error`, never an empty list.**
+  replaces the current rows: a new filter and a reload supersede whatever is
+  in flight, and a superseded response writes nothing.
+- **The background never takes what the reader asked for.**  The poll tick
+  skips its turn while any request is in flight (it does not supersede it),
+  and a "load more" asked for during a reload waits for it and appends after
+  the fresh rows.
+- **A failed load is an `error`, never an empty list.**  A failed reload
+  keeps the rows that were shown.
 - **A reload keeps what "load more" had loaded.**
+
+**A list that polls or reloads anchors its keyboard cursor by id.**  Rows move
+under an index: pass `useListCursor(count, onOpen, { getId })` the id of row `index`
+and the cursor follows its row through a reload (`cursorId`), instead of
+landing an `a` / `r` on whatever slid into that position.  Proposals,
+Findings, Names, Collaboration and Scanner observations do.
+
+**Single-letter shortcuts ask `utils/keyboard.isPageShortcutEvent`** before
+they act — never a private "is the user typing" check.  It refuses a key
+with a modifier, an auto-repeat (`allowRepeat` for cursor movement), a text
+field, a Select trigger or an open list / menu (their typeahead owns the
+letters) and an open dialog (`allowDialog` for a surface that is one).
 
 Proposals, Ingestion Results and Feedback use it.  A page that already has a
 guard of its own (`useLatestRequest`, a generation counter) moves when it is
@@ -624,11 +641,17 @@ gate anything; keep `hasPermission('admin')` for instance-wide surfaces
   the server decides; only a role known to be too low hides a control.
 - **A page follows the server's READ rule, a control its WRITE rule.**  When
   the server lets a role read a page's data, the page stays in the nav and
-  reachable for that role, read-only (Scope: every member reads it, analysts
-  change it — route and nav entry are `viewer`).  A page leaves the nav, and
-  its route refuses, only when the server refuses that role the read as well
-  (Ingestion Results: its GETs need analyst).  Never hide a readable page
-  because its writes are out of reach.
+  reachable for that role, read-only — route and nav entry are `viewer` for
+  Scope (every member reads it, analysts change it), Project settings (every
+  member reads the project's details and tags) and Scanner Integrations
+  (every member reads them, global admins change them).  A page leaves the
+  nav, and its route refuses, only when the server refuses that role the
+  read as well (Ingestion Results: its GETs need analyst).  Never hide a
+  readable page because its writes are out of reach.
+- **A SECTION whose read the server restricts is hidden for that role**, not
+  shown failing: Project settings' outbound webhooks and webhook deliveries
+  are read by project admins only, so nobody else is offered them (they used
+  to answer "Failed to load webhooks").
 - **`requiredRole` names two different roles.**  On a route or nav entry,
   `analyst` / `auditor` mean the project role (`useRoleGate`), `admin` means
   the account role, and `viewer` means any signed-in account.  The route in

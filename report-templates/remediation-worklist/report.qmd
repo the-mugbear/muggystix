@@ -43,6 +43,10 @@ format:
     toc-depth: 2
     theme: cosmo
     embed-resources: true
+    # No formula is ever typeset, so no math library is ever loaded: keep
+    # this line in a copy of this template (a report must make no request
+    # from the reader's browser).
+    html-math-method: plain
     include-in-header:
       - text: |
           <style>

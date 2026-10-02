@@ -146,6 +146,64 @@ def _drop_database(url) -> None:
         pass
 
 
+# A run that was hard-killed (Ctrl-C on the one-off container, a timeout)
+# never reaches the end-of-session drop, and nothing else removed its
+# database: 41 of them, 304 MB, sat on the development server by 2026-10-01.
+_STALE_TEST_DB_AGE = "1 day"
+
+
+def _sweep_stale_test_databases(app_url) -> list[str]:
+    """Drop test databases that earlier, interrupted runs left behind.
+
+    Deliberately narrow — every condition must hold:
+
+    * the name is exactly this suite's own: ``<app-db>_test_<host>_<pid>``
+      (the prefix is compared literally, then ``[a-z0-9]{1,16}_[0-9]+``).
+      Never the application database, never the plain ``<app-db>_test``,
+      never anything a person named;
+    * it was created more than a day ago (the creation time of its
+      ``PG_VERSION`` file) — no live run is that old;
+    * no session is connected to it, and ``DROP DATABASE`` is issued WITHOUT
+      ``FORCE``, so a connection that appears in between makes the drop fail
+      rather than cutting a run off.
+
+    Advisory: reading file times needs a superuser (or pg_read_server_files);
+    without it, or on any other error, nothing is dropped and nothing is said.
+    Returns the names dropped.
+    """
+    dropped: list[str] = []
+    app_db = app_url.database
+    prefix = f"{app_db}_test_"
+    try:
+        admin = create_engine(app_url.set(database="postgres"), isolation_level="AUTOCOMMIT")
+        try:
+            with admin.connect() as conn:
+                names = conn.execute(
+                    text(
+                        "SELECT d.datname FROM pg_database d "
+                        "WHERE left(d.datname, :n) = :prefix "
+                        "AND substr(d.datname, :n + 1) ~ '^[a-z0-9]{1,16}_[0-9]+$' "
+                        "AND d.datname <> :app AND NOT d.datistemplate "
+                        "AND NOT EXISTS (SELECT 1 FROM pg_stat_activity a WHERE a.datname = d.datname) "
+                        "AND (pg_stat_file('base/' || d.oid || '/PG_VERSION', true)).modification "
+                        f"    < now() - interval '{_STALE_TEST_DB_AGE}'"
+                    ),
+                    {"n": len(prefix), "prefix": prefix, "app": app_db},
+                ).scalars().all()
+                for name in names:
+                    try:
+                        quoted = name.replace('"', '""')
+                        conn.execute(text(f'DROP DATABASE IF EXISTS "{quoted}"'))
+                        dropped.append(name)
+                    except Exception:
+                        continue
+        finally:
+            admin.dispose()
+    except Exception:
+        pass
+    return dropped
+
+
 def _postgres_reachable(url) -> bool:
     try:
         admin = create_engine(url.set(database="postgres"), isolation_level="AUTOCOMMIT")
@@ -186,6 +244,7 @@ def _resolve_test_engine():
 
     app_url = make_url(settings.DATABASE_URL)
     if app_url.get_backend_name().startswith("postgresql") and _postgres_reachable(app_url):
+        _sweep_stale_test_databases(app_url)
         test_url = app_url.set(database=_test_database_name(app_url.database))
         _ensure_database(test_url)
         return create_engine(test_url, poolclass=NullPool), True

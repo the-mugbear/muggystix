@@ -421,18 +421,23 @@ def promote_issues(
         rep = min((v for v in rows if v.host_id in wanted), key=lambda v: (-_RANK.get(v.severity, 0), v.id))
         plan.append((item.issue_key, rep, chosen))
 
-    existing = _findings_by_key(db, project_id, keys)
     svc = FindingService(db)
     outcomes = []
     for issue_key, rep, chosen in plan:
-        found = existing.get(issue_key)
+        # The join rule is the service's, decided when it finds (or loses the
+        # insert to) the issue's finding — not from a read made before this
+        # loop: a finding created in between (a false-positive dismissal on
+        # one host) was then "joined" with status=confirmed and re-statused,
+        # and reported as created.
         finding = svc.promote_vulnerability(
             vuln=rep, project_id=project_id, actor_id=actor_id,
-            status=found.status if found is not None else FindingStatus.CONFIRMED.value,
+            status=FindingStatus.CONFIRMED.value,
             host_ids=chosen,
             summary="Promoted from the scanner observations list",
+            keep_status_on_join=True,
         )
         outcomes.append(PromoteOutcome(
-            issue_key=issue_key, finding_id=finding.id, created=found is None, host_count=len(chosen),
+            issue_key=issue_key, finding_id=finding.id, created=svc.last_promotion_created,
+            host_count=len(chosen),
         ))
     return outcomes

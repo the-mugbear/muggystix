@@ -22,6 +22,7 @@ import { useConfirm } from '../hooks/useConfirm';
 import { useListCursor } from '../hooks/useListCursor';
 import { ListPage, useListQuery } from '../hooks/useListQuery';
 import { formatApiError } from '../utils/apiErrors';
+import { isPageShortcutEvent } from '../utils/keyboard';
 import { announceProposalsChanged } from '../utils/proposalEvents';
 import PostureMeasure from '../components/posture/PostureMeasure';
 import PostureSection from '../components/posture/PostureSection';
@@ -79,15 +80,19 @@ const Proposals: React.FC = () => {
   const kindKnown = kindParam == null || KINDS.some((k) => k.kind === kindParam);
   const status: ProposalStatus = statusParam != null && statusKnown ? (statusParam as ProposalStatus) : 'pending';
   const kind: ProposalKind | undefined = kindParam != null && kindKnown ? (kindParam as ProposalKind) : undefined;
+  // The same for the session: `?agent_session_id=abc` was sent to the API as
+  // NaN and shown as "session #NaN".  Only a positive whole number is an id.
+  const sessionParam = params.get('agent_session_id');
+  const sessionKnown = sessionParam == null || /^[1-9]\d*$/.test(sessionParam);
+  const sessionId = sessionParam != null && sessionKnown ? Number(sessionParam) : undefined;
   useEffect(() => {
-    if (statusKnown && kindKnown) return;
+    if (statusKnown && kindKnown && sessionKnown) return;
     const next = new URLSearchParams(params);
     if (!statusKnown) next.delete('status');
     if (!kindKnown) next.delete('kind');
+    if (!sessionKnown) next.delete('agent_session_id');
     setParams(next, { replace: true });
-  }, [statusKnown, kindKnown, params, setParams]);
-  const sessionParam = params.get('agent_session_id');
-  const sessionId = sessionParam ? Number(sessionParam) : undefined;
+  }, [statusKnown, kindKnown, sessionKnown, params, setParams]);
   // 5.318.0 — whose findings: `mine` (authored or owned — what you were
   // notified about) or `all`.  Unset, a project admin sees all and everyone
   // else their own; the server says which (the summary's flag).
@@ -142,22 +147,30 @@ const Proposals: React.FC = () => {
   // the row's own buttons, so a busy or already-decided row ignores them and
   // there is one code path for a decision.
   const navigate = useNavigate();
-  const { cursor, cursorRowProps } = useListCursor(
+  //
+  // The cursor is anchored to the PROPOSAL, not to a row number (S2): the list
+  // is newest first and re-reads every 60 s, so a proposal arriving shifted
+  // every row and the highlight — and `a` — landed on a different one.
+  const { cursorId: cursorKey, cursorRowProps } = useListCursor(
     items?.length ?? 0,
     (i) => {
       const to = items ? proposalDestination(items[i]) : null;
       if (to) navigate(to);
     },
-    { resetKey: `${status}|${kind ?? ''}|${sessionId ?? ''}|${scope ?? ''}` },
+    { resetKey: `${status}|${kind ?? ''}|${sessionId ?? ''}|${scope ?? ''}`, getId: (i) => items?.[i]?.id },
   );
-  const cursorId = items && cursor >= 0 && cursor < items.length ? items[cursor].id : null;
+  const cursorId = typeof cursorKey === 'number' ? cursorKey : null;
   useEffect(() => {
     if (!canDecide || cursorId === null) return undefined;
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'a' && e.key !== 'r')) return;
-      const t = e.target as HTMLElement | null;
-      if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.tagName === 'SELECT' || t.isContentEditable)) return;
-      if (document.querySelector('[role="dialog"], [role="alertdialog"]')) return;
+      if (e.key !== 'a' && e.key !== 'r') return;
+      // Not while a Select or a menu has the key (their typeahead does not
+      // stop it), not on auto-repeat — holding `a` accepted one proposal per
+      // repeat — and not while a dialog is open (S1).
+      if (!isPageShortcutEvent(e)) return;
+      // One decision at a time: while any is in flight (a row's, or "all
+      // shown") the list is about to change under the cursor.
+      if (bulkBusy || document.querySelector('[data-proposal-action]:disabled')) return;
       const button = document.querySelector<HTMLButtonElement>(
         `[data-proposal="${cursorId}"] [data-proposal-action="${e.key === 'a' ? 'accept' : 'reject'}"]`,
       );
@@ -167,7 +180,7 @@ const Proposals: React.FC = () => {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [canDecide, cursorId]);
+  }, [canDecide, cursorId, bulkBusy]);
 
   const setParam = (key: string, value: string | undefined) => {
     const next = new URLSearchParams(params);

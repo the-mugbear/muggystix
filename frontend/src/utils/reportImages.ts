@@ -17,8 +17,31 @@
  * the author what it will decide.
  */
 
-/** A placement in Markdown: `![alt](evidence:<id>)`, with an optional title. */
+/**
+ * A placement in Markdown — THE grammar, the same pattern as the server's
+ * `REFERENCE`: `![alt](evidence:<id>)` on one line, with an optional title
+ * in double quotes.  Nothing wider places an image: `(<evidence:57>)`, a
+ * title in single quotes, an alt text over two lines or a reference-style
+ * image are other spellings Markdown allows, and the server rewrites them to
+ * this form when the section is saved (`normalise_references`).  Until then
+ * the report prints no image there, so the preview shows none either.
+ */
 export const EVIDENCE_REFERENCE = /!\[((?:[^\]\\\n]|\\.)*)\]\(\s*evidence:(\d{1,12})(?:\s+"[^"\n]*")?\s*\)/g;
+
+const EVIDENCE_REFERENCE_AT = new RegExp(EVIDENCE_REFERENCE.source, 'y');
+
+/**
+ * The placement that starts exactly at `at` in `text`, else null — what the
+ * preview asks before it shows an image, so it shows one for precisely the
+ * references the server counts (`referencedImageIds` finds the same ones).
+ */
+export const evidenceReferenceAt = (
+  text: string, at: number,
+): { id: number; alt: string; end: number } | null => {
+  EVIDENCE_REFERENCE_AT.lastIndex = at;
+  const m = EVIDENCE_REFERENCE_AT.exec(text);
+  return m ? { id: Number(m[2]), alt: m[1], end: at + m[0].length } : null;
+};
 
 /** The target of an image that names one of the finding's images, else null. */
 export const evidenceIdOf = (target: string): number | null => {

@@ -23,7 +23,7 @@ from sqlalchemy.orm import Session, selectinload, noload, aliased
 from sqlalchemy import or_, and_, case, distinct, func, true
 
 from app.core.config import settings
-from app.db.session import disable_statement_timeout, get_db
+from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role
 from app.api.params import HostFilterParams
@@ -468,7 +468,14 @@ def get_hosts_v2(
     try:
         vulnerability_service = VulnerabilityService(db)
         vuln_map = vulnerability_service.get_bulk_host_vulnerability_summaries(host_ids)
-    except Exception:
+    except Exception as exc:
+        # A statement the API timeout cancelled is the request's answer (503,
+        # from get_db) — and for anything else the failed statement has
+        # aborted the transaction, so undo it or every query below fails with
+        # "current transaction is aborted" and the page answers 500.
+        if is_statement_timeout(exc):
+            raise
+        db.rollback()
         logger.exception("Failed to load vulnerability summaries for %d hosts", len(host_ids))
         vuln_map = {hid: {'total': 0, 'by_severity': {}} for hid in host_ids}
         vuln_error = True

@@ -14,6 +14,14 @@ reduced to their alt text (an image path would read a local file), links keep
 only http/https/mailto targets, headings become bold paragraphs (the report's
 own structure stays the template's), and every attribute is dropped.
 
+NO MATH (review 2026-10-01 S1).  The text is read with the reader's math
+extensions OFF (`READER` below), so `$HOME/bin:$PATH` is those characters;
+`clean()` turns any Math node that appears all the same back into its source
+text; and the templates set `html-math-method: plain` (the renderer passes it
+too).  Before, `$…$` in a description became a formula: the HTML report
+loaded MathJax from a CDN — a request from the client's browser, and a script
+the report never had — which also typesets `\href{javascript:…}{x}`.
+
 ONE image form survives: `![alt](evidence:57)`, when data.json lists 57 for
 THAT field of THAT finding (`findings.N.placed.<field>` — the dataset builder
 decides which of the finding's images, marked "In report", a field may show;
@@ -62,6 +70,19 @@ local function resolve(key)
 end
 
 local WEB = { http = true, https = true, mailto = true }
+
+-- How written text is read: GitHub Markdown without raw HTML and without
+-- math (`$…$`, `$$…$$`, and gfm's ```math block and $`…`$).  The names are
+-- pandoc's own (`pandoc --list-extensions=gfm`); gfm has no fenced divs,
+-- attributes, bracketed spans or raw attributes, so a `::: {.bs-md …}` an
+-- author types is text, never one of this filter's placeholders.
+local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm"
+
+-- A Math node as the characters its author typed.
+local function math_source(el)
+  local mark = el.mathtype == "DisplayMath" and "$$" or "$"
+  return pandoc.Str(mark .. el.text .. mark)
+end
 
 --[[
 Figures.  Every evidence image BlueStick prints is built HERE, from data.json,
@@ -287,9 +308,13 @@ local function clean(blocks, images, drop_images)
     Header = function(el) return pandoc.Para({ pandoc.Strong(el.content) }) end,
     Div = function(el) return el.content end,
     Span = function(el) return el.content end,
+    -- The second layer: READER parses no math, and if a Math node arrives
+    -- anyway it is printed as its source, never as a formula.
+    Math = math_source,
     CodeBlock = function(el)
       local lang = el.classes[1]
-      if lang ~= nil and lang:match("^[%w_+-]+$") then
+      -- `math` is not a language: gfm's ```math block is display math.
+      if lang ~= nil and lang:match("^[%w_+-]+$") and lang:lower() ~= "math" then
         return pandoc.CodeBlock(el.text, pandoc.Attr("", { lang }))
       end
       return pandoc.CodeBlock(el.text)
@@ -406,7 +431,7 @@ local function fill_field(el)
   -- and a form field's text usually has no trailing newline (v2.407.0).
   -- Windows line endings are normalised too.
   text = text:gsub("\r\n?", "\n") .. "\n"
-  local doc = pandoc.read(text, "gfm-raw_html")
+  local doc = pandoc.read(text, READER)
   local images = field_images(key)
   local drop = el.attributes["images"] == "none"
   local width = valid_width(el.attributes["image-width"])

@@ -75,14 +75,94 @@ compose() { docker compose -f "$COMPOSE_ROOT/docker-compose.yml" --project-direc
 # The image compose builds for a service.  `config --images SERVICE` also
 # lists the images of the services it depends on (the database), in no fixed
 # order — taking the first line ran Alembic inside the postgres image one
-# time in two.  So the database's image is removed from the list first.
+# time in two, and removing only the database's still left the image of any
+# OTHER dependency to be picked.  So the image NAMED for the service is
+# selected, the way deploy.sh's service_image_ref and transfer-images.sh's
+# service_image do: <project>-<service>, else a name ending in the
+# service's.  (Each script has its own compose command, so the three lines
+# are repeated rather than shared.)
 service_image() {
-    local db_image
-    db_image="$(compose config --images db 2>/dev/null | head -1)"
-    compose config --images "$1" 2>/dev/null | grep -vxF "${db_image:-<none>}" | head -1
+    local service="$1" listed project ref=""
+    listed="$(compose config --images "$service" 2>/dev/null || true)"
+    [[ -n "$listed" ]] || return 0
+    project="$(compose config 2>/dev/null | awk '/^name:/ {print $2; exit}')"
+    ref="$(printf '%s\n' "$listed" | grep -xE "${project:-[^/]+}[-_]${service}(:[^/]+)?" | head -1 || true)"
+    [[ -n "$ref" ]] || ref="$(printf '%s\n' "$listed" | grep -E "(^|[-_/])${service}(:[^/]+)?\$" | head -1 || true)"
+    printf '%s\n' "$ref"
 }
 
 LOG_DIR="$(mktemp -d "${TMPDIR:-/tmp}/bluestick-check.XXXXXX")"
+
+# --- Leave nothing behind ---------------------------------------------------
+# Interrupted (Ctrl-C, a closed terminal), this script used to leave its log
+# directory in /tmp and — because the suite never reached its own
+# end-of-session drop — one `<db>_test_<host>_<pid>` database on the
+# development Postgres per aborted run.
+#
+#   * The log directory is removed on every exit EXCEPT a failed run, whose
+#     summary names it.
+#   * THIS run's test database is dropped.  Its name carries the suite
+#     container's host name, which is read while the container runs
+#     (watch_suite_container); only databases named exactly
+#     `<POSTGRES_DB>_test_<that host>_<digits>` are dropped — never the
+#     application database, never another run's.
+KEEP_LOGS=0
+SUITE_CONTAINER="bluestick-check-$$"
+SUITE_HOST_FILE="$LOG_DIR/suite-host"
+WATCHER_PID=""
+
+env_value() { grep -E "^$1=" "$COMPOSE_ROOT/.env" 2>/dev/null | tail -1 | cut -d= -f2-; }
+
+drop_run_test_database() {
+    [[ -s "$SUITE_HOST_FILE" ]] || return 0
+    local host pg_user pg_db prefix names name
+    # The same normalisation backend/tests/conftest.py applies to the host name.
+    host="$(tr '[:upper:]' '[:lower:]' < "$SUITE_HOST_FILE" | tr -cd 'a-z0-9' | cut -c1-16)"
+    pg_user="$(env_value POSTGRES_USER)"; pg_user="${pg_user:-nmapuser}"
+    pg_db="$(env_value POSTGRES_DB)";     pg_db="${pg_db:-networkMapper}"
+    [[ -n "$host" && "$pg_db" != *"'"* && "$pg_db" != *'"'* ]] || return 0
+    prefix="${pg_db}_test_${host}_"
+    names="$(compose exec -T db psql -U "$pg_user" -d postgres -tAc \
+        "SELECT datname FROM pg_database WHERE left(datname, ${#prefix}) = '${prefix}' AND substr(datname, ${#prefix} + 1) ~ '^[0-9]+\$' AND datname <> '${pg_db}'" \
+        2>/dev/null || true)"
+    while IFS= read -r name; do
+        [[ -n "$name" ]] || continue
+        if compose exec -T db psql -U "$pg_user" -d postgres -tAc \
+            "DROP DATABASE IF EXISTS \"${name}\" WITH (FORCE)" >/dev/null 2>&1; then
+            echo "check.sh: dropped this run's test database ${name}" >&2
+        fi
+    done <<< "$names"
+}
+
+cleanup() {
+    local rc=$?
+    trap - EXIT INT TERM HUP
+    [[ -n "$WATCHER_PID" ]] && kill "$WATCHER_PID" 2>/dev/null
+    # An interrupted suite container may still be shutting down; it is ours.
+    docker rm -f "$SUITE_CONTAINER" >/dev/null 2>&1 || true
+    drop_run_test_database
+    if [[ "$KEEP_LOGS" -ne 1 ]]; then
+        rm -rf "$LOG_DIR"
+    fi
+    exit "$rc"
+}
+trap cleanup EXIT
+trap 'echo "" >&2; echo "check.sh: interrupted — cleaning up." >&2; exit 130' INT TERM HUP
+
+# Record the suite container's host name as soon as it exists (it is --rm, so
+# it cannot be asked afterwards).
+watch_suite_container() {
+    local host
+    for _ in $(seq 1 240); do
+        host="$(docker inspect --format '{{.Config.Hostname}}' "$SUITE_CONTAINER" 2>/dev/null || true)"
+        if [[ -n "$host" ]]; then
+            printf '%s\n' "$host" > "$SUITE_HOST_FILE"
+            return 0
+        fi
+        sleep 0.5
+    done
+}
+
 declare -a STEP_NAMES=() STEP_RESULTS=() STEP_NOTES=()
 record() { STEP_NAMES+=("$1"); STEP_RESULTS+=("$2"); STEP_NOTES+=("$3"); }
 elapsed() { local s=$(( SECONDS - $1 )); printf '%dm%02ds' $(( s / 60 )) $(( s % 60 )); }
@@ -128,7 +208,11 @@ backend_suite() {
     # it the tests that read the shipped templates skip ("not mounted") even
     # though they are mounted.  `-rs` prints one line per skip reason, which
     # is what the Quarto check below reads.
-    compose run --rm --no-deps "${mounts[@]}" \
+    # Named, so its host name — part of the test database's name — can be
+    # read while it runs (see cleanup above).
+    watch_suite_container &
+    WATCHER_PID=$!
+    compose run --rm --no-deps --name "$SUITE_CONTAINER" "${mounts[@]}" \
         -e COVERAGE_FILE=/tmp/.coverage -e BLUESTICK_SKIP_DB_INIT=1 -e DB_POOL_SIZE=5 \
         -e REPORT_TEMPLATES_DIR=/app/report-templates -e BLUESTICK_REPO_ROOT=/repo \
         report-worker \
@@ -137,6 +221,7 @@ backend_suite() {
                cd /tmp && python -m pytest /app/tests -q -p no:cacheprovider --rootdir=/app -c /app/pytest.ini --no-cov -rs ${CHECK_PYTEST_ARGS:-}" \
         2>&1 | tee "$log"
     local rc=${PIPESTATUS[0]}
+    kill "$WATCHER_PID" 2>/dev/null; wait "$WATCHER_PID" 2>/dev/null; WATCHER_PID=""
 
     local tally quarto_skips
     tally="$(grep -E '^=+ .*(passed|failed|error|no tests ran).* in [0-9.]+s' "$log" | tail -1 | sed -E 's/^=+ //; s/ =+$//')"
@@ -260,8 +345,8 @@ done
 echo "--------------------------------------------------------------"
 if [[ "$failed" -eq 0 ]]; then
     echo "  PASSED$([[ "$FAST" -eq 1 ]] && echo ' (--fast: the Alembic round trip was not run)')"
-    rm -rf "$LOG_DIR"
-    exit 0
+    exit 0          # the EXIT trap removes the log directory
 fi
+KEEP_LOGS=1         # a failed run keeps its logs: the summary names them
 echo "  FAILED: $failed step(s). Full output: $LOG_DIR"
 exit 1

@@ -23,11 +23,31 @@
 #   ./scripts/restore-db.sh ../<project>-db-backups/nm-pgdump-YYYYMMDD-HHMMSS.dump
 #   ./scripts/restore-db.sh --no-safety-backup    # skip the pre-restore safety backup
 #
-# The backup is READ BACK before anything is touched (pg_restore --list for a
-# dump, a tar listing for a volume snapshot and for the uploads archive): a
-# truncated or corrupt file is refused while the current database still exists.
+# The backup is VERIFIED before anything is touched, while the current
+# database still exists:
+#   * its size and SHA-256 are compared with the ones backup-db.sh recorded in
+#     the .meta beside it (a file cut short or altered in a copy is refused);
+#   * a dump is then read to its end (pg_restore -f /dev/null — every data
+#     block; `--list` alone reads only the table of contents at the front of
+#     the file, which a truncated dump still has), a volume snapshot and the
+#     uploads archive are listed to their end.
+# A backup with no .meta, or one made before sizes and checksums were
+# recorded, is verified by the full read alone.
+#
+# The restore ends with a summary of the state the instance is in.  If
+# pg_restore itself fails, the app is left STOPPED and the summary gives the
+# command that puts back the safety backup taken a moment earlier.
 #
 # Flags:
+#   --yes                  Skip the typed RESTORE confirmation (deploy.sh
+#                          option 7 asks its own question first).
+#   --no-start             Leave the application stopped after the restore;
+#                          the caller starts it (deploy.sh option 7).
+#   --force-unverified     Restore even though the backup failed verification
+#                          (size / checksum mismatch, or it could not be read
+#                          to its end).  Whatever is readable is restored and
+#                          the rest is LOST — a last resort, when this file is
+#                          the only copy.
 #   --no-safety-backup     Don't take a fresh backup of the CURRENT database
 #                          before the restore overwrites it.  Use this only
 #                          when the current database is unrecoverable anyway
@@ -49,6 +69,9 @@ set -e
 # --- Parse flags (positional args follow) ---
 NO_SAFETY_BACKUP=0
 IGNORE_KEY_MISMATCH=0
+ASSUME_YES=0
+NO_START=0
+FORCE_UNVERIFIED=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --no-safety-backup)
@@ -59,8 +82,20 @@ while [[ $# -gt 0 ]]; do
             IGNORE_KEY_MISMATCH=1
             shift
             ;;
+        --yes)
+            ASSUME_YES=1
+            shift
+            ;;
+        --no-start)
+            NO_START=1
+            shift
+            ;;
+        --force-unverified)
+            FORCE_UNVERIFIED=1
+            shift
+            ;;
         -h|--help)
-            sed -n '2,45p' "$0"
+            sed -n '2,65p' "$0"
             exit 0
             ;;
         --)
@@ -97,6 +132,14 @@ else
     print_error "Neither 'docker compose' nor 'docker-compose' is available."
     exit 1
 fi
+
+# Shared with deploy.sh: `ask`, the staged start, the backend wait.
+if [[ ! -f "$SCRIPT_DIR/stack-lib.sh" ]]; then
+    print_error "scripts/stack-lib.sh is missing — this copy of the scripts folder is incomplete."
+    exit 1
+fi
+# shellcheck source=stack-lib.sh
+source "$SCRIPT_DIR/stack-lib.sh"
 
 env_val() { grep -E "^$1=" .env 2>/dev/null | tail -1 | cut -d'=' -f2-; }
 PG_USER="$(env_val POSTGRES_USER)"; PG_USER="${PG_USER:-nmapuser}"
@@ -209,8 +252,7 @@ if [[ -z "$BACKUP_FILE" ]]; then
         echo "  $((i + 1))) $(basename "${files[$i]}")${rev}"
     done
     echo ""
-    echo -n "Select [1]: "
-    read -r choice
+    ask choice "Select [1]: "
     choice="${choice:-1}"
     if ! [[ "$choice" =~ ^[0-9]+$ ]] || (( choice < 1 || choice > ${#files[@]} )); then
         print_error "Invalid choice."
@@ -241,9 +283,75 @@ uploads_archive=""
 [[ -f "${BACKUP_FILE}.meta" ]] && \
     uploads_archive="$(grep -E '^uploads_archive=' "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2-)"
 
+meta_val() {
+    [[ -f "${BACKUP_FILE}.meta" ]] || return 0
+    grep -E "^$1=" "${BACKUP_FILE}.meta" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
+# A verification failure stops the restore — unless --force-unverified, which
+# turns it into a warning (returns 0).
+verification_failed() {
+    if [[ "$FORCE_UNVERIFIED" -eq 1 ]]; then
+        print_warning "--force-unverified: continuing with a backup that FAILED verification."
+        print_warning "Whatever cannot be read from it will be missing after the restore."
+        return 0
+    fi
+    print_error "To restore it regardless (only when this file is the only copy): --force-unverified"
+    return 1
+}
+
+# Compare a file with the size and SHA-256 its .meta recorded.
+#   $1 file, $2 the .meta key of its size, $3 of its checksum, $4 what it is
+# Returns 0 when they match or nothing was recorded (older backup), 1 on a
+# mismatch.  Sets RECORD_CHECKED=1 when a checksum was compared.
+RECORD_CHECKED=0
+check_against_record() {
+    local file="$1" want_bytes want_sha have_bytes have_sha what="$4"
+    want_bytes="$(meta_val "$2")"
+    want_sha="$(meta_val "$3")"
+    RECORD_CHECKED=0
+    if [[ -n "$want_bytes" ]]; then
+        have_bytes="$(stat -c %s "$file" 2>/dev/null || wc -c < "$file" | tr -d ' ')"
+        if [[ "$have_bytes" != "$want_bytes" ]]; then
+            print_error "The $what is not the file that was backed up: it is $have_bytes bytes,"
+            print_error "and the backup recorded $want_bytes bytes — it was cut short or changed:"
+            print_error "    $file"
+            return 1
+        fi
+    fi
+    if [[ -n "$want_sha" && "$want_sha" != "unknown" ]]; then
+        have_sha="$(_sha256_hex < "$file" 2>/dev/null || true)"
+        if [[ -z "$have_sha" ]]; then
+            print_warning "No sha256 tool on this host — the $what's checksum was not compared."
+            return 0
+        fi
+        if [[ "$have_sha" != "$want_sha" ]]; then
+            print_error "The $what does not match the checksum recorded when it was made"
+            print_error "(SHA-256 $have_sha, recorded $want_sha):"
+            print_error "    $file"
+            return 1
+        fi
+        RECORD_CHECKED=1
+        print_success "The $what matches its recorded size and SHA-256."
+    fi
+    return 0
+}
+
 validate_backup() {
+    if [[ ! -f "${BACKUP_FILE}.meta" ]]; then
+        print_warning "No .meta file beside this backup — its size and checksum cannot be compared;"
+        print_warning "it is verified by reading it to its end instead."
+    fi
+    local what="database dump"
+    [[ "$BACKUP_FILE" == *.tar.gz ]] && what="volume snapshot"
+    if ! check_against_record "$BACKUP_FILE" bytes sha256 "$what"; then
+        verification_failed || return 1
+    fi
+
     case "$BACKUP_FILE" in
       *.dump)
+        # The table of contents first: without one there is nothing to
+        # restore, and no flag changes that.
         local entries
         entries="$(docker run --rm -i --entrypoint pg_restore "$HELPER_IMAGE" --list \
             < "$BACKUP_FILE" 2>/dev/null | grep -c '^[0-9]')" || true
@@ -253,7 +361,20 @@ validate_backup() {
             print_error "It is truncated, corrupt, or from a newer PostgreSQL than this stack runs."
             return 1
         fi
-        print_success "Dump is readable ($entries entries)."
+        # Then all of it.  The table of contents sits at the FRONT of the
+        # file, so it lists in full even when the data behind it was cut off;
+        # converting the archive to SQL (discarded) reads every data block and
+        # fails at the missing one.  No database is touched (branch review S1).
+        print_info "Reading the dump to its end ($entries entries)..."
+        if ! docker run --rm -i --entrypoint pg_restore "$HELPER_IMAGE" -f /dev/null \
+            < "$BACKUP_FILE" >/dev/null 2>&1; then
+            print_error "This dump is INCOMPLETE or corrupt: its table of contents lists $entries entries,"
+            print_error "but pg_restore could not read the data to the end of the file:"
+            print_error "    $BACKUP_FILE"
+            verification_failed || return 1
+        else
+            print_success "Dump read to its end ($entries entries, all data blocks)."
+        fi
         ;;
       *.tar.gz)
         # PG_VERSION at the top is what makes a tar a PGDATA snapshot.
@@ -270,6 +391,9 @@ validate_backup() {
         ;;
     esac
     if [[ -n "$uploads_archive" && -f "$BACKUP_FILE_DIR/$uploads_archive" ]]; then
+        if ! check_against_record "$BACKUP_FILE_DIR/$uploads_archive" uploads_bytes uploads_sha256 "uploads archive"; then
+            verification_failed || return 1
+        fi
         if ! tar tzf "$BACKUP_FILE_DIR/$uploads_archive" >/dev/null 2>&1; then
             print_error "The uploads archive that belongs to this backup is unreadable:"
             print_error "    $BACKUP_FILE_DIR/$uploads_archive"
@@ -346,18 +470,49 @@ check_key_fingerprint() {
         print_error "Re-run with --ignore-key-mismatch to proceed anyway."
         exit 1
     fi
-    echo -n "Type 'KEYS-DIFFER' to acknowledge and restore anyway: "
-    read -r ack
-    [[ "$ack" == "KEYS-DIFFER" ]] || { print_info "Cancelled."; exit 0; }
+    ask ack "Type 'KEYS-DIFFER' to acknowledge and restore anyway: " ""
+    [[ "$ack" == "KEYS-DIFFER" ]] || { print_info "Cancelled. Nothing was changed."; exit 1; }
 }
 check_key_fingerprint
 
 # --- Confirm (destructive) ---
 echo ""
 print_warning "This OVERWRITES the current '$PG_DB' database with the backup."
-echo -n "Type 'RESTORE' to confirm: "
-read -r confirm
-[[ "$confirm" == "RESTORE" ]] || { print_info "Cancelled."; exit 0; }
+if [[ "$ASSUME_YES" -eq 1 ]]; then
+    print_info "Confirmed by the caller (--yes)."
+else
+    ask confirm "Type 'RESTORE' to confirm: " ""
+    [[ "$confirm" == "RESTORE" ]] || { print_info "Cancelled. Nothing was changed."; exit 1; }
+fi
+
+# --- How it ends -------------------------------------------------------------
+# Every way out after this point prints the state the instance is in.  The
+# commands below used to be bare under `set -e`: a failing pg_restore or
+# `up -d` ended the script without a word, with the application stopped
+# (branch review S3).
+SAFETY_ARTIFACT=""
+restore_summary() {
+    # $1 state word, $2 what is true now, $3.. next steps
+    echo ""
+    echo "=============================================="
+    echo "   Restore — instance state: $1"
+    echo "=============================================="
+    echo "  $2"
+    shift 2
+    local step
+    for step in "$@"; do
+        echo "  $step"
+    done
+    echo ""
+}
+safety_recovery_line() {
+    if [[ -n "$SAFETY_ARTIFACT" ]]; then
+        echo "To put back the database as it was before this restore (the safety backup):"
+        echo "      ./scripts/restore-db.sh --no-safety-backup \"$SAFETY_ARTIFACT\""
+    else
+        echo "No safety backup was taken in this run (--no-safety-backup); choose a backup with ./scripts/restore-db.sh"
+    fi
+}
 
 # --- Safety backup of the current database first ---
 # Fails closed: the operator typed RESTORE expecting recoverability, so
@@ -373,12 +528,20 @@ else
     # BACKUP_KEEP=0: no retention pass here.  The backup being restored may be
     # the oldest one in the directory, and pruning "older than the newest N"
     # after adding one more would delete it moments before it is read.
+    safety_marker="$(mktemp)"
     if ! BACKUP_KEEP=0 "$SCRIPT_DIR/backup-db.sh"; then
-        print_error "Safety backup failed — aborting restore."
+        rm -f "$safety_marker"
+        print_error "Safety backup failed — aborting restore. Nothing was changed."
         print_error "Re-run with --no-safety-backup to override (only do this if the"
         print_error "current database is already unrecoverable)."
         exit 1
     fi
+    # The artifact that run just wrote — named in every failure message below.
+    SAFETY_ARTIFACT="$(find "$BACKUP_DIR" -maxdepth 1 \
+        \( -name 'nm-pgdump-*.dump' -o -name 'nm-pgdata-*.tar.gz' \) -newer "$safety_marker" 2>/dev/null \
+        | xargs -r ls -t 2>/dev/null | head -1)"
+    rm -f "$safety_marker"
+    [[ -n "$SAFETY_ARTIFACT" ]] && print_info "Safety backup: $SAFETY_ARTIFACT"
 fi
 
 case "$BACKUP_FILE" in
@@ -387,31 +550,61 @@ case "$BACKUP_FILE" in
     # reconnected the moment the database was recreated, and the worker's
     # LISTEN loop or an API write (session activity, an audit row) could land
     # in half-restored tables or claim a restored queued job (review
-    # 2026-09-23 R9).  `up -d` below brings them back.
+    # 2026-09-23 R9).  The staged start below brings them back.
     print_info "Logical restore — stopping the app containers, keeping the database up..."
     $DC stop backend worker report-worker frontend >/dev/null 2>&1 || true
-    $DC up -d db
+    db_rc=0
+    $DC up -d db || db_rc=$?
     print_info "Waiting for PostgreSQL to accept connections..."
-    ready=0
-    for _ in $(seq 1 30); do
-        if $DC exec -T db pg_isready -U "$PG_USER" -d "$PG_DB" >/dev/null 2>&1; then
-            ready=1; break
-        fi
-        sleep 2
-    done
-    [[ "$ready" -eq 1 ]] || { print_error "Database did not become ready."; exit 1; }
+    if [[ "$db_rc" -ne 0 ]] || ! wait_for_database 60; then
+        restore_summary "STOPPED — database NOT changed" \
+            "The database container did not come up ('$DC up -d db' returned $db_rc), so nothing was restored. The application containers are stopped." \
+            "Look at:  $DC logs db | tail -n 50" \
+            "Start the instance as it was:  $DC up -d"
+        exit 1
+    fi
 
     print_info "Recreating the '$PG_DB' database (drop + create)..."
-    $DC exec -T db psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 <<SQL
+    recreate_rc=0
+    $DC exec -T db psql -U "$PG_USER" -d postgres -v ON_ERROR_STOP=1 <<SQL || recreate_rc=$?
 SELECT pg_terminate_backend(pid) FROM pg_stat_activity
   WHERE datname = '$PG_DB' AND pid <> pg_backend_pid();
 DROP DATABASE IF EXISTS "$PG_DB" WITH (FORCE);
 CREATE DATABASE "$PG_DB" OWNER "$PG_USER";
 SQL
+    if [[ "$recreate_rc" -ne 0 ]]; then
+        restore_summary "STOPPED — database state UNCERTAIN" \
+            "Recreating '$PG_DB' failed (psql exit $recreate_rc; its message is above): the database may be the old one, or gone. The application containers are stopped." \
+            "Check:  $DC exec db psql -U $PG_USER -d postgres -c '\\l'" \
+            "If '$PG_DB' is still listed with its data, start the instance as it was:  $DC up -d"
+        safety_recovery_line | sed 's/^/  /'
+        exit 1
+    fi
 
     print_info "Restoring dump into '$PG_DB'..."
+    restore_log="$(mktemp)"
+    restore_rc=0
     $DC exec -T db pg_restore -U "$PG_USER" -d "$PG_DB" \
-        --no-owner --no-privileges < "$BACKUP_FILE"
+        --no-owner --no-privileges < "$BACKUP_FILE" 2> "$restore_log" || restore_rc=$?
+    if [[ "$restore_rc" -ne 0 ]]; then
+        echo ""
+        print_error "pg_restore FAILED (exit $restore_rc). Its last messages:"
+        tail -n 15 "$restore_log" | sed 's/^/    /'
+        ignored="$(grep -c 'errors ignored on restore' "$restore_log" 2>/dev/null || true)"
+        rm -f "$restore_log"
+        if [[ "${ignored:-0}" -gt 0 ]]; then
+            state_line="pg_restore ran to the end of the dump but some statements failed (listed above), so '$PG_DB' is restored EXCEPT for those. The application containers are stopped."
+            next_line="If the failed statements are harmless to you, start the instance on what was restored:  $DC up -d"
+        else
+            state_line="pg_restore stopped part-way, so '$PG_DB' is EMPTY or PARTLY restored. The application containers are stopped — started now, the backend would run its migrations on a partial database."
+            next_line="Fix the cause above and run this restore again, or put the safety backup back:"
+        fi
+        restore_summary "STOPPED — restore FAILED" "$state_line" "$next_line"
+        safety_recovery_line | sed 's/^/  /'
+        echo ""
+        exit 1
+    fi
+    rm -f "$restore_log"
     print_success "Dump restored."
     ;;
 
@@ -426,16 +619,33 @@ SQL
     }
     print_warning "Raw volume restore — target volume: $vol"
     print_warning "Stopping ALL containers..."
-    $DC down
+    down_rc=0
+    $DC down || down_rc=$?
+    if [[ "$down_rc" -ne 0 ]]; then
+        restore_summary "UNCERTAIN — database NOT changed" \
+            "'$DC down' failed (exit $down_rc; its message is above), so the volume was not touched. Some containers may be stopped." \
+            "See what is up:  $DC ps" \
+            "Start the instance as it was:  $DC up -d"
+        exit 1
+    fi
     print_info "Replacing the contents of volume '$vol'..."
     # The archive is streamed in on stdin (it is the operator's 0600 file; no
     # bind mount of the backup directory is needed).  find -mindepth 1 also
     # removes dot-entries, which `rm -rf /data/*` left behind.
+    vol_rc=0
     docker run --rm -i \
         -v "$vol":/data \
         --entrypoint sh \
-        "$HELPER_IMAGE" -c "find /data -mindepth 1 -delete; tar xzf - -C /data" \
-        < "$BACKUP_FILE"
+        "$HELPER_IMAGE" -c "find /data -mindepth 1 -delete && tar xzf - -C /data" \
+        < "$BACKUP_FILE" || vol_rc=$?
+    if [[ "$vol_rc" -ne 0 ]]; then
+        restore_summary "STOPPED — restore FAILED" \
+            "Replacing the contents of volume '$vol' failed (exit $vol_rc): the volume is EMPTY or PARTLY written, and every container is stopped. Do not start the stack on it — Postgres would initialise a new, empty database." \
+            "Run the restore again once the cause above is fixed."
+        safety_recovery_line | sed 's/^/  /'
+        echo ""
+        exit 1
+    fi
     print_success "Volume contents replaced."
     ;;
 
@@ -471,49 +681,55 @@ else
     print_warning "images and issued report files in ./uploads are left as they are."
 fi
 
-# --- Bring the full stack up; the backend runs `alembic upgrade head` ---
-echo ""
-print_info "Starting the full stack — the backend will migrate the schema forward..."
-$DC up -d
+# --- Start the stack; the backend runs `alembic upgrade head` ---
+if [[ "$NO_START" -eq 1 ]]; then
+    restore_summary "STOPPED — database restored" \
+        "'$PG_DB' holds the backup. The application containers are stopped (--no-start): the caller starts them."
+    exit 0
+fi
 
 # The backend serves only after `alembic upgrade head`, and an older backup
 # may have many revisions (some of them data migrations) to run: the wait was
 # 150 s, after which a healthy, still-migrating backend was reported as not
-# having come up.  RESTORE_HEALTH_TIMEOUT (seconds, default 1800); the loop
+# having come up.  RESTORE_HEALTH_TIMEOUT (seconds, default 1800); the wait
 # ends early when the container has exited or keeps restarting.
+#
+# Staged, like a deploy (scripts/stack-lib.sh): the backend alone first — it
+# holds the migration lock — then the workers, then the frontend.  Every `up`
+# is captured: a failing one used to end the script here in silence.
 RESTORE_HEALTH_TIMEOUT="${RESTORE_HEALTH_TIMEOUT:-1800}"
-print_info "Waiting for the backend to become healthy (it migrates the restored schema first; up to ${RESTORE_HEALTH_TIMEOUT}s)..."
-ok=0
-state="unknown"
-waited=0
-bid="$($DC ps -q backend 2>/dev/null || true)"
-while [[ "$waited" -lt "$RESTORE_HEALTH_TIMEOUT" ]]; do
-    status="unknown"
-    if [[ -n "$bid" ]]; then
-        status="$(docker inspect --format '{{.State.Health.Status}}' "$bid" 2>/dev/null || echo unknown)"
-        state="$(docker inspect --format '{{.State.Status}}' "$bid" 2>/dev/null || echo unknown)"
-    fi
-    if [[ "$status" == "healthy" ]]; then ok=1; break; fi
-    if [[ "$state" == "exited" || "$state" == "dead" ]]; then break; fi
-    # restart: unless-stopped turns a failing boot into a restart loop.
-    restarts="$(docker inspect --format '{{.RestartCount}}' "$bid" 2>/dev/null || echo 0)"
-    if [[ "$restarts" =~ ^[0-9]+$ && "$restarts" -ge 3 ]]; then state="crash-looping ($restarts restarts)"; break; fi
-    sleep 5
-    waited=$((waited + 5))
-    bid="$($DC ps -q backend 2>/dev/null || true)"
-done
-
 echo ""
-if [[ "$ok" -eq 1 ]]; then
-    print_success "Restore complete — backend healthy, schema migrated to head."
-else
-    if [[ "$state" == "running" ]]; then
-        print_warning "The backend is still starting after ${RESTORE_HEALTH_TIMEOUT}s (container running) — it may"
-        print_warning "still be migrating the restored schema.  Follow:  $DC logs -f backend"
-    else
-        print_error "The backend did not come up (container state: $state)."
-    fi
-    print_warning "If the backup's schema is NEWER than the deployed code, alembic"
-    print_warning "cannot migrate it forward.  Inspect the migration log:"
-    echo "    $DC logs backend | grep -iE 'alembic|revision'"
-fi
+print_info "Starting the stack — the backend migrates the restored schema forward first..."
+start_rc=0
+stack_start_staged "$RESTORE_HEALTH_TIMEOUT" || start_rc=$?
+
+case "$start_rc" in
+    0)
+        restore_summary "RUNNING" \
+            "Restore complete — the backend is healthy, the schema is migrated to this build's head, and the workers and frontend are up."
+        ;;
+    3)
+        restore_summary "PARTLY UP — database restored" \
+            "The backend is healthy on the restored database, but starting the workers or the frontend failed ('$DC up' output above)." \
+            "Retry:  $DC up -d      and look at:  $DC ps"
+        exit 1
+        ;;
+    2)
+        restore_summary "NOT RUNNING — database restored" \
+            "The restore itself succeeded, but the backend does not stay up on the restored database. The workers and the frontend were not started." \
+            "Look at:  $DC logs backend | grep -iE 'alembic|revision|MIGRATION' | tail -n 30" \
+            "If the backup's schema is NEWER than this build, alembic cannot migrate it (\"Can't locate revision\"): deploy the matching or a newer build, or restore an older backup."
+        safety_recovery_line | sed 's/^/  /'
+        echo ""
+        exit 1
+        ;;
+    *)
+        restore_summary "STILL STARTING — database restored" \
+            "The backend container is running but not healthy after ${RESTORE_HEALTH_TIMEOUT}s — it is probably still migrating the restored schema. It has NOT crashed. The workers and the frontend are not started yet." \
+            "Watch:  $DC logs -f backend" \
+            "When it is healthy:  $DC up -d" \
+            "Wait longer next time:  RESTORE_HEALTH_TIMEOUT=7200 ./scripts/restore-db.sh …"
+        print_migration_stall_help
+        exit 1
+        ;;
+esac

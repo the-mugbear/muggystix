@@ -165,6 +165,73 @@ describe('useListQuery', () => {
     expect(result.current.loadingMore).toBe(false);
   });
 
+  // Review 2026-10-01 M1 — the lanes are consistent.
+  it('a "load more" asked for during a reload waits for it, appends after the fresh rows, and leaves no flag on', async () => {
+    const reloadGate = deferred<ListPage<Row>>();
+    let gated = false;
+    const fetcher = vi.fn((req: ListPageRequest) =>
+      (gated && req.offset === 0 ? reloadGate.promise : server('a')(req)));
+    const { result } = renderHook(() => useListQuery<Row>(fetcher, []));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+
+    gated = true;
+    let reloaded!: Promise<void>;
+    let more!: Promise<void>;
+    act(() => { reloaded = result.current.reload(); });
+    act(() => { more = result.current.loadMore(); });
+    expect(result.current.loading).toBe(true);
+    // The reload was not cancelled, and no page was asked for at a stale offset.
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    // The reload brings one row fewer (one was decided meanwhile).
+    await act(async () => {
+      reloadGate.resolve({ items: rows('a', 1, 49), total: 119 });
+      await reloaded;
+      await more;
+    });
+    expect(fetcher).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 49, limit: 50 }));
+    expect(result.current.rows).toHaveLength(99);
+    expect(result.current.loading).toBe(false);
+    expect(result.current.loadingMore).toBe(false);
+  });
+
+  it('a first-page fetch superseded by a newer one leaves `loading` to the newer one, which clears it', async () => {
+    const slow = deferred<ListPage<Row>>();
+    let calls = 0;
+    const fetcher = vi.fn((req: ListPageRequest) => {
+      calls += 1;
+      return calls === 2 ? slow.promise : server('a')(req);
+    });
+    const { result } = renderHook(() => useListQuery<Row>(fetcher, []));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    act(() => { void result.current.reload(); });   // slow, superseded below
+    await act(async () => { await result.current.reload(); });
+    expect(result.current.loading).toBe(false);
+    await act(async () => { slow.resolve({ items: rows('stale', 1, 50), total: 120 }); });
+    expect(result.current.loading).toBe(false);
+    expect(result.current.rows?.every((r) => r.filter === 'a')).toBe(true);
+  });
+
+  it('the poll tick skips its turn while a "load more" is in flight', async () => {
+    const moreGate = deferred<ListPage<Row>>();
+    const fetcher = vi.fn((req: ListPageRequest) => (req.offset > 0 ? moreGate.promise : server('a')(req)));
+    const { result } = renderHook(() => useListQuery<Row>(fetcher, [], { poll: 60_000 }));
+    await waitFor(() => expect(result.current.rows).toHaveLength(50));
+    const pollCalls = vi.mocked(useVisibilityPoll).mock.calls;
+    const tick = pollCalls[pollCalls.length - 1][0];
+
+    let more!: Promise<void>;
+    act(() => { more = result.current.loadMore(); });
+    await act(async () => { await tick(); });
+    expect(fetcher).toHaveBeenCalledTimes(2);  // first page + the load more; no tick
+    await act(async () => { moreGate.resolve({ items: rows('a', 51, 50), total: 120 }); await more; });
+    expect(result.current.rows).toHaveLength(100);
+    expect(result.current.loadingMore).toBe(false);
+    // …and runs again once the lane is free.
+    await act(async () => { await tick(); });
+    expect(fetcher).toHaveBeenCalledTimes(3);
+    expect(fetcher).toHaveBeenLastCalledWith(expect.objectContaining({ offset: 0, limit: 100 }));
+  });
+
   it('fetches nothing while disabled, and polls through the same lane when asked', async () => {
     const fetcher = vi.fn(server('a'));
     const { result, rerender } = renderHook(

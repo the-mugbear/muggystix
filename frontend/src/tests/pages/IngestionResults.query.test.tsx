@@ -78,6 +78,13 @@ describe('Ingestion Results — the view is in the URL (B15)', () => {
     expect(screen.getByRole('combobox', { name: 'Sort by' })).toHaveTextContent('Sort: File size');
   });
 
+  // Branch review 2026-10-01 M11 — `?page=1.5` sent `skip=12.5`.
+  it.each(['1.5', '-2', '0', 'abc', '1e3', '2 ', ''])('a page of "%s" is the first page', async (value) => {
+    renderPage(`/parse-errors?page=${encodeURIComponent(value)}`);
+    await screen.findByText('scan.xml');
+    expect(api.getIngestionResults.mock.calls.every(([q]) => q.skip === 0)).toBe(true);
+  });
+
   it('typing a search writes it to the URL, and a new filter goes back to the first page', async () => {
     renderPage('/parse-errors?page=2');
     await screen.findByText('scan.xml');

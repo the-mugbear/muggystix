@@ -19,7 +19,7 @@ sys.path.insert(0, "/app")
 from app.db.session import SessionLocal  # noqa: E402
 from app.db import model_registry  # noqa: E402,F401
 from app.services.data_repair_service import record_run  # noqa: E402
-from app.services.misconfig_backfill import backfill_misconfigs  # noqa: E402
+from app.services.misconfig_backfill import UNMERGED_KEY, backfill_misconfigs  # noqa: E402
 
 
 def main() -> int:
@@ -28,17 +28,30 @@ def main() -> int:
     args = parser.parse_args()
     db = SessionLocal()
     try:
-        counts = backfill_misconfigs(db, project_id=args.project)
+        unmerged: list = []
+        counts = backfill_misconfigs(db, project_id=args.project, unmerged=unmerged)
         if args.project is None:
             record_run(db, "misconfig_backfill", applied_by="scripts/backfill_misconfigs.py",
                        rows_affected=counts)
         db.commit()
     finally:
         db.close()
-    total = sum(counts.values())
+    observations = {k: n for k, n in counts.items() if k != UNMERGED_KEY}
+    total = sum(observations.values())
     print(f"Recorded or refreshed {total} observation(s)")
-    for check_id, n in sorted(counts.items()):
+    for check_id, n in sorted(observations.items()):
         print(f"  {check_id}: {n}")
+    if unmerged:
+        # Two scanner findings for one catalog check in a project.  Nothing is
+        # merged here: which finding's text, status and history is kept is a
+        # person's decision.  Reported by every run until it is settled.
+        print(f"\n{len(unmerged)} finding(s) NOT moved onto their catalog check: "
+              "the project already has a finding for that check.")
+        print("Each pair is one weakness recorded as two findings. Merge them by hand "
+              "(move the endpoints and text you want onto one, delete the other), then run this again.")
+        for pair in unmerged:
+            print(f"  project {pair['project_id']}: finding #{pair['finding_id']} left as it is; "
+                  f"finding #{pair['kept_finding_id']} is the one for check {pair['check_id']}")
     if args.project is None:
         print("Recorded in the data-repair ledger (scripts/data_repairs.py).")
     else:

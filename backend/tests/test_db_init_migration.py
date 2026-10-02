@@ -86,6 +86,36 @@ def test_db_not_ready_reraises_without_critical(monkeypatch, caprecords):
     )
 
 
+# --- review 2026-10-01 B1 — what the failure line tells the operator ----------
+# The upgrade is one transaction, so a revision that raises (or refuses, like
+# b2e5a8c1d4f6 on duplicate scanner findings) leaves the database where it
+# started: no restore.  Only a run that passed a mid-chain commit moved it.
+
+def test_a_rolled_back_upgrade_says_nothing_changed_and_asks_for_no_restore():
+    msg = dbinit._failure_message(
+        "a1d4f7b9c2e3", "a1d4f7b9c2e3",
+        RuntimeError("2 issue(s) have more than one scanner finding … Nothing was changed."),
+    )
+    assert msg.startswith("DATABASE MIGRATION FAILED — NOTHING WAS CHANGED")
+    assert "still at revision a1d4f7b9c2e3" in msg
+    assert "No database restore is needed" in msg
+    assert "restoring the pre-deploy DB backup" not in msg
+    assert "more than one scanner finding" in msg  # the revision's own instructions
+
+
+def test_an_upgrade_that_stopped_partway_names_both_revisions_and_the_backup():
+    msg = dbinit._failure_message("c3f9a1b7e240", "f1d2c3b4a5e6", ValueError("boom"))
+    assert msg.startswith("DATABASE MIGRATION FAILED — schema left PARTWAY at revision f1d2c3b4a5e6")
+    assert "started at c3f9a1b7e240" in msg
+    assert "restoring the pre-deploy DB backup" in msg
+    assert "NOTHING WAS CHANGED" not in msg
+
+
+def test_a_failure_on_an_empty_database_is_described_without_a_revision():
+    msg = dbinit._failure_message(None, None, ValueError("boom"))
+    assert "NOTHING WAS CHANGED" in msg and "no schema version" in msg
+
+
 # --- v2.370.1 — the test harness must not migrate the developer's database ----
 # ``app.main`` runs initialize_database() at import. The suite mounts the
 # working tree, so an unmerged revision was applied to a real dev database.

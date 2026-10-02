@@ -22,6 +22,7 @@ from app.db.models_project import ProjectMembership, ProjectRole
 from app.db.models_vulnerability import Vulnerability
 from app.services.cvss_service import CvssError, normalize_cvss
 from app.services.finding_service import FindingService
+from app.services.report_images import normalise_references
 from app.services.report_text import REPORT_TEXT_FIELDS
 
 
@@ -71,7 +72,12 @@ def apply_report_text(
     changes: Dict[str, object] = {}
     for field in REPORT_TEXT_FIELDS:
         if field in sent:
-            value = (str(sent[field] or "")).strip() or None
+            # Stored in the ONE placement grammar: a tolerated spelling of an
+            # image reference (`(<evidence:57>)`…) is rewritten here, on every
+            # save — a person's and an accepted proposal's alike — so what
+            # "placed" means is the same for the editor, the delete guard and
+            # the report.  Text with no reference is unchanged.
+            value = normalise_references((str(sent[field] or "")).strip()) or None
             if value != getattr(finding, field):
                 changes[field] = value
     if "cvss_vector" in sent or "cvss_score" in sent:
@@ -135,6 +141,20 @@ def promote_or_dismiss_vulnerability(
             vuln=vuln, project_id=project_id, actor_id=actor_id,
             severity=severity, owner_id=owner_id, summary=summary,
         )
+    if not is_fp:
+        # ONE lock order for every path that makes an issue's finding and
+        # links its test results: the evidence rows FIRST, the finding after.
+        # This path used to insert the finding (an entry in
+        # ``uq_finding_scanner_issue`` that a concurrent insert waits on) and
+        # only then lock the evidence, while promoting a test's result
+        # (``create_finding_from_evidence``) locks the evidence and then
+        # inserts — each held what the other needed, and Postgres killed one
+        # with a deadlock error.  Now the second request waits here, holding
+        # nothing, and joins the finding the first one made.
+        from app.services.agent_evidence_service import _lock_issue_evidence, link_issue_evidence
+        from app.services.vuln_identity import issue_key_for
+
+        _lock_issue_evidence(db, host_id=vuln.host_id, issue_key=issue_key_for(vuln))
     finding = svc.promote_vulnerability(
         vuln=vuln, project_id=project_id, actor_id=actor_id,
         severity=severity, status=status, owner_id=owner_id, summary=summary,
@@ -144,9 +164,6 @@ def promote_or_dismiss_vulnerability(
     if not is_fp:
         # v2.445.0 — the results of tests that confirmed this issue on this
         # host go with it, so the finding shows what demonstrated it.
-        from app.services.agent_evidence_service import link_issue_evidence
-        from app.services.vuln_identity import issue_key_for
-
         db.flush()
         link_issue_evidence(db, host_id=vuln.host_id, issue_key=issue_key_for(vuln), finding_id=finding.id)
     return finding

@@ -21,6 +21,24 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.4.1",
+        "app_version": "2.449.1",
+        "summary": (
+            "Corrections after the second review. Imports: a failed or cancelled import "
+            "leaves no scan and nothing only it created, but it does NOT undo changes it "
+            "made to hosts and ports that already existed, nor the names it created; rows "
+            "a later scan re-observed are kept. Reports: assist_get_client_report's "
+            "`images` rows carry `printed` / `printed_in`, and the summary's "
+            "`images_printed`, `images_trailing`, `images_not_printed` (with reasons) and "
+            "`evidence_records` count what THIS report's template prints — a ticked image "
+            "or a test result is not necessarily printed (executive-brief prints no "
+            "images; remediation-worklist only those placed in the recommendation); "
+            "`confirmations` hold only printed results. A placement written in another "
+            "spelling is stored in the one form `![alt](evidence:<id>)`. Notifications: "
+            "tests an agent assigns to someone are one notification per session."
+        ),
+    },
+    {
         "version": "4.4.0",
         "app_version": "2.449.0",
         "summary": (

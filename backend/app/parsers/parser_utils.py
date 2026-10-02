@@ -7,7 +7,7 @@ import math
 import re
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, Iterable, Iterator, NamedTuple, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
@@ -501,10 +501,16 @@ class ScanHostObservations:
 
     ``note`` never downgrades: a host created by this parse stays ``created``
     on later notes, and a definite state is not replaced by ``None``.
+
+    It also remembers which hosts have something ``record_hosts_in_scan`` has
+    not written yet (review 2026-10-01 M2): the web parsers write their
+    history ahead of every heartbeat, and re-reading every host of the file on
+    each one made a long import quadratic.
     """
 
     def __init__(self) -> None:
         self._rows: Dict[int, HostObservation] = {}
+        self._unwritten: set[int] = set()
 
     def note(
         self,
@@ -517,22 +523,35 @@ class ScanHostObservations:
         if host is None or host.id is None:
             return
         prev = self._rows.get(host.id)
-        self._rows[host.id] = HostObservation(
+        merged = HostObservation(
             host_id=host.id,
             created=created or (prev.created if prev else False),
             state=state if state is not None else (prev.state if prev else None),
             hostname=hostname or (prev.hostname if prev else None) or host.hostname,
         )
+        self._rows[host.id] = merged
+        if merged != prev:
+            self._unwritten.add(host.id)
 
-    def checkpoint(self) -> Dict[int, HostObservation]:
+    def checkpoint(self) -> Tuple[Dict[int, HostObservation], set[int]]:
         """The notes so far, to ``restore`` if the record being written is
         rolled back (v2.419.0): a note on a host created inside the rolled-back
         savepoint would reach record_hosts_in_scan with an id that no longer
-        exists.  Rows are immutable, so a shallow copy suffices."""
-        return dict(self._rows)
+        exists.  Rows are immutable, so a shallow copy suffices.  Opaque to
+        the caller: hand it back to ``restore`` unchanged."""
+        return dict(self._rows), set(self._unwritten)
 
-    def restore(self, checkpoint: Dict[int, HostObservation]) -> None:
-        self._rows = dict(checkpoint)
+    def restore(self, checkpoint: Tuple[Dict[int, HostObservation], set[int]]) -> None:
+        rows, unwritten = checkpoint
+        self._rows = dict(rows)
+        self._unwritten = set(unwritten)
+
+    def take_unwritten(self) -> List[HostObservation]:
+        """The observations noted or changed since the last call, which are
+        then considered written."""
+        rows = [self._rows[host_id] for host_id in sorted(self._unwritten) if host_id in self._rows]
+        self._unwritten = set()
+        return rows
 
     def __len__(self) -> int:
         return len(self._rows)
@@ -566,23 +585,35 @@ def record_hosts_in_scan(
 
     Call after the parser has flushed its primary rows so the host ids are
     stable.  An empty accumulator is a no-op (file with no resolved hosts).
+
+    Safe to call repeatedly (the web parsers call it ahead of every
+    heartbeat, so each commit says which hosts the scan created).  Review
+    2026-10-01 M2: each call handles only the hosts noted or changed since
+    the previous one, and a row that already exists is UPDATED with what the
+    file has said about the host since — it used to be skipped, so
+    ``state_at_scan`` / ``hostname_at_scan`` froze at the first heartbeat.
     """
-    if not observations:
+    pending = observations.take_unwritten()
+    if not pending:
         return
-    host_ids = observations.host_ids
     existing_rows = {
         row.host_id: row
         for row in db.query(models.HostScanHistory).filter(
             models.HostScanHistory.scan_id == scan_id,
-            models.HostScanHistory.host_id.in_(host_ids),
+            models.HostScanHistory.host_id.in_([obs.host_id for obs in pending]),
         )
     }
-    for obs in observations:
+    for obs in pending:
         existing = existing_rows.get(obs.host_id)
         if existing is not None:
-            # Never downgrade created→updated (same rule as the dedup path).
+            # Never downgrade created→updated (same rule as the dedup path),
+            # and never replace a recorded value with "not said".
             if obs.created:
                 existing.host_created = True
+            if obs.state is not None:
+                existing.state_at_scan = obs.state
+            if obs.hostname:
+                existing.hostname_at_scan = obs.hostname
             continue
         db.add(
             models.HostScanHistory(

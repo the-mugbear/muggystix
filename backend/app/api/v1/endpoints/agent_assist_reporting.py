@@ -167,11 +167,15 @@ class AssistReportFinding(BaseModel):
     confirmations: List[Dict[str, Any]] = Field(default_factory=list)
     confirmations_omitted: int = 0
     # Report images: fetch one with assist_get_image(attachment_id=…).
-    # `images` is every image the report prints for the finding, each with its
-    # caption and `placed_in` — the written sections whose Markdown places it
-    # (`![caption](evidence:<attachment_id>)`); `evidence` is the rest, printed
-    # in the trailing evidence block.  A report issued before images could be
-    # placed has `evidence` alone.
+    # `images` is every image ticked for the report on this finding, each with
+    # its caption and `placed_in` — the written sections whose Markdown places
+    # it (`![caption](evidence:<attachment_id>)`).  `printed` says whether THIS
+    # report's template prints it and `printed_in` in which of those sections
+    # (a printed image with `printed_in: []` is in the trailing evidence
+    # block); both are null when it could not be measured or the report was
+    # issued before it was.  `evidence` is the images no section places — the
+    # trailing block's, where the template has one.  A report issued before
+    # images could be placed has `evidence` alone.
     images: List[Dict[str, Any]] = Field(default_factory=list)
     evidence: List[Dict[str, Any]] = Field(default_factory=list)
 
@@ -250,7 +254,10 @@ def get_assist_client_report(
         ]
         row["images"] = [
             {"attachment_id": e.get("attachment_id"), "caption": e.get("caption"),
-             "placed_in": list(e.get("placed_in") or [])}
+             "placed_in": list(e.get("placed_in") or []),
+             # What the dataset measured (None = not measured, never "no").
+             "printed": e.get("printed"),
+             "printed_in": list(e["printed_in"]) if e.get("printed_in") is not None else None}
             for e in (item.get("images") or [])
         ]
         row.pop("placed", None)  # the renderer's map; `images[].placed_in` says the same

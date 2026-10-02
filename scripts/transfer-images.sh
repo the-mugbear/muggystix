@@ -13,7 +13,15 @@
 #   - PostgreSQL database dump (all data)
 #   - Environment configuration template
 #
-# The exported directory can be copied to another host for complete application transfer.
+# What it does NOT do (review 2026-10-01 — an open question, not yet built):
+#   - the INGESTION WORKER's image is not exported: the target host has to
+#     build it (which needs the network); without it uploads are never
+#     processed;
+#   - the import tags the images networkmapper-* whatever the target's compose
+#     project is called;
+#   - deploy.sh has no option that starts a stack from loaded images without
+#     building.
+# So this moves images by hand; it is not an offline upgrade path.
 
 set -euo pipefail
 
@@ -66,7 +74,9 @@ What gets transferred:
   ✓ Docker Compose configuration
   ✓ Environment configuration template
 
+  ✓ Report-worker image (Quarto)
   ✓ PostgreSQL image (the exact release docker-compose.yml names)
+  ✗ Ingestion worker image — NOT exported; the target host has to build it
 
 Note: an export made before the database image was included has no
 postgres.tar; the target host then pulls the image docker-compose.yml names.
@@ -83,6 +93,31 @@ check_dependencies() {
   if [[ -z "$COMPOSE_CMD" ]]; then
     error "Docker Compose not found. Install 'docker compose' (v2) or 'docker-compose' (v1)"
   fi
+}
+
+# The image compose builds for a service, as `repository:tag`, when it exists
+# on this host.  With a compose that cannot list images (v1), the fallback is
+# the name search this script used to do — never a rollback tag.
+service_image() {
+  local service="$1" listed ref="" project
+  # `config --images SERVICE` lists the service's image AND those of every
+  # service it depends on, in no fixed order: pick the one named for it.
+  listed=$($COMPOSE_CMD config --images "$service" 2>/dev/null || true)
+  project=$($COMPOSE_CMD config 2>/dev/null | awk '/^name:/ {print $2; exit}' || true)
+  if [[ -n "$listed" ]]; then
+    ref=$(printf '%s\n' "$listed" | grep -xE "${project:-[^/]+}[-_]${service}(:[^/]+)?" | head -1 || true)
+    [[ -n "$ref" ]] || ref=$(printf '%s\n' "$listed" | grep -E "(^|[-_/])${service}(:[^/]+)?\$" | head -1 || true)
+  fi
+  if [[ -n "$ref" ]]; then
+    # compose prints the bare repository for a built image; Docker stores :latest
+    [[ "${ref##*/}" == *:* ]] || ref="$ref:latest"
+    if docker image inspect "$ref" >/dev/null 2>&1; then
+      printf '%s\n' "$ref"
+    fi
+    return 0
+  fi
+  docker images --format '{{.Repository}}:{{.Tag}}' \
+    | grep -v '^bluestick-rollback-' | grep -v '<none>' | grep -E "[-_]${service}:" | head -1 || true
 }
 
 check_db_running() {
@@ -113,8 +148,13 @@ export_app() {
 
   # v2.381.0 — the report worker's image carries Quarto (downloaded at build
   # time), so an offline host needs the built image, not the Dockerfile.
+  #
+  # Each image is the one COMPOSE names for the service (service_image).  It
+  # was `docker images | grep backend | head -1`, which could pick
+  # `bluestick-rollback-backend:previous` — the build deploy.sh keeps for a
+  # rollback, i.e. the PREVIOUS release — or another project's backend image.
   local report_worker_image
-  report_worker_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep report-worker | grep -v '<none>' | head -1)
+  report_worker_image=$(service_image report-worker)
   if [[ -n "$report_worker_image" ]]; then
     log "Exporting report-worker image: $report_worker_image"
     docker save "$report_worker_image" -o "$output_dir/report-worker.tar"
@@ -125,8 +165,8 @@ export_app() {
 
   # Get image names - use the images that were just built
   local backend_image frontend_image
-  backend_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep backend | grep -v '<none>' | head -1)
-  frontend_image=$(docker images --format '{{.Repository}}:{{.Tag}}' | grep frontend | grep -v '<none>' | head -1)
+  backend_image=$(service_image backend)
+  frontend_image=$(service_image frontend)
 
   # Verify we found the images
   if [[ -z "$backend_image" || -z "$frontend_image" ]]; then
@@ -162,7 +202,10 @@ export_app() {
       have=""
       [[ -n "$db_image_id" ]] && have=$(docker image inspect "$db_image_id" \
         --format '{{range .Config.Env}}{{println .}}{{end}}' 2>/dev/null | sed -n 's/^PG_VERSION=//p')
-      if [[ -n "$have" && "$have" == "$want"* ]]; then
+      # The same release: exactly, or followed by the packaging suffix
+      # (PG_VERSION is "16.13-1.pgdg13+1").  A bare prefix match took a 16.1
+      # pin for satisfied by a 16.13 image.
+      if [[ -n "$have" && ( "$have" == "$want" || "$have" == "$want"-* ) ]]; then
         docker tag "$db_image_id" "$db_image"
       fi
     fi

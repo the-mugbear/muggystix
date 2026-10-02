@@ -29,6 +29,8 @@ format:
     fontsize: 11pt
     page-layout: article
     embed-resources: true
+    # No formula is ever typeset, so no math library is ever loaded.
+    html-math-method: plain
     include-in-header:
       - text: |
           <style>

@@ -3,11 +3,12 @@
  * report's rules (quarto_fields.lua): no raw HTML, no images, web/mail links
  * only, headings as bold paragraphs.
  */
-import { render } from '@testing-library/react';
+import { fireEvent, render } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import SafeMarkdown from '../../components/SafeMarkdown';
 import type { EvidenceResolver } from '../../utils/reportImages';
+import { REFERENCE_CASES } from '../utils/reportImageCases';
 
 const md = (text: string) => render(<SafeMarkdown text={text} />).container;
 
@@ -152,6 +153,52 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
     expect(evidence.ensure).not.toHaveBeenCalled();
   });
 
+  // Review 2026-10-01 S4 — the resolver has three answers for an id it does
+  // not have: not known yet, known missing, the list could not be read.
+  describe('what is said about an image the resolver does not have', () => {
+    const unknown = (extra: Record<string, unknown>) => ({ lookup: () => null, ensure: vi.fn(), ...extra });
+
+    it('while the finding’s list is being read: a neutral placeholder of fixed height, no verdict', () => {
+      const c = render(<SafeMarkdown text="![shot](evidence:57)" evidence={unknown({ listStatus: 'loading' })} />).container;
+      const pending = c.querySelector('[data-testid="evidence-pending-57"]');
+      expect(pending?.textContent).toBe('Loading image…');
+      expect(pending?.querySelector('span')?.className).toContain('h-24');
+      expect(c.querySelector('[role="note"]')).toBeNull();
+      expect(c.textContent).not.toContain('Image not available');
+    });
+
+    it('once the list is read: the existing note', () => {
+      const c = render(<SafeMarkdown text="![shot](evidence:57)" evidence={unknown({ listStatus: 'ready' })} />).container;
+      expect(c.querySelector('[data-testid="evidence-missing-57"]')?.textContent).toContain('Image not available: evidence:57');
+    });
+
+    it('when the list could not be read: says that, with Retry', () => {
+      const retryList = vi.fn();
+      const c = render(
+        <SafeMarkdown text="![shot](evidence:57)" evidence={unknown({ listStatus: 'failed', retryList })} />,
+      ).container;
+      const note = c.querySelector('[data-testid="evidence-list-failed-57"]');
+      expect(note?.textContent).toContain('This finding’s images could not be loaded');
+      expect(c.textContent).not.toContain('Image not available');
+      fireEvent.click(note!.querySelector('button')!);
+      expect(retryList).toHaveBeenCalledTimes(1);
+    });
+
+    it('when the bytes of a known image could not be fetched: says that, with Retry — not "Loading…" for ever', () => {
+      const retry = vi.fn();
+      const evidence = {
+        lookup: () => ({ caption: 'Stored caption' }), ensure: vi.fn(), failed: (id: number) => id === 58, retry,
+      };
+      const c = render(<SafeMarkdown text="![](evidence:58)" evidence={evidence} />).container;
+      const note = c.querySelector('[data-testid="evidence-bytes-failed-58"]');
+      expect(note?.textContent).toContain('Image 58 could not be loaded');
+      expect(c.textContent).not.toContain('Loading image');
+      expect(c.textContent).toContain('Figure: Stored caption');
+      fireEvent.click(note!.querySelector('button')!);
+      expect(retry).toHaveBeenCalledWith(58);
+    });
+  });
+
   it('still reduces every OTHER image to its alt text and loads nothing', () => {
     const { c } = withImages(
       '![web](https://example.com/x.png) ![js](javascript:alert(1)) ![data](data:image/png;base64,AAAA) '
@@ -162,6 +209,27 @@ describe('SafeMarkdown — the finding’s own images (evidence:<id>)', () => {
     expect(c.querySelector('[role="note"]')).toBeNull();
     expect(c.textContent).toContain('web js data path near also');
     expect(c.textContent).toContain('<img src="evidence:57" onerror="alert(1)">');
+  });
+
+  // Review 2026-10-01 M1 — the preview shows an image for exactly the
+  // references the server counts as a placement (REFERENCE_CASES, the same
+  // table as backend/tests/test_report_image_placement.py).  Before, it
+  // showed `![a](<evidence:57>)` as the image while the report printed the
+  // alt text and left the image under Evidence.
+  it.each(REFERENCE_CASES)('shows an image for %j exactly when the server places it', (text, ids) => {
+    const { c } = withImages(text);
+    expect(Array.from(c.querySelectorAll('img')).map((i) => i.getAttribute('src')))
+      .toEqual(ids.map(() => 'blob:fifty-seven'));
+    // A spelling that places nothing is not an "image not available" either:
+    // it reads as its alt text, as it will in the report.
+    expect(c.querySelector('[role="note"]')).toBeNull();
+  });
+
+  it('shows another spelling of the reference as its alt text', () => {
+    const { c, evidence } = withImages("Before ![the alt](<evidence:57>) and ![other](evidence:57 'x') after");
+    expect(c.querySelector('img')).toBeNull();
+    expect(c.textContent).toBe('Before the alt and other after');
+    expect(evidence.ensure).not.toHaveBeenCalled();
   });
 
   it('renders a reference inside a table cell and a list item', () => {

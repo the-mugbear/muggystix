@@ -385,3 +385,152 @@ def test_the_worklist_addendum_names_a_rerated_finding_without_adding_work():
     # A full report and an earlier addendum have no such section.
     assert "# Severity changed" not in _fill("remediation-worklist", _sample("remediation-worklist"))
     assert "# Severity changed" not in _fill("remediation-worklist", _addendum(_sample("remediation-worklist")))
+
+
+# --- branch review 2026-10-01 S2: which evidence images a template prints ----------------
+
+SHIPPED = ("pentest", "executive-brief", "remediation-worklist")
+ALL_FIELDS = ["description", "impact", "recommendation", "references", "steps_to_reproduce"]
+
+
+@needs_templates
+def test_each_shipped_template_declares_the_images_it_prints(monkeypatch):
+    """template.json → "images": stated once by the author, shown on the
+    report page ("this template prints no evidence images").  It must be what
+    the .qmd does: filled with an image placed in every written field and one
+    placed nowhere, the fields printed with images and the trailing block are
+    the declared ones.  (The rendered figures: test_quarto_render.py.)"""
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(ROOT))
+    declared = {name: templates.get_template(name).images for name in SHIPPED}
+    assert declared == {
+        "pentest": {"fields": ALL_FIELDS, "trailing": True},
+        "executive-brief": {"fields": [], "trailing": False},
+        "remediation-worklist": {"fields": ["recommendation"], "trailing": False},
+    }
+    for name in SHIPPED:
+        template = templates.get_template(name)
+        assert json.loads((ROOT / name / "template.json").read_text()).get("images") is not None, name
+        assert templates.image_declaration_problem(template, templates.image_probe_dataset(_sample(name))) is None
+        assert template.as_dict()["images"] == declared[name]
+
+
+@needs_templates
+def test_a_declaration_that_is_not_what_the_template_does_is_named(tmp_path, monkeypatch):
+    import shutil
+    root = tmp_path / "report-templates"
+    shutil.copytree(ROOT / "remediation-worklist", root / "worklist")
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
+    manifest = root / "worklist" / "template.json"
+    data = json.loads(manifest.read_text())
+    probe = templates.image_probe_dataset(_sample("remediation-worklist"))
+
+    def problem(images):
+        manifest.write_text(json.dumps({**data, "images": images}))
+        return templates.image_declaration_problem(templates.get_template("worklist"), probe)
+
+    assert problem({"fields": ["recommendation"], "trailing": False}) is None
+    assert "prints the images placed in recommendation, which are not declared" in problem(
+        {"fields": [], "trailing": False})
+    assert "declares description, impact but prints no image placed there" in problem(
+        {"fields": ["recommendation", "impact", "description"], "trailing": False})
+    assert 'declares "trailing": true but prints no trailing evidence block' in problem(
+        {"fields": ["recommendation"], "trailing": True})
+    # Left out: taken to print everything — which this template does not.
+    manifest.write_text(json.dumps({k: v for k, v in data.items() if k != "images"}))
+    assumed = templates.get_template("worklist")
+    assert assumed.images == {"fields": ALL_FIELDS, "trailing": True}
+    assert templates.image_declaration_problem(assumed, probe) is not None
+
+
+def test_an_unusable_images_declaration_keeps_the_template_from_being_offered(tmp_path, monkeypatch):
+    root = tmp_path / "report-templates"
+    folder = root / "mine"
+    folder.mkdir(parents=True)
+    (folder / "report.qmd").write_text("---\ntitle: x\n---\n")
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(root))
+
+    def declare(images):
+        (folder / "template.json").write_text(json.dumps({"title": "Mine", "formats": ["html"], "images": images}))
+
+    for bad in (
+        "all", [], {"fields": "all"}, {"trailing": True}, {"fields": "some", "trailing": True},
+        {"fields": ["description", "summary"], "trailing": True}, {"fields": ["impact", "impact"], "trailing": True},
+        {"fields": ["impact"], "trailing": "yes"}, {"fields": ["impact"], "trailing": 1},
+        {"fields": [3], "trailing": False}, {"fields": "all", "trailing": True, "width": "6in"},
+    ):
+        declare(bad)
+        assert templates.list_templates() == [], bad
+        (problem,) = templates.template_problems()
+        assert problem["name"] == "mine" and "images must be" in problem["error"], bad
+        with pytest.raises(templates.TemplateError):
+            templates.get_template("mine")
+    # The usable forms; the fields come back in the one order.
+    declare({"fields": "all", "trailing": False})
+    assert templates.get_template("mine").images == {"fields": ALL_FIELDS, "trailing": False}
+    declare({"fields": ["steps_to_reproduce", "description"], "trailing": True})
+    assert templates.get_template("mine").images == {"fields": ["description", "steps_to_reproduce"], "trailing": True}
+    declare({"fields": [], "trailing": False})
+    assert templates.get_template("mine").images == {"fields": [], "trailing": False}
+    assert templates.template_problems() == []
+
+
+def _parts(name: str, data: dict) -> dict:
+    return quarto_render.printed_parts(ROOT / name, "report.qmd", data)
+
+
+@needs_templates
+def test_what_each_template_prints_of_a_full_report_is_measured_from_its_fill():
+    probe = templates.image_probe_dataset(_sample("pentest"))
+    parts = _parts("pentest", probe)
+    # Every finding in detail (the informational one in the appendix); the
+    # first one's five sections with their images, and the unplaced image.
+    assert parts["findings"] == [0, 1, 2, 3]
+    assert parts["fields"][0] == {f: True for f in ALL_FIELDS}
+    assert parts["figures"] == ["evidence/6.png"]
+    assert parts["confirmations"] == [0, 1]          # the sample's findings with test results
+
+    # The brief prints the recommendation of each finding above informational
+    # — without its images — and nothing else of a finding.
+    parts = _parts("executive-brief", templates.image_probe_dataset(_sample("executive-brief")))
+    assert parts["fields"] == {i: {"recommendation": False} for i in (0, 1, 2)}
+    assert parts["figures"] == [] and parts["confirmations"] == []
+
+    # The worklist prints the recommendation of the findings still to FIX:
+    # confirmed, above informational, with a system that is not remediated.
+    sample = _sample("remediation-worklist")
+    assert [(f["severity"], f["status"]) for f in sample["findings"]] == [
+        ("critical", "confirmed"), ("high", "confirmed"), ("medium", "accepted_risk"), ("info", "confirmed"),
+    ]
+    parts = _parts("remediation-worklist", templates.image_probe_dataset(sample))
+    assert parts["fields"] == {0: {"recommendation": True}, 1: {"recommendation": True}}
+    assert parts["findings"] == [0, 1] and parts["figures"] == []
+    # … so an image placed in the recommendation of the accepted-risk finding
+    # prints nowhere, whatever the declaration says about recommendations.
+    parts = _parts("remediation-worklist", templates.image_probe_dataset(sample, index=2))
+    assert 2 not in parts["findings"]
+
+
+@needs_templates
+def test_an_addendum_prints_evidence_only_for_what_it_shows_in_detail():
+    """pentest: a NEW finding in full; a finding on further systems, or
+    re-rated, is a heading and a table — no section, image or test result.
+    The worklist prints the recommendation of both; the brief of neither."""
+    def addendum(name):
+        data = _addendum(_sample(name))
+        confirmations = _sample("pentest")["findings"][0]["confirmations"]
+        for i, f in enumerate(data["findings"]):
+            f["confirmations"] = [dict(c, _path=f"findings.{i}.confirmations.{n}") for n, c in enumerate(confirmations)]
+        return data
+
+    for index in (0, 1):                               # images on the new finding, then on the grown one
+        probe = templates.image_probe_dataset(addendum("pentest"), index=index)
+        parts = _parts("pentest", probe)
+        assert parts["findings"] == [0] and parts["confirmations"] == [0]
+        assert set(parts["fields"]) == {0}
+        assert parts["figures"] == (["evidence/6.png"] if index == 0 else [])
+
+    parts = _parts("remediation-worklist", addendum("remediation-worklist"))
+    assert parts["fields"] == {0: {"recommendation": True}, 1: {"recommendation": True}}
+    assert parts["confirmations"] == []
+    parts = _parts("executive-brief", addendum("executive-brief"))
+    assert parts == {"fields": {}, "figures": [], "confirmations": [], "findings": []}

@@ -14,7 +14,9 @@ Two job formats, both ``report_type='client'`` with ``filters={"report_id"}``:
 Evidence images: a draft reads the live note attachments at render time; an
 issued report reads ITS OWN copies, made when it was issued
 (``client_report_service.freeze_report_images`` → ``report_images``), so an
-attachment deleted afterwards cannot fail its render.  An issued render
+attachment deleted afterwards cannot fail its render.  The copies are of the
+images the report PRINTS: one the dataset marks ``"printed": false`` (its
+template shows it nowhere) has no copy and the renderer never asks for it.  An issued render
 refuses what would make its files differ from what was signed off (review
 2026-09-23 C4): a template whose fingerprint changed since the issue, or an
 image copy that is gone or no longer matches its recorded hash.  Either is a

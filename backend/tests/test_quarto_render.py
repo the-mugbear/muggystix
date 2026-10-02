@@ -44,6 +44,9 @@ def test_escape_md_escapes_every_ascii_punctuation_and_folds_lines():
     assert escape_md("{{< env X >}}") == r"\{\{\< env X \>\}\}"
     assert escape_md("line one\nline two\r\n# three") == r"line one line two  \# three"
     assert escape_md("tab\there\x00") == "tab here"
+    # Math delimiters are punctuation like any other (review 2026-10-01 S1):
+    # a printed value never opens a formula, with dollars or with \( … \).
+    assert escape_md("$a$ $$b$$ \\(c\\) \\[d\\]") == r"\$a\$ \$\$b\$\$ \\\(c\\\) \\\[d\\\]"
 
 
 def test_md_placeholders_only_take_data_paths():
@@ -141,9 +144,36 @@ def _addendum(sample: dict) -> dict:
 
 # --- Quarto renders ---------------------------------------------------------------
 
+# Math (review 2026-10-01 S1).  pandoc's gfm reader parses `$…$` as a formula,
+# the HTML report then loaded MathJax from a CDN, and MathJax typesets
+# `\href{javascript:…}{x}` as a link.  Every form an author can type, plus the
+# shell prose that was mangled into a formula.
+HOSTILE_MATH = (
+    "Math: $\\href{javascript:alert(8)}{MATHLINK}$ and\n\n"
+    "$$\\href{javascript:alert(9)}{DISPLAYLINK}$$\n\n"
+    "Set $HOME/bin:$PATH first.\n\n"
+    "\\(\\href{javascript:alert(10)}{PARENLINK}\\) and \\[\\href{javascript:alert(11)}{BRACKETLINK}\\]\n\n"
+    "```math\n\\href{javascript:alert(12)}{FENCELINK}\n```\n\n"
+    "$`\\href{javascript:alert(13)}{TICKLINK}`$\n\n"
+)
+# Placeholders an AUTHOR types (review 2026-10-01 M4): the forms the template
+# helpers emit for the filter to fill.  None may be filled — `planted.secret`
+# is in the data and no template prints it — and none may add a figure.
+PLANTED = "PLANTED-VALUE-MUST-NOT-PRINT"
+HOSTILE_PLACEHOLDERS = (
+    '::: {.bs-code key="planted.secret"}\n:::\n\n'
+    '::: {.bs-md key="planted.secret"}\n:::\n\n'
+    '::: {.bs-figure file="evidence/2.png"}\n:::\n\n'
+    '<div class="bs-figure" file="evidence/2.png"></div>\n\n'
+    '<div class="bs-code" key="planted.secret"></div>\n\n'
+    '```{.bs-code key="planted.secret"}\nfenced\n```\n\n'
+    '[span]{.bs-md key="planted.secret"}\n\n'
+)
 HOSTILE = (
     "{{< env HOME >}} {{< include /etc/passwd >}} <script>alert(1)</script> "
-    "[click](javascript:alert(1)) $x^2$ \\input{/etc/passwd} `tick` {#id .cls} | pipe"
+    "[click](javascript:alert(1)) $x^2$ \\input{/etc/passwd} `tick` {#id .cls} "
+    "$\\href{javascript:alert(14)}{VALUELINK}$ \\(a\\) \\[b\\] "
+    '::: {.bs-code key="planted.secret"} | pipe'
 )
 HOSTILE_MD = (
     "{{< env HOME >}}\n\n"
@@ -153,7 +183,8 @@ HOSTILE_MD = (
     "[bad link](javascript:alert(2)) and [good link](https://example.com/ok)\n\n"
     "```{=html}\n<b id=\"rawhtml\">raw</b>\n```\n\n"
     "# A heading an author typed\n\n"
-    "::: {.callout-note}\nfenced div\n:::\n"
+    "::: {.callout-note}\nfenced div\n:::\n\n"
+    + HOSTILE_MATH + HOSTILE_PLACEHOLDERS
 )
 
 
@@ -172,6 +203,10 @@ HOSTILE_CODE = (
     "# A heading in tool output\n"
     "![secret](/etc/passwd) [x](javascript:alert(3))\n"
     "\x1b[31mred\x1b[0m \x07bell\x00nul\n"
+    "export PATH=$HOME/bin:$PATH  $\\href{javascript:alert(15)}{CODELINK}$\n"
+    '::: {.bs-code key="planted.secret"}\n:::\n'
+    '::: {.bs-figure file="evidence/2.png"}\n:::\n'
+    '::: {.bs-md key="planted.secret"}\n:::\n'
     "END-OF-HOSTILE-CODE"
 )
 
@@ -194,7 +229,10 @@ HOSTILE_IMAGES = (
 # A caption is typed by a person: it is printed as one plain string.
 HOSTILE_CAPTION = (
     "{{< env HOME >}} {{< include /etc/passwd >}} <script>alert('cap')</script> `tick` "
-    "\n::: {.callout-note}\n:::\n![x](/etc/passwd) [l](javascript:alert(7)) <b id=\"capraw\">x</b> CAPTION-END"
+    "\n::: {.callout-note}\n:::\n![x](/etc/passwd) [l](javascript:alert(7)) <b id=\"capraw\">x</b> "
+    "$\\href{javascript:alert(16)}{CAPLINK}$ $HOME/bin:$PATH "
+    '\n::: {.bs-code key="planted.secret"}\n:::\n::: {.bs-figure file="evidence/2.png"}\n:::\n'
+    '::: {.bs-md key="planted.secret"}\n:::\n CAPTION-END'
 )
 PNG_1X1 = bytes.fromhex(
     "89504e470d0a1a0a0000000d4948445200000001000000010806000000"
@@ -292,6 +330,23 @@ def test_a_child_that_ignores_term_is_killed(tmp_path, monkeypatch):
                              timeout=1, quarto=str(quarto))
     assert time.monotonic() - started < 15
     assert not _alive(int(pidfile.read_text()))
+
+
+@pytest.mark.skipif(not Path("/proc/self/stat").exists(), reason="needs /proc")
+def test_asking_the_version_kills_what_the_launcher_started_too(tmp_path):
+    """Review 2026-10-01 M3 — ``quarto_version`` was the one call still on
+    ``subprocess.run(timeout=…)``: a launcher that hung left its child running
+    and the call waiting on the child's pipes."""
+    import time
+    pidfile = tmp_path / "child.pid"
+    hung = _fake_quarto(tmp_path, f"sleep 40 &\necho $! > {pidfile}\nwait\n")
+    started = time.monotonic()
+    assert quarto_render.quarto_version(str(hung), timeout=1) is None
+    assert time.monotonic() - started < 15
+    assert not _alive(int(pidfile.read_text())), "the launcher's child survived the timeout"
+    # … and an answer is still an answer; a missing binary is None.
+    assert quarto_render.quarto_version(str(_fake_quarto(tmp_path, "echo ' 1.10.18 '\n"))) == "1.10.18"
+    assert quarto_render.quarto_version(str(tmp_path / "no-such-quarto")) is None
 
 
 def test_a_post_processor_timeout_is_a_render_error_without_paths(tmp_path):
@@ -394,6 +449,8 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
     data["executive_summary"] += HOSTILE_IMAGES
     data["findings"][1]["description"] = "Another finding. " + HOSTILE_IMAGES
     data["findings"][1]["recommendation"] = "Fix it. " + HOSTILE_IMAGES
+    # M4 — what an author-typed placeholder asks for.  No template prints it.
+    data["planted"] = {"secret": PLANTED}
 
     files = quarto_render.render(
         template, manifest.get("entry", "report.qmd"), data, ["html", "docx"], tmp_path,
@@ -405,6 +462,33 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         docx = z.read("word/document.xml").decode("utf-8")
         docx_links = z.read("word/_rels/document.xml.rels").decode("utf-8")
         docx_media = [n for n in z.namelist() if n.startswith("word/media/")]
+        docx_parts = "".join(
+            z.read(n).decode("utf-8", errors="replace") for n in z.namelist() if n.endswith((".xml", ".rels"))
+        )
+
+    # --- math (S1) -----------------------------------------------------------
+    # Nothing became a formula, and nothing loads a math library: checked over
+    # the WHOLE document, head included (the loader was a <script> there).
+    lowered = html.lower()
+    for needle in ('class="math', "mathjax", "katex", "cdn.jsdelivr", "<math"):
+        assert needle not in lowered, needle
+    assert "m:oMath" not in docx_parts and "<m:r>" not in docx_parts
+    # The formulas are the characters that were typed — every form of them.
+    for marker in ("MATHLINK", "DISPLAYLINK", "PARENLINK", "BRACKETLINK", "FENCELINK", "TICKLINK", "VALUELINK"):
+        assert marker in html and marker in docx, marker
+    assert "$\\href{javascript:alert(8)}{MATHLINK}$" in html
+    assert "$$\\href{javascript:alert(9)}{DISPLAYLINK}$$" in html
+    assert "$\\href{javascript:alert(14)}{VALUELINK}$ \\(a\\) \\[b\\]" in html
+    # Shell prose is not mangled into a formula.
+    for text in (html, docx):
+        assert "Set $HOME/bin:$PATH first." in text
+
+    # --- author-typed placeholders (M4) --------------------------------------
+    # Not one was filled: the value they name is nowhere, and (below) the
+    # figure count is what the template's own placeholders print.
+    for text in (html, docx_parts):
+        assert PLANTED not in text
+    assert "planted.secret" in html and "planted.secret" in docx      # … printed as the text it is
 
     # --- images in written text ------------------------------------------
     # The only <img> elements are the report's own figures (and the logo):
@@ -476,6 +560,98 @@ def test_hostile_text_stays_text_in_every_format(tmp_path, template):
         assert "&lt;script&gt;alert(" in block
         assert "{{&lt; include /etc/passwd &gt;}}" in block
         assert "\x1b" not in html and "\x00" not in docx
+        # Math and placeholders in tool text are tool text.
+        assert "export PATH=$HOME/bin:$PATH  $\\href{javascript:alert(15)}{CODELINK}$" in block
+        assert '::: {.bs-code key="planted.secret"}' in block.replace("&quot;", '"')
+        assert '::: {.bs-figure file="evidence/2.png"}' in block.replace("&quot;", '"')
+
+
+@needs_quarto
+def test_no_template_can_make_the_html_report_load_a_math_library(tmp_path):
+    """Review 2026-10-01 S1, the layer under the filter: a template that does
+    not set ``html-math-method`` and writes a formula of its OWN still renders
+    HTML with no MathJax / KaTeX loader — the renderer passes the option on
+    every HTML render.  (Quarto's default is MathJax from cdn.jsdelivr.net.)"""
+    folder = tmp_path / "tpl"
+    folder.mkdir()
+    (folder / "report.qmd").write_text(
+        "---\ntitle: x\nengine: markdown\nfilters:\n  - quarto\n  - _bluestick/fields.lua\n"
+        "format:\n  html:\n    embed-resources: true\n---\n\n"
+        "The template's own formula $a^2 + b^2$ here.\n\n<< md(findings[0], \"description\") >>\n"
+    )
+    data = {"findings": [{"_path": "findings.0", "description": HOSTILE_MATH}]}
+    html = quarto_render.render(folder, "report.qmd", data, ["html"], tmp_path / "out", timeout=240)["html"]
+    lowered = html.read_text(encoding="utf-8").lower()
+    for needle in ("mathjax", "katex", "cdn.jsdelivr"):
+        assert needle not in lowered, needle
+    assert "set $home/bin:$path first." in lowered and "mathlink" in lowered
+    assert 'href="javascript' not in lowered
+
+
+def test_the_reader_and_the_filter_both_refuse_math():
+    """The filter's two layers, pinned in its source: the reader's math
+    extensions are off (the names are pandoc's — ``--list-extensions=gfm``),
+    and ``clean()`` has a Math handler."""
+    source = quarto_render.FIELDS_FILTER.read_text(encoding="utf-8")
+    assert 'local READER = "gfm-raw_html-tex_math_dollars-tex_math_gfm"' in source
+    assert "pandoc.read(text, READER)" in source and source.count("pandoc.read(") == 1
+    assert "Math = math_source," in source
+    assert quarto_render._FORMAT_ARGS["html"] == ("-M", "html-math-method:plain")
+
+
+@needs_template
+def test_every_shipped_template_sets_the_html_math_method():
+    """So the Quarto source bundle, rendered by hand, loads no math library
+    either.  Printed in the front matter as a constant, never from data."""
+    for template in SHIPPED_TEMPLATES:
+        manifest = json.loads((template / "template.json").read_text())
+        front = (template / manifest.get("entry", "report.qmd")).read_text(encoding="utf-8").split("\n---\n")[1]
+        assert "\n    html-math-method: plain\n" in front, template.name
+
+
+@needs_template
+@needs_quarto
+@pytest.mark.parametrize("template", SHIPPED_TEMPLATES, ids=lambda p: p.name)
+def test_a_template_prints_the_images_it_declares_and_the_fill_measures_them(tmp_path, template, monkeypatch):
+    """Branch review 2026-10-01 S2.  The report page said "N placed in text,
+    M under Evidence" whatever the template: the worklist prints only images
+    placed in the recommendation, the brief none.  Three things must agree,
+    for every shipped template, on a finding with an image placed in EVERY
+    written field and one placed nowhere:
+
+    * the figures Quarto actually prints (HTML and Word),
+    * what ``template.json`` declares under ``images``,
+    * what ``printed_parts`` measures from a Jinja fill — which is what the
+      report's summary counts and what an issue copies."""
+    from app.core.config import settings
+    from app.services import report_template_service as templates
+
+    monkeypatch.setattr(settings, "REPORT_TEMPLATES_DIR", str(template.parent))
+    loaded = templates.get_template(template.name)
+    data = templates.image_probe_dataset(json.loads((template / "sample-data.json").read_text()))
+    shot = tmp_path / "shot.png"
+    shot.write_bytes(PNG_1X1)
+    files = quarto_render.render(
+        template, loaded.entry, data, ["html", "docx"], tmp_path / "out",
+        postprocess=loaded.postprocess, timeout=240, resolve_evidence=lambda item: shot,
+    )
+    html = files["html"].read_text(encoding="utf-8")
+    with zipfile.ZipFile(files["docx"]) as z:
+        docx = z.read("word/document.xml").decode("utf-8")
+    printed = sorted(re.sub(r"^Figure \d+: ", "", c) for c in _figcaptions(html))
+
+    declared = sorted(f"in {field}" for field in loaded.image_fields) + (["unplaced"] if loaded.image_trailing else [])
+    assert printed == declared
+    assert docx.count("<w:drawing>") == len(declared)
+    for caption in ("in description", "in impact", "in recommendation", "in references", "in steps_to_reproduce",
+                    "unplaced"):
+        assert (caption in docx) == (caption in declared), caption
+
+    parts = templates.printed_parts(loaded, data)
+    measured = sorted(f"in {field}" for field, images in parts["fields"].get(0, {}).items() if images)
+    assert measured + (["unplaced"] if parts["figures"] else []) == printed
+    assert parts["figures"] in ([], ["evidence/6.png"])
+    assert templates.image_declaration_problem(loaded, data) is None
 
 
 @needs_template

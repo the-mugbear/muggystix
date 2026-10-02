@@ -133,16 +133,18 @@ def create_tests(db, project_id, tests, who):
         result.append(row)
     # Review 2026-10-01 B9 — a test proposed FOR someone tells them (one
     # notification per assignee for the batch; a replayed test tells nobody).
-    _notify_assigned(db, created, who.user_id)
+    # An agent's tests are one notification per assignee per SESSION: it may
+    # send its batch as that many single-test calls.
+    _notify_assigned(db, created, who.user_id, agent_session_id=who.session.id if who.session else None)
     return result
 
 
-def _notify_assigned(db, tests, actor_id):
+def _notify_assigned(db, tests, actor_id, agent_session_id=None):
     """In the caller's transaction, so a rolled-back change notifies nobody."""
     from app.services.notification_service import NotificationService
 
     if tests:
-        NotificationService(db).notify_host_tests_assigned(tests, actor_id)
+        NotificationService(db).notify_host_tests_assigned(tests, actor_id, agent_session_id=agent_session_id)
 
 
 def update_test(db, project_id, test_id, body, user_id):

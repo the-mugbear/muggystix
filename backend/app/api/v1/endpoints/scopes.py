@@ -6,7 +6,7 @@ from sqlalchemy import case, func, or_, text, true
 from sqlalchemy.orm import Session, aliased
 from pydantic import BaseModel
 from app.db import models
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db.models import Scope, ScopeDomain, Subnet, HostSubnetMapping, SubnetLabel, SubnetLabelAssignment, Site
 from app.schemas.dns_names import (
     ScopeDomainBatchCreate,
@@ -289,6 +289,10 @@ async def upload_subnet_file(
         # Only a NEW subnet changes host membership; a duplicate-only or
         # description/label-only upload must not trigger the project-wide rebuild.
         if added:
+            # The project-wide rebuild is one set-based statement over every
+            # host and subnet: at scale it outlives the API statement limit,
+            # and a cancelled one here was only logged.
+            disable_statement_timeout(db)
             try:
                 correlated_hosts = correlation_service.correlate_all_hosts_to_subnets(project_id=project.id)
             except Exception as exc:  # pragma: no cover - defensive logging
@@ -745,6 +749,9 @@ def delete_scope(
     project: Project = Depends(get_current_project),
 ):
     """Delete a scope and all its subnets. Requires analyst role."""
+    # Every subnet and every host mapping of the scope goes with it: a bulk
+    # delete by design, not a query to narrow (review 2026-10-01 S2).
+    disable_statement_timeout(db)
     scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
     if not scope:
         raise HTTPException(status_code=404, detail="Scope not found")
@@ -814,6 +821,7 @@ def correlate_all_hosts(
     project: Project = Depends(get_current_project),
 ):
     """Manually correlate all existing hosts to subnets. Requires analyst role."""
+    disable_statement_timeout(db)  # the project-wide rebuild, by design
     correlation_service = SubnetCorrelationService(db)
     mappings_created = correlation_service.correlate_all_hosts_to_subnets(project_id=project.id)
 
@@ -1000,6 +1008,7 @@ def delete_subnet(
     project: Project = Depends(get_current_project),
 ):
     """Remove a single subnet from a scope. FK cascades drop mappings."""
+    disable_statement_timeout(db)  # a wide subnet maps every host of the project
     scope = db.query(Scope).filter(Scope.id == scope_id, Scope.project_id == project.id).first()
     if not scope:
         raise HTTPException(status_code=404, detail="Scope not found")

@@ -245,18 +245,32 @@ const Scopes: React.FC = () => {
   // the search box.  "Load more" appends, so it only checks that nothing
   // replaced the list while it was in flight.
   const scopeGen = useRef(0);
+  // The coverage has a lane of its own: it does not depend on the subnet
+  // search, so a search that supersedes a load or a reload must not take the
+  // coverage with it.  (A search typed during the first load left the page
+  // without its lead and measures; one typed after a change left the numbers
+  // from before the change.)
+  const coverageGen = useRef(0);
+  const readCoverage = () => {
+    const gen = ++coverageGen.current;
+    const request = getScopeCoverage();
+    request.then(
+      (data) => { if (gen === coverageGen.current) setCoverage(data); },
+      () => undefined,  // reported by the caller's own await
+    );
+    return request;
+  };
 
   const loadData = async (showSpinner = false) => {
     const gen = ++scopeGen.current;
     if (showSpinner) setLoading(true);
     try {
-      const [scopeData, coverageData] = await Promise.all([
+      const [scopeData] = await Promise.all([
         fetchScopePage(0, currentSubnetWindow()),
-        getScopeCoverage(),
+        readCoverage(),
       ]);
       if (gen !== scopeGen.current) return;
       setScope(scopeData);
-      setCoverage(coverageData);
       setError(null);
     } catch (err) {
       if (gen !== scopeGen.current) return;
@@ -271,13 +285,12 @@ const Scopes: React.FC = () => {
   const refreshScope = async () => {
     const gen = ++scopeGen.current;
     try {
-      const [scopeData, coverageData] = await Promise.all([
+      const [scopeData] = await Promise.all([
         fetchScopePage(0, currentSubnetWindow()),
-        getScopeCoverage(),
+        readCoverage(),
       ]);
       if (gen !== scopeGen.current) return;
       setScope(scopeData);
-      setCoverage(coverageData);
     } catch (err) {
       if (gen !== scopeGen.current) return;
       // Said, not only logged: the page otherwise kept showing the state

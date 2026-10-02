@@ -317,7 +317,12 @@ const FindingDetail: React.FC = () => {
     placement: (att: NoteAttachment) => imagesById.get(att.id),
     captionMax: findingImages.captionMax,
     onImagesChanged: reloadImages,
-  }), [canManage, finding?.viewer_is_project_admin, user?.id, imagesById, findingImages.captionMax, reloadImages]);
+    // The thread's thumbnails come from the page's one cache of image bytes.
+    thumbnails: findingImages.thumbnails,
+  }), [
+    canManage, finding?.viewer_is_project_admin, user?.id, imagesById, findingImages.captionMax, reloadImages,
+    findingImages.thumbnails,
+  ]);
   const [titleDraft, setTitleDraft] = useState<string | null>(null);
   const [titleSaving, setTitleSaving] = useState(false);
 
@@ -609,6 +614,25 @@ const FindingDetail: React.FC = () => {
         findingId={finding.id} canDecide={canManage} reloadKey={proposalsKey}
         onApplied={() => { void refreshAfterProposal(); reloadImages(); }}
       />
+
+      {findingImages.error && (
+        // The images' list feeds the report text (placed images), the editor's
+        // picker and the comment thread's rows: a failed read is said here,
+        // once, with a way to read it again — not left as images that look
+        // like they do not exist (S4).
+        <p role="alert" className="flex min-w-0 flex-wrap items-center gap-xs text-caption text-destructive"
+          data-testid="finding-images-error">
+          <span className="min-w-0 break-words">
+            {findingImages.error}{' '}
+            {findingImages.listStatus === 'failed'
+              ? 'Images placed in the report text cannot be shown, and captions and “In report” placement are not listed.'
+              : 'What is shown is from the last successful read.'}
+          </span>
+          <Button variant="outline" size="sm" className="h-6 px-xs" onClick={reloadImages} disabled={findingImages.loading}>
+            {findingImages.loading && <Loader2 className="size-3.5 animate-spin" aria-hidden />} Retry
+          </Button>
+        </p>
+      )}
 
       <FindingReportTextCard
         finding={finding} canEdit={canModify} canPropose={canManage}

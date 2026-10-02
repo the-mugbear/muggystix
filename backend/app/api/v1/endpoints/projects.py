@@ -13,7 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.db.session import get_db
+from app.db.session import disable_statement_timeout, get_db
 from app.db.models_project import Project, ProjectMembership
 from app.db.models_auth import User, UserRole
 from app.api.deps import get_client_info, get_current_user, require_role
@@ -542,6 +542,10 @@ def delete_project(
     """Delete a project and all its data. Requires global admin.
     Refuses to delete the last remaining project so the workspace is
     never empty."""
+    # One DELETE that cascades through every table the project owns: seconds
+    # at 20k hosts, past the API statement timeout at production size — and a
+    # 503 saying "narrow the filter" is no help to someone deleting a project.
+    disable_statement_timeout(db)
     project = db.query(Project).filter(Project.id == project_id).first()
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")

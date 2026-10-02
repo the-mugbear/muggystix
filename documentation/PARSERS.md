@@ -502,7 +502,13 @@ class MyToolParser:
   (it raises `ParseFailure` — never catch it as a bad record), and it COMMITS.
   ORM rows you hold stay usable (they are expired and reload); a parser that
   writes its host history at the end (`record_hosts_in_scan`) passes it as
-  `before=` so each commit also records which hosts the scan created.
+  `before=` so each commit also records which hosts the scan created. Each
+  call writes only the hosts noted or changed since the previous one, and
+  updates a row it already wrote with what the file has said since (state,
+  hostname) — so calling it before every heartbeat costs what changed, not
+  the whole file. A heartbeat that finds the job is no longer this attempt's
+  (cancelled from the API, or re-claimed) rolls the pending batch back and
+  raises; it never commits it.
   A parser that COLLECTS the file before it writes wraps the read loop in
   `beat_while_reading(items)` (every 20,000 by default): the read phase holds
   nothing half-built in the session, so its commit is safe and a cancel there
@@ -510,12 +516,53 @@ class MyToolParser:
   find — rdap's attribution rows belong to the project's address block, not to
   the scan, so it heartbeats while reading, once more before writing, and
   then writes in one transaction.
-- **What a failed import leaves:** nothing. The dispatcher deletes the scan
-  and, with it, the hosts and ports ONLY that attempt created (their history
-  says `host_created` / `port_created` for this scan and no other scan saw
-  them) and the observations it first recorded — never a host someone has
-  worked on (a note, a follow, a tag, a finding, a test, evidence). Changes it
-  made to rows that already existed stay. An import path that writes no
+- **What a failed import leaves:** no scan, and nothing that only it
+  created. The dispatcher (`delete_partial_scan`) deletes the scan and, with
+  it, the hosts and ports ONLY that attempt created (their history says
+  `host_created` / `port_created` for this scan and no other scan saw them),
+  the scanner observations it first recorded that no later scan has seen, its
+  scripts, web rows, name observations (`DNSRecord`) and history, and the
+  EyeWitness screenshots it extracted (`uploads/web_screenshots/<scan id>/`
+  and the `report-<scan id>.json|csv` beside it, removed after the delete
+  commits). It never deletes a host someone has worked on (a note, a follow,
+  a tag, a finding, a test, evidence, an operator's name for it) or that
+  anything from another scan or source hangs on; when in doubt the host
+  stays.
+  **What it does not undo:** changes the attempt made to hosts and ports that
+  ALREADY existed (state, service, OS, hostname, `last_seen`, a filled-in
+  field — the previous value is not kept anywhere to restore), the `DNSName`
+  rows it created (a name is an asset of the project, not of a scan; only
+  the scan's observations of it go), and the confidence conflict history
+  (`conflict_history`, whose scan pointers become NULL). A retry of the same file
+  writes the same values again; a failed import that is never retried leaves
+  those updates in place.
+  **A cleanup can run long after the attempt died** (a killed worker's job is
+  reaped or re-claimed after the stale window; another import of the same
+  hosts may have completed in between). So a row the dead scan first recorded
+  that a LATER scan re-observed is kept and moved to that scan, not deleted:
+  a vulnerability goes to its `last_seen_scan_id`; a script, host script,
+  host attribute or confidence row (their `scan_id` cascades and there is no
+  "last seen by" column) goes to the newest other scan that observed its port
+  or host, when that scan is later or the row was touched again after it was
+  written; and the host or port is then "introduced" by the first scan left
+  that saw it. A port or host a later scan updated (`last_updated_scan_id`)
+  or re-observed a vulnerability on is not the attempt's alone either. This
+  is why a re-observation must never MOVE a cascading `scan_id` to the newer
+  scan, and why a new per-host or per-port table with a cascading `scan_id`
+  that a later scan can re-observe needs a line in
+  `_rehome_rows_a_later_scan_saw`.
+  **One cleanup at a time per project, and never beside an open batch:** every
+  transaction of an import holds the project's import lock in shared mode
+  (`project_import_lock`, a PostgreSQL advisory lock taken when the
+  transaction begins — imports do not wait for each other); the cleanup takes
+  it exclusively, so with several workers it cannot delete a host a
+  concurrent import is re-observing. A cleanup that fails leaves the scan
+  named on the job row: the job is not parsed again until it is gone (a claim
+  that cannot remove it fails the job; a parser failure whose scan cannot be
+  removed ends the fallback chain), and the reaper retries the cleanup of
+  failed jobs once their lease is past the stale window — which is also how a
+  job cancelled while its worker was dead is cleaned.
+  An import path that writes no
   `PortScanHistory` (Nessus — and it must not start to: that would change the
   port counts on the Scans page, the dashboard and the scan diff) reports the
   ports it creates instead: `VulnerabilityService.created_port_ids` →

@@ -1030,8 +1030,15 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "client', read the latest issued one. Files carry a download_path. "
             "In an addendum each finding's change is new, new_hosts or "
             "severity_changed (previous_severity = what the baseline reported), "
-            "and delta counts them (findings_with_changed_severity). summary "
-            "carries evidence_records and agent_evidence_records."
+            "and delta counts them (findings_with_changed_severity). confirmations "
+            "and summary.evidence_records are only what THIS report's template "
+            "prints (evidence_records_not_printed counts the rest; "
+            "agent_evidence_records those an agent recorded). Each finding's "
+            "images[] is every image ticked for the report, with placed_in, "
+            "printed and printed_in; summary.images_printed / images_trailing / "
+            "images_not_printed (with images_not_printed_reasons) add up to "
+            "summary.images, and template_images is what the template declares "
+            "it prints. Those are null when printing could not be measured."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/client-reports/{report_id}",

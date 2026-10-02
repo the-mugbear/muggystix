@@ -27,8 +27,9 @@
  */
 import React, { useEffect } from 'react';
 
+import type { EvidenceImages } from '../utils/evidenceImages';
 import { CellAlign, isTableRow, splitTableRow, tableAlignments } from '../utils/markdownEditing';
-import { EvidenceResolver, evidenceIdOf } from '../utils/reportImages';
+import { EvidenceResolver, evidenceReferenceAt } from '../utils/reportImages';
 
 const SAFE_SCHEMES = new Set(['http', 'https', 'mailto']);
 
@@ -138,28 +139,70 @@ const BARE_URL = /^(?:https?:\/\/|mailto:)[^\s<>]+/i;
  * URL fetched through the authenticated attachment route for an id on the
  * finding's own list) — the reference's text is never a URL.
  */
-const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceResolver }> = ({ id, alt, evidence }) => {
+const evidenceNoteClass = 'my-xxs inline-block max-w-full rounded-control border border-dashed border-border px-xs py-xxs text-caption text-warning [overflow-wrap:anywhere]';
+// The same box while the list is being read and while the bytes are: the
+// text below it does not jump when the picture arrives.
+const evidencePlaceholderClass = 'flex h-24 items-center rounded-control border border-border bg-muted px-sm text-caption text-muted-foreground';
+const evidenceRetryClass = 'ml-xs rounded-sm underline underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+
+/**
+ * The resolver answers in three ways (review 2026-10-01 S4), and only one of
+ * them is "this is not one of the finding's images": while the finding's
+ * image list is still being read the reference is NOT KNOWN YET (a neutral
+ * placeholder), and when the list could not be read that is what is said,
+ * with a retry.  The same for the bytes of a known image: loading, shown, or
+ * could not be loaded.  A plain `EvidenceResolver` (no `listStatus`) is a
+ * list that is known.
+ */
+const EvidenceImage: React.FC<{ id: number; alt: string; evidence: EvidenceImages }> = ({ id, alt, evidence }) => {
   const found = evidence.lookup(id);
   const known = found !== null;
   useEffect(() => {
     if (known) evidence.ensure(id);
   }, [known, id, evidence]);
   if (!found) {
+    const listStatus = evidence.listStatus ?? 'ready';
+    if (listStatus === 'loading') {
+      return (
+        <span className="my-xs block min-w-0" data-testid={`evidence-pending-${id}`} aria-busy="true">
+          <span className={evidencePlaceholderClass}>Loading image…</span>
+        </span>
+      );
+    }
+    if (listStatus === 'failed') {
+      return (
+        <span role="note" data-testid={`evidence-list-failed-${id}`} className={evidenceNoteClass}>
+          This finding’s images could not be loaded, so image {id} cannot be shown here. The report is not affected.
+          {evidence.retryList && (
+            <button type="button" className={evidenceRetryClass} onClick={() => evidence.retryList?.()}>Retry</button>
+          )}
+        </span>
+      );
+    }
     return (
-      <span role="note" data-testid={`evidence-missing-${id}`}
-        className="my-xxs inline-block max-w-full rounded-control border border-dashed border-border px-xs py-xxs text-caption text-warning [overflow-wrap:anywhere]">
+      <span role="note" data-testid={`evidence-missing-${id}`} className={evidenceNoteClass}>
         Image not available: evidence:{id} is not one of this finding’s “In report” images, so the report prints
         {alt ? ` “${alt}” as text` : ' nothing here'}.
       </span>
     );
   }
   const caption = alt || found.caption || '';
+  const bytesFailed = !found.src && (evidence.failed?.(id) ?? false);
   return (
     <span className="my-xs block min-w-0" data-testid={`evidence-image-${id}`}>
       {found.src ? (
         <img src={found.src} alt={caption} className="block h-auto max-h-96 max-w-full rounded-control border border-border" />
+      ) : bytesFailed ? (
+        <span role="note" data-testid={`evidence-bytes-failed-${id}`} className={`${evidencePlaceholderClass} text-warning`}>
+          <span className="min-w-0">
+            Image {id} could not be loaded. The report is not affected.
+            {evidence.retry && (
+              <button type="button" className={evidenceRetryClass} onClick={() => evidence.retry?.(id)}>Retry</button>
+            )}
+          </span>
+        </span>
       ) : (
-        <span className="block rounded-control border border-border bg-muted px-sm py-md text-caption text-muted-foreground">
+        <span className={evidencePlaceholderClass}>
           Loading image {id}…
         </span>
       )}
@@ -223,23 +266,26 @@ const renderInline =(s: string, keyPrefix = 'i', evidence?: EvidenceResolver): R
     // Image: the alt text only (nothing is loaded) — except a reference to
     // one of the finding's own images (`evidence:<id>`), which the report
     // prints as a figure.  Which ids those are is the resolver's to say.
+    // What counts as such a reference is ONE grammar, the server's
+    // (`evidenceReferenceAt` — review 2026-10-01 M1): another spelling of the
+    // same image (`(<evidence:57>)`, a title in single quotes, an alt text
+    // over two lines) places nothing in the report, so it shows as its alt
+    // text here too, like any other image.
     if (c === '!' && s[i + 1] === '[') {
+      const placed = evidenceReferenceAt(s, i);
+      if (placed) {
+        const alt = plain(placed.alt).trim();
+        flush();
+        out.push(evidence
+          ? <EvidenceImage key={key()} id={placed.id} alt={alt} evidence={evidence} />
+          : <span key={key()} className="text-muted-foreground">[image {placed.id}{alt ? `: ${alt}` : ''}]</span>);
+        i = placed.end;
+        continue;
+      }
       const close = closingBracket(s, i + 1);
       const dest = close !== -1 ? linkDestination(s, close + 1) : null;
       if (dest) {
-        const alt = plain(s.slice(i + 2, close));
-        const evidenceId = evidenceIdOf(dest.url);
-        if (evidenceId !== null && evidence) {
-          flush();
-          out.push(<EvidenceImage key={key()} id={evidenceId} alt={alt.trim()} evidence={evidence} />);
-        } else if (evidenceId !== null) {
-          flush();
-          out.push(
-            <span key={key()} className="text-muted-foreground">[image {evidenceId}{alt.trim() ? `: ${alt.trim()}` : ''}]</span>,
-          );
-        } else {
-          text += alt;
-        }
+        text += plain(s.slice(i + 2, close));
         i = dest.end;
         continue;
       }

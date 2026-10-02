@@ -22,8 +22,9 @@ const error = vi.fn();
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success, error, info: vi.fn(), warning: vi.fn() }),
 }));
+const project = vi.hoisted(() => ({ my_role: undefined as string | undefined }));
 vi.mock('../../contexts/ProjectContext', () => ({
-  useProject: () => ({ currentProject: { id: 1, name: 'Proj' } }),
+  useProject: () => ({ currentProject: { id: 1, name: 'Proj', my_role: project.my_role } }),
 }));
 
 // Auto-confirm so the destructive path is exercised; the confirm copy itself
@@ -46,6 +47,31 @@ beforeEach(() => {
 });
 
 describe('TagManagement', () => {
+  // Branch review 2026-10-01 S5 — Project settings is every member's page
+  // now; renaming and deleting a tag stay the project analyst's.
+  it.each(['viewer', 'auditor'])('shows a project %s the tags without Rename or Delete', async (role) => {
+    project.my_role = role;
+    try {
+      render(<TagManagement />);
+      expect(await screen.findByText('prod')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: /rename prod/i })).toBeNull();
+      expect(screen.queryByRole('button', { name: /delete prod/i })).toBeNull();
+      expect(screen.queryByText(/Rename or delete them here/)).toBeNull();
+    } finally {
+      project.my_role = undefined;
+    }
+  });
+
+  it('shows an analyst the controls', async () => {
+    project.my_role = 'analyst';
+    try {
+      render(<TagManagement />);
+      expect(await screen.findByRole('button', { name: /rename prod/i })).toBeInTheDocument();
+    } finally {
+      project.my_role = undefined;
+    }
+  });
+
   it('lists tags with their host counts', async () => {
     render(<TagManagement />);
     expect(await screen.findByText('prod')).toBeInTheDocument();
