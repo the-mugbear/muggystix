@@ -125,7 +125,9 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # v2.451.0 — 26 measured: the measures strip's two statements went with
     # it (project status is Posture's); the bound follows, so a new N+1 of two
     # statements is still caught.
-    assert counter["n"] <= 28, (
+    # v2.451.1 — 24 measured: the team roster's two statements (its distinct
+    # count and its rows) went with ``team_review``.
+    assert counter["n"] <= 26, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
 
@@ -134,11 +136,10 @@ def test_workbench_returns_all_sections(client, test_project):
     r = client.get(_url(test_project.id))
     assert r.status_code == 200, r.text
     body = r.json()
-    assert set(body) >= {"my_queue", "my_tasks", "team_review", "since_last_visit"}
+    assert set(body) >= {"my_queue", "my_tasks", "my_findings", "followups", "since_last_visit"}
     # Empty project — sections render their zero states.
     assert body["my_queue"]["items"] == []
     assert body["my_tasks"]["items"] == []
-    assert body["team_review"]["reviewers"] == []
 
 
 def test_first_visit_marks_everything_new(client, db_session, test_project):
@@ -371,96 +372,35 @@ def test_workbench_returns_my_recent_authored_notes(client, db_session, test_pro
     assert recent[0]["body_preview"].startswith("my latest investigation")
 
 
-def test_my_activity_feed_unifies_notes_findings_reviews(client, db_session, test_project, test_user):
-    """§27 — GET /workbench/my-activity merges the caller's notes, created
-    findings, and reviewed hosts into one newest-first feed with deep-links."""
-    pid = test_project.id
-    host = _make_host(db_session, pid, "10.3.0.1")
-    db_session.add(models.Annotation(
-        host_id=host.id, user_id=test_user.id, body="checked SMB signing", note_type="observation",
+# v2.451.1 — the team roster and the personal activity feed are gone (owner,
+# 2026-10-02: Operations is the reader's own page; nothing read either).
+def test_the_team_roster_and_the_activity_feed_are_gone(client, db_session, test_project, test_user):
+    # A host in review, so a roster would have had something to say.
+    host = _make_host(db_session, test_project.id, "10.3.0.1")
+    db_session.add(models.HostFollow(
+        host_id=host.id, user_id=test_user.id, status=models.FollowStatus.IN_REVIEW,
     ))
     db_session.commit()
 
-    fid = client.post(
-        f"/api/v1/projects/{pid}/findings", json={"title": "Weak TLS", "severity": "high"},
-    ).json()["id"]
-    assert client.post(
-        f"/api/v1/projects/{pid}/hosts/{host.id}/follow", json={"status": "reviewed"},
-    ).status_code == 200
+    r = client.get(_url(test_project.id))
+    assert r.status_code == 200, r.text
+    assert "team_review" not in r.json()
+    assert r.json()["my_queue"]["in_review_count"] == 1
 
-    items = client.get(_url(pid, "/my-activity")).json()["items"]
-    by_kind = {e["kind"]: e for e in items}
-    assert {"note", "finding_created", "host_reviewed"} <= set(by_kind)
-    assert by_kind["note"]["host_id"] == host.id and by_kind["note"]["note_id"] is not None
-    assert by_kind["finding_created"]["finding_id"] == fid
-    assert by_kind["host_reviewed"]["host_id"] == host.id
-    # Newest-first ordering.
-    ats = [e["at"] for e in items]
-    assert ats == sorted(ats, reverse=True)
+    assert client.get(_url(test_project.id, "/my-activity")).status_code == 404
 
 
-def test_my_activity_filters(client, db_session, test_project, test_user):
-    """§27 recall filters — kinds restricts type, search matches title/body."""
-    pid = test_project.id
-    host = _make_host(db_session, pid, "10.3.9.9")
-    db_session.add(models.Annotation(
-        host_id=host.id, user_id=test_user.id, body="examined kerberos", note_type="observation",
-    ))
-    db_session.commit()
-    client.post(f"/api/v1/projects/{pid}/findings", json={"title": "Weak TLS cipher", "severity": "high"})
-
-    base = _url(pid, "/my-activity")
-    notes_only = client.get(f"{base}?kinds=note").json()["items"]
-    assert notes_only and all(e["kind"] == "note" for e in notes_only)
-
-    tls = client.get(f"{base}?search=weak%20tls").json()["items"]
-    assert [e["kind"] for e in tls] == ["finding_created"]
-
-    kerb = client.get(f"{base}?search=kerberos").json()["items"]
-    assert [e["kind"] for e in kerb] == ["note"]
-
-    assert client.get(f"{base}?search=zzznomatch").json()["items"] == []
-
-
-def test_my_activity_includes_agent_sessions(client, db_session, test_project, test_user):
-    """§27 — the agent sessions the caller started appear as 'session' events
-    with a deep-link to the session's own page; they're excluded from a text
-    search.  (v2.442.0: the link was the execution run's page — which took
-    the RUN id, not the session id, v2.340.1 — until runs were removed.)"""
-    from app.db.models_agent import AgentSession
-
-    mine = AgentSession(
-        workflow="project", project_id=test_project.id,
-        started_by_id=test_user.id, status="ended",
-    )
-    someone_elses = AgentSession(
-        workflow="project", project_id=test_project.id,
-        started_by_id=None, status="active",
-    )
-    db_session.add_all([mine, someone_elses])
-    db_session.commit()
-
-    base = _url(test_project.id, "/my-activity")
-    sessions = [e for e in client.get(base).json()["items"] if e["kind"] == "session"]
-    assert len(sessions) == 1
-    assert sessions[0]["link"] == f"/agent-sessions/{mine.id}"
-    assert sessions[0]["summary"] == "Ran an agent session (ended)"
-
-    # kinds filter isolates them; a text search excludes them (no title).
-    assert all(e["kind"] == "session" for e in client.get(f"{base}?kinds=session").json()["items"])
-    assert client.get(f"{base}?search=anything").json()["items"] == []
-
-
-def test_my_activity_survives_legacy_sessions_and_lists_project_sessions(
+def test_legacy_sessions_do_not_break_the_session_list_and_are_not_listed(
     client, db_session, test_project, test_user,
 ):
-    """v2.340.1 — a legacy plan-generation session 500'd the whole feed (the
-    link builder read a ``plan_id`` attribute the session row never had), and
-    project sessions — every session since the consolidation — were omitted.
+    """v2.340.1 — a legacy plan-generation session 500'd the personal activity
+    feed, and project sessions were omitted from it.  v2.442.0 — the legacy
+    per-workflow rows (recon, plan generation, execution) have no page left
+    to link to, so they are not listed.
 
-    v2.442.0 — the legacy per-workflow rows (recon, plan generation,
-    execution) have no page left to link to, so they are not listed; they
-    must still not break the feed."""
+    v2.451.1 — that feed (``GET /workbench/my-activity``) was removed; the
+    list of sessions is Agent Sessions', so the guard moved to it: the legacy
+    rows neither break it nor appear in it."""
     from app.db.models_agent import AgentSession
 
     legacy = [
@@ -475,15 +415,9 @@ def test_my_activity_survives_legacy_sessions_and_lists_project_sessions(
     db_session.add_all([*legacy, project])
     db_session.commit()
 
-    r = client.get(_url(test_project.id, "/my-activity?kinds=session"))
+    r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions")
     assert r.status_code == 200, r.text
-    items = r.json()["items"]
-    # v2.450.0 — never the stored "(active)": this session has no key, and it
-    # is inside its lifetime, so it reads as Agent Sessions shows it
-    # (test_operations_redesign pins every state).
-    assert [(e["summary"], e["link"]) for e in items] == [
-        ("Ran an agent session (key expired — resumable)", f"/agent-sessions/{project.id}"),
-    ]
+    assert [(s["id"], s["kind"]) for s in r.json()["sessions"]] == [(project.id, "project")]
 
 
 # v2.424.1 — Operations loads the "Worth a look" queue on its own request so

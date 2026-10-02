@@ -649,7 +649,12 @@ def test_a_tiers_count_is_the_hosts_list_it_opens(client, db_session, test_proje
 
 
 # ---------------------------------------------------------------------------
-# The activity feed says what Agent Sessions says
+# A session's state is its key's, never the stored status
+#
+# v2.451.1 — the personal activity feed (``GET /workbench/my-activity``), the
+# one server-side reader of ``session_key_state``, was removed.  The rule is
+# kept on what is left: the Agent Sessions list carries the three facts, and
+# the helper applied to them gives the state the page shows.
 # ---------------------------------------------------------------------------
 
 def test_session_key_state_is_live_only_while_a_key_is_valid():
@@ -671,11 +676,9 @@ def test_session_key_state_is_live_only_while_a_key_is_valid():
 def test_an_active_session_with_no_valid_key_does_not_read_active(
     client, db_session, test_project, test_agent, test_user,
 ):
-    from sqlalchemy import event
-    from sqlalchemy.engine import Engine
-
     from app.db.models_agent import AgentSession
     from app.db.models_auth import APIKey
+    from app.services.agent_session_service import session_key_state
 
     now = datetime.now(timezone.utc)
 
@@ -705,28 +708,29 @@ def test_an_active_session_with_no_valid_key_does_not_read_active(
     ended = _session(3, status="ended")
     db_session.commit()
 
-    statements: list = []
-
-    def _seen(conn, cursor, statement, params, context, executemany):
-        if "api_keys" in statement:
-            statements.append(statement)
-
-    event.listen(Engine, "after_cursor_execute", _seen)
-    try:
-        r = client.get(_wb(test_project.id, "/my-activity"), params={"kinds": "session"})
-    finally:
-        event.remove(Engine, "after_cursor_execute", _seen)
+    r = client.get(f"/api/v1/projects/{test_project.id}/agent-sessions")
     assert r.status_code == 200, r.text
-    by_link = {e["link"]: e["summary"] for e in r.json()["items"]}
-    assert by_link == {
-        f"/agent-sessions/{live.id}": "Ran an agent session (live)",
-        f"/agent-sessions/{lapsed.id}": "Ran an agent session (key expired — resumable)",
-        f"/agent-sessions/{over.id}": "Ran an agent session (ended)",
-        f"/agent-sessions/{ended.id}": "Ran an agent session (ended)",
+
+    def _at(value):
+        return datetime.fromisoformat(value.replace("Z", "+00:00")) if value else None
+
+    rows = {s["id"]: s for s in r.json()["sessions"]}
+    state = {
+        sid: session_key_state(
+            row["status"], _at(row["key_expires_at"]), _at(row["renewable_until"]), now,
+        )
+        for sid, row in rows.items()
     }
-    assert not any("(active)" in s for s in by_link.values())
-    # The keys of the page's sessions in ONE read — not one per row.
-    assert len(statements) == 1, statements
+    assert state == {
+        live.id: "live",
+        lapsed.id: "resumable",
+        over.id: "ended",
+        ended.id: "ended",
+    }
+    # The stored status alone would have called three of them the same thing.
+    assert [rows[s.id]["status"] for s in (live, lapsed, over)] == ["active"] * 3
+    # (One grouped read of the keys for the whole list is pinned by
+    # test_assist_session_key_expiry.)
 
 
 def test_the_sessions_line_asks_for_the_readers_own_sessions(

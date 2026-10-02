@@ -1,8 +1,8 @@
 """Operations workbench — one batched call for the personal-work surface.
 
 Refactor P2.  Operations previously fired four independent requests
-(my-attention, my-tasks, team-review, plus a localStorage-only
-"new scans" cursor) and stitched them together client-side.  This
+(my-attention, my-tasks, team-review — a roster removed in v2.451.1 — plus a
+localStorage-only "new scans" cursor) and stitched them together client-side.  This
 endpoint composes them server-side into a single response and adds a
 durable **per-user/per-project "since your last visit"** diff backed by
 the ``operations_cursors`` table — so "what changed while I was away?"
@@ -33,10 +33,8 @@ from app.api.deps import get_current_project
 # read GET /agent/assist/workbench is the same code.
 from app.services.address_terrain_service import AddressTerrainResponse, compute_address_terrain
 from app.services.operations_read_service import (
-    compute_my_activity,
     compute_investigation_queue,
     InvestigationQueueResponse,
-    MyActivityResponse,
 )
 from app.services.host_follow_service import HostFollowService
 from app.services.workbench_service import WorkbenchResponse, compute_workbench
@@ -222,28 +220,6 @@ def mark_workbench_seen(
     return MarkSeenResponse(last_viewed_at=target)
 
 
-@router.get(
-    "/my-activity",
-    response_model=MyActivityResponse,
-    summary="The caller's recent work history across notes, findings, and reviews",
-)
-def get_my_activity(
-    limit: int = 20,
-    kinds: Optional[str] = Query(
-        None, description="Comma list of event kinds to include: note, finding_created, finding_status, host_reviewed.",
-    ),
-    days: Optional[int] = Query(None, ge=1, le=3650, description="Only events within the last N days."),
-    search: Optional[str] = Query(None, max_length=200, description="Case-insensitive substring (note body, finding title, or host ip/hostname)."),
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-    project: Project = Depends(get_current_project),
-):
-    """§27 personal work history — a unified, newest-first feed of what the
-    caller did (notes authored, findings created/promoted/dispositioned, hosts
-    reviewed), with optional kind / date-range / search filters. Separate from
-    the batched workbench so it can grow without bloating that call."""
-    limit = max(1, min(limit, 100))
-    kind_set = {k.strip() for k in kinds.split(",") if k.strip()} if kinds else None
-    return compute_my_activity(
-        db, current_user, project, limit=limit, kinds=kind_set, days=days, search=search,
-    )
+# (``GET /workbench/my-activity`` was removed in v2.451.1 — no page had read
+# it since 5.329.0; "my activity" is the Collaboration page,
+# ``/activity?author=me``.)

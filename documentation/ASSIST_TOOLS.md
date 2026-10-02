@@ -369,6 +369,12 @@ list. `has:changed_since_review OR conclusion:needs_evidence` remains the
 team-wide question. `assist_get_terrain` is unchanged; the page that shows it
 is Posture.
 
+**No team roster in the workbench (v2.451.1, prompt 4.6.1)** — `assist_get_workbench`
+lost `team_review` (every teammate's In Review hosts, grouped by reviewer; no
+page read it). "What is the team already reviewing?" is
+`assist_list_hosts q=follow:in_review` — any teammate's, `total` for the count;
+the operator's own are `q=follow:mine`.
+
 **Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
 — fields, not tools: a finding comment in `assist_get_finding` carries
 `parent_id` / `thread_root_id`, as host notes already did, so its thread can be

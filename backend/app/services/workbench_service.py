@@ -28,7 +28,6 @@ from app.services.operations_read_service import (
     compute_my_tasks,
     compute_my_recent_notes,
     compute_my_findings,
-    compute_team_review,
     compute_investigation_queue,
     compute_review_followups,
     compute_blockers,
@@ -39,7 +38,6 @@ from app.services.operations_read_service import (
     MyTasksResponse,
     MyRecentNotesResponse,
     MyFindingsResponse,
-    TeamReviewResponse,
 )
 
 logger = logging.getLogger(__name__)
@@ -100,7 +98,9 @@ class WorkbenchResponse(BaseModel):
     # are discussion; the assigned-note queue ``my_notes`` went in v2.446.0.)
     recent_notes: MyRecentNotesResponse = Field(default_factory=MyRecentNotesResponse)
     my_findings: MyFindingsResponse = Field(default_factory=MyFindingsResponse)
-    team_review: TeamReviewResponse = Field(default_factory=TeamReviewResponse)
+    # (No ``team_review``: the project-wide review roster was removed in
+    # v2.451.1 — this is the caller's own page; the team's In Review hosts are
+    # the Hosts list ``follow:in_review``.)
     since_last_visit: SinceLastVisit = Field(default_factory=SinceLastVisit)
     # v2.347.0 — engagement-wide: untouched hosts worth a look (design
     # review item 2), beneath the personal queue on My Work.
@@ -242,7 +242,6 @@ def compute_workbench(
         my_work.hosts_in_review + my_work.tests_assigned
         + my_work.tests_on_hosts_in_review + my_work.findings_needing_me
     )
-    team_review = compute_team_review(db, current_user, project, limit=500)
     since = compute_since_last_visit(db, current_user, project)
     investigate_unavailable = False
     investigate: Optional[InvestigationQueueResponse] = None
@@ -279,7 +278,6 @@ def compute_workbench(
         my_tasks=my_tasks,
         recent_notes=recent_notes,
         my_findings=my_findings,
-        team_review=team_review,
         since_last_visit=since,
         investigate=investigate,
         investigate_unavailable=investigate_unavailable,

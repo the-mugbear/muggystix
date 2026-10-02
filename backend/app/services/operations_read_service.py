@@ -1,8 +1,8 @@
 """Operations read-model service (CR4-2).
 
-The personal-work aggregations — **My Queue** (In Review hosts), **Team
-Review** (the project review roster), and **My Tasks** (assigned +
-in-review + triage host tests) — used to live as route handlers in
+The personal-work aggregations — **My Queue** (In Review hosts) and **My
+Tasks** (assigned + in-review + triage host tests) — used to live as route
+handlers in
 ``dashboard.py`` and were reused by ``workbench.py`` by *calling those
 route functions directly*.  That made a service (the workbench composer)
 depend on routers, and a router call another router's handler — FastAPI
@@ -29,10 +29,9 @@ from sqlalchemy.orm import Session
 
 from app.db import models
 from app.db.models import Annotation, FollowStatus, HostFollow
-from app.db.models_agent import AgentSession
 from app.db.models_host_tests import HostTest
 from app.db.models_auth import User
-from app.db.models_findings import Finding, FindingHost, FindingStatusHistory
+from app.db.models_findings import Finding, FindingHost
 from app.db.models_project import Project
 from app.services.import_attention_service import (
     superseded_import_condition,
@@ -159,11 +158,10 @@ def compute_my_attention_queue(
     )
 
 
-# ---------------------------------------------------------------------------
-# Team Review — the project-wide review roster.  My Queue is the caller's
-# personal queue; this is the whole team's, grouped by reviewer, so
-# operators can see coverage and avoid two people working the same host.
-# ---------------------------------------------------------------------------
+# (The project-wide review roster — ``compute_team_review`` and the
+# workbench's ``team_review`` block — was removed in v2.451.1: Operations is
+# the reader's own page and nothing read it.  "What is the team reviewing" is
+# the Hosts list ``follow:in_review``.)
 
 # ---------------------------------------------------------------------------
 # Investigation queue (v2.347.0; design review item 2)
@@ -715,108 +713,6 @@ def compute_investigation_queue(
     )
 
 
-class TeamReviewHostRow(BaseModel):
-    """One in-review host under a reviewer."""
-    host_id: int
-    ip_address: str
-    hostname: Optional[str] = None
-    follow_updated_at: Optional[datetime] = None
-
-
-class TeamReviewerGroup(BaseModel):
-    """A reviewer and the hosts they currently have In Review."""
-    user_id: int
-    username: str
-    full_name: Optional[str] = None
-    host_count: int = 0
-    hosts: List[TeamReviewHostRow] = Field(default_factory=list)
-
-
-class TeamReviewResponse(BaseModel):
-    reviewers: List[TeamReviewerGroup] = Field(default_factory=list)
-    # Distinct hosts in review across the whole team (a host counts
-    # once even if two reviewers both have it).
-    total_hosts_in_review: int = 0
-
-
-def compute_team_review(
-    db: Session, current_user: User, project: Project, limit: int = 500,
-) -> TeamReviewResponse:
-    """Project-wide review roster, grouped by reviewer.
-
-    Every host any user has marked **In Review** in this project, so
-    the team can see who is working what and plan coverage.  Reviewers
-    are ordered by host count (busiest first); each reviewer's hosts
-    are newest-touched first.  Includes the caller — it's a roster,
-    not a "other people" list.
-
-    ``total_hosts_in_review`` is computed in SQL and is unaffected by
-    ``limit``, so the widget can still surface a correct "showing N of T"
-    figure even when the roster overflows the row cap.
-    """
-    # SQL-side distinct count — independent of the row cap below so the
-    # widget surfaces an honest "showing N of T" figure even when many
-    # in-review hosts overflow the cap.
-    total_hosts_in_review = (
-        db.query(func.count(distinct(HostFollow.host_id)))
-        .join(models.Host, HostFollow.host_id == models.Host.id)
-        .filter(
-            models.Host.project_id == project.id,
-            HostFollow.status == FollowStatus.IN_REVIEW,
-        )
-        .scalar()
-        or 0
-    )
-
-    rows = (
-        db.query(HostFollow, models.Host, User)
-        .join(models.Host, HostFollow.host_id == models.Host.id)
-        .join(User, HostFollow.user_id == User.id)
-        .filter(
-            models.Host.project_id == project.id,
-            HostFollow.status == FollowStatus.IN_REVIEW,
-        )
-        # Newest-touched first so each reviewer's host list reads
-        # most-recent-first as rows are appended below.
-        .order_by(
-            desc(HostFollow.updated_at.is_(None)),  # NULLs last
-            desc(HostFollow.updated_at),
-            desc(HostFollow.created_at),
-        )
-        .limit(limit)
-        .all()
-    )
-
-    groups: dict = {}
-    for follow, host, user in rows:
-        group = groups.get(user.id)
-        if group is None:
-            group = TeamReviewerGroup(
-                user_id=user.id,
-                username=user.username,
-                full_name=user.full_name,
-                host_count=0,
-                hosts=[],
-            )
-            groups[user.id] = group
-        group.hosts.append(TeamReviewHostRow(
-            host_id=host.id,
-            ip_address=host.ip_address,
-            hostname=host.hostname,
-            follow_updated_at=follow.updated_at or follow.created_at,
-        ))
-        group.host_count += 1
-
-    reviewers = sorted(
-        groups.values(),
-        key=lambda g: (-g.host_count, g.username.lower()),
-    )
-    return TeamReviewResponse(
-        reviewers=reviewers,
-        total_hosts_in_review=total_hosts_in_review,
-    )
-
-
 # ---------------------------------------------------------------------------
 # Personal "My Tasks" — the authoritative personal work queue.
 #
@@ -1296,190 +1192,7 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
     )
 
 
-# ---------------------------------------------------------------------------
-# My recent activity (§27) — a unified personal work history across entities,
-# answering "what did I do?" better than the authored-notes-only Recent Notes.
-# Each source is user-attributed + timestamped; we normalise to one event shape,
-# merge, and take the newest.  User-scoped + per-source limited, so it stays
-# cheap regardless of project size.
-# ---------------------------------------------------------------------------
-class ActivityEvent(BaseModel):
-    kind: str  # note | finding_created | finding_status | host_reviewed | session
-    at: datetime
-    summary: str
-    host_id: Optional[int] = None
-    note_id: Optional[int] = None
-    finding_id: Optional[int] = None
-    severity: Optional[str] = None
-    # Server-computed in-app path for sources with no entity-id mapping on the
-    # client (agent runs). The client prefers this when present.
-    link: Optional[str] = None
-
-
-class MyActivityResponse(BaseModel):
-    items: List[ActivityEvent] = Field(default_factory=list)
-
-
-ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed", "session"}
-
-# Agent sessions surfaced in the activity feed.  Every session since v2.337.0
-# is a ``project`` session and links to its own page; the legacy per-workflow
-# sessions (recon, plan generation, execution) have no page left to link to
-# and are not listed (v2.442.0).
-_SESSION_WORKFLOWS = {
-    "project": "Ran an agent session",
-}
-# ``agent_session_service.session_key_state`` → the words in the feed.
-_SESSION_STATE_TEXT = {
-    "live": "live",
-    "resumable": "key expired — resumable",
-    "ended": "ended",
-}
-
-
-def compute_my_activity(
-    db: Session, current_user: User, project: Project, limit: int = 20,
-    kinds: Optional[set] = None, days: Optional[int] = None,
-    search: Optional[str] = None,
-) -> MyActivityResponse:
-    """The caller's recent work history.  Optional filters (§27 recall):
-    ``kinds`` restricts the event types, ``days`` bounds how far back, and
-    ``search`` is a case-insensitive substring matched per-source (note body,
-    finding title, or host ip/hostname)."""
-    uid = current_user.id
-    pid = project.id
-    want = (kinds & ACTIVITY_KINDS) if kinds else ACTIVITY_KINDS
-    cutoff = (
-        datetime.now(timezone.utc) - timedelta(days=days)
-        if days and days > 0 else None
-    )
-    needle = f"%{search.strip()}%" if search and search.strip() else None
-    events: List[ActivityEvent] = []
-
-    # Notes authored by the caller.
-    if "note" in want:
-        q = (
-            db.query(Annotation, models.Host)
-            .join(models.Host, Annotation.host_id == models.Host.id)
-            .filter(models.Host.project_id == pid, Annotation.user_id == uid)
-        )
-        if cutoff is not None:
-            q = q.filter(Annotation.created_at >= cutoff)
-        if needle is not None:
-            q = q.filter(or_(
-                Annotation.body.ilike(needle),
-                models.Host.ip_address.ilike(needle),
-                models.Host.hostname.ilike(needle),
-            ))
-        for note, host in q.order_by(desc(Annotation.created_at)).limit(limit).all():
-            body = (note.body or "").strip()
-            preview = body.splitlines()[0][:80] if body else ""
-            events.append(ActivityEvent(
-                kind="note", at=note.created_at,
-                summary=f"Noted {host.ip_address}" + (f" — {preview}" if preview else ""),
-                host_id=host.id, note_id=note.id,
-            ))
-
-    # Findings the caller created / promoted.
-    if "finding_created" in want:
-        q = db.query(Finding).filter(Finding.project_id == pid, Finding.created_by_id == uid)
-        if cutoff is not None:
-            q = q.filter(Finding.created_at >= cutoff)
-        if needle is not None:
-            q = q.filter(Finding.title.ilike(needle))
-        for f in q.order_by(desc(Finding.created_at)).limit(limit).all():
-            verb = "Created" if f.source == "manual" else "Promoted"
-            events.append(ActivityEvent(
-                kind="finding_created", at=f.created_at,
-                summary=f"{verb} finding: {f.title}", finding_id=f.id, severity=f.severity,
-            ))
-
-    # Finding dispositions the caller made (real transitions, not the create row).
-    if "finding_status" in want:
-        q = (
-            db.query(FindingStatusHistory, Finding)
-            .join(Finding, FindingStatusHistory.finding_id == Finding.id)
-            .filter(
-                Finding.project_id == pid,
-                FindingStatusHistory.changed_by_id == uid,
-                FindingStatusHistory.from_status.isnot(None),
-            )
-        )
-        if cutoff is not None:
-            q = q.filter(FindingStatusHistory.created_at >= cutoff)
-        if needle is not None:
-            q = q.filter(Finding.title.ilike(needle))
-        for hist, f in q.order_by(desc(FindingStatusHistory.created_at)).limit(limit).all():
-            # A same-status row is not a disposition: an endpoint change,
-            # added hosts, accepted report text.  It says what happened in its
-            # summary; "Marked <title> confirmed" misreported it.
-            if hist.from_status == hist.to_status and hist.summary:
-                summary = f"{f.title}: {hist.summary}"
-            else:
-                summary = f"Marked {f.title} {hist.to_status.replace('_', ' ')}"
-            events.append(ActivityEvent(
-                kind="finding_status", at=hist.created_at,
-                summary=summary, finding_id=f.id, severity=f.severity,
-            ))
-
-    # Hosts the caller marked Reviewed.  A fresh follow row has updated_at=NULL
-    # (it's onupdate-only), so fall back to created_at for the event time.
-    if "host_reviewed" in want:
-        review_ts = func.coalesce(HostFollow.updated_at, HostFollow.created_at)
-        q = (
-            db.query(HostFollow, models.Host)
-            .join(models.Host, HostFollow.host_id == models.Host.id)
-            .filter(
-                models.Host.project_id == pid,
-                HostFollow.user_id == uid,
-                HostFollow.status == FollowStatus.REVIEWED,
-            )
-        )
-        if cutoff is not None:
-            q = q.filter(review_ts >= cutoff)
-        if needle is not None:
-            q = q.filter(or_(
-                models.Host.ip_address.ilike(needle),
-                models.Host.hostname.ilike(needle),
-            ))
-        for follow, host in q.order_by(desc(review_ts)).limit(limit).all():
-            events.append(ActivityEvent(
-                kind="host_reviewed", at=(follow.updated_at or follow.created_at),
-                summary=f"Reviewed {host.ip_address}", host_id=host.id,
-            ))
-
-    # Agent sessions the caller started.
-    # No free-text title, so they're omitted from a `search` query.
-    if "session" in want and needle is None:
-        session_ts = func.coalesce(AgentSession.started_at, AgentSession.created_at)
-        q = (
-            db.query(AgentSession)
-            .filter(
-                AgentSession.project_id == pid,
-                AgentSession.started_by_id == uid,
-                AgentSession.workflow.in_(list(_SESSION_WORKFLOWS)),
-            )
-        )
-        if cutoff is not None:
-            q = q.filter(session_ts >= cutoff)
-        sessions = q.order_by(desc(session_ts)).limit(limit).all()
-        # The stored status cannot tell a connected agent from a session
-        # whose key ran out: say what Agent Sessions says, from the same
-        # facts (one grouped read of the keys for the page — never per row).
-        from app.services.agent_session_service import (
-            key_expiry_for_agent_sessions, session_key_state,
-        )
-        from app.services.agent_key_ttl import session_renewal_deadline
-        expiry = key_expiry_for_agent_sessions(db, [s.id for s in sessions])
-        now = datetime.now(timezone.utc)
-        for s in sessions:
-            state = session_key_state(s.status, expiry.get(s.id), session_renewal_deadline(s), now)
-            events.append(ActivityEvent(
-                kind="session", at=(s.started_at or s.created_at),
-                summary=f"{_SESSION_WORKFLOWS[s.workflow]} ({_SESSION_STATE_TEXT[state]})",
-                link=f"/agent-sessions/{s.id}",
-            ))
-
-    events = [e for e in events if e.at is not None]
-    events.sort(key=lambda e: e.at, reverse=True)
-    return MyActivityResponse(items=events[:limit])
+# (The personal activity feed — ``compute_my_activity`` behind
+# ``GET /workbench/my-activity`` — was removed in v2.451.1: no page had read
+# it since 5.329.0.  "What did I do" is the Collaboration page,
+# ``/activity?author=me``.)

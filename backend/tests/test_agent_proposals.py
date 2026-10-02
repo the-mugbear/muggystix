@@ -645,11 +645,10 @@ def test_the_findings_history_names_the_proposal_each_accepted_change_came_from(
     created = client.post(f"{base}/proposals/{new}/accept", json={}).json()["result_finding_id"]
     assert history(created) == [f"Created from agent proposal #{new} (model-a, agent session #{sid})"]
 
-    # The activity feed shows what such a row says, not "Marked … <status>".
-    items = client.get(f"/api/v1/projects/{test_project.id}/workbench/my-activity",
-                       params={"kinds": "finding_status"}).json()["items"]
-    assert any(i["summary"].startswith("SMB signing not required: Impact set from agent proposal") for i in items)
-    assert not any(i["summary"] == "Marked SMB signing not required open" for i in items)
+    # (Until v2.451.1 this also read the personal activity feed, which worded
+    # such a same-status row by its summary rather than "Marked … <status>".
+    # The feed — ``GET /workbench/my-activity`` — was removed; the history
+    # rows above are what remains to pin.)
 
 
 def test_an_ai_draft_is_named_as_one_in_the_history(client, db_session, test_project, test_user):

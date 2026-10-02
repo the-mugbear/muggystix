@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.6.1",
+        "app_version": "2.451.1",
+        "summary": (
+            "assist_get_workbench no longer carries `team_review` (the project-wide "
+            "roster of hosts in review, grouped by reviewer): Operations is the "
+            "operator's own page and no page read it. To answer \"what is the team "
+            "already reviewing?\" use assist_list_hosts q=follow:in_review — any "
+            "teammate's In Review hosts, `total` for the count (the operator's own are "
+            "q=follow:mine). The person-side route GET /workbench/my-activity was "
+            "removed too; it was never an agent read."
+        ),
+    },
+    {
         "version": "4.6.0",
         "app_version": "2.451.0",
         "summary": (

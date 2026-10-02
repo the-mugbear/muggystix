@@ -58,25 +58,6 @@ export interface MyAttentionResponse {
   in_review_count: number;
   watching_count: number;
 }
-export interface TeamReviewHostRow {
-  host_id: number;
-  ip_address: string;
-  hostname: string | null;
-  follow_updated_at: string | null;
-}
-
-export interface TeamReviewerGroup {
-  user_id: number;
-  username: string;
-  full_name: string | null;
-  host_count: number;
-  hosts: TeamReviewHostRow[];
-}
-
-export interface TeamReviewResponse {
-  reviewers: TeamReviewerGroup[];
-  total_hosts_in_review: number;
-}
 /** Why a task is in your queue. Overlapping — a task can carry several. */
 export type MyTaskReason = 'assigned' | 'in_review' | 'triage';
 
@@ -249,7 +230,6 @@ export interface WorkbenchResponse {
   my_tasks: MyTasksResponse;
   recent_notes: MyRecentNotesResponse;
   my_findings: MyFindingsResponse;
-  team_review: TeamReviewResponse;
   since_last_visit: SinceLastVisit;
   /** `null` when requested with `includeInvestigate: false` (v2.424.1). */
   investigate?: InvestigationQueueResponse | null;
@@ -340,8 +320,8 @@ export const markWorkbenchSeen = async (
 };
 
 // (getMyActivity went with Operations' "My recent activity" column in
-// 5.329.0 — its only reader.  `GET /workbench/my-activity` still exists on
-// the server; nothing in the app calls it.)
+// 5.329.0 — its only reader — and the server's `GET /workbench/my-activity`
+// with v2.451.1.  The workbench's `team_review` roster went then too.)
 
 export interface AgentActivityStatusBreakdown {
   success: number;

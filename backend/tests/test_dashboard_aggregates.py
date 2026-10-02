@@ -2,11 +2,11 @@
 
 Two endpoints changed shape:
 
-* ``GET /dashboard/team-review`` — was unbounded ``.all()`` followed by
-  ``len(distinct_hosts)`` to compute the total.  Now caps the row
-  fetch at ``limit`` (default 500, le=2000) and computes
-  ``total_hosts_in_review`` via SQL so the figure stays correct even
-  when the cap is hit.
+* ``GET /dashboard/team-review`` — the project review roster.  The route
+  went in v2.244.0 and the roster itself (the workbench's ``team_review``)
+  in v2.451.1; what is left of it here is the one fact that still has a
+  reader — a host two teammates have in review is one host — pinned on the
+  Hosts list ``follow:in_review``.
 * ``GET /projects/{pid}/coverage/`` — was loading each scope's
   subnets + a distinct-host-count query per scope (N+1 over the scope
   list).  Now loads subnets in one batched query and the distinct
@@ -14,9 +14,7 @@ Two endpoints changed shape:
 
 These tests pin the behaviour:
 
-* Team-review row cap rejects oversize ``limit`` (422).
-* Team-review ``total_hosts_in_review`` is correct when the row cap
-  hides reviewers.
+* The team's In Review hosts count each host once.
 * Coverage emits per-scope counts that match the pre-fix per-scope
   query result.
 """
@@ -71,50 +69,36 @@ def _make_in_review_follow(db_session, user_id, host_id):
     return f
 
 
-def test_team_review_total_includes_rows_beyond_cap(
-    db_session, test_project, test_user,
-):
-    """When the row cap clips reviewers, the distinct-host total still
-    reflects the whole roster.
-
-    v2.244.0 — ``GET /dashboard/team-review`` was removed (``GET /workbench``
-    batches it from the same service function). The cap is a service-level
-    argument and /workbench passes a fixed one, so this exercises
-    ``compute_team_review`` directly — which is where the behaviour, and the
-    original bug, live. The oversize-limit 422 test went with the route: that
-    was FastAPI validating a query param, not project behaviour.
-    """
-    from app.services.operations_read_service import compute_team_review
-
-    alice = _make_user(db_session, "alice-tr")
-    for i in range(5):
-        h = _make_host(db_session, test_project.id, f"10.0.0.{10 + i}")
-        _make_in_review_follow(db_session, alice.id, h.id)
-    db_session.commit()
-
-    result = compute_team_review(db_session, test_user, test_project, limit=2)
-    assert result.total_hosts_in_review == 5, result
-    assert len(result.reviewers) == 1
-    assert result.reviewers[0].host_count == 2
-
-
-def test_team_review_distinct_count_dedupes_two_reviewers_on_same_host(
+def test_team_in_review_hosts_count_a_host_once_whoever_reviews_it(
     client, db_session, test_project,
 ):
-    """One host watched by two reviewers should count as 1 in
-    ``total_hosts_in_review`` (distinct host_id, not row count)."""
+    """One host in review by two teammates is ONE host in "what the team is
+    reviewing".
+
+    v2.451.1 — this was pinned on the workbench's ``team_review`` roster
+    (``total_hosts_in_review``), removed with it.  The question is now
+    answered by the Hosts list ``follow:in_review`` (any teammate's; the
+    agents' ``assist_list_hosts q=follow:in_review``), so the guard moved
+    there: distinct hosts, not follow rows.  (The roster's row-cap test went
+    with the roster — the cap was its own argument.)"""
     alice = _make_user(db_session, "alice-dedupe")
     bob = _make_user(db_session, "bob-dedupe")
     shared = _make_host(db_session, test_project.id, "10.0.5.1")
     alice_only = _make_host(db_session, test_project.id, "10.0.5.2")
+    _make_host(db_session, test_project.id, "10.0.5.3")  # nobody's
     _make_in_review_follow(db_session, alice.id, shared.id)
     _make_in_review_follow(db_session, bob.id, shared.id)
     _make_in_review_follow(db_session, alice.id, alice_only.id)
+    db_session.commit()
 
-    r = client.get(f"/api/v1/projects/{test_project.id}/workbench")
+    r = client.get(
+        f"/api/v1/projects/{test_project.id}/hosts/",
+        params={"q": "follow:in_review", "limit": 50},
+    )
     assert r.status_code == 200, r.text
-    body = r.json()["team_review"]
-    assert body["total_hosts_in_review"] == 2, body
+    body = r.json()
+    assert sorted(i["ip_address"] for i in body["items"]) == ["10.0.5.1", "10.0.5.2"]
+    assert body["total"] == 2, body["total"]
 
 
 def test_coverage_per_scope_counts_match_batched_path(

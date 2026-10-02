@@ -122,7 +122,7 @@ def get_assist_workbench(
     claim), ``my_queue`` (hosts they are reviewing), ``my_tasks`` (host tests
     to do; ``group_counts`` counts each once), ``recent_notes``,
     ``my_findings`` (findings they own that NEED them — each row's ``needs``
-    says why), ``team_review``, ``since_last_visit`` (scans, new
+    says why), ``since_last_visit`` (scans, new
     hosts, changed hosts, new critical/high scanner observations since the
     operator last marked Operations seen), ``followups`` ("Changed since
     review" — the OPERATOR'S OWN finished reviews that are not done, never a
@@ -132,7 +132,9 @@ def get_assist_workbench(
     There is no ``measures`` block (v2.451.0): project status — hosts, tested,
     untouched with a critical observation — is the ``total`` of ``GET
     /assist/hosts?q=has:tested`` / ``q=has:untouched has:critical`` and, by
-    address block, the terrain; on the page it is Posture's.
+    address block, the terrain; on the page it is Posture's.  There is no
+    ``team_review`` block either (v2.451.1): what the team is already
+    reviewing is ``GET /assist/hosts?q=follow:in_review`` (any teammate's).
 
     Read-only: this never moves the operator's "since last visit" cursor.  A
     section reported ``*_unavailable: true`` could not be computed — say so;

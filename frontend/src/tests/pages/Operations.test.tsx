@@ -66,7 +66,6 @@ const emptyWorkbench = {
     total: 0, hosts_in_review: 0, tests_assigned: 0, tests_on_hosts_in_review: 0,
     findings_needing_me: 0, to_claim: 0,
   },
-  team_review: { reviewers: [], total_hosts_in_review: 0 },
   followups: { items: [], total: 0 },
   since_last_visit: {
     last_viewed_at: null,
