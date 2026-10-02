@@ -61,6 +61,15 @@ backend_probe() {
     $DC exec -T backend python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8000/health', timeout=3).status==200 else 1)" >/dev/null 2>&1
 }
 
+# The migration's own failure line from the backend log of the last $1
+# seconds, or nothing.  A failed migration does NOT stop the container:
+# uvicorn's supervisor stays up and respawns the workers, each of which
+# re-runs the upgrade and fails again — status "running", restart count 0,
+# for as long as anyone waits (2026-10-02: a deploy waited on exactly that).
+backend_migration_failure() {
+    $DC logs --since "${1:-300}s" backend 2>/dev/null | grep "DATABASE MIGRATION FAILED" | tail -n 1 | cut -c1-700
+}
+
 # "<status> <restart count>" of the backend container, e.g. "running 0".
 backend_container_state() {
     local cid
@@ -118,13 +127,15 @@ wait_for_database() {
 #   * still migrating — the container is running and a session holds the
 #     migration advisory lock.  The only correct action is to wait; rolling
 #     back the images now would point the OLD code at a half-migrated schema.
-#   * crashed — the container exited, or Docker keeps restarting it.
+#   * crashed — the container exited, or Docker keeps restarting it;
+#   * the migration failed — the container stays "running" while its workers
+#     retry and fail (see backend_migration_failure).
 #
 # $1 = seconds to wait.  Returns 0 healthy, 2 crashed / crash-looping,
 # 1 still starting at the timeout.
 # ------------------------------------------------------------------
 wait_for_backend_healthy() {
-    local timeout="${1:-1800}" elapsed=0 status restarts last_note=0
+    local timeout="${1:-1800}" elapsed=0 status restarts last_note=0 failure
     print_info "Waiting for the backend (schema migrations run before it serves; up to ${timeout}s)..."
     while [[ "$elapsed" -lt "$timeout" ]]; do
         if backend_probe; then
@@ -140,6 +151,13 @@ wait_for_backend_healthy() {
         esac
         if [[ "${restarts:-0}" =~ ^[0-9]+$ && "${restarts:-0}" -ge "$BACKEND_RESTART_LIMIT" ]]; then
             print_error "The backend container has restarted ${restarts} times — it is crash-looping."
+            return 2
+        fi
+        failure="$(backend_migration_failure $((elapsed + 120)))"
+        if [[ -n "$failure" ]]; then
+            print_error "The schema migration FAILED — the backend will keep retrying it and failing the same way."
+            echo "  ${failure#*| }"
+            print_info "What failed and why, in one file: ./scripts/migration-failure-report.sh"
             return 2
         fi
         if (( elapsed - last_note >= 30 )); then

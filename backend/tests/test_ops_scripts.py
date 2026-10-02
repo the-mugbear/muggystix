@@ -335,6 +335,26 @@ def test_deploy_leaves_the_in_progress_marker_when_the_backend_does_not_come_up(
     assert "PREDEPLOY_ALEMBIC_REVISION|" + OLD_REV in state_file
 
 
+def test_deploy_stops_waiting_when_the_migration_has_failed(project):
+    """A failed migration leaves the container "running" with no restarts —
+    uvicorn respawns its workers, each failing again — so the wait went on to
+    its timeout saying "backend is running" (2026-10-02).  The failure line in
+    the log ends the wait and names the report script."""
+    project.state["healthy_images"] = []
+    project.state["backend_logs"] = (
+        "backend-1  | INFO  [alembic.runtime.migration] Running upgrade a -> b, one finding per issue\n"
+        "backend-1  | CRITICAL: DATABASE MIGRATION FAILED — NOTHING WAS CHANGED: the upgrade was rolled back\n"
+    )
+
+    result = project.run("deploy.sh", stdin="1\n", env={"DEPLOY_HEALTH_TIMEOUT": "600"})
+
+    out = _output(result)
+    assert result.returncode == 1
+    assert "The schema migration FAILED" in out and "NOTHING WAS CHANGED" in out
+    assert "migration-failure-report.sh" in out and "option 7" in out
+    assert "DEPLOY_IN_PROGRESS|" in project.state_file()
+
+
 def test_a_deploy_finished_by_hand_gets_a_new_rollback_point(project):
     """The wait timed out, the operator ran `up -d` when the backend came up:
     the marker is stale, and the next deploy snapshots what runs now."""

@@ -49,9 +49,13 @@ def upgrade():
         more = f"\n  … and {len(rows) - _MAX_LISTED} more" if len(rows) > _MAX_LISTED else ""
         raise RuntimeError(
             f"{len(rows)} issue(s) have more than one scanner finding, so the one-finding-per-issue "
-            "index cannot be created. Nothing was changed. On the version you are upgrading from, "
-            "keep one finding of each group (add the other's hosts to it) and delete the rest, "
-            "then upgrade again:\n" + listed + more
+            "index cannot be created. Nothing was changed. Merge each group into one finding, then "
+            "start this build again — either with the script, which works while this build is "
+            "failing to start (dry run first; it keeps endpoints, comments, evidence and report "
+            "text, and writes every finding to a file before it changes anything):\n"
+            "    docker compose exec backend python scripts/merge_duplicate_scanner_findings.py\n"
+            "or by hand on the version you are upgrading from: keep one finding of each group "
+            "(add the other's hosts to it) and delete the rest. The groups:\n" + listed + more
         )
     op.create_index(
         "uq_finding_scanner_issue", "findings", ["project_id", "dedup_key"], unique=True,

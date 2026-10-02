@@ -169,6 +169,9 @@ def compose(args: list[str], state: dict) -> int:
             containers["backend"]["restarts"] = crash.get("restarts", 0)
         save(state)
         return 0
+    if cmd == "logs":
+        out(state.get("backend_logs", ""))
+        return 0
     if cmd in ("stop", "start", "restart"):
         return 0
     if cmd == "down":
