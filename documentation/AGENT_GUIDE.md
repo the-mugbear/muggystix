@@ -1,6 +1,6 @@
 # BlueStick AI Agent Guide
 
-**Prompt version:** 4.8.4 · **Verified against:** backend 2.453.4 (2026-10-02)
+**Prompt version:** 4.8.5 · **Verified against:** backend 2.453.5 (2026-10-02)
 
 > **Version & compatibility (read this).** The number that matters is the **Prompt version** above — stamped live from the running deployment when this guide is fetched, and identical to the `prompt_version` in your instructions block (echoed on every `/context` response). If the two **match**, your prompt and this guide are the same contract — proceed; if they **differ**, the deployment changed mid-session, so **re-fetch this guide and prefer it**. Ignore the "Verified against backend X" stamp for compatibility — it's a different numbering scheme and won't equal the Prompt version.
 

@@ -21,6 +21,15 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.8.5",
+        "app_version": "2.453.5",
+        "summary": (
+            "assist_get_posture: scanner_observations.total excludes informational "
+            "rows (the page's number, equal to headline.detected_exposure.vuln_count); "
+            "the informational count is its own field."
+        ),
+    },
+    {
         "version": "4.8.4",
         "app_version": "2.453.4",
         "summary": (

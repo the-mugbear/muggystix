@@ -752,12 +752,16 @@ def test_posture_carries_the_scanner_rows_by_severity(client, db_session, test_p
     _vuln(db_session, a, scan, VulnerabilitySeverity.CRITICAL, True)
     _vuln(db_session, a, scan, VulnerabilitySeverity.CRITICAL, False)
     _vuln(db_session, b, scan, VulnerabilitySeverity.HIGH, False)
+    _vuln(db_session, b, scan, VulnerabilitySeverity.INFO, False)
     db_session.commit()
 
     agent = client.get("/api/v1/agent/assist/posture", headers=_assist(client, test_project.id)).json()
     page = client.get(f"/api/v1/projects/{test_project.id}/dashboard/stats").json()["vulnerability_stats"]
     rows = agent["scanner_observations"]
-    assert rows["total"] == 3 == page["total_vulnerabilities"]
+    # The page's headline excludes informational rows; so does `total`, which
+    # is also the posture headline's own count.
+    assert page["total_vulnerabilities"] == 4 and rows["informational"] == 1 == page["info"]
+    assert rows["total"] == 3 == agent["headline"]["detected_exposure"]["vuln_count"]
     assert (rows["by_severity"]["critical"], rows["by_severity"]["high"]) == (2, 1) == (page["critical"], page["high"])
     assert rows["hosts_by_severity"]["critical"] == 1 == page["hosts_by_severity"]["critical"]
 

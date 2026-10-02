@@ -713,8 +713,10 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "a judgement from counts. Note that label='insufficient_evidence' "
             "means the estate has NOT been assessed enough to judge — it is "
             "not a clean bill of health, and reporting it as one is wrong. "
-            "scanner_observations is the raw scanner rows (not findings): total, "
-            "by_severity, and hosts_by_severity — 'how many criticals?' has four "
+            "scanner_observations is the raw scanner rows (not findings): total "
+            "(informational excluded, as the page states it — the same number as "
+            "headline.detected_exposure.vuln_count), informational, by_severity, "
+            "and hosts_by_severity — 'how many criticals?' has four "
             "answers (critical findings, critical scanner issues, critical scanner "
             "rows, hosts carrying one): say which you are giving."
         ),

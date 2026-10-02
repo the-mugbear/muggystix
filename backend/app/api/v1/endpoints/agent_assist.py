@@ -2505,9 +2505,17 @@ def get_assist_posture(
     scanner_observations = None
     try:
         stats = VulnerabilityService(db).get_dashboard_statistics(project_id=session.project_id)
+        by_severity = stats["severity_breakdown"]
+        informational = int(by_severity.get("info", 0) or 0)
         scanner_observations = {
-            "total": stats["total_vulnerabilities"],
-            "by_severity": stats["severity_breakdown"],
+            # The page's headline — "N observations, informational excluded" —
+            # and the same number as headline.detected_exposure.vuln_count.
+            # It was the all-severities sum (1,189 where the page and the
+            # headline said 956): two totals in one payload (validation run,
+            # session 82).
+            "total": int(stats["total_vulnerabilities"]) - informational,
+            "informational": informational,
+            "by_severity": by_severity,
             "hosts_with_observations": stats["hosts_with_vulnerabilities"],
             "hosts_by_severity": stats.get("hosts_by_severity", {}),
         }
