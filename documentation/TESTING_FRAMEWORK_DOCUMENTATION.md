@@ -106,7 +106,7 @@ Strict-mode TypeScript is enforced; every PR should typecheck clean before merge
 
 ## Regression-pin file
 
-`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~39 tests (the plan, execution and sanity-check regressions went with those features in v2.442.0, or were rewritten onto host tests) covering: the content-detection module surface, cross-project host-test visibility (GET and PATCH 404), an unknown host-test status refused on both route families, SBOM cache invalidation on app-version change, the prompt-version floor, the v2.24.0 agent API call log helpers + middleware + retention, the agent rate limit, the unified agent-session timeline and the coverage summary's planned / tested definitions. Add to this file when fixing a regression so it can't silently come back.
+`backend/tests/test_phase1_regressions.py` is the home for regressions that pin specific past bugs. It currently holds ~39 tests covering: the content-detection module surface, cross-project host-test visibility (GET and PATCH 404), an unknown host-test status refused on both route families, SBOM cache invalidation on app-version change, the prompt-version floor, the v2.24.0 agent API call log helpers + middleware + retention, the agent rate limit, the unified agent-session timeline and the coverage summary's planned / tested definitions. Add to this file when fixing a regression so it can't silently come back.
 
 ## Docs-vs-code contract tests
 

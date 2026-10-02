@@ -8,6 +8,10 @@
  * not work, and is not here.  Severity wears the severity ramp
  * (`SeverityBadge` tokens) — nothing else on the page does.
  *
+ * The chips narrow it to one kind of work (`?need=`), with the server's
+ * counts: a decision (under investigation, or a proposal to decide) or report
+ * text alone.  A finding is under one — a decision comes before the writing.
+ *
  * No "Open in Findings" link: the Findings page has no filter that lists
  * exactly these (it filters by owner, not by need), and a tab links only to
  * a list that is exactly its own.
@@ -15,12 +19,15 @@
 import React from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 
-import type { MyFindingItem } from '../../services/api';
+import type { FindingNeed, MyFindingItem } from '../../services/api';
 import { useListCursor } from '../../hooks/useListCursor';
+import { FINDING_NEEDS, FINDING_NEED_LABEL } from '../../utils/operationsTabs';
 import { formatRelativeTime } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
-import { ListBody, PagedFooter, WaitingCell, type ListState, type Pager } from './QueueParts';
+import {
+  FilterChips, ListBody, PagedFooter, WaitingCell, type ListState, type Pager,
+} from './QueueParts';
 
 export const FINDINGS_TAB_TITLE = 'Findings that need me';
 
@@ -38,34 +45,67 @@ const SEVERITY_VARIANT: Record<string, BadgeVariant> = {
 export const needsLine = (f: MyFindingItem): string =>
   (f.needs ?? []).map((n) => n.text).join(' · ');
 
+const NEED_TITLE: Record<FindingNeed, string> = {
+  decide: 'Findings under investigation, or with a proposal waiting for your decision.',
+  write: 'Findings with nothing to decide whose required report text is missing.',
+};
+const EMPTY_NEED: Record<FindingNeed, string> = {
+  decide: 'Nothing here — no finding you own is under investigation or has a proposal waiting for a decision.',
+  write: 'Nothing here — no finding you own is only missing required report text.',
+};
+
 const NO_ROWS: MyFindingItem[] = [];
 
-export const FindingsNeedingMeTable: React.FC<{
+export interface FindingsNeedingMeTableProps {
   /** The page of the list on screen; null while it loads or when it failed. */
   rows: MyFindingItem[] | null;
   state: ListState;
   pager: Pager;
+  /** The server's count per kind of work; null when not known. */
+  needCounts: Record<FindingNeed, number | null>;
+  /** The kind the rows are narrowed to (null = both). */
+  need: FindingNeed | null;
+  onNeed: (need: FindingNeed | null) => void;
   /** This list owns the page's j / k / Enter keys (the tab on screen). */
   keysActive?: boolean;
-}> = ({ rows: loaded, state, pager, keysActive = true }) => {
+}
+
+export const FindingsNeedingMeTable: React.FC<FindingsNeedingMeTableProps> = ({
+  rows: loaded, state, pager, needCounts, need, onNeed, keysActive = true,
+}) => {
   const navigate = useNavigate();
   const rows = loaded ?? NO_ROWS;
   const { cursorRowProps } = useListCursor(
     rows.length,
     (i) => navigate(`/findings/${rows[i].finding_id}`),
-    { enabled: keysActive, resetKey: pager.page, getId: (i) => rows[i]?.finding_id },
+    { enabled: keysActive, resetKey: `${need}:${pager.page}`, getId: (i) => rows[i]?.finding_id },
   );
+  // The two kinds partition the list; one not known leaves the sum not known.
+  const all = needCounts.decide == null || needCounts.write == null
+    ? null : needCounts.decide + needCounts.write;
 
   return (
     <div className="min-w-0">
       <p className="mb-sm text-caption text-muted-foreground">
         Findings you own that need something from you. A confirmed finding with its report text written is not listed.
       </p>
+      <FilterChips
+        label="Filter by what the finding needs"
+        allLabel="All"
+        allCount={all}
+        chips={FINDING_NEEDS.map((k) => ({
+          key: k, label: FINDING_NEED_LABEL[k], count: needCounts[k], title: NEED_TITLE[k],
+        }))}
+        selected={need}
+        onSelect={onNeed}
+      />
       <ListBody
         rows={loaded}
         state={state}
         what="the findings that need you"
-        empty="Nothing here — a finding you own shows when it is under investigation, a required report section is empty, or a proposal about it is waiting for a decision."
+        empty={need != null
+          ? EMPTY_NEED[need]
+          : 'Nothing here — a finding you own shows when it is under investigation, a required report section is empty, or a proposal about it is waiting for a decision.'}
       >
         {() => (
           <div>

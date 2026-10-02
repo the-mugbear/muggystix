@@ -14,18 +14,12 @@ import {
 } from './UserGuideShell';
 
 /**
- * Agents guide — rewritten for the unified session (v2.337.0+, v5.218.0), and
- * again for 5.313.0: you drive your agent — and for 5.320.0: tests are
- * proposed on hosts and shown on each host's page; there are no test plans
- * and no execution runs.
- *
- * Gone since 5.313.0: the per-object buttons that minted a key for one kind of
- * work, the "approved set" of tools, plan approval, and the sanity check as a
- * gate. One session per operator (Start Agent Session) is the way an agent
- * starts (5.313.1: recon runs are gone — it reads a scope and uploads to its
- * session). Kept:
- * the key is your role, renewal, ending and resuming, every command shown,
- * the declared scope, the working directory and the audit trail.
+ * Agents guide.  One session per operator (Start Agent Session) is how an
+ * agent starts; it acts with the operator's project role, reads a scope,
+ * uploads what its tools produced, proposes tests on hosts and records what it
+ * ran as evidence.  The guide covers: the key is your role, renewal, ending
+ * and resuming, every command shown, the declared scope, the working
+ * directory and the audit trail.
  */
 const sections: GuideSection[] = [
   {
@@ -214,8 +208,8 @@ const sections: GuideSection[] = [
         <Para>
           A <strong>test</strong> is one check on one host: the tool, what it establishes, the
           exact command, and why it is worth running. Tests belong to the host — open a host and
-          its <strong>Tests</strong> section lists them. There is no test plan to open and no run
-          to start: a test is <strong>proposed</strong>, then <strong>in progress</strong>, then{' '}
+          its <strong>Tests</strong> section lists them. Nothing has to be opened
+          first: a test is <strong>proposed</strong>, then <strong>in progress</strong>, then{' '}
           <strong>done</strong>, or <strong>dismissed</strong> with a reason.
         </Para>
         <Subhead>Proposing tests</Subhead>

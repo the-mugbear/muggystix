@@ -24,7 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, Field
-from sqlalchemy import and_, case, desc, distinct, false, func, or_
+from sqlalchemy import and_, case, desc, distinct, false, func, not_, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -1056,10 +1056,20 @@ class MyFindingsResponse(BaseModel):
     #: Findings the caller owns that NEED them (the name is older than the
     #: definition: it counted every active finding owned until v2.450.0).
     total_open: int = 0
+    #: ``total_open`` in its two parts (v2.453.0), which add up to it:
+    #: ``decide`` — under investigation, or a proposal waits for a decision;
+    #: ``write`` — only required report text is missing.  Whole-list figures
+    #: whatever ``need`` and the page say.
+    need_counts: Dict[str, int] = Field(default_factory=lambda: {"decide": 0, "write": 0})
+
+
+#: The two kinds of work a finding asks of its owner (``need=`` on the list).
+FINDING_NEEDS = ("decide", "write")
 
 
 def compute_my_findings(
     db: Session, current_user: User, project: Project, limit: int = 15, offset: int = 0,
+    need: Optional[str] = None,
 ) -> MyFindingsResponse:
     """The caller's owned findings that need something from their owner
     (review 2026-10-02 — owning a confirmed, written-up finding is a state,
@@ -1080,6 +1090,13 @@ def compute_my_findings(
     Operations "Findings" tab, ``GET /workbench/findings``); ``total_open`` is
     the whole list whatever they say (a page past the end, or ``limit=0``,
     counts with one statement of the same filter).
+
+    ``need`` (v2.453.0) narrows the rows to one kind of work — ``decide``
+    (under investigation, or a proposal to decide) or ``write`` (required
+    report text missing and nothing to decide).  The two partition the list:
+    a decision comes before the writing, so a finding with both is a
+    ``decide``.  ``need_counts`` are the page lead's numbers and each is the
+    size of the list its ``need`` returns.
     """
     from app.db.models_vulnerability import severity_rank as _severity_rank
     from app.services import proposal_service
@@ -1095,11 +1112,25 @@ def compute_my_findings(
     investigating = Finding.status.in_(UNDER_INVESTIGATION)
     text_owed = and_(reportable_finding_condition(), missing_required_text_condition())
     blank = blank_required_text()
+    if need is not None and need not in FINDING_NEEDS:
+        raise ValueError(f"need must be one of {FINDING_NEEDS}, not {need!r}")
+    to_decide = or_(investigating, proposal_service.has_pending_proposal_condition())
     needs_me = (
         Finding.project_id == project.id,
         Finding.owner_id == current_user.id,
-        or_(investigating, text_owed, proposal_service.has_pending_proposal_condition()),
+        or_(to_decide, text_owed),
     )
+    narrowed = needs_me + (
+        (to_decide,) if need == "decide" else (not_(to_decide),) if need == "write" else ()
+    )
+
+    def _counts() -> Dict[str, int]:
+        row = (
+            db.query(func.count(Finding.id), func.count(Finding.id).filter(to_decide))
+            .filter(*needs_me).one()
+        )
+        return {"decide": int(row[1] or 0), "write": int(row[0] or 0) - int(row[1] or 0)}
+
     findings = (
         db.query(
             Finding.id, Finding.title, Finding.severity, Finding.status,
@@ -1107,20 +1138,27 @@ def compute_my_findings(
             text_owed.label("text_owed"),
             *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
             func.count().over().label("total"),
+            func.count().filter(to_decide).over().label("decide_total"),
         )
-        .filter(*needs_me)
+        .filter(*narrowed)
         .order_by(severity_rank, desc(Finding.updated_at), Finding.id)
         .offset(max(0, offset))
         .limit(limit)
         .all()
     ) if limit > 0 else []
     if not findings:
-        # No row to carry the window: nothing needs the owner, the page is
-        # past the end, or only the count was asked for.
-        total = 0
-        if offset > 0 or limit <= 0:
-            total = int(db.query(func.count(Finding.id)).filter(*needs_me).scalar() or 0)
-        return MyFindingsResponse(items=[], total_open=total)
+        # No row to carry the windows: nothing needs the owner, the page is
+        # past the end, or only the counts were asked for.
+        counts = _counts() if (offset > 0 or limit <= 0 or need is not None) else {"decide": 0, "write": 0}
+        return MyFindingsResponse(
+            items=[], total_open=counts["decide"] + counts["write"], need_counts=counts,
+        )
+    if need is None:
+        # The windows are over the whole list: no further statement.
+        decide_total = int(findings[0].decide_total)
+        need_counts = {"decide": decide_total, "write": int(findings[0].total) - decide_total}
+    else:
+        need_counts = _counts()
     finding_ids = [f.id for f in findings]
 
     # host_count per finding + one representative host_id, in one query.
@@ -1172,7 +1210,8 @@ def compute_my_findings(
             pending_proposals=proposals,
         ))
     return MyFindingsResponse(
-        items=items, total_open=int(findings[0].total) if findings else 0,
+        items=items, total_open=need_counts["decide"] + need_counts["write"],
+        need_counts=need_counts,
     )
 
 

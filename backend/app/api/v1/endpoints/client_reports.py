@@ -590,10 +590,14 @@ def issue_report(
                        commit=False)
         db.commit()
     except Exception:
-        # The issue did not happen: its copies of the evidence images
-        # (``freeze_report_images``) must not outlive it.
+        # The issue did not happen.  Its copies of the evidence images
+        # (``freeze_report_images``) are deliberately LEFT: the rollback
+        # released the report's lock, so another request may already have
+        # issued this draft and written ITS copies into the same folder —
+        # removing it here deleted an issued report's images (external review
+        # 2026-10-02 H1).  The next issue attempt empties the folder under the
+        # lock, and discarding the draft removes it.
         db.rollback()
-        discard_report_images(project.id, report_id)
         raise
     ReportJobService().enqueue_job(job.id, db=db)
     db.expire_all()

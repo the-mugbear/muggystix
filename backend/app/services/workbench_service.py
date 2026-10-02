@@ -86,6 +86,10 @@ class MyWorkTotals(BaseModel):
     tests_assigned: int = 0
     tests_on_hosts_in_review: int = 0
     findings_needing_me: int = 0
+    #: ``findings_needing_me`` in its two parts (v2.453.0): a decision is
+    #: waiting (under investigation, or a proposal), or only report text is.
+    findings_to_decide: int = 0
+    findings_to_write: int = 0
     #: Unassigned critical / high tests anyone may claim — shared work, not
     #: part of ``total``.
     to_claim: int = 0
@@ -249,6 +253,8 @@ def compute_workbench(
         tests_assigned=groups.assigned,
         tests_on_hosts_in_review=groups.in_review,
         findings_needing_me=my_findings.total_open,
+        findings_to_decide=my_findings.need_counts["decide"],
+        findings_to_write=my_findings.need_counts["write"],
         to_claim=groups.triage,
     )
     my_work.total = (

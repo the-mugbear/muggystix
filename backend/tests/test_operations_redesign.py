@@ -353,6 +353,8 @@ def test_every_group_brings_its_own_rows_and_the_total_is_their_sum(
         "tests_assigned": 2,
         "tests_on_hosts_in_review": 20,
         "findings_needing_me": 1,
+        "findings_to_decide": 1,
+        "findings_to_write": 0,
         "to_claim": 4,
     }
     # "In review" opens exactly the caller's hosts — not a teammate's.

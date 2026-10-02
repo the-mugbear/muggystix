@@ -21,7 +21,7 @@ import json
 from typing import Dict, List, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, or_
+from sqlalchemy import case, func, or_
 from sqlalchemy.orm import Session
 
 from app.db import models
@@ -137,11 +137,8 @@ def scan_host_snapshots(
 
     host_ids = [host.id for _hist, host in rows]
     ports_by_host: Dict[int, List[ScanPortSnapshot]] = {}
-    # Per-host totals counted for EVERY observed row; snapshot objects (and
-    # the service_info JSON decode) built only for the first _SNAPSHOT_PORT_CAP
-    # per host (v2.332.1).  The cap used to be applied after constructing a
-    # snapshot for every row, so a page of broad-scan hosts materialised and
-    # parsed thousands of objects it then threw away.
+    # Per-host totals are counted over EVERY observed row; only the first
+    # _SNAPSHOT_PORT_CAP rows per host are fetched and turned into snapshots.
     observed_counts: Dict[int, int] = {}
     open_counts: Dict[int, int] = {}
     if host_ids:
@@ -152,13 +149,29 @@ def scan_host_snapshots(
         # port silently rewrote every older scan's "as scanned" view.  The
         # per-scan value has been written to PortScanHistory.service_info all
         # along; this is its first reader.
-        port_rows = (
+        # Counted and cut IN SQL (external review 2026-10-02 R2): the totals
+        # are window counts over every observed row, and only the first
+        # _SNAPSHOT_PORT_CAP rows of each host come back.  The cap used to be
+        # applied in Python, after every row — service_info included — had
+        # crossed from Postgres: 100 hosts × 10,000 ports was a million rows
+        # read to show 5,000.  Protocol and id break the tie between tcp and
+        # udp on one number, so the listed rows are the same on every read.
+        per_host = {"partition_by": models.Port.host_id}
+        ranked = (
             db.query(
-                models.Port.host_id,
-                models.Port.port_number,
-                models.Port.protocol,
-                models.PortScanHistory.state_at_scan,
-                models.PortScanHistory.service_info,
+                models.Port.host_id.label("host_id"),
+                models.Port.port_number.label("port_number"),
+                models.Port.protocol.label("protocol"),
+                models.PortScanHistory.state_at_scan.label("state_at_scan"),
+                models.PortScanHistory.service_info.label("service_info"),
+                func.row_number().over(
+                    order_by=(models.Port.port_number, models.Port.protocol, models.Port.id),
+                    **per_host,
+                ).label("position"),
+                func.count().over(**per_host).label("observed"),
+                func.sum(
+                    case((models.PortScanHistory.state_at_scan == "open", 1), else_=0)
+                ).over(**per_host).label("open_count"),
             )
             .select_from(models.PortScanHistory)
             .join(models.Port, models.PortScanHistory.port_id == models.Port.id)
@@ -166,16 +179,21 @@ def scan_host_snapshots(
                 models.PortScanHistory.scan_id == scan_id,
                 models.Port.host_id.in_(host_ids),
             )
-            .order_by(models.Port.port_number)
+            .subquery()
+        )
+        port_rows = (
+            db.query(ranked)
+            .filter(ranked.c.position <= _SNAPSHOT_PORT_CAP)
+            .order_by(ranked.c.host_id, ranked.c.position)
             .all()
         )
-        for host_id, number, protocol, state_at_scan, service_info in port_rows:
-            observed_counts[host_id] = observed_counts.get(host_id, 0) + 1
-            if state_at_scan == "open":
-                open_counts[host_id] = open_counts.get(host_id, 0) + 1
+        for row in port_rows:
+            host_id = row.host_id
+            observed_counts[host_id] = int(row.observed)
+            open_counts[host_id] = int(row.open_count or 0)
+            number, protocol = row.port_number, row.protocol
+            state_at_scan, service_info = row.state_at_scan, row.service_info
             shown = ports_by_host.setdefault(host_id, [])
-            if len(shown) >= _SNAPSHOT_PORT_CAP:
-                continue
             shown.append(
                 ScanPortSnapshot(
                     port_number=number,

@@ -169,11 +169,11 @@ def test_web_targets_download_yields_urls(client, db_session, test_project, scop
     assert set(resp.text.split()) == {"http://10.99.1.4/", "https://10.99.1.4/"}
 
 
-def _brief(port, service, tunnel=None):
+def _brief(port, service, tunnel=None, method=None, ip="192.168.7.245"):
     from app.services.scope_targets_service import ScopeHostBrief, ScopePortBrief
     return ScopeHostBrief(
-        host_id=1, ip_address="192.168.7.245", hostname=None,
-        open_ports=[ScopePortBrief(port=port, service=service, tunnel=tunnel)],
+        host_id=1, ip_address=ip, hostname=None,
+        open_ports=[ScopePortBrief(port=port, service=service, tunnel=tunnel, method=method)],
     )
 
 
@@ -203,6 +203,74 @@ def test_the_port_table_still_covers_unprobed_ports():
     targets = web_targets_from_hosts([_brief(443, None)])
     assert targets[0].protocol == "https"
     assert targets[0].url == "https://192.168.7.245/"
+
+
+@pytest.mark.parametrize("port, service, tunnel, method, expected", [
+    # TLS around something that is not HTTP is not a web target (these were
+    # exported as https://…:993/ and friends).
+    (993, "imap", "ssl", "probed", None),
+    (636, "ldap", "ssl", "probed", None),
+    (465, "smtp", "ssl", None, None),
+    # A service identified as something else is not web, whatever its port.
+    (443, "ssh", None, "probed", None),
+    (8080, "socks5", None, "probed", None),
+    (443, "ssh", None, None, None),          # a tool that does not say how: taken as identified
+    # HTTP, with and without TLS, on any port.
+    (3000, "http", "ssl", "probed", "https://192.168.7.245:3000/"),
+    (8443, "https-alt", None, "table", "https://192.168.7.245:8443/"),
+    (8080, "http-proxy", None, "table", "http://192.168.7.245:8080/"),
+    # Nothing identified the port: the port table decides, as before.
+    (443, None, None, None, "https://192.168.7.245/"),
+    (443, "unknown", None, "probed", "https://192.168.7.245/"),
+    (9999, None, None, None, None),
+    # nmap's guess from the port number is not an identification: 81 is
+    # "hosts2-ns" and 4443 "pharos" in its table.
+    (81, "hosts2-ns", None, "table", "http://192.168.7.245:81/"),
+    (4443, "pharos", None, "table", "https://192.168.7.245:4443/"),
+    (22, "ssh", None, "table", None),
+])
+def test_a_web_target_is_a_port_that_speaks_http(port, service, tunnel, method, expected):
+    """External review 2026-10-02 H2."""
+    from app.services.scope_targets_service import web_targets_from_hosts
+
+    urls = [t.url for t in web_targets_from_hosts([_brief(port, service, tunnel, method)])]
+    assert urls == ([expected] if expected else [])
+
+
+@pytest.mark.parametrize("ip, port, service, expected", [
+    ("2001:db8::1", 8443, "https", "https://[2001:db8::1]:8443/"),
+    ("2001:db8::1", 443, "https", "https://[2001:db8::1]/"),
+    ("2001:db8::1", 80, "http", "http://[2001:db8::1]/"),
+    ("2001:db8::1", 8080, "http", "http://[2001:db8::1]:8080/"),
+    ("10.0.0.1", 8080, "http", "http://10.0.0.1:8080/"),
+])
+def test_an_ipv6_address_is_bracketed_in_the_url(ip, port, service, expected):
+    """External review 2026-10-02 H3: ``https://2001:db8::1:8443/`` is not a
+    URL.  The record's ``ip_address`` stays as stored."""
+    from urllib.parse import urlsplit
+
+    from app.services.scope_targets_service import web_targets_from_hosts
+
+    target = web_targets_from_hosts([_brief(port, service, ip=ip)])[0]
+    assert target.url == expected and target.ip_address == ip
+    parts = urlsplit(target.url)
+    assert parts.hostname == ip and (parts.port or (443 if parts.scheme == "https" else 80)) == port
+
+
+def test_the_address_file_reads_addresses_and_nothing_else(client, db_session, test_project, scope):
+    """External review 2026-10-02 R1: ``live-hosts.txt`` loaded every host
+    entity and every open port of the scope to print one column."""
+    from app.services import scope_targets_service as targets
+
+    ips = ["10.99.1.20", "10.99.1.3", "10.99.1.100"]
+    _seed_hosts(db_session, test_project, scope, ips)
+    lines, statements = _port_statements(
+        db_session, lambda: list(targets.iter_scope_live_hosts(db_session, scope.id)))
+    assert lines == ["10.99.1.3\n", "10.99.1.20\n", "10.99.1.100\n"]
+    assert statements == [], "the address file read the ports table"
+    # The same addresses, in the same order, as the full host file.
+    assert [l.strip() for l in lines] == [
+        b.ip_address for b in targets.iter_scope_hosts(db_session, scope.id)]
 
 
 def test_the_parser_keeps_the_tunnel_attribute(db_session):
@@ -360,7 +428,7 @@ def test_a_hosts_line_is_built_from_one_read_of_its_ports(db_session, test_proje
             "services": ["domain", "http", "ssh"],  # distinct, non-null, sorted
             "open_ports": [
                 {"port": number, "protocol": protocol, "state": "open", "service": service,
-                 "product": None, "version": None, "tunnel": None}
+                 "product": None, "version": None, "tunnel": None, "method": None}
                 for number, protocol, service in [
                     (22, "tcp", "ssh"), (53, "tcp", "domain"), (53, "udp", "domain"),
                     (80, "tcp", "http"), (8080, "tcp", "http"), (9999, "tcp", None),

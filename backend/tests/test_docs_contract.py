@@ -41,7 +41,7 @@ WORKFLOW_ANCHORS = {
     # (Workflow B); both are in the one slice.
     "testing": "Propose Tests on Hosts",
     "reconnaissance": "Populate Host Data",
-    "assist": "Inventory-assist phase (interactive query",
+    "assist": "Inventory assist (interactive query",
 }
 # A shared-section heading that must survive into EVERY slice.
 SHARED_ANCHOR = "Instance Identity (verify once"

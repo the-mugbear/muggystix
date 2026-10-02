@@ -42,21 +42,18 @@ decision of its own — that invariant is stated in `mcp_tools.py` and pinned by
 `tools/list` returns the **whole** tool catalogue: a key binds to one
 project-scoped `AgentSession` that does every kind of work, so there is no
 per-workflow filtering any more (it was always presentation — the endpoint
-behind each tool is the decider). The kinds of work are not a sequence
-(v2.433.0): the operator drives the agent — there is no approval step,
-approved-tool list or required order. Test plans and execution runs were
-removed in v2.442.0: the agent proposes tests on hosts and records what it ran
-as evidence.
+behind each tool is the decider). The kinds of work are not a sequence: the operator drives the agent, in
+whatever order the work needs. The agent proposes tests on hosts and records
+what it ran as evidence.
 
 | Work | Opened by | Tools |
 |---|---|---|
 | Query / report | (nothing to open) | `assist_*` reads, `assist_count_hosts`, `assist_list_findings`, … |
-| Scope reads, scanning and uploads | (nothing to open) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`, and `named-targets.ndjson` for name scope) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload. There is no run to open — recon runs were removed (v2.433.0) |
+| Scope reads, scanning and uploads | (nothing to open) | `assist_list_scopes`, then `scope_list_subnets` / `scope_list_domains` for one scope's CIDRs and names; the target files (`/agent/scopes/{scope_id}/hosts.ndjson`, `live-hosts.txt`, `web-targets.txt`, and `named-targets.ndjson` for name scope) and the upload itself (`POST /agent/uploads`) are curl; `get_upload_job` polls an upload |
 | Host tests | (nothing to open) | `host_tests_list` (read first — do not duplicate), `host_tests_propose {tests: [...], agent_model?}` (up to 200 individual tests, each with its own `request_key` and, when it confirms one scanner observation, that observation's `vulnerability_id`; they appear on each host's page at once), `host_tests_get`, `host_tests_update {test_id, expected_revision, status?, …}` (409 when the revision is stale) |
 | Running a test | (nothing to open) | `host_tests_update` → `in_progress`, run it, `record_evidence {host_id, host_test_id, request_key, tool, outcome, summary, …}`, then `host_tests_update` → `done`. Evidence with outcome `finding`, `no_finding` or `inconclusive` is what marks the host tested |
 
-There is no setup call: the environment probe (`record_environment`) was
-removed in v2.434.0. The session records its **client** from the `initialize`
+There is no setup call. The session records its **client** from the `initialize`
 handshake — `clientInfo` name and version, when the handshake carries the key
 (curl agents: the first call's `User-Agent`) — and its prompt version at start
 or resume. The **model** is the agent's own report: an optional `agent_model`
@@ -156,8 +153,7 @@ the count.) Eight of the tools belong to the session rather than to any kind of 
 **`session_renew`** (same key, later deadline), **`end_session`** (only when
 the operator says they are finished — it revokes the key; takes an optional
 `agent_model`), **`read_agent_guide`**,
-**`list_tools`** (the tool catalogue — a reference, not a permission list; it was
-`list_approved_tools` before v2.433.0), **`suggest_tool`** (propose a tool the
+**`list_tools`** (the tool catalogue — a reference, not a permission list), **`suggest_tool`** (propose a tool the
 catalogue lacks, for a curator — it grants nothing), **`get_upload_job`** (poll
 an upload's parse) and **`submit_feedback`**.
 
@@ -177,16 +173,14 @@ of the finding's own images with `![caption](evidence:<id>)`:
 that list.
 
 Each tool also carries a `workflows` grouping tag — `assist`, `testing` (the
-`host_tests_*` tools; it replaced `plan_generation` and `execution` in
-v2.442.0) or `scope` (scope reads and uploads; it was `recon` until the recon
-runs were removed) — which the tool reference page groups by. It is
+`host_tests_*` tools) or `scope` (scope reads and uploads) — which the tool reference page groups by. It is
 presentation, never a filter.
 
 **The MCP layer makes no authorisation decision.** A `tools/call` loops back
 into the real `/agent/*` route forwarding the caller's key; that endpoint
 decides, checked against the operator's project role.
-v2.337.0 removed the per-workflow `tools/list` filter entirely — one project
-session does everything, so the whole catalogue is listed and whether a given
+One project session does everything, so `tools/list` returns the whole
+catalogue to every session and whether a given
 call succeeds is settled at the endpoint (a write your role does not allow, a
 host test whose revision has moved on).
 
@@ -212,16 +206,11 @@ and the upload with `curl`; attachment paths come back in `assist_get_finding`'s
 ## 3. Connecting a client
 
 **Configure ONE server, named `bluestick`, with one key (`BLUESTICK_API_KEY`
-where the client reads it from the environment).** Before v2.337.0 an operator
-connected up to four (`bluestick-recon` / `-plan` / `-exec` / `-assist`); those
-names are gone, and a stale entry under one of them will simply fail to
-authenticate. Three clients have a recipe — VS Code Copilot, Claude Code and
-Codex. Cursor's was removed in v2.275.0 because its config shape was never
-verified against a real install.
+where the client reads it from the environment).** Three clients have a recipe — VS Code Copilot, Claude Code and
+Codex.
 
-The Start Agent Session dialog (v2.433.0 — the per-object recon / plan
-generation / execution mints are gone; a page's "with your agent" button opens
-the same dialog) emits ready-to-paste config per client, built by `app/services/mcp_client_setup_service.py`. The
+The Start Agent Session dialog (a page's "with your agent" button opens the
+same dialog) emits ready-to-paste config per client, built by `app/services/mcp_client_setup_service.py`. The
 reference page shows the same recipes with `<your-session-key>` in place of a
 key — served from that same builder, because the page previously kept its own
 copy and the two drifted twice.
@@ -326,11 +315,9 @@ v2.370; the number moves, the file is the source), rendered for
 humans at `/tool-reference` and served to agents, unfiltered, by `list_tools`
 (`GET /api/v1/references/tools`).
 
-**It is a catalogue, not a permission list (v2.433.0).** It used to carry an
-`approved` status that agents were told was the only set they could run without
-asking; that allowlist went with the rest of the "agent on rails" model (and the
-server never enforced it). Migration `c7d2e9f4a1b6` turned every `approved` row
-into `reference`. What an agent runs is between it and its operator.
+**It is a catalogue, not a permission list.** A tool's status (`reference`,
+`suggested`, `rejected`) is curation, never a permission: what an agent runs is
+between it and its operator.
 
 * **`status`** says only where a row stands in the catalogue: `reference` (in
   it), `suggested` (an agent proposed it; awaiting a curator), `rejected` (a
@@ -361,8 +348,7 @@ go-ahead, and a name in scope does not put the address it resolves to in scope;
 write output into the working directory — reading or writing outside it,
 installing software or changing settings or credentials needs explicit
 go-ahead; record every command and its outcome verbatim and upload scanner
-output. There is no approved-tool allowlist, no plan approval, no mandatory
-per-host sanity check and no required order — those were the retired "rails".
+output. The server prescribes no tool list and no order of work.
 
 **BlueStick cannot enforce any of this.** The commands run on the operator's
 machine and the server sees only what the agent reports. The real boundary is
@@ -392,8 +378,7 @@ makes the agent's own words part of the audit trail.
   deadline has passed — revokes its key; its tests and
   evidence stay, for another session or a person to carry on. **A session's page**
   (`/agent-sessions/{id}`, by the session id — its only id, the one
-  `agent_identity` reports as `session_id`; an older `/assist-sessions/{id}`
-  link, which named a second id sessions had until v2.449.0, redirects there)
+  `agent_identity` reports as `session_id`)
   has its controls, its work, the notes it wrote (the durable output) and its
   API-call feed (the read trail).
 * **Agent API activity** — per session, on its page.

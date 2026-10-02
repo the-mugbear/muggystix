@@ -579,3 +579,70 @@ def test_a_host_page_carries_its_total_so_a_page_is_not_read_as_the_answer(clien
     assert (len(first["items"]), first["total"], first["has_more"]) == (2, 5, True)
     last = client.get("/api/v1/agent/assist/hosts", params={"limit": 2, "offset": 4}, headers=headers).json()
     assert (len(last["items"]), last["total"], last["has_more"], last["offset"]) == (1, 5, False, 4)
+
+
+# ---------------------------------------------------------------------------
+# Agent feedback #26 / #27 (acceptance run, 2026-10-02)
+# ---------------------------------------------------------------------------
+
+def test_scanner_rows_say_how_the_finding_stands_on_this_host(client, db_session, test_project):
+    """#27 — ``assist_get_host_vulnerabilities`` rows carried no finding state,
+    so an agent could not tell a row judged on this host from one whose issue
+    has a finding on OTHER hosts only.  The rows now carry what the host
+    inspector's rows carry, from the same rule."""
+    from tests.test_finding_spine import _shared_issue
+
+    hosts, vulns = _shared_issue(db_session, test_project)
+    pid = test_project.id
+    promoted = client.post(
+        f"/api/v1/projects/{pid}/vulnerabilities/{vulns[0].id}/promote",
+        json={"vuln_id": vulns[0].id, "scope": "host"},
+    )
+    assert promoted.status_code == 201, promoted.text
+    finding_id = promoted.json()["id"]
+    headers = _assist(client, pid)
+
+    def agent_row(host, vuln):
+        body = client.get(f"/api/v1/agent/assist/hosts/{host.id}/findings", headers=headers).json()
+        return next(r for r in body["findings"] if r["id"] == vuln.id)
+
+    def page_row(host, vuln):
+        body = client.get(f"/api/v1/projects/{pid}/hosts/{host.id}").json()
+        return next(r for r in body["vulnerabilities"] if r["id"] == vuln.id)
+
+    keys = ("finding_id", "finding_status", "finding_on_this_host", "finding_endpoint_status")
+    here, elsewhere = agent_row(hosts[0], vulns[0]), agent_row(hosts[1], vulns[1])
+    assert [here[k] for k in keys] == [finding_id, "confirmed", True, "open"]
+    # The issue has a finding, but this host is not on it: unjudged HERE.
+    assert [elsewhere[k] for k in keys] == [finding_id, "confirmed", False, None]
+    for host, vuln, row in ((hosts[0], vulns[0], here), (hosts[1], vulns[1], elsewhere)):
+        page = page_row(host, vuln)
+        assert [row[k] for k in keys] == [page[k] for k in keys], "the agent and the inspector disagree"
+
+
+def test_a_findings_endpoints_carry_the_id_a_proposal_needs(client, db_session, test_project):
+    """#26 — ``propose_endpoint_status`` takes ``finding_host_id`` and no agent
+    read returned it."""
+    from app.db.models_findings import FindingHost
+    from tests.test_finding_spine import _shared_issue
+
+    _hosts, vulns = _shared_issue(db_session, test_project)
+    pid = test_project.id
+    finding_id = client.post(
+        f"/api/v1/projects/{pid}/vulnerabilities/{vulns[0].id}/promote", json={"vuln_id": vulns[0].id},
+    ).json()["id"]
+    headers = _assist(client, pid)
+
+    detail = client.get(f"/api/v1/agent/assist/findings/{finding_id}", headers=headers).json()
+    stored = {
+        fh.id: fh.host_id for fh in db_session.query(FindingHost).filter(FindingHost.finding_id == finding_id)
+    }
+    assert len(stored) > 1
+    assert {h["finding_host_id"]: h["host_id"] for h in detail["hosts"]} == stored
+
+    endpoint = detail["hosts"][0]
+    proposed = client.post("/api/v1/agent/proposals/endpoint-status", headers=headers, json={
+        "finding_id": finding_id, "finding_host_id": endpoint["finding_host_id"], "host_status": "retest",
+        "rationale": "from the id the read returned",
+    })
+    assert proposed.status_code == 201, proposed.text

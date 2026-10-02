@@ -896,6 +896,43 @@ def test_a_draft_leaves_no_image_copies_behind_and_never_touches_another_reports
     assert (kept / f"{att}.png").is_file() and outside.is_dir()
 
 
+def test_a_failed_issue_never_removes_copies_it_no_longer_holds_the_lock_for(
+    client, db_session, test_project, storage, monkeypatch,
+):
+    """External review 2026-10-02 H1.  A request whose issue fails after the
+    images were copied rolls back — which releases the report's lock — and
+    used to remove the evidence folder afterwards.  A second request that
+    issued the same draft in between had its committed copies deleted: an
+    issued report whose images were gone.  The folder is left alone once the
+    lock is gone; the next attempt empties it under the lock."""
+    from app.api.v1.endpoints import client_reports
+
+    finding = _finding(db_session, test_project, description="d", impact="i", recommendation="r")
+    att = _image(client, test_project, finding)
+    report, _, _ = _dataset(db_session, client, test_project)
+    folder = storage / "client_reports" / str(test_project.id) / str(report["id"]) / "evidence"
+    real_enqueue = client_reports._enqueue
+
+    def failing_enqueue(*args, **kwargs):
+        # Stands for what another request's issue wrote into the folder
+        # between this request's rollback and its cleanup.
+        (folder / "theirs.png").write_bytes(PNG)
+        raise RuntimeError("the render job could not be queued")
+
+    monkeypatch.setattr(client_reports, "_enqueue", failing_enqueue)
+    with pytest.raises(RuntimeError):
+        _issue(client, test_project, report["id"])
+    assert (folder / "theirs.png").is_file(), "a failed issue removed copies it did not own"
+    db_session.expire_all()
+    assert str(db_session.get(Report, report["id"]).status).lower().endswith("draft")
+    assert db_session.query(ReportImage).filter_by(report_id=report["id"]).count() == 0
+
+    # The retry starts from an empty folder, under the lock: only its copies.
+    monkeypatch.setattr(client_reports, "_enqueue", real_enqueue)
+    assert _issue(client, test_project, report["id"]).status_code == 200
+    assert [p.name for p in folder.iterdir()] == [f"{att}.png"]
+
+
 def test_a_report_issued_before_the_copies_reads_the_live_attachment(client, db_session, test_project, storage):
     """No ``report_images`` rows (issued before this, or a report with no
     images): the resolver is the draft's, as it always was."""

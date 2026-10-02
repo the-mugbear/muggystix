@@ -136,6 +136,14 @@ _PAGE_OFFSET = Query(0, ge=0, description="Rows to skip, in the list's own order
 def get_my_findings(
     limit: int = _PAGE_LIMIT,
     offset: int = _PAGE_OFFSET,
+    need: Optional[Literal["decide", "write"]] = Query(
+        None,
+        description=(
+            "Only this kind of work: decide (under investigation, or a proposal waits "
+            "for a decision) or write (required report text missing, nothing to decide). "
+            "The two add up to the whole list."
+        ),
+    ),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
     project: Project = Depends(get_current_project),
@@ -143,8 +151,10 @@ def get_my_findings(
     """Findings the caller owns that need something from them — under
     investigation, required report text missing, a proposal to decide — each
     row's ``needs`` saying which.  Severity first.  ``total_open`` is the whole
-    list (``my_work.findings_needing_me``) whatever the page."""
-    return compute_my_findings(db, current_user, project, limit=limit, offset=offset)
+    list (``my_work.findings_needing_me``) whatever the page and ``need``;
+    ``need_counts`` are its two parts (``my_work.findings_to_decide`` /
+    ``findings_to_write``), each the size of the list its ``need`` returns."""
+    return compute_my_findings(db, current_user, project, limit=limit, offset=offset, need=need)
 
 
 @router.get(

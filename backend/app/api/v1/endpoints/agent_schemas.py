@@ -118,6 +118,22 @@ class AssistFinding(BaseModel):
         "smb_signing_not_required), whichever tool reported it; null for a "
         "scanner's own finding (v2.418.0)."
     ))
+    finding_id: Optional[int] = Field(None, description=(
+        "The project finding that covers this row's issue, if one exists "
+        "(read it with assist_get_finding). Null = no finding for the issue."
+    ))
+    finding_status: Optional[str] = Field(None, description=(
+        "That finding's status — the ISSUE's, not this host's."
+    ))
+    finding_on_this_host: Optional[bool] = Field(None, description=(
+        "True when the finding includes this host. False = a finding covers "
+        "the issue on other hosts only: this row is still unjudged HERE. "
+        "Null when there is no finding."
+    ))
+    finding_endpoint_status: Optional[str] = Field(None, description=(
+        "This host's own state on that finding (open / remediated / retest / "
+        "false_positive); null when the host is not on it."
+    ))
 
 
 class AssistFindingsResponse(BaseModel):

@@ -235,10 +235,12 @@ def report_image_dir(project_id: int, report_id: int) -> Path:
 
 
 def discard_report_images(project_id: int, report_id: int) -> None:
-    """Remove the copies ``freeze_report_images`` made — for an issue that did
-    not commit, at the start of the next attempt, and when the DRAFT is
-    discarded (review 2026-10-01 M2: a crash between the copy and the commit
-    left the folder, and nothing ever removed it).  Never called for a report
+    """Remove the copies ``freeze_report_images`` made — when an issue fails
+    while it still holds the report's lock, at the start of the next attempt,
+    and when the DRAFT is discarded.  NEVER after the issuing transaction has
+    rolled back: the lock is gone and the folder may hold a later request's
+    committed copies (external review 2026-10-02 H1).  (Review 2026-10-01 M2: a crash between the copy and the commit left
+    the folder, and nothing ever removed it.)  Never called for a report
     that was issued: the callers hold a draft.
 
     Only ever this report's ``evidence`` folder: the path is built from the
@@ -1399,8 +1401,11 @@ class ClientReportService:
         now = datetime.now(timezone.utc)
         dataset, reported, summary = self.build(report, number=number, issued_at=now)
         # The report's own copies of its images, before anything is marked
-        # issued: a missing file refuses the issue.  The caller removes the
-        # copies if the transaction does not commit (``discard_report_images``).
+        # issued: a missing file refuses the issue.  If the transaction does
+        # not commit AFTER this method returns, the copies stay until the next
+        # attempt (which empties the folder first, under this lock) or until
+        # the draft is discarded — the caller must not remove them once the
+        # lock is gone.
         freeze_report_images(self.db, report, dataset)
         try:
             report.snapshot = {

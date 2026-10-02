@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { WorkbenchResponse } from '../services/api';
 import {
-  NO_COUNTS, OPERATIONS_TABS, firstNonEmptyTab, operationsTabCounts, personalTotal,
+  NO_COUNTS, OPERATIONS_TABS, firstNonEmptyTab, needFromParams, operationsTabCounts,
   tabFromParams, tabListSize, tabSearch, testKindFromParams, tierFromParams,
 } from '../utils/operationsTabs';
 import { fromOperationsQueue, operationsBackPath } from '../utils/operationsQueue';
@@ -28,7 +28,7 @@ const workbench = (over: Partial<WorkbenchResponse> = {}): WorkbenchResponse => 
   followups: { items: [], total: 27 },
   my_work: {
     total: 101, hosts_in_review: 37, tests_assigned: 12, tests_on_hosts_in_review: 28,
-    findings_needing_me: 24, to_claim: 15,
+    findings_needing_me: 24, findings_to_decide: 3, findings_to_write: 21, to_claim: 15,
   },
   ...over,
 });
@@ -38,22 +38,29 @@ describe('operationsTabCounts', () => {
     expect([...OPERATIONS_TABS]).toEqual(['findings', 'hosts', 'tests', 'changed', 'pickup']);
   });
 
-  it('each tab’s count is the server’s; the three personal ones add up to "your queue"', () => {
+  it('each tab’s count is the server’s, and the kinds within a tab add up to it', () => {
     const c = operationsTabCounts(workbench(), 112);
-    expect(c).toEqual({ findings: 24, hosts: 37, tests: 40, toClaim: 15, changed: 27, pickup: 112 });
-    // The heading's total is the sum of the personal tabs — claimable tests
-    // are shared work, outside it.
-    expect((c.findings ?? 0) + (c.hosts ?? 0) + (c.tests ?? 0)).toBe(personalTotal(workbench()));
-    expect(personalTotal(workbench())).toBe(101);
+    expect(c).toEqual({
+      findings: 24, findingsDecide: 3, findingsWrite: 21,
+      hosts: 37,
+      tests: 40, testsAssigned: 12, testsInReview: 28,
+      toClaim: 15, changed: 27, pickup: 112,
+    });
+    // The lead says the kinds apart; each pair is its tab's count in parts.
+    expect((c.findingsDecide ?? 0) + (c.findingsWrite ?? 0)).toBe(c.findings);
+    expect((c.testsAssigned ?? 0) + (c.testsInReview ?? 0)).toBe(c.tests);
     // The Tests tab LISTS the claimable ones too.
     expect(tabListSize('tests', c)).toBe(55);
     expect(tabListSize('hosts', c)).toBe(37);
   });
 
-  it('without the server’s sum (an older backend) it adds the same groups', () => {
+  it('without the server’s sums (an older backend) the groups still count; the kinds of finding are not known', () => {
     const old = workbench({ my_work: undefined });
-    expect(operationsTabCounts(old, null)).toMatchObject({ findings: 24, hosts: 37, tests: 40, toClaim: 15 });
-    expect(personalTotal(old)).toBe(101);
+    expect(operationsTabCounts(old, null)).toMatchObject({
+      findings: 24, hosts: 37, tests: 40, testsAssigned: 12, testsInReview: 28, toClaim: 15,
+      // Not known — never 0.
+      findingsDecide: null, findingsWrite: null,
+    });
   });
 
   it('a count that is not known is null — never 0', () => {
@@ -61,13 +68,14 @@ describe('operationsTabCounts', () => {
     expect(operationsTabCounts(null, 9).pickup).toBe(9);
     expect(operationsTabCounts(workbench({ followups_unavailable: true }), 3).changed).toBeNull();
     expect(tabListSize('tests', NO_COUNTS)).toBeNull();
-    expect(personalTotal(null)).toBe(0);
+    expect(Object.values(NO_COUNTS).every((v) => v === null)).toBe(true);
   });
 });
 
 describe('firstNonEmptyTab', () => {
   const counts = (over: Partial<typeof NO_COUNTS>) => ({
-    findings: 0, hosts: 0, tests: 0, toClaim: 0, changed: 0, pickup: 0, ...over,
+    findings: 0, findingsDecide: 0, findingsWrite: 0, hosts: 0,
+    tests: 0, testsAssigned: 0, testsInReview: 0, toClaim: 0, changed: 0, pickup: 0, ...over,
   });
 
   it('is the first tab with rows, in bar order', () => {
@@ -101,6 +109,10 @@ describe('the URL', () => {
     expect(tabFromParams(p(''))).toBeNull();
     expect(testKindFromParams(p('kind=triage'))).toBe('triage');
     expect(testKindFromParams(p('kind=mine'))).toBeNull();
+    expect(needFromParams(p('need=decide'))).toBe('decide');
+    expect(needFromParams(p('need=write'))).toBe('write');
+    expect(needFromParams(p('need=everything'))).toBeNull();
+    expect(needFromParams(p(''))).toBeNull();
     expect(tierFromParams(p('tier=3'))).toBe(3);
     expect(tierFromParams(p('tier=9'))).toBeNull();
     expect(tierFromParams(p(''))).toBeNull();
@@ -114,6 +126,20 @@ describe('the URL', () => {
     expect(tabSearch(p('tab=tests&kind=triage'), 'tests')).toBe('?tab=tests&kind=triage');
     expect(tabSearch(p('tab=tests&kind=triage'), 'tests', null)).toBe('?tab=tests');
     expect(tabSearch('?start=x', 'findings')).toBe('?start=x&tab=findings');
+  });
+
+  it('the need belongs to the Findings tab, exactly as the kind belongs to Tests', () => {
+    expect(tabSearch(p('tab=hosts&tier=2'), 'findings', 'write')).toBe('?tab=findings&tier=2&need=write');
+    // Leaving Findings drops its filter; returning to it with none asked keeps it.
+    expect(tabSearch(p('tab=findings&need=write'), 'hosts')).toBe('?tab=hosts');
+    expect(tabSearch(p('tab=findings&need=write'), 'findings')).toBe('?tab=findings&need=write');
+    expect(tabSearch(p('tab=findings&need=write'), 'findings', null)).toBe('?tab=findings');
+    expect(tabSearch(p('tab=findings&need=write'), 'findings', 'decide')).toBe('?tab=findings&need=decide');
+    // One tab's filter never survives on the other.
+    expect(tabSearch(p('tab=findings&need=write'), 'tests', 'assigned')).toBe('?tab=tests&kind=assigned');
+    expect(tabSearch(p('tab=tests&kind=triage'), 'findings', 'decide')).toBe('?tab=findings&need=decide');
+    // A filter that is not this tab's is not written.
+    expect(tabSearch(p(''), 'findings', 'triage')).toBe('?tab=findings');
   });
 });
 

@@ -5,7 +5,8 @@
  * Top to bottom (5.331.0 — tabs, one list at a time; UI_STYLE_GUIDE §42):
  *
  *   header            title · Start Agent Session · updated-at + refresh
- *   lead              one sentence; every number opens the tab it counts
+ *   lead              the kinds of work said apart, no total; every number
+ *                     opens the tab (and filter) it counts
  *   since last visit  what changed while the reader was away (only then)
  *   blocked           stopped imports, with the action that unblocks them
  *   tab bar           Findings · Hosts · Tests · Changed since review · Pick up,
@@ -43,7 +44,7 @@ import {
   getInvestigationQueue,
   markWorkbenchSeen,
 } from '../services/api';
-import type { MyTaskReason } from '../services/api';
+import type { FindingNeed, MyTaskReason } from '../services/api';
 import { useProject } from '../contexts/ProjectContext';
 import { projectRoleAtLeast } from '../utils/projectRole';
 import { useProjectRole } from '../hooks/useProjectRole';
@@ -62,9 +63,9 @@ import { filenameSummary } from '../utils/filenameSummary';
 import { agentInstruction } from '../utils/agentRuns';
 import { cn } from '../utils/cn';
 import {
-  firstNonEmptyTab, operationsTabCounts, personalTotal, tabFromParams, tabSearch,
+  firstNonEmptyTab, needFromParams, operationsTabCounts, tabFromParams, tabSearch,
   testKindFromParams, tierFromParams,
-  type OperationsTab, type OperationsTabCounts,
+  type OperationsTab, type OperationsTabCounts, type TabFilter,
 } from '../utils/operationsTabs';
 import { useMyAssistSessions } from '../hooks/useMyAssistSessions';
 
@@ -279,14 +280,15 @@ const Operations: React.FC = () => {
       });
   }, []);
 
-  // The tab, the Pick up tier and the Tests kind live in the URL, so a link
-  // to "the exploitable criticals" or "what is free to claim" can be shared,
-  // survives a reload, and Back / Forward walk the tabs.  Nothing is
-  // remembered anywhere else.
+  // The tab, the Pick up tier, the Tests kind and the Findings need live in
+  // the URL, so a link to "the exploitable criticals", "what is free to
+  // claim" or "what needs a decision" can be shared, survives a reload, and
+  // Back / Forward walk the tabs.  Nothing is remembered anywhere else.
   const [pageParams, setPageParams] = useSearchParams();
   const urlTab = tabFromParams(pageParams);
   const tier = tierFromParams(pageParams);
   const testKind = testKindFromParams(pageParams);
+  const findingNeed = needFromParams(pageParams);
   const setTab = useCallback((tab: OperationsTab) => {
     // A new history entry: Back returns to the tab the reader came from.
     setPageParams(tabSearch(pageParams, tab));
@@ -299,6 +301,11 @@ const Operations: React.FC = () => {
   const setTestKind = useCallback((next: MyTaskReason | null) => {
     const params = new URLSearchParams(pageParams);
     if (next == null) params.delete('kind'); else params.set('kind', next);
+    setPageParams(params, { replace: true });
+  }, [pageParams, setPageParams]);
+  const setFindingNeed = useCallback((next: FindingNeed | null) => {
+    const params = new URLSearchParams(pageParams);
+    if (next == null) params.delete('need'); else params.set('need', next);
     setPageParams(params, { replace: true });
   }, [pageParams, setPageParams]);
 
@@ -472,7 +479,7 @@ const Operations: React.FC = () => {
   }, [defaultTab, workbench, workbenchLoading]);
   const tab = urlTab ?? defaultTab;
   // A link that opens a tab of this page, keeping the page's parameters.
-  const toTab = (target: OperationsTab, kind?: MyTaskReason | null) => tabSearch(pageParams, target, kind);
+  const toTab = (target: OperationsTab, filter?: TabFilter | null) => tabSearch(pageParams, target, filter);
 
   return (
     <div className="min-w-0 p-md md:p-lg">
@@ -621,6 +628,8 @@ const Operations: React.FC = () => {
             testKind={testKind}
             onTestKind={setTestKind}
             testGroups={workbench?.my_tasks?.group_counts ?? null}
+            findingNeed={findingNeed}
+            onFindingNeed={setFindingNeed}
           />
 
           <AgentSessionsLine refreshKey={refreshKey} />
@@ -639,98 +648,166 @@ const SetupBlock: React.FC<{ title: string; children: React.ReactNode }> = ({ ti
   </div>
 );
 
+/** One linked number-phrase of the lead. */
+interface LeadClause { key: string; to: string; text: string }
+
+const LeadLinks: React.FC<{ clauses: LeadClause[] }> = ({ clauses }) => (
+  <>
+    {clauses.map((c, i) => (
+      <React.Fragment key={c.key}>
+        {i > 0 && (i === clauses.length - 1 ? ' and ' : ', ')}
+        <Link to={c.to} className={LINK}>{c.text}</Link>
+      </React.Fragment>
+    ))}
+  </>
+);
+
+/** Lines two and three of the lead: the same sentence style, at reading weight. */
+const LEAD_NEXT_LINE = 'mt-xxs block text-metadata font-normal';
+
 /**
- * The page's lead (v5.267.0): what is waiting on the reader — their queue,
- * the hosts they reviewed that changed — then what stopped (imports) and what
- * can be picked up next (the untouched queue), from the same payloads the
- * sections below render, so the sentence and the sections cannot disagree.
- * 5.329.0 — every number is a link to the list it counts, and "your queue"
- * counts work: a finding you own is in it only when it needs you.  5.330.0 —
- * no "Across the team": the changed reviews are the reader's own.  5.331.0 —
- * the links open TABS (`?tab=`), and the queue is said in its three parts,
- * each the count on its tab; the caption is one line.  Blocked work colours
- * it; a queue alone does not (work is the page's normal state).
+ * The page's lead (v5.267.0), from the same payloads the tabs render, so the
+ * lead and the tabs cannot disagree.  5.329.0 — every number is a link to the
+ * list it counts.  5.330.0 — no "Across the team": the changed reviews are the
+ * reader's own.  5.331.0 — the links open TABS (`?tab=`).
+ *
+ * Owner, 2026-10-02 — NO grand total.  "You have 101 items in your
+ * queue" added unlike things: decisions, report writing, and tests the reader
+ * was never assigned (they sit on a host the reader reviews).  The kinds are
+ * said apart, in the order someone would do them:
+ *
+ *   1. what needs the reader — findings to decide, findings to write up, tests
+ *      assigned to them;
+ *   2. what the reader holds — hosts In Review (with the tests on them), and
+ *      their finished reviews that changed;
+ *   3. what can be picked up — stopped imports, the untouched queue, tests
+ *      free to claim.
+ *
+ * A clause whose number is 0 is left out; a count that is not known is never
+ * said as zero.  Blocked work colours the lead; work alone does not (it is
+ * the page's normal state).
  */
 const OperationsLead: React.FC<{
   workbench: WorkbenchResponse;
-  /** The tab bar's counts — the same numbers, so the sentence and the tabs
+  /** The tab bar's counts — the same numbers, so the lead and the tabs
    *  cannot disagree.  A count that is not known is never said as zero. */
   counts: OperationsTabCounts;
-  toTab: (tab: OperationsTab, kind?: MyTaskReason | null) => string;
+  toTab: (tab: OperationsTab, filter?: TabFilter | null) => string;
 }> = ({ workbench, counts, toTab }) => {
-  const total = personalTotal(workbench);
   const b = workbench.blockers;
   const known = !workbench.blockers_unavailable && b;
   const failed = known ? b.failed_import_count : 0;
   const partial = known ? b.partial_import_count : 0;
   const blocked = failed + partial;
-  // The reader's own reviews (5.330.0); a failed check is not counted as zero
-  // in words — its tab says "—".
-  const changed = counts.changed ?? 0;
-  const worth = counts.pickup ?? 0;
-  const claim = counts.toClaim ?? 0;
   const n = (v: number) => v.toLocaleString();
   const s = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
-  // The queue in its parts — each the count on its tab; they add up to `total`.
-  const part = (key: OperationsTab, v: number | null, one: string, many: string) =>
-    ((v ?? 0) > 0 ? [{ key, text: s(v ?? 0, one, many) }] : []);
-  const mine: Array<{ key: OperationsTab; text: string }> = [
-    ...part('findings', counts.findings, 'finding', 'findings'),
-    ...part('hosts', counts.hosts, 'host', 'hosts'),
-    ...part('tests', counts.tests, 'test', 'tests'),
-  ];
+  // 1 — what needs the reader, decisions first.
+  const decide = counts.findingsDecide ?? 0;
+  const write = counts.findingsWrite ?? 0;
+  // A server that does not say the two kinds apart: the findings as one.
+  const undivided = counts.findingsDecide == null && counts.findingsWrite == null ? (counts.findings ?? 0) : 0;
+  const assigned = counts.testsAssigned ?? 0;
+  const findingClauses: LeadClause[] = [];
+  if (decide > 0) {
+    findingClauses.push({
+      key: 'decide', to: toTab('findings', 'decide'),
+      text: `${s(decide, 'finding needs', 'findings need')} a decision`,
+    });
+  }
+  if (write > 0) {
+    findingClauses.push({
+      key: 'write', to: toTab('findings', 'write'),
+      text: decide > 0
+        ? `${s(write, 'needs', 'need')} report text`
+        : `${s(write, 'finding needs', 'findings need')} report text`,
+    });
+  }
+  if (undivided > 0) {
+    findingClauses.push({
+      key: 'findings', to: toTab('findings', null),
+      text: `${s(undivided, 'finding needs', 'findings need')} you`,
+    });
+  }
+  const assignedClause: LeadClause | null = assigned > 0
+    ? { key: 'assigned', to: toTab('tests', 'assigned'), text: `${s(assigned, 'test is', 'tests are')} assigned to you` }
+    : null;
+  const needsMe = findingClauses.length > 0 || assignedClause != null;
 
-  // What else the page holds: stopped imports, and what can be picked up next.
-  const also: Array<{ key: string; to: string; text: string }> = [
+  // 2 — what the reader holds.  Tests on those hosts are listed with them:
+  // nobody assigned them to the reader.
+  const hosts = counts.hosts ?? 0;
+  const onHosts = counts.testsInReview ?? 0;
+  // The reader's own reviews (5.330.0); a failed check is not counted as zero
+  // in words — its tab says "—".
+  const changed = counts.changed ?? 0;
+  const holds = hosts > 0 || onHosts > 0 || changed > 0;
+
+  // 3 — stopped imports, and what can be picked up next.
+  const worth = counts.pickup ?? 0;
+  const claim = counts.toClaim ?? 0;
+  const also: LeadClause[] = [
     failed > 0 ? { key: 'failed', to: IMPORT_ERRORS_PATH, text: `${s(failed, 'import', 'imports')} failed` } : null,
     partial > 0 ? { key: 'partial', to: IMPORT_ERRORS_PATH, text: `${s(partial, 'import', 'imports')} finished partial` } : null,
     worth > 0 ? { key: 'untouched', to: toTab('pickup'), text: `${s(worth, 'untouched host has', 'untouched hosts have')} a reason to look` } : null,
     claim > 0 ? { key: 'claim', to: toTab('tests', 'triage'), text: `${s(claim, 'test is', 'tests are')} free to claim` } : null,
-  ].filter((p): p is { key: string; to: string; text: string } => !!p);
+  ].filter((p): p is LeadClause => !!p);
 
-  const tone: LeadTone = blocked > 0 ? 'critical' : total > 0 || changed > 0 || also.length ? 'neutral' : 'clear';
+  const tone: LeadTone = blocked > 0 ? 'critical' : needsMe || holds || also.length ? 'neutral' : 'clear';
 
   return (
     <PostureLead
       tone={tone}
-      restsOn="Your queue is findings you own that need something, hosts you have In Review, and tests assigned to you or on those hosts; what is to pick up is nobody’s yet."
+      restsOn="A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you."
     >
-      {total > 0 ? (
+      <span className="block" data-testid="lead-needs-me">
+        {needsMe ? (
+          <>
+            <LeadLinks clauses={findingClauses} />
+            {findingClauses.length > 0 && assignedClause && '; '}
+            {assignedClause && <LeadLinks clauses={[assignedClause]} />}
+            .
+          </>
+        ) : 'Nothing is waiting on a decision from you.'}
+      </span>
+      {holds && (
         <>
-          You have {s(total, 'item', 'items')} in your queue
-          {mine.length > 0 && (
-            <>
-              {' — '}
-              {mine.map((p, i) => (
-                <React.Fragment key={p.key}>
-                  {i > 0 && (i === mine.length - 1 ? ' and ' : ', ')}
-                  <Link to={toTab(p.key, null)} className={LINK}>{p.text}</Link>
-                </React.Fragment>
-              ))}
-            </>
-          )}
-        </>
-      ) : 'Nothing is waiting on you'}
-      {changed > 0 && (
-        <>
-          {total > 0 ? ', and ' : ', but '}
-          <Link to={toTab('changed')} className={LINK}>
-            {s(changed, 'host you reviewed has', 'hosts you reviewed have')} changed since
-          </Link>
+          {' '}
+          <span className={LEAD_NEXT_LINE} data-testid="lead-holds">
+            {hosts > 0 ? (
+              <>
+                In review:{' '}
+                <Link to={toTab('hosts')} className={LINK}>{s(hosts, 'host', 'hosts')}</Link>
+                {onHosts > 0 && (
+                  <>
+                    , with{' '}
+                    <Link to={toTab('tests', 'in_review')} className={LINK}>
+                      {s(onHosts, 'test', 'tests')} on {hosts === 1 ? 'it' : 'them'}
+                    </Link>
+                  </>
+                )}
+              </>
+            ) : onHosts > 0 && (
+              <Link to={toTab('tests', 'in_review')} className={LINK}>
+                {s(onHosts, 'test is', 'tests are')} on hosts you review
+              </Link>
+            )}
+            {(hosts > 0 || onHosts > 0) && changed > 0 && '; '}
+            {changed > 0 && (
+              <Link to={toTab('changed')} className={LINK}>
+                {s(changed, 'host you reviewed has', 'hosts you reviewed have')} changed since
+              </Link>
+            )}
+            .
+          </span>
         </>
       )}
-      .
       {also.length > 0 && (
         <>
-          {' '}To pick up:{' '}
-          {also.map((part, i) => (
-            <React.Fragment key={part.key}>
-              {i > 0 && (i === also.length - 1 ? ' and ' : ', ')}
-              <Link to={part.to} className={LINK}>{part.text}</Link>
-            </React.Fragment>
-          ))}
-          .
+          {' '}
+          <span className={LEAD_NEXT_LINE} data-testid="lead-pick-up">
+            To pick up: <LeadLinks clauses={also} />.
+          </span>
         </>
       )}
     </PostureLead>

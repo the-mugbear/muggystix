@@ -44,6 +44,10 @@ class ScopePortBrief(BaseModel):
     #: name="http" tunnel="ssl", so an agent reading only `service` would call
     #: an HTTPS service on a non-standard port plain HTTP.
     tunnel: Optional[str] = None
+    #: How the service name was arrived at, when the tool said (nmap's
+    #: ``method``): "table" is a guess from the port number, "probed" an
+    #: identification.  None for tools that do not say.
+    method: Optional[str] = None
 
 
 class ScopeHostBrief(BaseModel):
@@ -154,6 +158,7 @@ def _briefs_for_hosts(db: Session, host_rows: List[Any]) -> List[ScopeHostBrief]
                 product=p.service_product,
                 version=p.service_version,
                 tunnel=p.service_tunnel,
+                method=p.service_method,
             )
         )
 
@@ -197,41 +202,60 @@ def iter_scope_hosts(
             db.expunge(row)
 
 
-# Common HTTP/HTTPS port → scheme, the fallback used when a port carries no
-# observed service name.
+# Common HTTP/HTTPS port → scheme, the fallback used when nothing identified
+# the port's service (see ``web_targets_from_hosts``).
 _WEB_PORT_SCHEMES: Dict[int, str] = {
     80: "http", 8080: "http", 8000: "http", 81: "http",
     443: "https", 8443: "https", 4443: "https",
 }
 
 
+#: Service names that say "nothing was identified".
+_UNIDENTIFIED_SERVICES = frozenset({"", "unknown"})
+
+
+def _url_host(address: str) -> str:
+    """An address as a URL's host: an IPv6 literal goes in brackets (RFC 3986)
+    — without them ``https://2001:db8::1:8443/`` cannot be told from an
+    address ending ``:8443``.  ``ip_address`` itself stays as stored."""
+    if ":" in address and not address.startswith("["):
+        return f"[{address}]"
+    return address
+
+
 def web_targets_from_hosts(hosts: List[ScopeHostBrief]) -> List[WebTarget]:
     """Derive http/https URLs from per-host open ports.
 
-    The observed service beats the port-number guess: a port whose service
-    was seen as TLS-wrapped http is https regardless of its number; the port
-    table is only the fallback for ports nothing probed.
+    A port is a web target when its service was named as HTTP; TLS around it
+    (``tunnel``) then makes it https whatever its number.  TLS alone does not:
+    imaps, ldaps and smtps are TLS-wrapped too, and were exported as https
+    URLs (external review 2026-10-02 H2).
+
+    The port table is the fallback for ports nothing identified: no service
+    name, "unknown", or a name that is only the scanner's guess from the port
+    number (nmap's ``method="table"`` — it calls 81 ``hosts2-ns`` and 4443
+    ``pharos`` without having asked).  A service identified as something else
+    (ssh on 443) is not a web target.
     """
     targets: List[WebTarget] = []
     for h in hosts:
         for p in h.open_ports:
-            svc = (p.service or "").lower()
+            svc = (p.service or "").strip().lower()
             tunnel = (getattr(p, "tunnel", None) or "").lower()
+            method = (getattr(p, "method", None) or "").lower()
             scheme = None
-            if svc:
-                if tunnel == "ssl" or "https" in svc or "ssl/http" in svc:
-                    scheme = "https"
-                elif "http" in svc:
-                    scheme = "http"
-            if scheme is None:
+            if "http" in svc:
+                scheme = "https" if tunnel == "ssl" or "https" in svc else "http"
+            elif svc in _UNIDENTIFIED_SERVICES or method == "table":
                 scheme = _WEB_PORT_SCHEMES.get(p.port)
             if scheme is None:
                 continue
             default_port = 443 if scheme == "https" else 80
+            authority = _url_host(h.ip_address)
             url = (
-                f"{scheme}://{h.ip_address}/"
+                f"{scheme}://{authority}/"
                 if p.port == default_port
-                else f"{scheme}://{h.ip_address}:{p.port}/"
+                else f"{scheme}://{authority}:{p.port}/"
             )
             targets.append(WebTarget(
                 host_id=h.host_id,
@@ -251,10 +275,16 @@ def iter_scope_hosts_ndjson(db: Session, scope_id: int) -> Iterator[str]:
 
 
 def iter_scope_live_hosts(db: Session, scope_id: int) -> Iterator[str]:
-    """One IP per line — an ``-iL`` target file."""
-    for brief in iter_scope_hosts(db, scope_id):
-        if brief.ip_address:
-            yield brief.ip_address + "\n"
+    """One IP per line — an ``-iL`` target file.
+
+    Reads the address column alone, in the scope's order: this file used to
+    go through ``iter_scope_hosts`` and so loaded every host entity and every
+    open port of the scope to print one column (external review 2026-10-02
+    R1)."""
+    addresses = _scope_hosts_query(db, scope_id).with_entities(models.Host.ip_address).all()
+    for (address,) in addresses:
+        if address:
+            yield address + "\n"
 
 
 def iter_scope_web_targets(db: Session, scope_id: int) -> Iterator[str]:

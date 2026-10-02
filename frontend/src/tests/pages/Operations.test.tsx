@@ -55,7 +55,7 @@ const emptyWorkbench = {
   my_findings: { items: [], total_open: 0 },
   my_work: {
     total: 0, hosts_in_review: 0, tests_assigned: 0, tests_on_hosts_in_review: 0,
-    findings_needing_me: 0, to_claim: 0,
+    findings_needing_me: 0, findings_to_decide: 0, findings_to_write: 0, to_claim: 0,
   },
   followups: { items: [], total: 0 },
   since_last_visit: {
@@ -195,11 +195,14 @@ const busy = (over: Record<string, unknown> = {}) => ({
   my_findings: { items: [], total_open: 24 },
   my_work: {
     total: 101, hosts_in_review: 37, tests_assigned: 12, tests_on_hosts_in_review: 28,
-    findings_needing_me: 24, to_claim: 15,
+    findings_needing_me: 24, findings_to_decide: 3, findings_to_write: 21, to_claim: 15,
   },
   followups: { items: [], total: 27 },
   ...over,
 });
+/** No finding needs the reader. */
+const NO_FINDINGS = { findings_needing_me: 0, findings_to_decide: 0, findings_to_write: 0 };
+const NEEDS = { decide: 3, write: 21 };
 const findingRow = (id: number) => ({
   finding_id: id, title: `Weak TLS ${id}`, severity: 'critical', status: 'open', host_id: null,
   host_count: 3, evidence_annotation_id: null, updated_at: null,
@@ -230,7 +233,9 @@ const busyQueue = { items: [queueRow], queue_total: 112, untouched_total: 251, t
 const withWork = (over: Record<string, unknown> = {}) => {
   mockedApi.getWorkbench.mockResolvedValue(busy(over));
   mockedApi.getInvestigationQueue.mockResolvedValue(busyQueue);
-  mockedApi.getMyFindingsPage.mockResolvedValue({ items: [findingRow(21), findingRow(1)], total_open: 24 });
+  mockedApi.getMyFindingsPage.mockResolvedValue({
+    items: [findingRow(21), findingRow(1)], total_open: 24, need_counts: NEEDS,
+  });
   mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [hostRow(1), hostRow(2)], in_review_count: 37, watching_count: 0 });
   mockedApi.getMyTestsPage.mockResolvedValue({
     items: [testRow(31, 'assigned'), testRow(32)], total_open: 55,
@@ -261,7 +266,7 @@ beforeEach(() => {
   mockedApi.getProjectCoverage.mockResolvedValue(baseCoverage);
   mockedApi.getWorkbench.mockResolvedValue(emptyWorkbench);
   mockedApi.getInvestigationQueue.mockResolvedValue(emptyQueue);
-  mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0 });
+  mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0, need_counts: { decide: 0, write: 0 } });
   mockedApi.getMyReviewHostsPage.mockResolvedValue({ items: [], in_review_count: 0, watching_count: 0 });
   mockedApi.getMyTestsPage.mockResolvedValue({ ...emptyWorkbench.my_tasks });
   mockedApi.getReviewFollowupsPage.mockResolvedValue({ items: [], total: 0 });
@@ -317,8 +322,10 @@ describe('Operations page', () => {
       const before = (x: Element, y: Element) =>
         // eslint-disable-next-line no-bitwise
         !!(x.compareDocumentPosition(y) & Node.DOCUMENT_POSITION_FOLLOWING);
-      const lead = screen.getByText(/in your queue/);
+      const lead = screen.getByTestId('lead-needs-me');
       expect(before(lead, screen.getByRole('tablist'))).toBe(true);
+      // No grand total anywhere on the page (owner, 2026-10-02).
+      expect(document.body).not.toHaveTextContent(/\bitems?\b|in your queue|101/);
       expect(before(screen.getByRole('tablist'), screen.getByRole('tabpanel'))).toBe(true);
       // The agent line closes the page.
       expect(before(screen.getByRole('tabpanel'), screen.getByText(/session of yours live now/))).toBe(true);
@@ -385,7 +392,7 @@ describe('Operations page', () => {
         'Findings0', 'Hosts0', 'Tests0', 'Changed since review0', 'Pick up0',
       ]);
       expect(selectedTab()).toBe('Pick up0');
-      expect(screen.getByText('Nothing is waiting on you.')).toBeInTheDocument();
+      expect(screen.getByText('Nothing is waiting on a decision from you.')).toBeInTheDocument();
     });
   });
 
@@ -394,7 +401,7 @@ describe('Operations page', () => {
       // No finding needs the reader; hosts are the first list with rows.
       withWork({
         my_findings: { items: [], total_open: 0 },
-        my_work: { ...busy().my_work, findings_needing_me: 0, total: 77 },
+        my_work: { ...busy().my_work, ...NO_FINDINGS, total: 77 },
       });
       const router = renderRouted();
       await screen.findByRole('link', { name: '10.9.0.1' });
@@ -410,7 +417,7 @@ describe('Operations page', () => {
         my_queue: { items: [], in_review_count: 0, watching_count: 0 },
         my_work: {
           total: 0, hosts_in_review: 0, tests_assigned: 0, tests_on_hosts_in_review: 0,
-          findings_needing_me: 0, to_claim: 15,
+          ...NO_FINDINGS, to_claim: 15,
         },
       });
       renderPage();
@@ -426,9 +433,9 @@ describe('Operations page', () => {
       // The last finding was dealt with; the page is refreshed.
       mockedApi.getWorkbench.mockResolvedValue(busy({
         my_findings: { items: [], total_open: 0 },
-        my_work: { ...busy().my_work, findings_needing_me: 0, total: 77 },
+        my_work: { ...busy().my_work, ...NO_FINDINGS, total: 77 },
       }));
-      mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0 });
+      mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 0, need_counts: { decide: 0, write: 0 } });
       fireEvent.click(screen.getByRole('button', { name: 'Refresh Operations' }));
       await waitFor(() => expect(tab(/^Findings/)).toHaveTextContent('Findings0'));
       expect(selectedTab()).toBe('Findings0');
@@ -471,36 +478,56 @@ describe('Operations page', () => {
   });
 
   describe('lead', () => {
-    it('is about the reader: their queue in its three parts, their changed reviews, then what to pick up — each a link to its tab', async () => {
+    const leadOf = async () => (await screen.findByTestId('lead-needs-me')).closest('p') as HTMLElement;
+
+    it('says each kind of work apart, in the order to do it, with NO total — each number a link to the list it counts', async () => {
       withWork({ blockers: { failed_import_count: 2, partial_import_count: 0, imports: [] } });
       const router = renderRouted('/operations?tab=hosts&tier=2');
-      const lead = (await screen.findByText(/in your queue/)).closest('p') as HTMLElement;
+      const lead = await leadOf();
       await within(lead).findByRole('link', { name: /untouched hosts have a reason to look/ });
+      // Three lines: what needs the reader, what they hold, what to pick up.
+      expect(screen.getByTestId('lead-needs-me')).toHaveTextContent(
+        /^3 findings need a decision and 21 need report text; 12 tests are assigned to you\.$/,
+      );
+      expect(screen.getByTestId('lead-holds')).toHaveTextContent(
+        /^In review: 37 hosts, with 28 tests on them; 27 hosts you reviewed have changed since\.$/,
+      );
+      expect(screen.getByTestId('lead-pick-up')).toHaveTextContent(
+        /^To pick up: 2 imports failed, 112 untouched hosts have a reason to look and 15 tests are free to claim\.$/,
+      );
+      expect(screen.getByTestId('lead-holds')).toHaveClass('block');
+      expect(screen.getByTestId('lead-pick-up')).toHaveClass('block');
       expect(lead).toHaveTextContent(
-        'You have 101 items in your queue — 24 findings, 37 hosts and 40 tests, and 27 hosts you reviewed have changed since. '
+        '3 findings need a decision and 21 need report text; 12 tests are assigned to you. '
+        + 'In review: 37 hosts, with 28 tests on them; 27 hosts you reviewed have changed since. '
         + 'To pick up: 2 imports failed, 112 untouched hosts have a reason to look and 15 tests are free to claim.',
       );
-      expect(lead).not.toHaveTextContent(/Across the team/);
-      // The links open tabs of this page, keeping its other parameters.
+      expect(lead).not.toHaveTextContent(/Across the team|You have|in your queue|\bitems?\b/);
+      // The links open tabs of this page — with the filter that lists exactly
+      // what was counted — keeping the page's other parameters.
       const href = (name: string | RegExp) => within(lead).getByRole('link', { name }).getAttribute('href');
-      expect(href('24 findings')).toBe('/operations?tab=findings&tier=2');
+      expect(href('3 findings need a decision')).toBe('/operations?tab=findings&tier=2&need=decide');
+      expect(href('21 need report text')).toBe('/operations?tab=findings&tier=2&need=write');
+      expect(href('12 tests are assigned to you')).toBe('/operations?tab=tests&tier=2&kind=assigned');
       expect(href('37 hosts')).toBe('/operations?tab=hosts&tier=2');
-      expect(href('40 tests')).toBe('/operations?tab=tests&tier=2');
+      expect(href('28 tests on them')).toBe('/operations?tab=tests&tier=2&kind=in_review');
       expect(href('27 hosts you reviewed have changed since')).toBe('/operations?tab=changed&tier=2');
       expect(href('112 untouched hosts have a reason to look')).toBe('/operations?tab=pickup&tier=2');
       // "Free to claim" opens the Tests tab narrowed to exactly those.
       expect(href('15 tests are free to claim')).toBe('/operations?tab=tests&tier=2&kind=triage');
       expect(href('2 imports failed')).toBe('/parse-errors?status=needs_attention');
-      // The one number that is not a link is the SUM of the three beside it —
-      // the three tabs' counts.
+      // NO number that is not a link: nothing is added up (it said "101 items").
       const plain = lead.cloneNode(true) as HTMLElement;
       plain.querySelectorAll('a').forEach((a) => a.remove());
-      expect(plain.textContent?.match(/\d+/g)).toEqual(['101']);
-      expect(24 + 37 + 40).toBe(101);
+      expect(plain.textContent?.match(/\d+/g)).toBeNull();
       // One line of caption.
-      expect(screen.getByText(/^Your queue is findings you own that need something/).textContent?.length).toBeLessThan(200);
+      const caption = screen.getByText(/^A decision is a finding under investigation or a proposal waiting for you/);
+      expect(caption).toHaveTextContent(
+        'A decision is a finding under investigation or a proposal waiting for you; tests on hosts you review are listed with those hosts, not counted as assigned to you.',
+      );
+      expect(caption.textContent?.length).toBeLessThan(200);
 
-      // A link switches the tab.
+      // A link switches the tab, with its filter.
       fireEvent.click(within(lead).getByRole('link', { name: '15 tests are free to claim' }));
       await screen.findByRole('table', { name: 'Tests to do' });
       expect(router.state.location.search).toBe('?tab=tests&tier=2&kind=triage');
@@ -508,12 +535,95 @@ describe('Operations page', () => {
       await waitFor(() => expect(mockedApi.getMyTestsPage).toHaveBeenLastCalledWith(
         'triage', expect.objectContaining({ offset: 0, limit: 10 }),
       ));
+      // …and from Tests, "need report text" opens Findings narrowed to those,
+      // dropping the Tests tab's kind.
+      fireEvent.click(within(await leadOf()).getByRole('link', { name: '21 need report text' }));
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(router.state.location.search).toBe('?tab=findings&tier=2&need=write');
+      expect(screen.getByRole('button', { name: /^Needs report text/ })).toHaveAttribute('aria-pressed', 'true');
+      await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
+        'write', expect.objectContaining({ offset: 0, limit: 10 }),
+      ));
+    });
+
+    it('the owner’s page: 3 to decide, 21 to write, 1 assigned; 37 hosts with 39 tests; 27 changed; 112 and 1 to pick up', async () => {
+      withWork({
+        my_work: { ...busy().my_work, tests_assigned: 1, tests_on_hosts_in_review: 39, to_claim: 1 },
+      });
+      renderPage();
+      expect(await leadOf()).toHaveTextContent(
+        '3 findings need a decision and 21 need report text; 1 test is assigned to you. '
+        + 'In review: 37 hosts, with 39 tests on them; 27 hosts you reviewed have changed since. '
+        + 'To pick up: 112 untouched hosts have a reason to look and 1 test is free to claim.',
+      );
+    });
+
+    it('one of each is singular', async () => {
+      withWork({
+        my_work: {
+          ...busy().my_work, hosts_in_review: 1, tests_assigned: 1, tests_on_hosts_in_review: 1,
+          findings_needing_me: 2, findings_to_decide: 1, findings_to_write: 1, to_claim: 1,
+        },
+        followups: { items: [], total: 1 },
+      });
+      mockedApi.getInvestigationQueue.mockResolvedValue({ ...busyQueue, queue_total: 1 });
+      renderPage();
+      const lead = await leadOf();
+      await within(lead).findByRole('link', { name: /a reason to look/ });
+      expect(lead).toHaveTextContent(
+        '1 finding needs a decision and 1 needs report text; 1 test is assigned to you. '
+        + 'In review: 1 host, with 1 test on it; 1 host you reviewed has changed since. '
+        + 'To pick up: 1 untouched host has a reason to look and 1 test is free to claim.',
+      );
+    });
+
+    it('a clause whose number is 0 is left out, and the first one names what it counts', async () => {
+      // Nothing to decide: "findings" is said by the report-text clause.
+      withWork({
+        my_work: {
+          ...busy().my_work, findings_needing_me: 21, findings_to_decide: 0,
+          tests_assigned: 0, tests_on_hosts_in_review: 0,
+        },
+        followups: { items: [], total: 0 },
+      });
+      renderPage();
+      const lead = await leadOf();
+      expect(screen.getByTestId('lead-needs-me')).toHaveTextContent(/^21 findings need report text\.$/);
+      expect(within(lead).getByRole('link', { name: '21 findings need report text' }))
+        .toHaveAttribute('href', '/operations?tab=findings&need=write');
+      expect(screen.getByTestId('lead-holds')).toHaveTextContent(/^In review: 37 hosts\.$/);
+    });
+
+    it('only tests assigned: no finding clause, no separator', async () => {
+      withWork({
+        my_work: { ...busy().my_work, ...NO_FINDINGS, hosts_in_review: 0, tests_on_hosts_in_review: 0 },
+      });
+      renderPage();
+      await leadOf();
+      expect(screen.getByTestId('lead-needs-me')).toHaveTextContent(/^12 tests are assigned to you\.$/);
+      // Nothing held in review but changed reviews: the line is those alone.
+      expect(screen.getByTestId('lead-holds')).toHaveTextContent(/^27 hosts you reviewed have changed since\.$/);
+    });
+
+    it('a server that does not say the kinds of finding apart never has them said as zero', async () => {
+      const { findings_to_decide: _d, findings_to_write: _w, ...older } = busy().my_work;
+      withWork({ my_work: older });
+      renderPage();
+      const lead = await leadOf();
+      expect(screen.getByTestId('lead-needs-me')).toHaveTextContent(/^24 findings need you; 12 tests are assigned to you\.$/);
+      expect(within(lead).getByRole('link', { name: '24 findings need you' }))
+        .toHaveAttribute('href', '/operations?tab=findings');
     });
 
     it('says nothing is waiting when nothing is, and never counts an unavailable queue', async () => {
       mockedApi.getInvestigationQueue.mockRejectedValue(new Error('503'));
       renderPage();
-      expect(await screen.findByText('Nothing is waiting on you.')).toBeInTheDocument();
+      const lead = await leadOf();
+      // Everything zero: one short sentence, and no other line.
+      expect(lead).toHaveTextContent(/^Nothing is waiting on a decision from you\.$/);
+      expect(screen.queryByTestId('lead-holds')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('lead-pick-up')).not.toBeInTheDocument();
+      expect(within(lead).queryByRole('link')).not.toBeInTheDocument();
       // The tab says the count could not be checked — never 0 — and so does its list.
       await waitFor(() => expect(tab(/^Pick up/)).toHaveTextContent('Pick up—'));
       expect(tab(/^Pick up/)).toHaveAccessibleName('Pick up: could not be checked');
@@ -527,8 +637,90 @@ describe('Operations page', () => {
     it('with an empty queue it still says a host the reader reviewed changed', async () => {
       mockedApi.getWorkbench.mockResolvedValue({ ...emptyWorkbench, followups: { items: [], total: 1 } });
       renderPage();
-      const lead = (await screen.findByText(/Nothing is waiting on you/)).closest('p') as HTMLElement;
-      expect(lead).toHaveTextContent('Nothing is waiting on you, but 1 host you reviewed has changed since.');
+      const lead = await leadOf();
+      expect(lead).toHaveTextContent(/^Nothing is waiting on a decision from you\. 1 host you reviewed has changed since\.$/);
+      expect(within(lead).getByRole('link', { name: '1 host you reviewed has changed since' }))
+        .toHaveAttribute('href', '/operations?tab=changed');
+    });
+  });
+
+  describe('the Findings tab’s filter (?need=)', () => {
+    const chip = (name: RegExp) => screen.getByRole('button', { name });
+    const chipTexts = () => within(screen.getByRole('group', { name: 'Filter by what the finding needs' }))
+      .getAllByRole('button').map((c) => c.textContent);
+
+    it('the chips show the server’s counts; selecting one asks for that list and writes ?need=', async () => {
+      withWork();
+      const router = renderRouted('/operations?tab=findings');
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(chipTexts()).toEqual(['All 24', 'Needs a decision3', 'Needs report text21']);
+      expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(null, expect.objectContaining({ offset: 0, limit: 10 }));
+      expect(screen.getByText('1–2 of 24')).toBeInTheDocument();
+
+      // Page two of the whole list, then the filter: back to the first page.
+      fireEvent.click(screen.getByRole('button', { name: 'Next 10 findings' }));
+      await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
+        null, expect.objectContaining({ offset: 10, limit: 10 }),
+      ));
+      mockedApi.getMyFindingsPage.mockResolvedValue({ items: [findingRow(5)], total_open: 24, need_counts: NEEDS });
+      fireEvent.click(chip(/^Needs report text/));
+      await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
+        'write', expect.objectContaining({ offset: 0, limit: 10 }),
+      ));
+      expect(router.state.location.search).toBe('?tab=findings&need=write');
+      expect(await screen.findByRole('link', { name: 'Weak TLS 5' })).toBeInTheDocument();
+      // Rows of the previous filter are gone, and the footer is the filtered list's size.
+      expect(screen.queryByRole('link', { name: 'Weak TLS 21' })).not.toBeInTheDocument();
+      expect(screen.getByText('1–1 of 21')).toBeInTheDocument();
+      expect(chip(/^Needs report text/)).toHaveAttribute('aria-pressed', 'true');
+      // The chips and the tab keep the whole list's counts.
+      expect(chipTexts()).toEqual(['All 24', 'Needs a decision3', 'Needs report text21']);
+      expect(tab(/^Findings/)).toHaveTextContent('Findings24');
+
+      // "All" clears it.
+      fireEvent.click(chip(/^All/));
+      await waitFor(() => expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(
+        null, expect.objectContaining({ offset: 0, limit: 10 }),
+      ));
+      expect(router.state.location.search).toBe('?tab=findings');
+    });
+
+    it('a reload with ?tab=findings&need=write opens that filter', async () => {
+      withWork();
+      renderPage('/operations?tab=findings&need=write');
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(chip(/^Needs report text/)).toHaveAttribute('aria-pressed', 'true');
+      expect(mockedApi.getMyFindingsPage).toHaveBeenCalledTimes(1);
+      expect(mockedApi.getMyFindingsPage).toHaveBeenCalledWith('write', expect.objectContaining({ offset: 0, limit: 10 }));
+      expect(screen.getByText('1–2 of 21')).toBeInTheDocument();
+    });
+
+    it('an unknown ?need= is no filter, and leaving the tab drops it', async () => {
+      withWork();
+      const router = renderRouted('/operations?tab=findings&need=everything');
+      await screen.findByRole('table', { name: 'Findings that need me' });
+      expect(mockedApi.getMyFindingsPage).toHaveBeenLastCalledWith(null, expect.anything());
+      expect(chip(/^All/)).toHaveAttribute('aria-pressed', 'true');
+      openTab(/^Hosts/);
+      await screen.findByRole('table', { name: 'Hosts I am reviewing' });
+      expect(router.state.location.search).toBe('?tab=hosts');
+    });
+
+    it('an empty filter says which kind is empty', async () => {
+      withWork();
+      mockedApi.getMyFindingsPage.mockResolvedValue({ items: [], total_open: 21, need_counts: { decide: 0, write: 21 } });
+      renderPage('/operations?tab=findings&need=decide');
+      expect(await screen.findByText(/^Nothing here — no finding you own is under investigation/)).toBeInTheDocument();
+    });
+
+    it('counts that are not known are a dash on the chips — never 0', async () => {
+      withWork();
+      mockedApi.getWorkbench.mockRejectedValue(new Error('offline'));
+      mockedApi.getMyFindingsPage.mockRejectedValue(new Error('HTTP 500'));
+      renderPage('/operations?tab=findings');
+      await screen.findByText('Couldn\'t load your work\'s counts');
+      await waitFor(() => expect(chipTexts()).toEqual(['All —', 'Needs a decision—', 'Needs report text—']));
+      expect(tab(/^Findings/)).toHaveTextContent('Findings—');
     });
   });
 
@@ -553,7 +745,8 @@ describe('Operations page', () => {
       ]);
       // No count to choose by: the first tab opens, and its list loads for itself.
       expect(await screen.findByRole('table', { name: 'Findings that need me' })).toBeInTheDocument();
-      expect(screen.queryByText(/in your queue|Nothing is waiting/)).not.toBeInTheDocument();
+      expect(screen.queryByTestId('lead-needs-me')).not.toBeInTheDocument();
+      expect(screen.queryByText(/Nothing is waiting/)).not.toBeInTheDocument();
     });
 
     it('while the counts load the bar is there, with no number invented', async () => {

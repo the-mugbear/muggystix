@@ -48,6 +48,12 @@ export function usePagedList<T, P extends ListPage<T> = ListPage<T>>(
   const depsKey = JSON.stringify(deps);
   const [chosen, setChosen] = useState({ page: 0, key: depsKey });
   const page = chosen.key === depsKey ? chosen.page : 0;
+  // …and it is forgotten with them: returning to an earlier filter (All →
+  // one kind → All) starts from the first page too, not the page that was
+  // left.  `page` is already 0 here, so this asks for nothing.
+  useEffect(() => {
+    setChosen((c) => (c.key === depsKey ? c : { page: 0, key: depsKey }));
+  }, [depsKey]);
   const setPage = useCallback(
     (next: number) => setChosen({ page: Math.max(0, next), key: depsKey }),
     [depsKey],

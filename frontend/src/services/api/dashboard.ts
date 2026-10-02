@@ -129,16 +129,27 @@ export interface MyFindingsResponse {
    *  report text missing, or a proposal to decide (v2.450.0; it counted every
    *  active finding owned before). */
   total_open: number;
+  /** `total_open` in its two parts (v2.453.0) — whole-list figures whatever
+   *  `need` and the page say; each is the size of the list its `need` returns. */
+  need_counts?: Record<FindingNeed, number>;
 }
 
-/** The caller's queue as one number (v2.450.0): the four groups "My work"
- *  lists, added up; `to_claim` is shared work, outside `total`. */
+/** What a finding asks of its owner (v2.453.0): `decide` — it is under
+ *  investigation, or a proposal about it waits for a decision; `write` — only
+ *  required report text is missing.  A finding with both is a `decide`. */
+export type FindingNeed = 'decide' | 'write';
+
+/** The caller's work, counted (v2.450.0); `to_claim` is shared work, outside
+ *  `total`.  The page says the kinds apart and never shows `total`. */
 export interface MyWorkTotals {
   total: number;
   hosts_in_review: number;
   tests_assigned: number;
   tests_on_hosts_in_review: number;
   findings_needing_me: number;
+  /** `findings_needing_me` in its two parts (v2.453.0); they add up to it. */
+  findings_to_decide?: number;
+  findings_to_write?: number;
   to_claim: number;
 }
 
@@ -321,9 +332,15 @@ export const getInvestigationQueue = async (
 // Each is the function that produces the tab's count in `GET /workbench`,
 // paged: the count on a tab is the size of the list it pages through.
 
-/** Findings the caller owns that need them; `total_open` is the whole list. */
-export const getMyFindingsPage = async (page: WorkbenchPage = {}): Promise<MyFindingsResponse> => {
-  const response = await api.get(`${p()}/workbench/findings`, { params: pageParams(page), signal: page.signal });
+/** Findings the caller owns that need them. With `need`, only that kind of
+ *  work; the list's size is `total_open` (both kinds) or `need_counts[need]`. */
+export const getMyFindingsPage = async (
+  need: FindingNeed | null = null,
+  page: WorkbenchPage = {},
+): Promise<MyFindingsResponse> => {
+  const params = pageParams(page);
+  if (need) params.need = need;
+  const response = await api.get(`${p()}/workbench/findings`, { params, signal: page.signal });
   return response.data;
 };
 

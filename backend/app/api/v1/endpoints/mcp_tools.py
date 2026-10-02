@@ -463,7 +463,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "specifics in a report, not just counts. NOTE: these are scanner rows — "
             "each `id` is a vulnerability id, NOT a project-Finding id, so do not "
             "pass it to assist_get_finding. The triaged project Findings (the spine "
-            "assist_list_findings / assist_get_finding work on) are a separate set."
+            "assist_list_findings / assist_get_finding work on) are a separate set. "
+            "Each row says which finding covers its issue, if any: `finding_id` / "
+            "`finding_status` (the issue's), `finding_on_this_host` (false = the "
+            "finding covers other hosts only, so this row is still unjudged here) "
+            "and `finding_endpoint_status` (this host's own state on it)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/findings",
@@ -731,10 +735,14 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # service its page uses (agent_assist_operations.py).
     "assist_get_workbench": {
         "description": (
-            "Your operator's Operations page, as they see it. my_work is their "
-            "queue as ONE number (total = hosts_in_review + tests_assigned + "
-            "tests_on_hosts_in_review + findings_needing_me; to_claim is shared "
-            "work outside it) — quote it for 'how much is waiting on me?'. "
+            "Your operator's Operations page, as they see it. my_work is what is "
+            "waiting on them BY KIND — answer 'how much is waiting on me?' with the "
+            "kinds apart, as the page does: findings_to_decide (under investigation, "
+            "or a proposal waits for their decision), findings_to_write (only "
+            "required report text missing; the two add up to findings_needing_me), "
+            "tests_assigned; then what they hold in review: hosts_in_review and "
+            "tests_on_hosts_in_review (on those hosts, not assigned to them). "
+            "to_claim is shared work; total is those parts added up. "
             "my_queue: hosts they are reviewing. my_tasks: host tests to do "
             "(group_counts counts each test once: assigned / in_review / triage). "
             "my_findings: findings they own that NEED them — each row's needs "
@@ -941,7 +949,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "to justify promoting it, the replies on that note's thread "
             "(`evidence_thread`), the finding's own comment thread, the affected "
             "hosts (with `name_id`/`fqdn` when a row is a named endpoint; "
-            "`host_count` is distinct addresses, `endpoint_count` rows), and "
+            "`host_count` is distinct addresses, `endpoint_count` rows; each "
+            "row's `finding_host_id` is what propose_endpoint_status and "
+            "record_evidence take), and "
             "references to any attached screenshots. Every note says whether a "
             "person or an agent wrote it (`actor_type`). Use this when writing "
             "a finding up: assist_list_findings gives you titles and "
@@ -1216,7 +1226,11 @@ TOOLS: Dict[str, Dict[str, Any]] = {
         "description": (
             "Record what you ran against a host and what came back — the tool, the "
             "command verbatim, the outcome, a one-line summary, and the raw output "
-            "(up to 5 MB, kept with the record). Pass `host_test_id` (with a "
+            "(kept with the record). An MCP request is limited to 1 MiB in all, "
+            "so send output larger than that with curl — POST /agent/evidence, "
+            "same fields, up to 5 MB of raw_output. Text only: you cannot upload an "
+            "image — save a screenshot in your working directory, name the file in "
+            "`summary`, and ask the operator to attach it to the finding. Pass `host_test_id` (with a "
             "`request_key`) when it answers a proposed test. Recorded as it "
             "happened and never changed; cite it from proposals (evidence_ids)."
         ),

@@ -733,8 +733,14 @@ project, and the same host could appear three times.  The shape is:
 - **The tab is in the URL** (`?tab=`, plus the tab's own filters), a click is
   a history entry, and nothing is remembered in localStorage.  With no `?tab=`
   the first NON-EMPTY tab in bar order opens — decided once per visit, so
-  finishing a list does not move the reader.  The lead sentence's numbers are
-  links that open tabs, not `#anchors`.
+  finishing a list does not move the reader.  The lead's numbers are links
+  that open a tab and its filter (`?kind=`, `?need=`), not `#anchors`.
+- **The lead never adds unlike work into one total** (owner, 2026-10-02 —
+  "101 items in your queue" summed decisions, report writing and tests the
+  reader was never assigned).  It says the kinds apart, in the order to act:
+  what needs a decision, what needs writing, what is assigned; then what the
+  reader holds in review; then what can be picked up.  A filter change starts
+  at page 1 (`usePagedList`).
 - **Every tab is a table** (§8): labelled headers — the age column included —
   explicit widths, one line per row, the full value on `title`.  The tab is
   the list's heading; the panel repeats none.

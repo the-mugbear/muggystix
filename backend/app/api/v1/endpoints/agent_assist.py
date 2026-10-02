@@ -70,7 +70,9 @@ from app.services.host_query import (
     host_weakness_flags,
 )
 from app.services.host_serialization import (
+    _vuln_coverage,
     exploit_count_maps,
+    issue_coverage_map,
     note_load_options,
     serialize_attribution,
     serialize_cert_facts,
@@ -1310,11 +1312,17 @@ def get_assist_host_findings(
         q = q.filter(Vulnerability.severity.in_(wanted)) if wanted else q.filter(False)
     total = q.count()
     rows = (
-        q.order_by(_SEVERITY_RANK, func.coalesce(Vulnerability.cvss_score, 0).desc(), Vulnerability.id)
+        q.options(selectinload(Vulnerability.promoted_findings))
+        .order_by(_SEVERITY_RANK, func.coalesce(Vulnerability.cvss_score, 0).desc(), Vulnerability.id)
         .offset(offset)
         .limit(limit)
         .all()
     )
+    # Which finding covers each row and how it stands ON THIS HOST — the host
+    # inspector's own rule (``issue_coverage_map`` / ``_vuln_coverage``), so an
+    # agent and the page cannot disagree (agent feedback #27, 2026-10-02: the
+    # rows carried no finding state, so "is this judged here?" had no answer).
+    coverage = issue_coverage_map(db, session.project_id, rows, host_id=host_id)
 
     # One join-free port lookup for the rows' port_ids → number/service.
     port_ids = {v.port_id for v in rows if v.port_id is not None}
@@ -1353,6 +1361,10 @@ def get_assist_host_findings(
             solution=(v.solution or None) and v.solution[:_DESC_CAP],
             evidence=(v.plugin_output or None) and v.plugin_output[:_EVIDENCE_CAP],
             check_id=v.check_id,
+            **{
+                key: value for key, value in _vuln_coverage(v, coverage).items()
+                if key != "finding_match"
+            },
         ))
     return AssistFindingsResponse(
         host_id=host_id,
@@ -2745,6 +2757,11 @@ class AssistFindingNote(BaseModel):
 
 
 class AssistFindingHost(BaseModel):
+    #: The endpoint row's own id — what ``propose_endpoint_status`` and
+    #: ``record_evidence`` take as ``finding_host_id``.  It was not returned,
+    #: so an agent could read an endpoint and had no way to name it (agent
+    #: feedback #26, 2026-10-02).
+    finding_host_id: int
     host_id: int
     ip_address: Optional[str] = None
     hostname: Optional[str] = None
@@ -2885,6 +2902,7 @@ def get_assist_finding(
     # and the totals come from one grouped count.
     hosts = [
         AssistFindingHost(
+            finding_host_id=r.finding_host_id,
             host_id=r.host_id,
             ip_address=r.ip_address,
             hostname=r.hostname,
@@ -2894,6 +2912,7 @@ def get_assist_finding(
         )
         for r in (
             db.query(
+                FindingHost.id.label("finding_host_id"),
                 FindingHost.host_id, FindingHost.name_id, FindingHost.host_status,
                 models.Host.ip_address, models.Host.hostname, models.DNSName.fqdn,
             )

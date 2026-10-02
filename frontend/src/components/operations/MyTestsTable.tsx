@@ -6,8 +6,7 @@
  * strongest: assigned to the reader, on a host the reader is reviewing, or
  * free to claim (unassigned, critical or high priority).  The kinds are the
  * filter chips, with the server's counts.  Which number is which is said on
- * the page: the first two kinds are the reader's (the tab's count, part of
- * "your queue"); the claimable ones are shared work and are NOT counted as
+ * the page: the first two kinds are the reader's (the tab's count); the claimable ones are shared work and are NOT counted as
  * theirs.
  *
  * A test's PRIORITY is not a severity: a neutral outline badge.  The row

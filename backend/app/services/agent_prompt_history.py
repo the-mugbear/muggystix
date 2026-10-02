@@ -21,6 +21,48 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.8.2",
+        "app_version": "2.453.2",
+        "summary": (
+            "From the acceptance run's feedback: assist_get_finding's hosts carry "
+            "finding_host_id (what propose_endpoint_status and record_evidence take), "
+            "and assist_get_host_vulnerabilities rows carry finding_id, finding_status, "
+            "finding_on_this_host and finding_endpoint_status — whether a scanner row "
+            "is judged ON THIS HOST, by the host inspector's rule. record_evidence "
+            "says an MCP request is limited to 1 MiB: larger output goes by curl to "
+            "POST /agent/evidence (5 MB). Images: an agent cannot upload one — it "
+            "saves screenshots in the working directory, names each file in the "
+            "evidence summary, and asks the operator to attach them to the finding."
+        ),
+    },
+    {
+        "version": "4.8.1",
+        "app_version": "2.453.1",
+        "summary": (
+            "web-targets.txt lists a port only when its service was identified as "
+            "HTTP, or when nothing identified it and its number is a common web port "
+            "(TLS-wrapped non-HTTP services and e.g. ssh on 443 are no longer listed); "
+            "IPv6 addresses are bracketed in the URL. hosts.ndjson ports carry "
+            "`method` (table = guessed from the port number, probed = identified). "
+            "The guide no longer describes retired designs (approval steps, plans, "
+            "runs): it states only how a session works now; no instruction changed."
+        ),
+    },
+    {
+        "version": "4.8.0",
+        "app_version": "2.453.0",
+        "summary": (
+            "The Operations lead no longer says one total ('N items in your queue'): "
+            "it says the kinds of work apart. assist_get_workbench's my_work gained "
+            "findings_to_decide (under investigation, or a proposal waits for the "
+            "operator's decision) and findings_to_write (only required report text "
+            "is missing) — they add up to findings_needing_me — and my_findings "
+            "carries the same figures as need_counts. Tests on hosts the operator "
+            "reviews are not 'assigned to them'. Answer 'what is waiting on me?' by "
+            "kind; total is still returned but is a sum of unlike things."
+        ),
+    },
+    {
         "version": "4.7.0",
         "app_version": "2.452.0",
         "summary": (

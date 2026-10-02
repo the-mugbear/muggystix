@@ -119,6 +119,57 @@ def test_findings_tab_count_is_the_list_it_pages_through(client, db_session, tes
     assert order == sorted(order)
 
 
+def test_findings_to_decide_and_to_write_are_the_lists_they_page_through(
+    client, db_session, test_project, test_user,
+):
+    """v2.453.0 — the lead says the two kinds of work apart; each number is
+    the list ``need=`` returns, and together they are the tab."""
+    from app.db.models_proposals import AgentProposal
+
+    pid = test_project.id
+
+    def finding(title, status, **text):
+        f = Finding(
+            project_id=pid, title=title, severity="high", status=status, source="manual",
+            owner_id=test_user.id, created_by_id=test_user.id, **text,
+        )
+        db_session.add(f)
+        db_session.flush()
+        return f
+
+    for i in range(27):                                   # more than a page
+        finding(f"Investigating {i}", "open")
+    for i in range(29):                                   # more than a page
+        finding(f"Unwritten {i}", "confirmed")
+    # Unwritten AND a proposal waiting: a decision comes first — counted once.
+    both = finding("Unwritten with a draft", "confirmed")
+    db_session.add(AgentProposal(
+        project_id=pid, kind="finding_text", status="pending", source="agent", finding_id=both.id,
+        field="description", payload={"value": "x"},
+    ))
+    finding("Done", "confirmed", description="d", impact="i", recommendation="r")
+    db_session.commit()
+
+    counts = _counts(client, pid)["my_work"]
+    assert (counts["findings_to_decide"], counts["findings_to_write"]) == (28, 29)
+    assert counts["findings_needing_me"] == 57
+
+    decide = _pages(client, pid, "/findings", need="decide")
+    write = _pages(client, pid, "/findings", need="write")
+    assert [len(p["items"]) for p in decide] == [25, 3, 0]
+    assert [len(p["items"]) for p in write] == [25, 4, 0]
+    # Every page says the same whole-list figures, the one past the end too.
+    for page in decide + write:
+        assert page["need_counts"] == {"decide": 28, "write": 29} and page["total_open"] == 57
+    decide_ids = {i["finding_id"] for p in decide for i in p["items"]}
+    write_ids = {i["finding_id"] for p in write for i in p["items"]}
+    assert both.id in decide_ids and not (decide_ids & write_ids)
+    assert len(decide_ids | write_ids) == 57
+    for p in write:
+        assert all([n["kind"] for n in i["needs"]] == ["missing_text"] for i in p["items"])
+    assert client.get(_wb(pid, "/findings"), params={"need": "other"}).status_code == 422
+
+
 # ---------------------------------------------------------------------------
 # Hosts
 # ---------------------------------------------------------------------------
@@ -348,7 +399,8 @@ def test_the_light_call_has_the_full_calls_counts_and_fewer_statements(
 
     assert light["my_work"] == full["my_work"] == {
         "total": 3, "hosts_in_review": 1, "tests_assigned": 0,
-        "tests_on_hosts_in_review": 1, "findings_needing_me": 1, "to_claim": 1,
+        "tests_on_hosts_in_review": 1, "findings_needing_me": 1,
+        "findings_to_decide": 1, "findings_to_write": 0, "to_claim": 1,
     }
     assert light["followups"]["total"] == full["followups"]["total"] == 1
     assert light["my_tasks"]["group_counts"] == full["my_tasks"]["group_counts"]

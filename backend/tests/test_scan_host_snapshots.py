@@ -229,3 +229,67 @@ def test_snapshot_says_whether_the_scan_authenticated(client, db_session, test_p
 
     body = client.get(f"/api/v1/projects/{pid}/scans/{scan.id}/host-snapshots").json()
     assert {r["ip_address"]: r["credentialed"] for r in body["items"]} == rows
+
+
+def test_the_port_cap_is_applied_before_the_rows_are_read(client, db_session, test_project):
+    """External review 2026-10-02 R2.  A row lists at most 50 ports, but every
+    observed row used to be fetched first.  The totals are still counted over
+    all of them, the listed ports are the first by number then protocol, and
+    no more than the cap comes back per host."""
+    from sqlalchemy import event
+
+    from app.services import scan_snapshot_service as snapshots
+
+    pid = test_project.id
+    scan = _scan(db_session, pid, "broad.xml")
+    other = _scan(db_session, pid, "other.xml")
+    wanted = {"10.70.0.1": 0, "10.70.0.2": 49, "10.70.0.3": 50, "10.70.0.4": 51, "10.70.0.5": 120}
+    for ip, count in wanted.items():
+        host = models.Host(project_id=pid, ip_address=ip, state="up")
+        db_session.add(host)
+        db_session.flush()
+        _observe(db_session, scan, host, state="up")
+        for number in range(1, count + 1):
+            port = _port(db_session, host, number, current_state="open")
+            # Every third port was closed when scanned.
+            db_session.add(models.PortScanHistory(
+                port_id=port.id, scan_id=scan.id,
+                state_at_scan="closed" if number % 3 == 0 else "open",
+            ))
+            # Another scan's observation of the same port is not this scan's.
+            db_session.add(models.PortScanHistory(port_id=port.id, scan_id=other.id, state_at_scan="open"))
+    # tcp and udp on one number: both listed, in a fixed order.
+    both = db_session.query(models.Host).filter_by(project_id=pid, ip_address="10.70.0.2").one()
+    udp = models.Port(host_id=both.id, port_number=1, protocol="udp", state="open", service_name="x")
+    db_session.add(udp)
+    db_session.flush()
+    db_session.add(models.PortScanHistory(port_id=udp.id, scan_id=scan.id, state_at_scan="open"))
+    db_session.commit()
+
+    fetched = []
+    bind = db_session.get_bind()
+    engine = getattr(bind, "engine", bind)
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "port_scan_history" in statement:
+            fetched.append(cursor)
+
+    event.listen(engine, "after_cursor_execute", record)
+    try:
+        page = snapshots.scan_host_snapshots(db_session, pid, scan.id)
+        rowcounts = [c.rowcount for c in fetched]
+    finally:
+        event.remove(engine, "after_cursor_execute", record)
+
+    rows = {r.ip_address: r for r in page.items}
+    for ip, count in wanted.items():
+        observed = count + (1 if ip == "10.70.0.2" else 0)
+        closed = count // 3
+        assert rows[ip].observed_port_count == observed, ip
+        assert rows[ip].open_port_count == observed - closed, ip
+        assert len(rows[ip].ports) == min(observed, 50), ip
+    assert [(p.port_number, p.protocol) for p in rows["10.70.0.2"].ports][:3] == [(1, "tcp"), (1, "udp"), (2, "tcp")]
+    assert [p.port_number for p in rows["10.70.0.5"].ports] == list(range(1, 51))
+    assert rows["10.70.0.5"].ports[2].state_at_scan == "closed"
+    # 0 + 50 + 50 + 50 + 50 rows crossed, not the 271 observed.
+    assert rowcounts == [200], rowcounts

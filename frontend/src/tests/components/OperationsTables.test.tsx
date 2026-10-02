@@ -37,7 +37,7 @@ import { render, screen, fireEvent, waitFor, within } from '@testing-library/rea
 import { MemoryRouter, useLocation } from 'react-router-dom';
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-import FindingsNeedingMeTable from '../../components/operations/FindingsNeedingMeTable';
+import FindingsNeedingMeTable, { type FindingsNeedingMeTableProps } from '../../components/operations/FindingsNeedingMeTable';
 import MyTestsTable, { type MyTestsTableProps } from '../../components/operations/MyTestsTable';
 import ReviewHostsTable from '../../components/operations/ReviewHostsTable';
 import type { ListState, Pager } from '../../components/operations/QueueParts';
@@ -96,8 +96,65 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe('Findings tab', () => {
-  const renderIt = (rows: MyFindingItem[] | null, total = rows?.length ?? 0, state = ok, page = 0) =>
-    inRouter(<FindingsNeedingMeTable rows={rows} state={state} pager={pager(total, page)} />);
+  const onNeed = vi.fn();
+  const table = (
+    rows: MyFindingItem[] | null, total: number, state: ListState, page: number,
+    over: Partial<FindingsNeedingMeTableProps> = {},
+  ) => (
+    <FindingsNeedingMeTable
+      rows={rows} state={state} pager={pager(total, page)}
+      needCounts={{ decide: 3, write: 21 }} need={null} onNeed={onNeed}
+      {...over}
+    />
+  );
+  const renderIt = (
+    rows: MyFindingItem[] | null, total = rows?.length ?? 0, state = ok, page = 0,
+    over: Partial<FindingsNeedingMeTableProps> = {},
+  ) => inRouter(table(rows, total, state, page, over));
+  const chips = () => within(screen.getByRole('group', { name: 'Filter by what the finding needs' }));
+
+  it('the chips are the two kinds of work, with the server’s counts', () => {
+    renderIt([finding(1)], 24);
+    expect(chips().getAllByRole('button').map((c) => c.textContent)).toEqual([
+      'All 24', 'Needs a decision3', 'Needs report text21',
+    ]);
+    expect(chips().getByRole('button', { name: /^All/ })).toHaveAttribute('aria-pressed', 'true');
+    expect(3 + 21).toBe(24);
+  });
+
+  it('a chip narrows the list; a second click, or "All", restores it', () => {
+    const { rerender } = renderIt([finding(1)], 24);
+    fireEvent.click(screen.getByRole('button', { name: /^Needs report text/ }));
+    expect(onNeed).toHaveBeenLastCalledWith('write');
+    rerender(<MemoryRouter>{table([finding(1)], 21, ok, 0, { need: 'write' })}</MemoryRouter>);
+    const on = screen.getByRole('button', { name: /^Needs report text/ });
+    expect(on).toHaveAttribute('aria-pressed', 'true');
+    // The footer is the filtered list's size.
+    expect(screen.getByText('1–1 of 21')).toBeInTheDocument();
+    fireEvent.click(on);
+    expect(onNeed).toHaveBeenLastCalledWith(null);
+    fireEvent.click(screen.getByRole('button', { name: /^Needs a decision/ }));
+    expect(onNeed).toHaveBeenLastCalledWith('decide');
+    fireEvent.click(screen.getByRole('button', { name: /^All/ }));
+    expect(onNeed).toHaveBeenLastCalledWith(null);
+  });
+
+  it('a count that is not known is a dash, never 0', () => {
+    renderIt([finding(1)], 1, ok, 0, { needCounts: { decide: null, write: null } });
+    expect(chips().getAllByRole('button').map((c) => c.textContent)).toEqual([
+      'All —', 'Needs a decision—', 'Needs report text—',
+    ]);
+  });
+
+  it('a narrowed list with nothing in it says which kind is empty', () => {
+    const { unmount } = renderIt([], 0, ok, 0, { need: 'decide', needCounts: { decide: 0, write: 21 } });
+    expect(screen.getByText('Nothing here — no finding you own is under investigation or has a proposal waiting for a decision.')).toBeInTheDocument();
+    // The chips stay, so the reader can leave the empty filter.
+    expect(screen.getByRole('button', { name: /^Needs a decision/ })).toHaveAttribute('aria-pressed', 'true');
+    unmount();
+    renderIt([], 0, ok, 0, { need: 'write', needCounts: { decide: 3, write: 0 } });
+    expect(screen.getByText('Nothing here — no finding you own is only missing required report text.')).toBeInTheDocument();
+  });
 
   it('one table: severity, #, finding, what is owed, how long it has waited', () => {
     renderIt([
