@@ -1,6 +1,6 @@
 # Supported Upload Formats
 
-> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26)
+> **Last verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-02)
 
 Upload is **staged**: choose files → review formats → import. BlueStick detects each file's format and shows how it was recognised — **by structure** (the content alone identifies it), **by filename only** (just a hint — you confirm or choose), or **not recognised** (a parser it would merely try). Only a structural match is ready to import without you. If detection picked the wrong tool, choose the format in the review: the file is then parsed as exactly that and nothing else, so a wrong choice fails visibly instead of silently routing elsewhere. Nothing is parsed until you press Import. The table below summarises the parser coverage and what your source tools need to export.
 
@@ -38,6 +38,8 @@ Upload is **staged**: choose files → review formats → import. BlueStick dete
 - **Files are retained for `INGESTION_RETAIN_FILES_DAYS` (default 7) after a job finishes**, then only the bytes are removed — the job row stays. Retry-with-a-different-format and Re-process work only inside that window. A staged file nobody starts expires after 24 hours.
 - The review stages 4 files at a time and starts 6 at a time, however many you select.
 - Nessus files commit in batches (`NESSUS_COMMIT_BATCH_SIZE`, default 50 hosts) to keep database pressure manageable.
+- **Every import can be cancelled and has a time limit.** All parsers report progress, so a cancel, a worker shutdown and `INGESTION_JOB_TIMEOUT` (default 1800 s — 30 minutes) reach every format. A very large file that needs longer fails with "Job timed out" — raise the variable before importing it.
+- **An import that does not finish leaves no scan.** A failed, cancelled, timed-out or killed import is removed: its scan, the hosts and ports only it created, and the observations and DNS records it first recorded. A host someone has worked on (a note, a review, a tag, a finding, a test, evidence) is kept. It does **not** undo changes it made to hosts and ports that already existed, the names it added to the Names inventory, or conflict history — see [`PARSERS.md`](./PARSERS.md) ("What a failed import leaves").
 - **Parser quality stats** (v2.22.0) — parsers that drop records report `skipped_count` and a free-text `parser_warnings` string on the ingestion job row, and (v2.418.0, NetExec so far) the lines they did not interpret, as redacted shapes. Visible on **Inventory → Ingestion Results**; useful for spotting silent data loss in malformed inputs.
 
 ## Quick Tips

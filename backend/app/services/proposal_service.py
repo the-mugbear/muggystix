@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Dict, Iterable, List, Optional, Tuple
 
 from fastapi import HTTPException
-from sqlalchemy import func, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
@@ -745,6 +745,32 @@ def pending_per_finding(db: Session, finding_ids: List[int]) -> Dict[int, int]:
     pairs = direct.union(via_observation).subquery()
     rows = db.query(pairs.c.fid, func.count()).group_by(pairs.c.fid).all()
     return {fid: n for fid, n in rows}
+
+
+def has_pending_proposal_condition():
+    """SQL: this ``Finding`` has a pending proposal about it — the same two
+    routes as :func:`_about_findings` / :func:`pending_per_finding` (it names
+    the finding, or promotes / dismisses an observation that evidences it), as
+    a condition on ``Finding`` so a list can be filtered by it.  Operations'
+    "Findings that need me" does; ``pending_per_finding`` then counts them for
+    the rows shown, and ``test_operations_redesign`` pins the two together."""
+    pending = AgentProposal.status == ProposalStatus.PENDING.value
+    direct = (
+        exists()
+        .where(pending, AgentProposal.finding_id == Finding.id)
+        .correlate(Finding)
+    )
+    via_observation = (
+        exists()
+        .where(
+            pending,
+            AgentProposal.kind.in_(_OBSERVATION_KINDS),
+            AgentProposal.vulnerability_id == FindingVulnerability.vuln_id,
+            FindingVulnerability.finding_id == Finding.id,
+        )
+        .correlate(Finding)
+    )
+    return or_(direct, via_observation)
 
 
 def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] = None) -> Dict[str, int]:

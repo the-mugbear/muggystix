@@ -54,7 +54,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     tool: 'Masscan',
     formats: '.xml / .json / .txt',
     desc: 'XML (-oX), JSON (-oJ) or list (-oL) output.',
-    hint: 'scanner="masscan" in XML; "masscan" in the filename for JSON; "Timestamp: … Host: … Ports:" lines in a list.',
+    hint: 'scanner="masscan" in XML; JSON records carrying ip + a nested ports array (or "masscan" in the filename); a list by its "open tcp <port> <ip>" rows, the "#masscan" header or "Timestamp: … Host: … Ports:" lines.',
   },
   {
     tool: 'Naabu',
@@ -66,13 +66,13 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
     tool: 'RustScan',
     formats: '.txt',
     desc: 'Console output: "Open 10.0.0.1:22" lines or bracketed lists ("10.0.0.1 -> [22,80]"); IPv6 as "Open [2001:db8::1]:22".',
-    hint: 'Put "rustscan" in the filename or keep the banner in the file.',
+    hint: 'Recognised by its "Open <ip>:<port>" or "<ip> -> [ports]" lines, or the RustScan banner; "rustscan" in the filename is only a hint.',
   },
   // ── Vulnerability scanners ─────────────────────────────────────────────
   {
     tool: 'Nessus',
     formats: '.nessus / .xml',
-    desc: 'Nessus export (.nessus, not the HTML report). Severity-0 findings are skipped when the switch above is on.',
+    desc: 'Nessus export (.nessus, not the HTML report). Informational (severity 0) results are skipped or kept by the project’s import setting (Project settings), stated in this dialog. Whether the scan authenticated to each host (credentialed or not) is recorded and shown per host on the scan’s page.',
     hint: '.nessus routes directly; .xml is checked for NessusClientData content.',
   },
   {
@@ -83,20 +83,20 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   },
   {
     tool: 'Nuclei',
-    formats: '.json / .jsonl',
+    formats: '.json / .jsonl / .ndjson',
     desc: '-je JSON export or -jsonl lines. Every template match becomes a scanner observation with Nuclei’s severity; results with no IP (DNS / file templates) are reported as skipped.',
     hint: 'Records carrying template-id with info / matched-at; the filename is not used.',
   },
   // ── Web probing ────────────────────────────────────────────────────────
   {
     tool: 'httpx (ProjectDiscovery)',
-    formats: '.json / .jsonl',
+    formats: '.json / .jsonl / .ndjson',
     desc: 'Web probe output (-json). Feeds the Web Interfaces view alongside EyeWitness.',
     hint: '"httpx" in the filename, or records carrying url + tech / webserver.',
   },
   {
     tool: 'WhatWeb',
-    formats: '.json / .jsonl',
+    formats: '.json / .jsonl / .ndjson',
     desc: '--log-json fingerprint: title, server header and detected tech stack. No favicon hash or TLS detail (WhatWeb does not emit them).',
     hint: '"whatweb" in the filename, or records carrying target + plugins.',
   },
@@ -121,7 +121,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'DirBuster / Gobuster / Feroxbuster / ffuf / Dirsearch',
     formats: '.json / .csv / .txt',
-    desc: 'Directory brute-force output. Discovered paths are folded into the service description (first 50 kept).',
+    desc: 'Directory brute-force output. Each discovered path is kept (status, size, tool) and shown in the host’s Discovered paths section; path: finds hosts by it.',
     hint: 'Put the tool name in the filename; ffuf/feroxbuster/dirsearch JSON and gobuster "(Status: NNN)" text are also recognised by shape.',
   },
   // ── Names and DNS ──────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   },
   {
     tool: 'dnsx (ProjectDiscovery)',
-    formats: '.json / .jsonl',
+    formats: '.json / .jsonl / .ndjson',
     desc: 'DNS resolution run locally against your resolvers (-j -resp). A/AAAA/CNAME/MX/NS/TXT/SOA/SRV/CAA/PTR records are ingested, plus any other type dnsx lists; PTR answers set the host name. A successful zone transfer (-axfr) is kept record by record, the import says which server allowed it, and a server that is a host of the project gets the scanner observation "DNS zone transfer allowed". Resolution failures are reported as parser warnings.',
     hint: '"dnsx" in the filename, or records carrying host + a record-type array or an axfr object.',
   },
@@ -153,7 +153,7 @@ export const SUPPORTED_FORMATS: SupportedFormat[] = [
   {
     tool: 'SMBMap',
     formats: '.json / .txt',
-    desc: 'SMB host enumeration. Text output must keep the "[+] <ip>" host lines. Share details are not retained.',
+    desc: 'SMB share enumeration. Text output must keep the "[+] <ip>" host lines. The share table (name, permissions, comment) and the session (NULL / guest / authenticated) are kept and shown under the host’s SMB / AD enumeration.',
     hint: '"smbmap" in the filename, or "[+]" host lines with a Disk column.',
   },
   {

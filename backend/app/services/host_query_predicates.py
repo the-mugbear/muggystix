@@ -949,8 +949,8 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
       * ``in_review`` / ``in_review_any`` → some teammate has it In Review.
       * ``reviewed`` → some teammate has marked it Reviewed.
 
-    Per-user posture ("hosts assigned to me", "my in-review queue") is served
-    by the ``assigned`` filter and the Operations My-Queue, not here.  Any
+      * ``mine`` → the CALLER has it In Review (v2.450.0), the one per-user
+        value; "assigned to me" is the ``assigned`` filter.  Any
     other value (the retired ``watching`` follow state) falls through to the
     caller's own row so a legacy saved view / DSL query still resolves.
     """
@@ -968,6 +968,14 @@ def follow_predicate(db: Session, status: str, current_user: User) -> ColumnElem
             HostFollow.status == FollowStatus.REVIEWED.value
         )
         return models.Host.id.in_(reviewed)
+    if status == "mine":
+        # The CALLER has it In Review — exactly Operations' "In review" group
+        # (``compute_my_attention_queue``), so its count opens its list.
+        mine = db.query(HostFollow.host_id).filter(
+            HostFollow.user_id == current_user.id,
+            HostFollow.status == FollowStatus.IN_REVIEW.value,
+        )
+        return models.Host.id.in_(mine)
     # Legacy per-user fallback (e.g. the retired 'watching' state).
     follow_ids = db.query(HostFollow.host_id).filter(
         HostFollow.user_id == current_user.id, HostFollow.status == status
@@ -986,6 +994,58 @@ def review_conclusion_predicate(db: Session, conclusions: Sequence[str]) -> Colu
         HostFollow.review_conclusion.in_(list(conclusions)),
     )
     return models.Host.id.in_(concluded)
+
+
+# --- changed since review ---------------------------------------------------
+# What "the host changed after it was reviewed" means, ONCE: an open port
+# first seen after ``HostFollow.reviewed_at``, or a critical / high scanner
+# observation recorded after it.  Operations' "Changed since review" queue
+# (``operations_read_service.compute_review_followups``) builds its rows from
+# these two conditions and ``has:changed_since_review`` lists the same hosts,
+# so the queue's count and the Hosts list it opens cannot disagree.  Measured
+# against ``reviewed_at`` — never ``updated_at``, which every view bumps.  A
+# review with no baseline (NULL) has nothing to be "after".
+
+def port_after_review_condition(follow=HostFollow) -> ColumnElement:
+    """An open ``Port`` row first seen after ``follow``'s review."""
+    return and_(
+        follow.reviewed_at.isnot(None),
+        models.Port.state == "open",
+        models.Port.first_seen > follow.reviewed_at,
+    )
+
+
+def vuln_after_review_condition(follow=HostFollow) -> ColumnElement:
+    """A critical / high ``Vulnerability`` row recorded after ``follow``'s review."""
+    return and_(
+        follow.reviewed_at.isnot(None),
+        Vulnerability.severity.in_((VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH)),
+        Vulnerability.created_at > follow.reviewed_at,
+    )
+
+
+def changed_since_review_predicate(db: Session) -> ColumnElement:
+    """Host with a finished review (anyone's) that it changed after."""
+    hf = aliased(HostFollow)
+    new_port = (
+        exists()
+        .where(models.Port.host_id == hf.host_id, port_after_review_condition(hf))
+        .correlate(hf)
+    )
+    new_vuln = (
+        exists()
+        .where(Vulnerability.host_id == hf.host_id, vuln_after_review_condition(hf))
+        .correlate(hf)
+    )
+    return (
+        exists()
+        .where(
+            hf.host_id == models.Host.id,
+            hf.status == FollowStatus.REVIEWED.value,
+            or_(new_port, new_vuln),
+        )
+        .correlate(models.Host)
+    )
 
 
 def assigned_predicate(db: Session, value: str, current_user: User) -> Optional[ColumnElement]:

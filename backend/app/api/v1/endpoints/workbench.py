@@ -15,10 +15,10 @@ drift, with no router-to-router dependency (CR4-2).
 """
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -37,8 +37,10 @@ from app.services.operations_read_service import (
     compute_investigation_queue,
     InvestigationQueueResponse,
     MyActivityResponse,
+    OperationsMeasures,
 )
-from app.services.workbench_service import WorkbenchResponse, compute_workbench
+from app.services.host_follow_service import HostFollowService
+from app.services.workbench_service import WorkbenchResponse, compute_measures, compute_workbench
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -58,6 +60,15 @@ class MarkSeenResponse(BaseModel):
     last_viewed_at: datetime
 
 
+class StillReviewedRequest(BaseModel):
+    host_ids: List[int] = Field(..., min_length=1, max_length=200)
+
+
+class StillReviewedResponse(BaseModel):
+    #: The hosts whose review date was moved (every one asked for).
+    host_ids: List[int]
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -71,9 +82,17 @@ def get_workbench(
     include_investigate: bool = Query(
         True,
         description=(
-            "Include the engagement-wide 'Worth a look' queue. Operations passes "
+            "Include the engagement-wide untouched queue ('Untouched, with a reason'). Operations passes "
             "false and loads it from GET /workbench/investigate so the personal "
             "sections are not held up by it (v2.424.1)."
+        ),
+    ),
+    include_measures: bool = Query(
+        True,
+        description=(
+            "Include the measures strip's project-wide counts (hosts, tested, "
+            "untouched with a critical observation). Operations passes false and "
+            "loads GET /workbench/measures beside this call (v2.450.0)."
         ),
     ),
     db: Session = Depends(get_db),
@@ -86,33 +105,62 @@ def get_workbench(
     workbench cannot drift.  ``since_last_visit`` reflects the durable
     per-user cursor; advance it with ``POST /workbench/seen``.
     """
-    return compute_workbench(db, current_user, project, include_investigate=include_investigate)
+    return compute_workbench(
+        db, current_user, project,
+        include_investigate=include_investigate, include_measures=include_measures,
+    )
+
+
+@router.get(
+    "/measures",
+    response_model=OperationsMeasures,
+    summary="The Operations measures: hosts, hosts tested, untouched hosts with a critical observation",
+)
+def get_workbench_measures(
+    db: Session = Depends(get_db),
+    project: Project = Depends(get_current_project),
+):
+    """The project-wide numbers of the Operations strip, on their own request
+    (v2.450.0) so the page's first paint does not wait for them.  Each is
+    counted with the predicate its Hosts list uses — ``has:tested`` and
+    ``has:untouched has:critical`` — so a number is the length of the list it
+    opens.  503 on failure — never zeros, which would read as "nothing tested,
+    nothing exposed"."""
+    try:
+        return compute_measures(db, project)
+    except Exception:
+        logger.exception("operations measures failed for project %s", project.id)
+        db.rollback()
+        raise HTTPException(status_code=503, detail="The Operations measures could not be computed.")
 
 
 @router.get(
     "/investigate",
     response_model=InvestigationQueueResponse,
-    summary="The 'Worth a look' queue alone — untouched hosts with a reason, in stated tier order",
+    summary="'Untouched, with a reason' alone — untouched hosts with a reason, in stated tier order",
 )
 def get_investigation_queue(
     tier: Optional[int] = Query(None, ge=1, le=5, description="Only this tier's hosts (1 = exploitable critical … 5 = scans disagree); the totals stay whole-queue"),
+    limit: int = Query(25, ge=1, le=100),
+    offset: int = Query(0, ge=0, description="Rows to skip, in the queue's own order (v2.450.0: Operations pages the queue in place)."),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
     """The same queue ``GET /workbench`` embeds, on its own request (v2.424.1).
 
     ``tier`` narrows the rows to one tier (v2.427.0); ``queue_total`` and
-    ``tier_counts`` still describe the whole queue.
+    ``tier_counts`` still describe the whole queue, whatever ``tier`` /
+    ``limit`` / ``offset`` say.
 
     A failure is a 503 that says so — never an empty queue, which would read
     as "every host has been touched".
     """
     try:
-        return compute_investigation_queue(db, project, limit=25, tier=tier)
+        return compute_investigation_queue(db, project, limit=limit, tier=tier, offset=offset)
     except Exception:
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()
-        raise HTTPException(status_code=503, detail="The 'Worth a look' queue could not be computed.")
+        raise HTTPException(status_code=503, detail="The untouched-hosts queue could not be computed.")
 
 
 @router.get(
@@ -133,6 +181,44 @@ def get_address_terrain(
         logger.exception("address terrain failed for project %s", project.id)
         db.rollback()
         raise HTTPException(status_code=503, detail="The address terrain could not be computed.")
+
+
+@router.post(
+    "/followups/still-reviewed",
+    response_model=StillReviewedResponse,
+    summary="'Still reviewed': the caller saw what changed after their review and it stands — re-stamp the review date",
+)
+def mark_still_reviewed(
+    body: StillReviewedRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+    project: Project = Depends(get_current_project),
+):
+    """Move ``reviewed_at`` to now on the CALLER'S OWN finished reviews of
+    these hosts (v2.450.0), so they leave "Changed since review" until they
+    change again.  The conclusion and summary are untouched.  Who may: whoever
+    may set their own review status (``POST /hosts/{id}/follow``) — a review
+    is its reviewer's; nobody re-stamps someone else's.
+
+    All or nothing: if any host is not in the project, has no finished review
+    of the caller's, or was concluded ``needs_evidence`` (re-open it or change
+    the conclusion instead), nothing is written and the 409 names them
+    (``detail.host_ids``).
+    """
+    refused = HostFollowService(db).restamp_reviews(project.id, current_user.id, body.host_ids)
+    if refused:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": (
+                    f"{len(refused)} of {len(set(body.host_ids))} hosts have no finished review of "
+                    "yours that can be confirmed (not reviewed by you, or concluded “needs more "
+                    "evidence”). Nothing was changed."
+                ),
+                "host_ids": refused,
+            },
+        )
+    return StillReviewedResponse(host_ids=sorted(set(body.host_ids)))
 
 
 @router.post(

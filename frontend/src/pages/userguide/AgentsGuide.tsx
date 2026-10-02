@@ -53,7 +53,7 @@ const sections: GuideSection[] = [
         </Para>
         <Para>
           Pages that deal with one object — a scope, a host, a host selection — have a button such
-          as <em>Scan with your agent</em>, <em>Propose tests</em> or <em>Run these</em>. It opens
+          as <em>Scan with your agent</em>, <em>Propose tests</em> or <em>Ask agent</em>. It opens
           the same start dialog with a one-line task to copy (for example{' '}
           <Mono>Propose tests in BlueStick for these hosts only (host ids): 12, 14.</Mono>); if your session is
           already live, the dialog says so and you paste the task to that agent instead of
@@ -73,8 +73,9 @@ const sections: GuideSection[] = [
           leave the project, or your account is disabled, the key follows immediately.
         </Para>
         <UnorderedList>
-          <li><strong>Reads</strong> need current project membership — a viewer's agent sees what a viewer sees.</li>
-          <li><strong>Bulk exports</strong> (the whole-project dossier, host dumps, target lists, evidence files) need <strong>auditor</strong>, the same floor the Reports and Export pages have.</li>
+          <li><strong>Starting a session</strong> needs <strong>auditor</strong> or above on the project; a viewer is not offered <em>Start Agent Session</em>.</li>
+          <li><strong>Reads</strong> follow the page they mirror — an agent sees what its operator's role sees there.</li>
+          <li><strong>Bulk exports</strong> (the whole-project dossier, host dumps, target lists) need <strong>auditor</strong>, the same floor the Reports page and the export controls have.</li>
           <li><strong>Writes</strong> to project data — uploads, host tests, evidence records, notes, corrections — need <strong>analyst</strong>. A 403 on a write is the guardrail working, not a fault.</li>
           <li>Renewing its key and filing feedback are about the session, not the project, so any member's agent can do them.</li>
         </UnorderedList>
@@ -108,8 +109,9 @@ const sections: GuideSection[] = [
             what is live and each session with the tests it proposed and the evidence it recorded;
             a session's own page shows what it read and wrote — its API activity filters by host,
             target IP and status code — and has its Resume and End controls;{' '}
-            <strong>Workflows → Tool Activity</strong> answers "which agent touched this host".
-            Agents never reach user or admin surfaces.
+            <strong>Workflows → Tool Activity</strong> answers "was this, at this time, part of
+            our testing?" — uploaded scans and the commands agents recorded, by time, tool and
+            target IP, across your projects. Agents never reach user or admin surfaces.
           </AlertDescription>
         </Alert>
       </div>
@@ -135,6 +137,22 @@ const sections: GuideSection[] = [
           renewal is accepted even after expiry, so it never has to be re-bootstrapped mid-job.
           Renewal keeps working until the session reaches its maximum lifetime (7 days by default).
           You do not have to do anything, and the agent should never re-run a scan because of it.
+        </Para>
+        <Subhead>What a session's state means</Subhead>
+        <Para>
+          A session is one row with one id — the number in its page address
+          (<Mono>/agent-sessions/&lt;id&gt;</Mono>) is the same one its uploads, tests, evidence,
+          notes and API calls carry. Agent Sessions shows where each stands:
+        </Para>
+        <UnorderedList>
+          <li><strong>Live</strong> — the key is valid: an agent can use the session now.</li>
+          <li><strong>Resumable</strong> — the key ran out (or was rotated away) but the session is inside its lifetime. <em>Resume</em> reconnects an agent to it.</li>
+          <li><strong>Expired</strong> — the session is past its maximum lifetime and was never ended. It cannot be resumed; start a new one. Its work stays.</li>
+          <li><strong>Ended</strong> — the agent or a person ended it; the key is revoked.</li>
+        </UnorderedList>
+        <Para>
+          Operations and Agent Sessions print the same sentence about the project's sessions — how
+          many are live now, and how many wait to be resumed.
         </Para>
         <Subhead>Ending</Subhead>
         <Para>
@@ -253,7 +271,7 @@ const sections: GuideSection[] = [
           <li><strong>Planned</strong> — a host with a test that is proposed or in progress (<Mono>has:planned</Mono>). <strong>Tested</strong> — a host with evidence of a test that ran: a finding, no finding, or inconclusive (<Mono>has:tested</Mono>). An attempt that could not run does not count.</li>
           <li><strong>A test is closed by its result</strong>, not by a "done" button — a test nobody ran is dismissed with a reason instead.</li>
           <li><strong>Two people, one test</strong> — a change made on an out-of-date copy is refused, and the list is read again, rather than one overwriting the other.</li>
-          <li><strong>Your queue</strong> — tests assigned to you, tests on hosts you have in review, and unassigned critical or high tests anyone may claim are on Operations under My work.</li>
+          <li><strong>Your queue</strong> — tests assigned to you and tests on hosts you have in review are on Operations under My work; unassigned critical or high tests anyone may claim are listed beside them, under Available to claim, and are not counted as yours.</li>
           <li><strong>A finding</strong> an agent believes its evidence shows is a <em>proposal</em> for a person to accept — see Proposals.</li>
         </UnorderedList>
       </div>
@@ -276,12 +294,14 @@ const sections: GuideSection[] = [
         <Para>
           The agent runs the <strong>same boolean query language</strong> as the Hosts page (see
           Triage → Host search syntax), so it can answer questions the narrow filters can't —
-          including operator-relative ones, because <Mono>follow:</Mono> and <Mono>assigned:</Mono>{' '}
-          resolve to you, the person who started the session:
+          including operator-relative ones, because <Mono>follow:mine</Mono> and{' '}
+          <Mono>assigned:me</Mono> resolve to you, the person who started the session (the other{' '}
+          <Mono>follow:</Mono> values — <Mono>in_review</Mono>, <Mono>reviewed</Mono>,{' '}
+          <Mono>none</Mono> — are about the whole team's review):
         </Para>
         <UnorderedList>
           <li>"Give me all hosts with port 21 exposed" → <Mono>port:21</Mono>.</li>
-          <li>"Show me the hosts I have in review" → <Mono>follow:in_review</Mono>.</li>
+          <li>"Show me the hosts I have in review" → <Mono>follow:mine</Mono>.</li>
           <li>"What's assigned to me?" → <Mono>assigned:me</Mono>.</li>
           <li>"Which hosts are exposed to Log4Shell?" → <Mono>cve:CVE-2021-44228 OR vuln:"log4j"</Mono>.</li>
           <li>Project-wide questions have their own tools — finding counts by severity, unowned findings, coverage, the worst segment, posture and patterns — so totals are computed once rather than rebuilt from per-host pages.</li>
@@ -315,9 +335,11 @@ const sections: GuideSection[] = [
           <li>
             <strong>The HTTP client.</strong> In PowerShell, bare <Mono>curl</Mono> is an alias for{' '}
             <Mono>Invoke-WebRequest</Mono> and rejects curl's flags. The pasted prompt says so; the
-            agent should use <Mono>curl.exe -sk</Mono> or{' '}
-            <Mono>Invoke-RestMethod -SkipCertificateCheck</Mono>, and build JSON bodies with{' '}
-            <Mono>ConvertTo-Json</Mono> rather than bash single quotes.
+            agent should use <Mono>curl.exe -s</Mono> or <Mono>Invoke-RestMethod</Mono>, and build
+            JSON bodies with <Mono>ConvertTo-Json</Mono> rather than bash single quotes. It should
+            not skip certificate checking (<Mono>-k</Mono>, <Mono>-SkipCertificateCheck</Mono>)
+            unless you tell it to: that accepts any server claiming BlueStick's address. Trust the
+            certificate instead (next item).
           </li>
           <li>
             <strong>The certificate.</strong> Install the local root CA once, elevated:{' '}

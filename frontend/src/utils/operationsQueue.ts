@@ -13,13 +13,36 @@ export interface OperationsNavState {
   fromOperations: true;
   /** The section's hosts, in the order they were shown. */
   hostIds?: number[];
-  /** What to call the queue in the position counter ("2 of 5 in Worth a look"). */
+  /** What to call the queue in the position counter ("2 of 5 in Untouched, with a reason"). */
   queueLabel?: string;
   /** The section holds more than Operations had loaded, so `hostIds` is its
    *  first part. A flag, not a number: the server's totals count ROWS, and a
    *  row is not always a host. */
   queuePartial?: boolean;
 }
+
+// -- the exact Hosts list behind each Operations count (5.329.0) -------------
+// Every count on the page opens the list it counted.  Each query below is the
+// predicate the server counted with; `backend/tests/test_operations_redesign.py`
+// pins count == list for every one of them.
+
+/** "Changed since review": changed after a finished review, or a review
+ *  concluded "needs more evidence". */
+export const CHANGED_SINCE_REVIEW_QUERY = 'has:changed_since_review OR conclusion:needs_evidence';
+/** The hosts the CALLER has In Review (`follow:in_review` is the team's). */
+export const MY_REVIEW_QUERY = 'follow:mine';
+/** Every host nobody has touched, with or without a reason. */
+export const UNTOUCHED_QUERY = 'has:untouched';
+/**
+ * The untouched queue's tiers that a Hosts query expresses exactly.  Tier 4
+ * (a high-value service on a new or changed host) and tier 5 (scans disagree)
+ * have no query — the page pages those in place and says so.
+ */
+export const TIER_QUERY: Record<number, string> = {
+  1: 'has:untouched AND has:critical_exploit',
+  2: 'has:untouched AND has:critical AND NOT has:critical_exploit',
+  3: 'has:untouched AND has:exploit AND NOT has:critical',
+};
 
 const HOST_PATH = /^\/hosts\/(\d+)(?:[/?#]|$)/;
 

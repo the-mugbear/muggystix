@@ -371,11 +371,12 @@ _HAS_KEYWORDS = {
                          "Hosts page's \"critical · exploit\". has:critical AND has:exploit is "
                          "wider: the exploit may be on a lower-severity finding."),
     "tested": (lambda ctx: P.has_test_execution_predicate(ctx.db, ctx.project_id),
-               "Has had an agentic test executed against it."),
+               "Tested: has an evidence record with outcome finding, no_finding or inconclusive."),
     "planned": (lambda ctx: P.has_plan_entry_predicate(ctx.db, ctx.project_id),
-                "Appears in at least one test plan (planned, not necessarily tested yet)."),
+                "Has a test that is proposed or in progress (planned, not necessarily tested yet)."),
     "untouched": (lambda ctx: P.untouched_predicate(ctx.db),
-                  "Nobody has touched it yet: no review or assignment, note, test-plan entry or finding."),
+                  "Nobody has touched it yet: no review or assignment, note, "
+                  "test that was not dismissed, evidence record or finding."),
     "open_ports": (lambda ctx: P.has_open_ports_predicate(ctx.db),
                    "Has at least one open port."),
     "critical": (lambda ctx: P.severity_predicate(ctx.db, ["CRITICAL"], ctx.project_id),
@@ -409,9 +410,18 @@ _HAS_KEYWORDS = {
                   "Open cleartext-credential service (Telnet / FTP / POP3 / IMAP)."),
     "stale_review": (lambda ctx: P.stale_review_predicate(ctx.db),
                      "Marked Reviewed, but re-scanned since the review (evidence changed)."),
+    # Operations' "Changed since review" queue, as a list: the queue's rows
+    # are built from the same two conditions (host_query_predicates), so its
+    # count opens exactly these hosts (with `OR conclusion:needs_evidence`,
+    # the queue's other half).
+    "changed_since_review": (lambda ctx: P.changed_since_review_predicate(ctx.db),
+                             "Reviewed, then changed: an open port first seen, or a critical / high "
+                             "scanner observation recorded, after the review."),
 }
 
-_FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any"}
+# ``mine`` — the CALLER has it In Review (Operations' "In review" group);
+# the others are team-level (see ``follow_predicate``).
+_FOLLOW_VALUES = {s.value for s in FollowStatus} | {"none", "in_review_any", "mine"}
 
 
 def _b_subnet(ctx: BuildCtx, values: List[str]) -> ColumnElement:
@@ -736,7 +746,8 @@ _FIELD_SPECS: List[FieldSpec] = [
               description="Whether the vulnerability scan of an assessed host authenticated: "
                           "credentialed, uncredentialed or unstated."),
     FieldSpec("follow", _b_follow, value_source="enum", enum_values=sorted(_FOLLOW_VALUES),
-              description="Review state — in_review / reviewed / none / in_review_any."),
+              description="Review state — in_review / reviewed / none / in_review_any (any teammate's), "
+                          "or mine (you have it In Review)."),
     FieldSpec("conclusion", _b_conclusion, value_source="enum", enum_values=sorted(REVIEW_CONCLUSIONS),
               description="What a finished review concluded — e.g. `conclusion:needs_evidence` "
                           "is every reviewed host whose question is still open."),

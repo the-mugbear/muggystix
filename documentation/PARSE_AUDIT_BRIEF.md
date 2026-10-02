@@ -19,7 +19,10 @@ BlueStick; the operator carries the finished report out.
    default, after the import — Ingestion Results says until when).
 2. **A BlueStick agent session on the same project** (Operations → Start
    Agent Session; MCP server `bluestick`, or `X-API-Key` against
-   `/api/v1/agent/*`). Read-only use is enough; the audit writes nothing.
+   `/api/v1/agent/*`). Read-only use is enough; the audit writes nothing. The
+   operator who starts the session must hold the project's `analyst` role:
+   `assist_list_uninterpreted_lines` answers 403 for an auditor or viewer, as
+   the Ingestion Results page does.
 3. **What BlueStick is meant to read** from the format: `GET
    /api/v1/references/parser-coverage` (the "What BlueStick reads" page) —
    each signal with its level: `observation`, `field`, `text` (kept as the

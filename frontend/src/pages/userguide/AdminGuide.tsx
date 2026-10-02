@@ -20,10 +20,10 @@ import {
 } from './UserGuideShell';
 
 const ROLES: { role: string; desc: string }[] = [
-  { role: 'Admin', desc: 'Full access. Manage users, projects, system settings. Can manage any agent.' },
-  { role: 'Analyst', desc: 'Upload scans, manage scopes, propose and work tests on hosts, create notes, review hosts, start agent sessions.' },
-  { role: 'Auditor', desc: 'Read-only access with audit-log visibility.' },
-  { role: 'Viewer', desc: 'Read-only access to scans, hosts, and dashboards.' },
+  { role: 'Admin', desc: 'Everything an analyst can do, plus: add and remove members and change their roles, issue a client report (and render its files again), delete a scan, manage the project’s outbound webhooks, end any agent session in the project.' },
+  { role: 'Analyst', desc: 'Everything an auditor can do, plus the writes: upload scans, change the scope, review and assign hosts, tags, notes, tests and their results, promote or dismiss scanner observations, triage findings, accept or reject agent proposals, draft and revise client reports. Sees Ingestion Results.' },
+  { role: 'Auditor', desc: 'Everything a viewer can do, plus getting data out: the Reports page (client reports), Export targets / Export hosts on Hosts, the Scope and Names exports, Create briefing on the Posture pages. Can start an agent session, which is then read-only.' },
+  { role: 'Viewer', desc: 'Reads the project: Operations, hosts, names, scans, scope, findings, posture, proposals, agent sessions, collaboration, project settings. No write control, export or Reports page is shown.' },
 ];
 
 const sections: GuideSection[] = [
@@ -74,8 +74,19 @@ const sections: GuideSection[] = [
           </Table>
         </div>
         <Para>
-          Manage members and the project's AI agent from <strong>Settings → Project</strong>; create
-          users and assign system roles from <strong>Settings → System</strong> (admin only).
+          A control your role cannot use is hidden, not greyed out, and a page your role cannot read
+          leaves the sidebar; the server enforces the same rule whatever the page shows. An agent
+          session's key carries the role of the person who started it.
+        </Para>
+        <Subhead>The account role is separate</Subhead>
+        <Para>
+          Besides the project role, an account is either a <strong>member</strong> or a{' '}
+          <strong>global administrator</strong>. A global administrator passes every project check
+          and alone sees the <strong>Administration</strong> hub: <strong>All projects</strong>{' '}
+          (create a project), <strong>System</strong> (accounts, worker health, the audit log) and{' '}
+          <strong>Agent Feedback</strong>, plus <strong>Oversight</strong>. Deleting a project,
+          changing scanner integrations and uploading report-template files are theirs too. Project
+          members and roles are managed from <strong>Settings → Project</strong> by a project admin.
         </Para>
       </div>
     ),
@@ -88,15 +99,16 @@ const sections: GuideSection[] = [
     content: (
       <div>
         <Para>
-          Admins manage users from <strong>Settings → System</strong>. The platform enforces strong
+          Global administrators manage accounts from <strong>Administration → System</strong>. The platform enforces strong
           password policies, server-side session tracking, and comprehensive audit logging.
         </Para>
         <UnorderedList>
           <li><strong>JWT authentication</strong> — 8-hour token expiry; sessions are tracked server-side and can be revoked individually.</li>
           <li><strong>Account lockout</strong> — 5 failed login attempts triggers a 30-minute lockout.</li>
-          <li><strong>Session management</strong> — view and revoke your active sessions from your <strong>Profile</strong>.</li>
-          <li><strong>Audit trail</strong> — actions are logged with timestamps, IP addresses, and user agents; auditors and admins can review them.</li>
-          <li><strong>HTTPS</strong> — enforced in production with auto-generated SSL certificates.</li>
+          <li><strong>Session management</strong> — view and revoke your active sessions from your <strong>Profile</strong>. Changing your password signs out every session.</li>
+          <li><strong>One account per browser</strong> — every tab shares the sign-in. When another tab signs in as a different account, or signs out, this tab reloads rather than keep showing the first account's project.</li>
+          <li><strong>Audit trail</strong> — actions are logged with timestamps, IP addresses, and user agents; global administrators review them under Administration → System. (The project role "auditor" does not open the audit log.)</li>
+          <li><strong>HTTPS</strong> — the app is served over HTTPS only. The certificate is self-signed by default, or issued from your organisation's local root CA (<Mono>ca/local-ca.sh</Mono>), which analysts install once so browsers and agents trust the server.</li>
         </UnorderedList>
         <Para>
           Agent API keys are a separate, narrower surface — project-scoped, time-limited, carrying
@@ -109,24 +121,34 @@ const sections: GuideSection[] = [
     id: 'reporting',
     title: 'Export & reporting',
     Icon: FileDown,
-    summary: 'Tool-ready host lists, filtered reports, and async comprehensive exports.',
+    summary: 'The client report and its addenda, host exports, and tool-ready lists.',
     content: (
       <div>
         <Para>
-          BlueStick exports at two levels: quick <strong>tool-ready</strong> lists for piping into the
-          next tool, and richer <strong>reports</strong> for humans.
+          Getting data out needs <strong>auditor</strong> or above on the project. There are three
+          kinds: the <strong>client report</strong> built from findings, <strong>host exports</strong>{' '}
+          of the filtered inventory, and <strong>tool-ready</strong> lists for the next tool.
         </Para>
+        <Subhead>The client report (Findings → Reports)</Subhead>
         <UnorderedList>
-          <li><strong>Tool-ready output</strong> (Hosts page) — export the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query.</li>
-          <li><strong>Reports</strong> — generate filtered host reports with selectable columns in CSV, HTML, or JSON.</li>
-          <li><strong>Comprehensive report</strong> — a host-dossier-first export correlating each host's findings with their source, test findings (evidence records), tester summaries, and untriaged items.</li>
-          <li><strong>Scope export</strong> — scope coverage data and per-subnet host lists.</li>
+          <li><strong>What it includes</strong> — confirmed, accepted-risk and remediated findings with their written report text; systems marked false positive are left out; findings still under investigation are counted, not shown.</li>
+          <li><strong>Draft, preview, issue</strong> — an analyst creates and edits a draft and previews it. A project admin <strong>issues</strong> it: the report is numbered and frozen, and never changes afterwards. A correction is a <strong>revision</strong> — a new draft that supersedes the original.</li>
+          <li><strong>Addenda</strong> — an addendum reports only what changed since an issued report: new findings, findings on new systems, and a finding whose <strong>severity was re-rated</strong> (shown with its previous severity). A change of title or status is not reported.</li>
+          <li><strong>Formats</strong> — HTML, Word (<Mono>.docx</Mono>) and the QMD source (<Mono>.zip</Mono>), as the template allows. There is no PDF: export it from Word. In the QMD source the written text stays in <Mono>data.json</Mono> and is filled in when the report is rendered — it is not pasted into <Mono>report.qmd</Mono>.</li>
+          <li><strong>Images and test results</strong> — only images ticked <em>In report</em> on a finding print, and where depends on the template; the report page says how many print in the text, how many under Evidence, and which are not printed and why. An issued report keeps its own copies of its images. With the Penetration test template, a test result that showed the finding prints as how it was confirmed (tool, command, trimmed output).</li>
+          <li><strong>A large scope</strong> is not printed: the report gives totals and names a separate scope CSV with its SHA-256, which you download from the report's page and send with it.</li>
+          <li><strong>Templates</strong> — three ship: Penetration test report, Executive brief, Remediation worklist. A global administrator uploads the logo, cover image and Word reference file on the Reports page.</li>
+        </UnorderedList>
+        <Subhead>Host exports and tool-ready lists (Hosts page)</Subhead>
+        <UnorderedList>
+          <li><strong>Export targets</strong> — the filtered host/port list formatted for Nmap, Masscan, or custom scripts. Honours the full active filter + query.</li>
+          <li><strong>Export hosts</strong> — <em>Host dossiers</em> (everything per host — findings, scanner observations, services, site context; HTML or JSON) or <em>Host Inventory</em> (one row per host; HTML or CSV), plus two machine-readable bundles: a Markdown bundle and an NDJSON dataset for an agent. This is for reviewing the filtered hosts; it is not the client report.</li>
+          <li><strong>Scope and Names exports</strong> — the scope's entries and out-of-scope hosts from the Scope page; names from the Names page.</li>
         </UnorderedList>
         <Para>
-          Heavy formats (large bundles, JSON) run as <strong>asynchronous report jobs</strong> on
+          Heavy formats (JSON and the .zip bundles) run as <strong>background report jobs</strong> on
           a dedicated worker, so the UI never blocks. A reports tray shows recent jobs with live
-          status and lets you re-download a completed report or dismiss it. Generated artifacts carry
-          the build's <Mono>app_version</Mono> for provenance.
+          status and lets you re-download a completed export or dismiss it.
         </Para>
       </div>
     ),

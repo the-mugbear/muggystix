@@ -31,7 +31,10 @@ Every tool is text in the model's context on every session.
 | The catalogue — what EVERY session sees | 67 | ~62 KB (~15k tokens) |
 | of which `assist_*` | 36 (33 reads + 3 writes) | — |
 
-*(Measured at v2.428.0 via `tool_list_payload()`, not estimated; tokens ≈ bytes/4.)*
+*(Measured at v2.428.0 via `tool_list_payload()`, not estimated; tokens ≈ bytes/4.
+The catalogue has changed since — 57 tools at v2.450.0, 36 of them `assist_*`;
+the payload has not been re-measured. `GET /api/v1/references/mcp-tools` is the
+live list.)*
 
 **This constraint got tighter, not looser, in v2.337.0.** When this was first
 written a session saw only its own workflow's tools (27 for assist, ~22 KB of a
@@ -208,11 +211,13 @@ is what these services compute, deliberately (see the systemic-insights design:
 engagements run 6–8 weeks, so "compared to last quarter" has no data behind it).
 
 **Trends over time barely exist.** Scans carry timestamps, `HostScanHistory`
-records what each scan saw, and findings have status history — so
-"what changed between scan A and scan B" is *buildable*, but nothing computes it
-today, for humans or agents. If time-series is genuinely wanted, it is a feature
-with its own design, not a tool wrapping an existing service. **Queued P3, and
-flagged as build-not-wrap.**
+records what each scan saw, and findings have status history. Two pieces exist
+since this was written: "what changed between scan A and scan B" is
+`assist_compare_scans` (v2.428.0), and "new / changed / newly critical since X"
+is a `q=` time window (`firstseen:` / `changedsince:` / `vulnsince:`, v2.363.0).
+What nothing computes, for humans or agents, is a project-level series over
+time. If that is genuinely wanted, it is a feature with its own design, not a
+tool wrapping an existing service. **Queued P3, and flagged as build-not-wrap.**
 
 ---
 
@@ -339,6 +344,20 @@ labels, certificates, NSE output, conflicts); notes their threads, labels,
 attachments and targets; a finding its report text and status history. Read
 roles now equal the page's.
 
+**Operations redesign (v2.450.0)** — payload, not tools, and by rule 3 the same
+service the page reads: `assist_get_workbench` gained `my_work` (the operator's
+queue as one number, with its four parts and `to_claim`), `measures`
+(`total_hosts`, `tested_hosts`, `untouched_critical_hosts` — each the count of
+a Hosts query: `has:tested`, `has:untouched has:critical`),
+`my_tasks.group_counts` (each test once), `followups.host_total`, and
+`my_findings` changed meaning: findings the operator owns that NEED them, each
+with `needs` (under investigation / required report text missing / a proposal
+to decide) — a confirmed, written-up finding is no longer listed, so
+`my_findings.total_open` is not "findings I own" (that is
+`assist_list_findings` filtered by owner). Two DSL values came with it:
+`has:changed_since_review` and `follow:mine`. The page's sections were renamed
+("Changed since review", "Untouched, with a reason"); the tool names were not.
+
 **Payload follow-ups from acceptance feedback #23/#24 (v2.433.0, prompt 3.0.0)**
 — fields, not tools: a finding comment in `assist_get_finding` carries
 `parent_id` / `thread_root_id`, as host notes already did, so its thread can be
@@ -354,7 +373,9 @@ current state).
 tools, each read from the page's own data (rule 3):
 `assist_get_client_report` findings carry `confirmations` (the test results the
 report prints as how the finding was confirmed — tool, host, command, summary,
-output excerpt, date, who; at most 10) with `confirmations_omitted`, and in an
+output excerpt, date, who (`by`: since v2.450.0 the operator's full name when an
+agent recorded the result, and nothing about the session); at most 10) with
+`confirmations_omitted`, and in an
 addendum `previous_severity` / `previous_severity_label` beside the new
 `change` kind `severity_changed`; `delta` carries
 `findings_with_changed_severity`, and `summary` carries `evidence_records` /
@@ -365,10 +386,10 @@ addendum's already-reported finding) has an empty list, and
 `scanner_evidence` rows and says so with `scanner_evidence_total` /
 `scanner_evidence_truncated`.
 
-The read surface is **32 `assist_*` reads** (35 `assist_*` tools with the
-three writes) inside a 56-tool catalogue (v2.442.0 removed the plan and
+The read surface is **33 `assist_*` reads** (36 `assist_*` tools with the
+three writes) inside a 57-tool catalogue (v2.442.0 removed the plan and
 execution tools and `assist_get_host_testing`, and added four `host_tests_*`
-tools). Two of
+tools; v2.448.0 added `assist_list_scan_hosts`). Two of
 the three P2 items turned out not to be tools at all: one folded into an
 existing endpoint, one is a payload field plus a download. With the
 per-workflow filter gone there is no longer an "assist budget" to stay under —

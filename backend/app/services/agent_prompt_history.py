@@ -21,6 +21,33 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.5.0",
+        "app_version": "2.450.0",
+        "summary": (
+            "The workbench says what needs the operator. assist_get_workbench carries "
+            "`my_work` (the one count of the operator's queue: hosts in review, tests "
+            "assigned, tests on hosts in review, findings needing them, and what is free "
+            "to claim) and `measures` (total, tested, and untouched hosts with a critical "
+            "observation). `my_findings` now lists only findings that NEED their owner, "
+            "each with `needs` (under investigation, required report text missing, "
+            "proposals to decide) — owning a confirmed, complete finding is not work, so "
+            "do not report it as such; `my_findings.total_open` counts those. "
+            "`my_tasks.group_counts` is exclusive and adds up. Hosts queries gain "
+            "`has:changed_since_review` (reviewed, then gained ports or observations) and "
+            "`follow:mine` (the operator's own In Review — `follow:in_review` is anyone's). "
+            "The queues are called \"Changed since review\" and \"Untouched, with a "
+            "reason\" on the page; the API names (`followups`, `investigate`) are "
+            "unchanged. In a client report a test result names the operator in full and "
+            "nothing about the session. Guide corrections: a note has no status field; a "
+            "test's `vulnerability_id` comes from the host's scanner rows "
+            "(assist_get_host_vulnerabilities), not the host detail; a 503 saying a query "
+            "ran too long means narrow the filter, never 'nothing found'; a session lapses "
+            "only after its key expired AND its renewal deadline passed, and reads live or "
+            "resumable until then; `follow:mine` (not `follow:in_review`) is the operator's "
+            "own review queue."
+        ),
+    },
+    {
         "version": "4.4.1",
         "app_version": "2.449.1",
         "summary": (

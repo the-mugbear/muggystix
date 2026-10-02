@@ -86,14 +86,16 @@ What that takes, beyond "which hosts match X":
 | "Where is this project overall?" | `assist_get_posture` — the headline condition, and why |
 | "What does this estate have a *problem* with?" | `assist_get_patterns` — blind spots, segment outliers, root causes |
 | "What's the evidence behind this finding?" | `assist_get_finding` — the note, the thread, the screenshot references, the report text and status history, the finding's `images` (caption, whether each is in the report, and the report-text fields that place it), and up to 100 scanner rows (`scanner_evidence_total` / `scanner_evidence_truncated` say when there are more); `assist_get_image` to look at one |
-| "What's worth a look? What's mine? What changed since I was last here?" | `assist_list_worth_a_look` · `assist_get_workbench` (v2.428.0) |
+| "What should we look at next? What's mine? What changed since I was last here?" | `assist_list_worth_a_look` (Operations' "Untouched, with a reason" queue) · `assist_get_workbench` (v2.428.0; since v2.450.0 it carries `my_work` — the operator's queue as one number — `measures`, `my_tasks.group_counts` (each test once) and `followups.host_total`, and `my_findings` lists only the findings that NEED their owner, each with `needs` — a confirmed, written-up finding is not listed, so "findings I own" is `assist_list_findings owner=me`) |
+| "Which hosts do I have in review? Which reviewed hosts changed since?" | `assist_list_hosts q=follow:mine` (the operator's own In Review — `follow:in_review` / `in_review_any` match ANY teammate's) · `q=has:changed_since_review OR conclusion:needs_evidence` (Operations' "Changed since review"; `followups` in the workbench) |
+| "Where does the engagement stand?" | `assist_get_workbench` → `measures` (`tested_hosts` of `total_hosts`, `untouched_critical_hosts`) |
 | "Which ranges has nobody touched?" | `assist_get_terrain` |
 | "What is still unassessed in segment Y?" | `assist_list_evidence_gaps` |
 | "What changed between these two scans?" | `assist_compare_scans` |
 | "Which hosts did this scan see, and did it log in to them?" | `assist_list_scan_hosts` (`credentialed`: true / false / null = the scan did not say) |
 | "Which ports did that nmap scan actually probe?" | `assist_list_scans` (`scan_info`) |
 | "Which issues are widespread but not yet findings?" | `assist_list_scanner_observations` → `assist_list_observation_hosts` |
-| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) — each finding with its `confirmations` (the test results the report prints; `confirmations_omitted` for the rest) and, in an addendum, its `change` (`new` · `new_hosts` · `severity_changed`, with `previous_severity`); `delta.findings_with_changed_severity`, `summary.evidence_records` / `agent_evidence_records`. `confirmations` and `evidence_records` are only what the report prints (`summary.evidence_records_not_printed` counts the rest). Each finding's `images[]` (every ticked image) carries `placed_in`, `printed` and `printed_in`; `summary.images_printed` + `images_trailing` + `images_not_printed` = `summary.images`, with `images_not_printed_reasons` and `template_images` — all `null` when printing could not be measured |
+| "What did we report to the client?" | `assist_list_client_reports` → `assist_get_client_report` (operator needs `auditor`) — each finding with its `confirmations` (the test results the report prints; `confirmations_omitted` for the rest; `by` is the operator's full name even when an agent recorded the result — the report names no session) and, in an addendum, its `change` (`new` · `new_hosts` · `severity_changed`, with `previous_severity`); `delta.findings_with_changed_severity`, `summary.evidence_records` / `agent_evidence_records`. `confirmations` and `evidence_records` are only what the report prints (`summary.evidence_records_not_printed` counts the rest). Each finding's `images[]` (every ticked image) carries `placed_in`, `printed` and `printed_in`; `summary.images_printed` + `images_trailing` + `images_not_printed` = `summary.images`, with `images_not_printed_reasons` and `template_images` — all `null` when printing could not be measured |
 
 Several of these exist because their absence produced *confident wrong answers*
 rather than errors: rebuilding the findings spine from per-host calls counts one
@@ -110,9 +112,11 @@ that it ran and found nothing.
 **`assist_get_patterns` compares across the estate, not over time.** Its
 outliers and blind spots are cross-sectional — *this* subnet against the others,
 *this* condition's spread — because an engagement runs weeks and there is no
-baseline to compare a quarter against. Nothing in the assist surface answers
-"what changed since last week"; an agent that phrases these as trends is making
-a claim the data does not support.
+baseline to compare a quarter against. An agent that phrases these as trends is
+making a claim the data does not support. "What changed" has its own, narrower
+answers: `assist_compare_scans` (two scans), the `q=` time windows
+(`firstseen:` / `changedsince:` / `vulnsince:`), and the workbench's
+`since_last_visit` and `followups` — none of them is a trend.
 
 The full derivation of this tool set from the analyst's workflow — including
 what is deliberately *not* a tool, and what is still queued — is in
@@ -378,8 +382,14 @@ makes the agent's own words part of the audit trail.
 
 * **Workflows → Agent Sessions** (`/agent-activity`) — what is live (with the
   tests each session proposed and the evidence it recorded, and Resume / End)
-  and every session in the project. Ending a session — End here, the agent's
-  `end_session`, or the hourly lapse sweep — revokes its key; its tests and
+  and every session in the project. A session is **live** (its key is valid
+  now), **resumable** (the key ran out inside the session's lifetime — the
+  agent can still renew it, or the operator resumes with a new key) or
+  **ended**. A key lasts 24 h (`AGENT_KEY_TTL_HOURS`) and is renewable until
+  the session's maximum lifetime (`AGENT_SESSION_MAX_LIFETIME_HOURS`, 168 h).
+  Ending a session — End here, the agent's `end_session`, or the hourly lapse
+  sweep, which ends a session only after its key has expired AND that renewal
+  deadline has passed — revokes its key; its tests and
   evidence stay, for another session or a person to carry on. **A session's page**
   (`/agent-sessions/{id}`, by the session id — its only id, the one
   `agent_identity` reports as `session_id`; an older `/assist-sessions/{id}`

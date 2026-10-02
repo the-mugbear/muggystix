@@ -427,10 +427,11 @@ def s06_review_queue(c: Ctx, sc):
            conclusion="no_action", summary="Nothing notable at the time.")
     port(c, changed, sc, 3389, "ms-wbt-server", first_seen=ago(days=1))   # appeared AFTER the review
     c.note("s06", "My work: queues, and Next following them",
-           "/operations → My work → 'In review' shows 3 of 5 with 'Show 2 more'. Open one of the THREE without "
-           "expanding: the host page reads '1 of 5 in In review' and Next reaches all five.",
-           f"'Needs another look' lists /hosts/{need.id} (concluded 'needs evidence') and "
-           f"/hosts/{changed.id} (a port first seen after the review → 'Changed since review · 1 new port').",
+           "/operations → My work → 'Hosts I am reviewing' lists the five, with 'Open all 5 in Hosts' "
+           "(follow:mine). Open one: the host page reads '1 of 5 in Hosts I am reviewing' and Next reaches all five.",
+           f"'Changed since review' lists /hosts/{need.id} (concluded 'needs evidence' — Re-open review only) and "
+           f"/hosts/{changed.id} (a port first seen after the review — 'Still reviewed' takes it off the list, "
+           "keeping the conclusion).",
            "Complete a review from the inspector: 'Save and next unreviewed' is offered inside a queue.")
 
 
@@ -614,10 +615,10 @@ def s13_worth_a_look(c: Ctx, sc):
         p = port(c, h, sc, 445 if i == 1 else 3389, "microsoft-ds" if i == 1 else "ms-wbt-server")
         vuln(c, h, sc, f"s13 — {title}", VulnerabilitySeverity.CRITICAL, port_obj=p, exploitable=exploitable,
              cve=f"CVE-2020-{1000 + i}", plugin_id=f"s13-{i}")
-    c.note("s13", "Worth a look: untouched hosts, ordered by a stated tier",
-           "/operations → 'Worth a look' orders by tier: exploitable criticals first (s13-untouched-1, and "
+    c.note("s13", "Untouched, with a reason: untouched hosts, ordered by a stated tier",
+           "/operations → 'Untouched, with a reason' orders by tier: exploitable criticals first (s13-untouched-1, and "
            "s07-new-critical, which nobody has touched either), then s13-untouched-2 among the plain criticals. "
-           "'Review' takes one into your In review list.")
+           "The tier chips filter the list; 'Review' takes one into 'Hosts I am reviewing'.")
 
 
 DISCUSSION_USERS = (("eval-ana", "Ana Ortiz"), ("eval-ben", "Ben Okafor"))

@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Union
 
-from sqlalchemy import func, or_
+from sqlalchemy import and_, exists, func, or_
 from sqlalchemy.orm import Session, load_only, noload, selectinload
 
 from app.core.config import settings
@@ -92,6 +92,49 @@ STATUS_WORDS = {
 }
 # The report text a finding should have before a report goes out.
 REQUIRED_TEXT = ("description", "impact", "recommendation")
+
+
+def missing_required_text(values: Any) -> List[str]:
+    """The ``REQUIRED_TEXT`` sections that are empty on a finding (a dataset
+    item, a row or a model): absent or whitespace only.  ONE definition — the
+    report page's "Missing report text" and Operations' "Findings that need
+    me" both read it."""
+    get = values.get if hasattr(values, "get") else (lambda k: getattr(values, k, None))
+    return [k for k in REQUIRED_TEXT if not (get(k) or "").strip()]
+
+
+def reportable_finding_condition():
+    """SQL: this ``Finding`` would be in the client report — the rule
+    ``ClientReportService._included`` applies in Python: an included status, and not every
+    endpoint judged a false positive (a finding with no endpoint stays)."""
+    endpoint = exists().where(FindingHost.finding_id == Finding.id).correlate(Finding)
+    live_endpoint = (
+        exists()
+        .where(
+            FindingHost.finding_id == Finding.id,
+            FindingHost.host_status.is_distinct_from(FindingHostStatus.FALSE_POSITIVE.value),
+        )
+        .correlate(Finding)
+    )
+    return and_(Finding.status.in_(INCLUDED_STATUSES), or_(~endpoint, live_endpoint))
+
+
+def blank_required_text() -> Dict[str, Any]:
+    """SQL twin of :func:`missing_required_text`, per section: for each
+    ``REQUIRED_TEXT`` field, the condition "it is NULL or whitespace only"
+    (``str.strip()``'s whitespace)."""
+    whitespace = " \t\n\r\x0b\x0c"
+    return {
+        k: func.btrim(func.coalesce(getattr(Finding, k), ""), whitespace) == ""
+        for k in REQUIRED_TEXT
+    }
+
+
+def missing_required_text_condition():
+    """SQL: some required report section of this ``Finding`` is empty."""
+    return or_(*blank_required_text().values())
+
+
 SETTINGS_KEYS = (
     "client_name", "classification", "engagement_type", "testers", "distribution",
     "system_description", "applications", "thick_clients", "other_targets",
@@ -1021,10 +1064,10 @@ class ClientReportService:
             "missing_text": [
                 {
                     "id": item["id"], "ref": item["ref"], "title": item["title"],
-                    "missing": [k for k in REQUIRED_TEXT if not (item.get(k) or "").strip()],
+                    "missing": missing_required_text(item),
                 }
                 for item in items
-                if any(not (item.get(k) or "").strip() for k in REQUIRED_TEXT)
+                if missing_required_text(item)
             ],
             # Report details still empty — printed as a highlighted TODO.
             "missing_details": self._missing_details(dataset) + (

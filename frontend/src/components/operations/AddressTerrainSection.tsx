@@ -8,9 +8,14 @@
  * untouched hosts carry a critical scanner observation.
  *
  * Cost: nothing until the section nears the viewport. Then one request
- * (`GET /workbench/terrain`, one statement) and the three.js chunk, loaded
- * only here. The table view carries every number the map does, and is what a
- * browser without WebGL gets.
+ * (`GET /workbench/terrain`, one statement). The table view carries every
+ * number the map does, and is what a browser without WebGL gets.
+ *
+ * 5.329.0 (design review 2026-10-02) — the section's finding is its sentence
+ * and the block with the most untouched critical exposure; those are always
+ * shown. The scene — 460 px and three lines of control instructions — opens
+ * on demand ("Show the map", remembered per viewer), and three.js is fetched
+ * only then: a reader who never opens it never downloads it.
  */
 import React, { Suspense, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
@@ -69,6 +74,25 @@ function useNearViewport<T extends Element>(): [React.RefObject<T>, boolean] {
   return [ref, near];
 }
 
+/** Whether this viewer keeps the map open. A convenience, so every access is
+ *  guarded: storage can be absent or refuse (private windows, blocked data). */
+export const TERRAIN_OPEN_KEY = 'nm.operations.terrainOpen';
+const readOpen = (): boolean => {
+  try {
+    return localStorage.getItem(TERRAIN_OPEN_KEY) === '1';
+  } catch {
+    return false;
+  }
+};
+const writeOpen = (open: boolean): void => {
+  try {
+    if (open) localStorage.setItem(TERRAIN_OPEN_KEY, '1');
+    else localStorage.removeItem(TERRAIN_OPEN_KEY);
+  } catch {
+    // The choice simply does not persist.
+  }
+};
+
 const n = (v: number) => v.toLocaleString();
 const plural = (v: number, one: string, many: string) => `${n(v)} ${v === 1 ? one : many}`;
 
@@ -90,6 +114,12 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
   const [nonce, setNonce] = useState(0);
   const [canWebgl] = useState(webglAvailable);
   const [view, setView] = useState<View>(canWebgl ? 'map' : 'table');
+  // Closed by default: the sentence and the hot block carry the finding.
+  const [mapOpen, setMapOpen] = useState<boolean>(readOpen);
+  const toggleMap = () => setMapOpen((was) => {
+    writeOpen(!was);
+    return !was;
+  });
   const [hovered, setHovered] = useState<number | null>(null);
   const [selected, setSelected] = useState<number | null>(null);
   const sceneRef = useRef<TerrainSceneHandle>(null);
@@ -110,9 +140,10 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
   useEffect(() => { setSelected(null); setHovered(null); }, [layout]);
 
   const blocks = layout?.placed.map((p) => p.block) ?? [];
-  const focusIndex = hovered ?? selected
-    ?? (summary?.worst ? blocks.indexOf(summary.worst) : blocks.length ? blocks.reduce((best, b, i) => (b.hosts > blocks[best].hosts ? i : best), 0) : null);
-  const focus = focusIndex != null && focusIndex >= 0 ? blocks[focusIndex] : null;
+  // The map's readout follows the pointer or the keyboard; with neither it
+  // says how to read a block (the hot block is always shown above it).
+  const focusIndex = hovered ?? selected;
+  const focus = focusIndex != null && focusIndex >= 0 ? blocks[focusIndex] ?? null : null;
 
   const open = useCallback((i: number) => {
     const b = blocks[i];
@@ -142,8 +173,9 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
       {data && <SectionCount>{plural(data.blocks.length, 'address block', 'address blocks')}</SectionCount>}
     </span>
   );
+  const what = canWebgl ? 'map' : 'table';
   const toggle = data && data.blocks.length > 0 && (
-    <div role="group" aria-label="View" className="flex items-center gap-xxs">
+    <div role="group" aria-label="View" className="flex flex-wrap items-center gap-xxs">
       <Button size="sm" variant={view === 'map' ? 'secondary' : 'ghost'} disabled={!canWebgl}
         onClick={() => setView('map')} aria-pressed={view === 'map'}
         title={canWebgl ? undefined : 'This browser cannot draw the map (no WebGL)'}>
@@ -160,12 +192,11 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
     <section ref={rootRef} className="min-w-0">
       <PostureSection
         title={title}
-        description="Every address block the project has hosts in, as tall as its host count, filled from the ground up by how far the team has taken them."
-        actions={toggle}
+        description="How far the team has taken the hosts of each address block: tested, planned, someone has it, untouched."
       >
         {!data && (loading || !near) && !unavailable && (
-          <p role="status" aria-live="polite" className="flex h-[460px] items-center justify-center gap-xs text-metadata text-muted-foreground">
-            <Loader2 className="size-4 animate-spin" aria-hidden /> Loading the address map…
+          <p role="status" aria-live="polite" className="flex items-center gap-xs text-metadata text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" aria-hidden /> Loading the address blocks…
           </p>
         )}
         {unavailable && !data && (
@@ -181,7 +212,25 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
         )}
         {data && summary && layout && data.blocks.length > 0 && (
           <div className="flex min-w-0 flex-col gap-sm">
-            <TerrainLead summary={summary} />
+            {/* Always shown: the sentence, and the block to go to first. */}
+            <div className="grid min-w-0 gap-md lg:grid-cols-[minmax(0,1fr)_18rem]">
+              <div className="flex min-w-0 flex-col items-start gap-sm">
+                <TerrainLead summary={summary} />
+                <Button
+                  size="sm" variant="outline"
+                  aria-expanded={mapOpen}
+                  aria-controls="address-terrain-view"
+                  onClick={toggleMap}
+                >
+                  {canWebgl ? <MapIcon className="size-4" aria-hidden /> : <Table2 className="size-4" aria-hidden />}
+                  {mapOpen ? `Hide the ${what}` : `Show the ${what}`}
+                </Button>
+              </div>
+              <BlockReadout block={summary.worst} palette={palette} label="Most untouched critical exposure" />
+            </div>
+            {mapOpen && (
+            <div id="address-terrain-view" className="flex min-w-0 flex-col gap-sm">
+            {toggle}
             {view === 'map' && canWebgl ? (
               <div className="grid min-w-0 gap-md lg:grid-cols-[minmax(0,1fr)_18rem]">
                 <div
@@ -219,16 +268,24 @@ const AddressTerrainSection: React.FC<{ refreshKey?: number }> = ({ refreshKey =
                     Drag to turn · right-drag to pan · Ctrl + scroll to zoom · double-click opens a block
                   </p>
                 </div>
-                <BlockReadout block={focus} palette={palette} pinned={hovered == null && selected != null}
-                  isDefault={hovered == null && selected == null} />
+                {focus ? (
+                  <BlockReadout block={focus} palette={palette}
+                    label={hovered == null && selected != null ? 'Selected block' : 'Block'} />
+                ) : (
+                  <p className="min-w-0 border-l border-border pl-md text-caption text-muted-foreground">
+                    Point at a block, or step through them with the arrow keys, to read its numbers here.
+                  </p>
+                )}
               </div>
             ) : (
               <TerrainTable blocks={data.blocks} palette={palette} />
             )}
             <Legend palette={palette} />
+            </div>
+            )}
             {(data.truncated || data.unplaced_hosts > 0) && (
               <p className="text-caption text-muted-foreground">
-                {data.truncated && 'Only the largest blocks are drawn. '}
+                {data.truncated && 'Only the largest blocks are counted here. '}
                 {data.unplaced_hosts > 0 && `${plural(data.unplaced_hosts, 'host has', 'hosts have')} no IP address and ${data.unplaced_hosts === 1 ? 'is' : 'are'} not on the map.`}
               </p>
             )}
@@ -271,16 +328,14 @@ const STAGE_LINK_LABEL: Record<TerrainStage, string> = {
   untouched: 'untouched',
 };
 
-const BlockReadout: React.FC<{ block: TerrainBlock | null; palette: TerrainPalette; pinned: boolean; isDefault: boolean }> = ({
-  block, palette, pinned, isDefault,
+const BlockReadout: React.FC<{ block: TerrainBlock | null; palette: TerrainPalette; label: string }> = ({
+  block, palette, label,
 }) => {
   if (!block) return null;
   const colour: Record<TerrainStage, string> = palette;
   return (
-    <aside aria-live="polite" className="min-w-0 border-l border-border pl-md">
-      <p className="text-caption text-muted-foreground">
-        {isDefault ? 'Most untouched critical exposure' : pinned ? 'Selected block' : 'Block'}
-      </p>
+    <aside aria-live="polite" aria-label={label} className="min-w-0 border-l border-border pl-md">
+      <p className="text-caption text-muted-foreground">{label}</p>
       <h3 className="truncate font-mono text-subheading font-semibold text-foreground" title={block.cidr}>{block.cidr}</h3>
       <Link to={terrainBlockHref(block.cidr)} className="text-metadata text-info hover:underline">
         Open {plural(block.hosts, 'host', 'hosts')}

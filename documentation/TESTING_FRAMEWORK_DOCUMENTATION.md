@@ -1,10 +1,10 @@
 # BlueStick Testing Guide
 
-> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26)
+> **Last verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-02)
 
 ## Current Test Stack
 
-- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~2,100 test functions** (more after parametrisation) across ~245 modules (v2.427) — the number moves; `pytest --collect-only -q | tail -1` is the source.
+- Backend: `pytest` with FastAPI `TestClient`, dual SQLite-or-Postgres fixtures, and coverage enforcement from [`backend/pytest.ini`](/home/charles/Projects/Tools/NetworkMapper/backend/pytest.ini). The suite runs **~2,500 test functions** (more after parametrisation) across ~280 modules (v2.450) — the number moves; `pytest --collect-only -q | tail -1` is the source.
 - Frontend: `vitest` + Testing Library from [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests).
 
 ## The gates (run locally — there is no hosted CI)
@@ -26,7 +26,8 @@ one-screen summary and a non-zero exit on any failure. The gates, for running on
 - **Backend** — `python -m pytest -q` in a one-off container (recipe below). The recipes and
   `check.sh` pass `--no-cov` for speed, so the `--cov-fail-under=68` floor in
   `backend/pytest.ini` is **not enforced by any routine run**; drop `--no-cov` to measure it.
-- **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` → `npm run build`.
+- **Frontend** — Node 22 (the image's major): `tsc --noEmit` → `vitest run` (what `check.sh`
+  runs, on the host); `npm run build` is the image build's step and runs `tsc --noEmit` again.
   `tsconfig.json` has `noUnusedLocals` / `noUnusedParameters` on, so an unused import fails it
   (and fails the image build).
 
@@ -84,7 +85,7 @@ Coverage has a `68%` ratchet floor (`--cov-fail-under` in `backend/pytest.ini`) 
 
 Location: [`frontend/src/tests`](/home/charles/Projects/Tools/NetworkMapper/frontend/src/tests)
 
-Frontend coverage (~140 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
+Frontend coverage (~180 test files) has grown well beyond the original dashboard/version smoke tests. It now spans page-level views (`Hosts`, `Operations`, `ProjectActivity`, `AgentSessionDetail`, the scan compare view), shared components (`HostFilters`, `HostCommandBar`, `HostInspector`, `ProposeTestsDialog`), and pure utilities (`dslFromFilters`, `toolReadyOutput`, `navigation`, `versionConsistency`). Tests assert visible outcomes and the host query-DSL translation rather than implementation details.
 
 Run locally:
 
@@ -129,13 +130,22 @@ Update these WITH the change, never around it:
 | `test_host_list_query_budget.py`, `test_ingestion_query_budget.py`, `test_host_loading.py` | the /hosts list does not issue a query per host; ingestion dedup stays linear in host count; querying hosts is one statement |
 | `test_host_query_suggest.py::test_every_value_source_is_enumerable_or_deliberately_not` | every `/hosts` DSL field has a value source the autocomplete enumerates, or is `enum`/`window`/`free` on purpose |
 | `test_quarto_render.py::test_hostile_text_stays_text_in_every_format`, `test_report_templates_shipped.py`, `test_report_templates_escaping.py`, `test_report_template_assets.py` | every template in `report-templates/` keeps hostile text as text (run in the report-worker image — Quarto tests skip in the backend image); every shipped template is offered with no problems |
-| `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api` |
+| `test_service_router_boundary.py` | a module under `app/services` never imports from `app.api`; an endpoint module never imports another endpoint module's `_private` name; `app/api/deps.py` / `app/api/params.py` never import a router |
+| `test_finding_loading.py`, `test_read_path_review.py` | querying findings is one statement and loads no endpoints; rewritten Hosts predicates return the same hosts as the old ones, within a statement budget, and the revision's indexes match the models |
+| `test_review_2026_10_01_integration.py` | every route that queries while streaming is exempt from the API statement timeout (add a new streamed route there) |
+| `test_mcp_enum_contract.py` | every value an endpoint restricts to an enum is advertised by its MCP tool as an enum no wider than the endpoint's |
+| `test_ingestion_partial_scan.py`, `test_ingestion_late_cleanup.py` | a failed, cancelled or killed import leaves nothing only it created, and a late cleanup never deletes what a later import re-observed (run parser heartbeat tests under `tests/ingestion_job_harness.py` — without an active job `report_progress` is a no-op) |
+| `test_db_init_concurrent_boot.py` | five real processes booting together finish their migrations (no hang on the migration lock) |
+| `test_ops_scripts.py` | the real deploy / backup / restore / rollback scripts against a fake `docker` (`tests/ops_fake_docker.py`); a change to those scripts gets a case there |
 | `test_workbench.py::test_workbench_query_count_is_bounded` | the Operations surface's statement count (add grouped queries, never per-row ones) |
 | `test_note_serialization_loads.py`, `test_host_detail_loads.py` | serialising notes / opening a host costs a fixed number of queries; `note_load_options()` loads everything `_serialize_note` reads |
 | `test_docs_contract.py`, `test_mcp_tool_endpoint_contract.py` | the agent guide's section markers and slices; every documented agent route and every MCP tool maps to a real endpoint |
 | `test_db_init_migration.py` | boot-migration error handling, and that the harness runs with `BLUESTICK_SKIP_DB_INIT=1` |
 | `uploadFormats.test.ts`, `uploadFormatContract.test.ts` | the advertised upload formats against `documentation/UPLOAD_FORMATS.md`, and the dropzone allowlist against the backend's |
 | `versionConsistency.test.ts` | every version fallback in `docker-compose.yml` against `platform_version.json` |
+| `themeAlphaTokens.test.ts` | a theme token that carries its own alpha (`--muted`, `--accent`, `--border`, `--sidebar-accent`) is not wrapped with `/ <alpha-value>` in `tailwind.config.ts` |
+| `proxyHeaders.test.ts` | nginx: `X-Forwarded-For` is always the peer address (never appended to a client's); every `/api/` location carries `^~`; the auth surface stays capped at 1m; every location that declares an `add_header` repeats the full security-header set |
+| `navigation.test.ts` | a page's role in `config/navigation.tsx` equals its route's in `App.tsx` |
 
 A regression test earns its place by FAILING on the code it guards: run it against the pre-fix
 code before keeping it (`git stash push <the fixed files>`, run, `git stash pop`). Size fixtures

@@ -72,6 +72,21 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
         host_id=reviewed.id, user_id=1, status=models.FollowStatus.REVIEWED,
         review_conclusion="needs_evidence", reviewed_at=datetime.now(timezone.utc),
     ))
+    # v2.450.0 — a finding that needs its owner, and a test to claim, so "My
+    # work" runs its per-row lookups (hosts, pending proposals) too.
+    from app.db.models_findings import Finding, FindingHost
+    from app.db.models_host_tests import HostTest
+    finding = Finding(project_id=test_project.id, title="needs me", severity="high",
+                      status="open", source="manual", owner_id=1, created_by_id=1)
+    db_session.add(finding)
+    db_session.flush()
+    # On the reviewed host: the first one stays untouched, so the queue runs.
+    db_session.add(FindingHost(finding_id=finding.id, host_id=reviewed.id))
+    db_session.add(HostTest(
+        project_id=test_project.id, host_id=reviewed.id, priority="high", tool="t",
+        description="d", rationale="r", status="proposed", source="person",
+        request_key="qc-1", request_hash="qc-1",
+    ))
     db_session.flush()
 
     counter = {"n": 0}
@@ -103,6 +118,10 @@ def test_workbench_query_count_is_bounded(client, db_session, test_project):
     # execution runs — each ONE grouped statement; the interrupted-runs one
     # went with execution runs in v2.442.0).  Flag a fan-out blow-up
     # (e.g. an N+1 creeping into a section), not a fixed additive cost.
+    # v2.450.0 — 28 measured: two for the measures strip (hosts + tested in
+    # one, untouched-with-a-critical in the other) and one for the pending
+    # proposals of the findings shown; "Findings that need me" takes its total
+    # as a window, so its old count statement went.
     assert counter["n"] <= 30, (
         f"workbench issued {counter['n']} SQL statements:\n" + "\n".join(statements)
     )
@@ -457,8 +476,11 @@ def test_my_activity_survives_legacy_sessions_and_lists_project_sessions(
     r = client.get(_url(test_project.id, "/my-activity?kinds=session"))
     assert r.status_code == 200, r.text
     items = r.json()["items"]
+    # v2.450.0 — never the stored "(active)": this session has no key, and it
+    # is inside its lifetime, so it reads as Agent Sessions shows it
+    # (test_operations_redesign pins every state).
     assert [(e["summary"], e["link"]) for e in items] == [
-        ("Ran an agent session (active)", f"/agent-sessions/{project.id}"),
+        ("Ran an agent session (key expired — resumable)", f"/agent-sessions/{project.id}"),
     ]
 
 

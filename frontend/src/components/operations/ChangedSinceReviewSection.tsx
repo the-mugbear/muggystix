@@ -1,0 +1,355 @@
+/**
+ * "Changed since review" (5.329.0; it was "Needs another look", v5.237.0).
+ *
+ * Reviewed hosts that are not done: the host gained open ports or critical /
+ * high scanner observations after its review, or the review concluded "needs
+ * more evidence".  The definition is unchanged; what changed (design review
+ * 2026-10-02) is that a reviewer can now ANSWER a change:
+ *
+ *  - **Still reviewed** — "I saw the change; my review stands": the review
+ *    date moves to now, the conclusion stays.  Only on the reader's own
+ *    review, and never on a "needs more evidence" conclusion (an open
+ *    question is not answered by looking again).
+ *  - **Re-open review** — back In Review under the reader (as before, with a
+ *    confirming second click on one's own review, which clears its conclusion).
+ *
+ * One line per review, a selection column and both actions in bulk — the page
+ * showed 29 near-identical rows with one button each.  Readers (a role that
+ * cannot write) get the rows and the links, no checkboxes and no actions.
+ */
+import React from 'react';
+import { Link, useNavigate } from 'react-router-dom';
+
+import type { ReviewFollowupRow, ReviewFollowupsResponse } from '../../services/api';
+import { followHost, markStillReviewed, unfollowHost } from '../../services/api';
+import { useToast } from '../../contexts/ToastContext';
+import { useListCursor } from '../../hooks/useListCursor';
+import { formatApiError } from '../../utils/apiErrors';
+import { cn } from '../../utils/cn';
+import { buildHostsUrl } from '../../utils/drilldownLinks';
+import { isPageShortcutEvent } from '../../utils/keyboard';
+import { CHANGED_SINCE_REVIEW_QUERY, fromOperationsQueue } from '../../utils/operationsQueue';
+import { formatRelativeTime } from '../../utils/relativeTime';
+import { runLimited } from '../../utils/runLimited';
+import PostureSection, { SectionCount } from '../posture/PostureSection';
+import { Button } from '../ui/button';
+import { Checkbox } from '../ui/checkbox';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../ui/table';
+import { BulkBar, ListFooter, useRowSelection } from './QueueParts';
+
+export const CHANGED_SINCE_REVIEW_TITLE = 'Changed since review';
+/** Requests at once when a bulk action is one call per host. */
+const BULK_CONCURRENCY = 6;
+
+const rowKey = (row: ReviewFollowupRow) => `${row.host_id}-${row.reviewer_id}`;
+/** "Still reviewed" is the reviewer's own answer, and not to an open question. */
+export const canConfirmReview = (row: ReviewFollowupRow) =>
+  row.mine && row.review_conclusion !== 'needs_evidence';
+
+const ago = (iso: string | null) => (iso ? formatRelativeTime(iso, { style: 'compact' }) : '');
+const hosts = (n: number) => `${n.toLocaleString()} host${n === 1 ? '' : 's'}`;
+
+export const ChangedSinceReviewSection: React.FC<{
+  data: ReviewFollowupsResponse;
+  /** The reader's project role allows writes (hooks/useProjectRole). */
+  canWrite: boolean;
+  /** After an action: refresh the queues without blanking the page. */
+  onChanged: () => void;
+  /** This list owns the page's j / k / Enter / x keys right now. */
+  keysActive?: boolean;
+  onActivate?: () => void;
+}> = ({ data, canWrite, onChanged, keysActive = false, onActivate }) => {
+  const toast = useToast();
+  const navigate = useNavigate();
+  const rows = data.items;
+  const keys = React.useMemo(() => rows.map(rowKey), [rows]);
+  const selection = useRowSelection(keys);
+  const [busyKey, setBusyKey] = React.useState<string | null>(null);
+  const [bulkBusy, setBulkBusy] = React.useState(false);
+  const [outcome, setOutcome] = React.useState<string | null>(null);
+  // Re-opening YOUR finished review clears its conclusion, which no undo puts
+  // back exactly: it asks for a second click (one row, or the bulk button).
+  const [armed, setArmed] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    if (armed == null) return undefined;
+    const t = setTimeout(() => setArmed(null), 5000);
+    return () => clearTimeout(t);
+  }, [armed]);
+
+  const hostTotal = data.host_total ?? data.total;
+  const navState = fromOperationsQueue(rows.map((r) => r.host_id), CHANGED_SINCE_REVIEW_TITLE,
+    { partial: data.total > rows.length }).state;
+
+  const { cursorRowProps, cursorId } = useListCursor(
+    rows.length,
+    (i) => navigate(`/hosts/${rows[i].host_id}`, { state: navState }),
+    { enabled: keysActive, getId: (i) => keys[i] },
+  );
+  // x — tick the row under the cursor (the Hosts page's key).  The cursor is
+  // anchored by id, so the key acts on the row it is ON after a reload.
+  React.useEffect(() => {
+    if (!keysActive || !canWrite) return undefined;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key !== 'x' || !isPageShortcutEvent(e)) return;
+      if (typeof cursorId !== 'string') return;
+      e.preventDefault();
+      selection.toggle(cursorId);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  });
+
+  const stillReviewed = async (targets: ReviewFollowupRow[], busy: (on: boolean) => void) => {
+    const ids = [...new Set(targets.map((r) => r.host_id))];
+    if (ids.length === 0) return;
+    busy(true);
+    setOutcome(null);
+    try {
+      await markStillReviewed(ids);
+      toast.success(
+        ids.length === 1
+          ? `${targets[0].ip_address}: your review stands as of now`
+          : `Your review of ${hosts(ids.length)} stands as of now`,
+        { autoHideMs: 3000 },
+      );
+      selection.clear();
+      onChanged();
+    } catch (err) {
+      // All or nothing on the server: nothing was changed.
+      toast.error(formatApiError(err, 'Could not confirm the review. Nothing was changed.'));
+    } finally {
+      busy(false);
+    }
+  };
+
+  const reopenOne = async (row: ReviewFollowupRow) => {
+    const key = rowKey(row);
+    if (row.mine && armed !== key) {
+      setArmed(key);
+      return;
+    }
+    setArmed(null);
+    setBusyKey(key);
+    try {
+      await followHost(row.host_id, 'in_review');
+      toast.success(
+        row.mine ? `${row.ip_address} is back in your review queue` : `${row.ip_address} is now in your review queue`,
+        row.mine
+          ? { autoHideMs: 2500 }
+          // Taking over someone else's reviewed host added a review of yours;
+          // theirs is untouched, so removing yours is an exact undo.
+          : {
+              autoHideMs: 6000,
+              action: {
+                label: 'Undo',
+                onClick: () => {
+                  unfollowHost(row.host_id)
+                    .then(onChanged)
+                    .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
+                },
+              },
+            },
+      );
+      onChanged();
+    } catch (err) {
+      toast.error(formatApiError(err, 'Could not re-open the review.'));
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const picked = rows.filter((r) => selection.isSelected(rowKey(r)));
+  const confirmable = picked.filter(canConfirmReview);
+  const pickedHostIds = [...new Set(picked.map((r) => r.host_id))];
+  const pickedMine = picked.filter((r) => r.mine).length;
+
+  const reopenMany = async () => {
+    if (pickedMine > 0 && armed !== 'bulk') {
+      setArmed('bulk');
+      return;
+    }
+    setArmed(null);
+    setBulkBusy(true);
+    setOutcome(null);
+    const results = await runLimited(pickedHostIds, BULK_CONCURRENCY, (id) => followHost(id, 'in_review'));
+    const failed = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+    const done = results.length - failed.length;
+    if (failed.length === 0) {
+      toast.success(`${hosts(done)} back in your review queue`, { autoHideMs: 3000 });
+    } else {
+      // Partial failure, said as it is: what moved, what did not, and why.
+      setOutcome(
+        `Re-opened ${done} of ${hosts(results.length)}; ${failed.length} could not be re-opened `
+        + `(${formatApiError(failed[0].reason, 'the request failed')}). They are still listed below.`,
+      );
+    }
+    selection.clear();
+    setBulkBusy(false);
+    if (done > 0) onChanged();
+  };
+
+  return (
+    <PostureSection
+      title={<>
+        <span>{CHANGED_SINCE_REVIEW_TITLE}</span>
+        {hostTotal > 0 && (
+          <SectionCount>
+            <Link
+              to={buildHostsUrl({ q: CHANGED_SINCE_REVIEW_QUERY })}
+              aria-label={`${hosts(hostTotal)} changed since review — view hosts`}
+              className="rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              {hostTotal.toLocaleString()}
+            </Link>
+          </SectionCount>
+        )}
+      </>}
+      description={<>
+        Reviewed hosts that are not done: the host gained open ports or critical / high scanner
+        observations after its review, or the review concluded{' '}
+        <span className="font-medium text-foreground">“Needs more evidence”</span>
+        {data.total > 0 && ` — ${data.mine_total.toLocaleString()} of ${data.total.toLocaleString()} reviews are yours`}.
+      </>}
+    >
+      {rows.length === 0 ? (
+        <p className="text-metadata text-muted-foreground">
+          Nothing to re-check: no reviewed host has changed since its review, and no review is waiting on evidence.
+        </p>
+      ) : (
+        <div onMouseEnter={onActivate} onFocusCapture={onActivate}>
+          {canWrite && (
+            <BulkBar count={picked.length} noun="review" onClear={selection.clear} outcome={outcome}>
+              <Button
+                size="sm" variant="outline" className="h-7"
+                disabled={bulkBusy || confirmable.length === 0}
+                onClick={() => void stillReviewed(confirmable, setBulkBusy)}
+                title={confirmable.length < picked.length
+                  ? `${picked.length - confirmable.length} of the selected reviews cannot be confirmed here: someone else's, or concluded “needs more evidence”.`
+                  : 'You looked at what changed and your review stands: the review date moves to now, the conclusion stays.'}
+              >
+                Still reviewed ({confirmable.length})
+              </Button>
+              <Button size="sm" variant="outline" className="h-7" disabled={bulkBusy} onClick={() => void reopenMany()}>
+                {armed === 'bulk'
+                  ? `Click to confirm — clears ${pickedMine} conclusion${pickedMine === 1 ? '' : 's'}`
+                  : `Re-open review (${pickedHostIds.length})`}
+              </Button>
+            </BulkBar>
+          )}
+          {/* The table never widens the page: its columns fit, and if a
+              browser disagrees the scroll stays inside this box. */}
+          <div className="min-w-0 overflow-x-auto">
+          <Table aria-label={CHANGED_SINCE_REVIEW_TITLE}>
+            <TableHeader>
+              <TableRow className="hover:bg-transparent hover:shadow-none">
+                {canWrite && (
+                  <TableHead className="w-8">
+                    <Checkbox
+                      checked={selection.allState}
+                      onCheckedChange={(v) => selection.toggleAll(v === true)}
+                      aria-label="Select all rows shown"
+                    />
+                  </TableHead>
+                )}
+                {/* Fixed widths that fit a narrowed window: the name and the
+                    reviewer give way first (both stay on the row's tooltips),
+                    the reason keeps what is left. */}
+                <TableHead className="w-[8.5rem]">Host</TableHead>
+                <TableHead className="hidden w-[18%] lg:table-cell">Name</TableHead>
+                <TableHead>What changed</TableHead>
+                <TableHead className="hidden w-[9rem] md:table-cell">Reviewed</TableHead>
+                {canWrite && <TableHead className="w-[14.5rem] text-right">Action</TableHead>}
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {rows.map((row, i) => {
+                const key = rowKey(row);
+                const isSelected = selection.isSelected(key);
+                const reason = row.reasons.map((r) => r.text).join(' · ');
+                const who = row.mine ? 'you' : row.reviewer || 'someone else';
+                const when = ago(row.reviewed_at);
+                return (
+                  <TableRow
+                    key={key}
+                    {...cursorRowProps(i)}
+                    data-state={isSelected ? 'selected' : undefined}
+                    {...(canWrite ? { 'aria-selected': isSelected } : {})}
+                  >
+                    {canWrite && (
+                      <TableCell className="align-middle">
+                        <Checkbox
+                          checked={isSelected}
+                          onCheckedChange={() => selection.toggle(key)}
+                          aria-label={`Select ${row.ip_address}, reviewed by ${who}`}
+                        />
+                      </TableCell>
+                    )}
+                    <TableCell className="truncate align-middle font-mono">
+                      <Link
+                        to={`/hosts/${row.host_id}`}
+                        state={navState}
+                        title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
+                        className="rounded text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        {row.ip_address}
+                      </Link>
+                    </TableCell>
+                    <TableCell className="hidden truncate align-middle text-muted-foreground lg:table-cell" title={row.hostname ?? undefined}>
+                      {row.hostname || '—'}
+                    </TableCell>
+                    <TableCell className="truncate align-middle" title={`${reason} — reviewed by ${who}${when ? ` ${when} ago` : ''}`}>{reason}</TableCell>
+                    <TableCell
+                      className="hidden truncate align-middle text-caption text-muted-foreground md:table-cell"
+                      title={[
+                        `Reviewed by ${who}${row.reviewed_at ? ` on ${new Date(row.reviewed_at).toLocaleString()}` : ''}.`,
+                        row.review_summary ? `“${row.review_summary}”` : null,
+                      ].filter(Boolean).join(' ')}
+                    >
+                      by {who}{when ? ` · ${when}` : ''}
+                    </TableCell>
+                    {canWrite && (
+                      <TableCell className="whitespace-nowrap py-xxs text-right align-middle">
+                        {/* Gives way to the confirmation, which needs the width. */}
+                        {canConfirmReview(row) && armed !== key && (
+                          <Button
+                            size="sm" variant="ghost" className="h-7 text-info"
+                            disabled={busyKey === key || bulkBusy}
+                            onClick={() => void stillReviewed([row], (on) => setBusyKey(on ? key : null))}
+                            title="You looked at what changed and your review stands: the review date moves to now, the conclusion stays."
+                          >
+                            Still reviewed
+                          </Button>
+                        )}
+                        <Button
+                          size="sm" variant="ghost" className={cn('h-7', !canConfirmReview(row) && 'text-info')}
+                          disabled={busyKey === key || bulkBusy}
+                          onClick={() => void reopenOne(row)}
+                          title={row.mine
+                            ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared — click again to confirm.'
+                            : `Take this host into review yourself. ${row.reviewer ?? 'The reviewer'}'s conclusion stays on record.`}
+                        >
+                          {armed === key ? 'Confirm: clears the conclusion' : row.mine ? 'Re-open review' : 'Review'}
+                        </Button>
+                      </TableCell>
+                    )}
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+          </div>
+          <ListFooter
+            shown={rows.length}
+            total={data.total}
+            openAll={{
+              to: buildHostsUrl({ q: CHANGED_SINCE_REVIEW_QUERY }),
+              label: `Open all ${hosts(hostTotal)} in Hosts`,
+            }}
+          />
+        </div>
+      )}
+    </PostureSection>
+  );
+};
+
+export default ChangedSinceReviewSection;

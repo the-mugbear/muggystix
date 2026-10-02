@@ -92,7 +92,7 @@ class HostDetail(HostBrief):
     # `hostname` field is the ONE display name; a load balancer carries many.
     # Use one of these as an entry's `target_fqdn`.
     names: List[str] = Field(default_factory=list, description=(
-        "Names observed at this address (evidence-backed). Valid values for a plan entry's target_fqdn."
+        "Names observed at this address (evidence-backed). Valid values for a host test's target_fqdn."
     ))
 
 

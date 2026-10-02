@@ -1189,7 +1189,7 @@
           "stored_as": [
             "Vulnerability.exploitable"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention · Filter: has:exploit, exploitport: · Also: Workbench 'Worth a look' tiering; Hosts sort exploitable_vulns",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention · Filter: has:exploit, exploitport: · Also: Operations 'Untouched, with a reason' tiering; Hosts sort exploitable_vulns",
           "note": "One boolean; refreshed on re-upload. Which framework is kept only in references text."
         },
         {
@@ -1462,7 +1462,7 @@
           "stored_as": [
             "Vulnerability.exploitable"
           ],
-          "shown": "Host inspector › Scanner observations; Hosts list › Attention · Filter: has:exploit, exploitport: · Also: Workbench 'Worth a look' tiering; Hosts sort exploitable_vulns",
+          "shown": "Host inspector › Scanner observations; Hosts list › Attention · Filter: has:exploit, exploitport: · Also: Operations 'Untouched, with a reason' tiering; Hosts sort exploitable_vulns",
           "note": "Set only when the report's vector says exploit code exists — the same bar as the Nessus path's exploit_code_maturity. A GVM report has no dedicated exploit element, and most feed vectors are base-only, so most OpenVAS rows stay not-exploitable: nothing is inferred from severity, and EPSS (a probability) is not read as a statement. A re-observation only ever raises the flag."
         },
         {

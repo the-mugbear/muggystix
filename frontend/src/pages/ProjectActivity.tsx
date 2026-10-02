@@ -80,6 +80,8 @@ import {
   agentSessionPath,
   isStalledRun,
   keyState,
+  LIVE_SESSION_FILTERS,
+  liveSessionsSummary,
   sessionRowPath,
 } from '../utils/agentRuns';
 
@@ -172,20 +174,11 @@ const SessionsLead: React.FC<{
   windowDays: number | null;
 }> = ({ live, hygiene, windowDays }) => {
   if (live == null) return null;
-  const connected = live.filter((r) => keyState(r)?.tone === 'ok').length;
-  const resumable = live.filter((r) => keyState(r)?.tone === 'warn').length;
-  let tone: LeadTone = 'neutral';
-  const parts: string[] = [];
-  if (live.length === 0) {
-    parts.push('No agent session is live on this project.');
-  } else {
-    parts.push(`${plural(connected, 'session')} live now`);
-    if (resumable > 0) {
-      parts[0] += `; ${plural(resumable, 'more')} waiting to be resumed (the key ran out, the session did not)`;
-      tone = 'warning';
-    }
-    parts[0] += '.';
-  }
+  // The sentence Operations prints too (utils/agentRuns): one builder, so the
+  // two pages cannot say different things about the same sessions.
+  const summary = liveSessionsSummary(live);
+  const tone: LeadTone = summary.waiting ? 'warning' : 'neutral';
+  const parts: string[] = [summary.text];
   if (hygiene && hygiene.lapsed > 0) {
     parts.push(`${plural(hygiene.lapsed, 'session')} in the last ${windowDays ?? 14} days lapsed without ending.`);
   }
@@ -466,7 +459,7 @@ const ProjectActivity: React.FC = () => {
   // filters say — this section answers "what is running right now".
   const loadLive = useCallback(async () => {
     try {
-      const list = await listAgentSessions({ kind: 'project', status: 'active', limit: 100 });
+      const list = await listAgentSessions(LIVE_SESSION_FILTERS);
       setLive(list.sessions);
       setLiveError(null);
     } catch (e: unknown) {

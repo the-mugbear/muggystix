@@ -27,9 +27,9 @@ import { isPageShortcutEvent } from '../utils/keyboard';
  * 2px inset ring.
  *
  * It was `bg-accent ring-1`, and the fill never painted: `--accent` (like
- * `--muted` and `--border`) carries its own alpha, and tailwind.config wraps
- * each token as `hsl(var(--x) / <alpha-value>)`, so the browser gets the
- * invalid `hsl(H S% L% / 0.12 / 1)` and drops the declaration.  What was left
+ * `--muted` and `--border`) carries its own alpha, and tailwind.config wrapped
+ * each token (until 5.327.0) as `hsl(var(--x) / <alpha-value>)`, so the browser got the
+ * invalid `hsl(H S% L% / 0.12 / 1)` and dropped the declaration.  What was left
  * was a 1px ring nobody saw (walkthrough 2026-10-01).  `--primary` and
  * `--ring` are opaque tokens, so these classes resolve in every theme.
  */

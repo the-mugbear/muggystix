@@ -107,6 +107,9 @@ export interface MyTasksResponse {
   items: MyTaskItem[];
   total_open: number;
   reason_counts: MyTasksReasonCounts;
+  /** Each test counted ONCE, under its strongest reason — the group it is
+   *  listed in. These add up to `total_open` (v2.450.0). */
+  group_counts?: MyTasksReasonCounts;
 }
 export interface MyRecentNoteItem {
   note_id: number;
@@ -130,11 +133,40 @@ export interface MyFindingItem {
   host_count: number;
   evidence_annotation_id: number | null;
   updated_at: string | null;
+  /** Why it is listed, in the order to act on (v2.450.0). */
+  needs?: Array<{ kind: 'under_investigation' | 'missing_text' | 'proposals'; text: string }>;
+  /** Required report sections still empty (a finding the report includes). */
+  missing_text?: string[];
+  pending_proposals?: number;
 }
 
 export interface MyFindingsResponse {
   items: MyFindingItem[];
+  /** Findings the caller owns that NEED them — under investigation, required
+   *  report text missing, or a proposal to decide (v2.450.0; it counted every
+   *  active finding owned before). */
   total_open: number;
+}
+
+/** The caller's queue as one number (v2.450.0): the four groups "My work"
+ *  lists, added up; `to_claim` is shared work, outside `total`. */
+export interface MyWorkTotals {
+  total: number;
+  hosts_in_review: number;
+  tests_assigned: number;
+  tests_on_hosts_in_review: number;
+  findings_needing_me: number;
+  to_claim: number;
+}
+
+/** The measures strip's project-wide numbers (v2.450.0) — each counted with
+ *  the predicate its Hosts list uses. */
+export interface OperationsMeasures {
+  total_hosts: number;
+  /** `has:tested` */
+  tested_hosts: number;
+  /** `has:untouched has:critical` */
+  untouched_critical_hosts: number;
 }
 
 // --- Operations workbench (batched personal surface + since-last-visit) ---
@@ -240,6 +272,11 @@ export interface WorkbenchResponse {
   blockers?: OperationsBlockers;
   /** Could not be computed — must read as "unavailable", never "nothing blocked". */
   blockers_unavailable?: boolean;
+  /** The caller's queue as one number (v2.450.0). */
+  my_work?: MyWorkTotals;
+  /** `null` when requested with `includeMeasures: false`. */
+  measures?: OperationsMeasures | null;
+  measures_unavailable?: boolean;
 }
 
 // v2.359.0 — a reviewed host left every queue for good. Two kinds are not
@@ -260,25 +297,59 @@ export interface ReviewFollowupRow {
 
 export interface ReviewFollowupsResponse {
   items: ReviewFollowupRow[];
+  /** Rows: one per (host, reviewer). */
   total: number;
   mine_total: number;
+  /** Distinct hosts behind the rows — the section's count, and the length of
+   *  the Hosts list it opens (v2.450.0). */
+  host_total?: number;
 }
 
 export const getWorkbench = async (
-  opts: { includeInvestigate?: boolean } = {},
+  opts: { includeInvestigate?: boolean; includeMeasures?: boolean } = {},
 ): Promise<WorkbenchResponse> => {
-  // v2.424.1 — Operations leaves the "Worth a look" queue out and loads it
-  // with getInvestigationQueue(): on a large project it is most of the time,
-  // and the personal sections should not wait for it.
-  const params = opts.includeInvestigate === false ? { include_investigate: false } : undefined;
-  const response = await api.get(`${p()}/workbench`, { params });
+  // v2.424.1 — Operations leaves the untouched queue out and loads it with
+  // getInvestigationQueue(): on a large project it is most of the time, and
+  // the personal sections should not wait for it.  v2.450.0 — the measures
+  // strip's counts likewise (getOperationsMeasures()).
+  const params: Record<string, boolean> = {};
+  if (opts.includeInvestigate === false) params.include_investigate = false;
+  if (opts.includeMeasures === false) params.include_measures = false;
+  const response = await api.get(`${p()}/workbench`, {
+    params: Object.keys(params).length ? params : undefined,
+  });
   return response.data;
 };
 
-/** The "Worth a look" queue alone. Rejects (503) when it could not be
- *  computed — callers show "unavailable", never an empty queue. */
-export const getInvestigationQueue = async (tier?: number | null): Promise<InvestigationQueueResponse> => {
-  const response = await api.get(`${p()}/workbench/investigate`, { params: tier ? { tier } : undefined });
+/** The untouched queue alone. Rejects (503) when it could not be computed —
+ *  callers show "unavailable", never an empty queue. `offset` pages it in
+ *  the queue's own order; the totals stay whole-queue. */
+export const getInvestigationQueue = async (
+  tier?: number | null,
+  page: { limit?: number; offset?: number } = {},
+): Promise<InvestigationQueueResponse> => {
+  const params: Record<string, number> = {};
+  if (tier) params.tier = tier;
+  if (page.limit != null) params.limit = page.limit;
+  if (page.offset) params.offset = page.offset;
+  const response = await api.get(`${p()}/workbench/investigate`, {
+    params: Object.keys(params).length ? params : undefined,
+  });
+  return response.data;
+};
+
+/** The measures strip's project-wide numbers. Rejects (503) when they could
+ *  not be counted — callers show "unavailable", never zero. */
+export const getOperationsMeasures = async (): Promise<OperationsMeasures> => {
+  const response = await api.get(`${p()}/workbench/measures`);
+  return response.data;
+};
+
+/** "Still reviewed": the caller looked at what changed after their review and
+ *  it stands — the review date moves to now, the conclusion stays. All or
+ *  nothing (409 names the hosts that could not be confirmed). */
+export const markStillReviewed = async (hostIds: number[]): Promise<{ host_ids: number[] }> => {
+  const response = await api.post(`${p()}/workbench/followups/still-reviewed`, { host_ids: hostIds });
   return response.data;
 };
 
@@ -294,32 +365,9 @@ export const markWorkbenchSeen = async (
   return response.data;
 };
 
-// §27 — the caller's recent work history across notes, findings, and reviews.
-export type ActivityEventKind =
-  | 'note' | 'finding_created' | 'finding_status' | 'host_reviewed' | 'session';
-export interface ActivityEvent {
-  kind: ActivityEventKind;
-  at: string;
-  summary: string;
-  host_id: number | null;
-  note_id: number | null;
-  finding_id: number | null;
-  severity: string | null;
-  link: string | null;
-}
-export interface MyActivityResponse {
-  items: ActivityEvent[];
-}
-export const getMyActivity = async (
-  params?: { limit?: number; kinds?: string; days?: number; search?: string },
-): Promise<MyActivityResponse> => {
-  const sp = new URLSearchParams({ limit: String(params?.limit ?? 20) });
-  if (params?.kinds) sp.set('kinds', params.kinds);
-  if (params?.days) sp.set('days', String(params.days));
-  if (params?.search) sp.set('search', params.search);
-  const response = await api.get(`${p()}/workbench/my-activity?${sp.toString()}`);
-  return response.data;
-};
+// (getMyActivity went with Operations' "My recent activity" column in
+// 5.329.0 — its only reader.  `GET /workbench/my-activity` still exists on
+// the server; nothing in the app calls it.)
 
 export interface AgentActivityStatusBreakdown {
   success: number;

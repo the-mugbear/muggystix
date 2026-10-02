@@ -1,6 +1,6 @@
 """Agent API — the Operations and Evidence reads (v2.428.0).
 
-An agent asked "what's worth a look?", "what's mine?", "what changed since I
+An agent asked "what should we look at next?", "what's mine?", "what changed since I
 was last here?", "what changed between these two scans?" or "what is still
 unassessed in segment Y?" had no read that could answer: those live on the
 Operations workbench, the scan compare and the Evidence gap lists, which were
@@ -103,27 +103,30 @@ def _project_and_operator(db: Session, session: AgentSession) -> tuple:
 @router.get(
     "/assist/workbench",
     response_model=WorkbenchResponse,
-    summary="The operator's Operations workbench — my queue, tasks, notes, findings, since last visit, follow-ups, blockers",
+    summary="The operator's Operations workbench — my work, the measures, changed since review, since last visit, blockers",
 )
 def get_assist_workbench(
     request: Request,
     include_investigate: bool = Query(
         False,
         description=(
-            "Embed the first 25 rows of the 'Worth a look' queue. Off by default: "
-            "page it with GET /assist/workbench/investigate instead."
+            "Embed the first 25 rows of the untouched queue ('Untouched, with a "
+            "reason'). Off by default: page it with GET /assist/workbench/investigate instead."
         ),
     ),
     agent: Agent = Depends(check_agent_rate_limit),
     db: Session = Depends(get_db),
 ):
-    """What the session's operator sees on Operations → My work, computed by
-    the same service: ``my_queue`` (hosts they are reviewing), ``my_tasks``
-    (host tests to do), ``recent_notes``, ``my_findings`` (findings they own), ``team_review``,
-    ``since_last_visit`` (scans, new hosts, changed hosts, new critical/high
-    scanner observations since the operator last marked Operations seen),
-    ``followups`` ("needs another look") and ``blockers`` (stopped imports and
-    runs).
+    """What the session's operator sees on Operations, computed by the same
+    service: ``my_work`` (their queue as one number, and what is free to
+    claim), ``my_queue`` (hosts they are reviewing), ``my_tasks`` (host tests
+    to do; ``group_counts`` counts each once), ``recent_notes``,
+    ``my_findings`` (findings they own that NEED them — each row's ``needs``
+    says why), ``team_review``, ``measures`` (hosts, hosts tested, untouched
+    hosts with a critical observation), ``since_last_visit`` (scans, new
+    hosts, changed hosts, new critical/high scanner observations since the
+    operator last marked Operations seen), ``followups`` ("Changed since
+    review"; ``host_total`` hosts) and ``blockers`` (stopped imports).
 
     Read-only: this never moves the operator's "since last visit" cursor.  A
     section reported ``*_unavailable: true`` could not be computed — say so;
@@ -142,7 +145,7 @@ def get_assist_workbench(
 @router.get(
     "/assist/workbench/investigate",
     response_model=InvestigationQueueResponse,
-    summary="'Worth a look' — untouched hosts with a stated reason, in tier order",
+    summary="'Untouched, with a reason' — untouched hosts with a stated reason, in tier order",
 )
 def get_assist_investigation_queue(
     request: Request,
@@ -172,7 +175,7 @@ def get_assist_investigation_queue(
     except Exception:
         logger.exception("investigation queue failed for project %s", project.id)
         db.rollback()
-        raise HTTPException(status_code=503, detail="The 'Worth a look' queue could not be computed.")
+        raise HTTPException(status_code=503, detail="The untouched-hosts queue could not be computed.")
 
 
 @router.get(

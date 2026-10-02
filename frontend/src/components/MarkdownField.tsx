@@ -47,7 +47,7 @@ interface Props {
   disabled?: boolean;
   /**
    * A finding's report section: the finding's images ticked "In report".
-   * Adds "Insert image" (it writes `![caption](evidence:<id>)` on a line of
+   * Adds "Insert image" (it writes an empty reference, `![](evidence:<id>)`, on a line of
    * its own) and shows placed images in the preview.  Left out — the
    * executive summary, any text that is not a finding's — the field takes no
    * images, as before.
@@ -261,8 +261,8 @@ const MarkdownField: React.FC<Props> = ({ id, label, value, onChange, rows = 4, 
             {images ? (
               <p className="text-muted-foreground">
                 Images: only this finding&apos;s own, ticked &quot;In report&quot; — use Insert image, which writes{' '}
-                <span className="font-mono">![caption](evidence:57)</span>. The text in the brackets is the caption
-                for that place; leave it empty to print the image&apos;s own caption. Any other image prints as its
+                <span className="font-mono">![](evidence:57)</span>. Empty brackets print the image&apos;s own
+                caption; text in the brackets replaces it for that place. Any other image prints as its
                 text. Not printed: HTML (shown as text). A heading prints as bold text — the report&apos;s sections
                 are the template&apos;s.
               </p>

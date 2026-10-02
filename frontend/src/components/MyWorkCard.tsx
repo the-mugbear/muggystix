@@ -1,24 +1,36 @@
 /**
- * Unified "My work" list — the analyst's single resume queue.  Merges three
- * personal surfaces from the one /workbench response into a grouped,
- * one-line-per-row worklist:
- *   - Assigned     = host tests assigned to the caller
- *   - Findings     = active canonical findings the caller owns
- *   - In review    = hosts the caller marked In Review (+ in-review steps)
- *   - Available    = unassigned critical/high host tests anyone may claim
+ * "My work" — what is waiting on the reader, and nothing else.
  *
- * §27: owned findings ARE surfaced here (one resume surface — don't make the
- * analyst remember a second queue exists), and unassigned "Available" triage is
- * kept visually separate AND excluded from the personal total, so shared work
- * doesn't inflate the user's apparent load. Each Available row has a Claim.
+ * One /workbench response, five groups, one line per row:
+ *   - Tests assigned to me            host tests assigned to the caller
+ *   - Findings that need me           owned findings with something owed —
+ *                                     under investigation, required report
+ *                                     text missing, a proposal to decide;
+ *                                     the row says which
+ *   - Hosts I am reviewing            hosts the caller marked In Review
+ *   - Tests on hosts I am reviewing   tests to do on those hosts
+ *   - Available to claim              unassigned critical / high tests —
+ *                                     shared work, outside the personal total
  *
- * P0 (resume pass): every row deep-links to its EXACT artifact — a note to
- * its thread anchor (/hosts/:id#note-:id), a test to its row on the host
- * (/hosts/:id#host-test-:id) — so the analyst lands where they left off,
- * not on a generic host page.
+ * Design review 2026-10-02 (5.329.0):
+ *  - A finding is listed for a REASON.  Owning a confirmed, written-up finding
+ *    is a state, not a task; 24 of them were inflating "my queue".
+ *  - The heading's total is the sum of the groups listed (the server's
+ *    `my_work`), and "N to claim" always has its list on the page — one limit
+ *    over the merged test list used to let a busy group take every row.
+ *  - One "more" pattern: "Open all N" where a page lists exactly the group
+ *    (the caller's hosts in review), otherwise "Show N more" in place — no
+ *    page lists tests across hosts, and Findings has no "needs me" filter.
+ *  - Hosts and tests are separate groups, each row's kind named for a screen
+ *    reader; a test's PRIORITY is an outline badge, not a severity colour.
+ *
+ * Every row deep-links to its exact artifact — a test to its row on the host
+ * (/hosts/:id#host-test-:id) — so the analyst lands where they left off.
+ * The two team queues that used to live in this file are
+ * `operations/ChangedSinceReviewSection` and `operations/UntouchedQueueSection`.
  */
 import React from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 import {
   ClipboardList,
   Loader2,
@@ -27,47 +39,55 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 import type {
-  InvestigateRow,
-  InvestigationQueueResponse,
   MyAttentionResponse,
   MyFindingsResponse,
   MyTaskReason,
   MyTasksResponse,
-  ReviewFollowupRow,
-  ReviewFollowupsResponse,
+  MyWorkTotals,
 } from '../services/api';
-import { followHost, unfollowHost, updateHostTest } from '../services/api';
+import { updateHostTest } from '../services/api';
 import { useAuth } from '../contexts/AuthContext';
 import { useToast } from '../contexts/ToastContext';
 import { formatApiError } from '../utils/apiErrors';
-import { STATUS_LABEL } from '../utils/findingStatus';
 import { PostureSection, SectionCount } from './posture/PostureSection';
+import { ListFooter } from './operations/QueueParts';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Alert, AlertDescription, AlertTitle } from './ui/alert';
 import { cn } from '../utils/cn';
 import { formatRelativeTime } from '../utils/relativeTime';
 import { buildHostsUrl } from '../utils/drilldownLinks';
-import { fromOperationsQueue, hostIdOf } from '../utils/operationsQueue';
+import { MY_REVIEW_QUERY, fromOperationsQueue, hostIdOf } from '../utils/operationsQueue';
 
-type BadgeTone = 'destructive' | 'warning' | 'info' | 'muted' | 'secondary' | 'outline';
+type BadgeVariant = React.ComponentProps<typeof Badge>['variant'];
 
-type GroupKey = 'assigned' | 'findings' | 'in_review' | 'triage';
+type GroupKey = 'assigned' | 'findings' | 'in_review' | 'review_tests' | 'triage';
 
-const GROUP_META: Record<GroupKey, { label: string; rank: number }> = {
-  assigned: { label: 'Assigned', rank: 2 },
-  findings: { label: 'Findings I own', rank: 3 },
-  in_review: { label: 'In review', rank: 4 },
+const GROUP_META: Record<GroupKey, { label: string; rank: number; kind: string }> = {
+  assigned: { label: 'Tests assigned to me', rank: 1, kind: 'Test' },
+  findings: { label: 'Findings that need me', rank: 2, kind: 'Finding' },
+  in_review: { label: 'Hosts I am reviewing', rank: 3, kind: 'Host' },
+  review_tests: { label: 'Tests on hosts I am reviewing', rank: 4, kind: 'Test' },
   // Shared, unowned work — kept last and out of the personal total.
-  triage: { label: 'Available to claim', rank: 5 },
+  triage: { label: 'Available to claim', rank: 5, kind: 'Test' },
 };
 const GROUP_ORDER = (Object.keys(GROUP_META) as GroupKey[]).sort(
   (a, b) => GROUP_META[a].rank - GROUP_META[b].rank,
 );
 
+/** Element ids the page's lead and measures jump to. */
+export const MY_WORK_ID = 'my-work';
+export const TO_CLAIM_ID = 'available-to-claim';
+
 const PRIORITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3, info: 4 };
-const sevTone = (p: string): BadgeTone =>
-  p === 'critical' ? 'destructive' : p === 'high' ? 'warning' : p === 'medium' ? 'info' : 'muted';
+/** A finding's severity wears the severity ramp; nothing else here does. */
+const SEVERITY_VARIANT: Record<string, BadgeVariant> = {
+  critical: 'severity-critical',
+  high: 'severity-high',
+  medium: 'severity-medium',
+  low: 'severity-low',
+  info: 'severity-info',
+};
 
 const tsOf = (v?: string | null): number => {
   if (!v) return 0;
@@ -75,8 +95,7 @@ const tsOf = (v?: string | null): number => {
   return Number.isNaN(t) ? 0 : t;
 };
 
-/** Compact age ("5m") — the column header already says what it measures.
- *  Takes epoch ms because the callers sort on it first. */
+/** Compact age ("5m"). Takes epoch ms because the callers sort on it first. */
 function fmtAgo(ms: number): string {
   if (!ms) return '';
   return formatRelativeTime(ms, { style: 'compact' });
@@ -89,13 +108,16 @@ interface WorkItem {
   to: string;
   primary: string;
   primaryMono: boolean;
-  chip: { label: string; tone: BadgeTone } | null;
+  chip: { label: string; variant: BadgeVariant } | null;
+  /** What is owed, when the row can say (a finding's reasons). */
+  owed?: string;
   meta: string;
-  right: { label: string; tone: BadgeTone | null };
+  /** How long it has been waiting, compact; '' when nothing recorded it. */
+  waiting: string;
   priorityRank: number;
   tsEpoch: number;
-  // Present on "Available to claim" rows — claiming assigns the entry to the
-  // caller (moving it into Assigned).
+  // Present on "Available to claim" rows — claiming assigns the test to the
+  // caller (moving it into "Tests assigned to me").
   claim?: { testId: number; revision: number };
 }
 
@@ -106,13 +128,12 @@ function buildItems(
 ): WorkItem[] {
   const items: WorkItem[] = [];
 
-  // In-review hosts.
   for (const h of queue?.items ?? []) {
     const sev = h.critical_vulns > 0 ? 'critical' : h.high_vulns > 0 ? 'high' : 'low';
-    const findingsStr =
+    const observations =
       h.critical_vulns || h.high_vulns
-        ? `${h.critical_vulns ? `${h.critical_vulns} crit` : ''}${h.critical_vulns && h.high_vulns ? ' · ' : ''}${h.high_vulns ? `${h.high_vulns} high` : ''}`
-        : 'no crit/high';
+        ? `${h.critical_vulns ? `${h.critical_vulns} critical` : ''}${h.critical_vulns && h.high_vulns ? ' · ' : ''}${h.high_vulns ? `${h.high_vulns} high` : ''}`
+        : 'no critical or high observation';
     items.push({
       key: `host-${h.host_id}`,
       group: 'in_review',
@@ -121,41 +142,38 @@ function buildItems(
       primary: h.ip_address,
       primaryMono: true,
       chip: null,
-      meta: `${h.hostname ? `${h.hostname} · ` : ''}${findingsStr} · ${h.open_port_count} port${h.open_port_count === 1 ? '' : 's'}`,
-      right: { label: fmtAgo(tsOf(h.follow_updated_at)), tone: null },
+      meta: `${h.hostname ? `${h.hostname} · ` : ''}${observations} · ${h.open_port_count} open port${h.open_port_count === 1 ? '' : 's'}`,
+      waiting: fmtAgo(tsOf(h.follow_updated_at)),
       priorityRank: PRIORITY_RANK[sev] ?? 5,
       tsEpoch: tsOf(h.follow_updated_at),
     });
   }
 
-  // Active findings the caller owns — their own group (link to the finding).
   for (const f of findings?.items ?? []) {
     items.push({
       key: `finding-${f.finding_id}`,
       group: 'findings',
       Icon: ShieldAlert,
+      // The finding's page is where each of the three is resolved: its
+      // status, its report text (an empty section opens in the editor) and
+      // its Proposals section.
       to: `/findings/${f.finding_id}`,
       primary: `#${f.finding_id}`,
       primaryMono: false,
-      chip: { label: f.severity, tone: sevTone(f.severity) },
-      meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'} · ${(STATUS_LABEL as Record<string, string>)[f.status] ?? f.status}`,
-      // "—" when no change was recorded: an empty cell under "1d" read as a
-      // layout fault (UX review 2026-09-26).
-      right: { label: fmtAgo(tsOf(f.updated_at)) || '—', tone: null },
+      chip: { label: f.severity, variant: SEVERITY_VARIANT[f.severity] ?? 'muted' },
+      owed: (f.needs ?? []).map((n) => n.text).join(' · ') || undefined,
+      meta: `${f.title} · ${f.host_count} host${f.host_count === 1 ? '' : 's'}`,
+      waiting: fmtAgo(tsOf(f.updated_at)),
       priorityRank: PRIORITY_RANK[f.severity] ?? 5,
       tsEpoch: tsOf(f.updated_at),
     });
   }
 
-  // Host tests — assigned / in_review / triage; link to the test on its host.
   for (const t of tasks?.items ?? []) {
     const reasons = (t.reasons && t.reasons.length ? t.reasons : ['triage']) as MyTaskReason[];
-    const primaryReason: MyTaskReason = reasons.includes('assigned')
+    const group: GroupKey = reasons.includes('assigned')
       ? 'assigned'
-      : reasons.includes('in_review')
-        ? 'in_review'
-        : 'triage';
-    const group: GroupKey = primaryReason; // assigned|in_review|triage map 1:1
+      : reasons.includes('in_review') ? 'review_tests' : 'triage';
     items.push({
       key: `task-${t.test_id}`,
       group,
@@ -163,15 +181,13 @@ function buildItems(
       to: `/hosts/${t.host_id}#host-test-${t.test_id}`,
       primary: t.host_ip,
       primaryMono: true,
-      chip: { label: t.priority, tone: sevTone(t.priority) },
+      // A priority, not a severity: an outline badge that says so.
+      chip: { label: `${t.priority} priority`, variant: 'outline' },
       meta: [t.label, t.description].filter(Boolean).join(' · '),
-      right: { label: fmtAgo(tsOf(t.updated_at)), tone: null },
+      waiting: fmtAgo(tsOf(t.updated_at)),
       priorityRank: PRIORITY_RANK[t.priority] ?? 5,
       tsEpoch: tsOf(t.updated_at),
-      // Only the unowned triage rows are claimable.
-      claim: group === 'triage'
-        ? { testId: t.test_id, revision: t.revision }
-        : undefined,
+      claim: group === 'triage' ? { testId: t.test_id, revision: t.revision } : undefined,
     });
   }
 
@@ -184,547 +200,82 @@ function buildItems(
   return items;
 }
 
+/** The server's count for each group — each test under ONE group, so the
+ *  personal groups add up to the heading's total. */
+function groupTotals(
+  queue: MyAttentionResponse | null,
+  tasks: MyTasksResponse | null,
+  findings: MyFindingsResponse | null,
+): Record<GroupKey, number> {
+  // An older server sent overlapping `reason_counts` only: its triage count
+  // is the nearest answer, and the rest state what is loaded.
+  const groups = tasks?.group_counts;
+  const loaded = (reason: MyTaskReason) =>
+    (tasks?.items ?? []).filter((t) => (t.reasons?.[0] ?? 'triage') === reason).length;
+  return {
+    assigned: groups?.assigned ?? loaded('assigned'),
+    findings: findings?.total_open ?? 0,
+    in_review: queue?.in_review_count ?? 0,
+    review_tests: groups?.in_review ?? loaded('in_review'),
+    triage: groups?.triage ?? tasks?.reason_counts?.triage ?? 0,
+  };
+}
+
 /**
- * Authoritative server totals (the merged list is capped at the per-source
- * fetch limits, so it must NOT stand in for the totals).  §27: the personal
- * total EXCLUDES unassigned triage (shared work isn't "mine") and INCLUDES
- * owned findings.  Shared with the Operations lead sentence.
+ * What is waiting on the reader, as one number, and what is free to claim.
+ * The server adds it up (`my_work`, v2.450.0); the fallback is the same sum
+ * over the sections.  Shared with the Operations lead and the measures strip,
+ * so the three cannot disagree.
  */
 export function personalWorkCounts(
   queue: MyAttentionResponse | null,
   tasks: MyTasksResponse | null,
   findings: MyFindingsResponse | null,
+  totals?: MyWorkTotals | null,
 ): { total: number; available: number } {
-  const available = tasks?.reason_counts?.triage ?? 0;
-  return {
-    total:
-      (queue?.in_review_count ?? 0) +
-      Math.max(0, (tasks?.total_open ?? 0) - available) +
-      (findings?.total_open ?? 0),
-    available,
-  };
+  if (totals) return { total: totals.total, available: totals.to_claim };
+  const g = groupTotals(queue, tasks, findings);
+  return { total: g.assigned + g.findings + g.in_review + g.review_tests, available: g.triage };
 }
 
 export interface MyWorkCardProps {
   queue: MyAttentionResponse | null;
   tasks: MyTasksResponse | null;
   findings: MyFindingsResponse | null;
-  /** v5.223.0 — engagement-wide: untouched hosts worth a look (item 2). */
-  investigate?: InvestigationQueueResponse | null;
-  /** The server could not compute that queue: `investigate` is then an empty
-   *  placeholder, which must not render as "every host has been touched". */
-  investigateUnavailable?: boolean;
-  /** v5.304.1 — the queue loads on its own request (it is most of the
-   *  workbench's time on a large project); this is its loading state. */
-  investigateLoading?: boolean;
-  /** Retry only that queue.  Falls back to `onRetry`. */
-  onRetryInvestigate?: () => void;
-  /** v5.308.0 — the tier the queue is narrowed to (null = every tier), and
-   *  how to change it. Without the handler the tier rows do not narrow. */
-  investigateTier?: number | null;
-  onInvestigateTier?: (tier: number | null) => void;
-  /** v5.237.0 — reviewed hosts that are not done: "needs more evidence", or
-   *  changed after the review. */
-  followups?: ReviewFollowupsResponse | null;
-  followupsUnavailable?: boolean;
+  /** The server's sum of the personal groups (`WorkbenchResponse.my_work`). */
+  totals?: MyWorkTotals | null;
   loading: boolean;
   error: string | null;
   onRetry: () => void;
-  /** After an action here (take, re-open, claim, undo): refresh without
-   *  blanking the sections (5.304.0).  Falls back to `onRetry`. */
+  /** After a claim (or its undo): refresh without blanking the section.
+   *  Falls back to `onRetry`. */
   onChanged?: () => void;
-  /** Which sections to render (5.304.0): Operations puts "My work" beside
-   *  the activity feed and the two engagement-wide queues at full width
-   *  below — in one 2/3 column they left ~1500px of empty page beside them. */
-  part?: 'all' | 'mine' | 'engagement';
+  /** The reader's project role allows writes — Claim is hidden otherwise. */
+  canWrite?: boolean;
   /** "updated …" beside the heading (components/UpdatedAt). */
   updated?: React.ReactNode;
 }
-
-const INVESTIGATE_PREVIEW = 5;
 
 /** Carried to the host page so it offers "Back to my work" (v5.237.0): a host
  *  opened from Operations used to offer only "Back to Hosts". */
 export const FROM_OPERATIONS = { state: { fromOperations: true } } as const;
 
-const FOLLOWUPS_PREVIEW = 5;
+/** Rows shown per group before its footer. */
+const GROUP_PREVIEW = 5;
 
-/**
- * The one "see more" pattern for every list on this card (v5.294.0, UX review).
- *
- * Expand in place up to what was loaded, say how many of the whole are ON
- * SCREEN, and offer a single "View all (N)" where a page lists the whole. It
- * replaces "Show 12 more · 7 more not loaded here — use View all" and a
- * "Showing 15 of 29" that counted the rows loaded while five were visible.
- */
-const MoreFooter: React.FC<{
-  /** Rows on screen now. */
-  shown: number;
-  /** Rows the card holds (the expand ceiling). */
-  loaded: number;
-  /** The server's count of the whole list. */
-  total: number;
-  expanded: boolean;
-  onToggle: () => void;
-  viewAll?: { title: string; onClick: () => void };
-  /** Trailing caption (e.g. the ordering rule). */
-  children?: React.ReactNode;
-}> = ({ shown, loaded, total, expanded, onToggle, viewAll, children }) => {
-  const canToggle = expanded || loaded > shown;
-  const partial = total > shown;
-  if (!canToggle && !partial && !viewAll && !children) return null;
-  // 5.304.0 — one sentence of state, then the two actions.  It read "Show 12
-  // more · Showing 3 of 22 · View all (22)", and "12 more" stopped at 15 of
-  // 22 without saying the rest were only in the full list.
-  const rest = total - loaded;
-  return (
-    <div className="mt-xs flex flex-wrap items-center gap-x-md gap-y-xxs">
-      {partial && (
-        <span className="text-caption tabular-nums text-muted-foreground">
-          {shown.toLocaleString()} of {total.toLocaleString()}
-          {expanded && rest > 0 && ` — the other ${rest.toLocaleString()} are in the full list`}
-        </span>
-      )}
-      {canToggle && (
-        <button
-          type="button"
-          aria-expanded={expanded}
-          onClick={onToggle}
-          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          {expanded ? 'Show fewer' : `Show ${(loaded - shown).toLocaleString()} more here`}
-        </button>
-      )}
-      {viewAll && (
-        <button
-          type="button"
-          onClick={viewAll.onClick}
-          title={viewAll.title}
-          className="rounded text-caption text-primary hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-        >
-          Open the full list
-        </button>
-      )}
-      {children}
-    </div>
-  );
+const jumpTo = (id: string) => (e: React.MouseEvent) => {
+  e.preventDefault();
+  document.getElementById(id)?.scrollIntoView?.({ block: 'start' });
 };
-
-/**
- * "Needs another look" (v5.237.0) — reviewed hosts that are not done.  A
- * review concluded "needs more evidence" is an open question stored as a
- * closed state, and a host that changed after its review has a conclusion
- * older than its evidence; both had left every queue.  The reviewer's own
- * come first.  Re-opening the review returns the host to the personal queue
- * and clears the stale conclusion.  Same stacked-row shape as "Worth a look".
- */
-const FollowupsSection: React.FC<{
-  data: ReviewFollowupsResponse;
-  onReopened: () => void;
-}> = ({ data, onReopened }) => {
-  const toast = useToast();
-  const [expanded, setExpanded] = React.useState(false);
-  const [busyId, setBusyId] = React.useState<number | null>(null);
-  // 5.304.0 — re-opening YOUR finished review clears its conclusion, which
-  // an undo cannot put back exactly; that one asks for a second click.
-  const [armedId, setArmedId] = React.useState<number | null>(null);
-  React.useEffect(() => {
-    if (armedId == null) return undefined;
-    const t = setTimeout(() => setArmedId(null), 5000);
-    return () => clearTimeout(t);
-  }, [armedId]);
-  const rows = expanded ? data.items : data.items.slice(0, FOLLOWUPS_PREVIEW);
-
-  const reopen = async (row: ReviewFollowupRow) => {
-    if (row.mine && armedId !== row.host_id) {
-      setArmedId(row.host_id);
-      return;
-    }
-    setArmedId(null);
-    setBusyId(row.host_id);
-    try {
-      await followHost(row.host_id, 'in_review');
-      toast.success(
-        row.mine ? `${row.ip_address} is back in your review queue` : `${row.ip_address} is now in your review queue`,
-        row.mine
-          ? { autoHideMs: 2500 }
-          // Taking over someone else's reviewed host added a review of yours;
-          // theirs is untouched, so removing yours is an exact undo.
-          : {
-              autoHideMs: 6000,
-              action: {
-                label: 'Undo',
-                onClick: () => {
-                  unfollowHost(row.host_id)
-                    .then(onReopened)
-                    .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
-                },
-              },
-            },
-      );
-      onReopened();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not re-open the review.'));
-    } finally {
-      setBusyId(null);
-    }
-  };
-
-  return (
-    <PostureSection
-      title={<>
-        <span>Needs another look</span>
-        <SectionCount>{data.total.toLocaleString()}</SectionCount>
-      </>}
-      // 5.304.0 — "an open question" is defined, not left to guess.
-      description={<>
-        Reviewed hosts that are not done: the review concluded{' '}
-        <span className="font-medium text-foreground" title="The conclusion chosen in Mark reviewed when the host could not be settled. The query conclusion:needs_evidence lists them.">
-          “Needs more evidence”
-        </span>
-        , or the host gained ports or scanner observations after it was reviewed
-        {data.total > data.mine_total ? ` — ${data.mine_total} yours` : ''}.
-      </>}
-    >
-      <ul className="divide-y divide-border/60">
-        {rows.map((row) => (
-          <li key={`${row.host_id}-${row.reviewer_id}`} className="flex items-start gap-sm py-xs">
-            <div className="min-w-0 flex-1">
-              <div className="flex min-w-0 items-baseline gap-xs">
-                {/* A link (5.304.0), so a middle-click opens it in a tab. The
-                    section's hosts ride along, so Next on the host page walks
-                    THIS list (v5.243.0) — the whole section, not the rows on
-                    screen, or the hosts behind "Show more" were dropped. */}
-                <Link
-                  to={`/hosts/${row.host_id}`}
-                  state={fromOperationsQueue(data.items.map((r) => r.host_id), 'Needs another look',
-                    { partial: data.total > data.items.length }).state}
-                  className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
-                >
-                  {row.ip_address}
-                </Link>
-                {row.hostname && (
-                  <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
-                    {row.hostname}
-                  </span>
-                )}
-              </div>
-              <p className="truncate text-caption text-muted-foreground">
-                reviewed by {row.mine ? 'you' : row.reviewer || 'someone else'}
-                {row.reviewed_at ? ` ${fmtAgo(tsOf(row.reviewed_at))}` : ''}
-              </p>
-              <ul className="mt-xxs flex flex-col gap-xxs">
-                {row.reasons.map((r) => (
-                  <li key={r.kind} className="line-clamp-2 break-words text-caption text-foreground" title={r.text}>
-                    {r.text}
-                  </li>
-                ))}
-              </ul>
-              {row.review_summary && (
-                <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.review_summary}>
-                  “{row.review_summary}”
-                </p>
-              )}
-            </div>
-            <div className="flex shrink-0 flex-col items-stretch gap-xxs">
-              {/* v5.267.0 — a quiet action: a bright button on every row
-                  made the whole queue shout. */}
-              <Button
-                size="sm"
-                variant="ghost"
-                className="h-7 text-info"
-                disabled={busyId === row.host_id}
-                onClick={() => void reopen(row)}
-                title={row.mine
-                  ? 'Put this host back In Review under you. It returns to your queue and the old conclusion is cleared — click again to confirm.'
-                  : `Take this host into review yourself. ${row.reviewer ?? 'The reviewer'}'s conclusion stays on record.`}
-              >
-                {busyId === row.host_id
-                  ? 'Re-opening…'
-                  : armedId === row.host_id
-                    ? 'Click to confirm — clears the conclusion'
-                    : row.mine ? 'Re-open review' : 'Review'}
-              </Button>
-            </div>
-          </li>
-        ))}
-      </ul>
-      <MoreFooter
-        shown={rows.length}
-        loaded={data.items.length}
-        total={data.total}
-        expanded={expanded}
-        onToggle={() => setExpanded((v) => !v)}
-      />
-    </PostureSection>
-  );
-};
-
-/**
- * "Worth a look" — the engagement-wide queue beneath the personal one
- * (design review item 2).  Hosts nobody has touched yet that carry an
- * observed weakness or a relevant change, each row saying why, what the
- * evidence is, and the next step.  Ordered by a stated tier (the legend
- * lists them); there is deliberately no composite priority number.
- */
-/**
- * How the queue splits by tier (v5.308.0): one row per tier — name, a bar on
- * a scale shared by the five, the count. The labels carry identity, so one
- * colour serves (five steps of one hue could not be told apart). A row is a
- * button: it narrows the list below to that tier; the counts never change
- * with the choice (they are whole-queue).
- */
-const TierLadder: React.FC<{
-  tiers: string[];
-  counts: number[];
-  selected: number | null;
-  onSelect?: (tier: number | null) => void;
-}> = ({ tiers, counts, selected, onSelect }) => {
-  const max = Math.max(1, ...counts);
-  return (
-    <div className="mb-sm max-w-xl" role="group" aria-label="Hosts worth a look, by tier">
-      <ul className="flex flex-col gap-[2px]">
-        {tiers.map((label, i) => {
-          const tier = i + 1;
-          const n = counts[i] ?? 0;
-          const on = selected === tier;
-          const dim = selected != null && !on;
-          const body = (
-            <>
-              <span className="min-w-0 flex-1 truncate text-left" title={label}>{label}</span>
-              <span aria-hidden className="relative h-2 w-40 shrink-0 overflow-hidden rounded-[2px] bg-muted">
-                {n > 0 && (
-                  <span
-                    className="absolute inset-y-0 left-0 rounded-[2px] bg-warning"
-                    style={{ width: `${Math.max(3, (n / max) * 100)}%` }}
-                  />
-                )}
-              </span>
-              <span className="w-10 shrink-0 text-right font-semibold tabular-nums">{n.toLocaleString()}</span>
-            </>
-          );
-          return (
-            <li key={label} className={cn('text-caption', dim && 'opacity-50')}>
-              {onSelect && n > 0 ? (
-                <button
-                  type="button"
-                  aria-pressed={on}
-                  onClick={() => onSelect(on ? null : tier)}
-                  title={on ? 'Show every tier' : `Show only: ${label}`}
-                  className={cn(
-                    'flex w-full items-center gap-sm rounded px-xxs py-[1px] text-foreground hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                    on && 'bg-accent font-medium',
-                  )}
-                >
-                  {body}
-                </button>
-              ) : (
-                <div className={cn('flex items-center gap-sm px-xxs py-[1px]', n === 0 ? 'text-muted-foreground' : 'text-foreground')}>
-                  {body}
-                </div>
-              )}
-            </li>
-          );
-        })}
-      </ul>
-    </div>
-  );
-};
-
-const InvestigateSection: React.FC<{
-  data: InvestigationQueueResponse;
-  navigate: ReturnType<typeof useNavigate>;
-  onTaken: () => void;
-  tier?: number | null;
-  onTier?: (tier: number | null) => void;
-}> = ({ data, navigate, onTaken, tier = null, onTier }) => {
-  const toast = useToast();
-  const [expanded, setExpanded] = React.useState(false);
-  const [takingId, setTakingId] = React.useState<number | null>(null);
-  const rows = expanded ? data.items : data.items.slice(0, INVESTIGATE_PREVIEW);
-
-  // Take the host: mark it In Review under the caller.  The queue only lists
-  // hosts with no follow row at all, so nobody else is reviewing it; after
-  // this it leaves the queue and appears under "In review" above.  From
-  // there the assist agent can plan against it ("hosts assigned to me or in
-  // review by me").
-  const take = async (row: InvestigateRow) => {
-    setTakingId(row.host_id);
-    try {
-      await followHost(row.host_id, 'in_review');
-      // 5.304.0 — undoable: the queue lists only hosts nobody follows, so
-      // removing the new review restores exactly what was there.
-      toast.success(`${row.ip_address} is now in your review queue`, {
-        autoHideMs: 6000,
-        action: {
-          label: 'Undo',
-          onClick: () => {
-            unfollowHost(row.host_id)
-              .then(onTaken)
-              .catch((err) => toast.error(formatApiError(err, 'Could not undo.')));
-          },
-        },
-      });
-      onTaken();
-    } catch (err) {
-      toast.error(formatApiError(err, 'Could not take the host into review.'));
-    } finally {
-      setTakingId(null);
-    }
-  };
-
-  return (
-    <PostureSection
-      title={<>
-        <span>Worth a look</span>
-        <SectionCount>{data.queue_total.toLocaleString()}</SectionCount>
-      </>}
-      description="Hosts nobody is reviewing, with a reason — no review, assignment, note, test, evidence or finding yet. Review takes one into your queue."
-    >
-      {data.tier_counts && data.queue_total > 0 && (
-        <TierLadder tiers={data.tiers} counts={data.tier_counts} selected={tier} onSelect={onTier} />
-      )}
-      {tier != null && (
-        <p className="mb-xs text-caption text-muted-foreground">
-          Showing only <span className="font-medium text-foreground">{data.tiers[tier - 1]}</span>.{' '}
-          <button type="button" className="text-info hover:underline" onClick={() => onTier?.(null)}>Show every tier</button>
-        </p>
-      )}
-      {data.items.length === 0 ? (
-        <p className="text-caption text-muted-foreground">
-          {data.untouched_total > 0
-            ? `${data.untouched_total.toLocaleString()} untouched hosts, none with a weakness or change on record.`
-            : 'Every host has been touched by someone.'}
-        </p>
-      ) : (
-        <>
-          {/* Stacked rows, not a table: as four columns the next step got
-              ~110px and "Upload evidence" spilled out of the row.  Text takes
-              the row's width; the actions are a fixed column on the right. */}
-          <ul className="divide-y divide-border">
-            {rows.map((row) => (
-              <li key={row.host_id} data-tier={row.tier} className="flex items-start gap-sm py-xs">
-                <div className="min-w-0 flex-1">
-                  <div className="flex min-w-0 items-baseline gap-xs">
-                    <Link
-                      to={`/hosts/${row.host_id}`}
-                      state={fromOperationsQueue(data.items.map((r) => r.host_id), 'Worth a look',
-                        { partial: data.queue_total > data.items.length }).state}
-                      className="min-w-0 max-w-[60%] shrink-0 truncate rounded font-mono text-metadata text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                      title={row.hostname ? `${row.ip_address} · ${row.hostname}` : row.ip_address}
-                    >
-                      {row.ip_address}
-                    </Link>
-                    {row.hostname && (
-                      <span className="min-w-0 truncate text-caption text-muted-foreground" title={row.hostname}>
-                        {row.hostname}
-                      </span>
-                    )}
-                    {/* The tier on the host's own line (v5.267.0): a line of
-                        its own made every row five lines tall. */}
-                    <span className="ml-auto min-w-0 shrink truncate text-caption font-medium text-warning" title={row.tier_label}>
-                      {row.tier_label}
-                    </span>
-                  </div>
-                  <ul className="mt-xxs flex flex-col gap-xxs">
-                    {row.reasons.map((r) => (
-                      <li key={r.kind} className="line-clamp-2 break-words text-caption text-foreground" title={r.text}>
-                        {r.text}
-                      </li>
-                    ))}
-                  </ul>
-                  {/* 5.304.0 — "no scan recorded · seen 77d · scanner-reported"
-                      contradicted itself: the reporting tool was simply not
-                      recorded.  Said so, with what each part means on hover. */}
-                  <p
-                    className="mt-xxs truncate text-caption text-muted-foreground"
-                    title={[
-                      row.evidence.sources.length
-                        ? `Reported by: ${row.evidence.sources.join(', ')}`
-                        : 'The import did not record which tool reported this.',
-                      row.evidence.last_seen ? `Last observed ${new Date(row.evidence.last_seen).toLocaleString()}.` : null,
-                      row.evidence.confirmation === 'scanner'
-                        ? 'Scanner-reported: nobody has confirmed it yet.'
-                        : null,
-                    ].filter(Boolean).join(' ')}
-                  >
-                    <span>{row.evidence.sources.length ? row.evidence.sources.join(', ') : 'source tool not recorded'}</span>
-                    {' · '}
-                    {row.evidence.last_seen ? `last observed ${fmtAgo(tsOf(row.evidence.last_seen))}` : 'never observed'}
-                    {' · '}
-                    {row.evidence.confirmation === 'scanner'
-                      ? 'scanner-reported, unconfirmed'
-                      : row.evidence.confirmation === 'finding'
-                        ? 'has a finding'
-                        : 'tested'}
-                  </p>
-                  {/* The step only when it says more than the section does:
-                      "Take it into review — nobody has looked at this host
-                      yet" was on every row, under a heading saying so. */}
-                  {!row.next_action.generic && (
-                    <p className="line-clamp-2 break-words text-caption text-muted-foreground" title={row.next_action.text}>
-                      Next: {row.next_action.text}
-                    </p>
-                  )}
-                </div>
-                {/* A fixed-width action column: a row with "Upload evidence"
-                    pushed its "Review" out of line with the rows above. */}
-                <div className="flex w-32 shrink-0 flex-col items-end gap-xxs">
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="h-7 text-info"
-                    disabled={takingId === row.host_id}
-                    onClick={() => void take(row)}
-                    title="Mark this host In Review under you. It leaves this queue and joins your personal one."
-                  >
-                    {takingId === row.host_id ? 'Taking…' : 'Review'}
-                  </Button>
-                  {row.next_action.kind === 'collect' && (
-                    <Button size="sm" variant="ghost" className="h-7" onClick={() => navigate('/scans')}>
-                      Upload evidence
-                    </Button>
-                  )}
-                </div>
-              </li>
-            ))}
-          </ul>
-          <MoreFooter
-            shown={rows.length}
-            loaded={data.items.length}
-            total={tier != null ? (data.tier_counts?.[tier - 1] ?? data.items.length) : data.queue_total}
-            expanded={expanded}
-            onToggle={() => setExpanded((v) => !v)}
-          >
-            <span className="text-caption text-muted-foreground" title={`Tiers, in order: ${data.tiers.join(' › ')}`}>
-              Ordered by tier: {data.tiers.join(' › ')}
-            </span>
-          </MoreFooter>
-        </>
-      )}
-    </PostureSection>
-  );
-};
-
-// Lowered from 14: the card is now the focused action queue (recent-notes
-// activity moved to its own card) and shares a row with it, so a tighter
-// Rows shown per category before its own "Show more" (six categories).
-const GROUP_PREVIEW = 3;
 
 export const MyWorkCard: React.FC<MyWorkCardProps> = ({
-  queue, tasks, findings, investigate = null, investigateUnavailable = false,
-  investigateLoading = false, onRetryInvestigate, investigateTier = null, onInvestigateTier,
-  followups = null, followupsUnavailable = false,
-  loading, error, onRetry, onChanged, part = 'all', updated,
+  queue, tasks, findings, totals = null,
+  loading, error, onRetry, onChanged, canWrite = true, updated,
 }) => {
-  const navigate = useNavigate();
   const { user } = useAuth();
   const toast = useToast();
   const changed = onChanged ?? onRetry;
-  // v5.237.0 — each category expands by itself.  One global "show more" over
-  // a merged list meant reaching "In review" required paging through every
-  // category ranked above it.
+  // Each group expands by itself (v5.237.0).
   const [expandedGroups, setExpandedGroups] = React.useState<Set<GroupKey>>(new Set());
   const [claimingId, setClaimingId] = React.useState<number | null>(null);
 
@@ -738,6 +289,7 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
       .filter((g) => g.rows.length > 0),
     [items],
   );
+  const totalOf = groupTotals(queue, tasks, findings);
 
   const handleClaim = async (c: { testId: number; revision: number }) => {
     if (user?.id == null) return;
@@ -747,8 +299,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
         assigned_to_id: user.id,
         expected_revision: c.revision,
       });
-      // 5.304.0 — undoable: the step was unassigned before the claim.
-      toast.success("Claimed — it's now in your assigned work", {
+      // Undoable: the test was unassigned before the claim.
+      toast.success("Claimed — it's now in your assigned tests", {
         autoHideMs: 6000,
         action: {
           label: 'Undo',
@@ -771,40 +323,36 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
   };
 
   const { total: totalCount, available: availableCount } =
-    personalWorkCounts(queue, tasks, findings);
+    personalWorkCounts(queue, tasks, findings, totals);
 
-  // The server's count for a category, where one source owns it outright.
-  // "Assigned" states what is loaded and no more.
-  const serverTotal: Partial<Record<GroupKey, number>> = {
-    findings: findings?.total_open,
-    in_review: queue?.in_review_count,
-    triage: tasks?.reason_counts?.triage,
-  };
-  // Where the whole of a category can be listed, filtered to the caller.
-  const viewAll: Partial<Record<GroupKey, { to: string; label: string }>> = {
-    in_review: { to: buildHostsUrl({ q: 'follow:in_review' }), label: 'All hosts I have in review' },
-    findings: { to: '/findings?owner=me', label: 'All findings I own' },
-  };
-
-  // v5.267.0 — three sections over thin rules, not one card holding three
-  // queues (UI_STYLE_GUIDE §7).  The counts are plain text in the heading row.
-  const summary = [
-    totalCount > 0 ? `${totalCount.toLocaleString()} yours` : null,
-    availableCount > 0 ? `${availableCount.toLocaleString()} to claim` : null,
-  ].filter(Boolean).join(' · ');
+  const countLink = 'rounded hover:text-info hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring';
 
   return (
-    <div className="flex min-w-0 flex-col gap-lg">
-      {part !== 'engagement' && (
+    <div id={MY_WORK_ID} className="flex min-w-0 scroll-mt-md flex-col gap-lg">
       <PostureSection
         title={<>
           <span>My work</span>
-          {summary && (
-            <SectionCount>{summary}</SectionCount>
+          {(totalCount > 0 || availableCount > 0) && (
+            <SectionCount>
+              {totalCount > 0 && (
+                <span>{totalCount.toLocaleString()} waiting on you</span>
+              )}
+              {totalCount > 0 && availableCount > 0 && ' · '}
+              {availableCount > 0 && (
+                // The count jumps to its list, which is always on the page.
+                <a href={`#${TO_CLAIM_ID}`} onClick={jumpTo(TO_CLAIM_ID)} className={countLink}>
+                  {availableCount.toLocaleString()} to claim
+                </a>
+              )}
+            </SectionCount>
           )}
         </>}
-        // v5.243.0 — when the workbench last loaded.
-        actions={updated}
+        actions={<>
+          {updated}
+          {/* The feed of what the reader already did lives on Collaboration;
+              it had a third of this page's first screen. */}
+          <Link to="/activity?author=me" className="text-info hover:underline">My activity</Link>
+        </>}
       >
         {loading ? (
           <div className="flex items-center gap-xs" role="status" aria-live="polite">
@@ -823,98 +371,131 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           </Alert>
         ) : items.length === 0 ? (
           <p className="text-metadata text-muted-foreground">
-            Nothing in your queue. Work shows here when you mark a host{' '}
-            <strong className="text-foreground">In Review</strong>, a test is assigned to you, or you own a finding.
+            Nothing is waiting on you.{' '}
+            {canWrite
+              ? <>Work shows here when you take a host into review, a test is assigned to you, or a finding you own needs something — it is under investigation, its report text is incomplete, or a proposal about it is waiting.</>
+              : <>Work shows here when a test is assigned to you or a finding you own needs something.</>}
           </p>
         ) : (
           <div className="flex flex-col gap-md">
             {groups.map((g) => {
+              const meta = GROUP_META[g.key];
               const open = expandedGroups.has(g.key);
               const rows = open ? g.rows : g.rows.slice(0, GROUP_PREVIEW);
-              const total = serverTotal[g.key];
-              const beyond = total != null && total > g.rows.length ? total - g.rows.length : 0;
-              const all = viewAll[g.key];
+              const total = Math.max(totalOf[g.key], g.rows.length);
+              const beyond = total - g.rows.length;
+              // Only the hosts group has a page that lists exactly it.
+              const openAll = g.key === 'in_review'
+                ? { to: buildHostsUrl({ q: MY_REVIEW_QUERY }), label: `Open all ${total.toLocaleString()} in Hosts` }
+                : undefined;
+              const hidden = g.rows.length - rows.length;
+              const toggle = () => setExpandedGroups((prev) => {
+                const next = new Set(prev);
+                if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
+                return next;
+              });
               return (
-                <section key={g.key} aria-label={GROUP_META[g.key].label}>
+                <section
+                  key={g.key}
+                  aria-label={meta.label}
+                  id={g.key === 'triage' ? TO_CLAIM_ID : undefined}
+                  className="scroll-mt-md"
+                >
                   <div className="mb-xxs flex flex-wrap items-baseline gap-xs">
-                    {/* A label, not a coloured chip per group. */}
-                    <h3 className="text-metadata font-semibold text-foreground">
-                      {GROUP_META[g.key].label}
-                    </h3>
-                    {/* The full count where the server has one; never the
-                        number of rows that happen to be on screen. */}
-                    <span className="text-caption tabular-nums text-muted-foreground">
-                      {(total ?? g.rows.length).toLocaleString()}
+                    <h3 className="text-metadata font-semibold text-foreground">{meta.label}</h3>
+                    {/* The server's count; never the rows that happen to be on screen. */}
+                    <span className="text-caption tabular-nums text-muted-foreground">{total.toLocaleString()}</span>
+                    {g.key === 'triage' && (
+                      <span className="text-caption text-muted-foreground">
+                        — unassigned critical and high tests; not counted as yours
+                      </span>
+                    )}
+                    {/* The label of the right-hand column of every row below. */}
+                    <span className="ml-auto text-caption text-muted-foreground" aria-hidden
+                      title="How long since the row last changed: since you took the host into review, or since the test or finding was last updated.">
+                      waiting
                     </span>
                   </div>
                   <ul className="flex flex-col">
                     {rows.map((it) => (
-                <li key={it.key}>
-                  <div className="flex items-center gap-xxs">
-                    {/* A link (5.304.0), so a middle-click opens it in a tab. */}
-                    <Link
-                      to={it.to}
-                      // A host row carries its category's hosts as the queue;
-                      // a finding / plan-step row is not a host page.
-                      state={hostIdOf(it.to) != null
-                        ? fromOperationsQueue(g.rows.map((r) => hostIdOf(r.to)), GROUP_META[g.key].label,
-                          { partial: beyond > 0 }).state
-                        : undefined}
-                      className={cn(
-                        'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
-                        'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
-                      )}
-                    >
-                      <it.Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                      {it.chip && <Badge variant={it.chip.tone}>{it.chip.label}</Badge>}
-                      <span
-                        className={cn(
-                          'shrink-0 text-metadata font-medium text-foreground',
-                          it.primaryMono && 'font-mono',
-                        )}
-                      >
-                        {it.primary}
-                      </span>
-                      <span className="min-w-0 flex-1 truncate text-metadata text-muted-foreground">
-                        — {it.meta}
-                      </span>
-                      {it.right.label && (
-                        it.right.tone ? (
-                          <Badge variant={it.right.tone}>{it.right.label}</Badge>
-                        ) : (
-                          <span className="shrink-0 text-caption text-muted-foreground">{it.right.label}</span>
-                        )
-                      )}
-                    </Link>
-                    {it.claim && (
-                      <Button
-                        size="sm" variant="ghost" className="h-7 shrink-0 text-info"
-                        disabled={claimingId === it.claim.testId}
-                        onClick={() => handleClaim(it.claim!)}
-                      >
-                        {claimingId === it.claim.testId ? 'Claiming…' : 'Claim'}
-                      </Button>
-                    )}
-                  </div>
-                </li>
+                      <li key={it.key}>
+                        <div className="flex min-w-0 items-center gap-xxs">
+                          {/* A link, so a middle-click opens it in a tab. */}
+                          <Link
+                            to={it.to}
+                            // A host row carries its group's hosts as the queue;
+                            // a finding / test row is not a host page.
+                            state={g.key === 'in_review' && hostIdOf(it.to) != null
+                              ? fromOperationsQueue(g.rows.map((r) => hostIdOf(r.to)), meta.label,
+                                { partial: beyond > 0 }).state
+                              : undefined}
+                            className={cn(
+                              'flex min-w-0 flex-1 items-center gap-xs px-xs py-xxs text-left',
+                              'rounded-control hover:bg-accent focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
+                            )}
+                          >
+                            <it.Icon className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                            <span className="sr-only">{meta.kind}:</span>
+                            {it.chip && (
+                              <Badge variant={it.chip.variant} className="shrink-0 whitespace-nowrap">{it.chip.label}</Badge>
+                            )}
+                            <span
+                              className={cn(
+                                'shrink-0 text-metadata font-medium text-foreground',
+                                it.primaryMono && 'font-mono',
+                              )}
+                            >
+                              {it.primary}
+                            </span>
+                            <span
+                              className="min-w-0 flex-1 truncate text-metadata text-muted-foreground"
+                              title={[it.owed, it.meta].filter(Boolean).join(' — ')}
+                            >
+                              {it.owed && <span className="font-medium text-foreground">{it.owed}</span>}
+                              {' — '}{it.meta}
+                            </span>
+                            <span
+                              className="w-10 shrink-0 text-right text-caption tabular-nums text-muted-foreground"
+                              aria-label={it.waiting ? `waiting ${it.waiting}` : 'waiting time not recorded'}
+                              title={it.waiting ? `Waiting ${it.waiting}` : 'No change was recorded for this row.'}
+                            >
+                              {it.waiting || '—'}
+                            </span>
+                          </Link>
+                          {it.claim && canWrite && (
+                            <Button
+                              size="sm" variant="ghost" className="h-7 shrink-0 text-info"
+                              disabled={claimingId === it.claim.testId}
+                              onClick={() => handleClaim(it.claim!)}
+                            >
+                              {claimingId === it.claim.testId ? 'Claiming…' : 'Claim'}
+                            </Button>
+                          )}
+                        </div>
+                      </li>
                     ))}
                   </ul>
-                  {/* This card loads a capped slice per source; the footer
-                      says how much of the whole is on screen and names the
-                      view that lists all of it. */}
                   <div className="pl-xs">
-                    <MoreFooter
+                    <ListFooter
                       shown={rows.length}
-                      loaded={g.rows.length}
-                      total={total ?? g.rows.length}
-                      expanded={open}
-                      onToggle={() => setExpandedGroups((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(g.key)) next.delete(g.key); else next.add(g.key);
-                        return next;
-                      })}
-                      viewAll={all ? { title: all.label, onClick: () => navigate(all.to) } : undefined}
-                    />
+                      total={total}
+                      openAll={openAll}
+                      // In place only where no page lists the group.
+                      more={!openAll && (hidden > 0 || open)
+                        ? { label: open ? 'Show fewer' : `Show ${hidden} more`, onClick: toggle }
+                        : undefined}
+                    >
+                      {!openAll && open && beyond > 0 && (
+                        <span className="text-caption text-muted-foreground">
+                          {beyond.toLocaleString()} more {beyond === 1 ? 'is' : 'are'} not loaded — they take these rows' places as these are done.
+                        </span>
+                      )}
+                      {g.key === 'findings' && (
+                        <Link to="/findings?owner=me" className="text-caption text-muted-foreground hover:text-info hover:underline">
+                          All findings I own
+                        </Link>
+                      )}
+                    </ListFooter>
                   </div>
                 </section>
               );
@@ -922,49 +503,8 @@ export const MyWorkCard: React.FC<MyWorkCardProps> = ({
           </div>
         )}
       </PostureSection>
-      )}
-
-      {part !== 'mine' && !loading && !error && followupsUnavailable && (
-        <PostureSection title={<span>Needs another look</span>}>
-          <UnavailableLine onRetry={onRetry}>
-            Unavailable — reviewed hosts could not be checked for open questions or later changes.
-          </UnavailableLine>
-        </PostureSection>
-      )}
-      {part !== 'mine' && !loading && !error && !followupsUnavailable && followups && followups.items.length > 0 && (
-        <FollowupsSection data={followups} onReopened={changed} />
-      )}
-
-      {part !== 'mine' && !loading && !error && investigateLoading && !investigate && (
-        <PostureSection title={<span>Worth a look</span>}>
-          <p role="status" className="flex items-center gap-xs text-caption text-muted-foreground">
-            <Loader2 className="size-3.5 animate-spin" aria-hidden />
-            Finding untouched hosts with a reason to look…
-          </p>
-        </PostureSection>
-      )}
-      {part !== 'mine' && !loading && !error && investigateUnavailable && (
-        <PostureSection title={<span>Worth a look</span>}>
-          <UnavailableLine onRetry={onRetryInvestigate ?? onRetry}>
-            Unavailable — this queue could not be computed, so it says nothing about whether
-            hosts are waiting. Your own work above is unaffected.
-          </UnavailableLine>
-        </PostureSection>
-      )}
-      {part !== 'mine' && !loading && !error && !investigateUnavailable && investigate && (
-        <InvestigateSection data={investigate} navigate={navigate} onTaken={changed}
-          tier={investigateTier} onTier={onInvestigateTier} />
-      )}
     </div>
   );
 };
-
-/** A queue the server could not compute: said, never shown as empty. */
-const UnavailableLine: React.FC<{ onRetry: () => void; children: React.ReactNode }> = ({ onRetry, children }) => (
-  <div role="alert" className="flex flex-wrap items-center gap-xs text-caption text-warning">
-    <span className="min-w-0 flex-1">{children}</span>
-    <Button size="sm" variant="ghost" className="h-7" onClick={onRetry}>Retry</Button>
-  </div>
-);
 
 export default MyWorkCard;

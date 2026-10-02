@@ -277,9 +277,9 @@ class FindingVulnerability(Base):
 
 
 class FindingStatusHistory(Base):
-    """Audit trail of finding disposition transitions.  Same shape as
-    AnnotationStatusHistory so both share one status-transition recorder
-    (app.services.status_history_service)."""
+    """Audit trail of finding disposition transitions, written by the
+    status-transition recorder (app.services.status_history_service).  Note
+    status history, which shared it, was dropped in v2.447.0."""
     __tablename__ = "finding_status_history"
 
     id = Column(Integer, primary_key=True, index=True)

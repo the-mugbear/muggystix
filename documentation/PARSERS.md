@@ -1,6 +1,6 @@
 # Parser Reference & Contributor Guide
 
-> **Last verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26)
+> **Last verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-02)
 >
 > The **"What BlueStick reads"** page in the app (Reference → `/reference/tool-coverage`,
 > data in `backend/app/data/parser_coverage.json`) is the operator-facing,
@@ -226,9 +226,11 @@ issue.
   finding was attached to a TCP port, so an SNMP/NTP/IKE/DNS-over-UDP finding
   created or joined a phantom open TCP port; scans imported earlier need a
   re-import to correct (the vulnerability row never stored the protocol).
-- **Informational (severity 0) rows** can be skipped at ingest — the upload form's
-  switch wins, then the project's setting, then the deployment default
-  (`resolve_skip_informational`).
+- **Informational (severity 0) rows** can be skipped at ingest — a value sent
+  with the upload request wins, then the project's setting, then the deployment
+  default (`resolve_skip_informational`). The upload dialog has no switch of its
+  own: it states the project's setting and links to Project settings, where it
+  is changed.
 - **Vulnerability columns written:** `plugin_id`, `title` (plugin name),
   `description` (`description` → `synopsis`), `severity` (0–4 → INFO/LOW/
   MEDIUM/HIGH/CRITICAL), `source=NESSUS`, `solution`, `references` (CVE-MITRE
@@ -352,7 +354,7 @@ resolver_name` (there is **no** `hostname`/`ip_address` column on `DNSRecord`).
 
 | Field → | dnsx | dns CSV | amass / subfinder |
 | --- | --- | --- | --- |
-| Formats | `.json`/`.jsonl` | `.csv` | `.json`/`.jsonl`/`.txt` |
+| Formats | `.json`/`.jsonl`/`.ndjson` | `.csv` | `.json`/`.jsonl`/`.ndjson`/`.txt` |
 | `domain` | host or PTR name | `name` column | hostname (`name`/`host`/`domain`) |
 | `record_type` | A/AAAA/CNAME/MX/NS/TXT/SOA/SRV/CAA/PTR, any other type listed in `all`, and `AXFR` (the transfer itself) | from `type` column (an unknown type is rejected) | A/AAAA (`DISCOVERED` for unresolved names) |
 | `value` | the answer / IP | an IP for A/AAAA/PTR, the record data otherwise | resolved IP |

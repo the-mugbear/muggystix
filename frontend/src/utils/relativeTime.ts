@@ -17,9 +17,6 @@
  * local wrapper in the component over a seventh option.
  *
  * **Deliberately NOT migrated** — these look similar and are not:
- *   * ``MyActivityCard.dayBucket`` buckets by CALENDAR day ("Today",
- *     "Yesterday"), so an event at 23:50 last night is "Yesterday" where
- *     elapsed time would say "8h ago". Different question, different answer.
  *   * ``ProvenanceCard.formatAge`` is day-and-month granularity for scan age
  *     ("3 days ago", "4 months ago") — a months bucket nothing else wants.
  *   * ``SecurityPosture`` / ``PortfolioDashboard`` / ``Operations`` format a

@@ -1,6 +1,6 @@
 # Contributing / Maintaining BlueStick
 
-> **Verified against:** backend 2.427.1 / frontend 5.309.1 (2026-09-26).
+> **Verified against:** backend 2.450.0 / frontend 5.329.0 (2026-10-01).
 
 This is the orientation a developer needs to maintain BlueStick safely. It captures the
 project's **conventions and invariants** — the things that aren't obvious from reading the
@@ -89,9 +89,10 @@ on this repository). **The gate is one command, run before every push:**
 It runs (1) the backend suite in the **report-worker** image — the backend image plus Quarto —
 with `report-templates/` mounted, and **fails if any test skipped for want of Quarto or the
 templates**: in the plain `backend` image (the recipe further down) the client-report tests,
-the hostile-text contract among them, skip, and that run is green without them; (2) frontend
-`tsc --noEmit` and `vitest run`; (3) `scripts/test-alembic-roundtrip.sh`, which ends with
-`alembic check`. Every step runs even when one fails, a one-screen summary ends the run, and
+the hostile-text contract among them, skip, and that run is green without them; (2) `ruff check`
+over `backend/` in the same image — any finding fails the gate (see "Lint" above); (3) frontend
+`tsc --noEmit` and `vitest run`; (4) `scripts/test-alembic-roundtrip.sh`, which ends with
+`alembic check` (`--fast` skips this step). Every step runs even when one fails, a one-screen summary ends the run, and
 the exit status is non-zero on any failure. It needs the stack up and the images built, builds
 and pulls nothing, and sets `BLUESTICK_SKIP_DB_INIT=1`. From a git worktree it tests the
 worktree's source inside the main checkout's compose project.
@@ -102,8 +103,9 @@ and back up, so a migration needs a genuinely reversible `downgrade()`; `alembic
 model/migration drift. **Backend** — `pytest` (the recipe below; it passes `--no-cov`, as
 `check.sh` does, so the `--cov-fail-under` floor in `backend/pytest.ini` is **not** enforced by
 any routine run — drop `--no-cov` to measure coverage by hand). **Frontend** — `tsc --noEmit` →
-`vitest run` → `npm run build`. `tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an
-unused import fails the image build.
+`vitest run` (what `check.sh` runs; `npm run build` is run by the image build, not by the gate).
+`tsc` runs with `noUnusedLocals` / `noUnusedParameters`, so an unused import fails the gate and
+the image build.
 
 - **Frontend** tests run on the host: `cd frontend && npx vitest run` / `npx tsc --noEmit`.
 - **Backend** tests do **not** run on the host — there's no host `pytest`, and `app/` is baked
@@ -229,13 +231,17 @@ that file now, and (3) the split reduces real conflict or cognitive load. Otherw
 BlueStick exposes a `/api/v1/agent/*` surface for terminal-side AI agents, **physically
 separate** from the JWT user API (different auth — `X-API-Key`; different dependency chain;
 different router files). Since v2.337.0 an operator starts **one project-scoped agent session**
-with one time-limited, renewable key, and the session opens a *phase* for each kind of work —
-assist reads by default, then reconnaissance, plan drafting or execution. There is no
-per-workflow key, no workflow guard (`require_*_scope` are gone) and no capability grant
-(deleted v2.309.0): every agent request is checked against its **operator's project role**,
-re-resolved per request (`enforce_agent_operator_access` in `app/api/deps.py`). What keeps the
-record trustworthy is object-level — a plan must be human-approved, one active run per plan,
-and a run belongs to the session that opened it.
+with one time-limited, renewable key. A session has no phases (v2.433.0 removed recon runs and
+the approved-tool allowlist, v2.442.0 test plans and execution runs): the agent reads the
+inventory and scopes, uploads scan output, proposes tests on hosts and records evidence, in
+whatever order its operator asks. There is no per-workflow key, no workflow guard
+(`require_*_scope` are gone), no capability grant (deleted v2.309.0) and no approval step:
+every agent request is checked against its **operator's project role**, re-resolved per request
+(`enforce_agent_operator_access` in `app/api/deps.py`). What a person still decides is anything
+that changes what the team has concluded or what the client report says — a finding's report
+text, a new finding, promoting or dismissing a scanner observation, an endpoint's status: an
+agent's change of that kind is a **proposal** a person accepts (`/proposals`); everything else
+is written directly and attributed to the session.
 
 - **`documentation/AGENT_GUIDE.md`** is the contract every agent reads at startup, served sliced by
   workflow at `GET /api/v1/agents-guide?workflow=…` via the `<!-- agents:section -->` markers.
@@ -246,7 +252,8 @@ and a run belongs to the session that opened it.
   and every workflow slice keeps its body; every described OpenAPI tag is used by a route; and
   every agent endpoint documented in the guide's API-reference tables exists. If you rename or
   remove an agent route, update the agent guide (and the OpenAPI tags in `app/main.py`) in the same
-  commit or this test fails.
+  commit or this test fails. The same file requires every `scripts/*.py` and `scripts/*.sh` to be
+  named in `scripts/README.md`: a new script is documented in the commit that adds it.
 
 ## Frontend UI
 

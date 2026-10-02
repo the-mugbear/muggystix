@@ -145,7 +145,7 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "says they are finished (finishing a task is not that: report and wait); "
             "file any feedback you have not filed yet first; the key dies with this call. It "
             "revokes your key and marks the session ended so the operator's Agent "
-            "Activity page stops showing it as running. Optional `notes`: one or two "
+            "Sessions page stops showing it as live. Optional `notes`: one or two "
             "lines on what the session did (v2.340.0)."
         ),
         "method": "POST",
@@ -731,22 +731,35 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     # service its page uses (agent_assist_operations.py).
     "assist_get_workbench": {
         "description": (
-            "Your operator's Operations 'My work', as they see it: hosts they are "
-            "reviewing (my_queue), host tests to do (my_tasks), "
-            "findings they own, team review, follow-ups ('needs another "
-            "look'), blockers, and since_last_visit — scans, new and changed hosts, "
-            "new critical/high scanner observations since they last marked "
-            "Operations seen. Answers 'what's mine?' and 'what changed since I was "
-            "last here?'. Reading never marks anything seen. *_unavailable=true "
-            "means that section could not be computed — say so, never 'nothing'. "
-            "The lists are PREVIEWS as on the page (my_queue 10, tasks/notes/"
-            "findings/follow-ups 15): use the section's own count — "
-            "in_review_count, total_open, total — for 'how many', never the "
-            "list length. blockers.failed_import_count counts failed imports "
-            "nobody has dismissed and no later clean import superseded, so it is "
-            "smaller than assist_list_ingestion_issues' failed. investigate is "
-            "null here because the 'Worth a look' queue is not embedded — null is "
-            "not an empty queue; read it with assist_list_worth_a_look."
+            "Your operator's Operations page, as they see it. my_work is their "
+            "queue as ONE number (total = hosts_in_review + tests_assigned + "
+            "tests_on_hosts_in_review + findings_needing_me; to_claim is shared "
+            "work outside it) — quote it for 'how much is waiting on me?'. "
+            "my_queue: hosts they are reviewing. my_tasks: host tests to do "
+            "(group_counts counts each test once: assigned / in_review / triage). "
+            "my_findings: findings they own that NEED them — each row's needs "
+            "says why (under investigation, required report text missing, a "
+            "proposal to decide); a confirmed, written-up finding is not listed. "
+            "measures: total_hosts, tested_hosts (has:tested) and "
+            "untouched_critical_hosts (has:untouched has:critical). followups is "
+            "'Changed since review' — reviewed hosts that gained open ports or "
+            "critical/high observations after the review, or concluded 'needs "
+            "more evidence' (total = reviews, host_total = hosts; the hosts are "
+            "q='has:changed_since_review OR conclusion:needs_evidence'). Also "
+            "team review, blockers, and since_last_visit — scans, new and "
+            "changed hosts, new critical/high scanner observations since they "
+            "last marked Operations seen. Answers 'what's mine?' and 'what "
+            "changed since I was last here?'. Reading never marks anything seen. "
+            "*_unavailable=true means that section could not be computed — say "
+            "so, never 'nothing' or 0. The lists are PREVIEWS as on the page "
+            "(my_queue 10, tasks 10 per group, notes/findings/follow-ups 15): "
+            "use the section's own count — my_work, in_review_count, total_open, "
+            "host_total — for 'how many', never the list length. "
+            "blockers.failed_import_count counts failed imports nobody has "
+            "dismissed and no later clean import superseded, so it is smaller "
+            "than assist_list_ingestion_issues' failed. investigate is null here "
+            "because the untouched queue is not embedded — null is not an empty "
+            "queue; read it with assist_list_worth_a_look."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/workbench",
@@ -754,7 +767,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     },
     "assist_list_worth_a_look": {
         "description": (
-            "Operations' 'Worth a look' queue: hosts NOBODY has touched (no review, "
+            "Operations' 'Untouched, with a reason' queue (it was 'Worth a look'): "
+            "hosts NOBODY has touched (no review, "
             "note, host test, evidence or finding) that carry an observed weakness or a "
             "relevant change, each with its reasons and next action, in stated "
             "tier order (1 exploitable critical, 2 critical vulnerability, 3 "

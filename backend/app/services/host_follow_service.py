@@ -4,7 +4,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
-from sqlalchemy import func, or_
+from sqlalchemy import func, or_, update
 from sqlalchemy.orm import Session, selectinload
 
 from app.db import models
@@ -80,6 +80,44 @@ class HostFollowService:
         self.db.commit()
         self.db.refresh(follow)
         return follow
+
+    def restamp_reviews(self, project_id: int, user_id: int, host_ids: List[int]) -> List[int]:
+        """"Still reviewed" (v2.450.0): the reviewer looked at what changed
+        after their review and the review stands — move ``reviewed_at`` to
+        now on ``user_id``'s OWN finished reviews of these hosts, leaving the
+        conclusion and summary as they are.  The baseline "changed since
+        review" is measured against moves; nothing else does.
+
+        All or nothing, in ONE statement: the conditions are in the UPDATE's
+        WHERE, and a host that did not qualify — not in the project, no
+        finished review of the caller's, or concluded ``needs_evidence``
+        (an open question is not answered by looking again: re-open it or
+        change the conclusion) — rolls the whole call back.  Returns the host
+        ids that could NOT be stamped; empty means every one was.
+        """
+        wanted = list(dict.fromkeys(host_ids))
+        in_project = (
+            self.db.query(models.Host.id)
+            .filter(models.Host.id.in_(wanted), models.Host.project_id == project_id)
+        )
+        stamped = self.db.execute(
+            update(HostFollow)
+            .where(
+                HostFollow.user_id == user_id,
+                HostFollow.host_id.in_(in_project),
+                HostFollow.status == FollowStatus.REVIEWED,
+                HostFollow.review_conclusion.is_distinct_from("needs_evidence"),
+            )
+            .values(reviewed_at=datetime.now(timezone.utc))
+            .returning(HostFollow.host_id)
+            .execution_options(synchronize_session=False)
+        ).scalars().all()
+        refused = sorted(set(wanted) - set(stamped))
+        if refused:
+            self.db.rollback()
+            return refused
+        self.db.commit()
+        return []
 
     def assign_host(self, host_id: int, assignee_id: int, assigned_by_id: int) -> HostFollow:
         """Assign a host to ``assignee_id``.

@@ -109,20 +109,28 @@ const sections: GuideSection[] = [
         <Subhead>Two ways to filter</Subhead>
         <UnorderedList>
           <li><strong>Query bar</strong> — type plain text to search IP / hostname / OS, or use the boolean query language (next section) for precise filters. Press <Mono>/</Mono> to focus it; it validates as you type and shows a live match count.</li>
-          <li><strong>Filter panel</strong> — point-and-click filters for state, OS, ports, services, subnets, tags, review status, assignment, and scan. They combine with the query bar (AND).</li>
+          <li><strong>Filter panel</strong> — point-and-click filters in six groups: network and scope (subnet, site, out of scope, tags, labels), services and web evidence, weaknesses and access, scanner observations (severity, exploit reported, CVE), analyst work (team review, assigned to me, notes, tested) and discovery (operating system, scans, registered owner). They combine with the query bar (AND).</li>
         </UnorderedList>
         <Subhead>Working the list</Subhead>
         <UnorderedList>
-          <li><strong>Sorting</strong> — by critical / high findings, open ports, notes count, last seen, hostname, or IP (sorted numerically by octet).</li>
-          <li><strong>Review workflow</strong> — mark hosts Watching, In Review, or Reviewed to track progress (and filter back with <Mono>follow:</Mono>).</li>
-          <li><strong>Assignment</strong> — assign hosts to teammates; find yours with <Mono>assigned:me</Mono>.</li>
+          <li><strong>Sorting</strong> — by critical scanner observations, exploit reported, open ports, most discoveries, most notes, IP address (numerically) or hostname.</li>
+          <li><strong>Review workflow</strong> — take a host <strong>In Review</strong>, then mark it <strong>Reviewed</strong>. Review is the team's, not yours alone: <Mono>follow:in_review</Mono> and <Mono>follow:reviewed</Mono> match a host <em>any</em> teammate has in that state, <Mono>follow:none</Mono> a host nobody has taken, and <Mono>follow:mine</Mono> the hosts <em>you</em> have In Review. A reviewed host that later gains an open port or a critical / high scanner observation is listed on Operations under <em>Changed since review</em> (<Mono>has:changed_since_review</Mono>).</li>
+          <li><strong>Assignment</strong> — assign hosts to teammates; find yours with <Mono>assigned:me</Mono>. Taking a host In Review also makes it yours.</li>
           <li><strong>Notes</strong> — threaded notes with @mentions for collaboration.</li>
-          <li><strong>Tool-ready output</strong> — export the filtered list in tool formats (IP list, Nmap targets, …). Exports honour the full active filter + query.</li>
+          <li><strong>Export targets / Export hosts</strong> (auditors and above) — <em>Export targets</em> writes the filtered list in tool formats (IP list, Nmap targets, …); <em>Export hosts</em> builds a host report. Both honour the full active filter + query.</li>
           <li><strong>Share &amp; save</strong> — <strong>Copy link</strong> reproduces the exact view; <strong>Save view</strong> stores it as a named view.</li>
         </UnorderedList>
         <Para>
-          Click any host to open <strong>Host Detail</strong>: full port/service info, vulnerabilities,
-          scan history, the notes thread, and connection-helper commands.
+          Click any host to open it: ports and services, weaknesses (scanner observations), its
+          tests and their evidence, scan history, the discussion thread, and connection-helper
+          commands. Its assessment line says, per kind of evidence, whether the host was assessed —
+          and, for vulnerability scans, whether the scan authenticated: <em>credentialed</em>,{' '}
+          <em>not credentialed</em> or <em>credentials not stated</em>. That is shown beside
+          "assessed", never instead of it: an unauthenticated scan still counts as assessed.
+        </Para>
+        <Para>
+          Controls follow your role on the project: review, assignment, tags, notes and tests are
+          offered to analysts and above; viewers and auditors get the same pages read-only.
         </Para>
       </div>
     ),
@@ -147,6 +155,10 @@ const sections: GuideSection[] = [
         <Subhead>Examples</Subhead>
         <UnorderedList>
           <li><Mono>has:critical AND NOT follow:in_review_any</Mono> — critical-vuln hosts nobody is reviewing yet.</li>
+          <li><Mono>follow:mine</Mono> — the hosts <em>you</em> have in review (the other <Mono>follow:</Mono> values — <Mono>in_review</Mono>, <Mono>in_review_any</Mono>, <Mono>reviewed</Mono>, <Mono>none</Mono> — count any teammate's review).</li>
+          <li><Mono>has:changed_since_review OR conclusion:needs_evidence</Mono> — reviewed hosts that are not done: Operations' "Changed since review".</li>
+          <li><Mono>has:untouched AND has:critical</Mono> — hosts with a critical scanner observation that nobody has taken into review, been assigned, noted, tested or put in a finding: Operations' "Untouched, with a reason" starts from these.</li>
+          <li><Mono>vulnscan:uncredentialed</Mono> — hosts assessed by a vulnerability scan that did not authenticate (<Mono>credentialed</Mono> and <Mono>unstated</Mono> are the other two values).</li>
           <li><Mono>cve:CVE-2021-44228 OR vuln:"log4j"</Mono> — Log4Shell exposure by CVE or title.</li>
           <li><Mono>port:445 AND os:Windows AND label:"PCI"</Mono> — SMB-exposed Windows hosts in PCI subnets.</li>
           <li><Mono>service:http AND has:web AND NOT tag:reviewed</Mono> — un-reviewed web services.</li>
@@ -156,7 +168,7 @@ const sections: GuideSection[] = [
           <AlertDescription>
             This same query language is available to your <strong>agent</strong> — so you can
             ask your AI of choice questions like "which hosts do I have in review?" and it answers
-            with <Mono>follow:in_review</Mono> against the live data. See <strong>Agents →
+            with <Mono>follow:mine</Mono> against the live data. See <strong>Agents →
             Asking about your project</strong>.
           </AlertDescription>
         </Alert>
@@ -167,32 +179,39 @@ const sections: GuideSection[] = [
     id: 'findings',
     title: 'Findings',
     Icon: ShieldAlert,
-    summary: 'Vulnerabilities consolidated across scanners, with triage and evidence threads.',
+    summary: 'What the team has judged: findings, the scanner observations they come from, and the report text and images.',
     content: (
       <div>
         <Para>
-          The <strong>Findings</strong> page (Inventory hub) is the vulnerability triage surface. It
-          consolidates findings from every scanner that reports them — Nessus, OpenVAS, Nikto, and
-          agentic test results — deduplicated per host so the same issue from two scans is one row,
-          not two.
+          Two things are kept apart. <strong>Scanner observations</strong> are what the tools
+          reported on a host (Nessus, OpenVAS, Nuclei, Nikto, nmap scripts, testssl, NetExec…),
+          not yet judged. A <strong>finding</strong> is an issue the team has taken up: made by
+          promoting a scanner observation or a test result that showed the issue, or written by
+          hand. The <strong>Findings</strong> page (Findings hub) lists findings; its{' '}
+          <strong>Scanner observations</strong> view lists the raw rows grouped by issue across
+          hosts, and promotes several at once.
         </Para>
         <UnorderedList>
-          <li><strong>Severity &amp; disposition</strong> — sort and filter by severity; track triage state as you work through them.</li>
-          <li><strong>Evidence threads</strong> — attach comments and evidence to a finding; terminal determinations (e.g. confirmed / false-positive) require a justification, which is captured for the report.</li>
-          <li><strong>Source attribution</strong> — each finding records which scan and tool produced it, so you can trace it back.</li>
+          <li><strong>Status</strong> — a finding is <em>under investigation</em> (Open, Retest), <em>Confirmed</em>, or <em>closed</em> (False positive, Accepted risk, Remediated). Closing one asks for a justification, kept on the finding's history and carried into the report.</li>
+          <li><strong>One finding per issue</strong> — the same issue promoted from another host joins the existing finding. Each affected system has its own state (Still present, Remediated here, Retest here, False positive here), so the finding's status is never read as every host's. On the finding's page the systems are listed 100 at a time with a filter; tick several to set their state in one step.</li>
+          <li><strong>Who may change what</strong> — severity, owner and status are any analyst's. Renaming or deleting a finding, and its report text, belong to its author or a project admin. A comment is edited or deleted only by its author.</li>
+          <li><strong>Report text</strong> — Description, Impact, Recommendation, Steps to reproduce and References are written on the finding and print in the client report. The page says which required sections are still empty.</li>
+          <li><strong>Images in the report</strong> — <em>Attach image</em> on one of the finding's comments, then tick <strong>In report</strong> on the image; an image is left out until it is ticked. Give it a caption (the filename is used otherwise). In the report-text editor, <em>Insert image</em> places a ticked image in that section: it writes <Mono>![](evidence:&lt;id&gt;)</Mono>, and the empty brackets print the image's own caption (text typed in the brackets replaces it for that place). Only the finding's own images can be placed, and the same image may be placed more than once. A ticked image that is not placed prints under Evidence, with its caption. An image that is placed cannot be deleted or un-ticked, and the comment holding it cannot be deleted, until the reference is removed from the text — the refusal names the section. Where images print also depends on the report's template; the report page says what its template prints.</li>
+          <li><strong>Agent proposals</strong> — an agent's change to a finding (report text, a new finding, promoting or dismissing an observation, a system's state) waits as a proposal for a person to accept or reject, on <strong>Workflows → Proposals</strong> and on the finding's page.</li>
         </UnorderedList>
         <Para>
-          On the Hosts page, the same data drives <Mono>cve:</Mono>, <Mono>vuln:</Mono>, and{' '}
-          <Mono>has:critical</Mono> filters, so you can pivot from a host to its findings and back.
+          On the Hosts page, <Mono>cve:</Mono>, <Mono>vuln:</Mono>, and <Mono>has:critical</Mono>{' '}
+          filter on scanner observations, so you can pivot from a host to what was reported on it
+          and back.
         </Para>
       </div>
     ),
   },
   {
     id: 'posture',
-    title: 'Posture & Insights',
+    title: 'Posture',
     Icon: Gauge,
-    summary: 'Manager roll-ups, per-subnet hygiene, and estate-wide blind spots.',
+    summary: 'The overview, segments, estate-wide patterns, and what the evidence covers.',
     content: (
       <div>
         <Para>
@@ -200,15 +219,27 @@ const sections: GuideSection[] = [
           useful when you need the shape of the engagement, not an individual host.
         </Para>
         <UnorderedList>
-          <li><strong>Posture</strong> — the headline roll-up: exposure, coverage, severity mix, and ownership/review progress across the project, with by-site breakdowns.</li>
-          <li><strong>Insights</strong> — per-subnet exposure, neglect, and hygiene (EOL OS, weak TLS, risky services) so you can spot the worst-tended corners of the estate.</li>
-          <li><strong>Systemic</strong> — estate-wide patterns and blind spots: outliers, common vectors, and where a single weakness is spread across many hosts.</li>
+          <li><strong>Posture</strong> — the overview: one sentence on where the project stands, what that rests on, where to focus, and a grid of weakness families by site (or by subnet when the project defines no site).</li>
+          <li><strong>Segments</strong> — which sites and subnets need attention first: exposure, open assessment work and hygiene (EOL OS, weak TLS, risky services) per segment.</li>
+          <li><strong>Patterns</strong> — estate-wide weaknesses: where a single weakness is spread across many hosts.</li>
+          <li><strong>Evidence</strong> — per kind of evidence, how many eligible hosts were assessed, and the gaps with the step that closes each. For vulnerability scans it also counts the assessed hosts whose scan was credentialed, not credentialed, or did not say; each count opens its hosts (<Mono>vulnscan:</Mono>). All three count as assessed.</li>
         </UnorderedList>
         <Para>
-          For the day-to-day analyst view, <strong>Operations</strong> stays your home base (your
-          queue, blocked work, recent notes); <strong>Portfolio</strong> rolls posture up across
-          every project you belong to.
+          A project is one assessment window: evidence is assessed, not assessed or not applicable,
+          and dates are shown as provenance — nothing goes "stale". For the day-to-day analyst view,{' '}
+          <strong>Operations</strong> stays your home base (your work, blocked imports, the hosts
+          that changed since their review and the untouched hosts with a reason to look);{' '}
+          <strong>Portfolio</strong> rolls the same counts up across every project you belong to.
         </Para>
+        <Subhead>Operations, top to bottom</Subhead>
+        <UnorderedList>
+          <li><strong>My work</strong> lists only what needs you: tests assigned to you, findings that need you — each row says why (under investigation, required report text missing, a proposal to decide) — hosts you are reviewing, and tests on those hosts. <em>Available to claim</em> (unassigned critical or high tests) is listed beside them and not counted as yours.</li>
+          <li><strong>Changed since review</strong> — reviewed hosts that changed afterwards, or whose review concluded that more evidence is needed. <em>Still reviewed</em> says you saw the change and your review stands (your own finished reviews only); <em>Re-open review</em> puts the host back In Review under you. Tick rows to do either in bulk.</li>
+          <li><strong>Untouched, with a reason</strong> — hosts nobody has touched that carry a reason to look, ordered by a stated tier (never a score). The tier chips filter the list; <em>Review</em> takes a host — or the ticked hosts — into your queue.</li>
+          <li><strong>Where the team has been</strong> — how far each address block has been taken: tested, planned, someone has it, untouched. The sentence and the block to go to first are always shown; <em>Show the map</em> opens the 3D map and its table view, and the choice is remembered.</li>
+          <li><strong>Agent sessions</strong> — one line: how many sessions are live and how many wait to be resumed. The list is on Workflows → Agent Sessions.</li>
+          <li><strong>Exposure</strong> — scanner observations by severity (not yet judged) and the three scope states: in scope subnets, reached only through an in-scope name, outside scope.</li>
+        </UnorderedList>
       </div>
     ),
   },
@@ -216,7 +247,7 @@ const sections: GuideSection[] = [
     id: 'notes',
     title: 'Notes & collaboration',
     Icon: MessagesSquare,
-    summary: 'Threaded discussion on hosts and findings, @mentions, and the project-wide Activity feed.',
+    summary: 'Threaded discussion on hosts and findings, @mentions, and the project-wide Collaboration feed.',
     content: (
       <div>
         <Para>
@@ -224,14 +255,13 @@ const sections: GuideSection[] = [
           comments are where the team asks, answers and hands over. They are not the record of
           work. Work is a <strong>test</strong> on the host and the result recorded on it; a
           finding is made by promoting a weakness or a test result that showed an issue. The{' '}
-          <strong>Activity</strong> page (Collaboration hub) shows every discussion in the
-          project, latest first.
+          <strong>Collaboration</strong> page shows every discussion in the project, latest first.
         </Para>
         <UnorderedList>
           <li><strong>Threading</strong> — reply to notes to build a conversation.</li>
           <li><strong>@Mentions</strong> — tag teammates with <Mono>@username</Mono> to notify them; the bell icon shows your unread mention count.</li>
           <li><strong>Type and pin</strong> — label a thread (question, decision, handoff…) and pin the ones that must stay at the top.</li>
-          <li><strong>Screenshots for the report</strong> — put them on the finding: <em>Attach image</em> on one of its comments, then mark the image for the report. An image is left out until it is marked.</li>
+          <li><strong>Screenshots for the report</strong> — put them on the finding: <em>Attach image</em> on one of its comments, then tick <strong>In report</strong>. An image is left out until it is ticked; captions and placing an image in the report text are described under Findings.</li>
           <li><strong>Markdown</strong> — headers, lists, and bold render in the UI.</li>
         </UnorderedList>
       </div>

@@ -37,6 +37,8 @@ Give the agent:
     Operations → Start Agent Session, then connect the `bluestick` MCP
     server (Reference → MCP has the recipe for each client), or give the
     agent the key for `X-API-Key` on https://<bluestick>/api/v1/agent/*.
+    Start it as a project ANALYST: the uninterpreted-lines read is refused
+    (403) for an auditor's or viewer's session.
     Without it the agent can still report what was not interpreted, but it
     cannot tell "read correctly" from "read wrongly".
 

@@ -484,6 +484,40 @@ def key_expiry_for_agent_sessions(db: Session, session_ids: List[int]) -> dict:
 # on an otherwise-active row — which is the truthful state.
 
 
+def session_key_state(
+    status, key_expires_at: Optional[datetime], renewable_until: Optional[datetime],
+    now: Optional[datetime] = None,
+) -> str:
+    """Where a session stands, from the three facts the session list carries
+    (``status``, ``key_expires_at``, ``renewable_until``) — the server's twin
+    of the Agent Sessions page's Live / Resumable / Expired:
+
+    * ``live``      — active, and a key is valid right now;
+    * ``resumable`` — active, no valid key, still inside its lifetime (the
+      operator can resume it: same session, a new key);
+    * ``ended``     — anything else: ended, or active on paper with no key
+      and past its lifetime.
+
+    For a line of text that would otherwise print the stored status: "active"
+    alone cannot tell a connected agent from a session whose key ran out a
+    day ago.
+    """
+    if getattr(status, "value", status) != "active":
+        return "ended"
+    now = now or datetime.now(timezone.utc)
+
+    def _after_now(t: Optional[datetime]) -> bool:
+        if t is None:
+            return False
+        return (t if t.tzinfo is not None else t.replace(tzinfo=timezone.utc)) > now
+
+    if _after_now(key_expires_at):
+        return "live"
+    if _after_now(renewable_until):
+        return "resumable"
+    return "ended"
+
+
 def resume_agent_session(
     db: Session,
     session: AgentSession,

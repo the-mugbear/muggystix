@@ -240,8 +240,14 @@ class ReviewFollowupRow(BaseModel):
 
 class ReviewFollowupsResponse(BaseModel):
     items: List[ReviewFollowupRow] = Field(default_factory=list)
+    #: Rows — one per (host, reviewer): two people's reviews of one host are
+    #: two rows.
     total: int = 0
     mine_total: int = 0
+    #: Distinct HOSTS behind those rows — what the section's count and
+    #: "Open all N in Hosts" state, and exactly the hosts
+    #: ``has:changed_since_review OR conclusion:needs_evidence`` lists.
+    host_total: int = 0
 
 
 _FOLLOWUP_PORT_SAMPLE = 6
@@ -257,6 +263,11 @@ def compute_review_followups(
     and never backfilled (NULL) is reported for ``needs_evidence`` only: with
     no baseline there is nothing to call "since".  Three statements whatever
     the number of hosts (follows, new open ports, new critical/high vulns).
+
+    What counts as "changed" is ``host_query_predicates.port_after_review_condition``
+    / ``vuln_after_review_condition`` — the same two conditions behind
+    ``has:changed_since_review``, so ``host_total`` is the size of the Hosts
+    list this section opens.
     """
     from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity
 
@@ -283,12 +294,7 @@ def compute_review_followups(
     for fid, port_number in (
         db.query(HostFollow.id, models.Port.port_number)
         .join(models.Port, models.Port.host_id == HostFollow.host_id)
-        .filter(
-            HostFollow.id.in_(follow_ids),
-            HostFollow.reviewed_at.isnot(None),
-            models.Port.state == "open",
-            models.Port.first_seen > HostFollow.reviewed_at,
-        )
+        .filter(HostFollow.id.in_(follow_ids), P.port_after_review_condition())
         .order_by(models.Port.port_number)
         .all()
     ):
@@ -298,12 +304,7 @@ def compute_review_followups(
     for fid, sev, n in (
         db.query(HostFollow.id, Vulnerability.severity, func.count(Vulnerability.id))
         .join(Vulnerability, Vulnerability.host_id == HostFollow.host_id)
-        .filter(
-            HostFollow.id.in_(follow_ids),
-            HostFollow.reviewed_at.isnot(None),
-            Vulnerability.severity.in_((VulnerabilitySeverity.CRITICAL, VulnerabilitySeverity.HIGH)),
-            Vulnerability.created_at > HostFollow.reviewed_at,
-        )
+        .filter(HostFollow.id.in_(follow_ids), P.vuln_after_review_condition())
         .group_by(HostFollow.id, Vulnerability.severity)
         .all()
     ):
@@ -366,6 +367,7 @@ def compute_review_followups(
         items=rows[:limit],
         total=len(rows),
         mine_total=sum(1 for r in rows if r.mine),
+        host_total=len({r.host_id for r in rows}),
     )
 
 
@@ -868,6 +870,10 @@ class MyTasksResponse(BaseModel):
     items: List[MyTaskItem] = Field(default_factory=list)
     total_open: int = 0
     reason_counts: MyTasksReasonCounts = Field(default_factory=MyTasksReasonCounts)
+    #: Each test counted ONCE, under its strongest reason (assigned →
+    #: in_review → triage) — the group Operations lists it in.  These DO add
+    #: up to ``total_open``; ``group_counts.triage`` is "available to claim".
+    group_counts: MyTasksReasonCounts = Field(default_factory=MyTasksReasonCounts)
 
 
 def compute_my_tasks(
@@ -883,6 +889,11 @@ def compute_my_tasks(
 
     Order: strongest reason (assigned → in_review → triage), then
     priority (critical → info), then most recently updated.
+
+    ``limit`` is PER GROUP (review 2026-10-02): one limit over the merged
+    list let a busy group take every row, so Operations said "15 to claim"
+    over a list with no claimable row in it.  Each group now brings its own
+    top rows, and ``group_counts`` says how many each holds.
     """
     # Materialize the caller's In Review host_ids once — used both in the
     # SQL filter and for Python-side reason tagging.
@@ -932,17 +943,31 @@ def compute_my_tasks(
         else_=5,
     )
 
-    ordered = (
-        db.query(HostTest, models.Host)
-        .join(models.Host, HostTest.host_id == models.Host.id)
-        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
-        .order_by(
-            reason_rank_case,
-            priority_rank_case,
-            desc(HostTest.updated_at.is_(None)),  # NULLs last
-            desc(HostTest.updated_at),
+    # Rank inside each group and keep each group's top rows — one statement.
+    ranked = (
+        db.query(
+            HostTest.id.label("tid"),
+            reason_rank_case.label("reason_rank"),
+            func.row_number().over(
+                partition_by=reason_rank_case,
+                order_by=(
+                    priority_rank_case,
+                    desc(HostTest.updated_at.is_(None)),  # NULLs last
+                    desc(HostTest.updated_at),
+                    HostTest.id,
+                ),
+            ).label("rn"),
         )
-        .limit(limit)
+        .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
+        .subquery("ranked")
+    )
+    # Host columns, not the entity (an address and a name are all a row shows).
+    ordered = (
+        db.query(HostTest, models.Host.ip_address, models.Host.hostname)
+        .join(ranked, ranked.c.tid == HostTest.id)
+        .join(models.Host, HostTest.host_id == models.Host.id)
+        .filter(ranked.c.rn <= max(1, limit))
+        .order_by(ranked.c.reason_rank, ranked.c.rn)
         .all()
     )
 
@@ -959,9 +984,9 @@ def compute_my_tasks(
     items = [
         MyTaskItem(
             test_id=entry.id, description=entry.description, label=entry.label, revision=entry.revision,
-            host_id=host.id,
-            host_ip=host.ip_address,
-            host_hostname=host.hostname,
+            host_id=entry.host_id,
+            host_ip=str(host_ip),
+            host_hostname=host_hostname,
             priority=entry.priority,
             status=entry.status,
             rationale=entry.rationale,
@@ -969,7 +994,7 @@ def compute_my_tasks(
             reasons=reasons_for(entry),
             assigned_to_id=entry.assigned_to_id,
         )
-        for entry, host in ordered
+        for entry, host_ip, host_hostname in ordered
     ]
 
     # Deduped union total + per-bucket counts in ONE query via conditional
@@ -981,6 +1006,10 @@ def compute_my_tasks(
             func.count(distinct(case((assigned_cond, HostTest.id)))).label("assigned"),
             func.count(distinct(case((in_review_cond, HostTest.id)))).label("in_review"),
             func.count(distinct(case((triage_cond, HostTest.id)))).label("triage"),
+            # The same tests, each under its strongest reason only.
+            func.count(case((reason_rank_case == 0, HostTest.id))).label("g_assigned"),
+            func.count(case((reason_rank_case == 1, HostTest.id))).label("g_in_review"),
+            func.count(case((reason_rank_case == 2, HostTest.id))).label("g_triage"),
         )
         .filter(*base_filters, or_(assigned_cond, in_review_cond, triage_cond))
         .one()
@@ -991,9 +1020,15 @@ def compute_my_tasks(
         in_review=counts_row.in_review or 0,
         triage=counts_row.triage or 0,
     )
+    group_counts = MyTasksReasonCounts(
+        assigned=counts_row.g_assigned or 0,
+        in_review=counts_row.g_in_review or 0,
+        triage=counts_row.g_triage or 0,
+    )
 
     return MyTasksResponse(
         items=items, total_open=total_open, reason_counts=reason_counts,
+        group_counts=group_counts,
     )
 
 
@@ -1052,8 +1087,14 @@ def compute_my_recent_notes(
 # My Findings — active findings the caller owns
 # ---------------------------------------------------------------------------
 
+class MyFindingNeed(BaseModel):
+    """What a finding is waiting on its owner for."""
+    kind: str  # under_investigation | missing_text | proposals
+    text: str
+
+
 class MyFindingItem(BaseModel):
-    """One active finding the caller owns.  ``host_id`` is a representative
+    """One finding that needs its owner.  ``host_id`` is a representative
     affected host (for a host-context link); ``evidence_annotation_id`` lets
     the client deep-link to the originating note thread when present."""
     finding_id: int
@@ -1064,30 +1105,67 @@ class MyFindingItem(BaseModel):
     host_count: int = 0
     evidence_annotation_id: Optional[int] = None
     updated_at: Optional[datetime] = None
+    #: Why it is listed, in the order to act on — never empty.
+    needs: List[MyFindingNeed] = Field(default_factory=list)
+    #: The required report sections still empty (only for a finding the
+    #: client report would include).
+    missing_text: List[str] = Field(default_factory=list)
+    pending_proposals: int = 0
 
 
 class MyFindingsResponse(BaseModel):
     items: List[MyFindingItem] = Field(default_factory=list)
+    #: Findings the caller owns that NEED them (the name is older than the
+    #: definition: it counted every active finding owned until v2.450.0).
     total_open: int = 0
 
 
 def compute_my_findings(
     db: Session, current_user: User, project: Project, limit: int = 15,
 ) -> MyFindingsResponse:
-    """Return the caller's owned, active findings in this project, severity-
-    ranked.  One representative affected host + host_count are resolved in a
-    single grouped query (no per-finding N+1)."""
+    """The caller's owned findings that need something from their owner
+    (review 2026-10-02 — owning a confirmed, written-up finding is a state,
+    not a task, and 24 of them were inflating "my queue").  A finding is
+    listed when at least one holds:
+
+    * it is under investigation (``open`` / ``retest``);
+    * the client report would include it and a required report section is
+      empty — ``client_report_service``'s own rule and field list, so this is
+      the report page's "Missing report text" narrowed to the owner;
+    * a proposal about it is waiting for a decision
+      (``proposal_service``'s "about a finding").
+
+    Severity-ranked.  Three statements whatever the number of findings: the
+    rows (with the total as a window), their hosts, their pending proposals.
+    """
     from app.db.models_vulnerability import severity_rank as _severity_rank
-    severity_rank = _severity_rank(Finding.severity)
-    base_filters = (
-        Finding.project_id == project.id,
-        Finding.owner_id == current_user.id,
-        Finding.status.in_(ACTIVE_FINDING_STATUSES),
+    from app.services import proposal_service
+    from app.services.client_report_service import (
+        REQUIRED_TEXT,
+        UNDER_INVESTIGATION,
+        blank_required_text,
+        missing_required_text_condition,
+        reportable_finding_condition,
     )
+
+    severity_rank = _severity_rank(Finding.severity)
+    investigating = Finding.status.in_(UNDER_INVESTIGATION)
+    text_owed = and_(reportable_finding_condition(), missing_required_text_condition())
+    blank = blank_required_text()
     findings = (
-        db.query(Finding)
-        .filter(*base_filters)
-        .order_by(severity_rank, desc(Finding.updated_at))
+        db.query(
+            Finding.id, Finding.title, Finding.severity, Finding.status,
+            Finding.evidence_annotation_id, Finding.updated_at,
+            text_owed.label("text_owed"),
+            *[blank[k].label(f"blank_{k}") for k in REQUIRED_TEXT],
+            func.count().over().label("total"),
+        )
+        .filter(
+            Finding.project_id == project.id,
+            Finding.owner_id == current_user.id,
+            or_(investigating, text_owed, proposal_service.has_pending_proposal_condition()),
+        )
+        .order_by(severity_rank, desc(Finding.updated_at), Finding.id)
         .limit(limit)
         .all()
     )
@@ -1110,8 +1188,25 @@ def compute_my_findings(
             host_count[fid] = int(cnt)
             rep_host[fid] = min_host
 
-    items = [
-        MyFindingItem(
+    pending = proposal_service.pending_per_finding(db, finding_ids)
+
+    items: List[MyFindingItem] = []
+    for f in findings:
+        needs: List[MyFindingNeed] = []
+        if f.status in UNDER_INVESTIGATION:
+            needs.append(MyFindingNeed(kind="under_investigation", text="under investigation"))
+        missing = [k for k in REQUIRED_TEXT if getattr(f, f"blank_{k}")] if f.text_owed else []
+        if missing:
+            needs.append(MyFindingNeed(
+                kind="missing_text", text=f"report text missing: {', '.join(missing)}",
+            ))
+        proposals = int(pending.get(f.id, 0))
+        if proposals:
+            needs.append(MyFindingNeed(
+                kind="proposals",
+                text=f"{proposals} proposal{'' if proposals == 1 else 's'} to decide",
+            ))
+        items.append(MyFindingItem(
             finding_id=f.id,
             title=f.title,
             severity=f.severity,
@@ -1120,13 +1215,13 @@ def compute_my_findings(
             host_count=host_count.get(f.id, 0),
             evidence_annotation_id=f.evidence_annotation_id,
             updated_at=f.updated_at,
-        )
-        for f in findings
-    ]
-    total_open = (
-        db.query(func.count(Finding.id)).filter(*base_filters).scalar() or 0
+            needs=needs,
+            missing_text=missing,
+            pending_proposals=proposals,
+        ))
+    return MyFindingsResponse(
+        items=items, total_open=int(findings[0].total) if findings else 0,
     )
-    return MyFindingsResponse(items=items, total_open=total_open)
 
 
 # ---------------------------------------------------------------------------
@@ -1212,6 +1307,53 @@ def compute_blockers(db: Session, project: Project, limit: int = 3) -> Operation
 
 
 # ---------------------------------------------------------------------------
+# The measures strip (v2.450.0) — where the engagement stands, in two numbers
+# that had been at the bottom of the page or inside the terrain: how many
+# hosts are tested, and how many untouched hosts carry a critical scanner
+# observation.  Each is counted with the predicate its list uses —
+# ``has:tested`` and ``has:untouched has:critical`` — so the number on the
+# strip is the length of the Hosts list it opens.  Two statements: the
+# untouched count has its own WHERE so Postgres drives it from the critical
+# hosts (as an aggregate FILTER it would probe five anti-joins per host).
+# The strip's other two measures (changed since review, my queue) are the
+# workbench's own sections.
+# ---------------------------------------------------------------------------
+class OperationsMeasures(BaseModel):
+    total_hosts: int = 0
+    #: ``has:tested`` — evidence of a test that ran (``host_test_queries``).
+    tested_hosts: int = 0
+    #: ``has:untouched has:critical`` — the terrain's ``critical_untouched``,
+    #: summed over every block.
+    untouched_critical_hosts: int = 0
+
+
+def compute_operations_measures(db: Session, project: Project) -> OperationsMeasures:
+    host = models.Host
+    total, tested = (
+        db.query(
+            func.count(host.id),
+            func.count(host.id).filter(P.has_test_execution_predicate(db, project.id)),
+        )
+        .filter(host.project_id == project.id)
+        .one()
+    )
+    untouched_critical = (
+        db.query(func.count(host.id))
+        .filter(
+            host.project_id == project.id,
+            P.severity_predicate(db, ["CRITICAL"], project.id),
+            *P.untouched_conditions(db),
+        )
+        .scalar()
+    )
+    return OperationsMeasures(
+        total_hosts=int(total or 0),
+        tested_hosts=int(tested or 0),
+        untouched_critical_hosts=int(untouched_critical or 0),
+    )
+
+
+# ---------------------------------------------------------------------------
 # My recent activity (§27) — a unified personal work history across entities,
 # answering "what did I do?" better than the authored-notes-only Recent Notes.
 # Each source is user-attributed + timestamped; we normalise to one event shape,
@@ -1243,6 +1385,12 @@ ACTIVITY_KINDS = {"note", "finding_created", "finding_status", "host_reviewed", 
 # and are not listed (v2.442.0).
 _SESSION_WORKFLOWS = {
     "project": "Ran an agent session",
+}
+# ``agent_session_service.session_key_state`` → the words in the feed.
+_SESSION_STATE_TEXT = {
+    "live": "live",
+    "resumable": "key expired — resumable",
+    "ended": "ended",
 }
 
 
@@ -1372,10 +1520,20 @@ def compute_my_activity(
         if cutoff is not None:
             q = q.filter(session_ts >= cutoff)
         sessions = q.order_by(desc(session_ts)).limit(limit).all()
+        # The stored status cannot tell a connected agent from a session
+        # whose key ran out: say what Agent Sessions says, from the same
+        # facts (one grouped read of the keys for the page — never per row).
+        from app.services.agent_session_service import (
+            key_expiry_for_agent_sessions, session_key_state,
+        )
+        from app.services.agent_key_ttl import session_renewal_deadline
+        expiry = key_expiry_for_agent_sessions(db, [s.id for s in sessions])
+        now = datetime.now(timezone.utc)
         for s in sessions:
+            state = session_key_state(s.status, expiry.get(s.id), session_renewal_deadline(s), now)
             events.append(ActivityEvent(
                 kind="session", at=(s.started_at or s.created_at),
-                summary=f"{_SESSION_WORKFLOWS[s.workflow]} ({s.status})",
+                summary=f"{_SESSION_WORKFLOWS[s.workflow]} ({_SESSION_STATE_TEXT[state]})",
                 link=f"/agent-sessions/{s.id}",
             ))
 

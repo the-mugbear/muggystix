@@ -42,6 +42,7 @@ import { Alert, AlertDescription } from '../components/ui/alert';
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { formatApiError } from '../utils/apiErrors';
+import { useAuth } from '../contexts/AuthContext';
 import { notificationHref } from '../utils/notificationLinks';
 import { useListCursor } from '../hooks/useListCursor';
 import {
@@ -144,7 +145,20 @@ const Activity: React.FC = () => {
   const [totalNotes, setTotalNotes] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [authorFilter, setAuthorFilter] = useState<string>('');
+  // The author filter lives in the URL (`?author=<id>` or `?author=me`,
+  // 5.329.0), so "my activity" is a link — Operations' My work points here —
+  // and the choice survives a reload.  `me` resolves to the signed-in account.
+  const { user } = useAuth();
+  const authorParam = searchParams.get('author') ?? '';
+  const authorFilter = authorParam === 'me'
+    ? (user?.id != null ? String(user.id) : '')
+    : (/^\d+$/.test(authorParam) ? authorParam : '');
+  const setAuthorFilter = useCallback((next: string) => {
+    const params = new URLSearchParams(searchParams);
+    if (!next) params.delete('author');
+    else params.set('author', user?.id != null && next === String(user.id) ? 'me' : next);
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams, user?.id]);
   const [authors, setAuthors] = useState<NoteActivityAuthor[]>([]);
   const [search, setSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
@@ -464,7 +478,7 @@ const Activity: React.FC = () => {
             label="Search discussions"
             className="w-80"
           />
-          {authors.length > 0 && (
+          {(authors.length > 0 || authorFilter) && (
             <Select
               value={authorFilter || 'all'}
               onValueChange={(v) => setAuthorFilter(v === 'all' ? '' : v)}
@@ -474,7 +488,9 @@ const Activity: React.FC = () => {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All authors</SelectItem>
-                {authors.map((a) => (
+                {/* Always offered, and first: the reader's own messages. */}
+                {user?.id != null && <SelectItem value={String(user.id)}>Mine</SelectItem>}
+                {authors.filter((a) => a.id !== user?.id).map((a) => (
                   <SelectItem key={a.id} value={String(a.id)}>
                     {a.name}
                   </SelectItem>

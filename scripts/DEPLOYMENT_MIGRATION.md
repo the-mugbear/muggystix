@@ -21,5 +21,5 @@ published to the host, and the API docs are at `https://<host>/docs`. On first b
 creates the `admin` account: its password is `DEFAULT_ADMIN_PASSWORD` when set, otherwise a
 generated one written to `./uploads/initial-admin-password.txt` (mode 0600, never logged); a
 password change — and TOTP enrolment, with the default `REQUIRE_2FA=true` — is forced on first
-login. For diagnostics run `./scripts/collect-logs.sh`, which writes an anonymised bundle safe to
-share.
+login. For diagnostics run `./scripts/collect-logs.sh`, which writes an anonymised bundle; read
+its `feedback.txt` (free text) before sharing it, or leave that file out with `--no-feedback`.
