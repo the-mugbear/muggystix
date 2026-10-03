@@ -28,7 +28,11 @@ const modelOf = (d: Proposal) => d.agent_model ?? (d.source === 'llm_draft' ? 'A
 export const draftTabLabel = (d: Proposal, all: Proposal[]): string => {
   const model = modelOf(d);
   if (all.filter((o) => modelOf(o) === model).length === 1) return model;
-  const words = String(d.payload?.value ?? '').replace(/[#*_`>[\]()!-]+/g, ' ').trim().split(/\s+/).slice(0, 6).join(' ');
+  // Markdown marks go without leaving a gap ("(synthetic):" must not read "synthetic :").
+  const words = String(d.payload?.value ?? '')
+    .replace(/^\s*(?:[-*+]|\d+\.)\s+/, '')
+    .replace(/[#*_`>[\]()!]/g, '')
+    .trim().split(/\s+/).slice(0, 6).join(' ');
   return words ? `“${words}…”` : model;
 };
 

@@ -282,11 +282,11 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
   it('drafts from one model are told apart by their opening words (browser pass 5.334.1)', () => {
     renderCard({
       drafts: new Map([['impact', [
-        draft(1, 'impact', 'Apply the vendor fix and verify it.'),
+        draft(1, 'impact', 'Apply the vendor (synthetic): fix and verify it.'),
         draft(2, 'impact', 'Restrict access, then patch.'),
       ]]]),
     });
-    expect(screen.getByRole('tab', { name: /Draft A · “Apply the vendor fix and verify…”/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Draft A · “Apply the vendor synthetic: fix and…”/ })).toBeInTheDocument();
     expect(screen.getByRole('tab', { name: /Draft B · “Restrict access, then patch\.…”/ })).toBeInTheDocument();
   });
 
