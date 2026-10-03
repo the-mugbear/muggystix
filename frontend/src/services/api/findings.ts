@@ -91,6 +91,10 @@ export type FindingReportTextUpdate = Partial<
  *  502 (provider failed or answered unreadably). */
 export interface FindingTextDraft {
   proposals: Proposal[];
+  /** Backend 2.455.0: sections the model declined because the finding's data
+   *  does not support them — {field: what would let it be written}.  No
+   *  proposal was made for them. */
+  declined?: Record<string, string>;
   provider_id: number;
   provider_type: string;
   model_id: string | null;

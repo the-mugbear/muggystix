@@ -161,3 +161,56 @@ def test_parse_reads_json_in_a_fence_or_prose_and_drops_the_rest():
 def test_the_request_schema_names_the_service_fields():
     from app.api.v1.endpoints.report_drafts import FindingTextField
     assert set(get_args(FindingTextField)) == set(FINDING_TEXT_FIELDS)
+
+
+def test_a_section_the_data_does_not_support_is_declined_never_written(client, db_session, test_project, llm):
+    """2.455.0 — the prompt used to say "where the data is too thin, say what is
+    missing instead of inventing it", and that sentence became the proposal's
+    value: accepted, it printed in the client report.  A section the model
+    cannot support is now null with a reason under ``missing`` — no proposal,
+    and the reason goes to the reviewer, never into a section."""
+    answer, seen = llm
+    alice = _member(db_session, test_project, 331, "alice", ProjectRole.ANALYST)
+    app.dependency_overrides[get_current_user] = lambda: alice
+    fid = client.post(f"/api/v1/projects/{test_project.id}/findings",
+                      json={"title": "Weak TLS", "severity": "medium"}).json()["id"]
+
+    answer["content"] = (
+        '{"description": "TLS 1.0 is accepted on the portal.", "impact": null, "recommendation": null,'
+        ' "missing": {"impact": "No evidence of what the portal protects or who reaches it.",'
+        ' "recommendation": "  "}}'
+    )
+    r = client.post(_url(test_project), json={"finding_id": fid})
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert [p["field"] for p in body["proposals"]] == ["description"]
+    assert body["declined"] == {
+        "impact": "No evidence of what the portal protects or who reaches it.",
+        "recommendation": "The data does not support writing this section.",
+    }
+    # The reviewer reads what was left out beside the draft; no section holds it.
+    assert "impact: No evidence of what the portal protects" in body["proposals"][0]["rationale"]
+    assert all("No evidence" not in p["payload"]["value"] for p in body["proposals"])
+    # The model is told it may decline, and that a section never holds a placeholder.
+    assert '"missing"' in seen["user"] and "null" in seen["user"]
+    assert "Declining a section is allowed" in seen["system"] and "placeholder" in seen["system"]
+
+    # Declining everything is an answer, not a provider failure: nothing is proposed.
+    answer["content"] = '{"description": null, "impact": null, "recommendation": null, "missing": {"description": "Nothing recorded."}}'
+    r = client.post(_url(test_project), json={"finding_id": fid, "fields": ["impact", "recommendation"]})
+    assert r.status_code == 200, r.text
+    assert r.json()["proposals"] == []
+    assert set(r.json()["declined"]) == {"impact", "recommendation"}
+
+
+def test_parse_answer_separates_written_and_declined():
+    from app.services.report_draft_service import parse_finding_text_answer
+    written, declined = parse_finding_text_answer(
+        '{"impact": "x", "description": null, "missing": {"description": "Need the version.", "steps": "n/a"}}',
+        ["impact", "description", "recommendation"],
+    )
+    assert written == {"impact": "x"}
+    # A field the answer never mentions is neither written nor declined.
+    assert declined == {"description": "Need the version."}
+    # An empty string is neither text nor a reason: declined with the default reason only if named.
+    assert parse_finding_text_answer('{"impact": ""}', ["impact"]) == ({}, {"impact": "The data does not support writing this section."})

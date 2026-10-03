@@ -6,7 +6,7 @@ stays separate from the deterministic export renderers — a genuine seam, not a
 line-count split. Mounted under the same ``/reports`` prefix, so the path is
 ``POST /projects/{project_id}/reports/draft``.
 """
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
@@ -123,6 +123,10 @@ class FindingTextDraftResponse(BaseModel):
     # v2.437.0 — the draft is PROPOSALS (one per field, source ``llm_draft``),
     # reviewed like an agent's: the same panel, accept (then edit) or reject.
     proposals: List[dict]
+    # 2.455.0 — sections the model declined because the finding's data does
+    # not support them: {field: what would let it be written}.  No proposal is
+    # made for them; the reason is never report text.
+    declined: Dict[str, str] = {}
     provider_id: int
     provider_type: str
     model_id: Optional[str] = None
@@ -179,13 +183,20 @@ def draft_finding_text(
         user_id=current_user.id, source=ProposalSource.LLM_DRAFT.value,
         model=result.get("model_id") or result.get("provider_type"),
     )
-    rows = proposals.propose_finding_text(
-        db, project.id, who, finding_id=finding.id, fields=result["suggestions"],
-        rationale="Drafted in BlueStick with your LLM provider.",
-    )
-    db.commit()
+    declined = result.get("declined") or {}
+    rationale = "Drafted in BlueStick with your LLM provider."
+    if declined:
+        # The reviewer reads this beside the drafts: what was left out, and why.
+        rationale += " Not drafted — " + "; ".join(f"{k}: {v}" for k, v in declined.items())
+    rows = []
+    if result["suggestions"]:
+        rows = proposals.propose_finding_text(
+            db, project.id, who, finding_id=finding.id, fields=result["suggestions"], rationale=rationale,
+        )
+        db.commit()
     return FindingTextDraftResponse(
         proposals=proposals.serialize_many(db, rows),
+        declined=declined,
         provider_id=result["provider_id"], provider_type=result["provider_type"],
         model_id=result.get("model_id"), usage=result.get("usage"),
     )

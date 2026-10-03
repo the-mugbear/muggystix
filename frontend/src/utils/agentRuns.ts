@@ -203,6 +203,8 @@ export const agentInstruction = {
       + `section that needs it, and each missing one, write the complete new section as it should read in `
       + `the client report, and propose it with propose_finding_text; accepting replaces the section word `
       + `for word. Put what you changed and why in rationale, not in the text. Leave sections that are fine `
-      + `alone. Cite evidence you record. Do not change the finding directly.${gaps}`;
+      + `alone. Write only what the finding's data and evidence support: if a section cannot be written from `
+      + `them, do not propose it or fill it with a guess or placeholder; tell me what is missing and what would `
+      + `let you write it. Cite evidence you record. Do not change the finding directly.${gaps}`;
   },
 };

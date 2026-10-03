@@ -21,6 +21,19 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.9.0",
+        "app_version": "2.455.0",
+        "summary": (
+            "\"Not enough to write this\" is a valid answer (the user, 2026-10-03): "
+            "report text goes into the client report word for word, so an agent "
+            "proposes a section only when the finding's data and recorded evidence "
+            "support it — never a guess, a generic sentence or a placeholder — and "
+            "says what is missing, and what would let it write the section, in "
+            "`rationale` and to its operator. Session prompt, guide (Evidence and "
+            "proposals), propose_finding_text and propose_finding."
+        ),
+    },
+    {
         "version": "4.8.5",
         "app_version": "2.453.5",
         "summary": (

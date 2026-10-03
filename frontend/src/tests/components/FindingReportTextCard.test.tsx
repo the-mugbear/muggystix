@@ -54,6 +54,37 @@ describe('FindingReportTextCard — drafting', () => {
     expect(updateFinding).not.toHaveBeenCalled();
   });
 
+  // 5.334.4 — "not enough information" is an answer: the section gets no
+  // proposal, and the reason is shown beside it, never written into it.
+  it('shows the sections the draft declined, with what each needs, and proposes none for them', async () => {
+    draftFindingText.mockResolvedValue({
+      proposals: [{ id: 1, field: 'impact' }],
+      declined: { recommendation: 'No product or version is recorded for the affected service.' },
+      provider_id: 1, provider_type: 'openai', model_id: 'm',
+    });
+    const onDrafted = vi.fn();
+    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
+    expect(await screen.findByTestId('declined-recommendation')).toHaveTextContent(
+      'Not drafted — not enough information: No product or version is recorded for the affected service.',
+    );
+    expect(onDrafted).toHaveBeenCalledTimes(1);
+    expect(updateFinding).not.toHaveBeenCalled();
+  });
+
+  it('a draft that declines every section proposes nothing and says why', async () => {
+    draftFindingText.mockResolvedValue({
+      proposals: [], declined: { impact: 'Nothing shows who reaches the service.', recommendation: 'No version.' },
+      provider_id: 1, provider_type: 'openai', model_id: 'm',
+    });
+    const onDrafted = vi.fn();
+    render(<FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} onDrafted={onDrafted} />);
+    fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
+    expect(await screen.findByTestId('declined-impact')).toHaveTextContent(/Nothing shows who reaches the service/);
+    expect(screen.getByTestId('declined-recommendation')).toBeInTheDocument();
+    expect(onDrafted).not.toHaveBeenCalled();
+  });
+
   it('says why a draft failed', async () => {
     draftFindingText.mockRejectedValue(new Error('No LLM provider is configured.'));
     const onDrafted = vi.fn();
@@ -184,6 +215,9 @@ describe('FindingReportTextCard — 5.317.0 work on this with your agent', () =>
     expect(task).toMatch(/replaces the section/);
     expect(task).toMatch(/rationale/);
     expect(task).not.toMatch(/propose improvements/);
+    // 5.334.4 — "not enough to write this" is an answer: no guesses, no placeholders.
+    expect(task).toMatch(/do not propose it or fill it with a guess or placeholder/);
+    expect(task).toMatch(/tell me what is missing/);
     expect(task).toMatch(/Still empty: impact, recommendation\./);
     expect(agentInstruction.reviewFinding(42)).not.toMatch(/Still empty/);
   });

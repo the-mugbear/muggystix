@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
@@ -338,10 +338,11 @@ class ReportDraftService:
         user_message = (
             "Write these sections of this finding's write-up: "
             f"{', '.join(fields)}.  Return ONLY a JSON object whose keys are exactly "
-            f"{json.dumps(fields)} and whose values are Markdown strings.  "
-            "Use only the data below; where it is too thin for a section, say what "
-            "is missing instead of inventing it.  Keep the text already written "
-            "consistent with yours.\n\n"
+            f"{json.dumps(fields)} plus \"missing\".  Each section's value is its "
+            "Markdown, or null when the data below does not support writing it; "
+            "\"missing\" maps each null section to one sentence naming the "
+            "information or context that would let it be written.  Use only the "
+            "data below.  Keep the text already written consistent with yours.\n\n"
             f"```json\n{json.dumps(context, ensure_ascii=False, default=str)}\n```"
         )
         result = chat_completion(
@@ -351,12 +352,14 @@ class ReportDraftService:
             max_tokens=max_tokens,
             temperature=0.3,
         )
-        suggestions = parse_finding_text_suggestions(result.get("content", ""), fields)
-        if not suggestions:
+        suggestions, declined = parse_finding_text_answer(result.get("content", ""), fields)
+        if not suggestions and not declined:
             raise RuntimeError("The provider's answer could not be read as the requested sections.")
         raw = result.get("raw") or {}
         return {
             "suggestions": suggestions,
+            # Sections the model declined: {field: what would let it be written}.
+            "declined": declined,
             "provider_id": provider.id,
             "provider_type": provider.provider_type,
             "model_id": provider.model_id,
@@ -377,16 +380,23 @@ _FINDING_TEXT_PROMPT = (
     "Rules:\n"
     "- Ground every statement in the supplied data. Do NOT invent hosts, CVEs, "
     "versions or results that are not present.\n"
+    "- Declining a section is allowed and expected when the data is too thin: "
+    "set it to null and say under \"missing\" what is needed. A section's text "
+    "goes into the client report word for word, so it never holds a guess, a "
+    "placeholder (\"TBD\", \"[needs confirmation]\") or a note about what is "
+    "missing.\n"
     "- Plain, factual Markdown; no headings (the report supplies them).\n"
     "- This is a DRAFT a human reviews and edits before it is used.\n"
     "- Answer with the JSON object requested and nothing else.\n"
 )
 
 
-def parse_finding_text_suggestions(content: str, fields: List[str]) -> Dict[str, str]:
-    """The requested fields from a provider's answer: a JSON object, possibly
-    inside a code fence or surrounded by prose.  Unknown keys, non-strings
-    and empty values are dropped."""
+#: The longest reason kept for a declined section (it is shown, never stored
+#: as report text).
+DECLINED_REASON_MAX = 500
+
+
+def _answer_object(content: str) -> dict:
     text = (content or "").strip()
     start, end = text.find("{"), text.rfind("}")
     if start < 0 or end <= start:
@@ -395,9 +405,34 @@ def parse_finding_text_suggestions(content: str, fields: List[str]) -> Dict[str,
         data = json.loads(text[start:end + 1])
     except ValueError:
         return {}
-    if not isinstance(data, dict):
-        return {}
-    return {
+    return data if isinstance(data, dict) else {}
+
+
+def parse_finding_text_answer(content: str, fields: List[str]) -> Tuple[Dict[str, str], Dict[str, str]]:
+    """The provider's answer as (sections written, sections declined).
+
+    A JSON object, possibly inside a code fence or surrounded by prose.  A
+    requested field with text is written; one that is null, or named under
+    ``missing``, is DECLINED with the reason given (2.455.0) — the model may
+    say the data is too thin, and that sentence is never report text.
+    Unknown keys and non-strings are dropped."""
+    data = _answer_object(content)
+    written = {
         k: data[k].strip() for k in fields
         if isinstance(data.get(k), str) and data[k].strip()
     }
+    missing = data.get("missing") if isinstance(data.get("missing"), dict) else {}
+    declined: Dict[str, str] = {}
+    for k in fields:
+        if k in written:
+            continue
+        reason = missing.get(k)
+        if k in data or k in missing:
+            text = reason.strip() if isinstance(reason, str) else ""
+            declined[k] = (text or "The data does not support writing this section.")[:DECLINED_REASON_MAX]
+    return written, declined
+
+
+def parse_finding_text_suggestions(content: str, fields: List[str]) -> Dict[str, str]:
+    """The requested fields the provider wrote (see :func:`parse_finding_text_answer`)."""
+    return parse_finding_text_answer(content, fields)[0]

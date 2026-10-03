@@ -137,3 +137,23 @@ def test_agents_md_carries_the_read_back_for_every_workflow_slice():
         assert "Say the rules back before you start" in sliced, (
             f"the {workflow} slice lost the read-back section"
         )
+
+
+def test_every_report_writing_surface_says_not_enough_to_write_is_an_answer():
+    """2.455.0 (the user, 2026-10-03): an agent must know it may say it lacks the
+    information to write a section, rather than fill it — proposed report text
+    goes into the client report word for word.  The session prompt, the guide
+    and both report-text MCP tools say so; none of them may lose it."""
+    from app.api.v1.endpoints.mcp_tools import TOOLS
+    from app.services.agents_guide_service import read_agent_guide
+
+    session = _session()
+    assert "\"Not enough to write this\" is a valid answer" in session
+    assert "no guesses, no placeholders" in session
+
+    guide = read_agent_guide() or ""
+    assert "Saying \"I don't have enough to write this\" is the right answer" in guide
+    assert "do not propose that section" in guide
+
+    assert "NOT ENOUGH TO GO ON IS A VALID ANSWER" in TOOLS["propose_finding_text"]["description"]
+    assert "leave out one you cannot support" in TOOLS["propose_finding"]["description"]

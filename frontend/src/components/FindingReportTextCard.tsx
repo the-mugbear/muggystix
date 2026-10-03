@@ -141,6 +141,9 @@ const FindingReportTextCard: React.FC<Props> = ({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [drafting, setDrafting] = useState(false);
+  // 5.334.4 — sections the last AI draft declined, with what it needs: an
+  // answer, shown until the next draft; never report text.
+  const [declined, setDeclined] = useState<Record<string, string>>({});
   const cardRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -160,12 +163,19 @@ const FindingReportTextCard: React.FC<Props> = ({
     setDrafting(true);
     setError(null);
     try {
-      const { proposals } = await draftFindingText(finding.id, empty);
-      onDrafted?.();
-      announceProposalsChanged();
-      toast.success(
-        `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review each in its section below.`,
-      );
+      const { proposals, declined: notDrafted = {} } = await draftFindingText(finding.id, empty);
+      setDeclined(notDrafted);
+      const skipped = Object.keys(notDrafted).length;
+      if (proposals.length > 0) {
+        onDrafted?.();
+        announceProposalsChanged();
+        toast.success(
+          `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review each in its section below.`
+          + (skipped ? ` ${skipped} not drafted: not enough information.` : ''),
+        );
+      } else {
+        toast.info('Nothing drafted: the finding does not hold enough information yet. See what is missing below.');
+      }
       cardRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     } catch (err) {
       setError(formatApiError(err, 'Could not draft the report text.'));
@@ -312,6 +322,11 @@ const FindingReportTextCard: React.FC<Props> = ({
             {REPORT_TEXT_FIELDS.map((f) => (
               <div key={f.key} className="min-w-0">
                 <dt className="text-caption font-medium text-muted-foreground">{f.label}</dt>
+                {declined[f.key] && draftsFor(f.key).length === 0 && !(text?.[f.key] ?? '').trim() && (
+                  <dd role="note" className="min-w-0 break-words text-caption text-warning" data-testid={`declined-${f.key}`}>
+                    Not drafted — not enough information: {declined[f.key]}
+                  </dd>
+                )}
                 <dd className="min-w-0 break-words text-body" data-testid={`report-text-${f.key}`}>
                   {draftsFor(f.key).length > 0 ? (
                     <FieldDraftsReview

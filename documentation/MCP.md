@@ -170,7 +170,10 @@ row per call, so none is marked idempotent. A report-text section may place one
 of the finding's own images with `![caption](evidence:<id>)`:
 `assist_get_finding` lists them under `images` (`id`, `caption`, `in_report`,
 `placed_in`), and `propose_finding_text` refuses (422) an id that is not on
-that list.
+that list. Both report-text tools tell the agent that "not enough to write
+this" is a valid answer (2.455.0): a section the finding's data does not
+support is left out — never a guess or a placeholder — and what is missing goes
+in `rationale` and to the operator.
 
 Each tool also carries a `workflows` grouping tag — `assist`, `testing` (the
 `host_tests_*` tools) or `scope` (scope reads and uploads) — which the tool reference page groups by. It is

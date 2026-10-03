@@ -1337,7 +1337,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "REPLACEMENT for that section, written as it will read in the client report: "
             "on accept it overwrites the section word for word. Never a critique, a list "
             "of suggestions, a diff or notes to the author — put why you changed it in "
-            "`rationale`. Propose only the sections you would change. One proposal per "
+            "`rationale`. Propose only the sections you would change. NOT ENOUGH TO GO ON IS "
+            "A VALID ANSWER: write a section only from the finding's data and recorded "
+            "evidence; when that is too thin, do not propose the section and never fill it "
+            "with a guess or a placeholder (\"TBD\", \"[needs confirmation]\") — say what is "
+            "missing, and what would let you write it, in `rationale` and to your operator. "
+            "One proposal per "
             "field; several may stand side by side (e.g. from different models). Fields: "
             "description, impact, recommendation, references, steps_to_reproduce "
             "(Markdown), cvss_vector. IMAGES: a section may hold `![caption](evidence:<id>)`, "
@@ -1377,7 +1382,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
     "propose_finding": {
         "description": (
             "Propose a new finding on one or more hosts — a person accepts or rejects it. "
-            "Cite the evidence records that support it."
+            "Cite the evidence records that support it. `report_text` holds only the "
+            "sections the evidence supports — leave out one you cannot support (never a "
+            "guess or a placeholder) and say what is missing in `rationale`."
         ),
         "method": "POST",
         "path": "/api/v1/agent/proposals/finding",
