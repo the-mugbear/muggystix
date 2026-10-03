@@ -9,14 +9,20 @@
  *
  * The finding's own status is the ISSUE's; every control here changes an
  * endpoint row only.  A change updates the page from the route's response.
+ *
+ * 5.334.0 — an agent's pending endpoint-status proposal is shown and decided
+ * ON its row (it was listed in a Proposals section under the table, away from
+ * the endpoint it was about).
  */
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Loader2, Trash2, X } from 'lucide-react';
 
 import {
-  Finding, FindingHostInfo, FindingHostStatus, setFindingEndpointStatus, setFindingEndpointsStatus,
+  Finding, FindingHostInfo, FindingHostStatus, Proposal, setFindingEndpointStatus, setFindingEndpointsStatus,
 } from '../../services/api';
+import { useProposalDecision } from '../../hooks/useProposalDecision';
+import { ProposalDecisionControls, ProposalReasons, ProposalSource } from '../proposals/ProposalItem';
 import { useToast } from '../../contexts/ToastContext';
 import { formatApiError } from '../../utils/apiErrors';
 import { cn } from '../../utils/cn';
@@ -51,6 +57,26 @@ const READ_ONLY_VARIANT: Record<FindingHostStatus, 'warning' | 'success' | 'outl
   open: 'warning', remediated: 'success', false_positive: 'outline', retest: 'info',
 };
 
+/** One pending endpoint-status proposal, on the row it would change. */
+const EndpointProposal: React.FC<{
+  pr: Proposal; canDecide: boolean; onDecided: (updated: Proposal) => void;
+}> = ({ pr, canDecide, onDecided }) => {
+  const decision = useProposalDecision(pr, onDecided);
+  const to = String(pr.payload?.host_status ?? '') as FindingHostStatus;
+  return (
+    <div className="mt-xxs min-w-0 space-y-xxs whitespace-normal border-l-2 border-info pl-sm" data-proposal={pr.id}>
+      <p className="min-w-0 break-words text-caption">
+        <span className="font-medium text-info">Proposed: {ENDPOINT_STATUS_LABEL[to] ?? to}</span>
+        <span className="text-muted-foreground"> · <ProposalSource pr={pr} /></span>
+      </p>
+      <ProposalReasons pr={pr} />
+      <ProposalDecisionControls pr={pr} canDecide={canDecide} decision={decision} compact />
+    </div>
+  );
+};
+
+const NO_PROPOSALS = new Map<number, Proposal[]>();
+
 const endpointName = (h: FindingHostInfo) => `${h.fqdn ? `${h.fqdn} on ` : ''}${h.ip_address || h.host_id}`;
 
 interface Props {
@@ -62,9 +88,17 @@ interface Props {
   onRemove: (row: FindingHostInfo) => void;
   /** An endpoint row to bring into view (`?endpoint=` — a proposal's link). */
   focusEndpointId?: number | null;
+  /** Pending endpoint-status proposals by endpoint row id. */
+  proposals?: Map<number, Proposal[]>;
+  /** Analyst+: may decide them (the server still decides each accept). */
+  canDecide?: boolean;
+  onProposalDecided?: (updated: Proposal) => void;
 }
 
-const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRemove, focusEndpointId = null }) => {
+const FindingEndpoints: React.FC<Props> = ({
+  finding, canManage, onChanged, onRemove, focusEndpointId = null,
+  proposals = NO_PROPOSALS, canDecide = false, onProposalDecided,
+}) => {
   const toast = useToast();
   const [stateFilter, setStateFilter] = useState<EndpointStateFilter>('all');
   const [text, setText] = useState('');
@@ -396,20 +430,25 @@ const FindingEndpoints: React.FC<Props> = ({ finding, canManage, onChanged, onRe
                       />
                     </TableCell>
                   )}
-                  <TableCell className="truncate">
-                    <Link to={`/hosts/${h.host_id}`} className="font-mono text-info hover:underline">
-                      {h.ip_address || `Host ${h.host_id}`}
-                    </Link>
-                    {h.hostname && <span className="ml-xs text-caption text-muted-foreground" title={h.hostname}>{h.hostname}</span>}
-                    {h.fqdn && h.name_id != null && (
-                      <Link
-                        to={`/names?name_id=${h.name_id}`}
-                        className="ml-xs font-mono text-caption text-info hover:underline"
-                        title="Named endpoint this finding applies to on this host"
-                      >
-                        {h.fqdn}
+                  <TableCell className="min-w-0">
+                    <div className="truncate">
+                      <Link to={`/hosts/${h.host_id}`} className="font-mono text-info hover:underline">
+                        {h.ip_address || `Host ${h.host_id}`}
                       </Link>
-                    )}
+                      {h.hostname && <span className="ml-xs text-caption text-muted-foreground" title={h.hostname}>{h.hostname}</span>}
+                      {h.fqdn && h.name_id != null && (
+                        <Link
+                          to={`/names?name_id=${h.name_id}`}
+                          className="ml-xs font-mono text-caption text-info hover:underline"
+                          title="Named endpoint this finding applies to on this host"
+                        >
+                          {h.fqdn}
+                        </Link>
+                      )}
+                    </div>
+                    {(proposals.get(h.id) ?? []).map((pr) => (
+                      <EndpointProposal key={pr.id} pr={pr} canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} />
+                    ))}
                   </TableCell>
                   <TableCell>
                     {canManage ? (

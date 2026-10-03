@@ -17,6 +17,11 @@
  * reviewed in the finding's Proposals section exactly like an agent's; it no
  * longer fills the editor.  Any analyst may draft; accepting stays the
  * author's or a project admin's.
+ *
+ * 5.334.0 — pending drafts are reviewed HERE, in the section they would
+ * change (`FieldDraftsReview`: the current text beside the draft).  A section
+ * with drafts waiting says so instead of "Not written yet", never opens an
+ * empty editor by itself, and "Draft empty sections" leaves it alone.
  */
 import React, { useEffect, useRef, useState } from 'react';
 import { Loader2, Pencil, Sparkles } from 'lucide-react';
@@ -27,6 +32,7 @@ import {
   FindingReportText,
   FindingReportTextField,
   FindingReportTextUpdate,
+  Proposal,
   updateFinding,
 } from '../services/api';
 import { useToast } from '../contexts/ToastContext';
@@ -39,6 +45,7 @@ import { Input } from './ui/input';
 import { Label } from './ui/label';
 import MarkdownField from './MarkdownField';
 import SafeMarkdown from './SafeMarkdown';
+import FieldDraftsReview from './proposals/FieldDraftsReview';
 
 export const REPORT_TEXT_FIELDS: Array<{ key: FindingReportTextField; label: string; hint: string; rows: number }> = [
   { key: 'description', label: 'Description', hint: 'What the issue is, in the client’s terms.', rows: 6 },
@@ -83,7 +90,7 @@ interface Props {
   /** Analyst+: may ask for an AI draft (a proposal changes nothing). */
   canPropose?: boolean;
   onSaved: (finding: Finding) => void;
-  /** A draft created proposals: re-read the Proposals section. */
+  /** A draft created proposals: re-read the page's proposals. */
   onDrafted?: () => void;
   /** Open in the editor (the Reports page's "missing report text" links). */
   startEditing?: boolean;
@@ -93,14 +100,37 @@ interface Props {
   /** The finding's images (the page loads them once, `useFindingImages`):
    *  the editor's "Insert image" and the images placed in the text. */
   images?: MarkdownImages;
+  /** Pending report-text drafts by field (`useFindingProposals().textByField`). */
+  drafts?: Map<string, Proposal[]>;
+  /** Analyst+: may accept or reject a draft (the server still decides). */
+  canDecide?: boolean;
+  /** A draft was accepted or rejected. */
+  onProposalDecided?: (updated: Proposal) => void;
 }
+
+const NO_DRAFTS = new Map<string, Proposal[]>();
 
 const FindingReportTextCard: React.FC<Props> = ({
   finding, canEdit, canPropose = canEdit, onSaved, onDrafted, startEditing = false, agentAction, images,
+  drafts = NO_DRAFTS, canDecide = false, onProposalDecided,
 }) => {
   const toast = useToast();
   const text = finding.report_text;
+  const draftsFor = (field: string) => drafts.get(field) ?? [];
   const [draft, setDraft] = useState<Draft | null>(() => ((startEditing || nothingWritten(text)) && canEdit ? toDraft(text) : null));
+  // Opened by itself because nothing is written (not by the reader): when the
+  // proposals arrive and some section has drafts waiting, the drafts are the
+  // next thing to do — close the untouched editor so they show.
+  const autoOpened = useRef(!startEditing && nothingWritten(text) && canEdit);
+  useEffect(() => {
+    if (!autoOpened.current || drafts.size === 0) return;
+    autoOpened.current = false;
+    setDraft((d) => {
+      if (!d) return d;
+      const untouched = JSON.stringify(d) === JSON.stringify(toDraft(text));
+      return untouched ? null : d;
+    });
+  }, [drafts, text]);
   // Opened from an empty section: put the caret in that section.
   const [focusField, setFocusField] = useState<string | null>(null);
   useEffect(() => {
@@ -118,11 +148,14 @@ const FindingReportTextCard: React.FC<Props> = ({
   }, [startEditing]);
 
   const missing = missingReportText(text);
+  // Empty sections an AI draft may fill and nobody has drafted yet.
+  const undrafted = DRAFTABLE.filter((k) => !(text?.[k] ?? '').trim() && draftsFor(k).length === 0);
+  const waiting = [...drafts.values()].reduce((n, list) => n + list.length, 0);
 
   // Draft the required sections still empty as proposals — the same review
   // path an agent's drafts take; nothing is written until one is accepted.
   const draftEmpty = async () => {
-    const empty = DRAFTABLE.filter((k) => !(text?.[k] ?? '').trim());
+    const empty = undrafted;
     if (empty.length === 0) return;
     setDrafting(true);
     setError(null);
@@ -131,9 +164,9 @@ const FindingReportTextCard: React.FC<Props> = ({
       onDrafted?.();
       announceProposalsChanged();
       toast.success(
-        `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review them under Proposals.`,
+        `Drafted ${proposals.length} section${proposals.length === 1 ? '' : 's'} as proposals — review each in its section below.`,
       );
-      document.getElementById('proposals')?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+      cardRef.current?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
     } catch (err) {
       setError(formatApiError(err, 'Could not draft the report text.'));
     } finally {
@@ -189,11 +222,14 @@ const FindingReportTextCard: React.FC<Props> = ({
           {missing.length > 0 && (
             <> Still empty: <span className="text-foreground">{missing.join(', ')}</span>.</>
           )}
+          {waiting > 0 && (
+            <> <span className="text-info">{waiting === 1 ? '1 draft is' : `${waiting} drafts are`} waiting for review in the sections below.</span></>
+          )}
         </>}
         actions={canEdit || canPropose ? (
           <>
             {canPropose && agentAction}
-            {canPropose && missing.length > 0 && (
+            {canPropose && undrafted.length > 0 && (
               <Button variant="ghost" size="sm" onClick={() => void draftEmpty()} disabled={drafting || saving}
                 title="Draft the empty sections with your LLM provider, as proposals to review; nothing changes until one is accepted">
                 {drafting ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Sparkles className="size-4" aria-hidden />}
@@ -214,6 +250,12 @@ const FindingReportTextCard: React.FC<Props> = ({
               <div key={f.key} className="space-y-xxs">
                 <Label htmlFor={`rt-${f.key}`}>{f.label}</Label>
                 <p className="text-caption text-muted-foreground">{f.hint}</p>
+                {draftsFor(f.key).length > 0 && (
+                  <p role="note" className="text-caption text-info">
+                    {draftsFor(f.key).length === 1 ? 'A draft is' : `${draftsFor(f.key).length} drafts are`} waiting for this section.
+                    {' '}Saving here does not retire {draftsFor(f.key).length === 1 ? 'it' : 'them'}; accepting one later replaces what you save.
+                  </p>
+                )}
                 <MarkdownField
                   id={`rt-${f.key}`}
                   label={f.label}
@@ -271,7 +313,12 @@ const FindingReportTextCard: React.FC<Props> = ({
               <div key={f.key} className="min-w-0">
                 <dt className="text-caption font-medium text-muted-foreground">{f.label}</dt>
                 <dd className="min-w-0 break-words text-body" data-testid={`report-text-${f.key}`}>
-                  {text?.[f.key]?.trim()
+                  {draftsFor(f.key).length > 0 ? (
+                    <FieldDraftsReview
+                      field={f.key} label={f.label} current={text?.[f.key]} drafts={draftsFor(f.key)}
+                      canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} evidence={images?.resolver}
+                    />
+                  ) : text?.[f.key]?.trim()
                     ? <SafeMarkdown text={text[f.key] as string} evidence={images?.resolver} />
                     : canEdit ? (
                       <button
@@ -290,6 +337,14 @@ const FindingReportTextCard: React.FC<Props> = ({
               <dd className="break-all font-mono text-body">
                 {cvssLine ?? <span className="font-sans text-muted-foreground">Not scored</span>}
               </dd>
+              {draftsFor('cvss_vector').length > 0 && (
+                <dd className="mt-xs min-w-0 font-sans">
+                  <FieldDraftsReview
+                    field="cvss_vector" label="CVSS vector" current={text?.cvss_vector} drafts={draftsFor('cvss_vector')}
+                    canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)}
+                  />
+                </dd>
+              )}
             </div>
           </dl>
           </>

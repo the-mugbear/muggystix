@@ -142,8 +142,8 @@ export const FindingsNeedingMeTable: React.FC<FindingsNeedingMeTableProps> = ({
                         </TableCell>
                         <TableCell className="truncate align-middle" title={`${f.title} · ${hostCount}`}>
                           {/* The finding's page is where each of the three is
-                              resolved: its status, its report text and its
-                              Proposals section. */}
+                              resolved: its status, its report text and the
+                              proposals waiting in it. */}
                           <Link
                             to={`/findings/${f.finding_id}`}
                             className="rounded font-medium text-foreground hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"

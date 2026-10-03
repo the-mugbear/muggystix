@@ -751,5 +751,32 @@ project, and the same host could appear three times.  The shape is:
 - Write controls follow §40; selection follows §41; a row cursor is
   `useListCursor({getId})` and belongs to the list on screen.
 
+### 43. A proposed change is reviewed where it applies, against what it replaces (2026-10-02)
+A walkthrough of a finding with drafts: the current text sat in a closed
+"Current text" toggle under each draft, in caption grey, read after the draft;
+the drafts were listed a screen above the Report text they change, and endpoint
+changes under the table rather than on their row. Reviewers "could not compare",
+and the page was "confusing". The rules:
+
+- **The change sits on the thing it changes.** A report-text draft is reviewed
+  inside its section (`FieldDraftsReview`); an endpoint change on its row
+  (`FindingEndpoints`). A summary at the top of the page says what waits and
+  goes there; only a proposal with no home on the page is decided in the summary.
+- **The current value is always visible, shown once, and read first.** "Now in
+  the report" on the left, "Proposed" on the right (`TextComparison`), or one
+  pane with the words added and removed marked ("Changes"). Never behind a
+  toggle, never repeated per draft. An empty field shows only the proposal and
+  says that accepting fills it.
+- **Say when the base moved.** A proposal that replaces a whole value and was
+  written against an older one says so before its controls
+  (`changed_since_proposed`), with the text it was written against.
+- **Several drafts are lettered** (Draft A, B…, oldest first, so the letters stay
+  put) and switched as tabs; their source lines alone cannot tell them apart.
+- **A field with drafts waiting** says so instead of "Not written yet", never
+  opens an empty editor by itself, and is not drafted again.
+- **One decision path** (`hooks/useProposalDecision`): every place a proposal is
+  decided uses it, and "Accept and edit" can start from the draft or from the
+  current text.
+
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

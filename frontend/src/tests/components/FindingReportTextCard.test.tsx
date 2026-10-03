@@ -9,15 +9,20 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const draftFindingText = vi.fn();
 const updateFinding = vi.fn();
+const acceptProposal = vi.fn();
 vi.mock('../../services/api', () => ({
   draftFindingText: (...a: unknown[]) => draftFindingText(...a),
   updateFinding: (...a: unknown[]) => updateFinding(...a),
+  acceptProposal: (...a: unknown[]) => acceptProposal(...a),
+  rejectProposal: vi.fn(),
 }));
 vi.mock('../../contexts/ToastContext', () => ({
   useToast: () => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }),
 }));
 
+import { MemoryRouter } from 'react-router-dom';
 import FindingReportTextCard from '../../components/FindingReportTextCard';
+import type { Proposal } from '../../services/api';
 
 const finding = {
   id: 42, title: 'Weak TLS',
@@ -227,5 +232,106 @@ describe('FindingReportTextCard — a new finding is ready to write', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     expect(screen.queryByLabelText('Description')).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: /^Edit$/ })).toBeInTheDocument();
+  });
+});
+
+// Walkthrough 2026-10-02 — drafts are reviewed in the section they change.
+describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
+  const draft = (id: number, field: string, value: string, over: Partial<Proposal> = {}): Proposal => ({
+    id, kind: 'finding_text', status: 'pending', source: 'agent', finding_id: 42, vulnerability_id: null,
+    finding_host_id: null, field, payload: { value }, current_value: null, base_value: null, base_recorded: true,
+    changed_since_proposed: false,
+    target: { finding_title: 'Weak TLS', observation_title: null, host_id: null, host_ip: null },
+    rationale: null, evidence_ids: [], agent_session_id: 9, proposed_by: 'Ana', agent_model: 'model-a',
+    agent_client: null, prompt_version: null, created_at: null, decided_by: null, decided_at: null,
+    decision_note: null, result_finding_id: null, error: null, ...over,
+  });
+  const empty = {
+    id: 42, title: 'Weak TLS',
+    report_text: {
+      description: null, impact: null, recommendation: null, references: null,
+      steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+    },
+  } as never;
+  const renderCard = (props: Record<string, unknown>) => render(
+    <MemoryRouter><FindingReportTextCard finding={finding} canEdit onSaved={vi.fn()} canDecide {...props} /></MemoryRouter>,
+  );
+
+  it('a section with drafts shows them beside its current text, not “Not written yet”', () => {
+    renderCard({
+      drafts: new Map([
+        ['impact', [draft(1, 'impact', 'Relay to the file share.')]],
+        ['description', [draft(2, 'description', 'TLS 1.0 and 1.1 are accepted.', { current_value: 'TLS 1.0 is accepted.' })]],
+      ]),
+    });
+    const impact = screen.getByTestId('report-text-impact');
+    expect(within(impact).queryByText(/Not written yet/)).toBeNull();
+    expect(within(impact).getByText(/the section is empty now, so accepting fills it/)).toBeInTheDocument();
+    expect(within(impact).getByText('Relay to the file share.')).toBeInTheDocument();
+    const desc = screen.getByTestId('report-text-description');
+    expect(within(desc).getByTestId('compare-current')).toHaveTextContent('TLS 1.0 is accepted.');
+    expect(within(desc).getByTestId('compare-proposed')).toHaveTextContent('TLS 1.0 and 1.1 are accepted.');
+    // The words the draft changes, marked.
+    fireEvent.click(within(desc).getByRole('button', { name: 'Changes' }));
+    const changes = within(desc).getByTestId('text-changes');
+    expect(changes.querySelector('ins')).toHaveTextContent(/and 1\.1 are/);
+    expect(changes.querySelector('del')).toHaveTextContent(/is/);
+    expect(screen.getByText(/2 drafts are waiting for review in the sections below/)).toBeInTheDocument();
+  });
+
+  it('says when the section changed after the draft was written, with the text it was written against', () => {
+    renderCard({
+      drafts: new Map([['description', [draft(2, 'description', 'TLS 1.0 and 1.1 are accepted.', {
+        current_value: 'TLS 1.0 is accepted.', base_value: 'TLS is weak.', changed_since_proposed: true,
+      })]]]),
+    });
+    const desc = screen.getByTestId('report-text-description');
+    expect(within(desc).getByRole('note')).toHaveTextContent(/changed after the draft was written/);
+    expect(within(desc).getByText('TLS is weak.')).toBeInTheDocument();
+  });
+
+  it('“Draft empty sections” leaves a section that already has a draft alone', async () => {
+    draftFindingText.mockResolvedValue({ proposals: [{ id: 3, field: 'recommendation' }] });
+    renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]), onDrafted: vi.fn() });
+    fireEvent.click(screen.getByRole('button', { name: /Draft empty sections/ }));
+    await waitFor(() => expect(draftFindingText).toHaveBeenCalledWith(42, ['recommendation']));
+  });
+
+  it('no draft button when every empty section already has a draft', () => {
+    renderCard({
+      drafts: new Map([
+        ['impact', [draft(1, 'impact', 'Relay.')]], ['recommendation', [draft(2, 'recommendation', 'Fix.')]],
+      ]),
+    });
+    expect(screen.queryByRole('button', { name: /Draft empty sections/ })).toBeNull();
+  });
+
+  it('the editor a new finding opens by itself closes when drafts arrive, so the drafts show', () => {
+    const { rerender } = render(
+      <MemoryRouter><FindingReportTextCard finding={empty} canEdit onSaved={vi.fn()} canDecide /></MemoryRouter>,
+    );
+    expect(screen.getByLabelText('Description')).toBeInTheDocument();
+    rerender(
+      <MemoryRouter>
+        <FindingReportTextCard finding={empty} canEdit onSaved={vi.fn()} canDecide
+          drafts={new Map([['description', [draft(1, 'description', 'TLS 1.0 is accepted.')]]])} />
+      </MemoryRouter>,
+    );
+    expect(screen.queryByLabelText('Description')).toBeNull();
+    expect(screen.getByTestId('drafts-description')).toBeInTheDocument();
+  });
+
+  it('editing by hand says a section has drafts waiting that a later accept replaces', () => {
+    renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]) });
+    fireEvent.click(screen.getByRole('button', { name: /^Edit$/ }));
+    expect(screen.getByText(/A draft is waiting for this section/)).toBeInTheDocument();
+  });
+
+  it('accepting a draft hands the decided proposal back', async () => {
+    const onProposalDecided = vi.fn();
+    acceptProposal.mockResolvedValue({ ...draft(1, 'impact', 'Relay.'), status: 'accepted' });
+    renderCard({ drafts: new Map([['impact', [draft(1, 'impact', 'Relay.')]]]), onProposalDecided });
+    fireEvent.click(within(screen.getByTestId('drafts-impact')).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(onProposalDecided).toHaveBeenCalledWith(expect.objectContaining({ status: 'accepted' })));
   });
 });

@@ -209,4 +209,29 @@ describe('ProposalItem — after the decision', () => {
     });
     expect(screen.queryByRole('link', { name: /on the finding$/ })).toBeNull();
   });
+
+  // Walkthrough 2026-10-02 — the current text was a closed toggle, read after the draft.
+  it('shows the current text beside the proposed one, without opening anything', () => {
+    renderItem({ ...base, current_value: 'Relay to the file share.' });
+    expect(screen.queryByText('Current text')).toBeNull();
+    expect(screen.getByTestId('compare-current')).toHaveTextContent('Relay to the file share.');
+    expect(screen.getByTestId('compare-proposed')).toHaveTextContent('Relay attacks.');
+  });
+
+  it('accept-and-edit can start from the current text instead of the draft', async () => {
+    acceptProposal.mockResolvedValue({ ...base, status: 'accepted' });
+    renderItem({ ...base, current_value: 'Relay to the file share.' });
+    fireEvent.click(screen.getByRole('button', { name: /Accept and edit/ }));
+    const box = screen.getByLabelText('Impact') as HTMLTextAreaElement;
+    expect(box.value).toBe('Relay attacks.');
+    fireEvent.click(screen.getByRole('button', { name: 'Start from the current text' }));
+    expect(box.value).toBe('Relay to the file share.');
+    fireEvent.click(screen.getByRole('button', { name: 'Start from the draft' }));
+    expect(box.value).toBe('Relay attacks.');
+  });
+
+  it('warns when the field changed after the draft was written', () => {
+    renderItem({ ...base, current_value: 'Newer text.', base_value: 'Old text.', changed_since_proposed: true });
+    expect(screen.getByRole('note')).toHaveTextContent(/changed after the draft was written/);
+  });
 });

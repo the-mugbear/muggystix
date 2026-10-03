@@ -51,6 +51,8 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
+import { useFindingProposals } from '../hooks/useFindingProposals';
+import type { Proposal } from '../services/api';
 import { formatTimestamp } from '../utils/relativeTime';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
@@ -122,7 +124,7 @@ const FindingDetail: React.FC = () => {
   // shown inline (the page previously only linked out to it).
   const [evidenceThread, setEvidenceThread] = useState<Annotation[]>([]);
   const [addHostsOpen, setAddHostsOpen] = useState(false);
-  // Bumped after an AI draft so the Proposals section re-reads.
+  // Bumped after an AI draft so the page's proposals re-read.
   const [proposalsKey, setProposalsKey] = useState(0);
 
   const loadHistory = useCallback(async () => {
@@ -307,6 +309,15 @@ const FindingDetail: React.FC = () => {
   // where the report text places it (the comment thread's rows), the editor's
   // "Insert image" and the images shown in the text.
   const findingImages = useFindingImages(finding?.id ?? null);
+  // 5.334.0 — one read of the pending proposals; each is shown where it
+  // applies (the summary at the top, report text, the endpoint rows).
+  const proposals = useFindingProposals(finding?.id ?? null, proposalsKey);
+  const reloadProposals = proposals.reload;
+  const endpointIds = useMemo(() => new Set((finding?.hosts ?? []).map((h) => h.id)), [finding?.hosts]);
+  const proposalDecided = useCallback((updated: Proposal) => {
+    if (updated.status === 'accepted') { void refreshAfterProposal(); findingImages.reload(); }
+    void reloadProposals();
+  }, [refreshAfterProposal, findingImages.reload, reloadProposals]);
   const reloadImages = findingImages.reload;
   const imagesById = useMemo(
     () => new Map(findingImages.images.map((img) => [img.id, img])), [findingImages.images],
@@ -577,6 +588,12 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
+      {/* 5.334.0 — what is waiting for a decision comes first, as a summary
+          that goes to each proposal where it applies (walkthrough 2026-10-02). */}
+      <FindingProposalsPanel
+        proposals={proposals} endpointIds={endpointIds} canDecide={canManage} onDecided={proposalDecided}
+      />
+
       {/* v5.294.0 (UX review) — sections over thin rules, and the hosts first:
           triage starts from where the issue is, so the affected hosts sit
           directly under the status row, before the test evidence, the report
@@ -607,13 +624,11 @@ const FindingDetail: React.FC = () => {
             onChanged={handleEndpointsChanged}
             onRemove={(row) => void handleRemoveEndpoint(row)}
             focusEndpointId={focusEndpointId}
+            proposals={proposals.byEndpoint}
+            canDecide={canManage}
+            onProposalDecided={proposalDecided}
           />
       </PostureSection>
-
-      <FindingProposalsPanel
-        findingId={finding.id} canDecide={canManage} reloadKey={proposalsKey}
-        onApplied={() => { void refreshAfterProposal(); reloadImages(); }}
-      />
 
       {/* UX review 2026-10-02 U12 — the proof before the prose: what was run
           and what came back sits directly under the hosts, above the five
@@ -647,11 +662,14 @@ const FindingDetail: React.FC = () => {
         onSaved={(f) => { setFinding(f); reloadImages(); }}
         images={findingImages}
         onDrafted={() => setProposalsKey((k) => k + 1)}
+        drafts={proposals.textByField}
+        canDecide={canManage}
+        onProposalDecided={proposalDecided}
         agentAction={(
           <AgentTaskButton
             variant="ghost"
             label="Work on this with your agent"
-            title="Give your agent session this finding to review and complete — its changes arrive as proposals under Proposals"
+            title="Give your agent session this finding to review and complete — its changes arrive as proposals, shown in the sections they change"
             instruction={agentInstruction.reviewFinding(finding.id, missingReportText(finding.report_text))}
           />
         )}

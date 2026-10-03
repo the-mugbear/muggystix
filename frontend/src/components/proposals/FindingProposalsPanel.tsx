@@ -1,66 +1,46 @@
 /**
- * The finding page's Proposals section (v5.316.0): every pending proposal on
- * this finding — report text grouped by field so several drafts (different
- * agents or models) sit side by side for comparison, then endpoint changes.
- * A finding with any is "needs review".  Hidden when there are none.
+ * The finding page's Proposals summary (v5.316.0; a summary since 5.334.0).
  *
- * Accepting report text writes it as you (your name in the history); the
- * field's other drafts are then marked superseded.
+ * The walkthrough of 2026-10-02: report-text drafts were listed here, about
+ * 800 px above the Report text they change, and endpoint changes under the
+ * hosts table rather than on their rows — the reader held three parts of the
+ * page in mind to decide one thing.  Each proposal is now reviewed where it
+ * applies (report text: `FieldDraftsReview` inside Report text; an endpoint
+ * change: on its row in `FindingEndpoints`), and this section, at the top of
+ * the page, says what is waiting and goes there.  Only a proposal with no
+ * home on the page (an observation to promote or dismiss, an endpoint no
+ * longer on the finding) is decided here.
+ *
+ * Hidden when nothing is pending.
  */
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React from 'react';
+import { Link } from 'react-router-dom';
+import { ArrowDownRight } from 'lucide-react';
 
-import { listProposals, Proposal } from '../../services/api';
-import { useVisibilityPoll } from '../../hooks/useVisibilityPoll';
-import { formatApiError } from '../../utils/apiErrors';
-import PostureSection from '../posture/PostureSection';
-import ProposalItem, { FIELD_LABELS } from './ProposalItem';
+import type { Proposal } from '../../services/api';
+import type { FindingProposals } from '../../hooks/useFindingProposals';
+import PostureSection, { SectionCount } from '../posture/PostureSection';
+import ProposalItem, { describeProposal, FIELD_LABELS } from './ProposalItem';
+import { Button } from '../ui/button';
 
 const FIELD_ORDER = ['description', 'impact', 'recommendation', 'steps_to_reproduce', 'references', 'cvss_vector'];
 
 interface Props {
-  findingId: number;
+  proposals: FindingProposals;
+  /** The finding's endpoint row ids — an endpoint proposal is reviewed on its row. */
+  endpointIds: Set<number>;
   canDecide: boolean;
-  /** Bump to re-read (e.g. after "Draft empty sections"). */
-  reloadKey?: number;
-  /** An accept changed the finding: re-read it. */
-  onApplied: () => void;
+  onDecided: (updated: Proposal) => void;
 }
 
-const FindingProposalsPanel: React.FC<Props> = ({ findingId, canDecide, reloadKey = 0, onApplied }) => {
-  const [items, setItems] = useState<Proposal[] | null>(null);
-  const [error, setError] = useState<string | null>(null);
+const goTo = (id: string) => {
+  const el = document.getElementById(id);
+  el?.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+  el?.querySelector<HTMLElement>('[role="tab"][aria-selected="true"], [data-proposal-action="accept"]')?.focus?.({ preventScroll: true });
+};
 
-  const load = useCallback(async () => {
-    try {
-      const res = await listProposals({ finding_id: findingId, status: 'pending', limit: 200 });
-      setItems(res.items);
-      setError(null);
-    } catch (err) {
-      setError(formatApiError(err, 'Proposals unavailable.'));
-    }
-  }, [findingId]);
-
-  useEffect(() => { void load(); }, [load, reloadKey]);
-  useVisibilityPoll(load, 30_000);
-
-  const groups = useMemo(() => {
-    const byField = new Map<string, Proposal[]>();
-    const other: Proposal[] = [];
-    for (const pr of items ?? []) {
-      if (pr.kind === 'finding_text' && pr.field) {
-        byField.set(pr.field, [...(byField.get(pr.field) ?? []), pr]);
-      } else {
-        other.push(pr);
-      }
-    }
-    const fields = [...byField.keys()].sort((a, b) => FIELD_ORDER.indexOf(a) - FIELD_ORDER.indexOf(b));
-    return { fields: fields.map((f) => ({ field: f, items: byField.get(f) ?? [] })), other };
-  }, [items]);
-
-  const decided = (updated: Proposal) => {
-    if (updated.status === 'accepted') onApplied();
-    void load();
-  };
+const FindingProposalsPanel: React.FC<Props> = ({ proposals, endpointIds, canDecide, onDecided }) => {
+  const { items, error, textByField, byEndpoint } = proposals;
 
   if (error) {
     return (
@@ -71,32 +51,59 @@ const FindingProposalsPanel: React.FC<Props> = ({ findingId, canDecide, reloadKe
   }
   if (!items || items.length === 0) return null;
 
+  const fields = [...textByField.keys()].sort((a, b) => FIELD_ORDER.indexOf(a) - FIELD_ORDER.indexOf(b));
+  const onRows = [...byEndpoint.entries()].filter(([id]) => endpointIds.has(id));
+  const elsewhere = items.filter((pr) => !(pr.kind === 'finding_text' && pr.field)
+    && !(pr.kind === 'endpoint_status' && pr.finding_host_id != null && endpointIds.has(pr.finding_host_id)));
+
   return (
-    <div id="proposals" className="mb-md">
+    <div id="proposals" className="mb-md scroll-mt-24">
       <PostureSection
-        title={<span>Proposals · {items.length} to review</span>}
-        description="Changes an agent or an AI draft proposed for this finding. Nothing has changed yet: accept (then edit if needed) or reject each. Several drafts of one section stay side by side to compare; accepting one retires the others."
+        title={<><span>Proposals to review</span><SectionCount>{items.length}</SectionCount></>}
+        description="Changes an agent or an AI draft proposed for this finding. Nothing has changed yet: each waits where it applies — report text beside the section's current text, endpoint changes on their row."
       >
-        <div className="space-y-md">
-          {groups.fields.map((g) => (
-            <section key={g.field} className="min-w-0">
-              <h3 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">
-                {FIELD_LABELS[g.field] ?? g.field}{g.items.length > 1 ? ` · ${g.items.length} drafts` : ''}
-              </h3>
-              {g.items.map((pr) => (
-                <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} onDecided={decided} />
-              ))}
-            </section>
+        <ul className="min-w-0 divide-y divide-border">
+          {fields.map((field) => {
+            const n = textByField.get(field)?.length ?? 0;
+            return (
+              <li key={field} className="flex min-w-0 flex-wrap items-center justify-between gap-sm py-xs">
+                <span className="min-w-0 text-body">
+                  <span className="font-medium">{FIELD_LABELS[field] ?? field}</span>
+                  <span className="text-muted-foreground"> · {n === 1 ? '1 draft' : `${n} drafts`}</span>
+                </span>
+                <Button variant="ghost" size="sm" onClick={() => goTo(`review-${field}`)}>
+                  <ArrowDownRight className="size-4" aria-hidden /> Review in Report text
+                </Button>
+              </li>
+            );
+          })}
+          {onRows.map(([fhId, prs]) => (
+            prs.map((pr) => (
+              <li key={pr.id} className="flex min-w-0 flex-wrap items-center justify-between gap-sm py-xs">
+                <span className="min-w-0 truncate text-body" title={describeProposal(pr)}>
+                  {describeProposal(pr).replace(/ on “.*”$/, '')}
+                </span>
+                <Button asChild variant="ghost" size="sm">
+                  <Link
+                    to={`?endpoint=${fhId}#endpoints`}
+                    replace
+                    onClick={() => document.querySelector(`[data-endpoint-row="${fhId}"]`)?.scrollIntoView?.({ block: 'center' })}
+                  >
+                    <ArrowDownRight className="size-4" aria-hidden /> Review on its row
+                  </Link>
+                </Button>
+              </li>
+            ))
           ))}
-          {groups.other.length > 0 && (
-            <section className="min-w-0">
-              <h3 className="text-caption font-semibold uppercase tracking-wide text-muted-foreground">Endpoints and triage</h3>
-              {groups.other.map((pr) => (
-                <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} onDecided={decided} showTarget linkTarget={false} />
-              ))}
-            </section>
-          )}
-        </div>
+        </ul>
+        {elsewhere.length > 0 && (
+          <div className="mt-sm min-w-0">
+            <h3 className="text-caption font-semibold text-muted-foreground">Decide here</h3>
+            {elsewhere.map((pr) => (
+              <ProposalItem key={pr.id} proposal={pr} canDecide={canDecide} onDecided={onDecided} showTarget linkTarget={false} />
+            ))}
+          </div>
+        )}
       </PostureSection>
     </div>
   );

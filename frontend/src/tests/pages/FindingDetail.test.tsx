@@ -34,6 +34,10 @@ vi.mock('../../services/api', () => ({
   setNoteAttachmentCaption: vi.fn(),
   setNoteAttachmentInReport: vi.fn(),
   deleteNoteAttachment: vi.fn(),
+  // Pending proposals (5.334.0: one read for the page); none unless a test says so.
+  listProposals: vi.fn().mockResolvedValue({ items: [], total: 0, has_more: false }),
+  acceptProposal: vi.fn(),
+  rejectProposal: vi.fn(),
 }));
 const confirmMock = vi.fn();
 vi.mock('../../hooks/useConfirm', () => ({ useConfirm: () => [null, confirmMock] }));
@@ -390,6 +394,80 @@ describe('FindingDetail — layout and the initial status', () => {
     renderAt('/findings/7');
     expect(await screen.findByText(/Confirmed since the finding was created by ana/)).toBeInTheDocument();
     expect(screen.queryByText(/No status changes recorded yet/)).toBeNull();
+  });
+});
+
+// Walkthrough 2026-10-02 — drafts were listed a screen above the Report text
+// they change, with the current text folded away under each; endpoint changes
+// sat under the table instead of on their row.
+describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)', () => {
+  const proposal = (over: Record<string, unknown>) => ({
+    status: 'pending', source: 'agent', finding_id: 7, vulnerability_id: null, finding_host_id: null,
+    field: null, payload: {}, current_value: null, base_value: null, base_recorded: true, changed_since_proposed: false,
+    target: { finding_title: 'Weak TLS on portal', observation_title: null, host_id: null, host_ip: null },
+    rationale: null, evidence_ids: [], agent_session_id: 81, proposed_by: 'Ana', agent_model: 'model-a',
+    agent_client: null, prompt_version: null, created_at: '2026-10-02T10:00:00Z', decided_by: null,
+    decided_at: null, decision_note: null, result_finding_id: null, error: null, ...over,
+  });
+
+  beforeEach(() => {
+    mocked.getFinding.mockResolvedValue(finding({
+      host_count: 1,
+      hosts: [{ id: 55, host_id: 5, ip_address: '10.10.1.21', hostname: null, host_status: 'open' }],
+      report_text: {
+        description: 'TLS 1.0 is accepted.', impact: null, recommendation: 'Apply the vendor fix and re-scan.',
+        references: null, steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+      },
+    }));
+    mocked.listProposals.mockResolvedValue({
+      total: 3, has_more: false,
+      items: [
+        proposal({ id: 1, kind: 'finding_text', field: 'recommendation', current_value: 'Apply the vendor fix and re-scan.',
+          base_value: 'Apply the vendor fix and re-scan.', payload: { value: 'Upgrade to 2.3.32, then re-scan.' } }),
+        proposal({ id: 2, kind: 'finding_text', field: 'recommendation', agent_model: 'model-b',
+          created_at: '2026-10-02T11:00:00Z', current_value: 'Apply the vendor fix and re-scan.',
+          base_value: 'Apply the vendor fix and re-scan.', payload: { value: 'Restrict access, then patch.' } }),
+        proposal({ id: 3, kind: 'endpoint_status', finding_host_id: 55, payload: { host_status: 'retest' },
+          target: { finding_title: 'Weak TLS on portal', observation_title: null, host_id: 5, host_ip: '10.10.1.21' } }),
+      ],
+    });
+  });
+
+  it('summarises what waits at the top, and shows each draft beside the section’s current text', async () => {
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const summary = await screen.findByRole('heading', { name: /Proposals to review/ });
+    const hosts = screen.getByRole('heading', { name: /Affected hosts/ });
+    // eslint-disable-next-line no-bitwise
+    expect(summary.compareDocumentPosition(hosts) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Review in Report text/ })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Review on its row/ })).toBeInTheDocument();
+
+    // The drafts are inside Report text, under Recommendation, lettered.
+    const drafts = within(screen.getByTestId('report-text-recommendation')).getByTestId('drafts-recommendation');
+    expect(within(drafts).getByRole('tab', { name: /Draft A/ })).toHaveAttribute('aria-selected', 'true');
+    expect(within(drafts).getByTestId('compare-current')).toHaveTextContent('Apply the vendor fix and re-scan.');
+    expect(within(drafts).getByTestId('compare-proposed')).toHaveTextContent('Upgrade to 2.3.32, then re-scan.');
+    fireEvent.click(within(drafts).getByRole('tab', { name: /Draft B/ }));
+    expect(within(drafts).getByTestId('compare-proposed')).toHaveTextContent('Restrict access, then patch.');
+    // The current text is shown once, not once per draft.
+    expect(within(drafts).getAllByTestId('compare-current')).toHaveLength(1);
+
+    // The endpoint change is on its row.
+    const row = document.querySelector('[data-endpoint-row="55"]') as HTMLElement;
+    expect(within(row).getByText(/Proposed: Retest/)).toBeInTheDocument();
+    expect(within(row).getByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
+  });
+
+  it('accepting a draft re-reads the finding and the proposals', async () => {
+    mocked.acceptProposal.mockResolvedValue({ ...proposal({ id: 1, kind: 'finding_text', field: 'recommendation' }), status: 'accepted' });
+    renderAt('/findings/7');
+    const drafts = await screen.findByTestId('drafts-recommendation');
+    const calls = mocked.listProposals.mock.calls.length;
+    fireEvent.click(within(drafts).getByRole('button', { name: /^Accept$/ }));
+    await waitFor(() => expect(mocked.acceptProposal).toHaveBeenCalledWith(1, {}));
+    await waitFor(() => expect(mocked.getFinding.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() => expect(mocked.listProposals.mock.calls.length).toBeGreaterThan(calls));
   });
 });
 

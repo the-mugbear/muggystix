@@ -236,6 +236,45 @@ def test_several_proposals_per_field_stand_side_by_side_until_one_is_accepted(cl
     assert client.post(f"{_base(test_project)}/proposals/{ids[2]}/accept", json={}).status_code == 409
 
 
+def test_a_draft_keeps_the_text_it_was_written_against_and_says_when_the_field_changed(
+    client, db_session, test_project,
+):
+    """2.454.0 — the reviewer compares a draft with the field's text, and an
+    accept replaces the whole section: an edit made after the draft must show."""
+    key, _ = _start(client, test_project)
+    host = _host(db_session, test_project)
+    finding = _finding(client, test_project, host)
+    url = f"{_base(test_project)}/findings/{finding['id']}"
+    assert client.patch(url, json={"impact": "Relay to the file share."}).status_code == 200
+
+    r = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
+        "finding_id": finding["id"], "fields": {"impact": "NTLM relay to every host.", "description": "SMB."}})
+    assert r.status_code == 201, r.text
+    by_field = {p["field"]: p for p in r.json()["proposals"]}
+    assert by_field["impact"]["base_value"] == "Relay to the file share."
+    assert by_field["impact"]["base_recorded"] is True
+    assert by_field["impact"]["changed_since_proposed"] is False
+    # An empty field is recorded as empty, not as "unknown".
+    assert by_field["description"]["base_recorded"] is True and by_field["description"]["base_value"] is None
+    # An agent cannot supply the base: the payload holds the value and the server's base only.
+    assert set(by_field["impact"]["payload"]) == {"value", "base_value"}
+
+    assert client.patch(url, json={"impact": "Relay to the file share and the DC."}).status_code == 200
+    listed = client.get(f"{_base(test_project)}/proposals", params={"finding_id": finding["id"]}).json()["items"]
+    impact = next(p for p in listed if p["field"] == "impact")
+    assert impact["changed_since_proposed"] is True
+    assert impact["base_value"] == "Relay to the file share."
+    assert impact["current_value"] == "Relay to the file share and the DC."
+
+    # A proposal stored before the base was kept says "unknown", never "unchanged".
+    row = db_session.get(AgentProposal, impact["id"])
+    row.payload = {"value": row.payload["value"]}
+    db_session.commit()
+    listed = client.get(f"{_base(test_project)}/proposals", params={"finding_id": finding["id"]}).json()["items"]
+    impact = next(p for p in listed if p["field"] == "impact")
+    assert (impact["base_recorded"], impact["base_value"], impact["changed_since_proposed"]) == (False, None, None)
+
+
 def test_only_the_author_or_a_project_admin_accepts_report_text(client, db_session, test_project):
     """The authored-content rule decides, through the same code as an edit.
     The refusal leaves the proposal pending, with no error recorded (it is

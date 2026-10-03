@@ -16,9 +16,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const setFindingEndpointStatus = vi.fn();
 const setFindingEndpointsStatus = vi.fn();
+const rejectProposal = vi.fn();
 vi.mock('../../services/api', () => ({
   setFindingEndpointStatus: (...a: unknown[]) => setFindingEndpointStatus(...a),
   setFindingEndpointsStatus: (...a: unknown[]) => setFindingEndpointsStatus(...a),
+  acceptProposal: vi.fn(),
+  rejectProposal: (...a: unknown[]) => rejectProposal(...a),
 }));
 const toast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
 vi.mock('../../contexts/ToastContext', () => ({ useToast: () => toast }));
@@ -70,7 +73,7 @@ vi.mock('../../components/ui/select', () => {
 });
 
 import FindingEndpoints from '../../components/findings/FindingEndpoints';
-import type { Finding, FindingHostInfo, FindingHostStatus } from '../../services/api';
+import type { Finding, FindingHostInfo, FindingHostStatus, Proposal } from '../../services/api';
 
 const scrollIntoView = vi.fn();
 Element.prototype.scrollIntoView = scrollIntoView;
@@ -411,5 +414,38 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
     await act(async () => { bulk.resolve(withState(start, { 1: 'retest', 2: 'retest' })); });
     expect(bar()).toBeNull();
     expect(box(3)).not.toBeDisabled();
+  });
+});
+
+// 5.334.0 — an agent's endpoint change is decided on the row it would change.
+describe('FindingEndpoints — a proposed endpoint change sits on its row', () => {
+  const pr = {
+    id: 9, kind: 'endpoint_status', status: 'pending', source: 'agent', finding_id: 7, vulnerability_id: null,
+    finding_host_id: 2, field: null, payload: { host_status: 'retest' }, current_value: null,
+    target: { finding_title: 'F', observation_title: null, host_id: 2, host_ip: '10.0.0.2' },
+    rationale: 'The patch shipped Friday.', evidence_ids: [], agent_session_id: 81, proposed_by: 'Ana',
+    agent_model: 'model-a', agent_client: null, prompt_version: null, created_at: null, decided_by: null,
+    decided_at: null, decision_note: null, result_finding_id: null, error: null,
+  } as Proposal;
+
+  it('names the proposed state and why, and rejects with a note from the row', async () => {
+    const onProposalDecided = vi.fn();
+    rejectProposal.mockResolvedValue({ ...pr, status: 'rejected' });
+    render(
+      <MemoryRouter>
+        <FindingEndpoints finding={finding([endpoint(1), endpoint(2)])} canManage canDecide
+          onChanged={vi.fn()} onRemove={vi.fn()} proposals={new Map([[2, [pr]]])} onProposalDecided={onProposalDecided} />
+      </MemoryRouter>,
+    );
+    const row = document.querySelector('[data-endpoint-row="2"]') as HTMLElement;
+    expect(within(row).getByText(/Proposed: Retest/)).toBeInTheDocument();
+    expect(within(row).getByText(/The patch shipped Friday/)).toBeInTheDocument();
+    const other = document.querySelector('[data-endpoint-row="1"]') as HTMLElement;
+    expect(within(other).queryByText(/Proposed:/)).toBeNull();
+    fireEvent.click(within(row).getByRole('button', { name: /Reject…/ }));
+    fireEvent.change(within(row).getByRole('textbox', { name: /Why reject it/ }), { target: { value: 'Not retested yet.' } });
+    fireEvent.click(within(row).getByRole('button', { name: /^Reject$/ }));
+    await waitFor(() => expect(rejectProposal).toHaveBeenCalledWith(9, 'Not retested yet.'));
+    expect(onProposalDecided).toHaveBeenCalledWith(expect.objectContaining({ status: 'rejected' }));
   });
 });

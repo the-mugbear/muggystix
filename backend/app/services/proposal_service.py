@@ -341,9 +341,13 @@ def propose_finding_text(
                 normalize_cvss(value, None)
             except CvssError as exc:
                 raise HTTPException(status_code=422, detail=f"cvss_vector: {exc}")
+        # The text the proposal was written against (2.454.0): the reviewer
+        # compares the draft with what the field held then, and is told when
+        # the field has changed since — accepting replaces the whole section.
         out.append(_add(
             db, project_id, ProposalKind.FINDING_TEXT.value, who,
-            finding_id=finding_id, field=field, payload={"value": value},
+            finding_id=finding_id, field=field,
+            payload={"value": value, "base_value": getattr(finding, field, None)},
             rationale=rationale, evidence_ids=ev,
         ))
     _notify_finding_people(db, finding_id, who)
@@ -818,10 +822,20 @@ def pending_counts(db: Session, project_id: int, *, mine_user_id: Optional[int] 
 
 def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Finding]] = None) -> dict:
     """The row, plus for report text the finding's current value so a reviewer
-    sees the difference without a second request."""
+    sees the difference without a second request.
+
+    ``base_value`` is the field's text when the proposal was made (2.454.0);
+    ``base_recorded`` is false for proposals made before it was kept, and then
+    ``changed_since_proposed`` is null — unknown, never "unchanged"."""
     current_value = None
     if proposal.kind == ProposalKind.FINDING_TEXT.value and current and proposal.finding_id in current:
         current_value = getattr(current[proposal.finding_id], proposal.field, None)
+    payload = proposal.payload or {}
+    base_recorded = proposal.kind == ProposalKind.FINDING_TEXT.value and "base_value" in payload
+    base_value = payload.get("base_value") if base_recorded else None
+    changed_since_proposed = None
+    if base_recorded and proposal.status == ProposalStatus.PENDING.value and current and proposal.finding_id in current:
+        changed_since_proposed = (base_value or "").strip() != (current_value or "").strip()
     name = lambda u: (u.full_name or u.username) if u is not None else None  # noqa: E731
     return {
         "id": proposal.id,
@@ -834,6 +848,9 @@ def serialize_proposal(proposal: AgentProposal, current: Optional[Dict[int, Find
         "field": proposal.field,
         "payload": proposal.payload,
         "current_value": current_value,
+        "base_value": base_value,
+        "base_recorded": base_recorded,
+        "changed_since_proposed": changed_since_proposed,
         "target": _target(proposal),
         "rationale": proposal.rationale,
         "evidence_ids": proposal.evidence_ids or [],

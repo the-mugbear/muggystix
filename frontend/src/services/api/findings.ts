@@ -85,8 +85,8 @@ export type FindingReportTextUpdate = Partial<
 >;
 
 /** A draft of a finding's report text with your LLM provider.  Since v5.316.0
- *  (backend 2.437.0) it is a set of PROPOSALS, one per field — reviewed in the
- *  finding's Proposals section like an agent's.  Nothing is written until
+ *  (backend 2.437.0) it is a set of PROPOSALS, one per field — reviewed in each
+ *  section of the finding's Report text like an agent's (5.334.0).  Nothing is written until
  *  accepted.  Errors: 400 (no provider / nothing empty), 403 (below analyst),
  *  502 (provider failed or answered unreadably). */
 export interface FindingTextDraft {

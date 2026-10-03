@@ -34,6 +34,14 @@ export interface Proposal {
   payload: Record<string, unknown> | null;
   /** finding_text: the finding's text in that field now. */
   current_value: string | null;
+  /** finding_text (backend 2.454.0): the field's text when the proposal was
+   *  made — null when it was empty, or when `base_recorded` is false. */
+  base_value?: string | null;
+  /** False for proposals made before the base text was kept. */
+  base_recorded?: boolean;
+  /** Pending finding_text: the field changed after the draft was written;
+   *  null when that cannot be known (no base recorded). */
+  changed_since_proposed?: boolean | null;
   target: {
     finding_title: string | null;
     observation_title: string | null;

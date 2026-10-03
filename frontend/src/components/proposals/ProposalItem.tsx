@@ -5,16 +5,21 @@
  * person clicking; the server decides whether they may (report text: the
  * finding's author or a project admin), and a refusal is shown here.
  *
- * Shared by the finding page's Proposals section and the Proposals page.
+ * Shared by the finding page and the Proposals page.
+ *
+ * 5.334.0 — report text is shown against the field's current text
+ * (`TextComparison`, always visible), and the pieces — source line, rationale,
+ * decision controls — are exported for the finding page, which reviews
+ * report-text drafts inside Report text and endpoint changes on their rows.
+ * Deciding is `useProposalDecision`, the one decision path.
  */
-import React, { useState } from 'react';
+import React from 'react';
 import { Link } from 'react-router-dom';
 import { Check, Loader2, Pencil, X } from 'lucide-react';
 
-import { acceptProposal, Proposal, rejectProposal } from '../../services/api';
-import { useToast } from '../../contexts/ToastContext';
-import { formatApiError } from '../../utils/apiErrors';
-import { announceProposalsChanged, shortClient } from '../../utils/proposalEvents';
+import type { Proposal } from '../../services/api';
+import { ProposalDecision, useProposalDecision } from '../../hooks/useProposalDecision';
+import { shortClient } from '../../utils/proposalEvents';
 import { cn } from '../../utils/cn';
 import { formatRelativeTime, formatTimestamp } from '../../utils/relativeTime';
 import { Badge } from '../ui/badge';
@@ -23,6 +28,7 @@ import { Label } from '../ui/label';
 import { Textarea } from '../ui/textarea';
 import MarkdownField from '../MarkdownField';
 import SafeMarkdown from '../SafeMarkdown';
+import TextComparison from './TextComparison';
 
 export const FIELD_LABELS: Record<string, string> = {
   description: 'Description',
@@ -65,7 +71,7 @@ export const describeProposal =(pr: Proposal): string => {
   }
 };
 
-const Source: React.FC<{ pr: Proposal }> = ({ pr }) => {
+export const ProposalSource: React.FC<{ pr: Proposal }> = ({ pr }) => {
   const model = pr.agent_model ? ` · ${pr.agent_model}` : '';
   const when = formatRelativeTime(pr.created_at, { fallback: '' });
   if (pr.source === 'llm_draft') {
@@ -86,27 +92,27 @@ const Source: React.FC<{ pr: Proposal }> = ({ pr }) => {
   );
 };
 
+/** The base text to warn with, when the field changed after the draft was written. */
+export const staleBase = (pr: Proposal): { value: string | null } | null =>
+  (pr.changed_since_proposed ? { value: pr.base_value ?? null } : null);
+
 const Body: React.FC<{ pr: Proposal }> = ({ pr }) => {
   const payload = pr.payload ?? {};
   if (pr.kind === 'finding_text') {
     const value = String(payload.accepted_value ?? payload.value ?? '');
-    return (
-      <div className="space-y-xs">
-        {pr.field === 'cvss_vector'
-          ? <p className="break-all font-mono text-body">{value}</p>
-          : <SafeMarkdown text={value} className="text-body" />}
-        {pr.status === 'pending' && (
-          <details className="text-caption text-muted-foreground">
-            <summary className="cursor-pointer select-none">Current text</summary>
-            <div className="mt-xxs border-l-2 border-border pl-sm">
-              {(pr.current_value ?? '').trim()
-                ? <SafeMarkdown text={pr.current_value ?? ''} className="text-body text-muted-foreground" />
-                : <p>Empty.</p>}
-            </div>
-          </details>
-        )}
-      </div>
-    );
+    if (pr.status === 'pending') {
+      return (
+        <TextComparison
+          current={pr.current_value}
+          proposed={value}
+          mono={pr.field === 'cvss_vector'}
+          staleBase={staleBase(pr)}
+        />
+      );
+    }
+    return pr.field === 'cvss_vector'
+      ? <p className="break-all font-mono text-body">{value}</p>
+      : <SafeMarkdown text={value} className="text-body" />;
   }
   if (pr.kind === 'finding_create') {
     const hosts = Array.isArray(payload.host_ids) ? payload.host_ids.length : 0;
@@ -172,38 +178,120 @@ export const proposalOutcomeLink = (pr: Proposal): { to: string; label: string }
   return null;
 };
 
+/** "Why: …" and the evidence it cites — one muted block under the change. */
+export const ProposalReasons: React.FC<{ pr: Proposal }> = ({ pr }) => (
+  <>
+    {pr.rationale && <p className="break-words text-caption text-muted-foreground">Why: {pr.rationale}</p>}
+    {pr.evidence_ids.length > 0 && (
+      <p className="text-caption text-muted-foreground">
+        Cites evidence {pr.evidence_ids.map((id) => `#${id}`).join(', ')}
+        {pr.target.host_id != null && (
+          <> — <Link to={`/hosts/${pr.target.host_id}#evidence`} className="text-info hover:underline">on the host</Link></>
+        )}
+      </p>
+    )}
+  </>
+);
+
+interface ControlsProps {
+  pr: Proposal;
+  canDecide: boolean;
+  decision: ProposalDecision;
+  /** Shown as the edit box's label. */
+  fieldLabel?: string;
+  /** The field's text now — "Accept and edit" may start from it. */
+  current?: string | null;
+  /** Smaller buttons on one line (an endpoint row). */
+  compact?: boolean;
+}
+
+/** The pending proposal's controls: Accept, Accept and edit (report text),
+ *  Reject… with its optional note, and the error of the last attempt. */
+export const ProposalDecisionControls: React.FC<ControlsProps> = ({
+  pr, canDecide, decision, fieldLabel, current = null, compact = false,
+}) => {
+  const { busy, error, editing, setEditing, rejecting, setRejecting, accept, reject } = decision;
+  const pending = pr.status === 'pending';
+  const label = fieldLabel ?? FIELD_LABELS[pr.field ?? ''] ?? 'Text';
+  const draftText = String(pr.payload?.value ?? '');
+  const hasCurrent = !!(current ?? '').trim();
+  return (
+    <>
+      {pending && pr.error && <p className="break-words text-caption text-warning">Last attempt failed: {pr.error}</p>}
+      {error && <p className="break-words text-caption text-destructive">{error}</p>}
+      {pending && canDecide && editing !== null && (
+        <div className="space-y-xs">
+          <div className="flex min-w-0 flex-wrap items-baseline justify-between gap-xs">
+            <Label htmlFor={`proposal-${pr.id}`}>{label}</Label>
+            {/* Start from either side: the draft is the default, but a reviewer
+                who wants one sentence of it keeps the current text instead. */}
+            {hasCurrent && (
+              <span className="flex flex-wrap gap-xs text-caption">
+                <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={busy !== null}
+                  onClick={() => setEditing(draftText)}>Start from the draft</Button>
+                <Button type="button" variant="link" size="sm" className="h-auto p-0" disabled={busy !== null}
+                  onClick={() => setEditing(current ?? '')}>Start from the current text</Button>
+              </span>
+            )}
+          </div>
+          <MarkdownField id={`proposal-${pr.id}`} label={label} rows={5}
+            maxLength={32768} value={editing} onChange={setEditing} disabled={busy !== null} />
+          <div className="flex flex-wrap gap-xs">
+            <Button size="sm" onClick={() => void accept(editing)} disabled={busy !== null || !editing.trim()}>
+              {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
+              Accept with my edit
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={busy !== null}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {pending && canDecide && rejecting !== null && (
+        <div className="space-y-xs">
+          <Label htmlFor={`reject-${pr.id}`}>Why reject it? (optional)</Label>
+          <p id={`reject-${pr.id}-hint`} className="text-caption text-muted-foreground">
+            The agent that proposed it reads this — say what to change so its next proposal can follow it.
+          </p>
+          <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting} autoFocus
+            aria-describedby={`reject-${pr.id}-hint`} placeholder={REJECT_NOTE_PLACEHOLDER}
+            onChange={(e) => setRejecting(e.target.value)} disabled={busy !== null} />
+          <div className="flex flex-wrap gap-xs">
+            <Button size="sm" variant="outline" onClick={() => void reject(rejecting)} disabled={busy !== null}>
+              {busy === 'reject' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
+              Reject
+            </Button>
+            <Button size="sm" variant="ghost" onClick={() => setRejecting(null)} disabled={busy !== null}>Cancel</Button>
+          </div>
+        </div>
+      )}
+      {pending && canDecide && editing === null && rejecting === null && (
+        <div className="flex flex-wrap gap-xs">
+          <Button size="sm" variant="outline" data-proposal-action="accept" className={cn(compact && 'h-7')}
+            onClick={() => void accept()} disabled={busy !== null}>
+            {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
+            Accept
+          </Button>
+          {pr.kind === 'finding_text' && (
+            <Button size="sm" variant="ghost" onClick={() => setEditing(draftText)} disabled={busy !== null}>
+              <Pencil className="size-4" aria-hidden /> Accept and edit
+            </Button>
+          )}
+          <Button size="sm" variant="ghost" data-proposal-action="reject" className={cn(compact && 'h-7')}
+            onClick={() => setRejecting('')} disabled={busy !== null}>
+            <X className="size-4" aria-hidden /> Reject…
+          </Button>
+        </div>
+      )}
+    </>
+  );
+};
+
 const ProposalItem: React.FC<Props> = ({
   proposal: pr, canDecide, onDecided, showTarget = false, linkTarget = true, rowProps,
 }) => {
-  const toast = useToast();
-  const [busy, setBusy] = useState<'accept' | 'reject' | null>(null);
-  const [editing, setEditing] = useState<string | null>(null);
-  // 5.317.1 — Reject asks for an optional reason (stored as decision_note,
-  // which the proposing agent reads back through list_proposals).
-  const [rejecting, setRejecting] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
+  const decision = useProposalDecision(pr, onDecided);
   const pending = pr.status === 'pending';
   const outcome = proposalOutcomeLink(pr);
   const decidedWhen = formatRelativeTime(pr.decided_at, { fallback: '' });
-
-  const decide = async (action: 'accept' | 'reject', editedValue?: string, note?: string) => {
-    setBusy(action);
-    setError(null);
-    try {
-      const updated = action === 'accept'
-        ? await acceptProposal(pr.id, editedValue !== undefined ? { editedValue } : {})
-        : await rejectProposal(pr.id, note?.trim() || undefined);
-      setEditing(null);
-      setRejecting(null);
-      onDecided(updated);
-      announceProposalsChanged();
-      toast.success(action === 'accept' ? 'Accepted — applied as you.' : 'Rejected.');
-    } catch (err) {
-      setError(formatApiError(err, action === 'accept' ? 'Could not accept it.' : 'Could not reject it.'));
-    } finally {
-      setBusy(null);
-    }
-  };
 
   return (
     <article
@@ -221,32 +309,10 @@ const ProposalItem: React.FC<Props> = ({
         {!pending && (
           <Badge variant={pr.status === 'accepted' ? 'success' : 'muted'} className="shrink-0">{pr.status}</Badge>
         )}
-        <span className="min-w-0 text-caption text-muted-foreground"><Source pr={pr} /></span>
+        <span className="min-w-0 text-caption text-muted-foreground"><ProposalSource pr={pr} /></span>
       </div>
-      {pr.rationale && <p className="break-words text-caption text-muted-foreground">Why: {pr.rationale}</p>}
-      {editing !== null ? (
-        <div className="space-y-xs">
-          <Label htmlFor={`proposal-${pr.id}`}>{FIELD_LABELS[pr.field ?? ''] ?? 'Text'}</Label>
-          <MarkdownField id={`proposal-${pr.id}`} label={FIELD_LABELS[pr.field ?? ''] ?? 'Text'} rows={5}
-            maxLength={32768} value={editing} onChange={setEditing} disabled={busy !== null} />
-          <div className="flex flex-wrap gap-xs">
-            <Button size="sm" onClick={() => void decide('accept', editing)} disabled={busy !== null || !editing.trim()}>
-              {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
-              Accept with my edit
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setEditing(null)} disabled={busy !== null}>Cancel</Button>
-          </div>
-        </div>
-      ) : <Body pr={pr} />}
-      {pr.evidence_ids.length > 0 && (
-        <p className="text-caption text-muted-foreground">
-          Cites evidence {pr.evidence_ids.map((id) => `#${id}`).join(', ')}
-          {pr.target.host_id != null && (
-            <> — <Link to={`/hosts/${pr.target.host_id}#evidence`} className="text-info hover:underline">on the host</Link></>
-          )}
-        </p>
-      )}
-      {pending && pr.error && <p className="break-words text-caption text-warning">Last attempt failed: {pr.error}</p>}
+      {decision.editing === null && <Body pr={pr} />}
+      <ProposalReasons pr={pr} />
       {!pending && (pr.decided_by || pr.decision_note || decidedWhen) && (
         <p className="break-words text-caption text-muted-foreground">
           {pr.decided_by
@@ -262,43 +328,7 @@ const ProposalItem: React.FC<Props> = ({
           <Link to={outcome.to} className="break-words text-info hover:underline">{outcome.label}</Link>
         </p>
       )}
-      {error && <p className="break-words text-caption text-destructive">{error}</p>}
-      {pending && canDecide && rejecting !== null && (
-        <div className="space-y-xs">
-          <Label htmlFor={`reject-${pr.id}`}>Why reject it? (optional)</Label>
-          <p id={`reject-${pr.id}-hint`} className="text-caption text-muted-foreground">
-            The agent that proposed it reads this — say what to change so its next proposal can follow it.
-          </p>
-          <Textarea id={`reject-${pr.id}`} rows={2} maxLength={2000} value={rejecting} autoFocus
-            aria-describedby={`reject-${pr.id}-hint`} placeholder={REJECT_NOTE_PLACEHOLDER}
-            onChange={(e) => setRejecting(e.target.value)} disabled={busy !== null} />
-          <div className="flex flex-wrap gap-xs">
-            <Button size="sm" variant="outline" onClick={() => void decide('reject', undefined, rejecting)} disabled={busy !== null}>
-              {busy === 'reject' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <X className="size-4" aria-hidden />}
-              Reject
-            </Button>
-            <Button size="sm" variant="ghost" onClick={() => setRejecting(null)} disabled={busy !== null}>Cancel</Button>
-          </div>
-        </div>
-      )}
-      {pending && canDecide && editing === null && rejecting === null && (
-        <div className="flex flex-wrap gap-xs">
-          <Button size="sm" variant="outline" data-proposal-action="accept"
-            onClick={() => void decide('accept')} disabled={busy !== null}>
-            {busy === 'accept' ? <Loader2 className="size-4 animate-spin" aria-hidden /> : <Check className="size-4" aria-hidden />}
-            Accept
-          </Button>
-          {pr.kind === 'finding_text' && (
-            <Button size="sm" variant="ghost" onClick={() => setEditing(String(pr.payload?.value ?? ''))} disabled={busy !== null}>
-              <Pencil className="size-4" aria-hidden /> Accept and edit
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" data-proposal-action="reject"
-            onClick={() => setRejecting('')} disabled={busy !== null}>
-            <X className="size-4" aria-hidden /> Reject…
-          </Button>
-        </div>
-      )}
+      <ProposalDecisionControls pr={pr} canDecide={canDecide} decision={decision} current={pr.current_value} />
     </article>
   );
 };
