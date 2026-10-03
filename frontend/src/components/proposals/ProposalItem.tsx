@@ -311,7 +311,8 @@ const ProposalItem: React.FC<Props> = ({
         )}
         <span className="min-w-0 text-caption text-muted-foreground"><ProposalSource pr={pr} /></span>
       </div>
-      {decision.editing === null && <Body pr={pr} />}
+      {/* Kept while editing, so both texts stay in view (5.334.1). */}
+      <Body pr={pr} />
       <ProposalReasons pr={pr} />
       {!pending && (pr.decided_by || pr.decision_note || decidedWhen) && (
         <p className="break-words text-caption text-muted-foreground">

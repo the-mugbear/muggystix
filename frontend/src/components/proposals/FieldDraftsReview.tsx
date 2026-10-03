@@ -52,15 +52,15 @@ const Draft: React.FC<{
   const value = String(pr.payload?.value ?? '');
   return (
     <div className="min-w-0 space-y-xs" data-proposal={pr.id}>
-      {decision.editing === null && (
-        <TextComparison
-          current={current}
-          proposed={value}
-          mono={pr.field === 'cvss_vector'}
-          staleBase={staleBase(pr)}
-          evidence={evidence}
-        />
-      )}
+      {/* Kept while "Accept and edit" is open: the reviewer edits with both
+          texts in view (browser pass 5.334.1 — they vanished on edit). */}
+      <TextComparison
+        current={current}
+        proposed={value}
+        mono={pr.field === 'cvss_vector'}
+        staleBase={staleBase(pr)}
+        evidence={evidence}
+      />
       <div className="space-y-xxs">
         <p className="min-w-0 text-caption text-muted-foreground"><ProposalSource pr={pr} /></p>
         <ProposalReasons pr={pr} />

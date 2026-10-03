@@ -58,6 +58,44 @@ export const diffWords = (before: string, after: string): DiffPart[] | null => {
   while (j < bm.length) { push(out, 'added', bm[j]); j += 1; }
 
   if (tail) push(out, 'same', a.slice(a.length - tail).join(''));
+  return readable(out);
+};
+
+/** A common run this short between two changes is noise, not context. */
+const SHORT_COMMON_WORDS = 2;
+const SHORT_COMMON_CHARS = 12;
+
+/**
+ * Make a word diff readable (browser pass 5.334.1).  The raw LCS aligns on
+ * small common words ("of", "a", "on"), so a rewritten sentence came out as
+ * removed / added / removed / added word by word.  A short common run between
+ * two changes is folded into both sides, and each change block shows all of
+ * what it removes, then all of what it adds.  Rebuilding both texts from the
+ * parts is unchanged by this.
+ */
+const readable = (parts: DiffPart[]): DiffPart[] => {
+  const isShortCommon = (p: DiffPart, i: number) => {
+    if (p.kind !== 'same' || i === 0 || i === parts.length - 1) return false;
+    if (parts[i - 1].kind === 'same' || parts[i + 1].kind === 'same') return false;
+    const words = p.text.match(/[^\s]+/g) ?? [];
+    return words.length <= SHORT_COMMON_WORDS && words.join('').length <= SHORT_COMMON_CHARS;
+  };
+  const out: DiffPart[] = [];
+  let removed = '';
+  let added = '';
+  const flush = () => {
+    if (removed) out.push({ kind: 'removed', text: removed });
+    if (added) out.push({ kind: 'added', text: added });
+    removed = '';
+    added = '';
+  };
+  parts.forEach((p, i) => {
+    if (p.kind === 'removed') removed += p.text;
+    else if (p.kind === 'added') added += p.text;
+    else if (isShortCommon(p, i)) { removed += p.text; added += p.text; }
+    else { flush(); push(out, 'same', p.text); }
+  });
+  flush();
   return out;
 };
 

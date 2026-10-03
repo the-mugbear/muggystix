@@ -49,7 +49,10 @@ export const ChangesText: React.FC<{ parts: DiffPart[]; mono?: boolean }> = ({ p
     {parts.map((p, i) => (p.kind === 'same'
       ? <span key={i}>{p.text}</span>
       : p.kind === 'added'
-        ? <ins key={i} className="rounded-sm bg-success/20 text-foreground no-underline">{p.text}</ins>
+        // A replacement starts clear of the struck text it replaces
+        // ("~~accepts~~evaluates" read as one word).
+        ? <ins key={i} className={cn('rounded-sm bg-success/20 text-foreground no-underline',
+            parts[i - 1]?.kind === 'removed' && 'ml-[0.3em]')}>{p.text}</ins>
         : <del key={i} className="rounded-sm bg-destructive/15 text-muted-foreground line-through">{p.text}</del>))}
   </p>
 );

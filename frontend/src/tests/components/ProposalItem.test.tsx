@@ -228,6 +228,9 @@ describe('ProposalItem — after the decision', () => {
     expect(box.value).toBe('Relay to the file share.');
     fireEvent.click(screen.getByRole('button', { name: 'Start from the draft' }));
     expect(box.value).toBe('Relay attacks.');
+    // Both texts stay in view while editing (browser pass 5.334.1).
+    expect(screen.getByTestId('compare-current')).toHaveTextContent('Relay to the file share.');
+    expect(screen.getByTestId('compare-proposed')).toHaveTextContent('Relay attacks.');
   });
 
   it('warns when the field changed after the draft was written', () => {
