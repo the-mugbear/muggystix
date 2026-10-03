@@ -771,7 +771,13 @@ and the page was "confusing". The rules:
   written against an older one says so before its controls
   (`changed_since_proposed`), with the text it was written against.
 - **Several drafts are lettered** (Draft A, B…, oldest first, so the letters stay
-  put) and switched as tabs; their source lines alone cannot tell them apart.
+  put) and switched as tabs; their source lines alone cannot tell them apart, so
+  a tab names its model only when no other draft shares it, else its opening words.
+- **Show the from and the to together.** An endpoint row's proposal reads
+  "Still present → Retest here": the state column is a table's width away.
+- **A jump lands below the chrome.** A target scrolled to with `block: 'start'`
+  takes `uiStyles.scrollBelowChrome(extra)` (the layout's `--topbar-h` +
+  `--secondary-nav-h`), never a fixed `scroll-mt-*` shorter than the header.
 - **A field with drafts waiting** says so instead of "Not written yet", never
   opens an empty editor by itself, and is not drafted again.
 - **One decision path** (`hooks/useProposalDecision`): every place a proposal is

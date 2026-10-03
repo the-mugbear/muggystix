@@ -34,6 +34,14 @@ export const stickyBelowChrome: React.CSSProperties = {
   top: 'calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px) + 0.5rem)',
 };
 
+/** Reusable `style` for a jump target (`scrollIntoView({block: 'start'})`):
+ *  it lands below the fixed topbar + secondary nav, plus `extra` for a label
+ *  printed above it.  A fixed `scroll-mt-24` was shorter than the chrome, so
+ *  the target's first line landed under it (5.334.1). */
+export const scrollBelowChrome = (extra = '0.75rem'): React.CSSProperties => ({
+  scrollMarginTop: `calc(var(--topbar-h, 76px) + var(--secondary-nav-h, 0px) + ${extra})`,
+});
+
 /* Re-import React's type only — kept inline to avoid a top-level React
  * import in a pure-utility module. */
 import type * as React from 'react';

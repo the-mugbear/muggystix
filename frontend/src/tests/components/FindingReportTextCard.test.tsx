@@ -279,6 +279,17 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     expect(screen.getByText(/2 drafts are waiting for review in the sections below/)).toBeInTheDocument();
   });
 
+  it('drafts from one model are told apart by their opening words (browser pass 5.334.1)', () => {
+    renderCard({
+      drafts: new Map([['impact', [
+        draft(1, 'impact', 'Apply the vendor fix and verify it.'),
+        draft(2, 'impact', 'Restrict access, then patch.'),
+      ]]]),
+    });
+    expect(screen.getByRole('tab', { name: /Draft A · “Apply the vendor fix and verify…”/ })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: /Draft B · “Restrict access, then patch\.…”/ })).toBeInTheDocument();
+  });
+
   it('says when the section changed after the draft was written, with the text it was written against', () => {
     renderCard({
       drafts: new Map([['description', [draft(2, 'description', 'TLS 1.0 and 1.1 are accepted.', {

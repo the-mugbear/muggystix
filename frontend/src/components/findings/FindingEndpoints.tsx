@@ -59,14 +59,18 @@ const READ_ONLY_VARIANT: Record<FindingHostStatus, 'warning' | 'success' | 'outl
 
 /** One pending endpoint-status proposal, on the row it would change. */
 const EndpointProposal: React.FC<{
-  pr: Proposal; canDecide: boolean; onDecided: (updated: Proposal) => void;
-}> = ({ pr, canDecide, onDecided }) => {
+  pr: Proposal; from: FindingHostStatus; canDecide: boolean; onDecided: (updated: Proposal) => void;
+}> = ({ pr, from, canDecide, onDecided }) => {
   const decision = useProposalDecision(pr, onDecided);
   const to = String(pr.payload?.host_status ?? '') as FindingHostStatus;
   return (
     <div className="mt-xxs min-w-0 space-y-xxs whitespace-normal border-l-2 border-info pl-sm" data-proposal={pr.id}>
       <p className="min-w-0 break-words text-caption">
-        <span className="font-medium text-info">Proposed: {ENDPOINT_STATUS_LABEL[to] ?? to}</span>
+        {/* From → to on the row itself: the state column is a table's width
+            away (browser pass 5.334.1). */}
+        <span className="font-medium text-info">
+          Proposed: {ENDPOINT_STATUS_LABEL[from] ?? from} → {ENDPOINT_STATUS_LABEL[to] ?? to}
+        </span>
         <span className="text-muted-foreground"> · <ProposalSource pr={pr} /></span>
       </p>
       <ProposalReasons pr={pr} />
@@ -447,7 +451,7 @@ const FindingEndpoints: React.FC<Props> = ({
                       )}
                     </div>
                     {(proposals.get(h.id) ?? []).map((pr) => (
-                      <EndpointProposal key={pr.id} pr={pr} canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} />
+                      <EndpointProposal key={pr.id} pr={pr} from={h.host_status} canDecide={canDecide} onDecided={(u) => onProposalDecided?.(u)} />
                     ))}
                   </TableCell>
                   <TableCell>

@@ -13,11 +13,24 @@ import type { Proposal } from '../../services/api';
 import { useProposalDecision } from '../../hooks/useProposalDecision';
 import type { EvidenceResolver } from '../../utils/reportImages';
 import { cn } from '../../utils/cn';
+import { scrollBelowChrome } from '../../utils/uiStyles';
 import { ProposalDecisionControls, ProposalReasons, ProposalSource, staleBase } from './ProposalItem';
 import TextComparison from './TextComparison';
 
 export const draftLetter = (index: number): string =>
   index < 26 ? String.fromCharCode(65 + index) : `#${index + 1}`;
+
+const modelOf = (d: Proposal) => d.agent_model ?? (d.source === 'llm_draft' ? 'AI draft' : 'agent');
+
+/** What tells a draft's tab apart: its model when no other draft shares it,
+ *  else its opening words (browser pass 5.334.1 — two drafts from one model
+ *  both read "Draft A · claude-opus-5-5", "Draft B · claude-opus-5-5"). */
+export const draftTabLabel = (d: Proposal, all: Proposal[]): string => {
+  const model = modelOf(d);
+  if (all.filter((o) => modelOf(o) === model).length === 1) return model;
+  const words = String(d.payload?.value ?? '').replace(/[#*_`>[\]()!-]+/g, ' ').trim().split(/\s+/).slice(0, 6).join(' ');
+  return words ? `“${words}…”` : model;
+};
 
 interface Props {
   field: string;
@@ -66,7 +79,9 @@ const FieldDraftsReview: React.FC<Props> = ({ field, label, current, drafts, can
   return (
     <div
       id={`review-${field}`}
-      className="min-w-0 scroll-mt-24 space-y-xs border-l-2 border-info pl-sm"
+      className="min-w-0 space-y-xs border-l-2 border-info pl-sm"
+      // Room for the section's label printed above the drafts.
+      style={scrollBelowChrome('2.25rem')}
       data-testid={`drafts-${field}`}
     >
       <div className="flex min-w-0 flex-wrap items-center gap-xs">
@@ -79,7 +94,7 @@ const FieldDraftsReview: React.FC<Props> = ({ field, label, current, drafts, can
         <div role="tablist" aria-label={`${label} drafts`} className="flex min-w-0 flex-wrap gap-xs">
           {drafts.map((d, i) => {
             const active = d.id === selected.id;
-            const who = d.agent_model ?? (d.source === 'llm_draft' ? 'AI draft' : 'agent');
+            const who = draftTabLabel(d, drafts);
             return (
               <button
                 key={d.id}
@@ -88,7 +103,7 @@ const FieldDraftsReview: React.FC<Props> = ({ field, label, current, drafts, can
                 aria-selected={active}
                 aria-controls={`review-${field}-panel`}
                 onClick={() => setSelectedId(d.id)}
-                title={who}
+                title={`${modelOf(d)} · ${String(d.payload?.value ?? '').slice(0, 300)}`}
                 className={cn(
                   'inline-flex max-w-[16rem] items-center gap-xxs rounded-chip border px-sm py-xxs text-metadata focus:outline-none focus-visible:ring-2 focus-visible:ring-ring',
                   active

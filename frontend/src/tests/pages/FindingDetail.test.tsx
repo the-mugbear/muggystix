@@ -452,10 +452,14 @@ describe('FindingDetail — each proposal is reviewed where it applies (5.334.0)
     expect(within(drafts).getByTestId('compare-proposed')).toHaveTextContent('Restrict access, then patch.');
     // The current text is shown once, not once per draft.
     expect(within(drafts).getAllByTestId('compare-current')).toHaveLength(1);
+    // Two models: each tab names its model.
+    expect(within(drafts).getByRole('tab', { name: /Draft A · model-a/ })).toBeInTheDocument();
+    // The jump target clears the fixed chrome and the section label above it.
+    expect(drafts.style.scrollMarginTop).toMatch(/var\(--topbar-h/);
 
     // The endpoint change is on its row.
     const row = document.querySelector('[data-endpoint-row="55"]') as HTMLElement;
-    expect(within(row).getByText(/Proposed: Retest/)).toBeInTheDocument();
+    expect(within(row).getByText(/Proposed: Still present → Retest here/)).toBeInTheDocument();
     expect(within(row).getByRole('button', { name: /^Accept$/ })).toBeInTheDocument();
   });
 

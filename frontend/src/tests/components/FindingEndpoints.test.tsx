@@ -438,7 +438,7 @@ describe('FindingEndpoints — a proposed endpoint change sits on its row', () =
       </MemoryRouter>,
     );
     const row = document.querySelector('[data-endpoint-row="2"]') as HTMLElement;
-    expect(within(row).getByText(/Proposed: Retest/)).toBeInTheDocument();
+    expect(within(row).getByText(/Proposed: Still present → Retest here/)).toBeInTheDocument();
     expect(within(row).getByText(/The patch shipped Friday/)).toBeInTheDocument();
     const other = document.querySelector('[data-endpoint-row="1"]') as HTMLElement;
     expect(within(other).queryByText(/Proposed:/)).toBeNull();
