@@ -41,7 +41,7 @@ Every issued report records a fingerprint of the template folder, so its history
 | `report.qmd` | yes | The report: Quarto Markdown filled in by Jinja. The name is set by `entry`. |
 | `sample-data.json` | for `make` and the tests | An example of the data a template receives. |
 | `sample-evidence/*.png` | no | The images `sample-data.json` refers to, so `make` shows figures. Not part of a rendered report or its source zip. |
-| `partials/*.qmd` | no | Reusable pieces, pulled in with `include`. |
+| `partials/*.qmd` | no | Reusable pieces, pulled in with `include`. `pentest`'s `_affected.qmd` shows how to keep a long list short: up to 12 affected systems print one row each (system, name, port, note); more than that are set four across (address, and port), and only a system with an in-scope name or a note keeps a row of its own. Change `detail_max` there to move the cutoff. |
 | `reference.docx` | no | Word styles: fonts, headings, tables, title page, header and footer. Without it, Quarto's default Word styles are used. |
 | `filters/*.lua` | no | The template's own Pandoc Lua filters, listed under `filters:` in the front matter after `_bluestick/fields.lua` (see `pentest/filters/spacers.lua`). |
 | `scripts/…` | no | A post-processing script for a format (`postprocess`). |

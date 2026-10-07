@@ -165,3 +165,43 @@ def test_taking_a_host_into_review_removes_it_from_the_queue(client, db_session,
 def test_empty_project_is_empty_not_an_error(db_session, test_project):
     q = compute_investigation_queue(db_session, test_project)
     assert q.items == [] and q.untouched_total == 0 and q.queue_total == 0
+
+
+def test_the_queues_scanner_row_reads_can_use_the_signal_index(db_session, test_project):
+    """Prod, 2026-10-07: the queue's statement read ``vulnerabilities`` twice
+    by scanning all of it (24 of 32 requests logged SLOW).
+    ``ix_vulnerabilities_signal`` is a PARTIAL index, which Postgres uses only
+    when it can prove the statement's filter implies the index's predicate —
+    so rewording either filter, or the index, silently brings the scans back.
+    With sequential scans switched off, the plan must name the index for both
+    reads."""
+    import pytest
+    from sqlalchemy import event, text
+
+    from tests.conftest import engine
+
+    if engine.dialect.name != "postgresql":
+        pytest.skip("partial-index planning is Postgres-only")
+    h, s = _host(db_session, test_project.id, "10.8.0.1", ports=(445,))
+    _vuln(db_session, h, s, VulnerabilitySeverity.CRITICAL, exploitable=True)
+    db_session.commit()
+
+    captured = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        if "ranked_history" in statement and "vuln_sig" in statement:
+            captured.append((statement, parameters))
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        assert compute_investigation_queue(db_session, test_project, limit=5).queue_total == 1
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    assert captured, "the queue's ranking statement was not seen"
+    statement, parameters = captured[-1]
+
+    db_session.execute(text("SET LOCAL enable_seqscan = off"))
+    cursor = db_session.connection().connection.cursor()
+    cursor.execute("EXPLAIN (COSTS OFF) " + statement, parameters)
+    plan = "\n".join(row[0] for row in cursor.fetchall())
+    assert plan.count("ix_vulnerabilities_signal") >= 2, plan

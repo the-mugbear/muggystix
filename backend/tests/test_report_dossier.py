@@ -224,8 +224,19 @@ def test_a_row_judged_through_its_issue_is_not_untriaged(db_session, test_projec
 
     gen = _gen(db_session, test_project.id, test_user.id)
     ctx = gen._build_export_context([a, b])
-    assert gen._build_host_export_record(b, ctx, {})["untriaged_vulnerabilities"] == []
+    record_b = gen._build_host_export_record(b, ctx, {})
+    assert record_b["untriaged_vulnerabilities"] == []
     assert gen._inventory_finding_counts([b.id])[b.id]["promoted_vuln_ids"] == {rows["10.56.0.2"].id}
+
+    # Prod feedback 2026-10-07: ``vuln_id`` is host A's row (where the issue
+    # was first promoted), so on host B it matched none of the host's own
+    # ``vulnerabilities[].id``.  Each record names this host's rows.
+    (on_b,) = record_b["canonical_findings"]
+    assert on_b["vuln_id"] == rows["10.56.0.1"].id
+    assert on_b["vulnerability_ids"] == [rows["10.56.0.2"].id]
+    assert on_b["vulnerability_ids"] == [v["id"] for v in record_b["vulnerabilities"]]
+    (on_a,) = gen._build_host_export_record(a, ctx, {})["canonical_findings"]
+    assert on_a["vulnerability_ids"] == [rows["10.56.0.1"].id]
 
 
 def test_inmemory_cap_is_wired_and_not_above_the_streamed_cap():

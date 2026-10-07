@@ -65,6 +65,14 @@ services:
       - "-c"
       - "log_min_duration_statement=${PG_LOG_MIN_DURATION_MS:-500}"
       - "-c"
+      # JIT compilation off (v2.456.0).  Postgres compiles a statement whose
+      # estimated cost passes 100000, and BlueStick's page queries pass it
+      # while running for a few hundred ms — the compile (100-250 ms each)
+      # cost more than it saved: with it off, the Hosts filter facets went
+      # from 1.17 s to 0.91 s of SQL at 70k hosts and no measured route got
+      # slower.  PG_JIT=on restores the Postgres default.
+      - "jit=${PG_JIT:-off}"
+      - "-c"
       - "shared_preload_libraries=pg_stat_statements"
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-networkMapper}
@@ -139,8 +147,8 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
       CORS_ORIGINS: ${CORS_ORIGINS:-https://localhost,https://localhost:3000}
-      APP_VERSION: ${APP_VERSION:-2.455.0}
-      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.4}
+      APP_VERSION: ${APP_VERSION:-2.456.0}
+      FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.5}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -233,7 +241,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.455.0}
+      APP_VERSION: ${APP_VERSION:-2.456.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
     depends_on:
       db:
@@ -288,7 +296,7 @@ services:
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-nmapuser}:${POSTGRES_PASSWORD:-nmappass}@db:5432/${POSTGRES_DB:-networkMapper}
       DATABASE_SSL_MODE: ${DATABASE_SSL_MODE:-prefer}
-      APP_VERSION: ${APP_VERSION:-2.455.0}
+      APP_VERSION: ${APP_VERSION:-2.456.0}
       PLATFORM_VERSION_FILE: /app/platform_version.json
       # One sequential loop — a small pool protects the Postgres
       # max_connections budget (4 API workers + ingestion worker + this).
@@ -311,12 +319,12 @@ services:
         REACT_APP_API_URL: ${REACT_APP_API_URL:-https://localhost}
         # Keep this fallback in sync with the APP_VERSION defaults above
         # (lines 49 + 87) and with platform_version.json's "backend".
-        BACKEND_VERSION: ${APP_VERSION:-2.455.0}
+        BACKEND_VERSION: ${APP_VERSION:-2.456.0}
         # CR4-8 — the build context is just frontend/, so platform_version.json
         # isn't visible during the Docker build; pass the frontend version in
         # so generate-build-info.js stamps the right version (shown under About BlueStick).  Keep in
         # sync with platform_version.json's "frontend".
-        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.4}
+        FRONTEND_VERSION: ${FRONTEND_VERSION:-5.334.5}
         # Shown under About BlueStick; deploy.sh exports it from `git rev-parse`.
         GIT_COMMIT: ${GIT_COMMIT:-unknown}
         # Passed only when set; the Dockerfile holds the pinned defaults.

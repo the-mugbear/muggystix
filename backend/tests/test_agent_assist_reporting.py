@@ -64,7 +64,30 @@ def test_observations_are_the_pages_own_numbers(client, test_project, estate, pa
         headers=_assist_headers(client, test_project.id),
     )
     assert page.status_code == agent.status_code == 200, agent.text
-    assert agent.json() == page.json()
+    body = agent.json()
+    assert {k: body[k] for k in ("items", "total")} == page.json()
+    assert (body["limit"], body["offset"]) == (params.get("limit", 50), params.get("skip", 0))
+
+
+def test_observations_say_when_the_page_is_cut(client, test_project, estate):
+    """Prod feedback 2026-10-02: ``total: 1532`` beside 50 rows, with no
+    has_more, limit or offset — the agent could not page without guessing."""
+    headers = _assist_headers(client, test_project.id)
+    url = "/api/v1/agent/assist/scanner-observations"
+    seen, offset = [], 0
+    while True:
+        body = client.get(url, params={"limit": 2, "offset": offset}, headers=headers).json()
+        assert (body["total"], body["limit"], body["offset"]) == (3, 2, offset)
+        seen += [r["issue_key"] for r in body["items"]]
+        if not body["has_more"]:
+            break
+        offset += len(body["items"])
+    whole = client.get(url, headers=headers).json()
+    assert seen == [r["issue_key"] for r in whole["items"]] and len(seen) == 3
+    assert whole["has_more"] is False
+    # ``skip`` (the page route's name) still pages; ``offset`` wins when both are sent.
+    assert client.get(url, params={"limit": 2, "skip": 2}, headers=headers).json()["items"] == \
+        client.get(url, params={"limit": 2, "offset": 2, "skip": 0}, headers=headers).json()["items"]
 
 
 def test_sort_by_hosts_puts_the_most_widespread_first(client, test_project, estate):

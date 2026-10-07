@@ -26,7 +26,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy import func, or_
+from sqlalchemy import func, literal, or_, select
 from sqlalchemy.orm import Session, aliased, joinedload, selectinload, Query as SAQuery
 
 from app.db.session import disable_statement_timeout, get_db, is_statement_timeout
@@ -1308,6 +1308,9 @@ def get_assist_host_vulnerabilities(
         None,
         description="Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
     ),
+    cve: Optional[str] = Query(None, max_length=40, description="Only rows for this CVE id (exact, any case)."),
+    plugin_id: Optional[str] = Query(None, max_length=100, description="Only rows from this scanner plugin id (exact)."),
+    search: Optional[str] = Query(None, max_length=200, description="Only rows whose title contains this text (any case)."),
     limit: int = Query(200, ge=1, le=1000),
     offset: int = Query(0, ge=0),
     agent: Agent = Depends(check_agent_rate_limit),
@@ -1339,6 +1342,15 @@ def get_assist_host_vulnerabilities(
             raise unknown_value_error("severity", value, known)
         wanted = [m for m in VulnerabilitySeverity if m.value in wanted_values]
         q = q.filter(Vulnerability.severity.in_(wanted)) if wanted else q.filter(False)
+    # One issue's rows on this host, without downloading the host's other
+    # rows to find them (prod feedback 2026-09-30 / 2026-10-07: nineteen
+    # hosts' full pages to read one plugin's evidence).
+    if cve and cve.strip():
+        q = q.filter(func.lower(Vulnerability.cve_id) == cve.strip().lower())
+    if plugin_id and plugin_id.strip():
+        q = q.filter(Vulnerability.plugin_id == plugin_id.strip())
+    if search and search.strip():
+        q = q.filter(Vulnerability.title.ilike(f"%{escape_like(search.strip())}%", escape="\\"))
     total = q.count()
     rows = (
         q.options(selectinload(Vulnerability.promoted_findings))
@@ -1427,10 +1439,12 @@ def download_assist_report_context(
 
     Streams the COMPLETE per-host report dossier for every matching host, one
     JSON object per line, **uncapped** — the same correlated record the
-    server-side report builds: identity, ports (transport + service), findings
-    (severity / CVE / plugin / affected port / evidence / remediation), notes,
-    scan discoveries, canonical + execution findings, provenance, tags, and the
-    operator's review state. Same discrete filters + ``q`` DSL as
+    server-side report builds: identity, ports (transport + service),
+    ``vulnerabilities`` (scanner rows: severity / CVE / plugin / affected port /
+    evidence / remediation), ``untriaged_vulnerabilities``, notes, scan
+    discoveries, ``canonical_findings`` (each with ``vulnerability_ids``, this
+    host's scanner rows it covers) and ``execution_findings``, provenance, and
+    the operator's review state. Same discrete filters + ``q`` DSL as
     ``/assist/hosts``.
 
     Safe on a tens-of-thousands-host project: the server hydrates only one chunk
@@ -3122,10 +3136,14 @@ def get_assist_finding(
     # Capped, with the total beside it (C2): an issue-wide promotion links one
     # scanner row per affected host, and every one was returned as an entity.
     scanner_evidence: List[dict] = []
-    linked = db.query(FindingVulnerability.vuln_id).filter(FindingVulnerability.finding_id == finding.id)
-    evidences = Vulnerability.id.in_(linked)
+    # ONE id set (the linked rows, plus the row the finding was promoted from),
+    # so Postgres looks the rows up by primary key.  As ``id IN (linked) OR
+    # id = <vuln_id>`` the OR cost a scan of every scanner row in the database
+    # twice per read: 300 ms of this route's 317 at 524k rows (prod, 2026-10-07).
+    linked = select(FindingVulnerability.vuln_id).where(FindingVulnerability.finding_id == finding.id)
     if finding.vuln_id:
-        evidences = or_(evidences, Vulnerability.id == finding.vuln_id)
+        linked = linked.union(select(literal(finding.vuln_id)))
+    evidences = Vulnerability.id.in_(linked)
     scanner_evidence_total = db.query(func.count(Vulnerability.id)).filter(evidences).scalar() or 0
     if scanner_evidence_total:
         for v in (

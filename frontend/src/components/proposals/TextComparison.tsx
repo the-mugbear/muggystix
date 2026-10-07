@@ -9,7 +9,9 @@
  * draft was written (`changed_since_proposed`) that is said first, with the
  * text the draft was written against.
  *
- * An empty field shows only the proposal — there is nothing to compare.
+ * An empty field keeps the same two panes, the left one saying it is empty
+ * (5.334.5): shown alone, its proposal made written and empty sections of
+ * one finding look laid out differently.
  */
 import React, { useMemo, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
@@ -63,11 +65,23 @@ const TextComparison: React.FC<Props> = ({ current, proposed, mono = false, stal
   const parts = useMemo(() => (now ? diffWords(now, proposed.trim()) : null), [now, proposed]);
   const stats = parts ? diffStats(parts) : null;
 
+  // An empty section keeps the two panes (5.334.5).  It used to show the
+  // proposal alone, full width — so on one finding Description (written) read
+  // side by side and Impact, Recommendation… (empty) did not, which looked
+  // like a layout fault.  Every draft now sits in the same place; the left
+  // pane says the section is empty.  There are no words to diff, so no
+  // Side by side / Changes switch.
   if (!now) {
     return (
-      <div className="min-w-0 space-y-xxs">
-        <PaneLabel>Proposed · the section is empty now, so accepting fills it</PaneLabel>
-        <Text text={proposed} mono={mono} evidence={evidence} />
+      <div className="grid min-w-0 grid-cols-2 gap-md">
+        <div className="min-w-0 border-r border-border pr-md" data-testid="compare-current">
+          <PaneLabel>Now in the report</PaneLabel>
+          <p className="text-body text-muted-foreground">Nothing yet — accepting fills this section.</p>
+        </div>
+        <div className="min-w-0" data-testid="compare-proposed">
+          <PaneLabel>Proposed</PaneLabel>
+          <Text text={proposed} mono={mono} evidence={evidence} />
+        </div>
       </div>
     );
   }

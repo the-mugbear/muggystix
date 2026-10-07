@@ -466,12 +466,13 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "Each row says which finding covers its issue, if any: `finding_id` / "
             "`finding_status` (the issue's), `finding_on_this_host` (false = the "
             "finding covers other hosts only, so this row is still unjudged here) "
-            "and `finding_endpoint_status` (this host's own state on it)."
+            "and `finding_endpoint_status` (this host's own state on it). To read one "
+            "issue's rows only, narrow with cve, plugin_id or search (title text)."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/hosts/{host_id}/vulnerabilities",
         "path_params": ["host_id"],
-        "query_params": ["severity", "limit", "offset"],
+        "query_params": ["severity", "cve", "plugin_id", "search", "limit", "offset"],
         "defaults": {"limit": 50},
         "input_schema": {
             "type": "object",
@@ -481,6 +482,9 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                     "type": "string",
                     "description": "Comma-separated severities to include (critical/high/medium/low/info). Default: all.",
                 },
+                "cve": {"type": "string", "maxLength": 40, "description": "Only rows for this CVE id (exact, any case)."},
+                "plugin_id": {"type": "string", "maxLength": 100, "description": "Only rows from this scanner plugin id (exact)."},
+                "search": {"type": "string", "maxLength": 200, "description": "Only rows whose title contains this text."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 200},
                 "offset": {"type": "integer", "minimum": 0, "default": 0},
             },
@@ -1027,11 +1031,12 @@ TOOLS: Dict[str, Dict[str, Any]] = {
             "most hosts?'). An issue is listed until EVERY host carrying it is "
             "judged — a row with judged_host_count > 0 is partly judged; "
             "include_judged adds the fully judged ones. total counts all matching "
-            "issues. assist_list_observation_hosts lists one issue's hosts."
+            "issues; read has_more and page with offset. severity narrows to one "
+            "severity. assist_list_observation_hosts lists one issue's hosts."
         ),
         "method": "GET",
         "path": "/api/v1/agent/assist/scanner-observations",
-        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "sort", "skip", "limit"],
+        "query_params": ["search", "severity", "kind", "include_judged", "min_hosts", "sort", "offset", "skip", "limit"],
         "defaults": {"limit": 25},
         "input_schema": {
             "type": "object",
@@ -1042,7 +1047,8 @@ TOOLS: Dict[str, Dict[str, Any]] = {
                 "include_judged": {"type": "boolean", "default": False},
                 "min_hosts": {"type": "integer", "minimum": 1, "default": 1},
                 "sort": {"type": "string", "enum": ["severity", "hosts"], "default": "severity"},
-                "skip": {"type": "integer", "minimum": 0, "default": 0},
+                "offset": {"type": "integer", "minimum": 0, "default": 0},
+                "skip": {"type": "integer", "minimum": 0, "description": "Older name for offset; still accepted."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 25},
             },
             "additionalProperties": False,

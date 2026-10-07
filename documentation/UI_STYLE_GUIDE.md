@@ -765,8 +765,10 @@ and the page was "confusing". The rules:
 - **The current value is always visible, shown once, and read first.** "Now in
   the report" on the left, "Proposed" on the right (`TextComparison`), or one
   pane with the words added and removed marked ("Changes"). Never behind a
-  toggle, never repeated per draft. An empty field shows only the proposal and
-  says that accepting fills it.
+  toggle, never repeated per draft. An empty field keeps the same two panes: the
+  left says nothing is written yet and that accepting fills it (5.334.5 — the
+  proposal alone, full width, made a finding's written and empty sections look
+  laid out differently). **Every draft on a page sits in the same layout.**
 - **Say when the base moved.** A proposal that replaces a whole value and was
   written against an older one says so before its controls
   (`changed_since_proposed`), with the text it was written against.

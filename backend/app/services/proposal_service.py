@@ -892,3 +892,25 @@ def serialize_many(db: Session, proposals: List[AgentProposal]) -> List[dict]:
     proposal's ``current_value`` read in one query."""
     current = _current_findings(db, proposals)
     return [serialize_proposal(p, current) for p in proposals]
+
+
+def serialize_created(db: Session, proposals: List[AgentProposal]) -> List[dict]:
+    """What a create route answers to the agent that just proposed: the rows
+    without the report text the caller sent and the text it would replace.
+
+    The full rows echoed both — 8 to 11 KB for one finding's sections — which
+    an agent's terminal cut off or moved to a file outside its working
+    directory, six times in prod feedback (2026-09-30, 2026-10-07).  Each text
+    is replaced by its length; ``GET /agent/proposals`` returns the rows whole."""
+    rows = serialize_many(db, proposals)
+    for row in rows:
+        payload = dict(row.get("payload") or {})
+        if row["kind"] == ProposalKind.FINDING_TEXT.value:
+            row["value_chars"] = len(payload.get("value") or "")
+            row["base_value_chars"] = len(row.get("base_value") or "")
+            for key in ("payload", "current_value", "base_value"):
+                row.pop(key, None)
+        elif row["kind"] == ProposalKind.FINDING_CREATE.value and payload.get("report_text"):
+            payload["report_text_chars"] = {k: len(v or "") for k, v in payload.pop("report_text").items()}
+            row["payload"] = payload
+    return rows

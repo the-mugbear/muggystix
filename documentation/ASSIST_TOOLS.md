@@ -152,7 +152,7 @@ Largely done. This is the stage the surface was originally built for.
 |---|---|---|
 | Which hosts match | `assist_list_hosts` (`q=` DSL) | **have** |
 | One host in detail | `assist_get_host` | **have** |
-| Scanner observations on a host / findings across the project | `assist_get_host_vulnerabilities` (raw scanner rows, not triaged findings; each row carries `finding_id`, `finding_status`, `finding_on_this_host` and `finding_endpoint_status` — the inspector's rule for "is this judged on this host"), `assist_list_findings` | **have** |
+| Scanner observations on a host / findings across the project | `assist_get_host_vulnerabilities` (raw scanner rows, not triaged findings; each row carries `finding_id`, `finding_status`, `finding_on_this_host` and `finding_endpoint_status` — the inspector's rule for "is this judged on this host"; `cve` / `plugin_id` / `search` narrow to one issue's rows, v2.456.0), `assist_list_findings` | **have** |
 | What the team said | `assist_get_host_notes`, `assist_list_recent_notes` | **have** |
 | What the team tested, and what it showed | `host_tests_list` (`host_id=` — the tests proposed for the host, with status and evidence counts) and `list_evidence` (`host_id=` or `host_test_id=` — what was run and what came back); `assist_get_host` → `assessment.tests_executed` / `last_tested_at`. | **have** |
 | What values this project uses | `assist_get_vocabulary` | **have** |

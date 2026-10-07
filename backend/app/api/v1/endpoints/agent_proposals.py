@@ -195,7 +195,9 @@ def propose_finding_text(
     # Built before the commit (review 2026-10-01 N8, as the host-test routes
     # do): the commit expires every row, and serializing afterwards re-reads
     # each proposal and each of its relations.
-    data = {"proposals": proposals.serialize_many(db, rows)}
+    # The acknowledgement leaves the text out (serialize_created): it is what
+    # the caller just sent, and GET /agent/proposals has the rows whole.
+    data = {"proposals": proposals.serialize_created(db, rows)}
     db.commit()
     return data
 
@@ -210,7 +212,7 @@ def propose_finding(
         severity=body.severity, host_ids=body.host_ids, status=body.status,
         report_text=body.report_text, rationale=body.rationale, evidence_ids=body.evidence_ids,
     )
-    data = proposals.serialize_many(db, [row])[0]  # before the commit expires it (N8)
+    data = proposals.serialize_created(db, [row])[0]  # before the commit expires it (N8)
     db.commit()
     return data
 

@@ -776,3 +776,104 @@ def test_context_names_the_view_the_hosts_page_opens_on(client, db_session, test
     db_session.commit()
     view = client.get("/api/v1/agent/assist/context", headers=headers).json()["default_host_view"]
     assert view == {"name": "FTP", "filters": {"ports": ["21"]}}
+
+
+# ---------------------------------------------------------------------------
+# Prod feedback, diagnostics bundle 2026-10-07
+# ---------------------------------------------------------------------------
+
+def test_a_hosts_scanner_rows_narrow_to_one_issue(client, db_session, test_project):
+    """An agent after one plugin's evidence on a host downloaded the host's
+    whole page (161 rows) to find it.  ``cve``, ``plugin_id`` and ``search``
+    narrow the rows, and ``total`` is the narrowed count."""
+    from app.db.models_vulnerability import Vulnerability, VulnerabilitySeverity as Sev, VulnerabilitySource
+
+    scan = models.Scan(project_id=test_project.id, filename="n.nessus", tool_name="nessus")
+    host = models.Host(project_id=test_project.id, ip_address="10.73.0.1", state="up")
+    db_session.add_all([scan, host])
+    db_session.flush()
+    for plugin, cve, title in (
+        ("100", "CVE-2021-44228", "Apache Log4j RCE"),
+        ("200", None, "Apache httpd 100% outdated"),
+        ("300", "CVE-2020-0796", "SMBGhost"),
+    ):
+        db_session.add(Vulnerability(
+            host_id=host.id, scan_id=scan.id, source=VulnerabilitySource.NESSUS,
+            severity=Sev.HIGH, title=title, plugin_id=plugin, cve_id=cve,
+        ))
+    db_session.commit()
+    headers = _assist(client, test_project.id)
+    url = f"/api/v1/agent/assist/hosts/{host.id}/vulnerabilities"
+
+    def titles(**params):
+        body = client.get(url, params=params, headers=headers).json()
+        assert body["total"] == len(body["items"])
+        return sorted(r["title"] for r in body["items"])
+
+    assert len(titles()) == 3
+    assert titles(cve="cve-2021-44228") == ["Apache Log4j RCE"]
+    assert titles(plugin_id="300") == ["SMBGhost"]
+    assert titles(search="apache") == ["Apache Log4j RCE", "Apache httpd 100% outdated"]
+    # The text is matched literally: % is not a wildcard.
+    assert titles(search="100%") == ["Apache httpd 100% outdated"]
+    assert titles(search="apache", plugin_id="100") == ["Apache Log4j RCE"]
+    assert titles(cve="CVE-1999-0001") == []
+
+
+def test_the_scope_list_counts_the_subnets_it_lists(client, db_session, test_project):
+    """``GET /agent/scopes`` answered ``subnet_total: 0`` beside 447 subnets:
+    the route lists every subnet and never set the total."""
+    scope = models.Scope(project_id=test_project.id, name="Internal")
+    db_session.add(scope)
+    db_session.flush()
+    db_session.add_all([models.Subnet(scope_id=scope.id, cidr=f"10.74.{i}.0/24") for i in range(3)])
+    db_session.commit()
+    (row,) = client.get("/api/v1/agent/scopes", headers=_assist(client, test_project.id)).json()
+    assert (len(row["subnets"]), row["subnet_total"], row["subnets_truncated"]) == (3, 3, False)
+
+
+def test_a_findings_scanner_rows_are_looked_up_by_id(client, db_session, test_project):
+    """The finding detail found its scanner rows with ``id IN (linked) OR id =
+    <vuln_id>``, which Postgres answers by scanning every scanner row (300 ms
+    of the route at 524k rows).  Both reads now name one id set."""
+    from tests.test_finding_spine import _shared_issue
+
+    _hosts, vulns = _shared_issue(db_session, test_project)
+    pid = test_project.id
+    finding_id = client.post(
+        f"/api/v1/projects/{pid}/vulnerabilities/{vulns[0].id}/promote", json={"vuln_id": vulns[0].id},
+    ).json()["id"]
+    headers = _assist(client, pid)
+    statements = []
+
+    def record(conn, cursor, statement, parameters, context, executemany):
+        statements.append(statement)
+
+    from tests.conftest import engine
+
+    event.listen(engine, "before_cursor_execute", record)
+    try:
+        detail = client.get(f"/api/v1/agent/assist/findings/{finding_id}", headers=headers).json()
+    finally:
+        event.remove(engine, "before_cursor_execute", record)
+    from app.db.models_findings import Finding, FindingVulnerability
+
+    # A row linked through finding_vulnerabilities and the promoted row itself
+    # (here a second, unlinked row is made the finding's own to cover the union).
+    linked = {r.vuln_id for r in db_session.query(FindingVulnerability).filter_by(finding_id=finding_id)}
+    assert linked
+    spare = next(v.id for v in vulns if v.id not in linked) if len(linked) < len(vulns) else None
+    if spare is not None:
+        db_session.get(Finding, finding_id).vuln_id = spare
+        db_session.commit()
+        statements.clear()
+        event.listen(engine, "before_cursor_execute", record)
+        try:
+            detail = client.get(f"/api/v1/agent/assist/findings/{finding_id}", headers=headers).json()
+        finally:
+            event.remove(engine, "before_cursor_execute", record)
+        linked.add(spare)
+    assert detail["scanner_evidence_total"] == len(linked)
+    assert {r["vuln_id"] for r in detail["scanner_evidence"]} == linked
+    over_rows = [s for s in statements if "FROM vulnerabilities" in s and "finding_vulnerabilities" in s]
+    assert over_rows and all(" OR vulnerabilities.id = " not in s for s in over_rows)

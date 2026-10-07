@@ -220,6 +220,57 @@ def test_a_large_scope_is_summarised_and_its_file_named_not_printed():
     assert "10.0.5.0/24" not in brief and "10\\.0\\.5\\.0\\/24" not in brief
 
 
+def _with_affected(sample: dict, n: int) -> dict:
+    """The first finding on ``n`` systems: plain addresses (every second one
+    on a port), one reached by an in-scope name and one remediated."""
+    data = copy.deepcopy(sample)
+    rows = [
+        {"address": f"10.9.{i // 250}.{i % 250}", "hostname": f"srv{i}", "name": None,
+         "port": "445/tcp" if i % 2 else None, "state": None}
+        for i in range(n)
+    ]
+    rows[1]["name"] = "portal.example.com"
+    rows[2]["state"] = "Remediated"
+    data["findings"][0].update(affected=rows, affected_count=n)
+    return data
+
+
+def _affected_block(out: str) -> str:
+    start = out.index("Affected system(s)")
+    return out[start:out.index("Description", start)]
+
+
+@needs_templates
+def test_a_finding_on_many_systems_sets_them_four_across():
+    """The user, 2026-10-07: a finding on hundreds of hosts printed one row
+    per host — a single narrow column running for pages.  Past twelve systems
+    the plain addresses are set four to a row; a system with a name or a note
+    keeps its own row, so nothing the detailed table said is dropped."""
+    block = _affected_block(_fill("pentest", _with_affected(_sample("pentest"), 203)))
+    assert "203 systems are affected." in block
+    lines = [ln for ln in block.splitlines() if ln.startswith("|")]
+    grid = lines[2:lines.index("| System | Name | Port | Note |")]
+    cells = [c.strip() for ln in grid for c in ln.strip("|").split("|")]
+    # 201 plain systems, four across: 51 rows, the last padded with empty cells.
+    assert all(ln.count("|") == 5 for ln in grid) and len(grid) == 51
+    assert [c for c in cells if c][:2] == ["10\\.9\\.0\\.0", "10\\.9\\.0\\.3 \\(445\\/tcp\\)"]
+    assert len([c for c in cells if c]) == 201 and cells[-3:] == ["", "", ""]
+    # The two that carry more than an address are rows of their own, once.
+    assert "| 10\\.9\\.0\\.1 | portal\\.example\\.com | 445\\/tcp |  |" in block
+    assert "| 10\\.9\\.0\\.2 |  |  | Remediated |" in block
+    assert block.count("10\\.9\\.0\\.1 ") == 1 and block.count("10\\.9\\.0\\.2 ") == 1
+    # 203 rows became 51 + 2 (+ headers): the list no longer runs for pages.
+    assert len(lines) < 60
+
+
+@needs_templates
+def test_a_finding_on_a_dozen_systems_keeps_one_row_each():
+    block = _affected_block(_fill("pentest", _with_affected(_sample("pentest"), 12)))
+    assert "systems are affected" not in block
+    rows = [ln for ln in block.splitlines() if ln.startswith("| 10")]
+    assert len(rows) == 12 and "| 10\\.9\\.0\\.0 | srv0 |  |  |" in rows
+
+
 @needs_templates
 def test_a_scope_at_the_cutoff_is_still_a_table():
     out = _fill("pentest", _with_scope(_sample("pentest"), 25))

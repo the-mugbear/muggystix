@@ -576,6 +576,9 @@ def list_scopes(
             name=s.name,
             description=s.description,
             subnets=[sub.cidr for sub in s.subnets],
+            # This route lists every subnet, so the total is the list's own
+            # length — left at the schema default it read "0 of 447".
+            subnet_total=len(s.subnets),
         )
         for s in scopes
     ]

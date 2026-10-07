@@ -21,6 +21,25 @@ from typing import Dict, List
 # Newest first.  PROMPT_VERSION is taken from entry [0].
 PROMPT_VERSION_HISTORY: List[Dict[str, str]] = [
     {
+        "version": "4.10.0",
+        "app_version": "2.456.0",
+        "summary": (
+            "From the prod diagnostics bundle of 2026-10-07 (agent feedback #22–#39): "
+            "curl examples are `-sS` (`-s` alone hid a certificate error as an empty "
+            "answer), and a curl error at the identity check is a certificate "
+            "problem, not a mismatch (`trust-help`, or `--cacert`); the guide is "
+            "saved to the working directory and searched, and any long answer goes "
+            "to a file first. A report-text proposal is acknowledged by id, field "
+            "and text lengths (`value_chars`), no longer by echoing both texts; "
+            "assist_list_scanner_observations carries has_more / limit / offset "
+            "and pages with `offset`; assist_get_host_vulnerabilities narrows with "
+            "cve / plugin_id / search; report-context.ndjson's keys are named, and "
+            "each canonical_findings[] entry carries `vulnerability_ids` (this "
+            "host's rows — `vuln_id` is the row first promoted, often another "
+            "host's); GET /agent/scopes reports the true subnet_total."
+        ),
+    },
+    {
         "version": "4.9.0",
         "app_version": "2.455.0",
         "summary": (

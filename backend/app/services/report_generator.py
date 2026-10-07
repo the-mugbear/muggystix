@@ -290,6 +290,38 @@ class ReportGenerator:
                 out.setdefault(host_id, set()).add(vuln_id)
         return out
 
+    def _finding_rows_on_hosts(self, host_ids: List[int]) -> Dict[Tuple[int, int], List[int]]:
+        """``(host_id, finding_id) -> ids of THAT host's scanner rows the
+        finding covers`` — the judged rule above, keeping which finding.
+
+        ``Finding.vuln_id`` is the one row a finding was first promoted from,
+        usually another host's, so an agent joining a host's
+        ``canonical_findings`` to its ``vulnerabilities`` by it found nothing
+        (prod feedback 2026-10-07)."""
+        from app.db.models_findings import FindingSource
+        from sqlalchemy import and_, or_
+
+        out: Dict[Tuple[int, int], List[int]] = {}
+        for chunk in _id_chunks(host_ids):
+            for host_id, finding_id, vuln_id in (
+                self.db.query(Vulnerability.host_id, Finding.id, Vulnerability.id)
+                .join(FindingHost, FindingHost.host_id == Vulnerability.host_id)
+                .join(Finding, Finding.id == FindingHost.finding_id)
+                .filter(
+                    Vulnerability.host_id.in_(chunk),
+                    Finding.project_id == self.project_id,
+                    Finding.source == FindingSource.SCANNER.value,
+                    or_(
+                        Finding.vuln_id == Vulnerability.id,
+                        and_(Vulnerability.issue_key.isnot(None), Finding.dedup_key == Vulnerability.issue_key),
+                    ),
+                )
+                .order_by(Vulnerability.id)
+                .all()
+            ):
+                out.setdefault((host_id, finding_id), []).append(vuln_id)
+        return out
+
     def _inventory_finding_counts(self, host_ids: List[int]) -> Dict[int, Dict[str, Any]]:
         """``host_id -> {active, critical, exec, promoted_vuln_ids}`` via batched
         GROUP-BY queries — the counts the streaming inventory CSV needs without
@@ -1367,11 +1399,16 @@ class ReportGenerator:
 
         by_host: Dict[int, List[Dict[str, Any]]] = {}
         promoted_vuln_ids: Dict[int, set] = {}
+        rows_on_host = self._finding_rows_on_hosts(host_ids)
         for fh in fh_rows:
             if not fh.finding:
                 continue
             rec = dict(base[fh.finding_id])
             rec["host_status"] = fh.host_status
+            # THIS host's scanner rows the finding covers — the join to the
+            # record's ``vulnerabilities[].id``.  ``vuln_id`` above is the row
+            # the finding was first promoted from, on whichever host that was.
+            rec["vulnerability_ids"] = rows_on_host.get((fh.host_id, fh.finding_id), [])
             by_host.setdefault(fh.host_id, []).append(rec)
         # The app's judged rule, not just each finding's own vuln_id.
         promoted_vuln_ids.update(self._judged_vuln_ids(host_ids))

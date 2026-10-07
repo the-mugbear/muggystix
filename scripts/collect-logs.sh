@@ -389,7 +389,7 @@ for k in ("APP_VERSION", "MAX_FILE_SIZE", "INGESTION_RETAIN_FILES_DAYS", "NESSUS
         # (review 2026-10-01 R25; .env.example, "PostgreSQL tuning"):
         # temp_bytes climbing between two bundles -> PG_WORK_MEM;
         # blks_read far above blks_hit on a warm instance -> PG_SHARED_BUFFERS.
-        q "Postgres memory settings" "SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'effective_cache_size', 'work_mem', 'maintenance_work_mem', 'max_connections', 'log_min_duration_statement', 'shared_preload_libraries') ORDER BY name;"
+        q "Postgres memory settings" "SELECT name, setting, unit FROM pg_settings WHERE name IN ('shared_buffers', 'effective_cache_size', 'work_mem', 'maintenance_work_mem', 'max_connections', 'log_min_duration_statement', 'shared_preload_libraries', 'jit') ORDER BY name;"
         q "Cache and temp-file counters since stats_reset" "SELECT blks_hit, blks_read, round(100.0 * blks_hit / nullif(blks_hit + blks_read, 0), 2) AS cache_hit_pct, temp_files, pg_size_pretty(temp_bytes) AS temp_bytes, deadlocks, stats_reset FROM pg_stat_database WHERE datname = current_database();"
     fi
 } > "$LOG_DIR/versions_and_schema.txt" 2>&1

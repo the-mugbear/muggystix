@@ -60,9 +60,18 @@ def _operator_role(request: Request) -> Optional[str]:
 # Scanner observations — the Findings page's "Scanner observations" view
 # ---------------------------------------------------------------------------
 
+class AssistIssuePage(IssuePageOut):
+    """The page's rows and total, plus what every other agent list says about
+    its own cut (prod feedback 2026-10-02: ``total: 1532`` beside 50 rows and
+    nothing naming the way to the rest)."""
+    has_more: bool
+    limit: int
+    offset: int
+
+
 @router.get(
     "/assist/scanner-observations",
-    response_model=IssuePageOut,
+    response_model=AssistIssuePage,
     summary="Scanner observations, one row per issue across the project",
 )
 def list_assist_scanner_observations(
@@ -71,7 +80,8 @@ def list_assist_scanner_observations(
     severity: Optional[str] = Query(None, max_length=20),
     include_judged: bool = Query(False, description="Also list issues a finding already covers on every host"),
     min_hosts: int = Query(1, ge=1, le=100000),
-    skip: int = Query(0, ge=0),
+    offset: Optional[int] = Query(None, ge=0, description="Issues to skip — page until has_more is false"),
+    skip: int = Query(0, ge=0, description="The page route's name for offset; offset wins when both are sent"),
     limit: int = Query(50, ge=1, le=200),
     kind: Optional[str] = Query(None, max_length=20,
                                 description="misconfiguration | vulnerability | informational"),
@@ -81,14 +91,18 @@ def list_assist_scanner_observations(
     db: Session = Depends(get_db),
 ):
     session = load_agent_session(db, request)
+    start = skip if offset is None else offset
     try:
         page = observations.list_issues(
             db, session.project_id, search=search, severity=severity, include_judged=include_judged,
-            min_hosts=min_hosts, skip=skip, limit=limit, kind=kind, sort=sort,
+            min_hosts=min_hosts, skip=start, limit=limit, kind=kind, sort=sort,
         )
     except observations.ObservationError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
-    return IssuePageOut(items=[IssueRowOut(**vars(r)) for r in page.items], total=page.total)
+    items = [IssueRowOut(**vars(r)) for r in page.items]
+    return AssistIssuePage(
+        items=items, total=page.total, has_more=start + len(items) < page.total, limit=limit, offset=start,
+    )
 
 
 class AssistIssueHostPage(BaseModel):

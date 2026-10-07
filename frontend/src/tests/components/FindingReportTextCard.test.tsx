@@ -300,8 +300,11 @@ describe('FindingReportTextCard — drafts waiting (5.334.0)', () => {
     });
     const impact = screen.getByTestId('report-text-impact');
     expect(within(impact).queryByText(/Not written yet/)).toBeNull();
-    expect(within(impact).getByText(/the section is empty now, so accepting fills it/)).toBeInTheDocument();
-    expect(within(impact).getByText('Relay to the file share.')).toBeInTheDocument();
+    // An empty section is laid out like a written one (the user, 2026-10-07:
+    // Description read side by side and the empty sections did not).
+    expect(within(impact).getByTestId('compare-current')).toHaveTextContent(/Nothing yet — accepting fills this section/);
+    expect(within(impact).getByTestId('compare-proposed')).toHaveTextContent('Relay to the file share.');
+    expect(within(impact).queryByRole('button', { name: 'Changes' })).toBeNull();
     const desc = screen.getByTestId('report-text-description');
     expect(within(desc).getByTestId('compare-current')).toHaveTextContent('TLS 1.0 is accepted.');
     expect(within(desc).getByTestId('compare-proposed')).toHaveTextContent('TLS 1.0 and 1.1 are accepted.');

@@ -250,7 +250,20 @@ def test_a_draft_keeps_the_text_it_was_written_against_and_says_when_the_field_c
     r = client.post("/api/v1/agent/proposals/finding-text", headers=key, json={
         "finding_id": finding["id"], "fields": {"impact": "NTLM relay to every host.", "description": "SMB."}})
     assert r.status_code == 201, r.text
-    by_field = {p["field"]: p for p in r.json()["proposals"]}
+    # The acknowledgement names each proposal and the size of the two texts,
+    # not the texts (prod feedback: the echo of both ran to 8–11 KB and an
+    # agent's terminal cut it off); the list returns the rows whole.
+    created = {p["field"]: p for p in r.json()["proposals"]}
+    assert (created["impact"]["value_chars"], created["impact"]["base_value_chars"]) == (
+        len("NTLM relay to every host."), len("Relay to the file share."))
+    assert (created["description"]["value_chars"], created["description"]["base_value_chars"]) == (4, 0)
+    assert not {"payload", "base_value", "current_value"} & set(created["impact"])
+    assert created["impact"]["base_recorded"] is True and created["impact"]["status"] == "pending"
+    by_field = {
+        p["field"]: p
+        for p in client.get("/api/v1/agent/proposals", headers=key, params={"mine": True}).json()["items"]
+    }
+    assert by_field["impact"]["id"] == created["impact"]["id"]
     assert by_field["impact"]["base_value"] == "Relay to the file share."
     assert by_field["impact"]["base_recorded"] is True
     assert by_field["impact"]["changed_since_proposed"] is False
@@ -325,6 +338,9 @@ def test_a_proposed_finding_is_created_by_the_person_who_accepts_it(client, db_s
         "report_text": {"description": "Signing off."}, "evidence_ids": [ev["id"]]})
     assert r.status_code == 201, r.text
     assert r.json()["evidence_ids"] == [ev["id"]]
+    # The report text is acknowledged by length, not echoed.
+    assert r.json()["payload"]["report_text_chars"] == {"description": len("Signing off.")}
+    assert "report_text" not in r.json()["payload"] and r.json()["payload"]["title"] == "SMB signing not required"
     assert db_session.query(Finding).filter(Finding.project_id == test_project.id).count() == 0
 
     acc = client.post(f"{_base(test_project)}/proposals/{r.json()['id']}/accept", json={}).json()
