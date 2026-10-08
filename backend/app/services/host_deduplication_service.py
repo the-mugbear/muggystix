@@ -13,6 +13,7 @@ from sqlalchemy import func
 from sqlalchemy.exc import IntegrityError
 
 from app.db.models import Host, Port, Script, HostScript, HostScanHistory, PortScanHistory
+from app.services import scan_sightings
 from app.services.os_family import os_family_from_name
 
 logger = logging.getLogger(__name__)
@@ -592,13 +593,12 @@ class HostDeduplicationService:
 
         if existing_script:
             # The output is the latest observation's; ``scan_id`` stays the
-            # scan that FIRST recorded it (v2.419.0, review 2026-09-25 H2 —
-            # the vulnerability rule since v2.332.0).  It used to move to the
-            # newest scan, and ``scan_id`` cascades on delete: an import that
-            # failed part-way had its scan deleted by the cleanup, taking the
-            # rows an EARLIER scan created with it.
+            # scan that FIRST recorded it, and this scan's report of it is a
+            # sighting — written here, in the caller's record savepoint, so
+            # a record that is rolled back leaves none.
             existing_script.output = output
             existing_script.last_seen = func.now()
+            scan_sightings.see(self.db, scan_sightings.SCRIPT, existing_script.id, scan_id)
             return existing_script
         else:
             # Create new script
@@ -614,6 +614,7 @@ class HostDeduplicationService:
             # finds the row above instead of inserting a second one that would
             # detonate uq_port_script at the next commit.
             self.db.flush()
+            scan_sightings.see(self.db, scan_sightings.SCRIPT, new_script.id, scan_id)
             if self._ws_knows_port(port_id):
                 self._ws_scripts[(port_id, script_id)] = new_script
             return new_script
@@ -630,9 +631,11 @@ class HostDeduplicationService:
         ).first()
         
         if existing_script:
-            # scan_id stays the first recorder (see add_or_update_script, H2).
+            # scan_id stays the first recorder; this scan's report is a
+            # sighting (see add_or_update_script).
             existing_script.output = output
             existing_script.last_seen = func.now()
+            scan_sightings.see(self.db, scan_sightings.HOST_SCRIPT, existing_script.id, scan_id)
             return existing_script
         else:
             # Create new host script
@@ -646,6 +649,7 @@ class HostDeduplicationService:
             # autoflush is off — flush so an in-scan repeat finds this row instead
             # of inserting a duplicate that breaks uq_host_script at commit.
             self.db.flush()
+            scan_sightings.see(self.db, scan_sightings.HOST_SCRIPT, new_script.id, scan_id)
             return new_script
     
     def _create_new_host(self, ip_address: str, scan_id: int, host_data: Dict[str, Any]) -> Host:

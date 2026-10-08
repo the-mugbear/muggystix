@@ -112,14 +112,26 @@ const sections: GuideSection[] = [
           A failed, cancelled, timed-out or interrupted import leaves <strong>no scan</strong>, and
           nothing that only it created: the hosts and ports it added, and the observations and DNS
           records it first recorded, are removed with it. A host someone has worked on — a note, a
-          review, a tag, a finding, a test, evidence — is kept. What it does <em>not</em> undo:
-          changes it made to hosts and ports that already existed, and the names it added to the
-          Names inventory. Importing the same file again writes the same values. A truncated Nessus
-          export keeps nothing.
+          review, a tag, a finding, a test, evidence — is kept. A name only that import observed
+          leaves the Names inventory with it, unless something else holds it: someone added it, a
+          test, a finding or a scanner observation names it, or it is in scope. What it does{' '}
+          <em>not</em> undo: changes it made to hosts and ports that already existed. Importing the
+          same file again writes the same values. A truncated Nessus export keeps nothing.
         </Para>
         <Para>
           Deleting a finished scan is a project admin's action (<em>Delete scan…</em> on the Scans
-          page).
+          page), for a file that went into the wrong project or should not have been imported. It
+          removes everything that scan brought and nothing else holds, and the dialog counts each:
+          the hosts only that scan saw, with everything on them; on the hosts that stay, the ports
+          only it found and the scanner observations only it reported; its DNS records, and the
+          names only it observed. Anything another scan also reported stays, and so does a scanner
+          observation a finding or a proposal refers to. When some of the hosts that go have work
+          on them — notes, tests, evidence, findings — it lists them, each opening in a new tab,
+          and waits for you to confirm you reviewed them. What the scan <em>overwrote</em> on hosts,
+          ports and observations that were already there (OS, host name, service, script output,
+          severity) is not restored: no previous value is kept. A scan cannot be deleted while an
+          import is running in the project; the dialog names the file and the delete is available
+          when it finishes.
         </Para>
         <Subhead>Viewing scan results</Subhead>
         <Para>

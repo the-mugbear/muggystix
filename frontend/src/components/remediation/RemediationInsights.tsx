@@ -9,8 +9,12 @@
  */
 import React from 'react';
 
-import type { OverdueBand, RemediationPage, RemediationState } from '../../services/api';
-import { OVERDUE_BANDS, OVERDUE_BAND_LABEL, severityWord } from '../../utils/remediation';
+import type { OverdueBand, RemediationPage, RemediationState, RemediationVerification } from '../../services/api';
+import {
+  OVERDUE_BANDS, OVERDUE_BAND_LABEL, REMEDIATION_VERIFICATIONS, REMEDIATION_VERIFICATION_HELP,
+  REMEDIATION_VERIFICATION_LABEL, severityWord,
+} from '../../utils/remediation';
+import { InfoTip } from '../ui/info-tip';
 import { SeverityBadge } from '../ui/SeverityBadge';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
@@ -117,6 +121,40 @@ export const RemediationInsights: React.FC<RemediationInsightsProps> = ({ page, 
         </p>
       </div>
     </div>
+  );
+};
+
+/**
+ * Where the contact's record and the assessment disagree, over the same
+ * selection: one line, each number a button that opens exactly its rows.
+ * Nothing when neither gap has a row.  The record is never written from the
+ * assessment or the other way round, so these are for a person to settle.
+ */
+export const RemediationVerificationCounts: React.FC<{
+  counts: Partial<Record<RemediationVerification, number>> | undefined;
+  selected: RemediationVerification | null;
+  onSelect: (verification: RemediationVerification) => void;
+}> = ({ counts, selected, onSelect }) => {
+  const value = (v: RemediationVerification) => counts?.[v] ?? 0;
+  if (REMEDIATION_VERIFICATIONS.every((v) => value(v) === 0)) return null;
+  return (
+    <p className="mb-sm flex min-w-0 flex-wrap items-center gap-x-md gap-y-xxs text-metadata text-muted-foreground"
+      aria-label="Where the remediation record and the assessment disagree">
+      {REMEDIATION_VERIFICATIONS.map((v) => (
+        <span key={v} className="inline-flex min-w-0 items-center gap-xxs">
+          <span className="min-w-0 truncate">{REMEDIATION_VERIFICATION_LABEL[v]}</span>
+          {value(v) === 0 ? <span className="px-xxs">0</span> : (
+            <button type="button" aria-pressed={selected === v}
+              className={`${BUTTON} font-medium text-foreground`}
+              aria-label={`${value(v).toLocaleString()} ${REMEDIATION_VERIFICATION_LABEL[v].toLowerCase()}: show them`}
+              onClick={() => onSelect(v)}>
+              {value(v).toLocaleString()}
+            </button>
+          )}
+          <InfoTip text={REMEDIATION_VERIFICATION_HELP[v]} label={`About “${REMEDIATION_VERIFICATION_LABEL[v]}”`} />
+        </span>
+      ))}
+    </p>
   );
 };
 

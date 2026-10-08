@@ -81,6 +81,34 @@ def test_deleting_a_failed_rescan_keeps_the_earlier_scans_scripts(db_session, te
     assert port_script.scan_id == s1_id and host_script.scan_id == s1_id
 
 
+def test_deleting_the_first_scan_by_hand_keeps_the_scripts_a_later_scan_also_reported(
+    client, db_session, test_project, tmp_path,
+):
+    """Script rows cascade from the scan that FIRST recorded them.  Deleting
+    that scan on the Scans page took the rows a later scan had reported too."""
+    script = '<script id="http-title" output="{out}"/>'
+    hostscript = '<hostscript><script id="smb-os-discovery" output="{out}"/></hostscript>'
+    pid = test_project.id
+    s1 = _import_nmap(db_session, test_project, tmp_path, _nmap_xml(_host(
+        "10.61.0.6", _port("80", script=script.format(out="first")), hostscript.format(out="first"))), "s1.xml")
+    s1_id = s1.id
+    s2 = _import_nmap(db_session, test_project, tmp_path, _nmap_xml(_host(
+        "10.61.0.6", _port("80", script=script.format(out="second")), hostscript.format(out="second"))), "s2.xml")
+    s2_id = s2.id
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/projects/{pid}/scans/{s1_id}")
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+
+    host = db_session.query(models.Host).filter(
+        models.Host.project_id == pid, models.Host.ip_address == "10.61.0.6").one()
+    port_script = db_session.query(models.Script).join(models.Port).filter(models.Port.host_id == host.id).one()
+    host_script = db_session.query(models.HostScript).filter(models.HostScript.host_id == host.id).one()
+    assert port_script.output == "second" and host_script.output == "second"
+    assert port_script.scan_id == s2_id and host_script.scan_id == s2_id
+
+
 # --------------------------------------------------------------------- H1
 
 def test_a_rolled_back_element_does_not_cost_the_host_its_scan_membership(db_session, test_project, tmp_path):

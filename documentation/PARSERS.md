@@ -484,9 +484,9 @@ class MyToolParser:
   Many parsers also commit themselves (in batches for memory, or before a pass
   that needs committed rows, as rdap's `correlate_hosts`); `grep db.commit
   app/parsers` for the current set. A committing parser writes part of a scan
-  before it can fail — the dispatcher deletes a failed import's scan, so never
-  let a re-observed row's cascading `scan_id` move (see "What a failed import
-  leaves" below).
+  before it can fail — the dispatcher deletes a failed import's scan, so a
+  row the scan re-observed keeps its `scan_id` and gains a sighting instead
+  (see "What a failed import leaves" below).
 - **Record isolation:** a parser that catches a record's exception and carries
   on MUST wrap the record in `record_savepoint(db, observed, on_rollback)`;
   without it the failed flush poisons the session and the whole import fails
@@ -526,37 +526,65 @@ class MyToolParser:
   created. The dispatcher (`delete_partial_scan`) deletes the scan and, with
   it, the hosts and ports ONLY that attempt created (their history says
   `host_created` / `port_created` for this scan and no other scan saw them),
-  the scanner observations it first recorded that no later scan has seen, its
-  scripts, web rows, name observations (`DNSRecord`) and history, and the
+  the scanner observations, scripts, host scripts and host attributes that
+  no other scan reported, its web rows, name observations (`DNSRecord`), the
+  names (`DNSName`) only it observed that nothing else refers to, its
+  history, and the
   EyeWitness screenshots it extracted (`uploads/web_screenshots/<scan id>/`
   and the `report-<scan id>.json|csv` beside it, removed after the delete
-  commits). It never deletes a host someone has worked on (a note, a follow,
-  a tag, a finding, a test, evidence, an operator's name for it) or that
+  commits). It never deletes a host someone has worked on (`host_work.work_kinds`,
+  the one list: a note, a review, a tag, a finding endpoint, a test, an
+  evidence record, a remediation entry, a proposal about one of its
+  observations, an operator's name for it) or that
   anything from another scan or source hangs on; when in doubt the host
   stays.
+  **Names.** `dns_name_service.delete_scan_observations` — the step a scan
+  delete by hand runs too — removes the scan's observations and then a
+  `DNSName` whose every observation was that scan's, unless something else
+  holds it: a person added it (`created_by_id`), a host test, a finding
+  endpoint or a scanner observation names it, another scan's web interface
+  does, or a scope domain covers it (exactly, or as a descendant). A name
+  with an observation from another scan, an import or a test is not touched.
   **What it does not undo:** changes the attempt made to hosts and ports that
   ALREADY existed (state, service, OS, hostname, `last_seen`, a filled-in
-  field — the previous value is not kept anywhere to restore), the `DNSName`
-  rows it created (a name is an asset of the project, not of a scan; only
-  the scan's observations of it go), and the confidence conflict history
+  field — the previous value is not kept anywhere to restore) and the
+  confidence conflict history
   (`conflict_history`, whose scan pointers become NULL). A retry of the same file
   writes the same values again; a failed import that is never retried leaves
   those updates in place.
   **A cleanup can run long after the attempt died** (a killed worker's job is
   reaped or re-claimed after the stale window; another import of the same
   hosts may have completed in between). So a row the dead scan first recorded
-  that a LATER scan re-observed is kept and moved to that scan, not deleted:
-  a vulnerability goes to its `last_seen_scan_id`; a script, host script,
-  host attribute or confidence row (their `scan_id` cascades and there is no
-  "last seen by" column) goes to the newest other scan that observed its port
-  or host, when that scan is later or the row was touched again after it was
-  written; and the host or port is then "introduced" by the first scan left
-  that saw it. A port or host a later scan updated (`last_updated_scan_id`)
-  or re-observed a vulnerability on is not the attempt's alone either. This
-  is why a re-observation must never MOVE a cascading `scan_id` to the newer
-  scan, and why a new per-host or per-port table with a cascading `scan_id`
-  that a later scan can re-observe needs a line in
-  `_rehome_rows_a_later_scan_saw`.
+  that ANOTHER scan also reported is kept, not deleted. Which scans reported
+  a row is recorded, not guessed: a script, host script, host attribute or
+  vulnerability is one row per thing, overwritten by each scan that reports
+  it, and every such report writes a **sighting** — one row per (thing, scan)
+  in `script_sightings`, `host_script_sightings`, `host_attribute_sightings`
+  or `vulnerability_sightings` (`scan_sightings.see` / `see_many`, called by
+  the writer in the same savepoint as the row, on the insert and on every
+  re-observation; Nessus writes one statement per batch of 100 findings).
+  The row's own `scan_id` stays "first recorded by" (nullable, `ON DELETE
+  SET NULL` — never a cascade).
+  **`scan_sightings.release_scan` is the one step before any scan row is
+  deleted** — by this cleanup and by `DELETE /scans/{id}`: scripts, host
+  scripts and host attributes only that scan reported are deleted; a row
+  another scan also reported is handed to the EARLIEST other scan that
+  reported it (a vulnerability's `last_seen_scan_id` to the latest); a
+  vulnerability no other scan reported is deleted — by both paths — unless a
+  finding or a proposal refers to it, in which case it is kept without a
+  scan; a confidence row (the current winner, not an observation) goes to
+  a later scan that observed its host or port; and the host or port is then
+  "introduced" by the first scan left that saw it. A port or host a later
+  scan updated (`last_updated_scan_id`) or re-observed a vulnerability on is
+  not the attempt's alone either. A new table that merges a thing with the
+  scan that saw it gets a sighting table and a line in `release_scan`, never
+  a cascading `scan_id`. Rows that existed before sightings (revision
+  `c2f9d7a4e1b3`) were given one for the scan they name, one for a
+  vulnerability's `last_seen_scan_id`, and — scripts, host scripts,
+  attributes — one for the scan the old rule would have moved them to (the
+  newest other scan with history on their port or host that is later, or any
+  such scan when the row was touched again), so they survive the deletes
+  they survived before.
   **One cleanup at a time per project, and never beside an open batch:** every
   transaction of an import holds the project's import lock in shared mode
   (`project_import_lock`, a PostgreSQL advisory lock taken when the
@@ -579,15 +607,37 @@ class MyToolParser:
   saw it, nothing refers to it). For an import path that writes no
   `PortScanHistory` (Nessus — and it must not start to: that would change the
   port counts on the Scans page, the dashboard and the scan diff) the stamp is
-  the only record. It is read by the cleanup and nothing else, and a NULL
-  stamp (every port from before v2.465.0) is never an attempt's own. A partial
-  scan deleted by hand from the Scans page clears the stamp (`ON DELETE SET
-  NULL`), so its ports are kept.
+  the only record. It is read by the two scan deletes and the hand delete's
+  preview, never by a page, a list or a count, and a NULL
+  stamp (every port from before v2.465.0) is never a scan's own. Deleting
+  a scan by hand from the Scans page — finished or not — runs the same port
+  step in its transaction (`delete_ports_scan_created`, the one function both
+  paths call, same guards): the ports that scan created on hosts that stay,
+  that no other scan saw and nothing refers to, go with it. The delete clears
+  the stamp (`ON DELETE SET NULL`), so it is the only moment they can be
+  found.
+  **A scan deleted by hand takes everything it brought** (owner decision: a
+  scan imported into the wrong project, or an invalid one, must not stay in
+  the project's data): the hosts only it brought — under the cleanup's
+  provenance guards, so a host another scan or source attached anything to is
+  kept —, and on the hosts that stay its ports (above) and the scripts, host
+  attributes and scanner observations only it reported (an observation a
+  finding or a proposal refers to is kept, without a scan), and its name
+  observations with the names only it observed (**Names**, above). Unlike the
+  cleanup it also removes a host with work on it, so it asks first: the
+  preview (`GET /scans/{id}/deletion-impact`) lists those hosts and the
+  delete answers 409 `hosts_with_work` until the request says
+  `confirm_hosts_with_work=true`. It is refused while
+  an import of the project is running (409 `import_running`) and holds the
+  project's cleanup lock otherwise. What no delete can undo: a value the scan
+  OVERWROTE on a host, port, script or observation that already existed (OS,
+  host name, service, script output, severity) — no previous value is kept.
 - **A re-observed vulnerability is refreshed in one place:**
   `parser_utils.refresh_reobserved_vulnerability`, called by
   `upsert_vulnerability` and by the Nessus path. Severity is always taken from
   the newer observation; title, description, solution and references when the
-  newer value is not empty. `scan_id` ("first recorded by") never moves.
+  newer value is not empty. `scan_id` ("first recorded by") never moves; the
+  caller records the scan's sighting of the row.
 - **Fail closed:** raise `ValueError` when the file yields **zero** records, so
   a misrouted or malformed file surfaces a parse error instead of a silent
   empty scan. (Most parsers do this; it's the expected convention.)

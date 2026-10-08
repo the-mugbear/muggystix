@@ -274,7 +274,7 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
     expect(stateOf(1)).toBeDisabled();
     expect(stateOf(2)).toBeDisabled();
     expect(box(1)).toBeDisabled();
-    expect(screen.getByLabelText('Detach 10.0.0.1 from finding')).toBeDisabled();
+    expect(screen.getByLabelText('Actions for 10.0.0.1')).toBeDisabled();
     expect(stateOf(3)).not.toBeDisabled();
     // The second change waits for the first one's answer.
     await waitFor(() => expect(setFindingEndpointStatus).toHaveBeenCalledTimes(1));
@@ -408,7 +408,7 @@ describe('FindingEndpoints — requests in flight (M4 / M5)', () => {
 
     expect(box(3)).toBeDisabled();
     expect(screen.getByLabelText('Select every endpoint shown')).toBeDisabled();
-    expect(screen.getByLabelText('Detach 10.0.0.3 from finding')).toBeDisabled();
+    expect(screen.getByLabelText('Actions for 10.0.0.3')).toBeDisabled();
     expect(stateOf(3)).toBeDisabled();
 
     await act(async () => { bulk.resolve(withState(start, { 1: 'retest', 2: 'retest' })); });

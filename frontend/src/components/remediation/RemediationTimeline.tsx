@@ -17,7 +17,8 @@ import { useConfirm } from '../../hooks/useConfirm';
 import { formatApiError } from '../../utils/apiErrors';
 import { formatDate, formatTimestamp } from '../../utils/relativeTime';
 import {
-  REMEDIATION_FIELD_LABEL, REMEDIATION_STATUS_LABEL, groupTimeline, isRemediationStatus, type TimelineGroup,
+  REMEDIATION_FIELD_LABEL, REMEDIATION_STATUS_LABEL, groupTimeline, heldRecordText, isRemediationStatus,
+  type TimelineGroup,
 } from '../../utils/remediation';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
@@ -72,7 +73,7 @@ const Entry: React.FC<{
               <span className="font-medium">
                 {change.to === 'finding deleted' ? 'Finding deleted' : `Finding ${change.to ?? 'removed'}`}
               </span>
-              {change.from ? `. Its remediation record held: ${change.from}.` : '.'}
+              {change.from ? `. Its remediation record held: ${heldRecordText(change.from)}.` : '.'}
             </li>
           ) : (
             <li key={change.id} className="break-words text-metadata">

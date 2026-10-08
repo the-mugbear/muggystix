@@ -347,9 +347,22 @@ const ENDPOINT_STATE_CHOICES = [
   { value: 'filtered', label: 'Filtered' },
 ];
 
+/**
+ * Whether an endpoint condition can only be met by an OPEN port: a port or
+ * service with no state named means open, as does the state "open" alone.
+ * Only such a condition contradicts "no recorded open ports"; one that names
+ * another state ("22 closed", "any state") holds together with it, and the
+ * backend applies both.
+ */
+const requiresOpenPort = (f: HostFilterOptions): boolean => {
+  const states = f.portStates ?? [];
+  const constrains = Boolean(f.ports?.length || f.services?.length || states.length);
+  return constrains && (states.length === 0 || states.every((s) => s === 'open'));
+};
+
 function EndpointEditor({ field, filters, data, loading, error, commit, cancel }: EditorProps) {
   // `hasOpenPorts: false` is a different condition ("no recorded open ports")
-  // that the backend applies on its own; this editor leaves it alone.
+  // with its own field; this editor keeps it unless the two contradict.
   const [draft, setDraft] = useState<HostFilterOptions>(() => {
     let initial: HostFilterOptions = {};
     ENDPOINT_LIST_KEYS.forEach((k) => { initial = withValue(initial, k, filters[k]); });
@@ -367,12 +380,14 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
     ? withValue(draft, 'portStates', undefined) : draft;
   const draftIsEmpty = Object.keys(effective).length === 0;
   const excludesOpen = filters.hasOpenPorts === false;
+  // A condition that needs an open port matches nothing beside "no recorded
+  // open ports": the one being applied replaces it, and the editor says so
+  // below.  Any other condition is kept together with it.
+  const contradicts = excludesOpen && !draftIsEmpty && requiresOpenPort(effective);
   const apply = () => {
-    // The backend ignores every port filter while "no recorded open ports" is
-    // set, so the two cannot both hold: the condition being applied wins, and
-    // the editor says so below rather than letting one silently disable the other.
     let next = without(filters, draftIsEmpty && excludesOpen ? ENDPOINT_LIST_KEYS : field.keys);
     (Object.keys(effective) as Array<keyof HostFilterOptions>).forEach((k) => { next = withValue(next, k, effective[k]); });
+    if (excludesOpen && !contradicts) next = withValue(next, 'hasOpenPorts', false);
     commit(next);
   };
   // v5.289.0 — a port / service condition means an OPEN port unless a state is
@@ -478,9 +493,9 @@ function EndpointEditor({ field, filters, data, loading, error, commit, cancel }
           </button>
         </p>
       )}
-      {excludesOpen && !draftIsEmpty && (
+      {contradicts && (
         <p className="px-xs text-caption text-warning break-words">
-          “No recorded open ports” is applied and cannot hold together with a port condition — applying this replaces it.
+          “No recorded open ports” is applied and cannot hold together with a port that must be open — applying this replaces it. Name another state to keep both.
         </p>
       )}
       <p className="text-caption text-muted-foreground">{COUNTS_NOTE}</p>
@@ -716,9 +731,10 @@ export default function HostFilterPopover({
   const close = () => onOpenChange(false);
   const startingQueryRef = useRef(false);
   const commit = (next: HostFilterOptions) => {
-    // Choosing "no recorded open ports" drops a port condition it would
-    // otherwise silently override (see EndpointEditor for the other direction).
-    const settled = fieldId === 'noOpenPorts' && next.hasOpenPorts === false
+    // Choosing "no recorded open ports" drops a port condition that needs an
+    // open port — together they match nothing (see EndpointEditor for the
+    // other direction).  A condition naming another state is kept.
+    const settled = fieldId === 'noOpenPorts' && next.hasOpenPorts === false && requiresOpenPort(next)
       ? without(next, ENDPOINT_LIST_KEYS)
       : next;
     onApply(settled);

@@ -23,7 +23,7 @@ import { idParam } from '../utils/remediation';
 import RemediationTrend from '../components/remediation/RemediationTrend';
 import { useRemediationPolicy } from '../hooks/useRemediationPolicy';
 import { formatApiError } from '../utils/apiErrors';
-import { timelineSummary } from '../utils/remediation';
+import { REPORTED_FIXED, timelineSummary } from '../utils/remediation';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import RemediationWorkList from '../components/remediation/RemediationWorkList';
 import { RemediationLead } from './Remediation';
@@ -35,7 +35,7 @@ const COLUMNS: Array<{ state: RemediationState; label: string; tone?: string }> 
   { state: 'on_track', label: 'On track' },
   { state: 'not_assigned', label: 'Not assigned' },
   { state: 'deferred', label: 'Deferred' },
-  { state: 'closed', label: 'Closed' },
+  { state: 'closed', label: REPORTED_FIXED },
 ];
 
 const RemediationDeadlines: React.FC = () => {

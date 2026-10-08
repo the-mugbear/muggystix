@@ -877,5 +877,97 @@ From the codebase review of 2026-10-07 (5.339.0).
   async completion is still for the host on screen; a new one is keyed
   instead.
 
+### 46. Two statuses, two facts, one name each (2026-10-08)
+
+A finding on a host carries two statuses that record different facts. Each has
+ONE name wherever a person reads it; the stored values do not change.
+
+| Fact | Stored | Said as |
+|---|---|---|
+| The CONTACT's progress (remediation record, kept by a project admin) | `closed` | **Reported fixed** — never "Closed" |
+| | `open`, `deferred` | Open, Deferred |
+| The ASSESSOR's conclusion (the finding's endpoint) | `remediated` | **Remediated** |
+
+- A date, a count, a chart, a CSV column and a timeline entry follow the same
+  word: "Reported fixed on", "Reported fixed late", "reported fixed on time".
+- The two are never synced, so the remediation pages show where they disagree
+  as two named, countable, openable states: **Reported fixed, not retested**
+  and **Remediated, record still open**. The server derives them
+  (`verification`); a page never works one out.
+- In a row the relation is a short line in the cell that already holds the
+  state (the Deadline cell), with the definition on `title`; it is not a column,
+  which would be empty on most rows. The counts are buttons that set
+  `?verification=` and show a clearable chip; their definitions are on an
+  `InfoTip`.
+- These words belong to the remediation pages only. The finding page, Posture,
+  Operations and the client report keep their own vocabulary
+  (`utils/findingStatus.ts`).
+
+### 47. A detail page with a long list
+
+A detail page that holds a list which can run to thousands of rows (a finding's
+affected hosts) still has to show its other sections. Reference: the finding
+page — `components/findings/FindingEndpoints.tsx`, `FindingJumpBar.tsx`,
+`EndpointStateBar.tsx`, helpers in `utils/findingEndpoints.ts`. There is ONE
+layout: three rows get the same panel as three thousand, only shorter. No
+threshold, no second layout for "small" records.
+
+- **A jump bar, when the page has more than one section.** A sticky strip under
+  the title and its controls (`stickyBelowChrome`), one entry per section the
+  page actually renders, in page order: a label and, where the page knows one,
+  a count. It is navigation, not a second explanation (§44) — no descriptions.
+  A section that renders nothing has no entry: the bar asks the section's
+  wrapper whether it has content, so a section that loads for itself needs no
+  wiring. A jump target carries `jumpTargetStyle`, which clears the chrome AND
+  the bar. The section in view is marked with an IntersectionObserver held
+  inside the bar — never a scroll listener, and never state on the page, or
+  reading the page re-renders it.
+- **The list is a bounded panel.** It scrolls INSIDE a panel about twelve rows
+  tall (a max-height, so a short list is a short panel with no inner scrollbar
+  and no empty space), with a sticky table header. The sections below it are
+  then always within a screen. The border is the edge of a scroll region, not
+  a card (§7).
+- **The list's controls are pinned to the panel, outside the scrolling body:**
+  filters, chips and the bulk bar above the rows; "Showing N of M" and its
+  buttons below them. A control that scrolls away with row 40 cannot be used on
+  row 400.
+- **A link to one row scrolls the panel, then the page.** The row is centred in
+  the panel's own scroll and the PANEL is brought into view — once per link.
+  If the row is in a closed group or not mounted, that is opened and mounted
+  first.
+- **Rows are compact: one line, about 32 px.** Identity first (the address, a
+  mono link), then the name (truncated, the full text on `title`, a dash when
+  there is none), then the row's state control. Nothing else on the row.
+- **A destructive action lives in the row's "⋯" menu**, never as an icon beside
+  the control the reader uses most: a slip of a few pixels must not remove a
+  record. It keeps its confirmation and its Undo.
+- **Rows are grouped by the server's segment, never by arithmetic in the
+  browser.** The groups are the project's one segment rule (the Posture grid's
+  and the Evidence matrix's columns), sent with each row; a /24 worked out from
+  an address would be a second, disagreeing definition. A group header carries
+  the label, the count, the group's own state counts in the filter chips'
+  words, and a tick for the group's rows THAT MATCH THE CURRENT FILTER
+  (`selectAllState`; a bulk action never reaches a row the filter hides, §41).
+  Under a filter a header reads "matching of total", and a group with no match
+  is hidden.
+- **One group is no group:** when every row is in the same segment the list is
+  flat, with no header. Several groups start open when the filtered list is
+  short (25 rows or fewer) and closed otherwise; what the reader opens or
+  closes is kept for the visit, not stored.
+- **Mounted rows are bounded, and the bound is stated in code.** The list
+  mounts a first page, more on request, and never more than a fixed cap — past
+  it the mounted rows are a window that moves on ("Showing 201–700 of 2,000",
+  with a way back). Rows of a closed group are not mounted. "Show all" is
+  offered only when all of them fit under the cap. Paging is by rows across
+  the open groups in order, with one footer — not a "show more" per group,
+  which has no single bound.
+- **A stacked bar is a companion to the sentence, not a legend.** Beside the
+  sentence that says how the rows stand, one thin hand-built bar (no chart
+  library) of the same states: each part is a button with the same action as
+  its filter chip and an accessible name and `title` that say the count, the
+  state and that it filters. Fills come from the states' theme tones in
+  `utils/findingStatus.ts`; two states that would differ only by red against
+  green differ by pattern too. No legend — the chips already name the states.
+
 ## Final Rule
 If a UI change looks correct only with fixture data, it is not finished.

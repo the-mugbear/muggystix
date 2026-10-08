@@ -54,6 +54,14 @@ import { useProject } from '../contexts/ProjectContext';
 import { useProjectRole } from '../hooks/useProjectRole';
 import { useConfirm } from '../hooks/useConfirm';
 import { formatApiError } from '../utils/apiErrors';
+import {
+  hostsWithWorkCount,
+  hostsWithWorkRefusal,
+  importRunningNotice,
+  importRunningRefusal,
+  type HostsWithWorkRefusal,
+} from '../utils/scanDeletion';
+import HostsWithWorkWarning from '../components/scans/HostsWithWorkWarning';
 // From the barrel, like every other call here: a direct submodule import
 // bypasses a page test's mock and loads the real HTTP client.
 import { Alert, AlertDescription } from '../components/ui/alert';
@@ -128,6 +136,22 @@ export default function Scans() {
   const [deletionImpact, setDeletionImpact] = useState<ScanDeletionImpact | null>(null);
   const [impactLoading, setImpactLoading] = useState(false);
   const [impactError, setImpactError] = useState(false);
+  // Hosts the delete removes that carry people's work: the reader's tick, and
+  // the server's refusal when it found such hosts the dialog had not shown.
+  const [workReviewed, setWorkReviewed] = useState(false);
+  const [workRefusal, setWorkRefusal] = useState<HostsWithWorkRefusal | null>(null);
+  // The server's words when it refused the delete because an import is
+  // running in the project; the preview says the same before the click.
+  const [importRefusal, setImportRefusal] = useState<string | null>(null);
+  const importRunning = importRunningNotice(deletionImpact);
+  const impactRequest = useRef(0);
+  // Known from the preview; from the refusal when the preview could not be
+  // read.  While the preview is loading it is not known, and the delete waits.
+  const hostsWithWork = deletionImpact
+    ? hostsWithWorkCount(deletionImpact)
+    : !impactLoading && workRefusal
+      ? workRefusal.hosts_with_work
+      : 0;
 
   const [uploadDialogOpen, setUploadDialogOpen] = useState(false);
   // The results banner: one entry per file the review dialog (or the staged
@@ -810,41 +834,70 @@ export default function Scans() {
   });
 
   const handleViewScan = (scanId: number) => navigate(`/scans/${scanId}`);
-  const handleDeleteClick = (scan: Scan) => {
-    setScanToDelete(scan);
+  // Fetch the real impact so the modal can detail exactly what's removed.
+  // Hosts are deduplicated across scans, so this is rarely a blanket wipe.
+  // Every load un-ticks the review box: a tick is about the list on screen.
+  const loadDeletionImpact = (scanId: number) => {
+    const request = ++impactRequest.current;
     setDeletionImpact(null);
     setImpactError(false);
     setImpactLoading(true);
-    setDeleteDialogOpen(true);
-    // Fetch the real impact so the modal can detail exactly what's removed.
-    // Hosts are deduplicated across scans, so this is rarely a blanket wipe.
-    getScanDeletionImpact(scan.id)
+    setWorkReviewed(false);
+    return getScanDeletionImpact(scanId)
       .then((impact) => {
-        // Ignore a stale response if the user already targeted another scan.
-        setScanToDelete((current) => {
-          if (current && current.id === impact.scan_id) setDeletionImpact(impact);
-          return current;
-        });
+        // Ignore a stale response if the user already targeted another scan;
+        // an answer that is not about this scan is not a summary of it.
+        if (request !== impactRequest.current) return;
+        if (impact?.scan_id === scanId) setDeletionImpact(impact);
+        else setImpactError(true);
       })
-      .catch(() => setImpactError(true))
-      .finally(() => setImpactLoading(false));
+      .catch(() => {
+        if (request === impactRequest.current) setImpactError(true);
+      })
+      .finally(() => {
+        if (request === impactRequest.current) setImpactLoading(false);
+      });
+  };
+  const handleDeleteClick = (scan: Scan) => {
+    setScanToDelete(scan);
+    setWorkRefusal(null);
+    setImportRefusal(null);
+    setDeleteDialogOpen(true);
+    void loadDeletionImpact(scan.id);
   };
   const handleDeleteConfirm = async () => {
     if (!scanToDelete || deleteLoading) return;
     setDeleteLoading(true);
+    setImportRefusal(null);
     try {
-      await deleteScan(scanToDelete.id);
+      if (workReviewed) await deleteScan(scanToDelete.id, { confirmHostsWithWork: true });
+      else await deleteScan(scanToDelete.id);
       setScans((prev) => prev.filter((s) => s.id !== scanToDelete.id));
       toast.success(`Scan "${scanToDelete.filename}" deleted.`);
       setDeleteDialogOpen(false);
       setScanToDelete(null);
       setDeletionImpact(null);
+      setWorkRefusal(null);
     } catch (err) {
-      // Pre-audit shape silently swallowed failures and closed the
-      // dialog, leaving the row in the list while the user believed
-      // the delete succeeded.  Keep the dialog open on failure so the
-      // user can retry; surface a real toast (audit C8).
-      toast.error(formatApiError(err, `Failed to delete scan "${scanToDelete.filename}".`));
+      const refusal = hostsWithWorkRefusal(err);
+      const importing = importRunningRefusal(err);
+      if (importing) {
+        // An import is running in the project (or holds its lock).  Nothing
+        // was changed: say so in the server's words over a fresh preview,
+        // which also says whether the import is still running.
+        setImportRefusal(importing);
+        await loadDeletionImpact(scanToDelete.id);
+      } else if (refusal) {
+        // Hosts this scan removes carry work the reader has not confirmed
+        // (added since the preview, or the preview never loaded).  Show the
+        // server's words over a fresh list and ask again.
+        setWorkRefusal(refusal);
+        await loadDeletionImpact(scanToDelete.id);
+      } else {
+        // Keep the dialog open on failure so the reader can retry, and say
+        // what failed: the row is still in the list.
+        toast.error(formatApiError(err, `Failed to delete scan "${scanToDelete.filename}".`));
+      }
     } finally {
       setDeleteLoading(false);
     }
@@ -2097,10 +2150,11 @@ export default function Scans() {
             ? This action cannot be undone.
           </p>
 
-          {/* What gets removed. Hosts are deduplicated across scans, so this
-              is usually NOT a blanket wipe — only hosts seen by no other scan
-              are deleted; shared hosts are kept. The modal tells the truth via
-              a backend-computed impact preview. */}
+          {/* What gets removed: everything the scan brought that nothing else
+              holds. Hosts are deduplicated across scans, so this is usually
+              NOT a blanket wipe — hosts another scan also has are kept, and on
+              them only what this scan alone created or reported goes. Every
+              figure is the server's preview of its own delete. */}
           {impactLoading ? (
             <div className="mt-3 flex items-center gap-2 text-metadata text-muted-foreground">
               <Loader2 className="size-4 animate-spin" aria-hidden />
@@ -2110,8 +2164,8 @@ export default function Scans() {
             <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/40 p-3 text-metadata text-muted-foreground">
               <AlertCircle className="size-4 mt-0.5 shrink-0" aria-hidden />
               <span>
-                Couldn&apos;t load the removal summary. The scan and any hosts
-                seen <em>only</em> by it will still be removed if you continue.
+                Couldn&apos;t load the removal summary. The scan and everything
+                <em> only</em> it brought will still be removed if you continue.
               </span>
             </div>
           ) : deletionImpact ? (
@@ -2124,45 +2178,58 @@ export default function Scans() {
                   <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
                   This scan record and its scan history
                 </li>
-                <li className="flex items-baseline gap-2">
-                  <Trash2 className="size-3.5 shrink-0 text-destructive self-center" aria-hidden />
-                  <span>
-                    <span className="font-medium">{deletionImpact.hosts_removed.toLocaleString()}</span>{' '}
-                    {deletionImpact.hosts_removed === 1 ? 'host' : 'hosts'} seen only by this scan
-                    {deletionImpact.sample_removed_ips.length > 0 && (
-                      <span className="block text-muted-foreground break-words">
-                        {deletionImpact.sample_removed_ips.join(', ')}
-                        {deletionImpact.hosts_removed > deletionImpact.sample_removed_ips.length &&
-                          `, +${(
-                            deletionImpact.hosts_removed - deletionImpact.sample_removed_ips.length
-                          ).toLocaleString()} more`}
-                      </span>
-                    )}
-                  </span>
-                </li>
+                {/* Only what goes is listed: "0 hosts" is not a removal. */}
+                {deletionImpact.hosts_removed > 0 && (
+                  <li className="flex items-baseline gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive self-center" aria-hidden />
+                    <span>
+                      <span className="font-medium">{deletionImpact.hosts_removed.toLocaleString()}</span>{' '}
+                      {deletionImpact.hosts_removed === 1 ? 'host' : 'hosts'} seen only by this scan
+                      {deletionImpact.sample_removed_ips.length > 0 && (
+                        <span className="block text-muted-foreground break-words">
+                          {deletionImpact.sample_removed_ips.join(', ')}
+                          {deletionImpact.hosts_removed > deletionImpact.sample_removed_ips.length &&
+                            `, +${(
+                              deletionImpact.hosts_removed - deletionImpact.sample_removed_ips.length
+                            ).toLocaleString()} more`}
+                        </span>
+                      )}
+                    </span>
+                  </li>
+                )}
                 {deletionImpact.ports_removed > 0 && (
                   <li className="flex items-center gap-2">
                     <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
                     <span>
                       <span className="font-medium">{deletionImpact.ports_removed.toLocaleString()}</span>{' '}
-                      open {deletionImpact.ports_removed === 1 ? 'port' : 'ports'} on those hosts
+                      {deletionImpact.ports_removed === 1 ? 'port' : 'ports'} on those hosts
                     </span>
                   </li>
                 )}
-                {/* v5.204.0 — findings first recorded by this scan are KEPT
-                    (they belong to the host); only their "first seen by"
-                    pointer goes. Findings on removed hosts go with the host. */}
-                {deletionImpact.vulnerabilities_detached > 0 && (
+                {(deletionImpact.ports_removed_on_kept_hosts ?? 0) > 0 && (
                   <li className="flex items-center gap-2">
-                    <Info className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
                     <span>
                       <span className="font-medium">
-                        {deletionImpact.vulnerabilities_detached.toLocaleString()}
+                        {(deletionImpact.ports_removed_on_kept_hosts ?? 0).toLocaleString()}
                       </span>{' '}
-                      {deletionImpact.vulnerabilities_detached === 1
-                        ? 'vulnerability'
-                        : 'vulnerabilities'}{' '}
-                      first recorded by this scan are kept on their hosts, but lose that attribution
+                      {deletionImpact.ports_removed_on_kept_hosts === 1 ? 'port' : 'ports'} only this
+                      scan found, on hosts that stay
+                    </span>
+                  </li>
+                )}
+                {/* Observations on the removed hosts go with their host and are
+                    not counted here; one another scan also reported stays. */}
+                {(deletionImpact.vulnerabilities_removed ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">
+                        {deletionImpact.vulnerabilities_removed.toLocaleString()}
+                      </span>{' '}
+                      scanner{' '}
+                      {deletionImpact.vulnerabilities_removed === 1 ? 'observation' : 'observations'}{' '}
+                      only this scan reported, on hosts that stay
                     </span>
                   </li>
                 )}
@@ -2178,7 +2245,47 @@ export default function Scans() {
                     </span>
                   </li>
                 )}
+                {(deletionImpact.dns_records_removed ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">
+                        {(deletionImpact.dns_records_removed ?? 0).toLocaleString()}
+                      </span>{' '}
+                      DNS {deletionImpact.dns_records_removed === 1 ? 'record' : 'records'} from this scan
+                    </span>
+                  </li>
+                )}
+                {(deletionImpact.dns_names_removed ?? 0) > 0 && (
+                  <li className="flex items-center gap-2">
+                    <Trash2 className="size-3.5 shrink-0 text-destructive" aria-hidden />
+                    <span>
+                      <span className="font-medium">
+                        {(deletionImpact.dns_names_removed ?? 0).toLocaleString()}
+                      </span>{' '}
+                      {deletionImpact.dns_names_removed === 1 ? 'name' : 'names'} only this scan observed
+                    </span>
+                  </li>
+                )}
               </ul>
+              {(deletionImpact.vulnerabilities_kept ?? 0) > 0 && (
+                <div
+                  data-testid="observations-kept"
+                  className="mt-2.5 flex items-start gap-2 border-t border-border pt-2.5 text-metadata text-muted-foreground"
+                >
+                  <Info className="size-3.5 mt-0.5 shrink-0" aria-hidden />
+                  <span>
+                    <span className="font-medium text-foreground">
+                      {(deletionImpact.vulnerabilities_kept ?? 0).toLocaleString()}
+                    </span>{' '}
+                    scanner{' '}
+                    {deletionImpact.vulnerabilities_kept === 1 ? 'observation' : 'observations'} only
+                    this scan reported {deletionImpact.vulnerabilities_kept === 1 ? 'is' : 'are'} kept:
+                    a finding or a proposal refers to{' '}
+                    {deletionImpact.vulnerabilities_kept === 1 ? 'it' : 'them'}.
+                  </span>
+                </div>
+              )}
               {deletionImpact.hosts_kept > 0 && (
                 <div className="mt-2.5 flex items-start gap-2 border-t border-border pt-2.5 text-metadata text-muted-foreground">
                   <CheckCircle2 className="size-3.5 mt-0.5 shrink-0 text-emerald-600" aria-hidden />
@@ -2186,13 +2293,50 @@ export default function Scans() {
                     <span className="font-medium text-foreground">
                       {deletionImpact.hosts_kept.toLocaleString()}
                     </span>{' '}
-                    {deletionImpact.hosts_kept === 1 ? 'host is' : 'hosts are'} also in other scans
-                    and will be kept — their data is preserved.
+                    {deletionImpact.hosts_kept === 1 ? 'host' : 'hosts'} another scan also has{' '}
+                    {deletionImpact.hosts_kept === 1 ? 'is' : 'are'} kept.
+                  </span>
+                </div>
+              )}
+              {/* The limit of "a wrong scan leaves nothing behind".  A scan
+                  that touched no host that stays overwrote nothing. */}
+              {deletionImpact.hosts_kept > 0 && (
+                <div
+                  data-testid="not-restored"
+                  className="mt-1.5 flex items-start gap-2 text-metadata text-muted-foreground"
+                >
+                  <AlertCircle className="size-3.5 mt-0.5 shrink-0" aria-hidden />
+                  <span>
+                    What this scan overwrote on hosts, ports and observations that were already
+                    there (OS, host name, service, script output, severity) is not restored:
+                    BlueStick keeps no previous value.
                   </span>
                 </div>
               )}
             </div>
           ) : null}
+
+          {!impactLoading && (importRefusal || importRunning) && (
+            <div
+              role="alert"
+              data-testid="import-running"
+              className="mt-3 flex min-w-0 items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-metadata"
+            >
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" aria-hidden />
+              <span className="min-w-0 break-words">{importRefusal ?? importRunning}</span>
+            </div>
+          )}
+
+          {!impactLoading && (
+            <HostsWithWorkWarning
+              count={hostsWithWork}
+              sample={deletionImpact?.hosts_with_work_sample ?? []}
+              message={workRefusal?.message}
+              reviewed={workReviewed}
+              onReviewedChange={setWorkReviewed}
+              disabled={deleteLoading}
+            />
+          )}
 
           <DialogFooter>
             <Button
@@ -2205,7 +2349,9 @@ export default function Scans() {
             <Button
               variant="destructive"
               onClick={handleDeleteConfirm}
-              disabled={deleteLoading}
+              disabled={
+                deleteLoading || impactLoading || !!importRunning || (hostsWithWork > 0 && !workReviewed)
+              }
             >
               {deleteLoading ? (
                 <>

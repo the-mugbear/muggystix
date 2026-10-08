@@ -55,6 +55,7 @@ const row = (id: number, projectId: number, projectName: string): RemediationRow
   ip_address: `10.0.0.${id}`, hostname: null, contact_email: 'roger@example.com', contact_name: null, team: null,
   notified_on: '2026-10-01', status: 'open', closed_on: null, updated_at: null,
   state: 'overdue', due_on: '2026-10-31', days_left: -10, closed_days_late: null, last_follow_up_on: null,
+  verification: null,
 });
 
 const show = (path = '/remediation-deadlines') => render(

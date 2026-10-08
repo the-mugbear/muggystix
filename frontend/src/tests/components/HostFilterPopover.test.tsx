@@ -211,14 +211,28 @@ describe('HostFilterPopover', () => {
     expect(onApply).toHaveBeenCalledWith({ ports: ['22'], portStates: ['filtered', 'open'] });
   });
 
-  it('warns that a port condition replaces "no recorded open ports" instead of being silently ignored', async () => {
+  it('keeps "no recorded open ports" beside a port condition it can hold together with', async () => {
+    const user = userEvent.setup();
+    const onApply = vi.fn();
+    render(<Harness fieldId="endpoint" initial={{ hasOpenPorts: false }} onApply={onApply} />);
+    // A new condition starts at "Any state": port 22 in any state, and no open port.
+    await user.click(screen.getByRole('checkbox', { name: /22 \(ssh\)/ }));
+    expect(screen.queryByText(/cannot hold together/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Apply condition' }));
+    expect(onApply).toHaveBeenCalledWith({ ports: ['22'], portStates: ['any'], hasOpenPorts: false });
+  });
+
+  it('warns that a port that must be open replaces "no recorded open ports"', async () => {
     const user = userEvent.setup();
     const onApply = vi.fn();
     render(<Harness fieldId="endpoint" initial={{ hasOpenPorts: false }} onApply={onApply} />);
     await user.click(screen.getByRole('checkbox', { name: /22 \(ssh\)/ }));
-    expect(screen.getByText(/cannot hold together with a port condition/)).toBeInTheDocument();
+    await user.click(screen.getByRole('checkbox', { name: 'Any state' }));
+    await user.click(screen.getByRole('checkbox', { name: 'Open' }));
+    expect(screen.getByText(/cannot hold together with a port that must be open/)).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Apply condition' }));
-    expect(onApply).toHaveBeenCalledWith({ ports: ['22'], portStates: ['any'] });
+    // "Open" is what a port condition means with no state named, so none is written.
+    expect(onApply).toHaveBeenCalledWith({ ports: ['22'] });
   });
 
   it('"first discovered in" needs a scan, and leaves with the scans', async () => {

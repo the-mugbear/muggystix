@@ -16,6 +16,18 @@ export type FindingStatus =
   | 'retest';
 export type FindingSource = 'note' | 'scanner' | 'execution' | 'manual';
 
+/** The network segment an affected host belongs to: the project's one segment
+ *  rule (sites; most-specific subnets when the project defines no site), the
+ *  Posture grid's and the Evidence matrix's columns. */
+export interface FindingEndpointSegment {
+  /** A site id as a string, `unassigned`, `subnet:<id>` or `unmapped`. */
+  key: string;
+  label: string;
+  kind: 'site' | 'subnet' | 'unassigned' | 'unmapped';
+  /** Position among the project's segments (the grid's column order). */
+  order: number;
+}
+
 export interface FindingHostInfo {
   /** The affected-endpoint ROW id — a host may carry one row per named endpoint. */
   id: number;
@@ -29,6 +41,8 @@ export interface FindingHostInfo {
   /** This endpoint's own state: open | remediated | retest | false_positive.
    *  The finding's status is the issue's; this one is the host's (v5.225.0). */
   host_status: FindingHostStatus;
+  /** Single-finding responses only; a list row's preview sends null. */
+  segment?: FindingEndpointSegment | null;
 }
 
 /** `false_positive` (v5.238.0): the issue does not apply to THIS endpoint —

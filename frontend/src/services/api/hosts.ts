@@ -384,7 +384,8 @@ export interface NseScript {
   id: number;
   script_id: string;
   output: string | null;
-  scan_id: number;
+  /** The scan that first recorded it; null once that scan was deleted. */
+  scan_id: number | null;
 }
 
 /** When each kind of evidence about a host was last gathered — or that it

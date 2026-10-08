@@ -10,8 +10,10 @@ class ScriptBase(BaseModel):
 class Script(ScriptBase):
     id: int
     port_id: int
-    scan_id: int
-    
+    # The scan that first recorded it; None when that scan is gone and no
+    # other scan is recorded as having reported the script.
+    scan_id: Optional[int] = None
+
     model_config = ConfigDict(from_attributes=True)
 
 class HostScriptBase(BaseModel):
@@ -21,8 +23,8 @@ class HostScriptBase(BaseModel):
 class HostScript(HostScriptBase):
     id: int
     host_id: int
-    scan_id: int
-    
+    scan_id: Optional[int] = None  # first recorded by; see Script.scan_id
+
     model_config = ConfigDict(from_attributes=True)
 
 class PortBase(BaseModel):

@@ -396,8 +396,10 @@ describe('Oversight — remediation deadlines, where the installation tracks the
       .toHaveAttribute('href', '/remediation-deadlines?state=not_assigned');
     expect(screen.getByText('the longest by 41 days')).toBeInTheDocument();
     expect(screen.getByText('within 7 days')).toBeInTheDocument();
-    expect(screen.getByText('of 5 closed with a deadline')).toBeInTheDocument();
-    expect(screen.getByText(/over 3 closed with both dates/)).toBeInTheDocument();
+    expect(screen.getByText('of 5 reported fixed with a deadline')).toBeInTheDocument();
+    expect(screen.getByText(/over 3 reported fixed with both dates/)).toBeInTheDocument();
+    expect(screen.getByText('Reported fixed late')).toBeInTheDocument();
+    expect(screen.queryByText('Closed late')).not.toBeInTheDocument();
     // The rows live on one page; Oversight does not list the projects again.
     expect(screen.queryByRole('table', { name: 'Remediation by project' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'By project and by contact' })).toHaveAttribute('href', '/remediation-deadlines');
@@ -412,8 +414,8 @@ describe('Oversight — remediation deadlines, where the installation tracks the
       } },
     });
     await renderPage();
-    expect(screen.getByText('nothing closed with a deadline yet')).toBeInTheDocument();
-    expect(screen.getByText('no closed finding has both dates')).toBeInTheDocument();
+    expect(screen.getByText('nothing reported fixed with a deadline yet')).toBeInTheDocument();
+    expect(screen.getByText('none reported fixed has both dates')).toBeInTheDocument();
     expect(screen.queryByText(/the longest by/)).not.toBeInTheDocument();
     expect(screen.queryByText(/^0 days/)).not.toBeInTheDocument();
   });

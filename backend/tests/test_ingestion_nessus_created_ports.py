@@ -283,12 +283,13 @@ def test_the_last_partial_batch_is_stamped_in_the_commit_that_writes_it(
         host_id=known_host, port_number=22).scalar() is None
 
 
-def test_ports_of_a_partial_scan_someone_deleted_by_hand_are_left_alone(
-    db_session, test_project, tmp_path, known_host,
+def test_deleting_an_unfinished_imports_scan_by_hand_takes_the_ports_it_created(
+    client, db_session, test_project, tmp_path, known_host,
 ):
-    """Someone deleted the dead attempt's partial scan by hand: the FK cleared
-    the job's scan pointer and the stamp on the ports it had created.  Nothing
-    says whose they were any more, so the next claim keeps them."""
+    """Someone deletes a dead attempt's partial scan on the Scans page.  The
+    FK then clears the job's scan pointer and the stamp on the ports the
+    attempt created, so the delete itself is the only moment they can be
+    found: it removes them, and the retry starts from a clean inventory."""
     pid = test_project.id
     dead_scan = models.Scan(project_id=pid, filename="dead.nessus", tool_name="Nessus")
     db_session.add(dead_scan)
@@ -302,13 +303,64 @@ def test_ports_of_a_partial_scan_someone_deleted_by_hand_are_left_alone(
         {"in_progress_scan_id": dead_scan.id}
     )
     db_session.commit()
-    db_session.query(models.Scan).filter_by(id=dead_scan.id).delete()
-    db_session.commit()
+
+    response = client.delete(f"/api/v1/projects/{pid}/scans/{dead_scan.id}")
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
+    assert _ports(db_session, known_host) == [22]
 
     run_next(db_session)
 
     job = job_row(db_session, job_id)
     assert job.status == "completed", job.error_message
+    assert _ports(db_session, known_host) == [22]
+
+
+def test_deleting_a_finished_scan_by_hand_takes_the_ports_it_created_too(
+    client, db_session, test_project, known_host,
+):
+    """A finished scan deleted by hand takes what it brought: the ports it
+    created on hosts that stay, that nothing else holds, go with it."""
+    pid = test_project.id
+    finished = models.Scan(project_id=pid, filename="done.nessus", tool_name="Nessus")
+    db_session.add(finished)
+    db_session.flush()
+    db_session.add(models.Port(
+        host_id=known_host, port_number=8443, protocol="tcp", state="open",
+        created_scan_id=finished.id,
+    ))
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/projects/{pid}/scans/{finished.id}")
+    assert response.status_code == 200, response.text
+    assert response.json()["ports_removed_on_kept_hosts"] == 1
+    db_session.expire_all()
+    assert _ports(db_session, known_host) == [22]
+
+
+def test_a_port_the_unfinished_import_created_that_another_scan_saw_survives_the_hand_delete(
+    client, db_session, test_project, tmp_path, known_host,
+):
+    """The same guards as the automatic cleanup: when in doubt, keep."""
+    pid = test_project.id
+    dead_scan = models.Scan(project_id=pid, filename="dead.nessus", tool_name="Nessus")
+    other = models.Scan(project_id=pid, filename="sweep.xml", tool_name="nmap")
+    db_session.add_all([dead_scan, other])
+    db_session.flush()
+    seen_again = models.Port(
+        host_id=known_host, port_number=8443, protocol="tcp", state="open",
+        created_scan_id=dead_scan.id, last_updated_scan_id=other.id,
+    )
+    db_session.add(seen_again)
+    job_id = queue_file(db_session, pid, nessus_file(tmp_path, [("10.41.0.9", [443])]))
+    db_session.query(models.IngestionJob).filter_by(id=job_id).update(
+        {"in_progress_scan_id": dead_scan.id}
+    )
+    db_session.commit()
+
+    response = client.delete(f"/api/v1/projects/{pid}/scans/{dead_scan.id}")
+    assert response.status_code == 200, response.text
+    db_session.expire_all()
     assert _ports(db_session, known_host) == [22, 8443]
 
 

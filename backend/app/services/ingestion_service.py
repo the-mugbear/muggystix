@@ -355,7 +355,7 @@ def _seen_by_another_scan(vuln, scan_id: int):
     )
 
 
-def _port_is_only_this_attempts(port_id, scan_id: int) -> List[Any]:
+def _port_is_only_this_attempts(port_id, scan_id: int, *, before_release: bool = False) -> List[Any]:
     """The guards under which a port an attempt created may be deleted: no
     OTHER scan saw it and nothing else refers to it.  One list for the ports
     found through the row's own stamp (``ports_v2.created_scan_id``) and for
@@ -364,13 +364,16 @@ def _port_is_only_this_attempts(port_id, scan_id: int) -> List[Any]:
     "Saw it" is more than port history (S1): Nessus writes none, so a later
     scan's re-observation shows only as ``ports_v2.last_updated_scan_id`` and
     as ``vulnerabilities.last_seen_scan_id`` on a row the attempt first
-    recorded.  Both protect the port."""
+    recorded.  Both protect the port.
+
+    ``before_release`` — see ``_none_reported_by_another_scan``."""
     from sqlalchemy import exists
     from sqlalchemy.orm import aliased
 
     from app.db import models
     from app.db.models_findings import FindingHost
     from app.db.models_vulnerability import Vulnerability
+    from app.services import scan_sightings
 
     other_ph = aliased(models.PortScanHistory)
     this_port = aliased(models.Port)
@@ -378,7 +381,16 @@ def _port_is_only_this_attempts(port_id, scan_id: int) -> List[Any]:
     def another_scan(column):
         return column.is_distinct_from(scan_id)
 
+    sightings: List[Any] = []
+    if before_release:
+        port_vuln, port_script = aliased(Vulnerability), aliased(models.Script)
+        sightings = [
+            _none_reported_by_another_scan(scan_sightings.VULNERABILITY, port_vuln, port_vuln.port_id == port_id, scan_id),
+            _none_reported_by_another_scan(scan_sightings.SCRIPT, port_script, port_script.port_id == port_id, scan_id),
+        ]
+
     return [
+        *sightings,
         ~exists().where(other_ph.port_id == port_id, another_scan(other_ph.scan_id)),
         # A scan NAMED as the last updater that is not this one.  NULL does
         # not protect: it means the scan that last updated the port was
@@ -400,162 +412,74 @@ _API_CLEANUP_LOCK_TIMEOUT_S = 15
 _LEFTOVER_RETRY_SECONDS = 600
 
 
-def _rehome_rows_a_later_scan_saw(db: Session, scan_id: int) -> int:
-    """Move the rows ``scan_id`` first recorded that ANOTHER scan has since
-    seen onto that scan, so deleting ``scan_id`` neither deletes them nor
-    leaves them naming a scan that is gone (review 2026-10-01 S1).
+def _none_reported_by_another_scan(kind: str, row, of_parent, scan_id: int):
+    """``NOT EXISTS``: no ``row`` under the parent (``of_parent``) has a
+    sighting by a scan other than ``scan_id``.
 
-    A re-observation never moves a row's ``scan_id`` ("first recorded by"),
-    so a partial scan that is cleaned up late — its worker was killed, another
-    import of the same hosts completed, and only then was the job reaped or
-    re-claimed — still owned rows the completed import had reported.  Per
-    table:
+    The cleanup of an unfinished import asks its guards AFTER
+    ``scan_sightings.release_scan``, which has already handed every row
+    another scan also reported to that scan — the rows' own pointers then say
+    so and the guards need nothing more.  The hand delete chooses its hosts
+    before anything is written and its preview never writes, so both ask with
+    ``before_release=True``, which adds this: what release WOULD hand over
+    protects the host or port already.  The answer is then the same before
+    and after release."""
+    from sqlalchemy import exists
 
-    * ``vulnerabilities`` (``scan_id`` SET NULL): the re-observation is
-      recorded (``last_seen_scan_id``), so the row moves to exactly the scan
-      that last saw it.
-    * ``scripts_v2`` / ``host_scripts_v2`` / ``host_attributes`` (``scan_id``
-      CASCADE, NOT NULL, and no "last seen by" column): the row moves to the
-      newest OTHER scan that observed its port / host, when that scan is
-      later than this one (a higher id) or the row itself was touched again
-      after it was written (``last_seen`` past ``first_seen``).  A row on a
-      port only EARLIER scans saw, never touched again, is this attempt's
-      alone and cascades with the scan.
-    * ``host_confidence`` / ``port_confidence`` (CASCADE; ``scan_id`` moves
-      only when a scan's observation wins): to the newest later scan that
-      observed the host / port.
+    from app.services import scan_sightings
 
-    ``web_interfaces``, ``web_paths``, ``netexec_results``, ``scan_info`` and
-    the two history tables carry the scan in their identity — a later scan
-    writes its own rows — so there is nothing of theirs to move.
-
-    Then the introduction itself: a host or port this scan CREATED and another
-    scan has seen is now introduced by the first of those scans
-    (``host_created`` / ``port_created``), so the Scans page does not count it
-    as "already known" to every scan left.
-    """
-    from sqlalchemy import exists, func, or_, select, update
-    from sqlalchemy.orm import aliased
-
-    from app.db import models
-    from app.db.models_confidence import HostConfidence, PortConfidence
-    from app.db.models_vulnerability import HostAttribute, Vulnerability
-
-    HH, PH = models.HostScanHistory, models.PortScanHistory
-    moved = db.execute(
-        update(Vulnerability)
-        .where(
-            Vulnerability.scan_id == scan_id,
-            Vulnerability.last_seen_scan_id.isnot(None),
-            Vulnerability.last_seen_scan_id != scan_id,
-        )
-        .values(scan_id=Vulnerability.last_seen_scan_id)
-        .execution_options(synchronize_session=False)
-    ).rowcount
-
-    def _to_the_scan_that_saw_its_parent(model, parent, history, history_parent, touched_again=None):
-        other = aliased(history)
-        seen = [history_parent(other) == parent, other.scan_id != scan_id]
-        later = other.scan_id > scan_id
-        if touched_again is not None:
-            later = or_(later, touched_again)
-        target = select(func.max(other.scan_id)).where(*seen, later).correlate(model).scalar_subquery()
-        return db.execute(
-            update(model)
-            .where(model.scan_id == scan_id, exists().where(*seen, later))
-            .values(scan_id=target)
-            .execution_options(synchronize_session=False)
-        ).rowcount
-
-    by_port, by_host = (lambda h: h.port_id), (lambda h: h.host_id)
-    moved += _to_the_scan_that_saw_its_parent(
-        models.Script, models.Script.port_id, PH, by_port,
-        models.Script.last_seen > models.Script.first_seen,
-    )
-    moved += _to_the_scan_that_saw_its_parent(
-        models.HostScript, models.HostScript.host_id, HH, by_host,
-        models.HostScript.last_seen > models.HostScript.first_seen,
-    )
-    # first_seen / last_seen are two Python clock reads at insert, a few
-    # microseconds apart: "touched again" needs a real gap.
-    moved += _to_the_scan_that_saw_its_parent(
-        HostAttribute, HostAttribute.host_id, HH, by_host,
-        HostAttribute.last_seen > HostAttribute.first_seen + timedelta(seconds=1),
-    )
-    moved += _to_the_scan_that_saw_its_parent(HostConfidence, HostConfidence.host_id, HH, by_host)
-    moved += _to_the_scan_that_saw_its_parent(PortConfidence, PortConfidence.port_id, PH, by_port)
-
-    for history, parent, flag in ((HH, HH.host_id, HH.host_created), (PH, PH.port_id, PH.port_created)):
-        mine, other = aliased(history), aliased(history)
-        parent_name, flag_name = parent.key, flag.key
-        heirs = (
-            select(func.min(other.id))
-            .join(mine, getattr(mine, parent_name) == getattr(other, parent_name))
-            .where(mine.scan_id == scan_id, getattr(mine, flag_name).is_(True), other.scan_id != scan_id)
-            .group_by(getattr(other, parent_name))
-        )
-        db.execute(
-            update(history).where(history.id.in_(heirs)).values({flag_name: True})
-            .execution_options(synchronize_session=False)
-        )
-    return moved
+    return ~exists().where(of_parent, scan_sightings.another_scan_reported(kind, scan_id, row))
 
 
-def _host_is_only_this_attempts(host_id, scan_id: int) -> List[Any]:
-    """The guards under which a host an attempt created may be deleted: no
-    other scan saw it, nobody has worked on it, and nothing else has attached
-    to it.  When in doubt the host stays.
+def host_provenance_conditions(host_id, scan_id: int, *, before_release: bool = False) -> List[Any]:
+    """One ``NOT EXISTS`` per way ANOTHER scan or source can have attached to
+    a host: the host was brought by ``scan_id`` alone.  The cleanup of an
+    unfinished import takes these with the work conditions
+    (``_host_is_only_this_attempts``); a scan delete by hand, its refusal and
+    its preview take these alone (work is asked about, not a reason to keep).
 
     History is the usual witness, but not the only one (S1): a writer that
     attaches without a history row — a re-observed scanner row, a port another
-    scan updated, a web row, an operator's correction of the name — protects
-    the host as well."""
+    scan updated, a web row — protects the host as well."""
     from sqlalchemy import exists
     from sqlalchemy.orm import aliased
 
     from app.db import models
     from app.db.models_confidence import NetexecResult
-    from app.db.models_findings import FindingHost
-    from app.db.models_host_tests import HostTest
-    from app.db.models_proposals import AgentProposal, EvidenceRecord
-    from app.db.models_remediation import RemediationEvent
     from app.db.models_vulnerability import HostAttribute, Vulnerability
+    from app.services import scan_sightings
 
     other_hh = aliased(models.HostScanHistory)
     this_host = aliased(models.Host)
     host_port = aliased(models.Port)
     port_ph = aliased(models.PortScanHistory)
     host_vuln = aliased(Vulnerability)
-    proposed_vuln = aliased(Vulnerability)
-
-    def _no(column):
-        return ~exists().where(column == host_id)
 
     def _none_from_another_scan(model):
         return ~exists().where(model.host_id == host_id, model.scan_id != scan_id)
 
+    sightings: List[Any] = []
+    if before_release:
+        seen_vuln, seen_script = aliased(Vulnerability), aliased(models.HostScript)
+        seen_attribute, port_script, its_port = aliased(HostAttribute), aliased(models.Script), aliased(models.Port)
+        sightings = [
+            _none_reported_by_another_scan(scan_sightings.VULNERABILITY, seen_vuln, seen_vuln.host_id == host_id, scan_id),
+            _none_reported_by_another_scan(scan_sightings.HOST_SCRIPT, seen_script, seen_script.host_id == host_id, scan_id),
+            _none_reported_by_another_scan(
+                scan_sightings.HOST_ATTRIBUTE, seen_attribute, seen_attribute.host_id == host_id, scan_id),
+            ~exists().where(
+                its_port.host_id == host_id, port_script.port_id == its_port.id,
+                scan_sightings.another_scan_reported(scan_sightings.SCRIPT, scan_id, port_script),
+            ),
+        ]
+
     return [
         ~exists().where(other_hh.host_id == host_id, other_hh.scan_id != scan_id),
-        # Work: never deleted to tidy an import.
-        _no(models.Annotation.host_id),
-        _no(models.HostFollow.host_id),
-        _no(models.HostTagAssignment.host_id),
-        _no(FindingHost.host_id),
-        _no(HostTest.host_id),
-        _no(EvidenceRecord.host_id),
-        # A remediation note needs only a host, not a finding on it.
-        _no(RemediationEvent.host_id),
-        ~exists().where(
-            proposed_vuln.host_id == host_id,
-            AgentProposal.vulnerability_id == proposed_vuln.id,
-        ),
+        *sightings,
         # A scan named as its last updater that is not this one (the web
         # parsers leave the pointer NULL on a host they create, so NULL does
-        # not protect), or a name an operator typed.
-        ~exists().where(
-            this_host.id == host_id,
-            (this_host.last_updated_scan_id != scan_id) | (this_host.hostname_source == "operator"),
-        ),
+        # not protect).
+        ~exists().where(this_host.id == host_id, this_host.last_updated_scan_id != scan_id),
         # Something from another scan or source hangs on it.
         ~exists().where(host_vuln.host_id == host_id, _seen_by_another_scan(host_vuln, scan_id)),
         ~exists().where(host_port.host_id == host_id, host_port.last_updated_scan_id != scan_id),
@@ -568,6 +492,136 @@ def _host_is_only_this_attempts(host_id, scan_id: int) -> List[Any]:
         _none_from_another_scan(models.WebPath),
         _none_from_another_scan(NetexecResult),
     ]
+
+
+def _host_is_only_this_attempts(host_id, scan_id: int) -> List[Any]:
+    """The guards under which a host an attempt created may be deleted: no
+    other scan or source attached anything to it
+    (``host_provenance_conditions``) and nobody has worked on it.  When in
+    doubt the host stays."""
+    from app.services import host_work
+
+    return [
+        *host_provenance_conditions(host_id, scan_id),
+        # Work is never deleted to tidy an import.  The list of what counts
+        # as work is ``host_work.work_kinds`` — the one a scan delete by hand
+        # warns from; a new kind is added there, not here.
+        *host_work.no_work_conditions(host_id),
+    ]
+
+
+def hosts_scan_brought(scan_id: int):
+    """``SELECT host id, address`` of the hosts a scan delete BY HAND removes:
+    the scan has history for them and nothing says another scan or source had
+    them (``host_provenance_conditions``, asked as before release).  The
+    delete, its ``hosts_with_work`` refusal and its preview all select with
+    this."""
+    from sqlalchemy import select
+
+    from app.db import models
+
+    HH = models.HostScanHistory
+    return (
+        select(HH.host_id, models.Host.ip_address)
+        .join(models.Host, models.Host.id == HH.host_id)
+        .where(HH.scan_id == scan_id)
+        .where(*host_provenance_conditions(HH.host_id, scan_id, before_release=True))
+        .distinct()
+    )
+
+
+def _ports_scan_created(scan_id: int, *, before_release: bool = False) -> List[Any]:
+    """Conditions on ``Port``, one per way a scan's own ports are found — the
+    row's stamp, and port history saying the scan created it — each under the
+    ``_port_is_only_this_attempts`` guards.
+
+    The stamp names the import that inserted the row: the only record for an
+    import that writes no port history (Nessus).  A NULL stamp (a row older
+    than the column, or one whose creating scan is gone) matches no scan.
+    History finds the ports whose introduction passed to this scan when the
+    scan that inserted them was deleted (``scan_sightings.release_scan``
+    moves ``port_created``; the stamp went with the deleted scan)."""
+    from sqlalchemy import and_, select
+
+    from app.db import models
+
+    PH = models.PortScanHistory
+    guards = _port_is_only_this_attempts(models.Port.id, scan_id, before_release=before_release)
+    return [
+        and_(models.Port.created_scan_id == scan_id, *guards),
+        and_(
+            models.Port.id.in_(select(PH.port_id).where(PH.scan_id == scan_id, PH.port_created.is_(True))),
+            *guards,
+        ),
+    ]
+
+
+def ports_scan_created_condition(scan_id: int):
+    """Condition on ``Port``: what ``delete_ports_scan_created`` removes for a
+    scan delete by hand, for its preview to count."""
+    from sqlalchemy import or_
+
+    return or_(*_ports_scan_created(scan_id, before_release=True))
+
+
+def delete_ports_scan_created(db: Session, scan_id: int, *, before_release: bool = False) -> int:
+    """Delete the ports ``scan_id`` created that nothing else holds — the ONE
+    port step of a scan delete, for the cleanup of an unfinished import and
+    for a delete by hand.  Run it after the hosts the delete removes are gone
+    (their ports went with them; these are on hosts that stay) and before the
+    scan row, whose delete clears the stamp.  The caller holds the project's
+    cleanup lock."""
+    from sqlalchemy import delete
+
+    from app.db import models
+
+    removed = 0
+    for found in _ports_scan_created(scan_id, before_release=before_release):
+        removed += db.execute(
+            delete(models.Port).where(found).execution_options(synchronize_session=False)
+        ).rowcount
+    return removed
+
+
+def running_import(db: Session, project_id: Optional[int]) -> Optional[IngestionJob]:
+    """The project's import that a LIVE attempt is processing, or None.
+
+    A ``processing`` row alone does not say so: a worker that died leaves one
+    until the reaper finds it.  The attempt is over when nobody holds its
+    liveness lock (``attempt_is_over``) or its lease is past the reaper's
+    window — the rule a cancel decides by."""
+    if not _real_id(project_id):
+        return None
+    jobs = (
+        db.query(IngestionJob)
+        .filter(IngestionJob.project_id == project_id, IngestionJob.status == "processing")
+        .order_by(IngestionJob.id)
+        .all()
+    )
+    for job in jobs:
+        if job.started_at is not None and (
+            attempt_is_over(db, job.id, job.started_at) or ingestion_service._lease_is_dead(job)
+        ):
+            continue
+        return job
+    return None
+
+
+def refuse_hand_delete_while_importing(db: Session, project_id: Optional[int]) -> Optional[IngestionJob]:
+    """For a scan delete by hand, before it changes anything: the import
+    running in the project (the caller refuses), else take the project's
+    cleanup lock for the rest of the caller's transaction and return None.
+
+    The lock is what makes the delete's ``NOT EXISTS`` guards safe, so it is
+    always taken.  It waits at most ``_API_CLEANUP_LOCK_TIMEOUT_S`` (the
+    statement then fails with ``lock_not_available``).  An import claimed
+    between the first look and the lock is seen by the second look; one
+    claimed later waits for this transaction at its first write."""
+    job = running_import(db, project_id)
+    if job is not None:
+        return job
+    lock_project_for_cleanup(db, project_id, lock_timeout_s=_API_CLEANUP_LOCK_TIMEOUT_S)
+    return running_import(db, project_id)
 
 
 def scan_file_paths(scan_id: int) -> List[Path]:
@@ -624,42 +678,44 @@ def delete_partial_scan(
     * first, the project's import lock in exclusive mode
       (``lock_project_for_cleanup``): no import of the project has a batch
       open while the checks below run;
-    * rows this scan first recorded that a later scan re-observed are moved
-      to that scan (``_rehome_rows_a_later_scan_saw``);
+    * ``scan_sightings.release_scan`` — the step every scan delete runs:
+      scripts, host scripts and host attributes only this scan reported go;
+      the rows another scan also reported stay and name that scan as their
+      first recorder; scanner observations this scan first recorded and no
+      other scan saw go, unless a finding or a proposal refers to them;
 
     then removed, in this order:
 
     * hosts whose history says this scan CREATED them and no other scan saw
-      them — unless a person or an agent has worked on the host (a note, a
-      follow, a tag, a finding endpoint, a test, an evidence record, a
-      proposal about one of its observations) or something else has attached
-      to it (``_host_is_only_this_attempts``): work is never deleted to tidy
-      an import, and when in doubt the host stays;
+      them — unless a person or an agent has worked on the host (the kinds in
+      ``host_work.work_kinds``: a note, a review, a tag, a finding endpoint,
+      a test, an evidence record, a remediation entry, a proposal about one
+      of its observations, a host name someone typed) or something else has
+      attached to it (``_host_is_only_this_attempts``): work is never deleted
+      to tidy an import, and when in doubt the host stays;
     * on the hosts that stay, ports this scan created that no other scan saw
       and nothing else refers to — found through the stamp every insert puts
       on the row (``ports_v2.created_scan_id``; Nessus writes no port
       history, so for it the stamp is the only record) and through
       ``port_scan_history``; the same guards for both;
-    * scanner observations this scan first recorded and no later scan saw,
-      unless a finding or a proposal refers to them, and the name
-      observations it made;
-    * the scan — its history, scripts and web rows cascade.
+    * the name observations it made, and the names only it observed that
+      nothing else refers to (``dns_name_service.delete_scan_observations``,
+      the step a scan delete by hand runs too);
+    * the scan — its history, sightings and web rows cascade.
 
     Statements only (no rows loaded); the caller commits, then removes the
     scan's files (``remove_scan_files``).  Returns the counts for the log
     line.
     """
-    from sqlalchemy import delete, exists, or_, select
+    from sqlalchemy import delete, select
 
     from app.db import models
-    from app.db.models_findings import Finding, FindingVulnerability
-    from app.db.models_proposals import AgentProposal
-    from app.db.models_vulnerability import Vulnerability
+    from app.services import dns_name_service, scan_sightings
 
     lock_project_for_cleanup(db, _project_of_scan(db, scan_id), lock_timeout_s=lock_timeout_s)
-    rehomed = _rehome_rows_a_later_scan_saw(db, scan_id)
+    released = scan_sightings.release_scan(db, scan_id)
 
-    HH, PH = models.HostScanHistory, models.PortScanHistory
+    HH = models.HostScanHistory
 
     created_hosts = (
         select(HH.host_id)
@@ -672,53 +728,18 @@ def delete_partial_scan(
     ).rowcount
 
     # Ports of the deleted hosts went with them; these are on hosts that stay.
-    # The row's own stamp names the import that inserted it — the only record
-    # for an import that writes no port history (Nessus).  A NULL stamp (a row
-    # older than the column, or one whose creating scan is gone) matches no
-    # scan, so such a port is never deleted here.
-    ports = db.execute(
-        delete(models.Port)
-        .where(models.Port.created_scan_id == scan_id)
-        .where(*_port_is_only_this_attempts(models.Port.id, scan_id))
-        .execution_options(synchronize_session=False)
-    ).rowcount
-    # ...and the ports whose introduction passed to this scan when the scan
-    # that inserted them was cleaned up (``_rehome_rows_a_later_scan_saw``
-    # moves ``port_created``; the stamp went with the deleted scan).
-    created_ports = (
-        select(PH.port_id)
-        .where(PH.scan_id == scan_id, PH.port_created.is_(True))
-        .where(*_port_is_only_this_attempts(PH.port_id, scan_id))
-    )
-    ports += db.execute(
-        delete(models.Port).where(models.Port.id.in_(created_ports))
-        .execution_options(synchronize_session=False)
-    ).rowcount
+    ports = delete_ports_scan_created(db, scan_id)
 
-    # Only what no other scan has seen.  The re-observed ones were moved to
-    # the scan that saw them above; the second condition is the same rule
-    # stated where the delete happens, so it holds whatever ran before.
-    observations = db.execute(
-        delete(Vulnerability)
-        .where(Vulnerability.scan_id == scan_id)
-        .where(or_(
-            Vulnerability.last_seen_scan_id.is_(None),
-            Vulnerability.last_seen_scan_id == scan_id,
-        ))
-        .where(~exists().where(Finding.vuln_id == Vulnerability.id))
-        .where(~exists().where(FindingVulnerability.vuln_id == Vulnerability.id))
-        .where(~exists().where(AgentProposal.vulnerability_id == Vulnerability.id))
-        .execution_options(synchronize_session=False)
-    ).rowcount
-    db.execute(
-        delete(models.DNSRecord).where(models.DNSRecord.scan_id == scan_id)
-        .execution_options(synchronize_session=False)
-    )
+    names = dns_name_service.delete_scan_observations(db, scan_id)
     db.execute(
         delete(models.Scan).where(models.Scan.id == scan_id)
         .execution_options(synchronize_session=False)
     )
-    return {"hosts": hosts, "ports": ports, "observations": observations, "rehomed": rehomed}
+    return {
+        "hosts": hosts, "ports": ports,
+        "observations": released["observations"], "rehomed": released["rehomed"],
+        "dns_records": names["records"], "dns_names": names["names"],
+    }
 
 
 ParserDescriptor = Tuple[str, Type, str]

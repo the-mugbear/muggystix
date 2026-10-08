@@ -7,6 +7,7 @@
  * from ``../services/api`` — the barrel re-exports this module.
  */
 import { api, p } from './client';
+import type { HostWithWork } from '../../utils/scanDeletion';
 
 export interface ScanVulnerabilitySummary {
   /** Findings FIRST recorded by this scan. */
@@ -363,15 +364,27 @@ export const getScan = async (scanId: number) => {
   return response.data;
 };
 
-export const deleteScan = async (scanId: number) => {
-  const response = await api.delete(`${p()}/scans/${scanId}`);
+/**
+ * Delete a scan.  While hosts it removes carry work the server refuses with
+ * 409 `hosts_with_work` unless `confirmHostsWithWork` says the reader reviewed
+ * them; the parameter is sent only then.
+ */
+export const deleteScan = async (
+  scanId: number,
+  options?: { confirmHostsWithWork?: boolean },
+) => {
+  const response = await api.delete(
+    `${p()}/scans/${scanId}`,
+    options?.confirmHostsWithWork ? { params: { confirm_hosts_with_work: true } } : undefined,
+  );
   return response.data;
 };
 
 /**
- * What a scan delete actually removes. Hosts are deduplicated per-IP-per-
- * project, so deleting a scan only removes hosts seen by NO other scan
- * ("removed"); hosts shared with other scans are kept and re-pointed.
+ * What a scan delete actually removes: everything the scan brought that
+ * nothing else holds.  Hosts are deduplicated per-IP-per-project, so only the
+ * hosts no other scan or source has are removed; the others are kept, and on
+ * them only what this scan alone created or reported goes.
  */
 export interface ScanDeletionImpact {
   scan_id: number;
@@ -379,11 +392,27 @@ export interface ScanDeletionImpact {
   hosts_removed: number;
   hosts_kept: number;
   sample_removed_ips: string[];
+  /** Ports on the removed hosts. */
   ports_removed: number;
-  /** Findings first recorded by this scan on surviving hosts: kept, lose
-   *  that attribution (v5.204.0 — they used to be deleted with the scan). */
-  vulnerabilities_detached: number;
+  /** Ports this scan created on hosts that stay, that nothing else holds. */
+  ports_removed_on_kept_hosts?: number;
+  /** Scanner observations only this scan reported, on hosts that stay: deleted. */
+  vulnerabilities_removed: number;
+  /** The same, but a finding or a proposal refers to them: kept, without a scan. */
+  vulnerabilities_kept?: number;
+  /** An import is running in the project: the delete is refused until it finishes. */
+  import_running?: boolean;
+  import_running_filename?: string | null;
   web_interfaces_removed: number;
+  /** How many of the removed hosts carry people's work (notes, tests,
+   *  evidence…), which is deleted with them.  Absent from an older server. */
+  hosts_with_work?: number;
+  /** Up to 50 of those hosts, in address order. */
+  hosts_with_work_sample?: HostWithWork[];
+  /** The scan's own DNS observations, removed with it.  Absent from an older server. */
+  dns_records_removed?: number;
+  /** Names only this scan observed and nothing else refers to, removed with it. */
+  dns_names_removed?: number;
 }
 
 export const getScanDeletionImpact = async (

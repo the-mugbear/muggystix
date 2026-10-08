@@ -29,11 +29,12 @@ import { useListCursor } from '../../hooks/useListCursor';
 import { formatDate } from '../../utils/relativeTime';
 import {
   REMEDIATION_GROUPS, REMEDIATION_GROUP_LABEL, REMEDIATION_PAGE_SIZE, REMEDIATION_PAGE_SIZES,
-  OVERDUE_BAND_LABEL, REMEDIATION_STATES, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL, deadlineCell, idParam,
-  isOverdueBand, isRemediationGroup, isRemediationState, remediationCsv, remediationPageSize, remediationSummary,
-  severityWord, timelineSummary,
+  OVERDUE_BAND_LABEL, REMEDIATION_STATES, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL,
+  REMEDIATION_VERIFICATION_LABEL, REPORTED_FIXED, deadlineCell, idParam,
+  isOverdueBand, isRemediationGroup, isRemediationState, isRemediationVerification, remediationCsv,
+  remediationPageSize, remediationSummary, severityWord, timelineSummary, verificationNote,
 } from '../../utils/remediation';
-import RemediationInsights from './RemediationInsights';
+import RemediationInsights, { RemediationVerificationCounts } from './RemediationInsights';
 import {
   BulkBar, FilterChips, ListBody, PagedFooter, filterChipClass, useRowSelection,
 } from '../operations/QueueParts';
@@ -59,7 +60,7 @@ const ALL_PROJECTS = '__all__';
 const ANY_SEVERITY = '__any__';
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info'];
 
-/** Findings on hosts still open in a project: every state but deferred and closed. */
+/** Findings on hosts still open in a project: every state but deferred and reported fixed. */
 export const openCount = (states: Record<RemediationState, number>): number =>
   states.overdue + states.due_soon + states.on_track + states.not_assigned + states.no_deadline;
 
@@ -121,6 +122,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   const band = isOverdueBand(bandParam) ? bandParam : null;
   // Overdue or due soon, and nobody followed up within the warning window.
   const stale = params.get('stale') === '1';
+  // Where the contact's record and the assessment disagree (the server derives it).
+  const verificationParam = params.get('verification');
+  const verification = isRemediationVerification(verificationParam) ? verificationParam : null;
   // A link from a host or a finding narrows the list to it (`?host=`, `?finding=`).
   const hostId = across ? null : idParam(params.get('host'));
   const findingId = across ? null : idParam(params.get('finding'));
@@ -155,7 +159,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   );
 
   const filtered = !!contact || unassigned || hostId != null || findingId != null || projectId != null
-    || severity != null || !!team || band != null || stale;
+    || severity != null || !!team || band != null || stale || verification != null;
 
   // The filters of the list, as the API takes them — the list, the CSV and
   // nothing else read them, so the file holds exactly the rows on screen.
@@ -164,8 +168,9 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     host_id: hostId ?? undefined, finding_id: findingId ?? undefined, severity: severity ?? undefined,
     team: team || undefined, overdue_band: band ?? undefined,
     no_follow_up_days: stale ? (policy?.due_soon_days || 7) : undefined,
+    verification: verification ?? undefined,
     project_id: projectId ?? undefined,
-  }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, projectId, policy]);
+  }), [state, contact, unassigned, hostId, findingId, severity, team, band, stale, verification, projectId, policy]);
 
   // The rows' page is in the address (`?page=`): a reload, or Back from a
   // host or a finding, returns to the rows that were on screen.
@@ -216,6 +221,14 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
     const next = new URLSearchParams(prev);
     ['view', 'state', 'severity', 'band', 'stale', 'team', 'contact', 'unassigned'].forEach((k) => next.delete(k));
     Object.entries(set).forEach(([k, v]) => next.set(k, v));
+    return next;
+  });
+  // A gap count is taken over the selection before the state filters, so
+  // opening it drops those and keeps the rest (contact, team, severity…).
+  const openVerification = (value: string) => setParams((prev) => {
+    const next = new URLSearchParams(prev);
+    ['view', 'state', 'band', 'stale'].forEach((k) => next.delete(k));
+    next.set('verification', value);
     return next;
   });
 
@@ -303,6 +316,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
   if (team) extra.push({ key: 'team', label: `Team ${team}` });
   if (band) extra.push({ key: 'band', label: `Overdue by ${OVERDUE_BAND_LABEL[band].toLowerCase()}` });
   if (stale) extra.push({ key: 'stale', label: `Overdue or due soon, no follow-up in ${policy?.due_soon_days || 7} days` });
+  if (verification) extra.push({ key: 'verification', label: REMEDIATION_VERIFICATION_LABEL[verification] });
 
   // j / k move, Enter opens the row: the editor for an admin, the timeline otherwise.
   const { cursorRowProps } = useListCursor(
@@ -392,7 +406,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
         >
           {() => (
             <div className="min-w-0 overflow-x-auto">
-              <Table aria-label="Teams and their remediation deadlines" className="min-w-[48rem] table-fixed">
+              <Table aria-label="Teams and their remediation deadlines" className="min-w-[50rem] table-fixed">
                 <TableHeader>
                   <TableRow className="hover:bg-transparent hover:shadow-none">
                     <TableHead>Team</TableHead>
@@ -400,7 +414,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                     <TableHead className="w-[6rem] text-right">Due soon</TableHead>
                     <TableHead className="w-[6rem] text-right">On track</TableHead>
                     <TableHead className="w-[6rem] text-right">All open</TableHead>
-                    <TableHead className="w-[6rem] text-right">Closed</TableHead>
+                    <TableHead className="w-[8rem] text-right">{REPORTED_FIXED}</TableHead>
                     <TableHead className="w-[6rem] text-right">Contacts</TableHead>
                     {across && <TableHead className="w-[6rem] text-right">Projects</TableHead>}
                   </TableRow>
@@ -519,6 +533,8 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
               onNotFollowedUp={() => openRows({ stale: '1' })}
             />
           )}
+          <RemediationVerificationCounts counts={list.lastResponse?.verification_counts}
+            selected={verification} onSelect={openVerification} />
           <FilterChips<RemediationState>
             label="Filter by deadline state"
             allLabel="All"
@@ -629,7 +645,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                   {/* The fixed columns leave Finding — the one column with no
                       width — at least 10rem at the table's minimum. */}
                   <Table aria-label="Findings on hosts and their remediation deadlines"
-                    className={`${across ? 'min-w-[68rem]' : 'min-w-[59rem]'} table-fixed`}>
+                    className={`${across ? 'min-w-[70.5rem]' : 'min-w-[61.5rem]'} table-fixed`}>
                     <TableHeader>
                       <TableRow className="hover:bg-transparent hover:shadow-none">
                         {canWrite && (
@@ -638,7 +654,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                               onCheckedChange={(v) => selection.toggleAll(v === true)} />
                           </TableHead>
                         )}
-                        <TableHead className="w-[10.5rem]">Deadline</TableHead>
+                        <TableHead className="w-[13rem]">Deadline</TableHead>
                         <TableHead className="w-[9rem]">Host</TableHead>
                         <TableHead>Finding</TableHead>
                         {across && <TableHead className="w-[9rem]">Project</TableHead>}
@@ -651,6 +667,7 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                       {rows.map((r, i) => {
                         const picked = selection.isSelected(r.finding_host_id);
                         const deadline = deadlineCell(r);
+                        const verified = verificationNote(r);
                         return (
                           <TableRow key={r.finding_host_id} data-state={picked ? 'selected' : undefined}
                             aria-selected={canWrite ? picked : undefined} {...cursorRowProps(i)}>
@@ -667,6 +684,12 @@ export const RemediationWorkList: React.FC<RemediationWorkListProps> = ({
                               {deadline.date && (
                                 <span className="block truncate text-caption text-muted-foreground">
                                   {formatDate(deadline.date)}
+                                </span>
+                              )}
+                              {/* The assessment's side of the same finding on this host. */}
+                              {verified && (
+                                <span className={`block truncate text-caption ${verified.tone}`} title={verified.title}>
+                                  {verified.text}
                                 </span>
                               )}
                             </TableCell>

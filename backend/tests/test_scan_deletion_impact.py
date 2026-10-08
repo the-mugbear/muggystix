@@ -47,10 +47,9 @@ def test_deletion_impact_counts_only_what_delete_removes(client, db_session, tes
     db_session.add(models.Port(host_id=h_orphan.id, port_number=443, protocol="tcp", state="open"))
     db_session.add(models.Port(host_id=h_shared.id, port_number=22, protocol="tcp", state="open"))
 
-    # v2.332.0 — findings belong to their HOST; scan_id is "first recorded
-    # by" and SET NULL on scan delete.  The orphan host's vuln goes with the
-    # host; the target scan's vuln on the SHARED host is kept and only loses
-    # its attribution — that is what the impact preview reports.
+    # The orphan host's vuln goes with the host; the target scan's vuln on
+    # the SHARED host, which no other scan reported, is deleted too — that
+    # one is what the impact preview reports.
     for host in (h_orphan, h_shared):
         db_session.add(Vulnerability(
             host_id=host.id, scan_id=target.id, title="x",
@@ -73,7 +72,10 @@ def test_deletion_impact_counts_only_what_delete_removes(client, db_session, tes
     assert body["ports_removed"] == 2          # only the orphan host's ports
     # Only the shared host's target-scan vuln: the orphan host's goes with
     # the host (counted under hosts_removed), the other scan's is untouched.
-    assert body["vulnerabilities_detached"] == 1
+    assert body["vulnerabilities_removed"] == 1
+    assert body["vulnerabilities_kept"] == 0
+    assert body["ports_removed_on_kept_hosts"] == 0
+    assert body["import_running"] is False
     assert body["web_interfaces_removed"] == 1
 
 

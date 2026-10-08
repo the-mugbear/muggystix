@@ -70,6 +70,32 @@ export const ENDPOINT_STATUS_LABEL: Record<FindingHostStatus, string> = {
   false_positive: 'False positive here',
 };
 
+/** The short form, where the context already says "on this endpoint": the
+ *  filter chips, a network's counts, the state bar. */
+export const ENDPOINT_STATUS_SHORT_LABEL: Record<FindingHostStatus, string> = {
+  open: 'Still present',
+  retest: 'Retest',
+  remediated: 'Remediated',
+  false_positive: 'False positive',
+};
+
+/** The read-only badge's tone for each endpoint state. */
+export const ENDPOINT_STATUS_TONE: Record<FindingHostStatus, 'warning' | 'success' | 'outline' | 'info'> = {
+  open: 'warning', remediated: 'success', false_positive: 'outline', retest: 'info',
+};
+
+/**
+ * The same tones as fills, for the state bar.  False positive is hatched as
+ * well as neutral, so it is told from remediated by more than its hue.
+ */
+export const ENDPOINT_STATUS_FILL: Record<FindingHostStatus, string> = {
+  open: 'bg-warning',
+  retest: 'bg-info',
+  remediated: 'bg-success',
+  false_positive:
+    'bg-[repeating-linear-gradient(135deg,hsl(var(--muted-foreground))_0_2px,hsl(var(--muted-foreground)/0.25)_2px_5px)]',
+};
+
 /**
  * "Still present on 3 of 5 · 1 remediated · 1 retest" — how the endpoints
  * stand, so a finding's status is never read as one state for every host.

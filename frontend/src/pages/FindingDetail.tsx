@@ -54,6 +54,7 @@ import { Badge } from '../components/ui/badge';
 import { Button } from '../components/ui/button';
 import PostureSection, { SectionCount } from '../components/posture/PostureSection';
 import FindingEndpoints from '../components/findings/FindingEndpoints';
+import FindingJumpBar, { JumpEntry, jumpTargetStyle } from '../components/findings/FindingJumpBar';
 import { useFindingProposals } from '../hooks/useFindingProposals';
 import type { Proposal } from '../services/api';
 import { formatTimestamp } from '../utils/relativeTime';
@@ -67,7 +68,7 @@ import { Input } from '../components/ui/input';
 import { Textarea } from '../components/ui/textarea';
 import { safeFallback } from '../utils/uiStyles';
 import { cn } from '../utils/cn';
-import { STATUS_LABEL, TERMINAL_STATUSES, describeEndpointStates } from '../utils/findingStatus';
+import { STATUS_LABEL, TERMINAL_STATUSES } from '../utils/findingStatus';
 import { RETURN_PARAM, safeFindingsReturn } from '../utils/findingsReturn';
 
 const SEVERITY_VARIANT = SEVERITY_BADGE_VARIANT;
@@ -269,12 +270,6 @@ const FindingDetail: React.FC = () => {
     }
   };
 
-  // v5.225.0 — one endpoint's own state (design review item 7).  Changes the
-  // row, never the finding's status; the history trail names the endpoint.
-  const endpointSummary = useMemo(
-    () => (finding ? describeEndpointStates(finding.endpoint_status_counts, finding.host_count) : null),
-    [finding],
-  );
   // The endpoint routes answer with the finding, so a change updates the page
   // from the response (C2: no second read of thousands of endpoints); only
   // the history, which the change appended to, is re-read.
@@ -408,41 +403,57 @@ const FindingDetail: React.FC = () => {
     }
   };
 
-  // v5.195.0 — a host may carry several affected-endpoint rows (one per named
-  // endpoint).  Detach addresses the ROW, so a vhost's siblings survive, and
-  // Undo restores that row's name and per-endpoint status, not a bare host.
+  // A host may carry several affected-endpoint rows (one per named endpoint).
+  // Removal addresses the ROW, so a vhost's siblings survive, and Undo
+  // restores that row's name and per-endpoint status, not a bare host.
   const handleRemoveEndpoint = async (row: FindingHostInfo) => {
     if (!finding) return;
     const label = row.fqdn
       ? `${row.fqdn} (${row.ip_address || `Host ${row.host_id}`})`
       : row.ip_address || row.hostname || `Host ${row.host_id}`;
     const ok = await confirm({
-      title: row.fqdn ? 'Detach endpoint from finding?' : 'Detach host from finding?',
+      title: row.fqdn ? 'Remove endpoint from finding?' : 'Remove host from finding?',
       body: `"${label}" will be removed from this finding.`,
       resourceName: label,
       severity: 'danger',
-      confirmLabel: 'Detach',
+      confirmLabel: 'Remove',
     });
     if (!ok) return;
     try {
       const updated = await removeFindingEndpoint(finding.id, row.id);
       setFinding(updated);
-      toast.success(`Detached ${label}.`, {
+      toast.success(`Removed ${label} from the finding.`, {
         action: {
           label: 'Undo',
           onClick: () => {
             addFindingHosts(finding.id, [], [
               { host_id: row.host_id, name_id: row.name_id ?? null, host_status: row.host_status },
             ])
-              .then((reverted) => { setFinding(reverted); toast.success(`Re-attached ${label}.`); })
-              .catch((err) => toast.error(formatApiError(err, 'Failed to undo detach.')));
+              .then((reverted) => { setFinding(reverted); toast.success(`Put ${label} back on the finding.`); })
+              .catch((err) => toast.error(formatApiError(err, 'Failed to undo the removal.')));
           },
         },
       });
     } catch (err) {
-      toast.error(formatApiError(err, 'Failed to detach endpoint.'));
+      toast.error(formatApiError(err, 'Failed to remove the endpoint.'));
     }
   };
+
+  // The jump bar: one entry per section, in page order.  The bar leaves out
+  // any whose section renders nothing, so each is named here unconditionally.
+  const [commentCount, setCommentCount] = useState<number | null>(null);
+  const pendingProposals = proposals.items?.length ?? 0;
+  const emptyReportSections = finding ? missingReportText(finding.report_text).length : 0;
+  const hostCount = finding?.host_count ?? 0;
+  const jumpEntries = useMemo<JumpEntry[]>(() => [
+    { id: 'section-proposals', label: 'Proposals', count: pendingProposals > 0 ? pendingProposals.toLocaleString() : null },
+    { id: 'section-hosts', label: 'Affected hosts', count: hostCount.toLocaleString() },
+    { id: 'section-test-evidence', label: 'Test evidence' },
+    { id: 'section-report-text', label: 'Report text', count: emptyReportSections > 0 ? `${emptyReportSections} empty` : null },
+    { id: 'section-evidence-note', label: 'Evidence note' },
+    { id: 'section-comments', label: 'Comments & evidence', count: commentCount ? commentCount.toLocaleString() : null },
+    { id: 'section-history', label: 'Disposition history' },
+  ], [pendingProposals, hostCount, emptyReportSections, commentCount]);
 
   // Added hosts: say how many were new — the server skips any already on
   // the finding (e.g. added by someone else since the dialog opened).
@@ -610,34 +621,36 @@ const FindingDetail: React.FC = () => {
         )}
       </div>
 
-      {/* 5.334.0 — what is waiting for a decision comes first, as a summary
-          that goes to each proposal where it applies (walkthrough 2026-10-02). */}
-      <FindingProposalsPanel
-        proposals={proposals} endpointIds={endpointIds} canDecide={canManage} onDecided={proposalDecided}
-      />
+      {/* Where the page's sections are, pinned under the chrome: the hosts
+          panel is bounded, so every section is one click away. */}
+      <FindingJumpBar entries={jumpEntries} />
 
-      {/* v5.294.0 (UX review) — sections over thin rules, and the hosts first:
-          triage starts from where the issue is, so the affected hosts sit
-          directly under the status row, before the test evidence, the report
-          text and the discussion. */}
-      <PostureSection
-        className="mb-md"
-        title={<>
-          <span>Affected hosts</span>
-          <SectionCount>{finding.host_count.toLocaleString()}</SectionCount>
-        </>}
-        // v5.225.0 — the finding's status is the issue's; each endpoint keeps
-        // its own, so "Confirmed" here never means every host.
-        description={<>
-          The status above is the issue&apos;s; each endpoint has its own
-          {endpointSummary ? <>: <span className="text-foreground">{endpointSummary}</span></> : ' — all still present'}.
-        </>}
-        actions={canManage ? (
-          <Button variant="outline" size="sm" onClick={() => setAddHostsOpen(true)}>
-            <Plus className="size-4" aria-hidden /> Add hosts
-          </Button>
-        ) : undefined}
-      >
+      {/* What is waiting for a decision comes first, as a summary that goes
+          to each proposal where it applies. */}
+      <div id="section-proposals" style={jumpTargetStyle}>
+        <FindingProposalsPanel
+          proposals={proposals} endpointIds={endpointIds} canDecide={canManage} onDecided={proposalDecided}
+        />
+      </div>
+
+      {/* Sections over thin rules, and the hosts first: triage starts from
+          where the issue is, so the affected hosts sit directly under the
+          status row, before the test evidence, the report text and the
+          discussion.  The list is a bounded panel (FindingEndpoints), which
+          also says how the endpoints stand. */}
+      <div id="section-hosts" style={jumpTargetStyle}>
+        <PostureSection
+          className="mb-md"
+          title={<>
+            <span>Affected hosts</span>
+            <SectionCount>{finding.host_count.toLocaleString()}</SectionCount>
+          </>}
+          actions={canManage ? (
+            <Button variant="outline" size="sm" onClick={() => setAddHostsOpen(true)}>
+              <Plus className="size-4" aria-hidden /> Add hosts
+            </Button>
+          ) : undefined}
+        >
           <FindingEndpoints
             key={finding.id}
             finding={finding}
@@ -649,15 +662,17 @@ const FindingDetail: React.FC = () => {
             canDecide={canManage}
             onProposalDecided={proposalDecided}
           />
-      </PostureSection>
+        </PostureSection>
+      </div>
 
-      {/* UX review 2026-10-02 U12 — the proof before the prose: what was run
-          and what came back sits directly under the hosts, above the five
-          report-text editors (which, empty, used to push it a screen and a
-          half down).  Order: hosts → test evidence → report text → comments
-          → history. */}
-      <FindingEvidence findingId={finding.id} />
+      {/* The proof before the prose: what was run and what came back sits
+          directly under the hosts, above the five report-text editors.
+          Order: hosts → test evidence → report text → comments → history. */}
+      <div id="section-test-evidence" style={jumpTargetStyle}>
+        <FindingEvidence findingId={finding.id} />
+      </div>
 
+      <div id="section-report-text" style={jumpTargetStyle}>
       {findingImages.error && (
         // The images' list feeds the report text (placed images), the editor's
         // picker and the comment thread's rows: a failed read is said here,
@@ -697,7 +712,9 @@ const FindingDetail: React.FC = () => {
         )}
         startEditing={searchParams.get('edit') === 'report-text'}
       />
+      </div>
 
+      <div id="section-evidence-note" style={jumpTargetStyle}>
       {evidenceError && (
         <PostureSection className="mb-md" title={<span>Evidence note</span>}>
           <p className="text-caption text-destructive">{evidenceError}</p>
@@ -742,9 +759,15 @@ const FindingDetail: React.FC = () => {
           </div>
         </section>
       )}
+      </div>
 
-      <FindingCommentThread findingId={finding.id} canManage={canManage} reportMarking={reportMarking} />
+      <div id="section-comments" style={jumpTargetStyle}>
+        <FindingCommentThread
+          findingId={finding.id} canManage={canManage} reportMarking={reportMarking} onCount={setCommentCount}
+        />
+      </div>
 
+      <div id="section-history" style={jumpTargetStyle}>
       <PostureSection title={<span>Disposition history</span>}>
           {historyLoading && history.length === 0 ? (
             <div className="flex items-center gap-xs text-caption text-muted-foreground">
@@ -787,6 +810,7 @@ const FindingDetail: React.FC = () => {
             </ul>
           )}
       </PostureSection>
+      </div>
 
       {/* Terminal-disposition "why" prompt — same policy as the /findings
           list; the summary lands on the finding's disposition history. */}

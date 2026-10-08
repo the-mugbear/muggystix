@@ -183,6 +183,30 @@ def test_usable_discrete_values_still_filter(client, filter_estate):
     assert ids["total"] == 1 and len(ids["ids"]) == 1
 
 
+def test_no_open_ports_is_applied_together_with_a_port_filter(client, db_session, test_project):
+    """``has_open_ports=false`` used to make the other port filters vanish:
+    ``ports=22&port_states=closed&has_open_ports=false`` listed every host
+    with no open port, whatever its port 22."""
+    pid = test_project.id
+
+    def host(ip, *ports):
+        h = _host(db_session, pid, ip)
+        for number, state in ports:
+            db_session.add(models.Port(host_id=h.id, port_number=number, protocol="tcp", state=state))
+        return h
+
+    host("10.62.0.1", (22, "closed"))
+    host("10.62.0.2", (80, "closed"))
+    host("10.62.0.3", (22, "open"))
+    host("10.62.0.4", (22, "closed"), (443, "open"))
+    db_session.commit()
+
+    assert _ips(client, pid, has_open_ports="false") == {"10.62.0.1", "10.62.0.2"}
+    assert _ips(client, pid, has_open_ports="false", ports="22", port_states="closed") == {"10.62.0.1"}
+    # A port filter with no state means an OPEN port, which no such host has.
+    assert _ips(client, pid, has_open_ports="false", ports="22") == set()
+
+
 @pytest.mark.parametrize("term", ["²", "٣", "99999999999999999999"])
 def test_a_search_that_only_looks_like_a_number_is_a_search(client, filter_estate, term):
     """``"²".isdigit()`` is true and ``int("²")`` raises: the search box

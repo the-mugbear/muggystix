@@ -51,6 +51,7 @@ vi.mock('../../contexts/ProjectContext', () => ({
 }));
 
 import Remediation from '../../pages/Remediation';
+import { TooltipProvider } from '../../components/ui/tooltip';
 import { LIST_CURSOR_CLASS } from '../../hooks/useListCursor';
 import { resetRemediationPolicy } from '../../hooks/useRemediationPolicy';
 import type { RemediationPage, RemediationRow } from '../../services/api';
@@ -61,11 +62,12 @@ const row = (id: number, over: Partial<RemediationRow> = {}): RemediationRow => 
   state: 'not_assigned', due_on: null, days_left: null, closed_days_late: null, last_follow_up_on: null,
   severity: 'high', finding_status: 'confirmed', endpoint_status: 'open', host_id: 100 + id,
   ip_address: `10.0.0.${id}`, hostname: null, contact_email: null, contact_name: null, team: null,
-  notified_on: null, status: 'open', closed_on: null, updated_at: null, ...over,
+  notified_on: null, status: 'open', closed_on: null, updated_at: null, verification: null, ...over,
 });
 const page = (items: RemediationRow[], total = items.length): RemediationPage => ({
   items, total, has_more: total > items.length, limit: 25, offset: 0,
   status_counts: { open: 2, closed: 1, deferred: 0 },
+  verification_counts: { reported_fixed_not_retested: 0, remediated_record_open: 0 },
   state_counts: { overdue: 1, due_soon: 0, on_track: 0, not_assigned: 1, no_deadline: 0, deferred: 0, closed: 1 },
   severity_counts: { critical: { overdue: 0, due_soon: 0 }, high: { overdue: 1, due_soon: 0 }, medium: { overdue: 0, due_soon: 0 }, low: { overdue: 0, due_soon: 0 }, info: { overdue: 0, due_soon: 0 } },
   overdue_ages: { '1-7': 0, '8-30': 1, '31-90': 0, '90+': 0 }, not_followed_up: 1, not_followed_up_days: 7,
@@ -112,7 +114,9 @@ describe('Remediation', () => {
     // under it ("Overdue" beside "8 days overdue" said it twice).
     expect(within(rows[0]).getByText('8 days overdue')).toBeInTheDocument();
     expect(within(rows[0]).queryByText('Overdue')).not.toBeInTheDocument();
-    expect(within(rows[1]).getByText('Closed')).toBeInTheDocument();
+    // The record's `closed` is the contact's claim: "Reported fixed", never "Closed".
+    expect(within(rows[1]).getByText('Reported fixed')).toBeInTheDocument();
+    expect(within(table).queryByText('Closed')).not.toBeInTheDocument();
     expect(within(rows[2]).getByText('Not assigned', { selector: 'span.block' })).toBeInTheDocument();
     expect(within(table).getAllByRole('columnheader').map((h) => h.textContent)).toContain('Deadline');
     expect(within(rows[2]).getByText('No contact yet')).toBeInTheDocument();
@@ -244,7 +248,7 @@ describe('Remediation', () => {
   it('a status chip narrows the list and starts from the first page', async () => {
     show();
     await screen.findByRole('table', { name: /remediation/i });
-    fireEvent.click(screen.getByRole('button', { name: /Closed\s*1/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Reported fixed\s*1/ }));
     await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
       expect.objectContaining({ state: ['closed'], offset: 0 }), expect.anything(),
     ));
@@ -409,7 +413,8 @@ describe('Remediation', () => {
     expect(removed).toHaveTextContent(
       'Finding removed from this host. Its remediation record held: contact Roger Smith roger@example.com, status deferred.');
     expect(screen.getByText('Finding deleted').closest('li')).toHaveTextContent(
-      'Finding deleted. Its remediation record held: status closed on 2026-09-30.');
+      // The stored text says "status closed"; the page says it in today's words.
+      'Finding deleted. Its remediation record held: status reported fixed on 2026-09-30.');
     // Not the field-change form ("Finding: … → removed from this host").
     expect(removed).not.toHaveTextContent('→');
     expect(removed).not.toHaveTextContent('Finding:');
@@ -662,5 +667,107 @@ describe('Remediation', () => {
     const table = await screen.findByRole('table', { name: /contacts/i });
     expect(within(table).queryByRole('button', { name: 'Document' })).not.toBeInTheDocument();
     expect(within(table).getByRole('button', { name: 'Follow up' })).toBeInTheDocument();
+  });
+
+  describe('the contact’s record beside the assessment’s conclusion', () => {
+    const gaps = (items: RemediationRow[], counts: RemediationPage['verification_counts']): RemediationPage => ({
+      ...page(items), verification_counts: counts,
+    });
+    const showWithTips = (path = '/remediation') => render(
+      <TooltipProvider><MemoryRouter initialEntries={[path]}><Remediation /></MemoryRouter></TooltipProvider>,
+    );
+
+    it('says the gap in the row’s Deadline cell, and "Remediated" where the assessment concluded so', async () => {
+      listRemediation.mockResolvedValue(gaps([
+        row(1, { status: 'closed', state: 'closed', closed_on: '2026-10-06', closed_days_late: 0,
+          endpoint_status: 'retest', verification: 'reported_fixed_not_retested' }),
+        row(2, { endpoint_status: 'remediated', verification: 'remediated_record_open' }),
+        row(3, { status: 'closed', state: 'closed', closed_on: '2026-10-06', endpoint_status: 'remediated' }),
+        row(4),
+      ], { reported_fixed_not_retested: 1, remediated_record_open: 1 }));
+      showWithTips();
+      const table = await screen.findByRole('table', { name: /remediation deadlines$/i });
+      const rows = within(table).getAllByRole('row').slice(1);
+      expect(within(rows[0]).getByText('Reported fixed on time')).toBeInTheDocument();
+      const notRetested = within(rows[0]).getByText('Not retested');
+      expect(notRetested).toHaveAttribute('title', expect.stringMatching(/contact reported it fixed/));
+      expect(notRetested.className).toContain('truncate');
+      expect(within(rows[1]).getByText('Remediated, record still open')).toBeInTheDocument();
+      // The two agree: the row says both, and names no gap.
+      expect(within(rows[2]).getByText('Reported fixed')).toBeInTheDocument();
+      expect(within(rows[2]).getByText('Remediated')).toBeInTheDocument();
+      expect(within(rows[2]).queryByText('Not retested')).not.toBeInTheDocument();
+      // Nothing to relate: no extra line, and no column was added for it.
+      expect(within(rows[3]).queryByText(/Remediated|Not retested/)).not.toBeInTheDocument();
+      expect(within(table).getAllByRole('columnheader').map((h) => h.textContent))
+        .toEqual(['', 'Deadline', 'Host', 'Finding', 'Contact', 'Assigned', 'Actions']);
+    });
+
+    it('each gap count opens exactly its rows through the address, as a chip that clears', async () => {
+      listRemediation.mockResolvedValue(gaps([row(1)], { reported_fixed_not_retested: 5, remediated_record_open: 2 }));
+      showWithTips('/remediation?state=overdue&severity=high&band=8-30');
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      fireEvent.click(screen.getByRole('button', { name: '5 reported fixed, not retested: show them' }));
+      // The count is taken before the state filters, so those go; severity stays.
+      await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
+        expect.objectContaining({
+          verification: 'reported_fixed_not_retested', state: undefined, overdue_band: undefined,
+          severity: 'high', offset: 0,
+        }), expect.anything()));
+      expect(screen.getByText(/in this selection/)).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: '2 remediated, record still open: show them' }));
+      await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ verification: 'remediated_record_open' }), expect.anything()));
+      fireEvent.click(screen.getByRole('button', { name: 'Remediated, record still open: remove this filter' }));
+      await waitFor(() => expect(listRemediation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ verification: undefined, severity: 'high' }), expect.anything()));
+    });
+
+    it('reads the filter from the address, ignores a value it does not know, and the CSV follows it', async () => {
+      listRemediation.mockResolvedValue(gaps([row(1)], { reported_fixed_not_retested: 1, remediated_record_open: 0 }));
+      const first = showWithTips('/remediation?verification=reported_fixed_not_retested');
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      expect(listRemediation.mock.calls[0][0]).toMatchObject({ verification: 'reported_fixed_not_retested' });
+      // A gap with no rows is said as 0, not as a button.
+      expect(screen.queryByRole('button', { name: /remediated, record still open: show them/ })).not.toBeInTheDocument();
+      fireEvent.click(screen.getByRole('button', { name: /CSV/ }));
+      await waitFor(() => expect(saveBlob).toHaveBeenCalled());
+      expect(listRemediation).toHaveBeenLastCalledWith(
+        expect.objectContaining({ verification: 'reported_fixed_not_retested', limit: 200 }));
+      first.unmount();
+      listRemediation.mockClear();
+      showWithTips('/remediation?verification=closed');
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      expect(listRemediation.mock.calls[0][0]).toMatchObject({ verification: undefined });
+    });
+
+    it('shows no gap line when neither has a row', async () => {
+      show();
+      await screen.findByRole('table', { name: /remediation deadlines$/i });
+      expect(screen.queryByLabelText('Where the remediation record and the assessment disagree')).not.toBeInTheDocument();
+      expect(screen.queryByText('Reported fixed, not retested')).not.toBeInTheDocument();
+    });
+
+    it('the editor offers "Reported fixed" and dates it "Reported fixed on"; the timeline says the status so', async () => {
+      listRemediation.mockResolvedValue(page([
+        row(1, { status: 'closed', state: 'closed', closed_on: '2026-10-06', contact_email: 'roger@example.com' }),
+      ]));
+      listRemediationEvents.mockResolvedValue({
+        total: 1, has_more: false,
+        items: [{ id: 9, host_id: 101, kind: 'change', finding_id: 10, finding_host_id: 1, finding_title: 'Finding 1',
+          field: 'status', from: 'open', to: 'closed', body: null, edited_at: null, author: 'Ana',
+          agent_session_id: null, can_modify: false,
+          occurred_at: '2026-10-06T10:00:00Z', recorded_at: '2026-10-06T10:00:00Z' }],
+      });
+      show();
+      const table = await screen.findByRole('table', { name: /remediation deadlines$/i });
+      fireEvent.click(within(table).getByRole('button', { name: 'Timeline for 10.0.0.1' }));
+      expect((await screen.findByText('Status')).closest('li')).toHaveTextContent('Status: Open → Reported fixed');
+      fireEvent.keyDown(document.body, { key: 'Escape' });
+      fireEvent.click(within(table).getByRole('button', { name: 'Edit' }));
+      const dialog = await screen.findByRole('dialog');
+      expect(within(dialog).getByLabelText('Reported fixed on')).toHaveValue('2026-10-06');
+      expect(within(dialog).queryByText(/Closed/)).not.toBeInTheDocument();
+    });
   });
 });

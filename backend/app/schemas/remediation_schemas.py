@@ -6,7 +6,13 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+#: The CONTACT's progress.  ``closed`` is the contact's claim that it is fixed
+#: — every page says "Reported fixed" — and is not the assessor's conclusion
+#: (the endpoint's ``remediated``).
 RemediationStatus = Literal["open", "closed", "deferred"]
+#: Where that record and the assessor's endpoint status disagree
+#: (``remediation_policy.VERIFICATIONS``).
+Verification = Literal["reported_fixed_not_retested", "remediated_record_open"]
 #: Where a row stands against its deadline — ``remediation_policy.STATES``.
 RemediationState = Literal["overdue", "due_soon", "on_track", "not_assigned", "no_deadline", "deferred", "closed"]
 Severity = Literal["critical", "high", "medium", "low", "info"]
@@ -54,8 +60,12 @@ class TrackedFields(_Base):
     contact_name: Optional[str] = Field(None, max_length=200)
     team: Optional[str] = Field(None, max_length=100, description="The group that owns the fix.")
     notified_on: Optional[date] = None
-    status: Optional[RemediationStatus] = None
-    closed_on: Optional[date] = None
+    status: Optional[RemediationStatus] = Field(None, description=(
+        "The contact's progress. `closed` means the contact REPORTED it fixed (shown as "
+        "\"Reported fixed\"); it does not change the assessor's endpoint status, whose "
+        "`remediated` is the team's own conclusion."))
+    closed_on: Optional[date] = Field(None, description=(
+        "The day the contact reported it fixed; goes only with status `closed`."))
 
     @field_validator("contact_email")
     @classmethod

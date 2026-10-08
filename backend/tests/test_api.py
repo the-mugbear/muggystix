@@ -115,8 +115,8 @@ class TestHostsAPI:
         assert response.json()["items"] == []
         assert response.json()["total"] == 0
 
-        # …and it keeps the standalone meaning it always had beside other port
-        # filters (an exclusion of open-port hosts; the other filters are ignored).
+        # …and beside a port filter both apply: a port filter with no state
+        # means an open port, which a host with no open port cannot have.
         response = client.get(f"{base}?has_open_ports=false&ports=22")
         assert response.status_code == 200
         assert response.json()["items"] == []

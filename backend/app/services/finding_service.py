@@ -53,6 +53,50 @@ ENDPOINT_PREVIEW = 5
 _STATUS_GROUPS = {"active": _ACTIVE_STATUSES, "resolved": _TERMINAL_STATUSES}
 
 
+def endpoint_segments(db: Session, project_id: int, host_ids: Sequence[int]) -> Dict[int, Dict[str, object]]:
+    """The network segment of each of a finding's hosts, for the finding page's
+    groups: ``host_id -> {key, label, kind, order}``.
+
+    The segments are the project's ONE grouping — ``subnet_insight_service.
+    group_hosts_into_segments`` over every scoped host, as the Posture grid and
+    the Evidence matrix use it (sites; most-specific subnets when the project
+    defines no site) — plus Evidence's ``unmapped`` for a host outside every
+    scoped subnet.  The rule is decided over the PROJECT's hosts, never over
+    this finding's alone: a finding whose hosts carry no site would otherwise
+    be grouped by subnet in a project the other pages group by site.
+
+    ``order`` is the segment's position in that grouping (the grid's column
+    order, ``unmapped`` last).  ``kind`` is ``site`` | ``subnet`` |
+    ``unassigned`` | ``unmapped``.  Two statements whatever the number of
+    hosts (one when the project has no subnet); none for no host.
+    """
+    wanted = set(host_ids)
+    if not wanted:
+        return {}
+    from app.services.evidence_service import UNMAPPED_SEGMENT, UNMAPPED_SEGMENT_LABEL
+    from app.services.subnet_insight_service import (
+        UNASSIGNED_SEGMENT, group_hosts_into_segments, resolve_host_locations,
+    )
+
+    grouping = group_hosts_into_segments(resolve_host_locations(db, project_id))
+    out: Dict[int, Dict[str, object]] = {}
+    for order, key in enumerate(grouping["keys"]):
+        if key == UNASSIGNED_SEGMENT:
+            kind = "unassigned"
+        else:
+            kind = "subnet" if key.startswith("subnet:") else "site"
+        segment = {"key": key, "label": grouping["labels"].get(key) or key, "kind": kind, "order": order}
+        for host_id in grouping["hosts"][key] & wanted:
+            out[host_id] = segment
+    unmapped = {
+        "key": UNMAPPED_SEGMENT, "label": UNMAPPED_SEGMENT_LABEL, "kind": "unmapped",
+        "order": len(grouping["keys"]),
+    }
+    for host_id in wanted - set(out):
+        out[host_id] = unmapped
+    return out
+
+
 def _apply_status_filter(query, status: Optional[str]):
     """Apply a status filter that may be a real status OR a group keyword."""
     if not status:

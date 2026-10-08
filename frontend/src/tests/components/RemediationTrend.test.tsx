@@ -21,7 +21,7 @@ describe('RemediationTrend', () => {
     getRemediationTrend.mockResolvedValue({ as_of: '2026-11-10', days: 90, daily: [], closed_by_month: [] });
     render(<RemediationTrend scope="project" />);
     expect(await screen.findByText(/No day has been recorded yet/)).toBeInTheDocument();
-    expect(screen.getByText('Nothing was closed in the last twelve months.')).toBeInTheDocument();
+    expect(screen.getByText('Nothing was reported fixed in the last twelve months.')).toBeInTheDocument();
     expect(screen.queryByRole('img')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Show as table' })).not.toBeInTheDocument();
   });
@@ -42,9 +42,10 @@ describe('RemediationTrend', () => {
     });
     render(<RemediationTrend scope="all" projectId={9} />);
     expect(await screen.findByRole('img', { name: /Overdue findings on hosts per day.*7 on the last day/ })).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: /closed on time per month: 6 in all/ })).toBeInTheDocument();
-    expect(screen.getByRole('img', { name: /closed late per month: 4 in all/ })).toBeInTheDocument();
-    expect(screen.getByText(/6 closed on time, 4 late, 1 with no deadline to judge by/)).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /reported fixed on time per month: 6 in all/ })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: /reported fixed late per month: 4 in all/ })).toBeInTheDocument();
+    expect(screen.getByText(/6 reported fixed on time, 4 late, 1 with no deadline to judge by/)).toBeInTheDocument();
+    expect(screen.queryByText(/closed/i)).not.toBeInTheDocument();
     expect(getRemediationTrend).toHaveBeenCalledWith('all', 9, expect.anything());
     fireEvent.click(screen.getByRole('button', { name: 'Show as table' }));
     const [days, months] = screen.getAllByRole('table');

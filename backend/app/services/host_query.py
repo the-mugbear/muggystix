@@ -333,21 +333,30 @@ def build_filtered_host_query(
     # must satisfy all of ports/services/port_states/require_open) — see
     # ``port_match_conditions``, where a port/service condition means an OPEN
     # port unless ``port_states`` names one (``any`` = every state; v2.403.0).
-    # ``has_open_ports=False`` is a standalone
-    # exclusion of open-port hosts and intentionally ignores the other
-    # port filters, preserving the long-standing behaviour.
+    # ``has_open_ports=False`` ("no recorded open port") is a condition on
+    # the host, applied TOGETHER with any port / service / state filter:
+    # ``ports=22&port_states=closed&has_open_ports=false`` is hosts with no
+    # open port whose 22 is closed.  With no state named a port filter means
+    # an open port, so ``ports=22&has_open_ports=false`` matches nothing —
+    # the two contradict, and an empty list says so (it used to ignore
+    # ``ports`` and list every host with no open port).
     # `is not None`, not truthiness: has_open_ports=False is a filter in its own
-    # right.  The old `or has_open_ports` skipped this whole block when False
-    # was the ONLY port filter, so "no open ports" returned every host.
+    # right.
     if ports or services or port_states or has_open_ports is not None:
         port_ints = parse_port_list(ports) if ports else None
         service_list = [s.strip() for s in services.split(',') if s.strip()] if services else None
         state_list = [s.strip().lower() for s in port_states.split(',') if s.strip()] if port_states else None
         if has_open_ports is False:
-            # NOT EXISTS, never ``NOT IN (subquery)`` (review 2026-10-01 R19):
-            # Postgres cannot anti-join NOT IN, and this filter did not
-            # finish in 60 s on a 120k-host instance.
+            # NOT EXISTS, never ``NOT IN (subquery)``: Postgres cannot
+            # anti-join NOT IN, and this filter did not finish in 60 s on a
+            # 120k-host instance.
             query = query.filter(not_(P.has_open_ports_predicate(db)))
+            if port_ints or service_list or state_list:
+                query = query.filter(P.host_has_port(*P.port_match_conditions(
+                    ports=port_ints,
+                    services=service_list,
+                    port_states=state_list,
+                )))
         else:
             query = query.filter(P.host_has_port(*P.port_match_conditions(
                 ports=port_ints,

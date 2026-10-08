@@ -33,24 +33,23 @@ logger = logging.getLogger(__name__)
 
 # The version stamped on every session prompt, the served guide and each
 # session row.  Dotted numeric.
-PROMPT_VERSION = "4.15.0"
+PROMPT_VERSION = "4.16.0"
 
 # What PROMPT_VERSION changed (the current version only).
 PROMPT_CHANGES = (
-    "The host filters on /agent/hosts and /agent/assist/hosts are the Hosts "
-    "page's own: `search` is its search box (also OS family, port number, "
-    "service name or product); has_critical_vulns with has_high_vulns is "
-    "critical OR high; `ports` with `services` must be met by ONE open port. A "
-    "filter value that cannot be understood is a 422 naming it — an empty "
-    "list, an unknown `state`, a `subnets` value that is not a network, an "
-    "unparseable /agent/scans `created_after` — never an empty or unfiltered "
-    "answer. In `q`, NOT counts a host with no value recorded, and "
-    "`has:stale_review` is gone (use `has:changed_since_review`). A 401 with "
-    "`error: operator_credentials_changed` means the operator's password was "
-    "changed or reset: save your output and ask for a new session. Remediation: "
-    "the follow-up read carries `total` and `not_listed`, recording a follow-up "
-    "covers every at-risk row of the contact, and 'today' is the "
-    "installation's day (`as_of`)."
+    "Remediation tracking has one word per fact. A remediation row's `status: "
+    "closed` means the contact REPORTED it fixed: say 'reported fixed', never "
+    "'closed' or 'remediated'. `endpoint_status: remediated` is the "
+    "assessment's own conclusion: say 'remediated'. The stored values and "
+    "every call are unchanged (`open` / `closed` / `deferred`). Each row of "
+    "the remediation list now carries `verification` — "
+    "`reported_fixed_not_retested` (the record is closed, the endpoint is not "
+    "remediated and not a false positive), `remediated_record_open` (the "
+    "endpoint is remediated, the record is open, deferred or was never "
+    "written), or null — the list carries `verification_counts`, and "
+    "`verification=<value>` lists exactly those rows. The server derives it; "
+    "report a gap to the operator and never set one status because of the "
+    "other."
 )
 
 

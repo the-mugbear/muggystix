@@ -34,10 +34,10 @@ from typing import Optional
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import HTTPException
-from sqlalchemy import Date, Integer, case, cast, func, literal, null
+from sqlalchemy import Date, Integer, and_, case, cast, func, literal, null
 from sqlalchemy.orm import Session
 
-from app.db.models_findings import Finding
+from app.db.models_findings import Finding, FindingHost, FindingHostStatus
 from app.db.models_remediation import (
     DEFAULT_DUE_SOON_DAYS, DEFAULT_TIME_ZONE, DEFAULT_TIMELINE_DAYS, TIMELINE_SEVERITIES,
     FindingHostRemediation as Remediation, RemediationPolicy,
@@ -174,6 +174,37 @@ def state_expr(db: Session, policy: Policy, today: date):
         (due < _day(db, today), "overdue"),
         (due <= _day(db, today + timedelta(days=policy.due_soon_days)), "due_soon"),
         else_="on_track",
+    )
+
+
+#: Where the contact's record and the assessor's conclusion about the same
+#: finding on a host disagree.  The record's ``closed`` is the CONTACT's claim
+#: (shown as "Reported fixed"); the endpoint's ``remediated`` is the ASSESSOR's
+#: conclusion (shown as "Remediated").  Neither is ever written from the other,
+#: so the gap between them is a state of its own.
+VERIFICATIONS = ("reported_fixed_not_retested", "remediated_record_open")
+
+
+def verification_expr():
+    """The ONE definition of that gap; NULL where the two agree or have
+    nothing to say to each other.
+
+    * ``reported_fixed_not_retested`` — the record is ``closed`` and the
+      endpoint is neither ``remediated`` nor a false positive: the contact says
+      fixed, the team has not concluded so.
+    * ``remediated_record_open`` — the endpoint is ``remediated`` and the
+      record is ``open`` or ``deferred``, or was never written: the team
+      concluded fixed, the record still reads as work.
+    """
+    status = func.coalesce(Remediation.status, "open")
+    endpoint = FindingHost.host_status
+    remediated = FindingHostStatus.REMEDIATED.value
+    return case(
+        (and_(status == "closed",
+              endpoint.notin_((remediated, FindingHostStatus.FALSE_POSITIVE.value))),
+         "reported_fixed_not_retested"),
+        (and_(endpoint == remediated, status != "closed"), "remediated_record_open"),
+        else_=None,
     )
 
 

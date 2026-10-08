@@ -2,7 +2,7 @@
  * Is the remediation backlog shrinking? (5.341.0)
  *
  * Three single-series charts (small multiples, like `GrowthCharts`): overdue
- * findings on hosts per recorded day, and — per month — how many were closed
+ * findings on hosts per recorded day, and — per month — how many were reported fixed
  * on time and how many late.  One series each, so the title names it and no
  * legend is needed; a daily count and a monthly count are different scales,
  * so they are never one plot with two axes.
@@ -172,20 +172,20 @@ export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, proje
       </div>
 
       {months.length === 0 ? (
-        <p className="text-metadata text-muted-foreground">Nothing was closed in the last twelve months.</p>
+        <p className="text-metadata text-muted-foreground">Nothing was reported fixed in the last twelve months.</p>
       ) : (
         <div className="min-w-0 space-y-xs">
-          <p className="text-caption font-medium text-foreground">Closed on time, per month</p>
-          <PlotFigure options={monthOptions('on_time', 'closed on time', false)}
-            label={`Findings on hosts closed on time per month: ${closed.on.toLocaleString()} in all`} />
-          <p className="text-caption font-medium text-foreground">Closed late, per month</p>
-          <PlotFigure options={monthOptions('late', 'closed late', true)}
-            label={`Findings on hosts closed late per month: ${closed.late.toLocaleString()} in all`} />
+          <p className="text-caption font-medium text-foreground">Reported fixed on time, per month</p>
+          <PlotFigure options={monthOptions('on_time', 'reported fixed on time', false)}
+            label={`Findings on hosts reported fixed on time per month: ${closed.on.toLocaleString()} in all`} />
+          <p className="text-caption font-medium text-foreground">Reported fixed late, per month</p>
+          <PlotFigure options={monthOptions('late', 'reported fixed late', true)}
+            label={`Findings on hosts reported fixed late per month: ${closed.late.toLocaleString()} in all`} />
         </div>
       )}
 
       <p className="text-caption text-muted-foreground">
-        In the last twelve months: {closed.on.toLocaleString()} closed on time, {closed.late.toLocaleString()} late
+        In the last twelve months: {closed.on.toLocaleString()} reported fixed on time, {closed.late.toLocaleString()} late
         {closed.none > 0 && `, ${closed.none.toLocaleString()} with no deadline to judge by`}.{' '}
         {(trend.daily.length > 0 || months.length > 0) && (
           <button type="button" className="text-info hover:underline" onClick={() => setShowTable((s) => !s)} aria-expanded={showTable}>
@@ -222,7 +222,7 @@ export const RemediationTrend: React.FC<RemediationTrendProps> = ({ scope, proje
           </div>
           <div className="max-h-72 overflow-auto rounded-panel border border-border">
             <table className="w-full table-fixed text-caption">
-              <caption className="sr-only">Findings on hosts closed per month</caption>
+              <caption className="sr-only">Findings on hosts reported fixed per month</caption>
               <thead className="sticky top-0 bg-background text-muted-foreground">
                 <tr>
                   <th className="px-sm py-xxs text-left font-medium">Month</th>

@@ -8,7 +8,8 @@ import type { RemediationRow } from '../services/api';
 import {
   applyRowsFor, draftCaution, draftChanges, draftFor, draftProblem, groupTimeline, hasChanges, idParam,
   csvCell, deadlineCell, dueDistance, previewDueOn, remediationCsv, remediationPageSize, remediationSummary,
-  timelineSummary,
+  timelineSummary, heldRecordText, isRemediationVerification, verificationNote,
+  REMEDIATION_FIELD_LABEL, REMEDIATION_STATE_HELP, REMEDIATION_STATE_LABEL, REMEDIATION_STATUS_LABEL,
 } from '../utils/remediation';
 
 const row = (over: Partial<RemediationRow> = {}): RemediationRow => ({
@@ -16,7 +17,7 @@ const row = (over: Partial<RemediationRow> = {}): RemediationRow => ({
   state: 'not_assigned', due_on: null, days_left: null, closed_days_late: null, last_follow_up_on: null,
   severity: 'high', finding_status: 'confirmed', endpoint_status: 'open', host_id: 5,
   ip_address: '10.0.0.5', hostname: null, contact_email: null, contact_name: null, team: null,
-  notified_on: null, status: 'open', closed_on: null, updated_at: null, ...over,
+  notified_on: null, status: 'open', closed_on: null, updated_at: null, verification: null, ...over,
 });
 
 describe('draftFor', () => {
@@ -74,7 +75,7 @@ describe('draftProblem', () => {
     expect(draftProblem({ ...opened, contact_email: 'roger@example.com' })).toBeNull();
   });
   it('refuses a closed date on a row that is not closed', () => {
-    expect(draftProblem({ ...opened, status: 'deferred', closed_on: '2026-10-06' })).toMatch(/Closed/);
+    expect(draftProblem({ ...opened, status: 'deferred', closed_on: '2026-10-06' })).toMatch(/Reported fixed/);
     expect(draftProblem({ ...opened, status: 'closed', closed_on: '2026-10-06' })).toBeNull();
   });
 });
@@ -156,8 +157,8 @@ describe('deadlines (5.340.0)', () => {
     expect(dueDistance({ state: 'overdue', days_left: -1, closed_days_late: null })).toBe('1 day overdue');
     expect(dueDistance({ state: 'due_soon', days_left: 0, closed_days_late: null })).toBe('due today');
     expect(dueDistance({ state: 'on_track', days_left: 12, closed_days_late: null })).toBe('in 12 days');
-    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 0 })).toBe('closed on time');
-    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 4 })).toBe('closed 4 days late');
+    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 0 })).toBe('reported fixed on time');
+    expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: 4 })).toBe('reported fixed 4 days late');
     // No deadline: nothing to say, never "0 days".
     expect(dueDistance({ state: 'closed', days_left: null, closed_days_late: null })).toBeNull();
     expect(dueDistance({ state: 'not_assigned', days_left: null, closed_days_late: null })).toBeNull();
@@ -223,7 +224,83 @@ describe('handing it to someone else (5.341.0)', () => {
     expect(deadlineCell({ ...base, state: 'on_track', days_left: 10 })).toMatchObject({ primary: 'Due in 10 days', date: '2026-11-02' });
     expect(deadlineCell({ ...base, state: 'not_assigned', days_left: null, due_on: null })).toMatchObject({ primary: 'Not assigned', date: null });
     expect(deadlineCell({ ...base, state: 'closed', days_left: null, closed_on: '2026-11-06', closed_days_late: 4 }))
-      .toMatchObject({ primary: 'Closed 4 days late', date: '2026-11-06' });
-    expect(deadlineCell({ ...base, state: 'closed', days_left: null, closed_on: '2026-11-01', closed_days_late: null }).primary).toBe('Closed');
+      .toMatchObject({ primary: 'Reported fixed 4 days late', date: '2026-11-06' });
+    expect(deadlineCell({ ...base, state: 'closed', days_left: null, closed_on: '2026-11-06', closed_days_late: 0 }).primary)
+      .toBe('Reported fixed on time');
+    expect(deadlineCell({ ...base, state: 'closed', days_left: null, closed_on: '2026-11-01', closed_days_late: null }).primary).toBe('Reported fixed');
+  });
+});
+
+describe('one name per fact: the contact reports it fixed, the assessment calls it remediated', () => {
+  it('never says "Closed" for the record’s closed status, state, date or CSV', () => {
+    expect(REMEDIATION_STATUS_LABEL.closed).toBe('Reported fixed');
+    expect(REMEDIATION_STATE_LABEL.closed).toBe('Reported fixed');
+    expect(REMEDIATION_FIELD_LABEL.closed_on).toBe('Reported fixed on');
+    const said = [
+      ...Object.values(REMEDIATION_STATUS_LABEL), ...Object.values(REMEDIATION_STATE_LABEL),
+      ...Object.values(REMEDIATION_STATE_HELP), ...Object.values(REMEDIATION_FIELD_LABEL),
+    ].join(' | ');
+    expect(said).not.toMatch(/closed/i);
+    // The other statuses keep their names.
+    expect(REMEDIATION_STATUS_LABEL).toMatchObject({ open: 'Open', deferred: 'Deferred' });
+  });
+
+  it('the CSV says "Reported fixed", the assessment’s status and the gap between them', () => {
+    const csv = remediationCsv([
+      row({ status: 'closed', state: 'closed', closed_on: '2026-11-06', closed_days_late: 2,
+        endpoint_status: 'open', verification: 'reported_fixed_not_retested' }),
+      row({ endpoint_status: 'remediated', verification: 'remediated_record_open' }),
+      row({ status: 'closed', state: 'closed', endpoint_status: 'remediated' }),
+    ]).split('\r\n');
+    expect(csv[0]).toContain('Reported fixed on,Days late when reported fixed,Assessment status on this host,Record and assessment');
+    expect(csv[0]).not.toMatch(/closed/i);
+    expect(csv[1]).toContain('Reported fixed,');
+    expect(csv[1]).toContain(',2026-11-06,2,Still present,"Reported fixed, not retested"');
+    expect(csv[2]).toContain(',Remediated,"Remediated, record still open"');
+    // The two agree: the last cell is empty.
+    expect(csv[3]).toMatch(/,Remediated,,/);
+    expect(csv.slice(1).join('\n')).not.toMatch(/closed/i);
+  });
+
+  it('the copied summary says "Reported fixed" and names the gaps that have rows', () => {
+    const counts = {
+      as_of: '2026-11-10',
+      state_counts: { overdue: 0, due_soon: 0, on_track: 1, not_assigned: 0, no_deadline: 0, deferred: 2, closed: 5 },
+      severity_counts: {}, overdue_ages: { '1-7': 0, '8-30': 0, '31-90': 0, '90+': 0 },
+      not_followed_up: 0, not_followed_up_days: 7,
+    };
+    const text = remediationSummary(
+      { ...counts, verification_counts: { reported_fixed_not_retested: 5, remediated_record_open: 0 } },
+      { where: 'in this project', dueSoonDays: 7 });
+    expect(text).toContain('Deferred: 2   Reported fixed: 5');
+    expect(text).toContain('Reported fixed, not retested: 5');
+    expect(text).not.toContain('Remediated, record still open');      // nothing there: not said
+    expect(text).not.toMatch(/closed/i);
+    // A page read before the server sent the counts still summarises.
+    expect(remediationSummary(counts, { where: 'in this project', dueSoonDays: 7 })).toContain('Reported fixed: 5');
+  });
+
+  it('the row’s note shows the server’s gap, and "Remediated" where the two agree', () => {
+    expect(verificationNote({ verification: 'reported_fixed_not_retested', endpoint_status: 'open' }))
+      .toMatchObject({ text: 'Not retested', tone: 'text-warning' });
+    expect(verificationNote({ verification: 'remediated_record_open', endpoint_status: 'remediated' }))
+      .toMatchObject({ text: 'Remediated, record still open' });
+    expect(verificationNote({ verification: null, endpoint_status: 'remediated' }))
+      .toMatchObject({ text: 'Remediated', tone: 'text-muted-foreground' });
+    // Nothing to relate: no line at all (the cell does not grow an empty one).
+    expect(verificationNote({ verification: null, endpoint_status: 'open' })).toBeNull();
+    expect(verificationNote({ verification: null, endpoint_status: 'false_positive' })).toBeNull();
+    // The page never derives the gap itself: a closed record on an open
+    // endpoint with no `verification` from the server shows none.
+    expect(verificationNote({ verification: null, endpoint_status: 'retest' })).toBeNull();
+  });
+
+  it('a stored timeline text is said in today’s words, and a filter value is checked', () => {
+    expect(heldRecordText('contact Ana, status closed on 2026-09-30')).toBe('contact Ana, status reported fixed on 2026-09-30');
+    expect(heldRecordText('status deferred')).toBe('status deferred');
+    expect(isRemediationVerification('reported_fixed_not_retested')).toBe(true);
+    expect(isRemediationVerification('remediated_record_open')).toBe(true);
+    expect(isRemediationVerification('closed')).toBe(false);
+    expect(isRemediationVerification(null)).toBe(false);
   });
 });

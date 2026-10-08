@@ -3,9 +3,21 @@ the fix stands (v2.457.0).
 
 This is the client's progress, kept by a project admin.  It is deliberately
 separate from the assessor's conclusions (``Finding.status``,
-``FindingHost.host_status``) and never synced with them: "the contact says
-closed, nobody has retested" is a state worth seeing.  Nothing here feeds
+``FindingHost.host_status``) and never synced with them.  Nothing here feeds
 Posture, Operations or the client report.
+
+Two facts, one name each, wherever a person or an agent reads them:
+
+* this record's ``closed`` is the CONTACT's claim — shown as "Reported fixed",
+  never "Closed";
+* the endpoint's ``remediated`` is the ASSESSOR's conclusion — "Remediated".
+
+The stored values are unchanged (``open`` / ``closed`` / ``deferred``); only
+the labels differ.  Where the two disagree the remediation pages say so, as
+its own countable state (``remediation_policy.verification_expr``):
+"Reported fixed, not retested" (closed here, the endpoint not remediated and
+not a false positive) and "Remediated, record still open" (the endpoint
+remediated, this record open, deferred or never written).
 
 The whole feature is per INSTALLATION (v2.461.0, ``RemediationPolicy``): an
 installation that has not turned it on shows nothing about remediation, and

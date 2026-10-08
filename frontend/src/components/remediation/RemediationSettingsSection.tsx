@@ -174,7 +174,7 @@ export const RemediationSettingsSection: React.FC = () => {
               </div>
             </div>
             <p className="mt-xs text-caption text-muted-foreground">
-              All in days. Empty means no deadline for that severity; “Warn before” is how close to its deadline a finding counts as due soon. A change applies to every finding still open; one already closed keeps the deadline it was closed against.
+              All in days. Empty means no deadline for that severity; “Warn before” is how close to its deadline a finding counts as due soon. A change applies to every finding still open; one already reported fixed keeps the deadline that applied when it was.
             </p>
             <div className="mt-sm max-w-xs min-w-0">
               <Label htmlFor="ss-remediation-zone"

@@ -279,7 +279,8 @@ def enqueue(db: Session, project_id: int, body, who) -> ReportJob:
     email = body.contact_email
     listing = contact_rows(db, project_id, email)
     if listing["total"] == 0:
-        raise HTTPException(409, "Everything assigned to this contact is closed: there is nothing to list.")
+        raise HTTPException(409, "Everything assigned to this contact has been reported fixed: "
+                                 "there is nothing to list.")
 
     service = ReportJobService()
     filters = {"contact_email": email}

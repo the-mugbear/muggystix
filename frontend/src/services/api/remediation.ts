@@ -1,7 +1,10 @@
 import { api, p } from './client';
 
-/** Where the fix stands, as the contact reports it — not the finding's own status. */
+/** Where the fix stands, as the contact reports it — not the finding's own
+ *  status.  `closed` is the contact's claim and is shown as "Reported fixed". */
 export type RemediationStatus = 'open' | 'closed' | 'deferred';
+/** Where that record and the assessor's `endpoint_status` disagree (derived by the server). */
+export type RemediationVerification = 'reported_fixed_not_retested' | 'remediated_record_open';
 export type RemediationGroup = 'host' | 'finding' | 'contact' | 'due' | 'team';
 /** How many days past its deadline an overdue row is. */
 export type OverdueBand = '1-7' | '8-30' | '31-90' | '90+';
@@ -62,6 +65,8 @@ export interface RemediationRow {
   /** Days after its deadline a row was closed (0 = on time); null = it had none. */
   closed_days_late: number | null;
   last_follow_up_on: string | null;
+  /** The gap between `status` and `endpoint_status`; null where they agree. */
+  verification: RemediationVerification | null;
 }
 
 export interface RemediationPage {
@@ -73,6 +78,9 @@ export interface RemediationPage {
   /** Over the whole selection, before the status filter. */
   status_counts: Record<RemediationStatus, number>;
   state_counts: Record<RemediationState, number>;
+  /** Rows where the record and the assessment disagree, over the selection,
+   *  before the state, status and verification filters. */
+  verification_counts: Record<RemediationVerification, number>;
   /** Overdue and due soon per severity, over the selection BEFORE the severity filter. */
   severity_counts: Record<string, { overdue: number; due_soon: number }>;
   /** The overdue rows by days past their deadline; adds up to `state_counts.overdue`. */
@@ -91,6 +99,7 @@ export interface RemediationQuery {
   team?: string;
   overdue_band?: OverdueBand;
   no_follow_up_days?: number;
+  verification?: RemediationVerification;
   contact?: string;
   /** Exactly this contact. */
   contact_email?: string;

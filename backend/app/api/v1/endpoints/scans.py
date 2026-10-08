@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, aliased
 from sqlalchemy import func, desc, case, cast, distinct, and_, text, or_, exists, literal, String
+from sqlalchemy.exc import OperationalError
 from pydantic import BaseModel, Field
 
 from app.db.session import disable_statement_timeout, get_db
@@ -26,6 +27,8 @@ from app.services.command_explanation_service import CommandExplanationService
 from app.services import scope_coverage
 from app.services.format_registry import format_label
 from app.services.import_attention_service import superseded_import_condition
+from app.services import dns_name_service, host_work, scan_sightings
+from app.services import ingestion_service as imports
 from app.services.operations_read_service import blocked_import_condition
 from app.services.staged_import_service import DISCARDED_MESSAGE, EXPIRED_MESSAGE_PREFIX
 from app.services.scan_inventory_filters import apply_scan_inventory_filters
@@ -53,36 +56,85 @@ class MessageResponse(BaseModel):
 
 class DeleteScanResponse(BaseModel):
     message: str
-    hosts_removed: int = Field(..., ge=0, description="Number of orphaned hosts removed")
+    hosts_removed: int = Field(..., ge=0, description="Hosts only this scan brought, removed")
+    ports_removed_on_kept_hosts: int = Field(
+        0, ge=0, description="Ports this scan created on hosts that stay, that nothing else held; removed",
+    )
+    vulnerabilities_removed: int = Field(
+        0, ge=0, description="Scanner observations only this scan reported, on hosts that stay; removed",
+    )
+    dns_records_removed: int = Field(0, ge=0, description="The scan's own DNS observations, removed")
+    dns_names_removed: int = Field(0, ge=0, description="Names only this scan observed and nothing else refers to, removed")
+
+
+class HostWithWork(BaseModel):
+    """A host the delete removes that carries work, with how much of each kind."""
+
+    host_id: int
+    ip_address: str
+    hostname: Optional[str] = None
+    work: Dict[str, int] = Field(
+        default_factory=dict,
+        description="Kind of work → how many; only kinds with a count above 0 (`host_work.work_kinds`)",
+    )
+
+
+# How many hosts with work the deletion preview lists by name.
+HOSTS_WITH_WORK_SAMPLE = 50
 
 
 class ScanDeletionImpact(BaseModel):
     """Preview of exactly what deleting a scan removes.
 
-    Because hosts are deduplicated per-IP-per-project (one Host row shared
-    across every scan that observed the IP), deleting a scan does NOT delete
-    all the hosts it touched — only those seen by no other scan ("orphans").
-    Hosts also seen by other scans survive; their provenance is re-pointed.
-    This preview lets the delete modal tell the truth instead of implying a
-    blanket wipe.
+    A delete removes what the scan brought that nothing else holds: the hosts
+    only it brought, and — on the hosts that stay — the ports it created and
+    the scanner observations only it reported.  A host, port or observation
+    another scan or source also has survives; its provenance is re-pointed.
+    Every figure is computed with the conditions the delete itself applies.
     """
 
     scan_id: int
     filename: str
-    hosts_removed: int = Field(..., ge=0, description="Hosts seen ONLY by this scan; deleted")
-    hosts_kept: int = Field(..., ge=0, description="Hosts also seen by other scans; kept, re-pointed")
+    hosts_removed: int = Field(
+        ..., ge=0, description="Hosts only this scan brought (no other scan or source attached anything); deleted",
+    )
+    hosts_kept: int = Field(..., ge=0, description="Hosts this scan observed that stay")
     sample_removed_ips: List[str] = Field(
         default_factory=list, description="Up to 10 IPs of the hosts that will be removed"
     )
-    ports_removed: int = Field(..., ge=0, description="Open ports on the removed (orphan) hosts")
-    # v2.332.0 — findings are no longer deleted with the scan that first
-    # recorded them (their scan pointer is SET NULL instead); the number here
-    # is how many lose that attribution, not how many disappear.
-    vulnerabilities_detached: int = Field(
-        ..., ge=0,
-        description="Vulnerabilities first recorded by this scan; kept, but lose that attribution",
+    ports_removed: int = Field(..., ge=0, description="Ports on the removed hosts")
+    ports_removed_on_kept_hosts: int = Field(
+        0, ge=0, description="Ports this scan created on hosts that stay, that nothing else holds; deleted",
     )
+    # Both figures are about the hosts that STAY: a removed host takes its
+    # scanner observations with it, and `hosts_removed` already says so.
+    vulnerabilities_removed: int = Field(
+        ..., ge=0,
+        description="Scanner observations only this scan reported, on hosts that stay; deleted",
+    )
+    vulnerabilities_kept: int = Field(
+        0, ge=0,
+        description=(
+            "Scanner observations only this scan reported, on hosts that stay, that a finding or a "
+            "proposal refers to; kept, without a scan"
+        ),
+    )
+    import_running: bool = Field(
+        False, description="An import is running in the project; the delete answers 409 until it finishes",
+    )
+    import_running_filename: Optional[str] = Field(None, description="The file that import is reading")
     web_interfaces_removed: int = Field(..., ge=0, description="Web interfaces/screenshots from this scan")
+    # Work people or agents put on the hosts that go (notes, tests,
+    # evidence…) is deleted with them, so the delete is refused until the
+    # request confirms it.
+    hosts_with_work: int = Field(0, ge=0, description="How many of the removed hosts carry work")
+    hosts_with_work_sample: List[HostWithWork] = Field(
+        default_factory=list, description="Up to 50 of those hosts, in address order",
+    )
+    dns_records_removed: int = Field(0, ge=0, description="The scan's own DNS observations; removed")
+    dns_names_removed: int = Field(
+        0, ge=0, description="Names only this scan observed and nothing else refers to; removed",
+    )
 
 
 class CountResponse(BaseModel):
@@ -1536,11 +1588,28 @@ def get_scan_deletion_impact(
     """Compute exactly what `DELETE /scans/{scan_id}` would remove, without
     deleting anything. Powers the delete-confirmation modal.
 
-    Mirrors the delete endpoint's orphan rule: a host is removed only if this
-    scan is the *only* scan that ever observed it. Vulnerabilities and web
-    interfaces are scan-scoped (FK ``ON DELETE CASCADE`` on ``scan_id``), so
-    their counts key off ``scan_id`` directly; ports are host-owned, so only
-    ports on orphan hosts are removed.
+    Every figure comes from the condition the delete applies:
+
+    * hosts — ``ingestion_service.hosts_scan_brought``: the scan has history
+      for the host and no other scan or source attached anything to it;
+    * ports — all of them on the removed hosts (``ports_removed``), and on
+      the hosts that stay the ones this scan created that nothing else holds
+      (``ports_removed_on_kept_hosts``, ``ports_scan_created_condition``);
+    * scanner observations only this scan reported, on the hosts that stay:
+      deleted (``vulnerabilities_removed``, ``scan_sightings.removed_with_scan``)
+      unless a finding or a proposal refers to them (``vulnerabilities_kept``).
+      One another scan also reported is handed to that scan and counted
+      nowhere.  Those on the removed hosts go with their host;
+    * web interfaces — the scan's own rows (``ON DELETE CASCADE``);
+    * the scan's own DNS observations, and the names only it observed
+      (``dns_name_service.delete_scan_observations``).
+
+    ``hosts_with_work`` counts the removed hosts that carry work
+    (``host_work.work_kinds`` — the list the import cleanup keeps hosts by);
+    the delete refuses until the request confirms them.  ``import_running``
+    says the delete would be refused now.  A read: the project's cleanup lock
+    is not taken, and the statement count does not depend on the number of
+    hosts.
     """
     scan = db.query(models.Scan).filter(
         models.Scan.id == scan_id,
@@ -1549,25 +1618,14 @@ def get_scan_deletion_impact(
     if not scan:
         raise HTTPException(status_code=404, detail="Scan not found")
 
-    # Orphan host ids + their IPs — same NOT EXISTS rule the delete uses.
+    # The hosts the delete removes, selected as the delete selects them.
     orphan_rows = db.execute(
-        text("""
-            SELECT h.host_id, hv.ip_address
-            FROM host_scan_history h
-            JOIN hosts_v2 hv ON hv.id = h.host_id
-            WHERE h.scan_id = :scan_id
-              AND NOT EXISTS (
-                  SELECT 1 FROM host_scan_history h2
-                  WHERE h2.host_id = h.host_id AND h2.scan_id != :scan_id
-              )
-            ORDER BY hv.ip_address
-        """),
-        {"scan_id": scan_id},
+        imports.hosts_scan_brought(scan_id).order_by(models.Host.ip_address)
     ).fetchall()
     orphan_host_ids = [r[0] for r in orphan_rows]
     sample_removed_ips = [str(r[1]) for r in orphan_rows[:10] if r[1] is not None]
 
-    # Total distinct hosts this scan observed — the rest (non-orphans) are kept.
+    # Total distinct hosts this scan observed — the rest are kept.
     hosts_observed = db.execute(
         text("SELECT COUNT(DISTINCT host_id) FROM host_scan_history WHERE scan_id = :scan_id"),
         {"scan_id": scan_id},
@@ -1580,29 +1638,68 @@ def get_scan_deletion_impact(
             {"ids": orphan_host_ids},
         ).scalar() or 0
 
-    # Findings on orphan hosts go with the host (CASCADE on host_id); findings
-    # this scan first recorded on surviving hosts are kept and lose the
-    # pointer (SET NULL on scan_id, v2.332.0).  Report the latter.
-    vulnerabilities_detached = db.execute(
-        text(
-            "SELECT COUNT(*) FROM vulnerabilities "
-            "WHERE scan_id = :scan_id AND host_id != ALL(:orphan_ids)"
-        ),
-        {"scan_id": scan_id, "orphan_ids": orphan_host_ids or []},
+    # On the hosts that stay: the ports this scan created that nothing else
+    # holds, and the scanner rows only it reported — deleted, or kept because
+    # someone's work refers to them.  (On the removed hosts everything goes
+    # with the host, CASCADE on host_id.)
+    ports_removed_on_kept_hosts = db.query(func.count(models.Port.id)).filter(
+        imports.ports_scan_created_condition(scan_id),
+        text("ports_v2.host_id != ALL(:orphan_ids)").bindparams(orphan_ids=orphan_host_ids or []),
     ).scalar() or 0
+    vulnerabilities_removed, vulnerabilities_kept = db.query(
+        func.count(Vulnerability.id).filter(scan_sightings.removed_with_scan(scan_id)),
+        func.count(Vulnerability.id).filter(scan_sightings.kept_without_scan(scan_id)),
+    ).filter(
+        scan_sightings.only_this_scan_saw(scan_id),
+        text("vulnerabilities.host_id != ALL(:orphan_ids)").bindparams(orphan_ids=orphan_host_ids or []),
+    ).one()
     web_interfaces_removed = db.execute(
         text("SELECT COUNT(*) FROM web_interfaces WHERE scan_id = :scan_id"),
         {"scan_id": scan_id},
     ).scalar() or 0
 
+    # Work on the hosts that go: one grouped statement over the orphan set,
+    # then the first of those hosts in address order (the Hosts list's order).
+    work = host_work.work_on_hosts(db, orphan_host_ids)
+    sample: List[HostWithWork] = []
+    if work:
+        sample = [
+            HostWithWork(host_id=host_id, ip_address=str(ip), hostname=hostname, work=work[host_id])
+            for host_id, ip, hostname in db.execute(
+                text("""
+                    SELECT id, ip_address, hostname FROM hosts_v2
+                    WHERE id = ANY(:ids)
+                    ORDER BY ip_address::inet, id
+                    LIMIT :limit
+                """),
+                {"ids": list(work), "limit": HOSTS_WITH_WORK_SAMPLE},
+            )
+        ]
+    # The names step of the delete, counted with the delete's own conditions.
+    # Rows on the removed hosts are gone by the time the delete asks, and so
+    # are the scanner observations it deletes on the hosts that stay.
+    names = dns_name_service.scan_observation_counts(
+        db, scan_id, hosts_being_removed=orphan_host_ids,
+        observations_being_removed=scan_sightings.removed_with_scan(scan_id),
+    )
+    running = imports.running_import(db, project.id)
+
     return ScanDeletionImpact(
+        ports_removed_on_kept_hosts=ports_removed_on_kept_hosts,
+        vulnerabilities_kept=int(vulnerabilities_kept or 0),
+        import_running=running is not None,
+        import_running_filename=running.original_filename if running is not None else None,
+        hosts_with_work=len(work),
+        hosts_with_work_sample=sample,
+        dns_records_removed=names["records"],
+        dns_names_removed=names["names"],
         scan_id=scan_id,
         filename=scan.filename,
         hosts_removed=len(orphan_host_ids),
         hosts_kept=max(0, hosts_observed - len(orphan_host_ids)),
         sample_removed_ips=sample_removed_ips,
         ports_removed=ports_removed,
-        vulnerabilities_detached=vulnerabilities_detached,
+        vulnerabilities_removed=int(vulnerabilities_removed or 0),
         web_interfaces_removed=web_interfaces_removed,
     )
 
@@ -1610,16 +1707,44 @@ def get_scan_deletion_impact(
 @router.delete(
     "/{scan_id}",
     response_model=DeleteScanResponse,
-    responses={**_ADMIN_RESPONSES, 404: {"description": "Scan not found"}},
+    responses={
+        **_ADMIN_RESPONSES,
+        404: {"description": "Scan not found"},
+        409: {
+            "description": (
+                "`detail.error = import_running`: an import is running in the project — try again when "
+                "it finishes. `detail.error = hosts_with_work`: hosts this delete removes carry work — "
+                "repeat with `confirm_hosts_with_work=true`. Nothing was changed in either case."
+            ),
+        },
+    },
     dependencies=[Depends(require_project_role(ProjectRole.ADMIN))],
     summary="Delete scan (admin)",
 )
 def delete_scan(
     scan_id: int,
+    confirm_hosts_with_work: bool = Query(
+        False,
+        description="Required when a host this delete removes carries work (notes, tests, evidence…)",
+    ),
     db: Session = Depends(get_db),
     project: Project = Depends(get_current_project),
 ):
-    """Delete a scan and all dependent records atomically. Requires admin role."""
+    """Delete a scan and everything it brought that nothing else holds,
+    atomically. Requires admin role.
+
+    Removed: the hosts only this scan brought, with everything on them; on
+    the hosts that stay, the ports it created and the scanner observations,
+    scripts and attributes only it reported (an observation a finding or a
+    proposal refers to is kept); its own DNS observations and the names only
+    it observed.  What another scan or source also has stays.  Values this
+    scan overwrote on rows that already existed are not restored: no previous
+    value is kept.
+
+    Refused, with nothing changed: 409 `import_running` while an import is
+    running in the project, and 409 `hosts_with_work` when a host it removes
+    carries work, unless `confirm_hosts_with_work=true`.
+    """
     # The re-pointing UPDATEs and the cascading DELETEs below are each one
     # large statement by design; the API statement timeout is for reads.
     disable_statement_timeout(db)
@@ -1634,33 +1759,98 @@ def delete_scan(
         # All steps run inside a single transaction — if any step fails,
         # the entire operation is rolled back and no data is lost.
 
-        # DB-level ON DELETE actions (migration f1a9c7e3b528) now cascade a
+        # 0. Never beside an import.  A running import of the project refuses
+        #    the delete; otherwise the project's cleanup lock is held to the
+        #    end of this transaction, so no import has a batch open while the
+        #    NOT EXISTS guards below decide what is only this scan's.
+        try:
+            running = imports.refuse_hand_delete_while_importing(db, project.id)
+        except OperationalError as exc:
+            if getattr(getattr(exc, "orig", None), "pgcode", None) != "55P03":
+                raise
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "import_running",
+                    "message": (
+                        "An import is writing to this project right now. Nothing was changed; "
+                        "try again when it finishes."
+                    ),
+                },
+            )
+        if running is not None:
+            filename = running.original_filename
+            db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "import_running",
+                    "message": (
+                        f'An import of "{filename}" is running in this project. Nothing was changed; '
+                        "try again when it finishes."
+                    ),
+                },
+            )
+
+        # 1. The hosts only this scan brought: it has history for them and no
+        #    other scan or source attached anything (the cleanup's provenance
+        #    guards).  Chosen before anything is written — the preview's
+        #    selection — and the set step 2 deletes.
+        orphan_host_ids = [r[0] for r in db.execute(imports.hosts_scan_brought(scan_id))]
+
+        #    Work on those hosts goes with them, so the request must say it
+        #    knows.  Asked here, on the set that is deleted, with the rows
+        #    locked: work added after the preview is seen, and work arriving
+        #    now waits for this transaction.  Nothing has been written yet.
+        if orphan_host_ids and not confirm_hosts_with_work:
+            db.execute(
+                text('SELECT id FROM "hosts_v2" WHERE id = ANY(:ids) ORDER BY id FOR UPDATE'),
+                {"ids": orphan_host_ids},
+            )
+            with_work = len(host_work.work_on_hosts(db, orphan_host_ids))
+            if with_work:
+                db.rollback()
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "hosts_with_work",
+                        "hosts_with_work": with_work,
+                        "message": (
+                            f"Deleting this scan would remove {with_work} "
+                            f"{'host that has' if with_work == 1 else 'hosts that have'} work on "
+                            f"{'it' if with_work == 1 else 'them'} (notes, tests, evidence…); review "
+                            "and confirm before deleting."
+                        ),
+                    },
+                )
+
+        # DB-level ON DELETE actions (migration f1a9c7e3b528) cascade a
         # scan's / host's / port's owned children and SET NULL the nullable
-        # provenance pointers, so the former pg_constraint-reflection
-        # workaround (_clear_fk_refs) is gone: deleting the orphan hosts and
-        # the scan lets the database clean up every dependent row.  (Steps
-        # 2-3 still re-point surviving rows' last_updated_scan_id BEFORE the
-        # delete so they keep a meaningful scan instead of the bare NULL the
-        # SET NULL cascade would leave.)
+        # provenance pointers: deleting the hosts and the scan lets the
+        # database clean up every dependent row.
 
-        # 1. Identify hosts only seen by this scan (orphans to remove)
-        orphan_host_ids = [
-            r[0]
-            for r in db.execute(
-                text("""
-                    SELECT h.host_id
-                    FROM host_scan_history h
-                    WHERE h.scan_id = :scan_id
-                      AND NOT EXISTS (
-                          SELECT 1 FROM host_scan_history h2
-                          WHERE h2.host_id = h.host_id AND h2.scan_id != :scan_id
-                      )
-                """),
-                {"scan_id": scan_id},
-            ).fetchall()
-        ]
+        # 2. Delete those hosts — their ports/scripts/vulns/confidence/
+        #    history and the ports' own children all cascade from the host
+        #    (FK ON DELETE CASCADE), so a single DELETE suffices.  First, so
+        #    the counts of the next two steps are about the hosts that stay.
+        if orphan_host_ids:
+            db.execute(text('DELETE FROM "hosts_v2" WHERE id = ANY(:ids)'), {"ids": orphan_host_ids})
 
-        # 2. Bulk-update surviving hosts — set last_updated_scan_id to
+        # 3. The step every scan delete runs: scripts, host scripts, host
+        #    attributes and scanner observations only this scan reported go
+        #    (never an observation a finding or a proposal refers to); the
+        #    ones another scan also reported are handed to that scan.
+        released = scan_sightings.release_scan(db, scan_id)
+
+        # 4. The ports this scan created on the hosts that stay, that no
+        #    other scan saw and nothing else refers to — the cleanup's port
+        #    step.  Before the scan row goes: its delete clears the stamp
+        #    that names them, and before step 5 moves the update pointers the
+        #    guards read.
+        ports_on_kept_hosts = imports.delete_ports_scan_created(db, scan_id, before_release=True)
+
+        # 5. Bulk-update surviving hosts — set last_updated_scan_id to
         #    the most recent remaining scan, or NULL if none remain.
         db.execute(text("""
             UPDATE hosts_v2 h
@@ -1675,16 +1865,14 @@ def delete_scan(
             ) sub
             WHERE h.id = sub.host_id
               AND h.last_updated_scan_id = :scan_id
-              AND h.id != ALL(:orphan_ids)
-        """), {"scan_id": scan_id, "orphan_ids": orphan_host_ids or []})
+        """), {"scan_id": scan_id})
         db.execute(text("""
             UPDATE hosts_v2
             SET last_updated_scan_id = NULL
             WHERE last_updated_scan_id = :scan_id
-              AND id != ALL(:orphan_ids)
-        """), {"scan_id": scan_id, "orphan_ids": orphan_host_ids or []})
+        """), {"scan_id": scan_id})
 
-        # 3. Bulk-update surviving ports — same pattern.
+        # 6. Bulk-update surviving ports — same pattern.
         db.execute(text("""
             UPDATE ports_v2 p
             SET last_updated_scan_id = sub.new_scan_id
@@ -1698,22 +1886,21 @@ def delete_scan(
             ) sub
             WHERE p.id = sub.port_id
               AND p.last_updated_scan_id = :scan_id
-              AND p.host_id != ALL(:orphan_host_ids)
-        """), {"scan_id": scan_id, "orphan_host_ids": orphan_host_ids or []})
+        """), {"scan_id": scan_id})
         db.execute(text("""
             UPDATE ports_v2
             SET last_updated_scan_id = NULL
             WHERE last_updated_scan_id = :scan_id
-              AND host_id != ALL(:orphan_host_ids)
-        """), {"scan_id": scan_id, "orphan_host_ids": orphan_host_ids or []})
+        """), {"scan_id": scan_id})
 
-        # 4. Delete orphaned hosts — their ports/scripts/vulns/confidence/
-        #    history and the ports' own children all cascade from the host
-        #    (FK ON DELETE CASCADE), so a single DELETE suffices.
-        if orphan_host_ids:
-            db.execute(text('DELETE FROM "hosts_v2" WHERE id = ANY(:ids)'), {"ids": orphan_host_ids})
+        # 7. The scan's own name observations, and the names only it observed
+        #    that nothing else refers to — the step the import cleanup runs.
+        #    Before the scan row goes: that clears `dns_records.scan_id`,
+        #    after which nothing says whose the observations were.  The same
+        #    answer seen by another scan is that scan's own row and stays.
+        names = dns_name_service.delete_scan_observations(db, scan_id)
 
-        # 5. Delete the scan — its owned children cascade and the nullable
+        # 8. Delete the scan — its owned children cascade and the nullable
         #    provenance pointers (last_updated_scan_id, conflict_history.*) are
         #    SET NULL by the FK actions.  Raw DELETE (rather than db.delete(scan))
         #    so the database does the cascade in one statement instead of
@@ -1727,8 +1914,14 @@ def delete_scan(
         return {
             "message": "Scan deleted successfully",
             "hosts_removed": len(orphan_host_ids),
+            "ports_removed_on_kept_hosts": ports_on_kept_hosts,
+            "vulnerabilities_removed": released["observations"],
+            "dns_records_removed": names["records"],
+            "dns_names_removed": names["names"],
         }
 
+    except HTTPException:
+        raise
     except Exception:
         db.rollback()
         logger.exception("Failed to delete scan %s", scan_id)

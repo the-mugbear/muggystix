@@ -345,7 +345,8 @@ describe('FindingDetail — a project viewer', () => {
     expect(screen.queryByLabelText('Select every endpoint shown')).toBeNull();
     expect(screen.queryByLabelText('Select 10.0.0.5')).toBeNull();
     expect(screen.queryByRole('button', { name: /Add hosts/ })).toBeNull();
-    expect(screen.queryByRole('button', { name: /Detach/ })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Actions for/ })).toBeNull();
+    expect(screen.queryByRole('checkbox')).toBeNull();
     expect(screen.queryByRole('button', { name: /Delete/ })).toBeNull();
     expect(screen.queryByLabelText('New comment')).toBeNull();
     // The owner roster is an analyst's picker; a reader never asks for it.
@@ -632,11 +633,14 @@ describe('FindingDetail — v5.256.0: the author renames or deletes', () => {
     renderAt('/findings/7');
     await screen.findByText('Weak TLS on portal');
     confirmMock.mockResolvedValueOnce(true);
-    fireEvent.click(screen.getByRole('button', { name: 'Detach 10.0.0.5 from finding' }));
+    // Removal is in the row's menu, not an icon beside the state control.
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('button', { name: 'Actions for 10.0.0.5' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Remove from finding/ }));
     await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(7, 31));
     await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith(REFUSAL));
     expect(toastMock.success).not.toHaveBeenCalled();
-    expect(screen.getByRole('button', { name: 'Detach 10.0.0.5 from finding' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Actions for 10.0.0.5' })).toBeInTheDocument();
   });
 });
 
@@ -840,5 +844,121 @@ describe('FindingDetail — add affected hosts', () => {
     await user.click(screen.getByRole('button', { name: 'Add 1 host' }));
     expect(await screen.findByText(/not in this project|could not be added/)).toBeInTheDocument();
     expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+});
+
+// The hosts are a bounded panel, so the page says where its sections are.
+describe('FindingDetail — the jump bar', () => {
+  const scrollIntoView = vi.fn();
+  beforeEach(() => {
+    scrollIntoView.mockClear();
+    Element.prototype.scrollIntoView = scrollIntoView;
+    // Nothing waiting and no test evidence, whatever an earlier block left set.
+    mocked.listProposals.mockResolvedValue({ items: [], total: 0, has_more: false });
+    mocked.listEvidenceRecords.mockResolvedValue({ items: [], total: 0, has_more: false });
+  });
+  const hosts = (n: number) => Array.from({ length: n }, (_, i) => ({
+    id: 100 + i, host_id: 10 + i, ip_address: `10.0.0.${i + 1}`, hostname: null, name_id: null, fqdn: null, host_status: 'open',
+  }));
+  const entries = async () => {
+    const bar = await screen.findByRole('navigation', { name: 'Sections of this finding' });
+    return within(bar).getAllByRole('button').map((b) => b.textContent);
+  };
+
+  it('names the sections the page shows, in page order, with what the page knows about each', async () => {
+    mocked.getFinding.mockResolvedValue(finding({
+      host_count: 3, hosts: hosts(3),
+      report_text: {
+        description: 'TLS 1.0 is accepted.', impact: null, recommendation: null, references: null,
+        steps_to_reproduce: null, cvss_vector: null, cvss_score: null, cvss_score_from_vector: false,
+      },
+    }));
+    mocked.getFindingNotes.mockResolvedValue([
+      { id: 1, parent_id: null, body: 'one', author_id: 1, author_name: 'tester', created_at: '2026-10-01T10:00:00Z', attachments: [] },
+      { id: 2, parent_id: null, body: 'two', author_id: 1, author_name: 'tester', created_at: '2026-10-01T11:00:00Z', attachments: [] },
+    ]);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    // No proposals waiting and no test evidence: neither is offered.
+    await waitFor(async () => expect(await entries()).toEqual([
+      'Affected hosts3', 'Report text2 empty', 'Comments & evidence2', 'Disposition history',
+    ]));
+  });
+
+  it('offers Proposals and Test evidence when the page shows them', async () => {
+    mocked.listProposals.mockResolvedValue({
+      total: 1, has_more: false,
+      items: [{
+        id: 1, kind: 'finding_text', field: 'impact', status: 'pending', source: 'agent', finding_id: 7,
+        vulnerability_id: null, finding_host_id: null, payload: { value: 'An attacker reads the session.' },
+        current_value: null, base_value: null, base_recorded: true, changed_since_proposed: false,
+        target: { finding_title: 'Weak TLS on portal', observation_title: null, host_id: null, host_ip: null },
+        rationale: null, evidence_ids: [], agent_session_id: 81, proposed_by: 'Ana', agent_model: 'model-a',
+        agent_client: null, prompt_version: null, created_at: '2026-10-02T10:00:00Z', decided_by: null,
+        decided_at: null, decision_note: null, result_finding_id: null, error: null,
+      }],
+    });
+    mocked.listEvidenceRecords.mockResolvedValue({
+      total: 1, has_more: false,
+      items: [{
+        id: 31, host_test_id: 4, host_id: 5, host_ip: '10.0.0.5', finding_id: 7, finding_host_id: null,
+        tool: 'nxc', command: 'nxc smb 10.0.0.5', outcome: 'finding', summary: 'Signing is not required',
+        raw_output_preview: 'signing:False', raw_output_bytes: 13, raw_output_truncated_in_preview: false,
+        observed_ip: null, executed_at: '2026-10-01T10:00:00Z', agent_session_id: null, recorded_by: 'Ana',
+        agent_model: null, agent_client: null, created_at: '2026-10-01T10:00:00Z',
+      }],
+    });
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    await waitFor(async () => expect((await entries()).slice(0, 3)).toEqual(['Proposals1', 'Affected hosts0', 'Test evidence']));
+  });
+
+  it('a click scrolls to that section', async () => {
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+    const bar = await screen.findByRole('navigation', { name: 'Sections of this finding' });
+    scrollIntoView.mockClear();
+    fireEvent.click(within(bar).getByRole('button', { name: /Disposition history/ }));
+    expect(scrollIntoView).toHaveBeenCalledTimes(1);
+    const target = scrollIntoView.mock.instances[0] as unknown as HTMLElement;
+    expect(target.id).toBe('section-history');
+    expect(within(target).getByRole('heading', { name: /Disposition history/ })).toBeInTheDocument();
+    expect(target.style.scrollMarginTop).toMatch(/var\(--topbar-h/);
+  });
+
+  it('`?endpoint=` brings the hosts panel into view with the row in it', async () => {
+    mocked.getFinding.mockResolvedValue(finding({ host_count: 40, hosts: hosts(40) }));
+    renderAt('/findings/7?endpoint=135');
+    await screen.findByText('Weak TLS on portal');
+    await waitFor(() => expect(document.querySelector('[data-endpoint-row="135"]')).not.toBeNull());
+    expect(scrollIntoView.mock.instances.map((el) => (el as unknown as HTMLElement).id)).toContain('endpoints');
+  });
+});
+
+describe('FindingDetail — removing an endpoint from its row menu', () => {
+  it('removes after confirmation and offers Undo, which puts the same row back', async () => {
+    const user = userEvent.setup();
+    const row = { id: 31, host_id: 5, ip_address: '10.0.0.5', hostname: null, name_id: 9, fqdn: 'a.example.com', host_status: 'retest' };
+    const other = { id: 32, host_id: 6, ip_address: '10.0.0.6', hostname: null, name_id: null, fqdn: null, host_status: 'open' };
+    const before = finding({ status: 'confirmed', host_count: 2, hosts: [row, other] });
+    mocked.getFinding.mockResolvedValue(before);
+    mocked.removeFindingEndpoint.mockResolvedValue({ ...before, host_count: 1, hosts: [other] });
+    mocked.addFindingHosts.mockResolvedValue(before);
+    confirmMock.mockResolvedValueOnce(true);
+    renderAt('/findings/7');
+    await screen.findByText('Weak TLS on portal');
+
+    await user.click(screen.getByRole('button', { name: 'Actions for a.example.com on 10.0.0.5' }));
+    await user.click(await screen.findByRole('menuitem', { name: /Remove from finding/ }));
+    await waitFor(() => expect(mocked.removeFindingEndpoint).toHaveBeenCalledWith(7, 31));
+    expect(confirmMock).toHaveBeenCalledWith(expect.objectContaining({ title: 'Remove endpoint from finding?', severity: 'danger' }));
+    await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).toBeNull());
+
+    const [message, options] = toastMock.success.mock.calls[0];
+    expect(message).toBe('Removed a.example.com (10.0.0.5) from the finding.');
+    expect(options.action.label).toBe('Undo');
+    await act(async () => { options.action.onClick(); });
+    expect(mocked.addFindingHosts).toHaveBeenCalledWith(7, [], [{ host_id: 5, name_id: 9, host_status: 'retest' }]);
+    await waitFor(() => expect(document.querySelector('[data-endpoint-row="31"]')).not.toBeNull());
   });
 });

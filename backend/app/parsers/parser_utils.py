@@ -20,6 +20,7 @@ from app.db.models_vulnerability import (
     VulnerabilitySeverity,
     VulnerabilitySource,
 )
+from app.services import scan_sightings
 from app.services.host_deduplication_service import HostDeduplicationService
 from app.services.subnet_correlation import SubnetCorrelationService
 
@@ -684,10 +685,15 @@ def refresh_reobserved_vulnerability(
     report carries none.  ``references`` is the stored (JSON) text.
 
     ``scan_id`` ("first recorded by") never moves; the re-observation lands
-    on ``last_seen_scan_id``."""
+    on ``last_seen_scan_id``.  The caller records the sighting
+    (``scan_sightings.see`` / ``see_many``) — this helper has no session, and
+    the Nessus path writes a batch's sightings in one statement."""
     # Aware UTC; UTCDateTime stores it naive.
     existing.last_seen = datetime.now(timezone.utc)
-    existing.last_seen_scan_id = scan_id
+    # A report with no scan to name (a backfill from a row whose scan is
+    # gone) keeps the stored "last seen by".
+    if scan_id is not None:
+        existing.last_seen_scan_id = scan_id
     existing.severity = severity
     # Title can change across scans for the same plugin_id — keep latest.
     if title:
@@ -792,6 +798,7 @@ def upsert_vulnerability(
             existing.exploitable = True
         if check_id:
             existing.check_id = check_id
+        scan_sightings.see(db, scan_sightings.VULNERABILITY, existing.id, scan_id)
         return existing
 
     vulnerability = Vulnerability(
@@ -817,6 +824,7 @@ def upsert_vulnerability(
     )
     db.add(vulnerability)
     db.flush()
+    scan_sightings.see(db, scan_sightings.VULNERABILITY, vulnerability.id, scan_id)
     return vulnerability
 
 

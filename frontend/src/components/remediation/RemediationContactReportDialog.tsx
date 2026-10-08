@@ -100,7 +100,7 @@ export const RemediationContactReportDialog: React.FC<{
           <DialogDescription>
             The findings assigned to this contact{projectName ? ` in ${projectName}` : ' in this project'}, in the
             penetration test report’s format: each with its description, impact, evidence and recommendation, and
-            the deadline on every affected system. Closed ones are counted, not listed.
+            the deadline on every affected system. Those reported fixed are counted, not listed.
           </DialogDescription>
         </DialogHeader>
         <DialogBody>

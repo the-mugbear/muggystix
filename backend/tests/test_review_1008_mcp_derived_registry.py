@@ -31,6 +31,11 @@ ROUTE_BOUND = "the endpoint enforces this bound; the hand-typed schema did not s
 FREE_OBJECT = "the endpoint takes a free-form object; stated instead of left unsaid"
 NO_DEFAULT = "the hand-typed default was not the endpoint's: it has none for this argument"
 
+NEW_ARGUMENT = "the endpoint gained this query parameter after the capture; its tool offers it unedited"
+
+#: {tool: {query argument}} — what a route gained since the fixture was taken.
+ADDED_SINCE_CAPTURE = {"remediation_list": {"verification"}}
+
 #: {tool: {"argument/key": reason}} — every difference, and nothing else.
 DIFFERENCES = {
     "assist_get_finding": {"finding_id/minimum": ROUTE_BOUND},
@@ -61,6 +66,7 @@ DIFFERENCES = {
         "limit/default": ROUTE_DEFAULT,
         "offset/default": ROUTE_DEFAULT,
         "unassigned/default": ROUTE_DEFAULT,
+        "verification": NEW_ARGUMENT,
     },
     "remediation_timeline": {"limit/default": ROUTE_DEFAULT, "offset/default": ROUTE_DEFAULT},
     "remediation_trend": {"days/default": ROUTE_DEFAULT},
@@ -122,10 +128,12 @@ def test_the_same_tools_are_listed():
 def test_names_requiredness_and_placement_are_unchanged(name):
     before, spec = BEFORE[name], TOOLS[name]
     schema = advertised_schema(spec)
-    assert set(schema["properties"]) == set(before["inputSchema"]["properties"])
+    added = ADDED_SINCE_CAPTURE.get(name, set())
+    assert set(schema["properties"]) == set(before["inputSchema"]["properties"]) | added
     assert set(schema.get("required", ())) == set(before["inputSchema"].get("required", ()))
     for where in ("path_params", "query_params", "body_params"):
-        assert set(spec.get(where, ())) == set(before[where]), where
+        expected = set(before[where]) | (added if where == "query_params" else set())
+        assert set(spec.get(where, ())) == expected, where
     assert (spec["method"], spec["path"]) == (before["method"], before["path"])
     assert (spec.get("path_alternatives") or {}) == before["path_alternatives"]
     # Unknown arguments are still refused.
@@ -173,6 +181,9 @@ def test_no_listed_difference_widens_a_schema():
                 assert leaf == "additionalProperties" and (before, derived) == ("(absent)", True), (name, key)
             elif reason == NO_DEFAULT:
                 assert leaf == "default" and derived == "(absent)", (name, key)
+            elif reason == NEW_ARGUMENT:
+                # A whole optional argument the endpoint gained, not a change to one.
+                assert key in ADDED_SINCE_CAPTURE[name] and before == "(absent)", (name, key)
             else:
                 raise AssertionError(f"{name} {key}: unknown reason {reason!r}")
 

@@ -5,17 +5,63 @@
  */
 import type {
   OverdueBand, RemediationApplyRow, RemediationFields, RemediationGroup, RemediationPage, RemediationPolicy,
-  RemediationRow, RemediationState, RemediationStatus,
+  RemediationRow, RemediationState, RemediationStatus, RemediationVerification,
 } from '../services/api';
 
 export const REMEDIATION_PAGE_SIZE = 25;
 
 export const REMEDIATION_STATUSES: RemediationStatus[] = ['open', 'closed', 'deferred'];
+/** The record's `closed` is the CONTACT's claim, so it is said as "Reported
+ *  fixed" everywhere — never "Closed", and never "Remediated", which is the
+ *  assessor's conclusion about the endpoint.  The stored value is unchanged. */
+export const REPORTED_FIXED = 'Reported fixed';
 export const REMEDIATION_STATUS_LABEL: Record<RemediationStatus, string> = {
   open: 'Open',
-  closed: 'Closed',
+  closed: REPORTED_FIXED,
   deferred: 'Deferred',
 };
+
+/** Where the contact's record and the assessor's endpoint status disagree.
+ *  Derived by the server (`verification`); the page only names it. */
+export const REMEDIATION_VERIFICATIONS: RemediationVerification[] = [
+  'reported_fixed_not_retested', 'remediated_record_open',
+];
+export const REMEDIATION_VERIFICATION_LABEL: Record<RemediationVerification, string> = {
+  reported_fixed_not_retested: 'Reported fixed, not retested',
+  remediated_record_open: 'Remediated, record still open',
+};
+export const REMEDIATION_VERIFICATION_HELP: Record<RemediationVerification, string> = {
+  reported_fixed_not_retested:
+    'The contact reported it fixed, and the assessment has not concluded it is remediated on this host.',
+  remediated_record_open:
+    'The assessment concluded it is remediated on this host, and the remediation record is still open or deferred.',
+};
+export const isRemediationVerification = (v: string | null): v is RemediationVerification =>
+  v != null && (REMEDIATION_VERIFICATIONS as string[]).includes(v);
+
+/** The line under a row's deadline that relates the two statuses: the gap
+ *  when there is one, "Remediated" when the assessment concluded so and the
+ *  record agrees, nothing otherwise. */
+export interface VerificationNote { text: string; title: string; tone: string }
+export const verificationNote = (
+  row: Pick<RemediationRow, 'verification' | 'endpoint_status'>,
+): VerificationNote | null => {
+  if (row.verification === 'reported_fixed_not_retested') {
+    return { text: 'Not retested', title: REMEDIATION_VERIFICATION_HELP.reported_fixed_not_retested, tone: 'text-warning' };
+  }
+  if (row.verification === 'remediated_record_open') {
+    return { text: 'Remediated, record still open', title: REMEDIATION_VERIFICATION_HELP.remediated_record_open, tone: 'text-warning' };
+  }
+  if (row.endpoint_status === 'remediated') {
+    return { text: 'Remediated', title: 'The assessment concluded it is remediated on this host.', tone: 'text-muted-foreground' };
+  }
+  return null;
+};
+
+/** Text written before the vocabulary changed — the record of a finding
+ *  removed from a host says "status closed" — as the page says it now. */
+export const heldRecordText = (text: string): string =>
+  text.replace(/\bstatus closed\b/g, 'status reported fixed');
 
 export const REMEDIATION_GROUPS: RemediationGroup[] = ['due', 'host', 'finding', 'contact', 'team'];
 export const REMEDIATION_GROUP_LABEL: Record<RemediationGroup, string> = {
@@ -37,7 +83,7 @@ export const REMEDIATION_STATE_LABEL: Record<RemediationState, string> = {
   not_assigned: 'Not assigned',
   no_deadline: 'No deadline',
   deferred: 'Deferred',
-  closed: 'Closed',
+  closed: REPORTED_FIXED,
 };
 /** What each state means, for the chip's tooltip. */
 export const REMEDIATION_STATE_HELP: Record<RemediationState, string> = {
@@ -47,7 +93,7 @@ export const REMEDIATION_STATE_HELP: Record<RemediationState, string> = {
   not_assigned: 'Open with no assigned date: the clock has not started',
   no_deadline: 'Open, and this severity has no remediation timeline',
   deferred: 'Deferred: the clock is stopped',
-  closed: 'The contact reported it fixed',
+  closed: 'The contact reported it fixed. The assessment’s own conclusion is the endpoint’s status, which this does not change',
 };
 export const isRemediationState = (v: string | null): v is RemediationState =>
   v != null && (REMEDIATION_STATES as string[]).includes(v);
@@ -58,7 +104,7 @@ const days = (n: number): string => `${n.toLocaleString()} day${n === 1 ? '' : '
 export const dueDistance = (row: Pick<RemediationRow, 'state' | 'days_left' | 'closed_days_late'>): string | null => {
   if (row.state === 'closed') {
     if (row.closed_days_late == null) return null;
-    return row.closed_days_late === 0 ? 'closed on time' : `closed ${days(row.closed_days_late)} late`;
+    return row.closed_days_late === 0 ? 'reported fixed on time' : `reported fixed ${days(row.closed_days_late)} late`;
   }
   if (row.days_left == null) return null;
   if (row.days_left < 0) return `${days(-row.days_left)} overdue`;
@@ -115,7 +161,7 @@ export const REMEDIATION_FIELD_LABEL: Record<string, string> = {
   team: 'Team',
   notified_on: 'Assigned on',
   status: 'Status',
-  closed_on: 'Closed date',
+  closed_on: 'Reported fixed on',
   finding: 'Finding',
 };
 
@@ -159,7 +205,7 @@ const EMAIL = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
 export const draftProblem = (draft: RemediationDraft): string | null => {
   const email = draft.contact_email.trim();
   if (email && !EMAIL.test(email)) return 'The contact must be an email address.';
-  if (draft.closed_on && draft.status !== 'closed') return 'A closed date goes with the status Closed.';
+  if (draft.closed_on && draft.status !== 'closed') return 'A “Reported fixed on” date goes with the status Reported fixed.';
   return null;
 };
 
@@ -168,7 +214,7 @@ export const draftProblem = (draft: RemediationDraft): string | null => {
  *  time to close" on Oversight (seen in the browser, 5.337.1). */
 export const draftCaution = (draft: RemediationDraft): string | null =>
   (draft.status === 'closed' && draft.closed_on && draft.notified_on && draft.closed_on < draft.notified_on
-    ? 'The closed date is before the assigned date. It is saved as entered, and left out of the average time to close.'
+    ? 'The “Reported fixed on” date is before the assigned date. It is saved as entered, and left out of the average time to a reported fix.'
     : null);
 
 /**
@@ -301,7 +347,7 @@ export const deadlineCell = (
     case 'closed': {
       const late = row.closed_days_late;
       return {
-        primary: late == null ? 'Closed' : late === 0 ? 'Closed on time' : `Closed ${days(late)} late`,
+        primary: late == null ? REPORTED_FIXED : late === 0 ? `${REPORTED_FIXED} on time` : `${REPORTED_FIXED} ${days(late)} late`,
         date: row.closed_on, after: null, tone: late != null && late > 0 ? 'text-warning' : quiet,
       };
     }
@@ -328,6 +374,13 @@ export const csvCell = (value: string | number | null | undefined): string => {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 };
 
+/** The assessor's endpoint status in the finding page's words (there `open`
+ *  reads "Still present", so it is never taken for the record's Open). */
+const ENDPOINT_STATUS_WORD: Record<string, string> = {
+  open: 'Still present', remediated: 'Remediated', retest: 'Retest', false_positive: 'False positive',
+};
+const endpointStatusWord = (status: string): string => ENDPOINT_STATUS_WORD[status] ?? status;
+
 const CSV_COLUMNS: Array<[string, (r: RemediationRow) => string | number | null]> = [
   ['Project', (r) => r.project_name],
   ['Host', (r) => r.ip_address],
@@ -338,8 +391,10 @@ const CSV_COLUMNS: Array<[string, (r: RemediationRow) => string | number | null]
   ['Assigned on', (r) => r.notified_on],
   ['Due on', (r) => r.due_on],
   ['Days left', (r) => r.days_left],
-  ['Closed on', (r) => r.closed_on],
-  ['Days late at close', (r) => r.closed_days_late],
+  ['Reported fixed on', (r) => r.closed_on],
+  ['Days late when reported fixed', (r) => r.closed_days_late],
+  ['Assessment status on this host', (r) => endpointStatusWord(r.endpoint_status)],
+  ['Record and assessment', (r) => (r.verification ? REMEDIATION_VERIFICATION_LABEL[r.verification] : null)],
   ['Contact', (r) => r.contact_name],
   ['Contact email', (r) => r.contact_email],
   ['Team', (r) => r.team],
@@ -352,7 +407,8 @@ export const remediationCsv = (rows: RemediationRow[]): string =>
 
 /** The page as plain text, for a status mail or a slide's notes. */
 export const remediationSummary = (
-  page: Pick<RemediationPage, 'state_counts' | 'severity_counts' | 'overdue_ages' | 'not_followed_up' | 'not_followed_up_days' | 'as_of'>,
+  page: Pick<RemediationPage, 'state_counts' | 'severity_counts' | 'overdue_ages' | 'not_followed_up' | 'not_followed_up_days' | 'as_of'>
+    & Partial<Pick<RemediationPage, 'verification_counts'>>,
   options: { where: string; dueSoonDays: number; timeline?: string },
 ): string => {
   const c = page.state_counts;
@@ -378,7 +434,11 @@ export const remediationSummary = (
   if (c.overdue + c.due_soon > 0) {
     lines.push('', `Overdue or due soon with no follow-up in ${page.not_followed_up_days} days: ${page.not_followed_up.toLocaleString()}`);
   }
-  lines.push('', `Deferred: ${c.deferred.toLocaleString()}   Closed: ${c.closed.toLocaleString()}`);
+  lines.push('', `Deferred: ${c.deferred.toLocaleString()}   ${REPORTED_FIXED}: ${c.closed.toLocaleString()}`);
+  const gaps = REMEDIATION_VERIFICATIONS.filter((v) => (page.verification_counts?.[v] ?? 0) > 0);
+  if (gaps.length > 0) {
+    lines.push('', ...gaps.map((v) => `${REMEDIATION_VERIFICATION_LABEL[v]}: ${(page.verification_counts?.[v] ?? 0).toLocaleString()}`));
+  }
   if (options.timeline) lines.push('', `Timeline: ${options.timeline}, counted from the day a finding is assigned.`);
   return lines.join('\n');
 };

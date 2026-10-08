@@ -213,7 +213,8 @@ class Settings:
     # Two workers importing into ONE project do not wait on each
     # other: every transaction of an import takes the project's
     # advisory lock SHARED (``ingestion_service.project_import_lock``),
-    # and only the cleanup of a failed / cancelled import takes it
+    # and only a scan delete — the cleanup of a failed / cancelled
+    # import, or a delete by hand — takes it
     # EXCLUSIVE (``lock_project_for_cleanup``) — it starts when no
     # import of that project has a batch open and holds new batches
     # back for the few statements it runs.

@@ -193,7 +193,7 @@ export const RemediationEditDialog: React.FC<{
               <Select value={draft.status || UNCHANGED}
                 onValueChange={(v) => {
                   const status = v === UNCHANGED ? '' : (v as RemediationStatus);
-                  // A closed date belongs to Closed only.
+                  // The date belongs to Reported fixed only.
                   setDraft((d) => ({ ...d, status, closed_on: status === 'closed' ? d.closed_on : '' }));
                 }}>
                 <SelectTrigger id="rem-status"><SelectValue /></SelectTrigger>
@@ -207,7 +207,7 @@ export const RemediationEditDialog: React.FC<{
             </div>
             {draft.status === 'closed' && (
               <div className="min-w-0">
-                <Label htmlFor="rem-closed">Closed date</Label>
+                <Label htmlFor="rem-closed">Reported fixed on</Label>
                 <Input id="rem-closed" type="date" ref={closedRef} value={draft.closed_on}
                   onBlur={checkDates} onKeyUp={checkDates}
                   onChange={(e) => set('closed_on', e.target.value)} />

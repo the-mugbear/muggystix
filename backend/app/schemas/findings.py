@@ -8,6 +8,19 @@ from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 
+class FindingEndpointSegment(BaseModel):
+    """The network segment an affected host belongs to — the project's one
+    segment rule (``subnet_insight_service.group_hosts_into_segments``), the
+    Posture grid's and the Evidence matrix's columns."""
+    # A site id as a string, ``unassigned``, ``subnet:<id>`` or ``unmapped``.
+    key: str
+    label: str
+    # site | subnet | unassigned | unmapped
+    kind: str
+    # Position among the project's segments (the grid's column order).
+    order: int
+
+
 class FindingHostInfo(BaseModel):
     # v2.325.0 — the affected-endpoint ROW id.  A host may carry several rows
     # (one per named endpoint); detach/restore address this id, not host_id.
@@ -20,6 +33,9 @@ class FindingHostInfo(BaseModel):
     name_id: Optional[int] = None
     fqdn: Optional[str] = None
     host_status: str
+    # Single-finding responses only (every endpoint is returned there, and the
+    # page groups them by it); a list row's preview sends null.
+    segment: Optional[FindingEndpointSegment] = None
     model_config = ConfigDict(from_attributes=True)
 
 

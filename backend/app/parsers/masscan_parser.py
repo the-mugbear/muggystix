@@ -21,6 +21,7 @@ from app.db import models
 from app.parsers.parser_utils import (
     ProgressBeat, ScanClock, announce_scan, beat_while_reading, correlate_scan, epoch_to_utc, without_nul,
 )
+from app.services import scan_sightings
 
 logger = logging.getLogger(__name__)
 
@@ -816,16 +817,21 @@ class MasscanParser:
                     models.Script.script_id.like("masscan-%"),
                 )
             }
+            reported = []
             for (pid, script_id), banner in wanted.items():
                 row = existing.get((pid, script_id))
                 if row is not None:
-                    # scan_id stays the first recorder: it cascades on delete,
-                    # and a failed import's cleanup deletes its scan (H2).
+                    # scan_id stays the first recorder; this scan's report of
+                    # the banner is a sighting, below.
                     row.output = banner
                     row.last_seen = func.now()
                 else:
-                    self.db.add(models.Script(port_id=pid, script_id=script_id, output=banner, scan_id=scan_id))
+                    row = models.Script(port_id=pid, script_id=script_id, output=banner, scan_id=scan_id)
+                    self.db.add(row)
+                reported.append(row)
             self.db.flush()
+            scan_sightings.see_many(
+                self.db, scan_sightings.SCRIPT, [(row.id, scan_id) for row in reported])
         self._banners = {}
 
     def _extract_xml_host(self, host_elem: etree._Element) -> Optional[Dict[str, Any]]:

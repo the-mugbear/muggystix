@@ -631,6 +631,127 @@ def host_reachable_via_in_scope_name_condition(project_id: int) -> ColumnElement
     )
 
 
+# --------------------------------------------------------------------------
+# A scan is being deleted: its observations, and the names only it knew
+# --------------------------------------------------------------------------
+def names_only_scan_holds_conditions(
+    scan_id: int, *, hosts_being_removed: Optional[Sequence[int]] = None,
+    observations_being_removed: Optional[ColumnElement] = None,
+) -> List[ColumnElement]:
+    """Predicate on ``DNSName`` rows: every observation of the name came from
+    ``scan_id`` and nothing else refers to it, so the name goes with the scan.
+
+    Evaluated while the scan's observations still exist.  A name is KEPT when
+
+    * any observation of it is not this scan's — another scan's, an import's,
+      a test's (``TESTED``, keyed to an evidence record), or one whose scan
+      was deleted earlier;
+    * a person added it (``created_by_id``);
+    * a host test, a finding endpoint or a scanner observation names it, or a
+      web interface from another scan does (this scan's own web rows are
+      deleted with it);
+    * a scope domain covers it, exactly or as a descendant
+      (``scope_domain_match_condition``) — a wildcard pattern too: when in
+      doubt, keep.
+
+    ``hosts_being_removed`` is for the PREVIEW of a delete that will also
+    remove those hosts: what hangs on them (cascading ``host_id``) is gone by
+    the time the delete itself asks, so the preview leaves it out to give the
+    same answer.  ``observations_being_removed`` (a condition on
+    ``Vulnerability``) is the same for the scanner observations the delete
+    removes on hosts that stay.  The delete passes neither.
+    """
+    from sqlalchemy import Integer, all_, bindparam
+    from sqlalchemy.dialects.postgresql import ARRAY
+
+    from app.db.models_findings import FindingHost
+    from app.db.models_host_tests import HostTest
+    from app.db.models_vulnerability import Vulnerability
+
+    n = models.DNSName
+    own = aliased(models.DNSRecord)
+    other = aliased(models.DNSRecord)
+
+    def stays(host_col) -> List[ColumnElement]:
+        if not hosts_being_removed:
+            return []
+        gone = bindparam("hosts_being_removed", list(hosts_being_removed), type_=ARRAY(Integer), unique=True)
+        return [or_(host_col.is_(None), host_col != all_(gone))]
+
+    return [
+        select(own.id).where(own.name_id == n.id, own.scan_id == scan_id).exists(),
+        ~select(other.id).where(other.name_id == n.id, other.scan_id.is_distinct_from(scan_id)).exists(),
+        n.created_by_id.is_(None),
+        ~select(HostTest.id).where(HostTest.name_id == n.id, *stays(HostTest.host_id)).exists(),
+        ~select(FindingHost.id).where(FindingHost.name_id == n.id, *stays(FindingHost.host_id)).exists(),
+        ~select(Vulnerability.id).where(
+            Vulnerability.name_id == n.id,
+            *stays(Vulnerability.host_id),
+            *([~observations_being_removed] if observations_being_removed is not None else []),
+        ).exists(),
+        ~select(models.WebInterface.id).where(
+            models.WebInterface.name_id == n.id,
+            models.WebInterface.scan_id != scan_id,
+            *stays(models.WebInterface.host_id),
+        ).exists(),
+        ~scope_domain_match_condition(n.project_id, n.fqdn),
+    ]
+
+
+def scan_observation_counts(
+    db: Session, scan_id: int, *, hosts_being_removed: Optional[Sequence[int]] = None,
+    observations_being_removed: Optional[ColumnElement] = None,
+) -> Dict[str, int]:
+    """What ``delete_scan_observations`` would remove, without removing it:
+    ``{"records": the scan's observations, "names": the names that go}``."""
+    records = db.execute(
+        select(func.count(models.DNSRecord.id)).where(models.DNSRecord.scan_id == scan_id)
+    ).scalar() or 0
+    names = db.execute(
+        select(func.count(models.DNSName.id))
+        .where(*names_only_scan_holds_conditions(
+            scan_id, hosts_being_removed=hosts_being_removed,
+            observations_being_removed=observations_being_removed,
+        ))
+    ).scalar() or 0
+    return {"records": int(records), "names": int(names)}
+
+
+def delete_scan_observations(db: Session, scan_id: int) -> Dict[str, int]:
+    """Remove what a scan being deleted observed about names — the ONE step
+    for the cleanup of an unfinished import and for a scan delete by hand.
+
+    An observation is one row per (name, kind, value, resolver, scan), so the
+    scan's rows are exactly what it observed: the same answer seen by an
+    earlier or a later scan is that scan's own row and stays.  A name whose
+    every observation was this scan's, and that nothing else refers to
+    (``names_only_scan_holds_conditions``), goes too: it would otherwise stay
+    in the project with nothing behind it.
+
+    Call it after the hosts the delete removes are gone and BEFORE the scan
+    row is deleted (that sets ``dns_records.scan_id`` to NULL, after which
+    nothing says whose the observations were).  Statements only; returns the
+    counts.
+    """
+    from sqlalchemy import delete
+
+    records = db.execute(
+        select(func.count(models.DNSRecord.id)).where(models.DNSRecord.scan_id == scan_id)
+    ).scalar() or 0
+    # The names first: the rule reads the scan's observations, and a deleted
+    # name takes its own (all this scan's) with it.
+    names = db.execute(
+        delete(models.DNSName)
+        .where(*names_only_scan_holds_conditions(scan_id))
+        .execution_options(synchronize_session=False)
+    ).rowcount
+    db.execute(
+        delete(models.DNSRecord).where(models.DNSRecord.scan_id == scan_id)
+        .execution_options(synchronize_session=False)
+    )
+    return {"records": int(records), "names": int(names or 0)}
+
+
 def domain_matches(fqdn: str, domain: str, include_subdomains: bool) -> bool:
     """Python twin of scope_domain_match_condition, for single checks."""
     if fqdn == domain:

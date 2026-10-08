@@ -10,7 +10,7 @@ import logging
 from typing import Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Response, UploadFile, File
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session, object_session, selectinload
 
 from app.db.session import get_db
 from app.db.models import Annotation, Host
@@ -21,7 +21,7 @@ from app.db.models_project import Project, ProjectRole
 from app.api.deps import get_current_user
 from app.api.deps import get_current_project, require_project_role, resolve_project_assignee
 from app.core.security import log_audit_event
-from app.services.finding_service import FindingService, validate_severity
+from app.services.finding_service import FindingService, endpoint_segments, validate_severity
 from app.services.finding_actions import (
     FindingActor, apply_report_text, finding_actor, promote_or_dismiss_vulnerability, require_modify,
 )
@@ -73,7 +73,7 @@ def _serialize(
     from ``FindingService.endpoint_summaries`` — the true count, the state
     roll-up and a preview of at most five endpoints, so ``finding.hosts`` is
     never touched.  Without it (one finding, loaded by ``_load``) every
-    endpoint is returned."""
+    endpoint is returned, each with its ``segment``."""
     if endpoints is not None:
         hosts = [
             FindingHostInfo(
@@ -85,6 +85,13 @@ def _serialize(
         host_count = endpoints["host_count"]
         endpoint_status_counts: Dict[str, int] = dict(endpoints["status_counts"])
     else:
+        # Each endpoint's network segment, for the page's groups: the project's
+        # one segment rule, in two statements however many endpoints there are.
+        db = object_session(finding)
+        segments = (
+            endpoint_segments(db, finding.project_id, [fh.host_id for fh in finding.hosts])
+            if db is not None else {}
+        )
         hosts = [
             FindingHostInfo(
                 id=fh.id,
@@ -94,6 +101,7 @@ def _serialize(
                 name_id=fh.name_id,
                 fqdn=fh.name.fqdn if fh.name else None,
                 host_status=fh.host_status,
+                segment=segments.get(fh.host_id),
             )
             for fh in finding.hosts
         ]

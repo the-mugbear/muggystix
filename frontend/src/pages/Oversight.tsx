@@ -729,17 +729,17 @@ const Oversight: React.FC = () => {
                     info="Open findings on hosts with no assigned date: no deadline is running for them. A project that assigns nothing shows here, not under overdue.">
                     no deadline running
                   </PostureMeasure>
-                  <PostureMeasure label="Closed late" value={n(s.remediation.closed_late ?? 0)}
-                    info="Findings on hosts closed after the deadline that applied on the day they were closed, out of the closed ones that had a deadline.">
+                  <PostureMeasure label="Reported fixed late" value={n(s.remediation.closed_late ?? 0)}
+                    info="Findings on hosts their contact reported fixed after the deadline that applied on that day, out of those reported fixed that had a deadline. It is the contact's report, not the assessment's “remediated”.">
                     {(s.remediation.closed_with_deadline ?? 0) > 0
-                      ? `of ${n(s.remediation.closed_with_deadline ?? 0)} closed with a deadline`
-                      : 'nothing closed with a deadline yet'}
+                      ? `of ${n(s.remediation.closed_with_deadline ?? 0)} reported fixed with a deadline`
+                      : 'nothing reported fixed with a deadline yet'}
                   </PostureMeasure>
-                  <PostureMeasure label="Average time to close" value={days(s.remediation.avg_days_to_close)}
-                    info="Mean days from the assigned date to the closed date, over closed findings on hosts that carry both dates, the closed date not before the assigned one. One slow fix moves a mean a long way; the number of fixes it is taken over is beside it.">
+                  <PostureMeasure label="Average time to a reported fix" value={days(s.remediation.avg_days_to_close)}
+                    info="Mean days from the assigned date to the day the contact reported it fixed, over findings on hosts that carry both dates, the second not before the first. One slow fix moves a mean a long way; the number of fixes it is taken over is beside it.">
                     {(s.remediation.closed_measured ?? 0) > 0
-                      ? `over ${n(s.remediation.closed_measured ?? 0)} closed with both dates`
-                      : 'no closed finding has both dates'}
+                      ? `over ${n(s.remediation.closed_measured ?? 0)} reported fixed with both dates`
+                      : 'none reported fixed has both dates'}
                   </PostureMeasure>
                 </div>
               </PostureSection>

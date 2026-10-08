@@ -29,7 +29,7 @@ from app.db.models_project import Project, ProjectMembership, ProjectRole
 from app.db.session import get_db
 from app.schemas.remediation_schemas import (
     ApplyBody, ContactReportBody, FollowUpBody, Grouping, NoteCreate, NoteUpdate, OverdueBand, PolicyUpdate, RemediationState,
-    RemediationStatus, Severity,
+    RemediationStatus, Severity, Verification,
 )
 from app.services import remediation_policy, remediation_report
 from app.services import remediation_service as remediation
@@ -62,7 +62,21 @@ def enabled(db: Session = Depends(get_db)) -> remediation_policy.Policy:
     return remediation_policy.require_enabled(db)
 
 
-_STATE = Query(None, description="Where the row stands against its deadline; repeat for several.")
+_STATUS = Query(None, description=(
+    "The contact's progress as recorded: open, deferred, or closed — the contact REPORTED it fixed "
+    "(shown as \"Reported fixed\"). It is not the assessor's conclusion: that is each row's "
+    "`endpoint_status`, where `remediated` means the team concluded it is fixed."))
+_STATE = Query(None, description=(
+    "Where the row stands against its deadline; repeat for several. `closed` is a row the contact "
+    "reported fixed."))
+_VERIFICATION = Query(None, description=(
+    "Only rows where the contact's record and the assessor's `endpoint_status` disagree: "
+    "`reported_fixed_not_retested` — the record is closed (reported fixed) and the endpoint is not "
+    "`remediated` (nor a false positive); `remediated_record_open` — the endpoint is `remediated` "
+    "and the record is open, deferred or was never written. `verification_counts` in the answer "
+    "counts both over the selection, before this filter and the state / status filters; each row "
+    "carries its own `verification` (null where the two agree). Neither status is ever written "
+    "from the other."))
 _CONTACT = Query(None, min_length=1, max_length=254, description="Part of a contact's address or name.")
 _TEAM = Query(None, min_length=1, max_length=100, description="Exactly this team (case does not matter).")
 _BAND = Query(None, description="Only OVERDUE rows this many days past their deadline.")
@@ -75,13 +89,14 @@ def make_router(reader, admin, *, dependencies=()):
     router = APIRouter(dependencies=[Depends(enabled), *dependencies])
 
     @router.get("/remediation", summary="Findings on hosts with their remediation contact and status")
-    def listing(status: Optional[RemediationStatus] = None,
+    def listing(status: Optional[RemediationStatus] = _STATUS,
                 state: Optional[List[RemediationState]] = _STATE,
                 contact: Optional[str] = _CONTACT,
                 unassigned: bool = Query(False, description="Only rows with no contact."),
                 host_id: Optional[int] = Query(None, gt=0), finding_id: Optional[int] = Query(None, gt=0),
                 severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
                 overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
+                verification: Optional[Verification] = _VERIFICATION,
                 group: Grouping = "host",
                 limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
                 actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -89,8 +104,8 @@ def make_router(reader, admin, *, dependencies=()):
         return remediation.list_rows(
             db, [actor.project_id], status=status, state=state, contact=contact, unassigned=unassigned,
             host_id=host_id, finding_id=finding_id, severity=severity, team=team,
-            overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, group=group,
-            limit=limit, offset=offset)
+            overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
+            group=group, limit=limit, offset=offset)
 
     @router.get("/remediation/contacts", summary="The contacts in use, with their counts")
     def contact_list(actor: Actor = Depends(reader), db: Session = Depends(get_db)):
@@ -295,21 +310,22 @@ def _selected(projects: List[Project], project_id: Optional[int]) -> List[int]:
 @account_router.get("/remediation-overview",
                     summary="Findings on hosts across the projects you administer, by deadline")
 def overview(project_id: Optional[int] = Query(None, gt=0),
-             status: Optional[RemediationStatus] = None,
+             status: Optional[RemediationStatus] = _STATUS,
              state: Optional[List[RemediationState]] = _STATE,
              contact: Optional[str] = _CONTACT,
              contact_email: Optional[str] = Query(None, min_length=3, max_length=254,
                                                   description="Exactly this contact."),
              unassigned: bool = False, severity: Optional[Severity] = None, team: Optional[str] = _TEAM,
              overdue_band: Optional[OverdueBand] = _BAND, no_follow_up_days: Optional[int] = _STALE,
+             verification: Optional[Verification] = _VERIFICATION,
              group: Grouping = "due",
              limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0),
              projects: List[Project] = Depends(administered_projects), db: Session = Depends(get_db)):
     return remediation.list_rows(
         db, _selected(projects, project_id), status=status, state=state, contact=contact,
         contact_email=contact_email, unassigned=unassigned, severity=severity, team=team,
-        overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, group=group,
-        limit=limit, offset=offset)
+        overdue_band=overdue_band, no_follow_up_days=no_follow_up_days, verification=verification,
+        group=group, limit=limit, offset=offset)
 
 
 @account_router.get("/remediation-overview/projects",

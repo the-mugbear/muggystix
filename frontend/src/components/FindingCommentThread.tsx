@@ -34,6 +34,9 @@ interface FindingCommentThreadProps {
   canManage: boolean;
   /** v5.260.0 — the images' "In report" mark (see NoteAttachments). */
   reportMarking?: ReportMarking;
+  /** How many comments the thread holds, for the page's jump bar; null while
+   *  that is not known (never loaded). */
+  onCount?: (count: number | null) => void;
 }
 
 /** A file waiting to be attached. `error` is set when its upload against
@@ -49,7 +52,7 @@ interface PendingFile {
   noteId?: number;
 }
 
-const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking }) => {
+const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, canManage, reportMarking, onCount }) => {
   const toast = useToast();
   const { user } = useAuth();
   const [confirmDialog, confirm] = useConfirm();
@@ -86,6 +89,9 @@ const FindingCommentThread: React.FC<FindingCommentThreadProps> = ({ findingId, 
   }, [findingId]);
 
   useEffect(() => { void load(); }, [load]);
+
+  const noteCount = notes ? notes.length : null;
+  useEffect(() => { onCount?.(noteCount); }, [onCount, noteCount]);
 
   // A notification links to /findings/:id#note-:noteId — bring that comment
   // into view once the thread has loaded.

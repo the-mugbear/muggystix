@@ -77,12 +77,14 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
               host_id: Optional[int] = None, finding_id: Optional[int] = None,
               severity: Optional[str] = None, team: Optional[str] = None,
               overdue_band: Optional[str] = None, no_follow_up_days: Optional[int] = None,
+              verification: Optional[str] = None,
               group: str = "host", limit: int = 50, offset: int = 0,
               policy: Optional[deadlines.Policy] = None, today: Optional[date] = None) -> dict:
     policy = policy or deadlines.load(db)
     today = today or policy.today()
     state_of, due = deadlines.state_expr(db, policy, today), deadlines.due_expr(db, policy)
     band_of = deadlines.overdue_band_expr(db, policy, today)
+    verification_of = deadlines.verification_expr()
     query = _rows(db, project_ids)
     if team:
         query = query.filter(func.lower(Remediation.team) == team.strip().lower())
@@ -115,8 +117,10 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     overdue_ages = {name: 0 for name, _, _ in deadlines.OVERDUE_BANDS}
     not_followed_up = 0
     severity_of = func.lower(Finding.severity)
+    # They follow the verification filter like any other part of the selection.
+    selection = query if verification is None else query.filter(verification_of == verification)
     for sev, value, band, stale, n in (
-        query.filter(at_risk).with_entities(severity_of, state_of, band_of, never_or_long_ago, func.count())
+        selection.filter(at_risk).with_entities(severity_of, state_of, band_of, never_or_long_ago, func.count())
         .group_by(severity_of, state_of, band_of, never_or_long_ago)
     ):
         if sev in severity_counts:
@@ -131,10 +135,22 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
     if severity:
         query = query.filter(func.lower(Finding.severity) == severity)
     # Counted before the state and status filters: the chips show every state
-    # of the current selection, whichever one is open.
+    # of the current selection, whichever one is open.  The same statement
+    # counts where the contact's record and the assessor's conclusion disagree
+    # (`verification_counts`): over the selection, before the state, status and
+    # verification filters, so each count is the list `verification=` opens by
+    # itself.  The state counts follow the verification filter, as they follow
+    # every other filter but their own.
     state_counts = {name: 0 for name in deadlines.STATES}
-    for value, n in query.with_entities(state_of, func.count()).group_by(state_of):
-        state_counts[value] = n
+    verification_counts = {name: 0 for name in deadlines.VERIFICATIONS}
+    for value, gap, n in (query.with_entities(state_of, verification_of, func.count())
+                          .group_by(state_of, verification_of)):
+        if gap in verification_counts:
+            verification_counts[gap] += n
+        if verification is None or gap == verification:
+            state_counts[value] += n
+    if verification is not None:
+        query = query.filter(verification_of == verification)
 
     wanted = set(state or deadlines.STATES)
     if status:
@@ -164,13 +180,15 @@ def list_rows(db, project_ids: Sequence[int], *, status: Optional[str] = None,
             state_of.label("state"), due.label("open_due_on"),
             Remediation.closed_due_on.label("closed_due_on"),
             Remediation.last_follow_up_on.label("last_follow_up_on"),
+            verification_of.label("verification"),
         )
         .order_by(*_order(db, group, state_of, due)).offset(offset).limit(limit).all()
     )
     items = [_item(r, today) for r in rows]
     return {"items": items, "total": total, "has_more": offset + len(items) < total,
             "limit": limit, "offset": offset, "status_counts": _status_counts(state_counts),
-            "state_counts": state_counts, "severity_counts": severity_counts, "overdue_ages": overdue_ages,
+            "state_counts": state_counts, "verification_counts": verification_counts,
+            "severity_counts": severity_counts, "overdue_ages": overdue_ages,
             "not_followed_up": not_followed_up,
             "not_followed_up_days": no_follow_up_days or policy.due_soon_days,
             "as_of": today.isoformat()}
@@ -214,6 +232,9 @@ def _item(r, today: date) -> dict:
         "closed_days_late": (max(0, (closed_on - closed_due).days)
                              if state == "closed" and closed_on and closed_due else None),
         "last_follow_up_on": _iso(r.last_follow_up_on), "team": r.team,
+        # Where this record and the assessor's `endpoint_status` disagree
+        # (`remediation_policy.verification_expr`); None where they do not.
+        "verification": r.verification,
     }
 
 

@@ -139,12 +139,13 @@ class Port(Base):
     last_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_updated_scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"))
     # The scan whose import INSERTED this row, set at every insert site and
-    # never moved afterwards.  Cleanup only: a failed import removes the ports
-    # it created (``ingestion_service.delete_partial_scan``), and an import
-    # that writes no port history (Nessus) has no other record of which ones
-    # those are.  NULL — a row older than the column, or one whose creating
-    # scan was deleted — is never "this attempt's".  Not read by a page or a
-    # count.
+    # never moved afterwards.  Read only when a scan is deleted: the cleanup
+    # of an unfinished import and a delete by hand both remove the ports that
+    # scan created (``ingestion_service.delete_ports_scan_created``), and an
+    # import that writes no port history (Nessus) has no other record of
+    # which ones those are.  NULL — a row older than the column, or one whose
+    # creating scan was deleted — is never a scan's own.  Not read by a page
+    # or a count other than the deletion preview.
     created_scan_id = Column(
         Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True,
     )
@@ -179,9 +180,11 @@ class Script(Base):
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    # Indexed: deleting a scan cascades here, and the partial-scan cleanup
-    # re-homes rows by it.
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    # The scan that FIRST recorded the row; every scan that reported it has a
+    # row in ``script_sightings``, which is what decides whether the script
+    # outlives a deleted scan (``scan_sightings.release_scan``).  Nullable +
+    # SET NULL: a delete that skips that step loses the pointer, not the row.
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Relationships
     port = relationship("Port", back_populates="scripts")
@@ -204,7 +207,8 @@ class HostScript(Base):
     # Audit fields
     first_seen = Column(DateTime(timezone=True), server_default=func.now())
     last_seen = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
-    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), nullable=False, index=True)
+    # First recorded by; see Script.scan_id and ``host_script_sightings``.
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
 
     # Relationships
     host = relationship("Host", back_populates="host_scripts")
@@ -214,6 +218,32 @@ class HostScript(Base):
         UniqueConstraint('host_id', 'script_id', name='uq_host_script'),
         Index('idx_host_script_id', 'script_id'),
     )
+
+
+class ScriptSighting(Base):
+    """One row per (port script, scan that reported it).
+
+    A script row is one per port and NSE id, overwritten by each scan that
+    reports it, so the row alone cannot say which scans saw it.  These rows
+    do: deleting a scan deletes its sightings, a script no other scan saw
+    goes with it, and a survivor's "first recorded by" moves to the earliest
+    sighting left.  Written by ``scan_sightings.see`` / ``see_many`` in the
+    same savepoint as the script; read only by ``scan_sightings.release_scan``.
+    """
+    __tablename__ = "script_sightings"
+
+    script_id = Column(Integer, ForeignKey("scripts_v2.id", ondelete="CASCADE"), primary_key=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), primary_key=True, index=True)
+    seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+
+class HostScriptSighting(Base):
+    """One row per (host script, scan that reported it); see ScriptSighting."""
+    __tablename__ = "host_script_sightings"
+
+    host_script_id = Column(Integer, ForeignKey("host_scripts_v2.id", ondelete="CASCADE"), primary_key=True)
+    scan_id = Column(Integer, ForeignKey("scans.id", ondelete="CASCADE"), primary_key=True, index=True)
+    seen_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
 
 
 class HostScanHistory(Base):
@@ -802,8 +832,10 @@ class DNSRecord(Base):
     evidence_record_id = Column(Integer, ForeignKey("evidence_records.id", ondelete="CASCADE"), nullable=True, index=True)
     # RV-1 — provenance: which scan produced this DNS row, so a scan can
     # report its dns_record_count instead of looking "empty" when it only
-    # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none,
-    # and a deleted scan leaves the record as orphaned-but-intact.
+    # yielded DNS answers.  Nullable + SET NULL: pre-RV-1 rows have none.
+    # Both scan deletes remove the scan's own rows first
+    # (dns_name_service.delete_scan_observations); SET NULL is what a delete
+    # that forgot that step would leave — an orphan, never a lost name.
     scan_id = Column(Integer, ForeignKey("scans.id", ondelete="SET NULL"), nullable=True, index=True)
     domain = Column(String, nullable=False, index=True)
     record_type = Column(String, nullable=False)  # A, AAAA, CNAME, MX, TXT, etc.

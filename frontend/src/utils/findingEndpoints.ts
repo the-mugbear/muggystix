@@ -8,8 +8,14 @@
 import type { Finding, FindingHostInfo, FindingHostStatus } from '../services/api';
 import { compareAddresses } from './ipAddress';
 
-/** Endpoint rows the finding page renders before "Show more". */
+/** Endpoint rows the finding page lists before "Show more", and each step of it. */
 export const ENDPOINT_CAP = 100;
+/** The most endpoint rows the page ever has mounted: past it the listed rows
+ *  are a window that moves on, so a finding with thousands of endpoints never
+ *  mounts them all. */
+export const ENDPOINT_MOUNT_MAX = 500;
+/** Several networks start open when the filtered list is at most this long. */
+export const ENDPOINT_GROUPS_OPEN_MAX = 25;
 /** `PATCH /findings/{id}/endpoints` takes at most this many ids per call. */
 export const ENDPOINT_BULK_MAX = 500;
 
@@ -84,6 +90,71 @@ export const sortEndpoints = <H extends Pick<FindingHostInfo, 'id' | 'ip_address
     || text(a.fqdn).localeCompare(text(b.fqdn))
     || text(a.hostname).localeCompare(text(b.hostname))
     || a.id - b.id);
+};
+
+/** A network's rows on the finding page.  `rows` are the ones the current
+ *  filter matches, in the table's order; `total` is every endpoint of the
+ *  finding in that network. */
+export interface EndpointGroup<H> {
+  key: string;
+  label: string;
+  rows: H[];
+  total: number;
+  counts: Record<FindingHostStatus, number>;
+}
+
+const NO_SEGMENT = { key: '', label: 'Network not known', order: Number.MAX_SAFE_INTEGER };
+
+const segmentOf = (h: Pick<FindingHostInfo, 'segment'>) => h.segment ?? NO_SEGMENT;
+
+/** How many networks the finding's endpoints are in — one means a flat list. */
+export const endpointSegmentCount = (hosts: ReadonlyArray<Pick<FindingHostInfo, 'segment'>>): number =>
+  new Set(hosts.map((h) => segmentOf(h).key)).size;
+
+/**
+ * The matching endpoints under their network, in the order the server gives
+ * the segments (the Posture grid's column order).  The segment is the
+ * server's — the project's one segment rule — never derived from an address
+ * here.  `matching` must already be in the table's order; a network with no
+ * matching row is left out.
+ */
+export const groupEndpoints = <H extends Pick<FindingHostInfo, 'segment' | 'host_status'>>(
+  matching: ReadonlyArray<H>,
+  all: ReadonlyArray<Pick<FindingHostInfo, 'segment'>>,
+): EndpointGroup<H>[] => {
+  const totals = new Map<string, number>();
+  all.forEach((h) => { const k = segmentOf(h).key; totals.set(k, (totals.get(k) ?? 0) + 1); });
+  const groups = new Map<string, EndpointGroup<H> & { order: number }>();
+  matching.forEach((h) => {
+    const s = segmentOf(h);
+    let g = groups.get(s.key);
+    if (!g) {
+      g = {
+        key: s.key, label: s.label, order: s.order, rows: [], total: totals.get(s.key) ?? 0,
+        counts: { open: 0, retest: 0, remediated: 0, false_positive: 0 },
+      };
+      groups.set(s.key, g);
+    }
+    g.rows.push(h);
+    g.counts[h.host_status] = (g.counts[h.host_status] ?? 0) + 1;
+  });
+  return [...groups.values()].sort((a, b) => a.order - b.order || a.label.localeCompare(b.label));
+};
+
+/** Which rows are mounted: `[start, end)` of the listable rows. */
+export interface EndpointWindow { start: number; end: number }
+
+export const FIRST_ENDPOINT_WINDOW: EndpointWindow = { start: 0, end: ENDPOINT_CAP };
+
+/** The window widened to hold rows `[first, last)`, never wider than
+ *  `ENDPOINT_MOUNT_MAX`: past that it moves instead, keeping the rows asked for. */
+export const revealEndpoints = (w: EndpointWindow, first: number, last: number): EndpointWindow => {
+  const start = Math.min(w.start, first);
+  const end = Math.max(w.end, last);
+  if (end - start <= ENDPOINT_MOUNT_MAX) return { start, end };
+  return first < w.start
+    ? { start: first, end: Math.max(last, first + ENDPOINT_MOUNT_MAX) }
+    : { start: Math.min(first, last - ENDPOINT_MOUNT_MAX), end: last };
 };
 
 /** The ids from `anchor` to `target` inclusive, in `ordered`'s order — a

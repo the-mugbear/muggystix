@@ -337,6 +337,7 @@ GAP_ACTIONS: Dict[str, Dict[str, str]] = {
 # Overview grid cannot show them (it is about scoped segments); Evidence covers
 # every host in the project, so here they are a column, never a silent omission.
 UNMAPPED_SEGMENT = "unmapped"
+UNMAPPED_SEGMENT_LABEL = "Outside scoped subnets"
 OUTSIDE_SCOPE_ACTION: Dict[str, str] = {
     "kind": "confirm_scope",
     "text": "Outside every scoped subnet. Confirm these hosts are in scope — e.g. reached "
@@ -362,7 +363,7 @@ def evidence_segments(db: Session, project_id: int) -> Dict[str, Any]:
     unmapped = all_hosts - set(locations)
     if unmapped:
         hosts[UNMAPPED_SEGMENT] = unmapped
-        labels[UNMAPPED_SEGMENT] = "Outside scoped subnets"
+        labels[UNMAPPED_SEGMENT] = UNMAPPED_SEGMENT_LABEL
         keys.append(UNMAPPED_SEGMENT)
     return {"group_by": grouping["group_by"], "keys": keys, "labels": labels, "hosts": hosts}
 
